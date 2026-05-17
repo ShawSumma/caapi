@@ -1,0 +1,10 @@
+# Walk forward for 10 sim-seconds, screenshot every 2.
+0.2  screenshot /tmp/walk_0.png
+0.5  down w
+2.5  screenshot /tmp/walk_2.png
+4.5  screenshot /tmp/walk_4.png
+6.5  screenshot /tmp/walk_6.png
+8.5  screenshot /tmp/walk_8.png
+10.5 up w
+10.7 screenshot /tmp/walk_10.png
+11.0 quit

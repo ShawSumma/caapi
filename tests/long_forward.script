@@ -1,0 +1,15 @@
+# Hold W for 20 seconds, screenshotting every 2 s.
+0.2  screenshot /tmp/stress_00.png
+0.5  down w
+2.0  screenshot /tmp/stress_02.png
+4.0  screenshot /tmp/stress_04.png
+6.0  screenshot /tmp/stress_06.png
+8.0  screenshot /tmp/stress_08.png
+10.0 screenshot /tmp/stress_10.png
+12.0 screenshot /tmp/stress_12.png
+14.0 screenshot /tmp/stress_14.png
+16.0 screenshot /tmp/stress_16.png
+18.0 screenshot /tmp/stress_18.png
+20.0 up w
+20.5 screenshot /tmp/stress_20.png
+21.0 quit

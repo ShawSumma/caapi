@@ -95,7 +95,8 @@ void renderFrame(VkDevice device, VkQueue queue,
 
     VkClearValue[2] clears;
     clears[0].color.float32 = [0.05f, 0.07f, 0.12f, 1.0f];
-    clears[1].depthStencil.depth = 1.0f;
+    // Reverse-Z: far plane = 0.0
+    clears[1].depthStencil.depth = 0.0f;
 
     VkRenderPassBeginInfo rpBegin;
     rpBegin.sType = VkStructureType.VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;

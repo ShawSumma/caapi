@@ -61,26 +61,28 @@ Surface[] cpuExtract(const(ubyte)[] voxels, uint dim) {
 /// Make a simple test voxel grid: a sphere of voxels in the middle of the chunk
 /// with a few materials.
 ubyte[] makeTestVoxels(uint dim) {
-    // Solid voxels along the 12 edges of the chunk cube: voxels with >= 2 axes at
-    // a boundary coordinate. Visualizes the {4,3,5} honeycomb skeleton when this
-    // chunk geometry is instanced across all visible chunks.
+    // One cube-corner per chunk: three perpendicular voxel columns meeting at
+    // the chunk's outer corner (where coords are low). Placed at coord 1 (not
+    // 0) so the compute extractor's chunk-margin skip doesn't drop the outward
+    // faces. Each chunk's "corner" sits at a dodecahedron vertex, producing
+    // the honeycomb skeleton when the 20-chunks-per-node × N-nodes are drawn.
     auto data = new ubyte[dim * dim * dim];
     int N = cast(int) dim;
     for (int z = 0; z < N; z++) {
         for (int y = 0; y < N; y++) {
             for (int x = 0; x < N; x++) {
-                int b = 0;
-                if (x == 0 || x == N - 1) {
-                    b++;
+                int oneAxes = 0;
+                if (x == 1) {
+                    oneAxes++;
                 }
-                if (y == 0 || y == N - 1) {
-                    b++;
+                if (y == 1) {
+                    oneAxes++;
                 }
-                if (z == 0 || z == N - 1) {
-                    b++;
+                if (z == 1) {
+                    oneAxes++;
                 }
-                if (b >= 2) {
-                    data[x + y * N + z * N * N] = 1; // material 1 = Dirt
+                if (oneAxes >= 2) {
+                    data[x + y * N + z * N * N] = 1;
                 }
             }
         }

@@ -7,10 +7,12 @@ import client.graphics.core;
 import client.graphics.base;
 import client.graphics.voxels;
 import client.graphics.frustum : Frustum;
-import common.dodeca : Vertex, VERTEX_COUNT, vertexChunkToNode, vertexChunkBoundingSphereCenter;
-import common.math : MPoint;
+import common.dodeca : Vertex, VERTEX_COUNT, Side, SIDE_COUNT,
+    vertexChunkToNode, vertexChunkBoundingSphereCenter,
+    sideReflection, sideIsFacing;
+import common.math : MPoint, MIsometry, MVector;
 import common.graph : Graph, NodeId;
-import common.math : MIsometry;
+import common.proto : Position;
 import common.traversal : ensureNearby, nearbyNodes;
 
 struct Renderer {
@@ -20,12 +22,73 @@ struct Renderer {
     SurfaceExtraction extract;
     uint dimension = 12;
     float time = 0;
-    float camYaw = 0;
-    float camPitch = 0;
+    // Hyperbolic camera position: a node id + local isometry within that node.
+    // camPos.local maps camera-local frame (origin = camera, -Z forward) to
+    // node-local frame. View matrix = camPos.local.inverse(). Yaw/pitch are
+    // applied directly to camPos.local so that node migration (reflection)
+    // mirrors orientation along with position.
+    Position camPos;
+    // Graph and visible chunk count are mutated each frame as the camera moves.
+    Graph graph;
+    float viewRadius = 1.2f;
+    uint maxChunks = 0;
+    uint currentChunkCount = 0;
 
-    void setCamera(float yaw, float pitch) {
-        camYaw = yaw;
-        camPitch = pitch;
+    /// Rotate camera in its own local frame: yawDelta around Y, pitchDelta around X.
+    void rotateCamera(float yawDelta, float pitchDelta) {
+        if (yawDelta != 0) {
+            camPos.local = camPos.local * rotationY(yawDelta);
+        }
+        if (pitchDelta != 0) {
+            camPos.local = camPos.local * rotationX(pitchDelta);
+        }
+        // Cheap to renormalize; without it the 3x3 orientation drifts after
+        // many rotation accumulations and small skews compound.
+        if (yawDelta != 0 || pitchDelta != 0) {
+            camPos.local = camPos.local.renormalized();
+        }
+    }
+
+    /// Translate camera in its local frame: dz negative = forward, dx positive = right.
+    void moveCamera(float dx, float dy, float dz) {
+        if (dx == 0 && dy == 0 && dz == 0) {
+            return;
+        }
+        float[3] v = [dx, dy, dz];
+        auto step = MIsometry!float.translationAlong(v);
+        camPos.local = camPos.local * step;
+        migratePosition();
+        camPos.local = camPos.local.renormalized();
+    }
+
+    private void migratePosition() {
+        // Repeatedly find a side facing the current local point and reflect across it
+        // until we're inside the node bounds.
+        foreach (_; 0 .. SIDE_COUNT) {
+            auto col3 = MVector!float(
+                camPos.local.mat.data[3][0], camPos.local.mat.data[3][1],
+                camPos.local.mat.data[3][2], camPos.local.mat.data[3][3]);
+            auto p = MPoint!float(col3);
+            Side facing;
+            bool any = false;
+            foreach (sideIdx; 0 .. SIDE_COUNT) {
+                auto side = cast(Side) sideIdx;
+                if (sideIsFacing(side, p)) {
+                    facing = side;
+                    any = true;
+                    break;
+                }
+            }
+            if (!any) {
+                return;
+            }
+            auto neighbor = graph.ensureNeighbor(camPos.node, facing);
+            if (neighbor == NodeId.init) {
+                return;
+            }
+            camPos.node = neighbor;
+            camPos.local = sideReflection(facing) * camPos.local;
+        }
     }
 
     bool init(void* window) {
@@ -44,33 +107,28 @@ struct Renderer {
         }
         Surface[] empty;
 
-        // Build the hyperbolic graph and traverse nearby nodes. For each node × each
-        // of 20 vertex-chunks, store nodeTransform * vertexChunkToNode(v) as the per-
-        // instance transform.
-        auto graph = Graph.create(cast(ubyte) dimension);
-        auto startLocal = MIsometry!float.identity();
-        ensureNearby(graph, NodeId.ROOT, startLocal, 1.0f);
-        auto nodes = nearbyNodes(graph, NodeId.ROOT, startLocal, 1.0f);
-        writefln("Nearby nodes within radius 3: %d", nodes.length);
-
+        // Build the hyperbolic graph. Each frame we re-traverse from the camera
+        // position to refresh the visible set; here we just allocate a generous
+        // transforms VBO ceiling so we never need to resize.
+        graph = Graph.create(cast(ubyte) dimension);
+        // At radius 1.0 ~ 400 nodes * 20 chunks; at 2.0 the count climbs quickly in
+        // hyperbolic space. Cap at 32k slots — the renderer truncates the BFS output
+        // if it overflows.
+        maxChunks = 32768;
         float[16][] transforms;
-        transforms.length = nodes.length * VERTEX_COUNT;
-        foreach (ni, nn; nodes) {
-            foreach (i; 0 .. VERTEX_COUNT) {
-                auto v = cast(Vertex) i;
-                auto m = nn.transform.mat * vertexChunkToNode(v);
-                foreach (col; 0 .. 4) {
-                    foreach (row; 0 .. 4) {
-                        transforms[ni * VERTEX_COUNT + i][col * 4 + row] = m.data[col][row];
-                    }
-                }
-            }
-        }
+        transforms.length = maxChunks;
+        currentChunkCount = 0;
 
         if (!voxels.init(core.physicalDevice, core.device, swapState.renderPass, empty, transforms,
                          extract.surfacesBuf.buffer)) {
             return false;
         }
+
+        // Start the camera in the root node, offset into chunk A.
+        auto chunkCenter = vertexChunkBoundingSphereCenter(Vertex.A);
+        auto originPoint = MPoint!float.origin();
+        camPos.node = NodeId.ROOT;
+        camPos.local = MIsometry!float.translation(originPoint, chunkCenter);
 
         writeln("Renderer initialized successfully");
         return true;
@@ -78,21 +136,54 @@ struct Renderer {
 
     void render(float dt) {
         time += dt;
+        // Re-traverse nodes from current camera position and rebuild transforms.
+        updateVisibleChunks();
+        // Diagnostic: every second of sim time, print the local camera position so we
+        // can see if it stays bounded after node migration.
+        static int lastSecond = -1;
+        int currentSecond = cast(int) time;
+        if (currentSecond != lastSecond) {
+            lastSecond = currentSecond;
+            auto col3 = camPos.local.mat.data[3];
+            float mip = col3[3] * col3[3] - col3[0] * col3[0] - col3[1] * col3[1] - col3[2] * col3[2];
+            writefln("[t=%ss] node=%s local = (%.3f, %.3f, %.3f, %.3f)  -mip=%.4f  visible=%d  graph=%d",
+                currentSecond, camPos.node, col3[0], col3[1], col3[2], col3[3], mip,
+                currentChunkCount, graph.len);
+            stdout.flush();
+        }
         auto extent = swapState.extent;
         float aspect = cast(float) extent.width / cast(float) extent.height;
         // Proper hypermine projection: Beltrami-Klein perspective into unit ball.
         auto frustum = Frustum.fromVfov(45.0f * (cast(float) PI / 180.0f), aspect);
         auto proj = frustum.projection(1.0e-4f);
-        // Camera at the center of chunk A (so we're *inside* a chunk, not on a vertex).
-        // view = rotateX(pitch) * rotateY(yaw) * translation(chunkCenter -> origin)
-        auto chunkCenter = vertexChunkBoundingSphereCenter(Vertex.A);
-        auto originPoint = MPoint!float.origin();
-        auto toOrigin = MIsometry!float.translation(chunkCenter, originPoint);
-        float[16] camOffset = matToFlat(toOrigin.mat);
-        auto view = matMul(matMul(rotateX(camPitch), rotateY(camYaw)), camOffset);
+        // camPos.local maps camera-local frame to node-local frame, so the view
+        // matrix is its inverse — applied as a single isometry (orientation already
+        // baked in).
+        auto worldToCam = camPos.local.inverse();
+        float[16] view = matToFlat(worldToCam.mat);
         auto vp = matMul(proj, view);
         float[16] invp = 0;
-        voxels.updateCommonUbo(core.device, vp, invp, 0.0f, time);
+        // Light direction fixed in camera frame ("above-forward"), transformed
+        // to node-local frame via camPos.local so it stays stable across
+        // node migrations.
+        import std.math : sqrt;
+        float[4] lightCam = [0.3f, 0.8f, 0.4f, 0]; // camera-relative
+        float[4] lightNode;
+        foreach (row; 0 .. 4) {
+            lightNode[row] = 0;
+            foreach (k; 0 .. 4) {
+                lightNode[row] += camPos.local.mat.data[k][row] * lightCam[k];
+            }
+        }
+        // Normalize xyz
+        float llen = sqrt(lightNode[0]*lightNode[0] + lightNode[1]*lightNode[1] + lightNode[2]*lightNode[2]);
+        if (llen > 0) {
+            foreach (i; 0 .. 3) {
+                lightNode[i] /= llen;
+            }
+        }
+        lightNode[3] = 0;
+        voxels.updateCommonUbo(core.device, vp, invp, 0.0f, time, lightNode);
 
         renderVoxelsFrame(
             core.device,
@@ -110,10 +201,41 @@ struct Renderer {
             voxels.commonSet,
             voxels.staticSet,
             voxels.transformsVbo.buffer,
-            voxels.chunkCount,
+            currentChunkCount,
             dimension,
             &extract,
         );
+    }
+
+    private void updateVisibleChunks() {
+        ensureNearby(graph, camPos.node, camPos.local, viewRadius);
+        auto nodes = nearbyNodes(graph, camPos.node, camPos.local, viewRadius);
+        uint count = cast(uint)(nodes.length * VERTEX_COUNT);
+        if (count > maxChunks) {
+            count = maxChunks;
+        }
+        // Map the transforms VBO and overwrite.
+        void* mapped;
+        vkMapMemory(core.device, voxels.transformsVbo.memory, 0, count * 64, 0, &mapped);
+        auto buf = cast(float*) mapped;
+        uint idx = 0;
+        outer: foreach (nn; nodes) {
+            foreach (i; 0 .. VERTEX_COUNT) {
+                auto v = cast(Vertex) i;
+                auto m = nn.transform.mat * vertexChunkToNode(v);
+                foreach (col; 0 .. 4) {
+                    foreach (row; 0 .. 4) {
+                        buf[idx * 16 + col * 4 + row] = m.data[col][row];
+                    }
+                }
+                idx++;
+                if (idx >= maxChunks) {
+                    break outer;
+                }
+            }
+        }
+        vkUnmapMemory(core.device, voxels.transformsVbo.memory);
+        currentChunkCount = idx;
     }
 
     void cleanup() {
@@ -129,16 +251,6 @@ struct Renderer {
 }
 
 // ---- math helpers (column-major mat4) ----
-private float[16] rotateY(float angle) {
-    float[16] m = 0;
-    float c = cos(angle);
-    float s = sin(angle);
-    m[0] = c;  m[2]  = -s;
-    m[5] = 1;
-    m[8] = s;  m[10] = c;
-    m[15] = 1;
-    return m;
-}
 
 private float[16] matToFlat(M)(M m) {
     float[16] r;
@@ -150,15 +262,28 @@ private float[16] matToFlat(M)(M m) {
     return r;
 }
 
-private float[16] rotateX(float angle) {
-    float[16] m = 0;
+private MIsometry!float rotationY(float angle) {
+    import common.math : Matrix4;
     float c = cos(angle);
     float s = sin(angle);
-    m[0] = 1;
-    m[5] = c;  m[6]  = s;
-    m[9] = -s; m[10] = c;
-    m[15] = 1;
-    return m;
+    Matrix4!float m;
+    m.data[0][0] = c;  m.data[2][0] = -s;
+    m.data[1][1] = 1;
+    m.data[0][2] = s;  m.data[2][2] = c;
+    m.data[3][3] = 1;
+    return MIsometry!float(m);
+}
+
+private MIsometry!float rotationX(float angle) {
+    import common.math : Matrix4;
+    float c = cos(angle);
+    float s = sin(angle);
+    Matrix4!float m;
+    m.data[0][0] = 1;
+    m.data[1][1] = c;  m.data[2][1] = s;
+    m.data[1][2] = -s; m.data[2][2] = c;
+    m.data[3][3] = 1;
+    return MIsometry!float(m);
 }
 
 private float[16] perspective(float fovY, float aspect, float near, float far) {
@@ -235,8 +360,9 @@ private void renderVoxelsFrame(
     extract.recordExtract(cmd, chunkCount);
 
     VkClearValue[2] clears;
-    clears[0].color.float32 = [0.05f, 0.07f, 0.12f, 1.0f];
-    clears[1].depthStencil.depth = 1.0f;
+    clears[0].color.float32 = [0.52f, 0.70f, 0.85f, 1.0f]; // sky blue
+    // Reverse-Z: far plane = 0.0
+    clears[1].depthStencil.depth = 0.0f;
 
     VkRenderPassBeginInfo rp;
     rp.sType = VkStructureType.VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;

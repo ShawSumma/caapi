@@ -101,7 +101,7 @@ struct SurfacePipeline {
 
         // --- Buffers ---
         // Common UBO: mat4 vp, mat4 invp, float fog, float time, vec2 pad → 144 bytes
-        ubyte[144] commonInit = 0;
+        ubyte[160] commonInit = 0;
         commonUbo = GpuBuffer.create(phys, device, commonInit[],
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
 
@@ -201,6 +201,8 @@ struct SurfacePipeline {
         VkPipelineRasterizationStateCreateInfo rs;
         rs.sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
         rs.polygonMode = VkPolygonMode.VK_POLYGON_MODE_FILL;
+        // Cull back faces. Parity-flipped chunks have their winding corrected
+        // in voxels.vert by swapping a pair of triangle vertices.
         rs.cullMode = VkCullModeFlagBits.VK_CULL_MODE_BACK_BIT;
         rs.frontFace = VkFrontFace.VK_FRONT_FACE_COUNTER_CLOCKWISE;
         rs.lineWidth = 1.0f;
@@ -213,7 +215,9 @@ struct SurfacePipeline {
         dssci.sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
         dssci.depthTestEnable = 1;
         dssci.depthWriteEnable = 1;
-        dssci.depthCompareOp = VkCompareOp.VK_COMPARE_OP_LESS;
+        // Beltrami-Klein projection from frustum.d is reverse-Z (near=1.0, far=0.0),
+        // so we keep larger depth values (closer geometry).
+        dssci.depthCompareOp = VkCompareOp.VK_COMPARE_OP_GREATER;
 
         VkPipelineColorBlendAttachmentState cba;
         cba.colorWriteMask = 0xf;
@@ -249,17 +253,25 @@ struct SurfacePipeline {
         return true;
     }
 
-    void updateCommonUbo(VkDevice device, float[16] vp, float[16] invp, float fogDensity, float time) {
-        // common UBO layout: mat4 vp (64), mat4 invp (64), float fog (4), float time (4), pad (8)
-        ubyte[144] data = 0;
+    void updateCommonUbo(VkDevice device, float[16] vp, float[16] invp,
+                         float fogDensity, float time, float[4] lightDir) {
+        // common UBO layout (std140):
+        //   mat4 vp         0..63
+        //   mat4 invp      64..127
+        //   float fog      128
+        //   float time     132
+        //   <pad>          136..143
+        //   vec4 lightDir  144..159
+        ubyte[160] data = 0;
         import core.stdc.string : memcpy;
         memcpy(data.ptr + 0,   vp.ptr,   64);
         memcpy(data.ptr + 64,  invp.ptr, 64);
         memcpy(data.ptr + 128, &fogDensity, 4);
         memcpy(data.ptr + 132, &time, 4);
+        memcpy(data.ptr + 144, lightDir.ptr, 16);
         void* mapped;
-        vkMapMemory(device, commonUbo.memory, 0, 144, 0, &mapped);
-        memcpy(mapped, data.ptr, 144);
+        vkMapMemory(device, commonUbo.memory, 0, 160, 0, &mapped);
+        memcpy(mapped, data.ptr, 160);
         vkUnmapMemory(device, commonUbo.memory);
     }
 

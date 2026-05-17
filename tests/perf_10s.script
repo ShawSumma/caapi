@@ -1,0 +1,5 @@
+# Hold W for 10 seconds, no screenshots, just FPS measurement.
+0.5  down w
+10.5 up w
+10.6 screenshot /tmp/perf_end.png
+11.0 quit

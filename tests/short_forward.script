@@ -1,0 +1,10 @@
+# Hold W for 5 seconds with screenshots every second.
+0.2  screenshot /tmp/short_00.png
+0.5  down w
+1.5  screenshot /tmp/short_01.png
+2.5  screenshot /tmp/short_02.png
+3.5  screenshot /tmp/short_03.png
+4.5  screenshot /tmp/short_04.png
+5.0  up w
+5.2  screenshot /tmp/short_05.png
+5.5  quit

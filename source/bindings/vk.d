@@ -118,6 +118,7 @@ enum VkImageTiling : int {
 
 enum VkCompareOp : int {
     VK_COMPARE_OP_LESS = 1,
+    VK_COMPARE_OP_GREATER = 4,
 }
 
 enum VkAttachmentLoadOp : int {
