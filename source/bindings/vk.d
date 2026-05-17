@@ -81,6 +81,7 @@ enum VkDescriptorType : int {
     VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER = 1,
     VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER = 6,
     VK_DESCRIPTOR_TYPE_STORAGE_BUFFER = 7,
+    VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT = 10,
 }
 
 enum VkVertexInputRateExt : int {
@@ -108,10 +109,11 @@ enum VkPresentModeKHR : int {
 
 enum VkImageLayout : int {
     VK_IMAGE_LAYOUT_UNDEFINED = 0,
-    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL = 7,
-    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL = 5,
     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL = 2,
     VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL = 3,
+    VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL = 4,
+    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL = 5,
+    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL = 7,
     VK_IMAGE_LAYOUT_PRESENT_SRC_KHR = 1000001002,
 }
 
@@ -129,11 +131,13 @@ enum VkCompareOp : int {
 }
 
 enum VkAttachmentLoadOp : int {
+    VK_ATTACHMENT_LOAD_OP_LOAD = 0,
     VK_ATTACHMENT_LOAD_OP_CLEAR = 1,
 }
 
 enum VkAttachmentStoreOp : int {
     VK_ATTACHMENT_STORE_OP_STORE = 0,
+    VK_ATTACHMENT_STORE_OP_DONT_CARE = 1,
 }
 
 enum VkPipelineBindPoint : int {
@@ -171,6 +175,7 @@ enum VkImageUsageFlagBits : uint {
     VK_IMAGE_USAGE_SAMPLED_BIT = 0x00000004,
     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT = 0x00000010,
     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT = 0x00000020,
+    VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT = 0x00000080,
 }
 
 enum VkCompositeAlphaFlagBitsKHR : uint {
@@ -200,17 +205,24 @@ enum VkShaderStageFlagBits : uint {
 }
 
 enum VkAccessFlagBits : uint {
+    VK_ACCESS_INDIRECT_COMMAND_READ_BIT = 0x00000001,
+    VK_ACCESS_INPUT_ATTACHMENT_READ_BIT = 0x00000010,
     VK_ACCESS_SHADER_READ_BIT = 0x00000020,
     VK_ACCESS_SHADER_WRITE_BIT = 0x00000040,
-    VK_ACCESS_INDIRECT_COMMAND_READ_BIT = 0x00000001,
+    VK_ACCESS_COLOR_ATTACHMENT_READ_BIT = 0x00000080,
+    VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT = 0x00000100,
+    VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT = 0x00000200,
+    VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT = 0x00000400,
 }
 
 enum VkPipelineStageFlagBitsExt : uint {
-    VK_PIPELINE_STAGE_TRANSFER_BIT = 0x00001000,
-    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT = 0x00000800,
+    VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT = 0x00000002,
     VK_PIPELINE_STAGE_VERTEX_SHADER_BIT = 0x00000008,
     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT = 0x00000080,
-    VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT = 0x00000002,
+    VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT = 0x00000100,
+    VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT = 0x00000200,
+    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT = 0x00000800,
+    VK_PIPELINE_STAGE_TRANSFER_BIT = 0x00001000,
 }
 
 enum VkVertexInputRate : int {
@@ -964,6 +976,7 @@ extern(C) nothrow @nogc {
     void vkCmdFillBuffer(VkCommandBuffer, ulong, VkDeviceSize, VkDeviceSize, uint);
     void vkCmdPipelineBarrier(VkCommandBuffer, uint, uint, uint, uint, const(void)*, uint, const(VkBufferMemoryBarrier)*, uint, const(void)*);
     void vkCmdDrawIndirect(VkCommandBuffer, ulong, VkDeviceSize, uint, uint);
+    void vkCmdNextSubpass(VkCommandBuffer, VkSubpassContents);
     VkResult vkCreateSampler(VkDevice, const(VkSamplerCreateInfo)*, const(void)*, VkSampler*);
     void vkDestroySampler(VkDevice, VkSampler, const(void)*);
     void vkCmdCopyBufferToImage(VkCommandBuffer, ulong, VkImage, int, uint, const(VkBufferImageCopy)*);
@@ -1039,3 +1052,13 @@ enum VK_SAMPLER_MIPMAP_MODE_NEAREST = 0;
 enum VK_SAMPLER_ADDRESS_MODE_REPEAT = 0;
 enum VK_QUEUE_FAMILY_IGNORED = ~0U;
 enum VK_ACCESS_TRANSFER_WRITE_BIT = 0x00001000;
+enum VK_DEPENDENCY_BY_REGION_BIT = 0x00000001;
+
+enum VkBlendFactor : int {
+    VK_BLEND_FACTOR_SRC_ALPHA = 6,
+    VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA = 7,
+}
+
+enum VkBlendOp : int {
+    VK_BLEND_OP_ADD = 0,
+}

@@ -44,7 +44,8 @@ struct SurfacePipeline {
     bool init(VkPhysicalDevice phys, VkDevice device, VkRenderPass renderPass,
               Surface[] surfaces, float[16][] transforms,
               VkQueue queue = null, VkCommandPool cmdPool = 0,
-              ulong externalSurfacesBuf = 0) {
+              ulong externalSurfacesBuf = 0,
+              VkImageView depthView = 0) {
         static immutable ubyte[] vertSpv = cast(ubyte[]) import("voxels.vert.spv");
         static immutable ubyte[] fragSpv = cast(ubyte[]) import("voxels.frag.spv");
 
@@ -56,17 +57,21 @@ struct SurfacePipeline {
         }
 
         // --- Descriptor set layouts ---
-        // set 0 binding 0 = Common UBO (vert)
-        VkDescriptorSetLayoutBinding commonBind;
-        commonBind.binding = 0;
-        commonBind.descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        commonBind.descriptorCount = 1;
-        commonBind.stageFlags = VkShaderStageFlagBits.VK_SHADER_STAGE_VERTEX_BIT |
-                                VkShaderStageFlagBits.VK_SHADER_STAGE_FRAGMENT_BIT;
+        // set 0: binding 0 = Common UBO, binding 1 = depth input attachment (fog)
+        VkDescriptorSetLayoutBinding[2] commonBinds;
+        commonBinds[0].binding = 0;
+        commonBinds[0].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        commonBinds[0].descriptorCount = 1;
+        commonBinds[0].stageFlags = VkShaderStageFlagBits.VK_SHADER_STAGE_VERTEX_BIT |
+                                    VkShaderStageFlagBits.VK_SHADER_STAGE_FRAGMENT_BIT;
+        commonBinds[1].binding = 1;
+        commonBinds[1].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+        commonBinds[1].descriptorCount = 1;
+        commonBinds[1].stageFlags = VkShaderStageFlagBits.VK_SHADER_STAGE_FRAGMENT_BIT;
         VkDescriptorSetLayoutCreateInfo commonCi;
         commonCi.sType = VkStructureType.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        commonCi.bindingCount = 1;
-        commonCi.pBindings = &commonBind;
+        commonCi.bindingCount = 2;
+        commonCi.pBindings = commonBinds.ptr;
         vkCreateDescriptorSetLayout(device, &commonCi, null, &commonLayout);
 
         // set 1: binding 0 = Surfaces SSBO (vert), binding 1 = texture array (frag)
@@ -86,17 +91,19 @@ struct SurfacePipeline {
         vkCreateDescriptorSetLayout(device, &staticCi, null, &staticLayout);
 
         // --- Descriptor pool + sets ---
-        VkDescriptorPoolSize[3] sizes;
+        VkDescriptorPoolSize[4] sizes;
         sizes[0].type = VkDescriptorType.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         sizes[0].descriptorCount = 1;
         sizes[1].type = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         sizes[1].descriptorCount = 1;
         sizes[2].type = VkDescriptorType.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         sizes[2].descriptorCount = 1;
+        sizes[3].type = VkDescriptorType.VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+        sizes[3].descriptorCount = 1;
         VkDescriptorPoolCreateInfo poolCi;
         poolCi.sType = VkStructureType.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         poolCi.maxSets = 2;
-        poolCi.poolSizeCount = 3;
+        poolCi.poolSizeCount = 4;
         poolCi.pPoolSizes = sizes.ptr;
         vkCreateDescriptorPool(device, &poolCi, null, &descPool);
 
@@ -151,7 +158,11 @@ struct SurfacePipeline {
         imgInfo.sampler = textureSampler;
         imgInfo.imageView = textureView;
         imgInfo.imageLayout = VkImageLayout.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        VkWriteDescriptorSet[3] writes;
+        VkDescriptorImageInfo depthInfo;
+        depthInfo.sampler = 0;
+        depthInfo.imageView = depthView;
+        depthInfo.imageLayout = VkImageLayout.VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+        VkWriteDescriptorSet[4] writes;
         writes[0].sType = VkStructureType.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].dstSet = commonSet;
         writes[0].dstBinding = 0;
@@ -159,18 +170,24 @@ struct SurfacePipeline {
         writes[0].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         writes[0].pBufferInfo = &commonInfo;
         writes[1].sType = VkStructureType.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[1].dstSet = staticSet;
-        writes[1].dstBinding = 0;
+        writes[1].dstSet = commonSet;
+        writes[1].dstBinding = 1;
         writes[1].descriptorCount = 1;
-        writes[1].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[1].pBufferInfo = &ssboInfo;
+        writes[1].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+        writes[1].pImageInfo = cast(const(void)*) &depthInfo;
         writes[2].sType = VkStructureType.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[2].dstSet = staticSet;
-        writes[2].dstBinding = 1;
+        writes[2].dstBinding = 0;
         writes[2].descriptorCount = 1;
-        writes[2].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[2].pImageInfo = &imgInfo;
-        vkUpdateDescriptorSets(device, 3, writes.ptr, 0, null);
+        writes[2].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[2].pBufferInfo = &ssboInfo;
+        writes[3].sType = VkStructureType.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[3].dstSet = staticSet;
+        writes[3].dstBinding = 1;
+        writes[3].descriptorCount = 1;
+        writes[3].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[3].pImageInfo = cast(const(void)*) &imgInfo;
+        vkUpdateDescriptorSets(device, 4, writes.ptr, 0, null);
 
         // --- Pipeline layout ---
         VkPushConstantRange pcr;
@@ -285,27 +302,109 @@ struct SurfacePipeline {
                                      VkQueue queue, VkCommandPool cmdPool) {
         import common.world : MATERIAL_COUNT;
         import core.stdc.string : memcpy, memset;
+        import client.graphics.png_loader : loadPngRgba;
+        import std.format : format;
 
-        enum TEX_SIZE = 16;
         enum LAYER_COUNT = MATERIAL_COUNT - 1; // exclude Void
-        enum PIXEL_BYTES = TEX_SIZE * TEX_SIZE * 4;
-        enum TOTAL_BYTES = PIXEL_BYTES * LAYER_COUNT;
 
-        // Fill all layers with gray (178, 178, 178, 255)
-        ubyte[TOTAL_BYTES] pixels;
-        for (size_t i = 0; i < TOTAL_BYTES; i += 4) {
-            pixels[i]   = 178;
-            pixels[i+1] = 178;
-            pixels[i+2] = 178;
-            pixels[i+3] = 255;
+        // Try to load PNG textures from the hypermine assets directory
+        string[] searchPaths = [
+            "../hypermine/assets/materials",
+            "assets/materials",
+        ];
+
+        string materialsDir;
+        foreach (p; searchPaths) {
+            import std.file : exists;
+            if (exists(p)) {
+                materialsDir = p;
+                break;
+            }
+        }
+
+        uint texSize = 128;
+        uint pixelBytes;
+        ubyte[] allPixels;
+
+        if (materialsDir.length > 0) {
+            // Load real textures from PNG files, searching by numeric prefix
+            import std.file : dirEntries, SpanMode;
+            import std.path : baseName;
+            import std.algorithm : startsWith;
+
+            // Collect filenames sorted by index
+            string[] filenames;
+            filenames.length = LAYER_COUNT;
+            try {
+                foreach (entry; dirEntries(materialsDir, SpanMode.shallow)) {
+                    string name = baseName(entry.name);
+                    if (name.length >= 6 && name[$ - 4 .. $] == ".png") {
+                        // Parse the 5-digit prefix
+                        uint idx = 0;
+                        bool valid = true;
+                        foreach (ch; name[0 .. 5]) {
+                            if (ch < '0' || ch > '9') { valid = false; break; }
+                            idx = idx * 10 + (ch - '0');
+                        }
+                        if (valid && idx >= 1 && idx <= LAYER_COUNT) {
+                            filenames[idx - 1] = entry.name;
+                        }
+                    }
+                }
+            } catch (Exception) {}
+
+            ubyte[][] layers;
+            foreach (i; 0 .. LAYER_COUNT) {
+                ubyte[] pixels;
+                if (filenames[i].length > 0) {
+                    pixels = loadPngRgba(filenames[i]);
+                }
+                if (pixels is null) {
+                    pixels = new ubyte[](texSize * texSize * 4);
+                    for (size_t j = 0; j < pixels.length; j += 4) {
+                        pixels[j] = 178; pixels[j+1] = 178;
+                        pixels[j+2] = 178; pixels[j+3] = 255;
+                    }
+                }
+                if (layers.length == 0 && pixels.length > texSize * texSize * 4) {
+                    import std.math : sqrt;
+                    texSize = cast(uint) sqrt(cast(float)(pixels.length / 4));
+                }
+                layers ~= pixels;
+            }
+
+            pixelBytes = texSize * texSize * 4;
+            allPixels = new ubyte[](pixelBytes * LAYER_COUNT);
+            foreach (i, layer; layers) {
+                if (layer.length == pixelBytes) {
+                    memcpy(allPixels.ptr + i * pixelBytes, layer.ptr, pixelBytes);
+                } else {
+                    for (size_t j = 0; j < pixelBytes; j += 4) {
+                        allPixels[i * pixelBytes + j] = 178;
+                        allPixels[i * pixelBytes + j + 1] = 178;
+                        allPixels[i * pixelBytes + j + 2] = 178;
+                        allPixels[i * pixelBytes + j + 3] = 255;
+                    }
+                }
+            }
+            writefln("Loaded %d material textures (%dx%d) from %s", LAYER_COUNT, texSize, texSize, materialsDir);
+        } else {
+            writeln("Warning: materials directory not found, using gray textures");
+            texSize = 16;
+            pixelBytes = texSize * texSize * 4;
+            allPixels = new ubyte[](pixelBytes * LAYER_COUNT);
+            for (size_t i = 0; i < allPixels.length; i += 4) {
+                allPixels[i] = 178; allPixels[i+1] = 178;
+                allPixels[i+2] = 178; allPixels[i+3] = 255;
+            }
         }
 
         // Create image
         VkImageCreateInfo ici;
         ici.sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         ici.imageType = VkImageType.VK_IMAGE_TYPE_2D;
-        ici.format = VkFormat.VK_FORMAT_R8G8B8A8_UNORM;
-        ici.extent = VkExtent3D(TEX_SIZE, TEX_SIZE, 1);
+        ici.format = VkFormat.VK_FORMAT_R8G8B8A8_SRGB;
+        ici.extent = VkExtent3D(texSize, texSize, 1);
         ici.mipLevels = 1;
         ici.arrayLayers = LAYER_COUNT;
         ici.samples = 1;
@@ -343,7 +442,7 @@ struct SurfacePipeline {
         vkBindImageMemory(device, textureImage, textureMemory, 0);
 
         // Create staging buffer
-        auto staging = GpuBuffer.create(phys, device, pixels[],
+        auto staging = GpuBuffer.create(phys, device, allPixels,
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
 
         // Upload via command buffer
@@ -384,7 +483,7 @@ struct SurfacePipeline {
         region.imageSubresource = VkImageSubresourceLayers(
             VkImageAspectFlagBits.VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, LAYER_COUNT);
         region.imageOffset = VkOffset3D(0, 0, 0);
-        region.imageExtent = VkExtent3D(TEX_SIZE, TEX_SIZE, 1);
+        region.imageExtent = VkExtent3D(texSize, texSize, 1);
         vkCmdCopyBufferToImage(cmd, staging.buffer, textureImage,
             VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
@@ -414,7 +513,7 @@ struct SurfacePipeline {
         ivci.sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         ivci.image = textureImage;
         ivci.viewType = VkImageViewType.VK_IMAGE_VIEW_TYPE_2D_ARRAY;
-        ivci.format = VkFormat.VK_FORMAT_R8G8B8A8_UNORM;
+        ivci.format = VkFormat.VK_FORMAT_R8G8B8A8_SRGB;
         ivci.subresourceRange = VkImageSubresourceRange(
             VkImageAspectFlagBits.VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, LAYER_COUNT);
         res = vkCreateImageView(device, &ivci, null, &textureView);
@@ -422,11 +521,11 @@ struct SurfacePipeline {
             return false;
         }
 
-        // Create sampler
+        // Create sampler (linear filtering, matching Rust reference)
         VkSamplerCreateInfo sci;
         sci.sType = VkStructureType.VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-        sci.magFilter = VK_FILTER_NEAREST;
-        sci.minFilter = VK_FILTER_NEAREST;
+        sci.magFilter = VK_FILTER_LINEAR;
+        sci.minFilter = VK_FILTER_LINEAR;
         sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
         sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
@@ -439,6 +538,7 @@ struct SurfacePipeline {
 
         return true;
     }
+
 
     void updateCommonUbo(VkDevice device, float[16] vp, float[16] invp,
                          float fogDensity, float time, float[4] lightDir) {

@@ -6,6 +6,7 @@ import bindings.vk;
 import client.graphics.core;
 import client.graphics.base;
 import client.graphics.voxels;
+import client.graphics.fog : FogPipeline;
 import client.graphics.frustum : Frustum;
 import common.dodeca : Vertex, VERTEX_COUNT, Side, SIDE_COUNT,
     vertexChunkToNode, vertexChunkBoundingSphereCenter,
@@ -20,6 +21,7 @@ struct Renderer {
     SwapchainState swapState;
     SurfacePipeline voxels;
     SurfaceExtraction extract;
+    FogPipeline fog;
     uint dimension = 12;
     float time = 0;
     // Hyperbolic camera position: a node id + local isometry within that node.
@@ -121,7 +123,12 @@ struct Renderer {
 
         if (!voxels.init(core.physicalDevice, core.device, swapState.renderPass, empty, transforms,
                          core.graphicsQueue, swapState.commandPool,
-                         extract.surfacesBuf.buffer)) {
+                         extract.surfacesBuf.buffer,
+                         swapState.depthView)) {
+            return false;
+        }
+
+        if (!fog.init(core.device, swapState.renderPass, voxels.commonLayout)) {
             return false;
         }
 
@@ -163,11 +170,16 @@ struct Renderer {
         auto worldToCam = camPos.local.inverse();
         float[16] view = matToFlat(worldToCam.mat);
         auto vp = matMul(proj, view);
-        float[16] invp = 0;
+        // Compute inverse projection for fog shader (reconstructs view-space position)
+        auto invp = matInverse(proj);
+        // Fog density: achieve ~0.1% transmission at fog_distance with exponent 5.
+        // density = ln(1/transmission)^(1/exponent) / distance
+        import std.math : sqrt, log, pow;
+        float fogDistance = 75.0f; // meters (matches sim_config view_distance)
+        float fogDensity = pow(log(1.0f / 1e-3f), 1.0f / 5.0f) / fogDistance;
         // Light direction fixed in camera frame ("above-forward"), transformed
         // to node-local frame via camPos.local so it stays stable across
         // node migrations.
-        import std.math : sqrt;
         float[4] lightCam = [0.3f, 0.8f, 0.4f, 0]; // camera-relative
         float[4] lightNode;
         foreach (row; 0 .. 4) {
@@ -184,7 +196,7 @@ struct Renderer {
             }
         }
         lightNode[3] = 0;
-        voxels.updateCommonUbo(core.device, vp, invp, 0.0f, time, lightNode);
+        voxels.updateCommonUbo(core.device, vp, invp, fogDensity, time, lightNode);
 
         renderVoxelsFrame(
             core.device,
@@ -205,6 +217,7 @@ struct Renderer {
             currentChunkCount,
             dimension,
             &extract,
+            &fog,
         );
     }
 
@@ -242,6 +255,7 @@ struct Renderer {
     void cleanup() {
         if (core.device !is null) {
             vkDeviceWaitIdle(core.device);
+            fog.cleanup(core.device);
             voxels.cleanup(core.device);
             extract.cleanup(core.device);
             swapState.cleanup(core.device);
@@ -324,6 +338,53 @@ private float[16] matMul(float[16] a, float[16] b) {
     return r;
 }
 
+private float[16] matInverse(float[16] m) {
+    // Generic 4x4 inverse via cofactor expansion (column-major)
+    float[16] inv;
+    float a00 = m[0], a01 = m[1], a02 = m[2], a03 = m[3];
+    float a10 = m[4], a11 = m[5], a12 = m[6], a13 = m[7];
+    float a20 = m[8], a21 = m[9], a22 = m[10], a23 = m[11];
+    float a30 = m[12], a31 = m[13], a32 = m[14], a33 = m[15];
+
+    float b00 = a00*a11 - a01*a10;
+    float b01 = a00*a12 - a02*a10;
+    float b02 = a00*a13 - a03*a10;
+    float b03 = a01*a12 - a02*a11;
+    float b04 = a01*a13 - a03*a11;
+    float b05 = a02*a13 - a03*a12;
+    float b06 = a20*a31 - a21*a30;
+    float b07 = a20*a32 - a22*a30;
+    float b08 = a20*a33 - a23*a30;
+    float b09 = a21*a32 - a22*a31;
+    float b10 = a21*a33 - a23*a31;
+    float b11 = a22*a33 - a23*a32;
+
+    float det = b00*b11 - b01*b10 + b02*b09 + b03*b08 - b04*b07 + b05*b06;
+    if (det == 0) {
+        return m;
+    }
+    float invDet = 1.0f / det;
+
+    inv[0]  = ( a11*b11 - a12*b10 + a13*b09) * invDet;
+    inv[1]  = (-a01*b11 + a02*b10 - a03*b09) * invDet;
+    inv[2]  = ( a31*b05 - a32*b04 + a33*b03) * invDet;
+    inv[3]  = (-a21*b05 + a22*b04 - a23*b03) * invDet;
+    inv[4]  = (-a10*b11 + a12*b08 - a13*b07) * invDet;
+    inv[5]  = ( a00*b11 - a02*b08 + a03*b07) * invDet;
+    inv[6]  = (-a30*b05 + a32*b02 - a33*b01) * invDet;
+    inv[7]  = ( a20*b05 - a22*b02 + a23*b01) * invDet;
+    inv[8]  = ( a10*b10 - a11*b08 + a13*b06) * invDet;
+    inv[9]  = (-a00*b10 + a01*b08 - a03*b06) * invDet;
+    inv[10] = ( a30*b04 - a31*b02 + a33*b00) * invDet;
+    inv[11] = (-a20*b04 + a21*b02 - a23*b00) * invDet;
+    inv[12] = (-a10*b09 + a11*b07 - a12*b06) * invDet;
+    inv[13] = ( a00*b09 - a01*b07 + a02*b06) * invDet;
+    inv[14] = (-a30*b03 + a31*b01 - a32*b00) * invDet;
+    inv[15] = ( a20*b03 - a21*b01 + a22*b00) * invDet;
+
+    return inv;
+}
+
 private float[3] nrm(float[3] v) {
     float l = sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]);
     if (l == 0) {
@@ -344,7 +405,8 @@ private void renderVoxelsFrame(
     VkPipeline pipeline, VkPipelineLayout layout,
     VkDescriptorSet commonSet, VkDescriptorSet staticSet,
     ulong transformsBuf, uint chunkCount, uint dimension,
-    SurfaceExtraction* extract) {
+    SurfaceExtraction* extract,
+    FogPipeline* fogPipeline) {
 
     vkWaitForFences(device, 1, &fence, 1, ulong.max);
     vkResetFences(device, 1, &fence);
@@ -361,7 +423,7 @@ private void renderVoxelsFrame(
     extract.recordExtract(cmd, chunkCount);
 
     VkClearValue[2] clears;
-    clears[0].color.float32 = [0.52f, 0.70f, 0.85f, 1.0f]; // sky blue
+    clears[0].color.float32 = [0.0f, 0.0f, 0.0f, 0.0f]; // fog provides sky color
     // Reverse-Z: far plane = 0.0
     clears[1].depthStencil.depth = 0.0f;
 
@@ -397,6 +459,10 @@ private void renderVoxelsFrame(
 
     // Draw indirect: vertex_count was written by compute extraction
     vkCmdDrawIndirect(cmd, extract.indirectBuf.buffer, 0, 1, 16);
+
+    // Subpass 1: fog post-process
+    vkCmdNextSubpass(cmd, VkSubpassContents.VK_SUBPASS_CONTENTS_INLINE);
+    fogPipeline.draw(cmd, fogPipeline.pipelineLayout, commonSet);
 
     vkCmdEndRenderPass(cmd);
     vkEndCommandBuffer(cmd);

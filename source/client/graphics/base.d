@@ -100,7 +100,8 @@ struct SwapchainState {
         dci.arrayLayers = 1;
         dci.samples = 1;
         dci.tiling = VkImageTiling.VK_IMAGE_TILING_OPTIMAL;
-        dci.usage = VkImageUsageFlagBits.VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        dci.usage = VkImageUsageFlagBits.VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+                  | VkImageUsageFlagBits.VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
         dci.sharingMode = VkSharingMode.VK_SHARING_MODE_EXCLUSIVE;
         dci.initialLayout = VkImageLayout.VK_IMAGE_LAYOUT_UNDEFINED;
         vkCreateImage(device, &dci, null, &depthImage);
@@ -133,26 +134,23 @@ struct SwapchainState {
         dvci.subresourceRange.layerCount = 1;
         vkCreateImageView(device, &dvci, null, &depthView);
 
-        // Create render pass
+        // Create render pass (2 subpasses: voxels, then fog post-process)
         VkAttachmentDescription[2] attachments;
         attachments[0].format = format;
         attachments[0].samples = 1;
         attachments[0].loadOp = VkAttachmentLoadOp.VK_ATTACHMENT_LOAD_OP_CLEAR;
         attachments[0].storeOp = VkAttachmentStoreOp.VK_ATTACHMENT_STORE_OP_STORE;
-        attachments[0].stencilLoadOp = VkAttachmentLoadOp.VK_ATTACHMENT_LOAD_OP_CLEAR;
-        attachments[0].stencilStoreOp = VkAttachmentStoreOp.VK_ATTACHMENT_STORE_OP_STORE;
         attachments[0].initialLayout = VkImageLayout.VK_IMAGE_LAYOUT_UNDEFINED;
         attachments[0].finalLayout = VkImageLayout.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
         attachments[1].format = VkFormat.VK_FORMAT_D32_SFLOAT;
         attachments[1].samples = 1;
         attachments[1].loadOp = VkAttachmentLoadOp.VK_ATTACHMENT_LOAD_OP_CLEAR;
-        attachments[1].storeOp = VkAttachmentStoreOp.VK_ATTACHMENT_STORE_OP_STORE;
-        attachments[1].stencilLoadOp = VkAttachmentLoadOp.VK_ATTACHMENT_LOAD_OP_CLEAR;
-        attachments[1].stencilStoreOp = VkAttachmentStoreOp.VK_ATTACHMENT_STORE_OP_STORE;
+        attachments[1].storeOp = VkAttachmentStoreOp.VK_ATTACHMENT_STORE_OP_DONT_CARE;
         attachments[1].initialLayout = VkImageLayout.VK_IMAGE_LAYOUT_UNDEFINED;
         attachments[1].finalLayout = VkImageLayout.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
+        // Subpass 0: voxels — writes color + depth
         VkAttachmentReference colorRef;
         colorRef.attachment = 0;
         colorRef.layout = VkImageLayout.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -160,28 +158,55 @@ struct SwapchainState {
         depthRef.attachment = 1;
         depthRef.layout = VkImageLayout.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
-        VkSubpassDescription subpass;
-        subpass.pipelineBindPoint = VkPipelineBindPoint.VK_PIPELINE_BIND_POINT_GRAPHICS;
-        subpass.colorAttachmentCount = 1;
-        subpass.pColorAttachments = &colorRef;
-        subpass.pDepthStencilAttachment = &depthRef;
+        // Subpass 1: fog — reads depth as input attachment, writes color
+        VkAttachmentReference depthInputRef;
+        depthInputRef.attachment = 1;
+        depthInputRef.layout = VkImageLayout.VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 
-        VkSubpassDependency dep;
-        dep.srcSubpass = VK_SUBPASS_EXTERNAL;
-        dep.dstSubpass = 0;
-        dep.srcStageMask = VkPipelineStageFlagBits.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        dep.dstStageMask = VkPipelineStageFlagBits.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        dep.srcAccessMask = 0;
-        dep.dstAccessMask = 0x00000100; // VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+        VkSubpassDescription[2] subpasses;
+        subpasses[0].pipelineBindPoint = VkPipelineBindPoint.VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpasses[0].colorAttachmentCount = 1;
+        subpasses[0].pColorAttachments = &colorRef;
+        subpasses[0].pDepthStencilAttachment = &depthRef;
+
+        subpasses[1].pipelineBindPoint = VkPipelineBindPoint.VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpasses[1].colorAttachmentCount = 1;
+        subpasses[1].pColorAttachments = &colorRef;
+        subpasses[1].inputAttachmentCount = 1;
+        subpasses[1].pInputAttachments = &depthInputRef;
+
+        VkSubpassDependency[2] deps;
+        // EXTERNAL → subpass 0
+        deps[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+        deps[0].dstSubpass = 0;
+        deps[0].srcStageMask = VkPipelineStageFlagBits.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+                              | VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+        deps[0].dstStageMask = VkPipelineStageFlagBits.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+                              | VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+        deps[0].srcAccessMask = 0;
+        deps[0].dstAccessMask = VkAccessFlagBits.VK_ACCESS_COLOR_ATTACHMENT_READ_BIT
+                              | VkAccessFlagBits.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+                              | VkAccessFlagBits.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT
+                              | VkAccessFlagBits.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+        // Subpass 0 → subpass 1 (depth write → input attachment read)
+        deps[1].srcSubpass = 0;
+        deps[1].dstSubpass = 1;
+        deps[1].srcStageMask = VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
+                              | VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+        deps[1].dstStageMask = VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        deps[1].srcAccessMask = VkAccessFlagBits.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        deps[1].dstAccessMask = VkAccessFlagBits.VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
+        deps[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 
         VkRenderPassCreateInfo rpci;
         rpci.sType = VkStructureType.VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
         rpci.attachmentCount = 2;
         rpci.pAttachments = attachments.ptr;
-        rpci.subpassCount = 1;
-        rpci.pSubpasses = &subpass;
-        rpci.dependencyCount = 1;
-        rpci.pDependencies = &dep;
+        rpci.subpassCount = 2;
+        rpci.pSubpasses = subpasses.ptr;
+        rpci.dependencyCount = 2;
+        rpci.pDependencies = deps.ptr;
 
         vkCreateRenderPass(device, &rpci, null, &renderPass);
 
