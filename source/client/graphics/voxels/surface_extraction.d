@@ -20,6 +20,25 @@ uint[] packVoxelsForExtraction(const(ubyte)[] voxels, uint dim) {
             }
         }
     }
+    // Fill margins by copying boundary voxels outward
+    for (uint z = 0; z < dim; z++) {
+        for (uint y = 0; y < dim; y++) {
+            padded[0         + (y+1)*paddedDim + (z+1)*paddedDim*paddedDim] = padded[1       + (y+1)*paddedDim + (z+1)*paddedDim*paddedDim];
+            padded[(dim+1)   + (y+1)*paddedDim + (z+1)*paddedDim*paddedDim] = padded[dim     + (y+1)*paddedDim + (z+1)*paddedDim*paddedDim];
+        }
+    }
+    for (uint z = 0; z < dim; z++) {
+        for (uint x = 0; x < paddedDim; x++) {
+            padded[x + 0*paddedDim         + (z+1)*paddedDim*paddedDim] = padded[x + 1*paddedDim       + (z+1)*paddedDim*paddedDim];
+            padded[x + (dim+1)*paddedDim   + (z+1)*paddedDim*paddedDim] = padded[x + dim*paddedDim     + (z+1)*paddedDim*paddedDim];
+        }
+    }
+    for (uint y = 0; y < paddedDim; y++) {
+        for (uint x = 0; x < paddedDim; x++) {
+            padded[x + y*paddedDim + 0*paddedDim*paddedDim]         = padded[x + y*paddedDim + 1*paddedDim*paddedDim];
+            padded[x + y*paddedDim + (dim+1)*paddedDim*paddedDim]   = padded[x + y*paddedDim + dim*paddedDim*paddedDim];
+        }
+    }
     auto pairs = new uint[(paddedSize + 1) / 2];
     for (uint i = 0; i + 1 < paddedSize; i += 2) {
         pairs[i / 2] = padded[i] | (cast(uint) padded[i + 1] << 16);
