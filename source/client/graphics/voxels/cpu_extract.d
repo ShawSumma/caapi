@@ -18,10 +18,14 @@ Surface[] cpuExtract(const(ubyte)[] voxels, uint dim) {
         return voxels[idx(x, y, z)] != 0;
     };
 
-    static immutable int[3][3] uvs = [
-        [1, 2, 0], // axis 0 (X): u=Y, v=Z
-        [2, 0, 1], // axis 1 (Y): u=Z, v=X
-        [0, 1, 2], // axis 2 (Z): u=X, v=Y
+    // Per-world-vertex AO: for each face corner, check the 4 voxels
+    // touching that world vertex on the occluding side. This gives
+    // consistent values at shared edges between adjacent coplanar faces,
+    // eliminating seam artifacts.
+    static immutable int[2][3] uvAxes = [
+        [1, 2], // axis 0 (X): u=Y, v=Z
+        [2, 0], // axis 1 (Y): u=Z, v=X
+        [0, 1], // axis 2 (Z): u=X, v=Y
     ];
 
     for (int z = 0; z < cast(int)dim; z++) {
@@ -41,39 +45,34 @@ Surface[] cpuExtract(const(ubyte)[] voxels, uint dim) {
                     bool inward = here;
                     bool reverse = there;
 
-                    // Compute occlusion matching hypermine's surface_occlusion
-                    int[3] voxel = [x, y, z];
-                    int[3] occBase = voxel;
+                    int[3] occBase = [x, y, z];
                     if (!inward) {
                         occBase[axis] -= 1;
                     }
 
-                    int uAxis = uvs[axis][0];
-                    int vAxis = uvs[axis][1];
-                    int[3] u = [0, 0, 0];
-                    u[uAxis] = 1;
-                    int[3] v = [0, 0, 0];
-                    v[vAxis] = 1;
+                    int uAx = uvAxes[axis][0];
+                    int vAx = uvAxes[axis][1];
 
-                    // 0 1 2
-                    // 3 . 4
-                    // 5 6 7
-                    bool[8] occ;
-                    occ[0] = getVoxel(occBase[0]-u[0]-v[0], occBase[1]-u[1]-v[1], occBase[2]-u[2]-v[2]);
-                    occ[1] = getVoxel(occBase[0]     -v[0], occBase[1]     -v[1], occBase[2]     -v[2]);
-                    occ[2] = getVoxel(occBase[0]+u[0]-v[0], occBase[1]+u[1]-v[1], occBase[2]+u[2]-v[2]);
-                    occ[3] = getVoxel(occBase[0]-u[0]     , occBase[1]-u[1]     , occBase[2]-u[2]     );
-                    occ[4] = getVoxel(occBase[0]+u[0]     , occBase[1]+u[1]     , occBase[2]+u[2]     );
-                    occ[5] = getVoxel(occBase[0]-u[0]+v[0], occBase[1]-u[1]+v[1], occBase[2]-u[2]+v[2]);
-                    occ[6] = getVoxel(occBase[0]     +v[0], occBase[1]     +v[1], occBase[2]     +v[2]);
-                    occ[7] = getVoxel(occBase[0]+u[0]+v[0], occBase[1]+u[1]+v[1], occBase[2]+u[2]+v[2]);
+                    uint[4] occResult;
+                    foreach (ci; 0 .. 4) {
+                        int cu = ci & 1;
+                        int cv = ci >> 1;
+                        int wu = occBase[uAx] + cu;
+                        int wv = occBase[vAx] + cv;
 
-                    uint[4] occResult = [
-                        vertexOcclusion(occ[0], occ[1], occ[3]),
-                        vertexOcclusion(occ[2], occ[1], occ[4]),
-                        vertexOcclusion(occ[5], occ[6], occ[3]),
-                        vertexOcclusion(occ[7], occ[6], occ[4]),
-                    ];
+                        int count = 0;
+                        for (int du = -1; du <= 0; du++) {
+                            for (int dv = -1; dv <= 0; dv++) {
+                                int[3] probe = occBase;
+                                probe[uAx] = wu + du;
+                                probe[vAx] = wv + dv;
+                                if (getVoxel(probe[0], probe[1], probe[2])) {
+                                    count++;
+                                }
+                            }
+                        }
+                        occResult[ci] = cast(uint)(4 - count);
+                    }
 
                     bool flip = occResult[1] + occResult[2] > occResult[0] + occResult[3];
                     Surface s;
@@ -86,13 +85,6 @@ Surface[] cpuExtract(const(ubyte)[] voxels, uint dim) {
         }
     }
     return out_;
-}
-
-private uint vertexOcclusion(bool a, bool b, bool c) {
-    if (b && c) {
-        return 0;
-    }
-    return 3 - cast(uint)a - cast(uint)b - cast(uint)c;
 }
 
 /// Make a simple test voxel grid: a sphere of voxels in the middle of the chunk
