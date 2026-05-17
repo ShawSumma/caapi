@@ -34,11 +34,17 @@ struct SurfacePipeline {
     GpuBuffer commonUbo;     // set=0 binding=0
     GpuBuffer surfacesSsbo;  // set=1 binding=0
     GpuBuffer transformsVbo; // per-instance mat4
+    VkImage textureImage;
+    VkDeviceMemory textureMemory;
+    VkImageView textureView;
+    VkSampler textureSampler;
     uint surfaceCount;
     uint chunkCount;
 
     bool init(VkPhysicalDevice phys, VkDevice device, VkRenderPass renderPass,
-              Surface[] surfaces, float[16][] transforms, ulong externalSurfacesBuf = 0) {
+              Surface[] surfaces, float[16][] transforms,
+              VkQueue queue = null, VkCommandPool cmdPool = 0,
+              ulong externalSurfacesBuf = 0) {
         static immutable ubyte[] vertSpv = cast(ubyte[]) import("voxels.vert.spv");
         static immutable ubyte[] fragSpv = cast(ubyte[]) import("voxels.frag.spv");
 
@@ -63,28 +69,34 @@ struct SurfacePipeline {
         commonCi.pBindings = &commonBind;
         vkCreateDescriptorSetLayout(device, &commonCi, null, &commonLayout);
 
-        // set 1 binding 0 = Surfaces SSBO (vert)
-        VkDescriptorSetLayoutBinding staticBind;
-        staticBind.binding = 0;
-        staticBind.descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        staticBind.descriptorCount = 1;
-        staticBind.stageFlags = VkShaderStageFlagBits.VK_SHADER_STAGE_VERTEX_BIT;
+        // set 1: binding 0 = Surfaces SSBO (vert), binding 1 = texture array (frag)
+        VkDescriptorSetLayoutBinding[2] staticBinds;
+        staticBinds[0].binding = 0;
+        staticBinds[0].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        staticBinds[0].descriptorCount = 1;
+        staticBinds[0].stageFlags = VkShaderStageFlagBits.VK_SHADER_STAGE_VERTEX_BIT;
+        staticBinds[1].binding = 1;
+        staticBinds[1].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        staticBinds[1].descriptorCount = 1;
+        staticBinds[1].stageFlags = VkShaderStageFlagBits.VK_SHADER_STAGE_FRAGMENT_BIT;
         VkDescriptorSetLayoutCreateInfo staticCi;
         staticCi.sType = VkStructureType.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        staticCi.bindingCount = 1;
-        staticCi.pBindings = &staticBind;
+        staticCi.bindingCount = 2;
+        staticCi.pBindings = staticBinds.ptr;
         vkCreateDescriptorSetLayout(device, &staticCi, null, &staticLayout);
 
         // --- Descriptor pool + sets ---
-        VkDescriptorPoolSize[2] sizes;
+        VkDescriptorPoolSize[3] sizes;
         sizes[0].type = VkDescriptorType.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         sizes[0].descriptorCount = 1;
         sizes[1].type = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         sizes[1].descriptorCount = 1;
+        sizes[2].type = VkDescriptorType.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        sizes[2].descriptorCount = 1;
         VkDescriptorPoolCreateInfo poolCi;
         poolCi.sType = VkStructureType.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         poolCi.maxSets = 2;
-        poolCi.poolSizeCount = 2;
+        poolCi.poolSizeCount = 3;
         poolCi.pPoolSizes = sizes.ptr;
         vkCreateDescriptorPool(device, &poolCi, null, &descPool);
 
@@ -120,6 +132,12 @@ struct SurfacePipeline {
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
         chunkCount = cast(uint) transforms.length;
 
+        // --- Create texture array ---
+        if (!createTextureArray(phys, device, queue, cmdPool)) {
+            writeln("Failed to create texture array");
+            return false;
+        }
+
         // --- Write descriptors ---
         VkDescriptorBufferInfo commonInfo;
         commonInfo.buffer = commonUbo.buffer;
@@ -129,7 +147,11 @@ struct SurfacePipeline {
         ssboInfo.buffer = surfacesSsbo.buffer;
         ssboInfo.offset = 0;
         ssboInfo.range = VK_WHOLE_SIZE;
-        VkWriteDescriptorSet[2] writes;
+        VkDescriptorImageInfo imgInfo;
+        imgInfo.sampler = textureSampler;
+        imgInfo.imageView = textureView;
+        imgInfo.imageLayout = VkImageLayout.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkWriteDescriptorSet[3] writes;
         writes[0].sType = VkStructureType.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].dstSet = commonSet;
         writes[0].dstBinding = 0;
@@ -142,7 +164,13 @@ struct SurfacePipeline {
         writes[1].descriptorCount = 1;
         writes[1].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         writes[1].pBufferInfo = &ssboInfo;
-        vkUpdateDescriptorSets(device, 2, writes.ptr, 0, null);
+        writes[2].sType = VkStructureType.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[2].dstSet = staticSet;
+        writes[2].dstBinding = 1;
+        writes[2].descriptorCount = 1;
+        writes[2].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[2].pImageInfo = &imgInfo;
+        vkUpdateDescriptorSets(device, 3, writes.ptr, 0, null);
 
         // --- Pipeline layout ---
         VkPushConstantRange pcr;
@@ -203,7 +231,7 @@ struct SurfacePipeline {
         rs.polygonMode = VkPolygonMode.VK_POLYGON_MODE_FILL;
         // Cull back faces. Parity-flipped chunks have their winding corrected
         // in voxels.vert by swapping a pair of triangle vertices.
-        rs.cullMode = VkCullModeFlagBits.VK_CULL_MODE_BACK_BIT;
+        rs.cullMode = VkCullModeFlagBits.VK_CULL_MODE_NONE;
         rs.frontFace = VkFrontFace.VK_FRONT_FACE_COUNTER_CLOCKWISE;
         rs.lineWidth = 1.0f;
 
@@ -253,6 +281,165 @@ struct SurfacePipeline {
         return true;
     }
 
+    private bool createTextureArray(VkPhysicalDevice phys, VkDevice device,
+                                     VkQueue queue, VkCommandPool cmdPool) {
+        import common.world : MATERIAL_COUNT;
+        import core.stdc.string : memcpy, memset;
+
+        enum TEX_SIZE = 16;
+        enum LAYER_COUNT = MATERIAL_COUNT - 1; // exclude Void
+        enum PIXEL_BYTES = TEX_SIZE * TEX_SIZE * 4;
+        enum TOTAL_BYTES = PIXEL_BYTES * LAYER_COUNT;
+
+        // Fill all layers with gray (178, 178, 178, 255)
+        ubyte[TOTAL_BYTES] pixels;
+        for (size_t i = 0; i < TOTAL_BYTES; i += 4) {
+            pixels[i]   = 178;
+            pixels[i+1] = 178;
+            pixels[i+2] = 178;
+            pixels[i+3] = 255;
+        }
+
+        // Create image
+        VkImageCreateInfo ici;
+        ici.sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        ici.imageType = VkImageType.VK_IMAGE_TYPE_2D;
+        ici.format = VkFormat.VK_FORMAT_R8G8B8A8_UNORM;
+        ici.extent = VkExtent3D(TEX_SIZE, TEX_SIZE, 1);
+        ici.mipLevels = 1;
+        ici.arrayLayers = LAYER_COUNT;
+        ici.samples = 1;
+        ici.tiling = VkImageTiling.VK_IMAGE_TILING_OPTIMAL;
+        ici.usage = VkImageUsageFlagBits.VK_IMAGE_USAGE_TRANSFER_DST_BIT
+                  | VkImageUsageFlagBits.VK_IMAGE_USAGE_SAMPLED_BIT;
+        ici.sharingMode = VkSharingMode.VK_SHARING_MODE_EXCLUSIVE;
+        ici.initialLayout = VkImageLayout.VK_IMAGE_LAYOUT_UNDEFINED;
+        auto res = vkCreateImage(device, &ici, null, &textureImage);
+        if (res != VkResult.VK_SUCCESS) {
+            return false;
+        }
+
+        // Allocate device-local memory
+        VkMemoryRequirements req;
+        vkGetImageMemoryRequirements(device, textureImage, &req);
+        VkPhysicalDeviceMemoryProperties memProps;
+        vkGetPhysicalDeviceMemoryProperties(phys, &memProps);
+        uint memIdx = uint.max;
+        for (uint i = 0; i < memProps.memoryTypeCount; i++) {
+            if ((req.memoryTypeBits & (1u << i)) &&
+                (memProps.memoryTypes[i].propertyFlags & VkMemoryPropertyFlagBits.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+                memIdx = i;
+                break;
+            }
+        }
+        if (memIdx == uint.max) {
+            return false;
+        }
+        VkMemoryAllocateInfo mai;
+        mai.sType = VkStructureType.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        mai.allocationSize = req.size;
+        mai.memoryTypeIndex = memIdx;
+        vkAllocateMemory(device, &mai, null, &textureMemory);
+        vkBindImageMemory(device, textureImage, textureMemory, 0);
+
+        // Create staging buffer
+        auto staging = GpuBuffer.create(phys, device, pixels[],
+            VkBufferUsageFlagBits.VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+
+        // Upload via command buffer
+        VkCommandBufferAllocateInfo cbai;
+        cbai.sType = VkStructureType.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        cbai.commandPool = cmdPool;
+        cbai.level = VkCommandBufferLevel.VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cbai.commandBufferCount = 1;
+        VkCommandBuffer cmd;
+        vkAllocateCommandBuffers(device, &cbai, &cmd);
+
+        VkCommandBufferBeginInfo beginInfo;
+        beginInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        vkBeginCommandBuffer(cmd, &beginInfo);
+
+        // Transition to TRANSFER_DST
+        VkImageMemoryBarrier barrier;
+        barrier.sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.srcAccessMask = 0;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.oldLayout = VkImageLayout.VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = textureImage;
+        barrier.subresourceRange = VkImageSubresourceRange(
+            VkImageAspectFlagBits.VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, LAYER_COUNT);
+        vkCmdPipelineBarrier(cmd,
+            VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0, 0, null, 0, null, 1, &barrier);
+
+        // Copy buffer to image
+        VkBufferImageCopy region;
+        region.bufferOffset = 0;
+        region.bufferRowLength = 0;
+        region.bufferImageHeight = 0;
+        region.imageSubresource = VkImageSubresourceLayers(
+            VkImageAspectFlagBits.VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, LAYER_COUNT);
+        region.imageOffset = VkOffset3D(0, 0, 0);
+        region.imageExtent = VkExtent3D(TEX_SIZE, TEX_SIZE, 1);
+        vkCmdCopyBufferToImage(cmd, staging.buffer, textureImage,
+            VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+        // Transition to SHADER_READ_ONLY
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VkAccessFlagBits.VK_ACCESS_SHADER_READ_BIT;
+        barrier.oldLayout = VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.newLayout = VkImageLayout.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        vkCmdPipelineBarrier(cmd,
+            VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0, 0, null, 0, null, 1, &barrier);
+
+        vkEndCommandBuffer(cmd);
+
+        VkSubmitInfo si;
+        si.sType = VkStructureType.VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &cmd;
+        vkQueueSubmit(queue, 1, &si, VK_NULL_HANDLE);
+        vkQueueWaitIdle(queue);
+
+        staging.cleanup(device);
+
+        // Create image view
+        VkImageViewCreateInfo ivci;
+        ivci.sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        ivci.image = textureImage;
+        ivci.viewType = VkImageViewType.VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+        ivci.format = VkFormat.VK_FORMAT_R8G8B8A8_UNORM;
+        ivci.subresourceRange = VkImageSubresourceRange(
+            VkImageAspectFlagBits.VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, LAYER_COUNT);
+        res = vkCreateImageView(device, &ivci, null, &textureView);
+        if (res != VkResult.VK_SUCCESS) {
+            return false;
+        }
+
+        // Create sampler
+        VkSamplerCreateInfo sci;
+        sci.sType = VkStructureType.VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        sci.magFilter = VK_FILTER_NEAREST;
+        sci.minFilter = VK_FILTER_NEAREST;
+        sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        sci.maxLod = 0;
+        res = vkCreateSampler(device, &sci, null, &textureSampler);
+        if (res != VkResult.VK_SUCCESS) {
+            return false;
+        }
+
+        return true;
+    }
+
     void updateCommonUbo(VkDevice device, float[16] vp, float[16] invp,
                          float fogDensity, float time, float[4] lightDir) {
         // common UBO layout (std140):
@@ -297,8 +484,19 @@ struct SurfacePipeline {
         if (fragShader) {
             vkDestroyShaderModule(device, fragShader, null);
         }
+        if (textureSampler) {
+            vkDestroySampler(device, textureSampler, null);
+        }
+        if (textureView) {
+            vkDestroyImageView(device, textureView, null);
+        }
+        if (textureImage) {
+            vkDestroyImage(device, textureImage, null);
+        }
+        if (textureMemory) {
+            vkFreeMemory(device, textureMemory, null);
+        }
         commonUbo.cleanup(device);
-        // surfacesSsbo may be external — only free if we own it
         if (surfacesSsbo.memory != 0) {
             surfacesSsbo.cleanup(device);
         }

@@ -11,44 +11,74 @@ import common.worldgen.mod_ : ChunkParams, ChunkIncidentEnviroFactors, generateV
 Surface[] cpuExtract(const(ubyte)[] voxels, uint dim) {
     Surface[] out_;
     auto idx = (int x, int y, int z) => x + y * cast(int)dim + z * cast(int)dim * cast(int)dim;
-    auto solid = (int x, int y, int z) {
+    auto getVoxel = (int x, int y, int z) {
         if (x < 0 || y < 0 || z < 0 || x >= dim || y >= dim || z >= dim) {
             return false;
         }
         return voxels[idx(x, y, z)] != 0;
     };
 
+    static immutable int[3][3] uvs = [
+        [1, 2, 0], // axis 0 (X): u=Y, v=Z
+        [2, 0, 1], // axis 1 (Y): u=Z, v=X
+        [0, 1, 2], // axis 2 (Z): u=X, v=Y
+    ];
+
     for (int z = 0; z < cast(int)dim; z++) {
         for (int y = 0; y < cast(int)dim; y++) {
             for (int x = 0; x < cast(int)dim; x++) {
-                bool here = solid(x, y, z);
-                // For each axis a, emit a face if exactly one of (here, neighbor on -axis) is solid.
-                // axis 0 = X, 1 = Y, 2 = Z
+                bool here = getVoxel(x, y, z);
                 static immutable int[3][3] dirs = [[1,0,0],[0,1,0],[0,0,1]];
                 foreach (axis; 0 .. 3) {
                     int nx = x - dirs[axis][0];
                     int ny = y - dirs[axis][1];
                     int nz = z - dirs[axis][2];
-                    bool there = solid(nx, ny, nz);
+                    bool there = getVoxel(nx, ny, nz);
                     if (here == there) {
                         continue;
                     }
                     uint mat = here ? voxels[idx(x, y, z)] : voxels[idx(nx, ny, nz)];
-                    bool reverse = there; // face points toward solid side
-                    // Position of the face's voxel corner: we place at the solid voxel.
-                    int fx = here ? x : nx;
-                    int fy = here ? y : ny;
-                    int fz = here ? z : nz;
-                    // Surface struct expects the position of the negative neighbor for -axis faces.
-                    // Following hypermine convention: store the position of the +X/+Y/+Z voxel.
-                    int px = here ? x : x;
-                    int py = here ? y : y;
-                    int pz = here ? z : z;
-                    cast(void) fx; cast(void) fy; cast(void) fz;
+                    bool inward = here;
+                    bool reverse = there;
+
+                    // Compute occlusion matching hypermine's surface_occlusion
+                    int[3] voxel = [x, y, z];
+                    int[3] occBase = voxel;
+                    if (!inward) {
+                        occBase[axis] -= 1;
+                    }
+
+                    int uAxis = uvs[axis][0];
+                    int vAxis = uvs[axis][1];
+                    int[3] u = [0, 0, 0];
+                    u[uAxis] = 1;
+                    int[3] v = [0, 0, 0];
+                    v[vAxis] = 1;
+
+                    // 0 1 2
+                    // 3 . 4
+                    // 5 6 7
+                    bool[8] occ;
+                    occ[0] = getVoxel(occBase[0]-u[0]-v[0], occBase[1]-u[1]-v[1], occBase[2]-u[2]-v[2]);
+                    occ[1] = getVoxel(occBase[0]     -v[0], occBase[1]     -v[1], occBase[2]     -v[2]);
+                    occ[2] = getVoxel(occBase[0]+u[0]-v[0], occBase[1]+u[1]-v[1], occBase[2]+u[2]-v[2]);
+                    occ[3] = getVoxel(occBase[0]-u[0]     , occBase[1]-u[1]     , occBase[2]-u[2]     );
+                    occ[4] = getVoxel(occBase[0]+u[0]     , occBase[1]+u[1]     , occBase[2]+u[2]     );
+                    occ[5] = getVoxel(occBase[0]-u[0]+v[0], occBase[1]-u[1]+v[1], occBase[2]-u[2]+v[2]);
+                    occ[6] = getVoxel(occBase[0]     +v[0], occBase[1]     +v[1], occBase[2]     +v[2]);
+                    occ[7] = getVoxel(occBase[0]+u[0]+v[0], occBase[1]+u[1]+v[1], occBase[2]+u[2]+v[2]);
+
+                    uint[4] occResult = [
+                        vertexOcclusion(occ[0], occ[1], occ[3]),
+                        vertexOcclusion(occ[2], occ[1], occ[4]),
+                        vertexOcclusion(occ[5], occ[6], occ[3]),
+                        vertexOcclusion(occ[7], occ[6], occ[4]),
+                    ];
+
+                    bool flip = occResult[1] + occResult[2] > occResult[0] + occResult[3];
                     Surface s;
-                    uint[4] occ = [3, 3, 3, 3];
-                    Surface.pack(cast(uint) px, cast(uint) py, cast(uint) pz,
-                                 cast(uint) axis, reverse, false, mat, occ,
+                    Surface.pack(cast(uint) x, cast(uint) y, cast(uint) z,
+                                 cast(uint) axis, reverse, flip, mat, occResult,
                                  s.pos_axis, s.occlusion_mat);
                     out_ ~= s;
                 }
@@ -56,6 +86,13 @@ Surface[] cpuExtract(const(ubyte)[] voxels, uint dim) {
         }
     }
     return out_;
+}
+
+private uint vertexOcclusion(bool a, bool b, bool c) {
+    if (b && c) {
+        return 0;
+    }
+    return 3 - cast(uint)a - cast(uint)b - cast(uint)c;
 }
 
 /// Make a simple test voxel grid: a sphere of voxels in the middle of the chunk

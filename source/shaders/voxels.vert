@@ -7,7 +7,6 @@ layout(location = 0) in mat4 transform;
 
 layout(location = 0) out vec3 texcoords_out;
 layout(location = 1) out float occlusion;
-layout(location = 2) out vec3 normal_out;
 
 layout(set = 1, binding = 0) readonly restrict buffer Surfaces {
     Surface surfaces[];
@@ -42,15 +41,6 @@ const uvec2 texcoords[4][6] = {
     {{0, 1}, {0, 0}, {1, 0}, {1, 0}, {1, 1}, {0, 1}},
 };
 
-// Outward-facing normal in chunk-local frame, indexed by axis (0..2 = -X/-Y/-Z, 3..5 = +X/+Y/+Z;
-// 6..11 are flipped-diagonal versions of the same six normals).
-const vec3 face_normals[12] = {
-    vec3(-1, 0, 0), vec3(0, -1, 0), vec3(0, 0, -1),
-    vec3( 1, 0, 0), vec3(0,  1, 0), vec3(0, 0,  1),
-    vec3(-1, 0, 0), vec3(0, -1, 0), vec3(0, 0, -1),
-    vec3( 1, 0, 0), vec3(0,  1, 0), vec3(0, 0,  1),
-};
-
 void main() {
     uint index = gl_VertexIndex / 6;
     uint vertex = gl_VertexIndex % 6;
@@ -78,5 +68,4 @@ void main() {
     occlusion = get_occlusion(s, uv);
     vec3 relative_coords = vertices[axis][vertex] + pos;
     gl_Position = view_projection * transform * vec4(relative_coords / dimension, 1);
-    normal_out = face_normals[axis];
 }

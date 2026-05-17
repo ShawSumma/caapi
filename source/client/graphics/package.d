@@ -120,6 +120,7 @@ struct Renderer {
         currentChunkCount = 0;
 
         if (!voxels.init(core.physicalDevice, core.device, swapState.renderPass, empty, transforms,
+                         core.graphicsQueue, swapState.commandPool,
                          extract.surfacesBuf.buffer)) {
             return false;
         }

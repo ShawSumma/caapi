@@ -72,10 +72,13 @@ enum VkStructureType : int {
     VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO = 34,
     VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET = 35,
     VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO = 29,
+    VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO = 31,
     VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER = 44,
+    VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER = 45,
 }
 
 enum VkDescriptorType : int {
+    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER = 1,
     VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER = 6,
     VK_DESCRIPTOR_TYPE_STORAGE_BUFFER = 7,
 }
@@ -86,8 +89,10 @@ enum VkVertexInputRateExt : int {
 
 enum VkFormat : int {
     VK_FORMAT_UNDEFINED = 0,
-    VK_FORMAT_B8G8R8A8_SRGB = 50,
+    VK_FORMAT_R8G8B8A8_UNORM = 37,
+    VK_FORMAT_R8G8B8A8_SRGB = 43,
     VK_FORMAT_B8G8R8A8_UNORM = 44,
+    VK_FORMAT_B8G8R8A8_SRGB = 50,
     VK_FORMAT_D32_SFLOAT = 126,
 }
 
@@ -103,6 +108,8 @@ enum VkPresentModeKHR : int {
 
 enum VkImageLayout : int {
     VK_IMAGE_LAYOUT_UNDEFINED = 0,
+    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL = 7,
+    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL = 5,
     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL = 2,
     VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL = 3,
     VK_IMAGE_LAYOUT_PRESENT_SRC_KHR = 1000001002,
@@ -143,6 +150,7 @@ enum VkSubpassContents : int {
 
 enum VkImageViewType : int {
     VK_IMAGE_VIEW_TYPE_2D = 1,
+    VK_IMAGE_VIEW_TYPE_2D_ARRAY = 5,
 }
 
 enum VkComponentSwizzle : int {
@@ -159,6 +167,8 @@ enum VkSharingMode : int {
 }
 
 enum VkImageUsageFlagBits : uint {
+    VK_IMAGE_USAGE_TRANSFER_DST_BIT = 0x00000002,
+    VK_IMAGE_USAGE_SAMPLED_BIT = 0x00000004,
     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT = 0x00000010,
     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT = 0x00000020,
 }
@@ -196,8 +206,10 @@ enum VkAccessFlagBits : uint {
 }
 
 enum VkPipelineStageFlagBitsExt : uint {
+    VK_PIPELINE_STAGE_TRANSFER_BIT = 0x00001000,
     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT = 0x00000800,
     VK_PIPELINE_STAGE_VERTEX_SHADER_BIT = 0x00000008,
+    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT = 0x00000080,
     VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT = 0x00000002,
 }
 
@@ -229,6 +241,7 @@ enum VkDynamicState : int {
 }
 
 enum VkBufferUsageFlagBits : uint {
+    VK_BUFFER_USAGE_TRANSFER_SRC_BIT = 0x00000001,
     VK_BUFFER_USAGE_VERTEX_BUFFER_BIT = 0x00000080,
     VK_BUFFER_USAGE_INDEX_BUFFER_BIT = 0x00000040,
     VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT = 0x00000010,
@@ -237,6 +250,7 @@ enum VkBufferUsageFlagBits : uint {
     VK_BUFFER_USAGE_TRANSFER_DST_BIT = 0x00000002,
 }
 
+alias VkSampler = ulong;
 alias VkDescriptorSetLayout = ulong;
 alias VkDescriptorPool = ulong;
 alias VkDescriptorSet = ulong;
@@ -950,6 +964,78 @@ extern(C) nothrow @nogc {
     void vkCmdFillBuffer(VkCommandBuffer, ulong, VkDeviceSize, VkDeviceSize, uint);
     void vkCmdPipelineBarrier(VkCommandBuffer, uint, uint, uint, uint, const(void)*, uint, const(VkBufferMemoryBarrier)*, uint, const(void)*);
     void vkCmdDrawIndirect(VkCommandBuffer, ulong, VkDeviceSize, uint, uint);
+    VkResult vkCreateSampler(VkDevice, const(VkSamplerCreateInfo)*, const(void)*, VkSampler*);
+    void vkDestroySampler(VkDevice, VkSampler, const(void)*);
+    void vkCmdCopyBufferToImage(VkCommandBuffer, ulong, VkImage, int, uint, const(VkBufferImageCopy)*);
+    VkResult vkQueueWaitIdle(VkQueue);
+}
+
+struct VkSamplerCreateInfo {
+    VkStructureType sType;
+    const(void)* pNext;
+    uint flags;
+    int magFilter;
+    int minFilter;
+    int mipmapMode;
+    int addressModeU;
+    int addressModeV;
+    int addressModeW;
+    float mipLodBias;
+    VkBool32 anisotropyEnable;
+    float maxAnisotropy;
+    VkBool32 compareEnable;
+    int compareOp;
+    float minLod;
+    float maxLod;
+    int borderColor;
+    VkBool32 unnormalizedCoordinates;
+}
+
+struct VkDescriptorImageInfo {
+    VkSampler sampler;
+    VkImageView imageView;
+    int imageLayout;
+}
+
+struct VkImageMemoryBarrier {
+    VkStructureType sType;
+    const(void)* pNext;
+    uint srcAccessMask;
+    uint dstAccessMask;
+    int oldLayout;
+    int newLayout;
+    uint srcQueueFamilyIndex;
+    uint dstQueueFamilyIndex;
+    VkImage image;
+    VkImageSubresourceRange subresourceRange;
+}
+
+struct VkImageSubresourceLayers {
+    uint aspectMask;
+    uint mipLevel;
+    uint baseArrayLayer;
+    uint layerCount;
+}
+
+struct VkOffset3D {
+    int x;
+    int y;
+    int z;
+}
+
+struct VkBufferImageCopy {
+    VkDeviceSize bufferOffset;
+    uint bufferRowLength;
+    uint bufferImageHeight;
+    VkImageSubresourceLayers imageSubresource;
+    VkOffset3D imageOffset;
+    VkExtent3D imageExtent;
 }
 
 enum VkPipelineBindPointCompute = 1;
+enum VK_FILTER_NEAREST = 0;
+enum VK_FILTER_LINEAR = 1;
+enum VK_SAMPLER_MIPMAP_MODE_NEAREST = 0;
+enum VK_SAMPLER_ADDRESS_MODE_REPEAT = 0;
+enum VK_QUEUE_FAMILY_IGNORED = ~0U;
+enum VK_ACCESS_TRANSFER_WRITE_BIT = 0x00001000;
