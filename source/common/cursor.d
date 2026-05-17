@@ -1,0 +1,95 @@
+module common.cursor;
+
+import common.dodeca;
+import common.graph;
+import common.node;
+
+/// Directions for navigating the cubic dual
+enum Dir {
+    Left, Right, Down, Up, Forward, Back,
+}
+
+Dir negateDir(Dir d) {
+    final switch (d) {
+        case Dir.Left: return Dir.Right;
+        case Dir.Right: return Dir.Left;
+        case Dir.Down: return Dir.Up;
+        case Dir.Up: return Dir.Down;
+        case Dir.Forward: return Dir.Back;
+        case Dir.Back: return Dir.Forward;
+    }
+}
+
+/// Navigates the cubic dual of a graph
+struct Cursor {
+    NodeId node;
+    Side a, b, c;
+
+    static Cursor fromVertex(NodeId node, Vertex vertex) {
+        auto sides = vertexCanonicalSides(vertex);
+        return Cursor(node, sides[0], sides[1], sides[2]);
+    }
+
+    /// Get the neighbor towards dir
+    Cursor step(const ref Graph graph, Dir dir) const {
+        auto aPrime = getNeighborSide(a, b, c);
+        auto bPrime = getNeighborSide(b, a, c);
+        auto cPrime = getNeighborSide(c, b, a);
+
+        if (aPrime == Side.init && bPrime == Side.init && cPrime == Side.init) {
+            return Cursor.init;
+        }
+
+        Side[3] sides;
+        Side neighborSide;
+        final switch (dir) {
+            case Dir.Left:    sides = [a, b, cPrime]; neighborSide = c; break;
+            case Dir.Right:   sides = [a, b, cPrime]; neighborSide = cPrime; break;
+            case Dir.Down:    sides = [a, bPrime, c]; neighborSide = b; break;
+            case Dir.Up:      sides = [a, bPrime, c]; neighborSide = bPrime; break;
+            case Dir.Forward: sides = [aPrime, b, c]; neighborSide = a; break;
+            case Dir.Back:    sides = [aPrime, b, c]; neighborSide = aPrime; break;
+        }
+
+        auto n = graph.neighbor(node, neighborSide);
+        if (n == NodeId.init) {
+            return Cursor.init;
+        }
+        return Cursor(n, sides[0], sides[1], sides[2]);
+    }
+
+    ChunkId canonicalize(const ref Graph graph) const {
+        auto vertex = vertexFromThreeSides([a, b, c]);
+        if (vertex == cast(Vertex) 255) {
+            return ChunkId.init;
+        }
+        auto chunk = ChunkId(node, vertex);
+        // Walk toward root
+        auto sides = vertexCanonicalSides(vertex);
+        auto result = chunk;
+        foreach (side; sides) {
+            auto n = graph.neighbor(result.node, side);
+            if (n != NodeId.init && graph.depth(n) < graph.depth(result.node)) {
+                result.node = n;
+            }
+        }
+        return result;
+    }
+}
+
+/// Maps (A, B, C) sharing a vertex to A', the side that shares edges with B and C but not A
+private Side getNeighborSide(Side opposite, Side shared1, Side shared2) {
+    foreach (sIdx; 0 .. SIDE_COUNT) {
+        auto s = cast(Side) sIdx;
+        if (s == opposite || s == shared1 || s == shared2) {
+            continue;
+        }
+        bool adjOpposite = sideAdjacentTo(s, opposite);
+        bool adjShared1 = sideAdjacentTo(s, shared1);
+        bool adjShared2 = sideAdjacentTo(s, shared2);
+        if (!adjOpposite && adjShared1 && adjShared2) {
+            return s;
+        }
+    }
+    return Side.init;
+}

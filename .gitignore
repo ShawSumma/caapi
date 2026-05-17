@@ -1,0 +1,4 @@
+*.a
+mined
+mined-server
+mined-test-library
