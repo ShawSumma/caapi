@@ -68,17 +68,29 @@ void main(string[] args) {
 
     bool running = true;
     bool mouseCaptured = false;
+    bool skipNextMotion = false;
     SDL_Event ev;
     CameraInput cam;
     int shotIndex = 0;
-    float dt = 0.016f;
     float simTime = 0;
     float mouseDx = 0;
     float mouseDy = 0;
-    ulong lastFpsReport = SDL_GetTicks();
+    ulong lastTicks = SDL_GetTicks();
     ulong framesSinceReport = 0;
+    ulong lastFpsReport = lastTicks;
 
     while (running) {
+        auto nowTicks = SDL_GetTicks();
+        float dt = (nowTicks - lastTicks) / 1000.0f;
+        lastTicks = nowTicks;
+        if (dt > 0.1f) {
+            dt = 0.1f;
+        }
+
+        if (script.events.length > 0) {
+            dt = 0.016f;
+        }
+
         mouseDx = 0;
         mouseDy = 0;
 
@@ -90,8 +102,17 @@ void main(string[] args) {
             if (script.events.length == 0) {
                 processInteractiveInput(
                     ev, window, cam, renderer, mouseCaptured,
-                    mouseDx, mouseDy, running, xWindowId, shotIndex);
+                    skipNextMotion, mouseDx, mouseDy,
+                    running, xWindowId, shotIndex);
             }
+        }
+
+        if (mouseCaptured) {
+            int w = 0;
+            int h = 0;
+            SDL_GetWindowSize(window, &w, &h);
+            SDL_WarpMouseInWindow(window, cast(float)(w / 2), cast(float)(h / 2));
+            skipNextMotion = true;
         }
 
         if (script.events.length > 0) {
@@ -107,33 +128,19 @@ void main(string[] args) {
             break;
         }
 
-        if (mouseCaptured) {
-            float mx = 0;
-            float my = 0;
-            SDL_GetMouseState(&mx, &my);
-            int w = 0;
-            int h = 0;
-            SDL_GetWindowSize(window, &w, &h);
-            float cx = cast(float) w / 2.0f;
-            float cy = cast(float) h / 2.0f;
-            mouseDx = mx - cx;
-            mouseDy = my - cy;
-            SDL_WarpMouseInWindow(window, cx, cy);
-        }
-
         enum float MOUSE_SENS = 0.003f;
-        float yaw = cam.yawRate * dt - mouseDx * MOUSE_SENS;
-        float pitch = cam.pitchRate * dt - mouseDy * MOUSE_SENS;
-        renderer.rotateCamera(yaw, pitch);
+        float yaw = cam.yawRate * dt + mouseDx * MOUSE_SENS;
+        float pitch = cam.pitchRate * dt + mouseDy * MOUSE_SENS;
+        float roll = cam.rollRate * dt;
+        renderer.rotateCamera(yaw, pitch, roll);
         renderer.moveCamera(cam.strafe * dt, cam.vert * dt, cam.fwd * dt);
         renderer.render(dt);
         simTime += dt;
 
         framesSinceReport++;
-        auto nowTicks = SDL_GetTicks();
-        if (nowTicks - lastFpsReport >= 1000) {
+        if (nowTicks - lastFpsReport >= 5000) {
             float fps = framesSinceReport * 1000.0f / (nowTicks - lastFpsReport);
-            writefln("FPS=%.1f", fps);
+            writefln("FPS=%.0f", fps);
             stdout.flush();
             framesSinceReport = 0;
             lastFpsReport = nowTicks;
@@ -147,6 +154,7 @@ private void processInteractiveInput(
     ref CameraInput cam,
     ref Renderer renderer,
     ref bool mouseCaptured,
+    ref bool skipNextMotion,
     ref float mouseDx,
     ref float mouseDy,
     ref bool running,
@@ -176,10 +184,24 @@ private void processInteractiveInput(
         handleKeyUp(ev.key.key, cam);
     }
 
+    if (ev.type == SDL_EVENT_MOUSE_MOTION && mouseCaptured) {
+        if (skipNextMotion) {
+            skipNextMotion = false;
+        } else {
+            mouseDx += ev.motion.xrel;
+            mouseDy += ev.motion.yrel;
+        }
+    }
+
     if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
         if (!mouseCaptured) {
             SDL_SetWindowMouseGrab(window, true);
             SDL_HideCursor();
+            int w = 0;
+            int h = 0;
+            SDL_GetWindowSize(window, &w, &h);
+            SDL_WarpMouseInWindow(window, cast(float)(w / 2), cast(float)(h / 2));
+            skipNextMotion = true;
             mouseCaptured = true;
         } else if (ev.button.button == SDL_BUTTON_LEFT) {
             renderer.breakBlock();
@@ -192,6 +214,7 @@ private void processInteractiveInput(
 struct CameraInput {
     float yawRate = 0;
     float pitchRate = 0;
+    float rollRate = 0;
     float fwd = 0;
     float strafe = 0;
     float vert = 0;
@@ -224,6 +247,12 @@ private void handleKeyDown(uint key, ref CameraInput cam) {
     if (key == SDLK_D) {
         cam.strafe = MOVE;
     }
+    if (key == SDLK_Q) {
+        cam.rollRate = TURN;
+    }
+    if (key == SDLK_E) {
+        cam.rollRate = -TURN;
+    }
     if (key == SDLK_SPACE) {
         cam.vert = MOVE;
     }
@@ -238,6 +267,9 @@ private void handleKeyUp(uint key, ref CameraInput cam) {
     }
     if (key == SDLK_UP || key == SDLK_DOWN) {
         cam.pitchRate = 0;
+    }
+    if (key == SDLK_Q || key == SDLK_E) {
+        cam.rollRate = 0;
     }
     if (key == SDLK_W || key == SDLK_S) {
         cam.fwd = 0;

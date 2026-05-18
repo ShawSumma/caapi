@@ -41,15 +41,20 @@ struct Renderer {
     uint nextSlot = 0;
     uint[] freeSlots;
     uint[] activeSlots;
+    ExtractTask[CONCURRENCY] tasksBuf;
+    uint tasksLen;
 
-    void rotateCamera(float yawDelta, float pitchDelta) {
+    void rotateCamera(float yawDelta, float pitchDelta, float rollDelta = 0) {
         if (yawDelta != 0) {
             camPos.local = camPos.local * rotationY(yawDelta);
         }
         if (pitchDelta != 0) {
             camPos.local = camPos.local * rotationX(pitchDelta);
         }
-        if (yawDelta != 0 || pitchDelta != 0) {
+        if (rollDelta != 0) {
+            camPos.local = camPos.local * rotationZ(rollDelta);
+        }
+        if (yawDelta != 0 || pitchDelta != 0 || rollDelta != 0) {
             camPos.local = camPos.local.renormalized();
         }
     }
@@ -136,50 +141,49 @@ struct Renderer {
 
     void render(float dt) {
         time += dt;
+        ensureNearby(graph, camPos.node, camPos.local, viewRadius);
         worldgenDriver.drive(
             Position(camPos.node, camPos.local),
             viewRadius, graph, cast(ubyte) dimension);
-
-        ensureNearby(graph, camPos.node, camPos.local, viewRadius);
         auto nodes = nearbyNodes(graph, camPos.node, camPos.local, viewRadius);
 
-        ExtractTask[] tasks;
-        uint scratchIdx = 0;
+        tasksLen = 0;
         activeSlots.length = 0;
 
         vkWaitForFences(core.device, 1, &swapState.inFlightFence, 1, ulong.max);
 
-        bool[ChunkId] visibleSet;
-        foreach (nn; nodes) {
-            if (!graph.contains(nn.id)) {
-                continue;
-            }
-            foreach (vIdx; 0 .. VERTEX_COUNT) {
-                auto v = cast(Vertex) vIdx;
-                auto c = &graph[nn.id].chunks.values[v];
-                if (c.state != ChunkState.Populated || c.voxels.isSolid()) {
-                    continue;
-                }
-                visibleSet[ChunkId(nn.id, v)] = true;
-            }
-        }
-
-        ChunkId[] toRemove;
+        // Evict non-visible chunks from slotMap
+        ChunkId[512] removeBuf;
+        uint removeLen = 0;
         foreach (cid, slot; slotMap) {
-            if (cid !in visibleSet) {
+            bool visible = false;
+            if (graph.contains(cid.node)) {
+                auto c = &graph[cid.node].chunks.values[cid.vertex];
+                if (c.state == ChunkState.Populated && !c.voxels.isSolid()) {
+                    foreach (nn; nodes) {
+                        if (nn.id == cid.node) {
+                            visible = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!visible && removeLen < removeBuf.length) {
+                removeBuf[removeLen++] = cid;
                 freeSlots ~= slot;
-                toRemove ~= cid;
             }
         }
-        foreach (cid; toRemove) {
-            slotMap.remove(cid);
-            slotGeneration.remove(cid);
+        foreach (i; 0 .. removeLen) {
+            slotMap.remove(removeBuf[i]);
+            slotGeneration.remove(removeBuf[i]);
         }
 
         void* tfMapped;
         vkMapMemory(core.device, voxels.transformsVbo.memory,
                      0, MAX_SLOTS * 64, 0, &tfMapped);
         auto tfBuf = cast(float*) tfMapped;
+
+        auto voxelsMapped = extract.mapVoxels(core.device);
 
         foreach (nn; nodes) {
             if (!graph.contains(nn.id)) {
@@ -215,17 +219,17 @@ struct Renderer {
                     slotMap[chunkId] = slot;
                 }
 
-                if (needsExtract && scratchIdx < CONCURRENCY) {
+                if (needsExtract && tasksLen < CONCURRENCY) {
                     extract.uploadVoxels(
-                        core.device, scratchIdx,
+                        voxelsMapped, tasksLen,
                         cast(const(ushort)[]) c.voxels.denseData);
 
-                    tasks ~= ExtractTask(
+                    tasksBuf[tasksLen] = ExtractTask(
                         extract.indirectOffset(slot),
                         extract.faceOffset(slot),
-                        scratchIdx,
+                        tasksLen,
                         slot);
-                    scratchIdx++;
+                    tasksLen++;
                     slotGeneration[chunkId] = c.generation;
                 }
 
@@ -238,6 +242,7 @@ struct Renderer {
                 activeSlots ~= slot;
             }
         }
+        extract.unmapVoxels(core.device);
         vkUnmapMemory(core.device, voxels.transformsVbo.memory);
 
         static int lastSecond = -1;
@@ -246,7 +251,7 @@ struct Renderer {
             lastSecond = currentSecond;
             writefln("[t=%ss] active=%d slots=%d new=%d graph=%d",
                 currentSecond, activeSlots.length, nextSlot,
-                tasks.length, graph.len);
+                tasksLen, graph.len);
             stdout.flush();
         }
 
@@ -290,8 +295,8 @@ struct Renderer {
         bi.sType = VkStructureType.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         vkBeginCommandBuffer(cmd, &bi);
 
-        if (tasks.length > 0) {
-            extract.recordExtract(core.device, cmd, tasks);
+        if (tasksLen > 0) {
+            extract.recordExtract(core.device, cmd, tasksBuf[0 .. tasksLen]);
         }
 
         VkClearValue[2] clears;
@@ -466,6 +471,20 @@ private MIsometry!float rotationX(float angle) {
     m.data[2][1] = s;
     m.data[1][2] = -s;
     m.data[2][2] = c;
+    m.data[3][3] = 1;
+    return MIsometry!float(m);
+}
+
+private MIsometry!float rotationZ(float angle) {
+    import common.math : Matrix4;
+    float c = cos(angle);
+    float s = sin(angle);
+    Matrix4!float m;
+    m.data[0][0] = c;
+    m.data[1][0] = -s;
+    m.data[0][1] = s;
+    m.data[1][1] = c;
+    m.data[2][2] = 1;
     m.data[3][3] = 1;
     return MIsometry!float(m);
 }

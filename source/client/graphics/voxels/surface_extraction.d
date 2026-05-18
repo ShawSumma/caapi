@@ -12,20 +12,21 @@ private uint roundUp(uint value, uint alignment) {
     return (value + alignment - 1) / alignment * alignment;
 }
 
-/// Pack already-padded (dim+2)³ ushort materials into u32 pairs (matches extract.comp layout).
-uint[] packPaddedVoxels(const(ushort)[] padded, uint dim) {
+/// Pack already-padded (dim+2)³ ushort materials into u32 pairs in-place.
+/// Writes into the provided buffer and returns the number of uint elements written.
+uint packPaddedVoxelsInto(const(ushort)[] padded, uint dim, uint[] outBuf) {
     uint paddedSize = (dim + 2) * (dim + 2) * (dim + 2);
     if (padded.length < paddedSize) {
-        return null;
+        return 0;
     }
-    auto pairs = new uint[(paddedSize + 1) / 2];
+    uint pairCount = (paddedSize + 1) / 2;
     for (uint i = 0; i + 1 < paddedSize; i += 2) {
-        pairs[i / 2] = padded[i] | (cast(uint) padded[i + 1] << 16);
+        outBuf[i / 2] = padded[i] | (cast(uint) padded[i + 1] << 16);
     }
     if (paddedSize % 2 == 1) {
-        pairs[paddedSize / 2] = padded[paddedSize - 1];
+        outBuf[paddedSize / 2] = padded[paddedSize - 1];
     }
-    return pairs;
+    return pairCount;
 }
 
 struct ExtractTask {
@@ -64,6 +65,7 @@ struct SurfaceExtraction {
     uint stateBufUnit;
     uint faceBufUnit;
     uint maxFaces;
+    uint[] packBuf;
 
     bool init(VkPhysicalDevice phys, VkDevice device, uint dim, uint conc, uint slots) {
         dimension = dim;
@@ -201,30 +203,38 @@ struct SurfaceExtraction {
         if (vkCreateComputePipelines(device, 0, 1, &cpci, null, &pipeline) != VkResult.VK_SUCCESS) {
             return false;
         }
+        uint paddedSize = (dim + 2) * (dim + 2) * (dim + 2);
+        packBuf = new uint[(paddedSize + 1) / 2];
+
         writefln("Extract: facesBuf=0x%x (%d bytes) indirBuf=0x%x voxBuf=0x%x",
             facesBuf.buffer, facesSize, indirectBuf.buffer, voxelsBuf.buffer);
         return true;
     }
 
-    /// Upload voxel data into scratch slot.
-    void uploadVoxels(VkDevice device, uint scratchIndex, const(ushort)[] paddedData) {
+    /// Upload voxel data into scratch slot using pre-mapped memory.
+    void uploadVoxels(void* voxelsMapped, uint scratchIndex, const(ushort)[] paddedData) {
         import core.stdc.string : memcpy;
-        auto packed = packPaddedVoxels(paddedData, dimension);
-        if (packed is null) {
+        uint count = packPaddedVoxelsInto(paddedData, dimension, packBuf);
+        if (count == 0) {
             return;
         }
         ulong offset = cast(ulong) scratchIndex * voxelBufUnit;
-        ulong size = packed.length * 4;
+        ulong size = count * 4;
         if (size > voxelBufUnit) {
             size = voxelBufUnit;
         }
+        memcpy(cast(ubyte*) voxelsMapped + offset, packBuf.ptr, size);
+    }
+
+    /// Map voxels buffer for batch upload.
+    void* mapVoxels(VkDevice device) {
         void* mapped;
-        auto res = vkMapMemory(device, voxelsBuf.memory, offset, size, 0, &mapped);
-        if (res != VkResult.VK_SUCCESS) {
-            writefln("uploadVoxels: vkMapMemory failed at offset %d size %d: %s", offset, size, res);
-            return;
-        }
-        memcpy(mapped, packed.ptr, size);
+        vkMapMemory(device, voxelsBuf.memory, 0, voxelBufUnit * concurrency, 0, &mapped);
+        return mapped;
+    }
+
+    /// Unmap voxels buffer after batch upload.
+    void unmapVoxels(VkDevice device) {
         vkUnmapMemory(device, voxelsBuf.memory);
     }
 

@@ -53,7 +53,7 @@ struct SwapchainState {
         sci.imageSharingMode = VkSharingMode.VK_SHARING_MODE_EXCLUSIVE;
         sci.preTransform = caps.currentTransform;
         sci.compositeAlpha = VkCompositeAlphaFlagBitsKHR.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-        sci.presentMode = VkPresentModeKHR.VK_PRESENT_MODE_FIFO_KHR;
+        sci.presentMode = selectPresentMode(physDevice, surface);
         sci.clipped = 1;
 
         auto res = vkCreateSwapchainKHR(device, &sci, null, &swapchain);
@@ -277,4 +277,22 @@ struct SwapchainState {
         }
         vkDestroySwapchainKHR(device, swapchain, null);
     }
+}
+
+private VkPresentModeKHR selectPresentMode(VkPhysicalDevice phys, VkSurfaceKHR surface) {
+    uint count;
+    vkGetPhysicalDeviceSurfacePresentModesKHR(phys, surface, &count, null);
+    auto modes = new VkPresentModeKHR[](count);
+    vkGetPhysicalDeviceSurfacePresentModesKHR(phys, surface, &count, modes.ptr);
+    foreach (m; modes) {
+        if (m == VkPresentModeKHR.VK_PRESENT_MODE_MAILBOX_KHR) {
+            return m;
+        }
+    }
+    foreach (m; modes) {
+        if (m == VkPresentModeKHR.VK_PRESENT_MODE_IMMEDIATE_KHR) {
+            return m;
+        }
+    }
+    return VkPresentModeKHR.VK_PRESENT_MODE_FIFO_KHR;
 }

@@ -47,16 +47,7 @@ void main() {
     Surface s = surfaces[index];
     uvec3 pos = get_pos(s);
     uint axis = get_axis(s);
-    // ~Half of the chunk transforms have det<0 (vertexChunkToNode includes a
-    // reflection for odd-parity vertices). Hypermine handles this by flipping
-    // the surface's `inward` flag at extraction time via `reverse_winding`.
-    // Since we share one SSBO across all chunks, we do it here instead: flip
-    // the axis by ±3, which reverses vertex positions, UV mapping, AND AO
-    // corner lookups all at once — matching what hypermine's extract.comp does.
-    // Full 4x4 determinant — the 3x3 sub-block determinant is NOT ±1 for
-    // Lorentz boosts (only for pure rotations), so we must use the 4x4 det
-    // which IS ±1 for any Lorentz isometry.
-    float det4 = determinant(transform);
+    float det4 = determinant(view_projection * transform);
     if (det4 < 0.0) {
         if (axis < 3) { axis += 3; }
         else if (axis < 6) { axis -= 3; }
