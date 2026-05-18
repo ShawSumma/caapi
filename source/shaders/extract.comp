@@ -59,36 +59,38 @@ bool find_face(out Face info) {
     return (neighbor_mat == 0) != (self_mat == 0);
 }
 
-uint corner_occlusion(ivec3 occBase, uint uAx, uint vAx, int cu, int cv) {
-    int wu = occBase[uAx] + cu;
-    int wv = occBase[vAx] + cv;
-    int count = 0;
-    for (int du = -1; du <= 0; du++) {
-        for (int dv = -1; dv <= 0; dv++) {
-            ivec3 probe = occBase;
-            probe[uAx] = wu + du;
-            probe[vAx] = wv + dv;
-            if (get_voxel(probe) != 0) {
-                count++;
-            }
-        }
-    }
-    return uint(4 - count);
+uint vertex_occlusion(bool a, bool b, bool c) {
+    return b && c ? 0 : (3 - uint(a) - uint(b) - uint(c));
 }
 
 uvec4 surface_occlusion(ivec3 voxel, uint axis, bool inward) {
-    ivec3 occBase = voxel;
+    const ivec3 uvs[3][2] = {
+        {{0, 1, 0}, {0, 0, 1}},
+        {{0, 0, 1}, {1, 0, 0}},
+        {{1, 0, 0}, {0, 1, 0}},
+    };
+
     if (!inward) {
-        occBase += neighbor_offset(axis);
+        voxel += neighbor_offset(axis);
     }
-    const uint uvAxes[3][2] = {{1, 2}, {2, 0}, {0, 1}};
-    uint uAx = uvAxes[axis][0];
-    uint vAx = uvAxes[axis][1];
+
+    ivec3 u = uvs[axis][0];
+    ivec3 v = uvs[axis][1];
+    bool occluders[8] = {
+        get_voxel(voxel - u - v) != 0,
+        get_voxel(voxel     - v) != 0,
+        get_voxel(voxel + u - v) != 0,
+        get_voxel(voxel - u    ) != 0,
+        get_voxel(voxel + u    ) != 0,
+        get_voxel(voxel - u + v) != 0,
+        get_voxel(voxel     + v) != 0,
+        get_voxel(voxel + u + v) != 0,
+    };
     return uvec4(
-        corner_occlusion(occBase, uAx, vAx, 0, 0),
-        corner_occlusion(occBase, uAx, vAx, 1, 0),
-        corner_occlusion(occBase, uAx, vAx, 0, 1),
-        corner_occlusion(occBase, uAx, vAx, 1, 1)
+        vertex_occlusion(occluders[0], occluders[1], occluders[3]),
+        vertex_occlusion(occluders[2], occluders[1], occluders[4]),
+        vertex_occlusion(occluders[5], occluders[6], occluders[3]),
+        vertex_occlusion(occluders[7], occluders[6], occluders[4])
     );
 }
 
@@ -98,5 +100,5 @@ void main() {
     uint idx = atomicAdd(face_count, 1);
     atomicAdd(vertex_count, 6);
     surfaces[idx] = surface(info.voxel, info.axis, info.inward, info.material,
-                            surface_occlusion(info.voxel, info.axis, !info.inward));
+                            surface_occlusion(info.voxel, info.axis, info.inward));
 }

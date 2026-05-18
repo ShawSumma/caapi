@@ -12,37 +12,11 @@ private uint roundUp(uint value, uint alignment) {
     return (value + alignment - 1) / alignment * alignment;
 }
 
-/// Pack a (dim+2)³ array of u16 materials into u32 pairs (matches extract.comp layout).
-uint[] packVoxelsForExtraction(const(ubyte)[] voxels, uint dim) {
-    uint paddedDim = dim + 2;
-    uint paddedSize = paddedDim * paddedDim * paddedDim;
-    auto padded = new ushort[paddedSize];
-    for (uint z = 0; z < dim; z++) {
-        for (uint y = 0; y < dim; y++) {
-            for (uint x = 0; x < dim; x++) {
-                uint src = x + y * dim + z * dim * dim;
-                uint dst = (x + 1) + (y + 1) * paddedDim + (z + 1) * paddedDim * paddedDim;
-                padded[dst] = voxels[src];
-            }
-        }
-    }
-    for (uint z = 0; z < dim; z++) {
-        for (uint y = 0; y < dim; y++) {
-            padded[0       + (y+1)*paddedDim + (z+1)*paddedDim*paddedDim] = padded[1   + (y+1)*paddedDim + (z+1)*paddedDim*paddedDim];
-            padded[(dim+1) + (y+1)*paddedDim + (z+1)*paddedDim*paddedDim] = padded[dim + (y+1)*paddedDim + (z+1)*paddedDim*paddedDim];
-        }
-    }
-    for (uint z = 0; z < dim; z++) {
-        for (uint x = 0; x < paddedDim; x++) {
-            padded[x + 0*paddedDim       + (z+1)*paddedDim*paddedDim] = padded[x + 1*paddedDim   + (z+1)*paddedDim*paddedDim];
-            padded[x + (dim+1)*paddedDim + (z+1)*paddedDim*paddedDim] = padded[x + dim*paddedDim + (z+1)*paddedDim*paddedDim];
-        }
-    }
-    for (uint y = 0; y < paddedDim; y++) {
-        for (uint x = 0; x < paddedDim; x++) {
-            padded[x + y*paddedDim + 0*paddedDim*paddedDim]       = padded[x + y*paddedDim + 1*paddedDim*paddedDim];
-            padded[x + y*paddedDim + (dim+1)*paddedDim*paddedDim] = padded[x + y*paddedDim + dim*paddedDim*paddedDim];
-        }
+/// Pack already-padded (dim+2)³ ushort materials into u32 pairs (matches extract.comp layout).
+uint[] packPaddedVoxels(const(ushort)[] padded, uint dim) {
+    uint paddedSize = (dim + 2) * (dim + 2) * (dim + 2);
+    if (padded.length < paddedSize) {
+        return null;
     }
     auto pairs = new uint[(paddedSize + 1) / 2];
     for (uint i = 0; i + 1 < paddedSize; i += 2) {
@@ -233,9 +207,9 @@ struct SurfaceExtraction {
     }
 
     /// Upload voxel data into scratch slot.
-    void uploadVoxels(VkDevice device, uint scratchIndex, const(ubyte)[] voxelData) {
+    void uploadVoxels(VkDevice device, uint scratchIndex, const(ushort)[] paddedData) {
         import core.stdc.string : memcpy;
-        auto packed = packVoxelsForExtraction(voxelData, dimension);
+        auto packed = packPaddedVoxels(paddedData, dimension);
         if (packed is null) {
             return;
         }
@@ -317,9 +291,9 @@ struct SurfaceExtraction {
         vkCmdBindPipeline(cmd, cast(VkPipelineBindPoint) 1, pipeline);
         vkCmdBindDescriptorSets(cmd, cast(VkPipelineBindPoint) 1, pipelineLayout, 0, 1, &paramsSet, 0, null);
 
-        uint gx = (3 * dimension + 3) / 4;
-        uint gy = (dimension + 3) / 4;
-        uint gz = (dimension + 3) / 4;
+        uint gx = ((dimension + 1) * 3 + 3) / 4;
+        uint gy = ((dimension + 1) + 3) / 4;
+        uint gz = ((dimension + 1) + 3) / 4;
 
         // Dispatch per task with per-slot descriptor set
         foreach (ref task; tasks) {

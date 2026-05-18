@@ -362,9 +362,12 @@ struct SurfacePipeline {
                 }
                 if (pixels is null) {
                     pixels = new ubyte[](texSize * texSize * 4);
+                    auto c = fallbackColor(cast(uint) i);
                     for (size_t j = 0; j < pixels.length; j += 4) {
-                        pixels[j] = 178; pixels[j+1] = 178;
-                        pixels[j+2] = 178; pixels[j+3] = 255;
+                        pixels[j] = c[0];
+                        pixels[j+1] = c[1];
+                        pixels[j+2] = c[2];
+                        pixels[j+3] = 255;
                     }
                 }
                 if (layers.length == 0 && pixels.length > texSize * texSize * 4) {
@@ -531,7 +534,10 @@ struct SurfacePipeline {
         sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        sci.mipLodBias = 0;
+        sci.minLod = 0;
         sci.maxLod = 0;
+        sci.maxAnisotropy = 0;
         res = vkCreateSampler(device, &sci, null, &textureSampler);
         if (res != VkResult.VK_SUCCESS) {
             return false;
@@ -603,6 +609,55 @@ struct SurfacePipeline {
         }
         transformsVbo.cleanup(device);
     }
+}
+
+private ubyte[3] fallbackColor(uint index) {
+    static immutable ubyte[3][] palette = [
+        [139, 119,  101], // dirt
+        [194, 178,  128], // sand
+        [160, 140,  120], // silt
+        [180, 140,  100], // clay
+        [100,  80,   60], // mud
+        [170, 155,  120], // sandy loam
+        [150, 135,  115], // silty loam
+        [165, 130,  100], // clay loam
+        [200, 120,   80], // red sand
+        [210, 210,  200], // limestone
+        [130, 130,  130], // shale
+        [200, 195,  180], // dolomite
+        [215, 200,  165], // sandstone
+        [185, 110,   80], // red sandstone
+        [235, 230,  225], // marble
+        [110, 115,  120], // slate
+        [160, 155,  150], // granite
+        [170, 170,  165], // diorite
+        [140, 140,  135], // andesite
+        [ 60,  60,   65], // gabbro
+        [100, 100,  105], // basalt
+        [ 55,  55,   55], // obsidian
+        [190, 180,  175], // chalk
+        [120, 110,  100], // mudstone
+        [180, 170,  155], // travertine
+        [200, 200,  195], // quartzite
+        [110, 110,  110], // coal
+        [200, 180,  140], // gold
+        [200, 200,  200], // iron
+        [ 80, 120,   60], // grass
+        [100, 140,   70], // moss
+        [120,  80,   50], // wood
+        [160, 140,  100], // wood planks
+        [180, 140,   90], // wood planks light
+        [  0, 100,  180], // water
+        [220, 220,  230], // snow
+        [180, 200,  220], // ice
+        [140, 160,  140], // lichen
+        [100, 130,  100], // fern
+    ];
+    if (index < palette.length) {
+        return palette[index];
+    }
+    uint h = index * 137 + 43;
+    return [cast(ubyte)(h & 0xFF), cast(ubyte)((h >> 3) & 0xFF), cast(ubyte)((h >> 6) & 0xFF)];
 }
 
 private bool createShader(VkDevice device, const(ubyte)[] spv, ref VkShaderModule mod) {

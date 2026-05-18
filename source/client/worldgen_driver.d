@@ -69,10 +69,12 @@ private void populateChunk(ref Graph graph, ChunkId chunk, VoxelData voxels, uby
             continue;
         }
         fixMargins(dimension, chunk.vertex, voxels, dir, neighborC.voxels);
+        neighborC.generation++;
     }
     auto c = &graph[chunk.node].chunks.values[chunk.vertex];
     c.state = ChunkState.Populated;
     c.voxels = voxels;
+    c.generation++;
 }
 
 /// Get the neighboring chunk in a given direction.

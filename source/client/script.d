@@ -50,6 +50,12 @@ struct Script {
         return s;
     }
 
+    float fwd = 0;
+    float strafe = 0;
+    float vert = 0;
+    float yawRate = 0;
+    float pitchRate = 0;
+
     void tick(float now, ulong xwid, ref bool running) {
         while (cursor < events.length && events[cursor].time <= now) {
             auto e = events[cursor++];
@@ -59,6 +65,29 @@ struct Script {
                 system(cmd.toStringz);
             } else if (e.command == "quit") {
                 running = false;
+            } else if (e.command == "key_down" || e.command == "key_up") {
+                float val = (e.command == "key_down") ? 1.0f : 0.0f;
+                if (e.arg == "W") {
+                    fwd = -val;
+                } else if (e.arg == "S") {
+                    fwd = val;
+                } else if (e.arg == "A") {
+                    strafe = -val;
+                } else if (e.arg == "D") {
+                    strafe = val;
+                } else if (e.arg == "SPACE") {
+                    vert = val;
+                } else if (e.arg == "LSHIFT") {
+                    vert = -val;
+                } else if (e.arg == "UP") {
+                    pitchRate = -val * 1.5f;
+                } else if (e.arg == "DOWN") {
+                    pitchRate = val * 1.5f;
+                } else if (e.arg == "LEFT") {
+                    yawRate = -val * 1.5f;
+                } else if (e.arg == "RIGHT") {
+                    yawRate = val * 1.5f;
+                }
             }
         }
     }

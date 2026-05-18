@@ -96,10 +96,29 @@ void main(string[] args) {
 
         if (script.events.length > 0) {
             script.tick(simTime, xWindowId, running);
+            cam.fwd = script.fwd;
+            cam.strafe = script.strafe;
+            cam.vert = script.vert;
+            cam.yawRate = script.yawRate;
+            cam.pitchRate = script.pitchRate;
         }
 
         if (!running) {
             break;
+        }
+
+        if (mouseCaptured) {
+            float mx = 0;
+            float my = 0;
+            SDL_GetMouseState(&mx, &my);
+            int w = 0;
+            int h = 0;
+            SDL_GetWindowSize(window, &w, &h);
+            float cx = cast(float) w / 2.0f;
+            float cy = cast(float) h / 2.0f;
+            mouseDx = mx - cx;
+            mouseDy = my - cy;
+            SDL_WarpMouseInWindow(window, cx, cy);
         }
 
         enum float MOUSE_SENS = 0.003f;
@@ -137,7 +156,8 @@ private void processInteractiveInput(
     if (ev.type == SDL_EVENT_KEY_DOWN) {
         if (ev.key.key == SDLK_ESCAPE) {
             if (mouseCaptured) {
-                SDL_SetWindowRelativeMouseMode(window, false);
+                SDL_SetWindowMouseGrab(window, false);
+                SDL_ShowCursor();
                 mouseCaptured = false;
             } else {
                 running = false;
@@ -156,14 +176,10 @@ private void processInteractiveInput(
         handleKeyUp(ev.key.key, cam);
     }
 
-    if (ev.type == SDL_EVENT_MOUSE_MOTION && mouseCaptured) {
-        mouseDx += ev.motion.xrel;
-        mouseDy += ev.motion.yrel;
-    }
-
     if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
         if (!mouseCaptured) {
-            SDL_SetWindowRelativeMouseMode(window, true);
+            SDL_SetWindowMouseGrab(window, true);
+            SDL_HideCursor();
             mouseCaptured = true;
         } else if (ev.button.button == SDL_BUTTON_LEFT) {
             renderer.breakBlock();

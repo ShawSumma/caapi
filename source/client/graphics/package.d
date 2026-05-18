@@ -31,12 +31,13 @@ struct Renderer {
     float time = 0;
     Position camPos;
     Graph graph;
-    float viewRadius = 1.2f;
+    float viewRadius = 1.5f;
 
-    enum MAX_SLOTS = 512;
+    enum MAX_SLOTS = 1024;
     enum CONCURRENCY = 64;
 
     uint[ChunkId] slotMap;
+    uint[ChunkId] slotGeneration;
     uint nextSlot = 0;
     uint[] freeSlots;
     uint[] activeSlots;
@@ -172,6 +173,7 @@ struct Renderer {
         }
         foreach (cid; toRemove) {
             slotMap.remove(cid);
+            slotGeneration.remove(cid);
         }
 
         void* tfMapped;
@@ -192,13 +194,16 @@ struct Renderer {
 
                 auto chunkId = ChunkId(nn.id, v);
                 uint slot;
+                bool needsExtract = false;
 
                 if (auto p = chunkId in slotMap) {
                     slot = *p;
-                } else {
-                    if (scratchIdx >= CONCURRENCY) {
-                        continue;
+                    auto gen = chunkId in slotGeneration;
+                    if (gen is null || *gen != c.generation) {
+                        needsExtract = true;
                     }
+                } else {
+                    needsExtract = true;
                     if (freeSlots.length > 0) {
                         slot = freeSlots[$ - 1];
                         freeSlots = freeSlots[0 .. $ - 1];
@@ -208,9 +213,12 @@ struct Renderer {
                         continue;
                     }
                     slotMap[chunkId] = slot;
+                }
 
-                    auto coreData = extractCore(c.voxels.denseData, dimension);
-                    extract.uploadVoxels(core.device, scratchIdx, coreData);
+                if (needsExtract && scratchIdx < CONCURRENCY) {
+                    extract.uploadVoxels(
+                        core.device, scratchIdx,
+                        cast(const(ushort)[]) c.voxels.denseData);
 
                     tasks ~= ExtractTask(
                         extract.indirectOffset(slot),
@@ -218,6 +226,7 @@ struct Renderer {
                         scratchIdx,
                         slot);
                     scratchIdx++;
+                    slotGeneration[chunkId] = c.generation;
                 }
 
                 auto m = nn.transform.mat * vertexChunkToNode(v);
@@ -359,22 +368,6 @@ struct Renderer {
         vkQueuePresentKHR(core.graphicsQueue, &pi);
     }
 
-    private static ubyte[] extractCore(M)(M[] paddedData, uint dim) {
-        uint paddedDim = dim + 2;
-        auto arr = new ubyte[](dim * dim * dim);
-        for (uint z = 0; z < dim; z++) {
-            for (uint y = 0; y < dim; y++) {
-                for (uint x = 0; x < dim; x++) {
-                    uint src = (x + 1)
-                        + (y + 1) * paddedDim
-                        + (z + 1) * paddedDim * paddedDim;
-                    arr[x + y * dim + z * dim * dim] = cast(ubyte) paddedData[src];
-                }
-            }
-        }
-        return arr;
-    }
-
     void breakBlock() {
         import common.collision_math : Ray;
         import common.graph_ray_casting : rayCast;
@@ -394,7 +387,7 @@ struct Renderer {
         }
         auto idx = hit.voxelCoords.toIndex(cast(ubyte) dimension);
         c.voxels.dataMut(cast(ubyte) dimension)[idx] = Material.Void;
-        slotMap.remove(hit.chunk);
+        c.generation++;
     }
 
     void placeBlock(ushort material) {
@@ -423,7 +416,7 @@ struct Renderer {
         if (coords[hit.faceAxis] < dimension) {
             auto idx = Coords(coords).toIndex(cast(ubyte) dimension);
             c.voxels.dataMut(cast(ubyte) dimension)[idx] = cast(Material) material;
-            slotMap.remove(hit.chunk);
+            c.generation++;
         }
     }
 

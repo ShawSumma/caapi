@@ -94,6 +94,7 @@ struct Chunk {
     VoxelData voxels;
     uint surface;     // 0 = no surface
     uint oldSurface;  // 0 = no surface
+    uint generation;  // incremented when voxels/margins change
 }
 
 /// A single dodecahedral node in the graph
