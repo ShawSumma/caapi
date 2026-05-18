@@ -27,7 +27,7 @@ struct VulkanCore {
         appInfo.applicationVersion = 1;
         appInfo.pEngineName = "mined";
         appInfo.engineVersion = 1;
-        appInfo.apiVersion = (1 << 22) | (0 << 12); // VK_API_VERSION_1_0
+        appInfo.apiVersion = (1 << 22) | (1 << 12); // VK_API_VERSION_1_1
 
         VkInstanceCreateInfo createInfo;
         createInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;

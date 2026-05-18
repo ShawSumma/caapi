@@ -28,20 +28,18 @@ SPIR-V binaries in `source/shaders/spv/` are embedded into the D binary via `str
 Run on Xephyr to avoid stealing keyboard focus:
 
 ```
-DISPLAY=:7 ./mined --script tests/short_forward.script
+DISPLAY=:7 ./mined --script tests/screenshot.script
 ```
 
-A persistent Xephyr instance should already be running on `:7`. Do NOT restart it between runs. Test scripts live in `tests/` and support timed input events and screenshots:
+A persistent Xephyr instance should already be running on `:7`. Do NOT restart it between runs. Test scripts live in `tests/` and support timed screenshots:
 
 ```
-0.2  screenshot /tmp/shot.png
-0.5  down w
-1.5  screenshot /tmp/after.png
-2.0  up w
+# Wait for terrain to load, take a screenshot, quit.
+2.0  screenshot /tmp/mined_test.png
 2.5  quit
 ```
 
-Screenshots are taken via ImageMagick's `import -window` command. Read the resulting PNG files to visually inspect the output.
+Scripts use a fixed dt of 0.016s. Screenshots are taken via ImageMagick's `import -window` command. Read the resulting PNG files to visually inspect the output.
 
 ## Architecture Overview
 
@@ -95,10 +93,12 @@ There is also a `cpuExtract` function in `cpu_extract.d` that implements the sam
 The renderer uses raw Vulkan (no helper libraries). The binding declarations are minimal and hand-written in `source/bindings/vk.d` — only the subset of Vulkan actually used is declared. If you need a new Vulkan function, struct, or enum value, add it there.
 
 **Per-frame rendering flow:**
-1. BFS traversal of the graph from the camera position to find visible chunks
-2. Upload chunk transforms to VBO
-3. Record command buffer: reset counters → compute extract dispatch → barrier → draw indirect
-4. All visible chunks share one SSBO of surfaces and draw with `vkCmdDrawIndirect`
+1. Worldgen driver populates chunks near the camera with terrain data
+2. BFS traversal of the graph from the camera position to find visible chunks
+3. Assign draw slots to new chunks; free slots for chunks no longer visible
+4. Upload per-chunk voxel data to scratch buffer, upload transforms to VBO
+5. Record command buffer: per-slot compute extract dispatches → barriers → render pass with per-slot `vkCmdDrawIndirect` → fog subpass
+6. Each chunk has its own descriptor set pointing at its own region of the voxels/state/indirect/faces buffers
 
 **Descriptor sets:**
 - Set 0, binding 0: Common UBO (mat4 view_projection, mat4 inverse_projection, float fog_density, float time, vec4 light_dir) — 160 bytes, std140
@@ -107,15 +107,17 @@ The renderer uses raw Vulkan (no helper libraries). The binding declarations are
 
 **Shaders:**
 - `voxels.vert` — unpacks Surface struct, looks up position/axis/occlusion, applies chunk transform + view-projection. The `transform` is a per-instance mat4 vertex attribute.
-- `voxels.frag` — `color = texture(textures, texcoords) * occlusion`. Currently all texture layers are a uniform gray (16×16 RGBA). Real material textures are not yet loaded.
+- `voxels.frag` — `color = texture(textures, texcoords) * occlusion`. Material textures are loaded from `../hypermine/assets/materials/` (39 PNGs, 128×128, R8G8B8A8_SRGB).
 - `extract.comp` — surface extraction compute shader (described above)
+- `fullscreen.vert` — fullscreen triangle for post-process passes
+- `fog.frag` — exponential^5 fog using hyperbolic distance via `atanh()`, reads depth as subpass input attachment
 - `cube.vert`/`cube.frag` — debug cube rendering (not used in normal path)
 
 ### Worldgen (`source/common/worldgen/`, `source/client/worldgen_driver.d`)
 
-The worldgen currently produces a skeleton structure: three perpendicular 1-voxel-thick beams meeting at each chunk's low corner (coord 1 on each axis). This places edges at dodecahedral vertices, producing the visible honeycomb wireframe pattern. The `makeTestVoxels` function in `cpu_extract.d` generates this pattern.
+Terrain generation uses NodeState propagation through the graph. Each node computes `EnviroFactors` (elevation, temperature, rainfall, blockiness) from its parents — single-parent nodes use `variedFrom` (hash-seeded pseudo-random walk), multi-parent nodes use `continueFrom` (smooth interpolation). The 8 nodes incident to each chunk vertex provide trilinearly-interpolated enviro factors for voxel generation.
 
-The full terrain generation system (`generateVoxels`, `generateTerrain`, `chooseMaterial`) exists in `source/common/worldgen/mod_.d` but is fed zero-initialized enviro factors from the worldgen driver, so it produces only the thin boundary shell. Wiring up proper node state propagation (sky/land classification, elevation, temperature, rainfall) through the graph would enable real terrain.
+The terrain surface is defined by a `Plane` per node (Side.A for Land, -Side.A for Sky, propagated for Deep nodes). Voxels below the surface get material from the Voronoi lookup (`terraingenVoronoi` in `terraingen.d`), which selects from 113-site tables based on elevation stratum, temperature, and rainfall. Terracing effects (`terracingDiff` with `serp` interpolation) create cliffs and plateaus. Roads, road supports (trussing), and trees are also generated.
 
 ### Input and Simulation
 
@@ -125,17 +127,62 @@ The main loop (`source/main.d`) handles SDL3 events, drives the simulation, and 
 
 ## Coding Conventions
 
+### Style
+
 - **D language** — use D idioms, not C-style code where D has a better way
-- **Brace every control-flow body**, even single-statement `if`/`for`/`foreach` — always use `{ }`
+- **Brace every control-flow body** on its own lines. Never put a braced body on the same line as the condition:
+  ```d
+  // WRONG
+  if (x == 0) { return; }
+
+  // RIGHT
+  if (x == 0) {
+      return;
+  }
+  ```
+- **One statement per line.** No `x = 0; y = 0;` or `float c = cos(a), s = sin(a);`
+- **`scope(exit)`** — no space before the parenthesis, always use a braced body:
+  ```d
+  scope(exit) {
+      cleanup();
+  }
+  ```
+- **Function arguments** — when a call wraps, each argument gets its own line. Never leave a dangling `);` as the only content on a line:
+  ```d
+  // WRONG
+  renderer.rotateCamera(
+      cam.yawRate * dt - mouseDx * MOUSE_SENS,
+      cam.pitchRate * dt - mouseDy * MOUSE_SENS);
+
+  // RIGHT — compute into locals if it cleans up the call
+  float yaw = cam.yawRate * dt - mouseDx * MOUSE_SENS;
+  float pitch = cam.pitchRate * dt - mouseDy * MOUSE_SENS;
+  renderer.rotateCamera(yaw, pitch);
+  ```
+- **Function parameters** — when a signature wraps, each parameter gets its own line. Don't pack multiple parameters onto one line:
+  ```d
+  // WRONG
+  void processInput(ref SDL_Event ev, void* window, ref CameraInput cam, ref Renderer renderer,
+      ref bool mouseCaptured, ref float mouseDx, ref float mouseDy) {
+
+  // RIGHT — but also reconsider the API; too many ref params is a smell
+  ```
+- **No multi-line compressed math.** Even matrix helpers should have readable formatting with one operation per line.
+
+### Architecture
+
 - **Vulkan bindings** are minimal — only declare what you use, in `source/bindings/vk.d`
 - **No Wayland** — SDL3 is built with X11 only
 - **Shader changes** require manual SPIR-V recompilation or `dub build --force`
+- **SPIR-V imports** — use `cast(immutable(ubyte)[]) import("file.spv")` for LDC2 compatibility
+- **Vulkan struct fields** — D initializes floats to `nan` by default. Always explicitly zero fields like `depthBiasClamp`, `minDepth`, viewport `x`/`y`, etc.
+- **Storage buffer offsets** must be aligned to `minStorageBufferOffsetAlignment` (typically 16 bytes). Use `roundUp(size, alignment)` when computing per-slot buffer offsets.
+- **This is a port of `../hypermine`** — when in doubt, match the Rust code. Don't invent new approaches; port the existing ones.
 
 ## Known Issues and Future Work
 
 - Backface culling is disabled; winding should be fixed so it can be re-enabled
-- `fixMargins` is not called between neighboring chunks — AO at chunk boundaries assumes self-continuation rather than reading actual neighbor data
-- Texture array uses uniform gray for all 39 material layers; real per-material textures need to be loaded
-- Worldgen enviro factors are all zero — terrain generation produces only boundary shells instead of real terrain with elevation/biomes
-- No fog shader (the reference has exponential hyperbolic-distance fog via a fullscreen post-process)
-- The `light_dir` uniform is computed and uploaded but not used by any shader
+- Per-chunk slot count (`MAX_SLOTS`) is limited; needs LRU eviction matching the Rust `LruSlab`
+- Draw buffers (`facesBuf`, `indirectBuf`) use HOST_VISIBLE memory; should use DEVICE_LOCAL like the Rust `DedicatedBuffer`
+- The `light_dir` uniform is computed and uploaded but not used by the fragment shader
+- No networking — protocol structs exist but no transport layer

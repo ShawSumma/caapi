@@ -46,8 +46,8 @@ struct SurfacePipeline {
               VkQueue queue = null, VkCommandPool cmdPool = 0,
               ulong externalSurfacesBuf = 0,
               VkImageView depthView = 0) {
-        static immutable ubyte[] vertSpv = cast(ubyte[]) import("voxels.vert.spv");
-        static immutable ubyte[] fragSpv = cast(ubyte[]) import("voxels.frag.spv");
+        static immutable ubyte[] vertSpv = cast(immutable(ubyte)[]) import("voxels.vert.spv");
+        static immutable ubyte[] fragSpv = cast(immutable(ubyte)[]) import("voxels.frag.spv");
 
         if (!createShader(device, vertSpv, vertShader)) {
             return false;
@@ -246,10 +246,11 @@ struct SurfacePipeline {
         VkPipelineRasterizationStateCreateInfo rs;
         rs.sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
         rs.polygonMode = VkPolygonMode.VK_POLYGON_MODE_FILL;
-        // Cull back faces. Parity-flipped chunks have their winding corrected
-        // in voxels.vert by swapping a pair of triangle vertices.
         rs.cullMode = VkCullModeFlagBits.VK_CULL_MODE_NONE;
         rs.frontFace = VkFrontFace.VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        rs.depthBiasConstantFactor = 0;
+        rs.depthBiasClamp = 0;
+        rs.depthBiasSlopeFactor = 0;
         rs.lineWidth = 1.0f;
 
         VkPipelineMultisampleStateCreateInfo ms;

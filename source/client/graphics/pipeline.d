@@ -11,8 +11,8 @@ struct CubePipeline {
     VkPipeline pipeline;
 
     bool init(VkDevice device, VkRenderPass renderPass) {
-        static immutable ubyte[] vertSpv = cast(ubyte[]) import("cube.vert.spv");
-        static immutable ubyte[] fragSpv = cast(ubyte[]) import("cube.frag.spv");
+        static immutable ubyte[] vertSpv = cast(immutable(ubyte)[]) import("cube.vert.spv");
+        static immutable ubyte[] fragSpv = cast(immutable(ubyte)[]) import("cube.frag.spv");
 
         if (!createShader(device, vertSpv, vertShader)) {
             return false;

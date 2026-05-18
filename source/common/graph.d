@@ -120,6 +120,67 @@ struct Graph {
         }
     }
 
+    struct ParentResult { Side side; NodeId id; }
+
+    /// Returns up to 3 parent (side, nodeId) pairs — neighbors with lower depth.
+    ParentResult[3] parents(NodeId node, out int count) const {
+        ParentResult[3] results;
+        count = 0;
+        auto nc = node in nodes;
+        if (nc is null) {
+            return results;
+        }
+        uint nodeDepth = (*nc).depth;
+        foreach (sideIdx; 0 .. SIDE_COUNT) {
+            auto side = cast(Side) sideIdx;
+            auto n = (*nc).neighbors[side];
+            if (!n.valid) {
+                continue;
+            }
+            auto neighborNC = n.id in nodes;
+            if (neighborNC is null) {
+                continue;
+            }
+            if ((*neighborNC).depth < nodeDepth) {
+                results[count++] = ParentResult(side, n.id);
+                if (count >= 3) {
+                    break;
+                }
+            }
+        }
+        return results;
+    }
+
+    /// The node ID is already its hash (matches Rust graph.hash_of).
+    ulong hashOf(NodeId node) const {
+        return node.value[0] ^ node.value[1];
+    }
+
+    /// Lazily compute and return the NodeState for a node.
+    void ensureNodeState(NodeId nodeId) {
+        import common.worldgen.mod_ : NodeState;
+        auto nc = nodeId in nodes;
+        if (nc is null) {
+            return;
+        }
+        if ((*nc).value.state !is null) {
+            return;
+        }
+        // Ensure parents have state first
+        int pcount;
+        auto ps = parents(nodeId, pcount);
+        foreach (i; 0 .. pcount) {
+            ensureNodeState(ps[i].id);
+        }
+        (*nc).value.state = cast(void*) NodeState.create(this, nodeId);
+    }
+
+    /// Return the NodeState (must have been ensured first).
+    auto nodeState(NodeId nodeId) const {
+        import common.worldgen.mod_ : NodeState;
+        return cast(const(NodeState)*) nodes[nodeId].value.state;
+    }
+
     /// Normalize a transform to find the closest node
     NodeId normalizeTransform(NodeId reference, ref MIsometry!float transform) const {
         auto location = transform * MPoint!float.origin();

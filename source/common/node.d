@@ -99,4 +99,5 @@ struct Chunk {
 /// A single dodecahedral node in the graph
 struct Node {
     Chunks!Chunk chunks;
+    void* state; // NodeState*, stored as void* to avoid circular imports
 }

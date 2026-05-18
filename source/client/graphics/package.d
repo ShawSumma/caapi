@@ -1,20 +1,24 @@
 module client.graphics;
 
 import std.stdio;
-import std.math : sin, cos, tan, sqrt, PI;
+import std.math : sin, cos, tan, sqrt, PI, log, pow;
 import bindings.vk;
 import client.graphics.core;
 import client.graphics.base;
 import client.graphics.voxels;
 import client.graphics.fog : FogPipeline;
 import client.graphics.frustum : Frustum;
+import client.worldgen_driver : WorldgenDriver;
 import common.dodeca : Vertex, VERTEX_COUNT, Side, SIDE_COUNT,
     vertexChunkToNode, vertexChunkBoundingSphereCenter,
-    sideReflection, sideIsFacing;
+    sideReflection, sideIsFacing, vertexParity;
 import common.math : MPoint, MIsometry, MVector;
 import common.graph : Graph, NodeId;
+import common.node : ChunkId, ChunkState;
 import common.proto : Position;
-import common.traversal : ensureNearby, nearbyNodes;
+import common.traversal : ensureNearby, NearbyNode, nearbyNodes;
+import common.voxel_math : Coords, CoordSign, CoordAxis;
+import common.world : Material;
 
 struct Renderer {
     VulkanCore core;
@@ -22,21 +26,21 @@ struct Renderer {
     SurfacePipeline voxels;
     SurfaceExtraction extract;
     FogPipeline fog;
+    WorldgenDriver worldgenDriver;
     uint dimension = 12;
     float time = 0;
-    // Hyperbolic camera position: a node id + local isometry within that node.
-    // camPos.local maps camera-local frame (origin = camera, -Z forward) to
-    // node-local frame. View matrix = camPos.local.inverse(). Yaw/pitch are
-    // applied directly to camPos.local so that node migration (reflection)
-    // mirrors orientation along with position.
     Position camPos;
-    // Graph and visible chunk count are mutated each frame as the camera moves.
     Graph graph;
     float viewRadius = 1.2f;
-    uint maxChunks = 0;
-    uint currentChunkCount = 0;
 
-    /// Rotate camera in its own local frame: yawDelta around Y, pitchDelta around X.
+    enum MAX_SLOTS = 512;
+    enum CONCURRENCY = 64;
+
+    uint[ChunkId] slotMap;
+    uint nextSlot = 0;
+    uint[] freeSlots;
+    uint[] activeSlots;
+
     void rotateCamera(float yawDelta, float pitchDelta) {
         if (yawDelta != 0) {
             camPos.local = camPos.local * rotationY(yawDelta);
@@ -44,35 +48,29 @@ struct Renderer {
         if (pitchDelta != 0) {
             camPos.local = camPos.local * rotationX(pitchDelta);
         }
-        // Cheap to renormalize; without it the 3x3 orientation drifts after
-        // many rotation accumulations and small skews compound.
         if (yawDelta != 0 || pitchDelta != 0) {
             camPos.local = camPos.local.renormalized();
         }
     }
 
-    /// Translate camera in its local frame: dz negative = forward, dx positive = right.
     void moveCamera(float dx, float dy, float dz) {
         if (dx == 0 && dy == 0 && dz == 0) {
             return;
         }
         float[3] v = [dx, dy, dz];
-        auto step = MIsometry!float.translationAlong(v);
-        camPos.local = camPos.local * step;
+        camPos.local = camPos.local * MIsometry!float.translationAlong(v);
         migratePosition();
         camPos.local = camPos.local.renormalized();
     }
 
     private void migratePosition() {
-        // Repeatedly find a side facing the current local point and reflect across it
-        // until we're inside the node bounds.
         foreach (_; 0 .. SIDE_COUNT) {
             auto col3 = MVector!float(
                 camPos.local.mat.data[3][0], camPos.local.mat.data[3][1],
                 camPos.local.mat.data[3][2], camPos.local.mat.data[3][3]);
             auto p = MPoint!float(col3);
-            Side facing;
             bool any = false;
+            Side facing;
             foreach (sideIdx; 0 .. SIDE_COUNT) {
                 auto side = cast(Side) sideIdx;
                 if (sideIsFacing(side, p)) {
@@ -101,29 +99,20 @@ struct Renderer {
             return false;
         }
 
-        // Build test world: one chunk
-        auto voxelData = makeTestVoxels(dimension);
+        graph = Graph.create(cast(ubyte) dimension);
 
-        if (!extract.init(core.physicalDevice, core.device, dimension, voxelData)) {
+        if (!extract.init(core.physicalDevice, core.device, dimension, CONCURRENCY, MAX_SLOTS)) {
             return false;
         }
+
         Surface[] empty;
-
-        // Build the hyperbolic graph. Each frame we re-traverse from the camera
-        // position to refresh the visible set; here we just allocate a generous
-        // transforms VBO ceiling so we never need to resize.
-        graph = Graph.create(cast(ubyte) dimension);
-        // At radius 1.0 ~ 400 nodes * 20 chunks; at 2.0 the count climbs quickly in
-        // hyperbolic space. Cap at 32k slots — the renderer truncates the BFS output
-        // if it overflows.
-        maxChunks = 32768;
         float[16][] transforms;
-        transforms.length = maxChunks;
-        currentChunkCount = 0;
+        transforms.length = MAX_SLOTS;
 
-        if (!voxels.init(core.physicalDevice, core.device, swapState.renderPass, empty, transforms,
+        if (!voxels.init(core.physicalDevice, core.device, swapState.renderPass,
+                         empty, transforms,
                          core.graphicsQueue, swapState.commandPool,
-                         extract.surfacesBuf.buffer,
+                         extract.facesBuf.buffer,
                          swapState.depthView)) {
             return false;
         }
@@ -132,11 +121,13 @@ struct Renderer {
             return false;
         }
 
-        // Start the camera in the root node, offset into chunk A.
-        auto chunkCenter = vertexChunkBoundingSphereCenter(Vertex.A);
-        auto originPoint = MPoint!float.origin();
-        camPos.node = NodeId.ROOT;
-        camPos.local = MIsometry!float.translation(originPoint, chunkCenter);
+        worldgenDriver = WorldgenDriver.create();
+
+        auto skyNode = graph.ensureNeighbor(NodeId.ROOT, Side.A);
+        camPos.node = skyNode;
+        camPos.local = MIsometry!float.translation(
+            MPoint!float.origin(),
+            vertexChunkBoundingSphereCenter(Vertex.A));
 
         writeln("Renderer initialized successfully");
         return true;
@@ -144,43 +135,122 @@ struct Renderer {
 
     void render(float dt) {
         time += dt;
-        // Re-traverse nodes from current camera position and rebuild transforms.
-        updateVisibleChunks();
-        // Diagnostic: every second of sim time, print the local camera position so we
-        // can see if it stays bounded after node migration.
+        worldgenDriver.drive(
+            Position(camPos.node, camPos.local),
+            viewRadius, graph, cast(ubyte) dimension);
+
+        ensureNearby(graph, camPos.node, camPos.local, viewRadius);
+        auto nodes = nearbyNodes(graph, camPos.node, camPos.local, viewRadius);
+
+        ExtractTask[] tasks;
+        uint scratchIdx = 0;
+        activeSlots.length = 0;
+
+        vkWaitForFences(core.device, 1, &swapState.inFlightFence, 1, ulong.max);
+
+        bool[ChunkId] visibleSet;
+        foreach (nn; nodes) {
+            if (!graph.contains(nn.id)) {
+                continue;
+            }
+            foreach (vIdx; 0 .. VERTEX_COUNT) {
+                auto v = cast(Vertex) vIdx;
+                auto c = &graph[nn.id].chunks.values[v];
+                if (c.state != ChunkState.Populated || c.voxels.isSolid()) {
+                    continue;
+                }
+                visibleSet[ChunkId(nn.id, v)] = true;
+            }
+        }
+
+        ChunkId[] toRemove;
+        foreach (cid, slot; slotMap) {
+            if (cid !in visibleSet) {
+                freeSlots ~= slot;
+                toRemove ~= cid;
+            }
+        }
+        foreach (cid; toRemove) {
+            slotMap.remove(cid);
+        }
+
+        void* tfMapped;
+        vkMapMemory(core.device, voxels.transformsVbo.memory,
+                     0, MAX_SLOTS * 64, 0, &tfMapped);
+        auto tfBuf = cast(float*) tfMapped;
+
+        foreach (nn; nodes) {
+            if (!graph.contains(nn.id)) {
+                continue;
+            }
+            foreach (vIdx; 0 .. VERTEX_COUNT) {
+                auto v = cast(Vertex) vIdx;
+                auto c = &graph[nn.id].chunks.values[v];
+                if (c.state != ChunkState.Populated || c.voxels.isSolid()) {
+                    continue;
+                }
+
+                auto chunkId = ChunkId(nn.id, v);
+                uint slot;
+
+                if (auto p = chunkId in slotMap) {
+                    slot = *p;
+                } else {
+                    if (scratchIdx >= CONCURRENCY) {
+                        continue;
+                    }
+                    if (freeSlots.length > 0) {
+                        slot = freeSlots[$ - 1];
+                        freeSlots = freeSlots[0 .. $ - 1];
+                    } else if (nextSlot < MAX_SLOTS) {
+                        slot = nextSlot++;
+                    } else {
+                        continue;
+                    }
+                    slotMap[chunkId] = slot;
+
+                    auto coreData = extractCore(c.voxels.denseData, dimension);
+                    extract.uploadVoxels(core.device, scratchIdx, coreData);
+
+                    tasks ~= ExtractTask(
+                        extract.indirectOffset(slot),
+                        extract.faceOffset(slot),
+                        scratchIdx,
+                        slot);
+                    scratchIdx++;
+                }
+
+                auto m = nn.transform.mat * vertexChunkToNode(v);
+                foreach (col; 0 .. 4) {
+                    foreach (row; 0 .. 4) {
+                        tfBuf[slot * 16 + col * 4 + row] = m.data[col][row];
+                    }
+                }
+                activeSlots ~= slot;
+            }
+        }
+        vkUnmapMemory(core.device, voxels.transformsVbo.memory);
+
         static int lastSecond = -1;
         int currentSecond = cast(int) time;
         if (currentSecond != lastSecond) {
             lastSecond = currentSecond;
-            auto col3 = camPos.local.mat.data[3];
-            float mip = col3[3] * col3[3] - col3[0] * col3[0] - col3[1] * col3[1] - col3[2] * col3[2];
-            writefln("[t=%ss] node=%s local = (%.3f, %.3f, %.3f, %.3f)  -mip=%.4f  visible=%d  graph=%d",
-                currentSecond, camPos.node, col3[0], col3[1], col3[2], col3[3], mip,
-                currentChunkCount, graph.len);
+            writefln("[t=%ss] active=%d slots=%d new=%d graph=%d",
+                currentSecond, activeSlots.length, nextSlot,
+                tasks.length, graph.len);
             stdout.flush();
         }
+
         auto extent = swapState.extent;
         float aspect = cast(float) extent.width / cast(float) extent.height;
-        // Proper hypermine projection: Beltrami-Klein perspective into unit ball.
-        auto frustum = Frustum.fromVfov(45.0f * (cast(float) PI / 180.0f), aspect);
+        auto frustum = Frustum.fromVfov(45.0f * (PI / 180.0f), aspect);
         auto proj = frustum.projection(1.0e-4f);
-        // camPos.local maps camera-local frame to node-local frame, so the view
-        // matrix is its inverse — applied as a single isometry (orientation already
-        // baked in).
-        auto worldToCam = camPos.local.inverse();
-        float[16] view = matToFlat(worldToCam.mat);
+        auto view = matToFlat(camPos.local.inverse().mat);
         auto vp = matMul(proj, view);
-        // Compute inverse projection for fog shader (reconstructs view-space position)
         auto invp = matInverse(proj);
-        // Fog density: achieve ~0.1% transmission at fog_distance with exponent 5.
-        // density = ln(1/transmission)^(1/exponent) / distance
-        import std.math : sqrt, log, pow;
-        float fogDistance = 75.0f; // meters (matches sim_config view_distance)
-        float fogDensity = pow(log(1.0f / 1e-3f), 1.0f / 5.0f) / fogDistance;
-        // Light direction fixed in camera frame ("above-forward"), transformed
-        // to node-local frame via camPos.local so it stays stable across
-        // node migrations.
-        float[4] lightCam = [0.3f, 0.8f, 0.4f, 0]; // camera-relative
+        float fogDensity = pow(log(1.0f / 1e-3f), 1.0f / 5.0f) / 75.0f;
+
+        float[4] lightCam = [0.3f, 0.8f, 0.4f, 0];
         float[4] lightNode;
         foreach (row; 0 .. 4) {
             lightNode[row] = 0;
@@ -188,8 +258,10 @@ struct Renderer {
                 lightNode[row] += camPos.local.mat.data[k][row] * lightCam[k];
             }
         }
-        // Normalize xyz
-        float llen = sqrt(lightNode[0]*lightNode[0] + lightNode[1]*lightNode[1] + lightNode[2]*lightNode[2]);
+        float llen = sqrt(
+            lightNode[0] * lightNode[0] +
+            lightNode[1] * lightNode[1] +
+            lightNode[2] * lightNode[2]);
         if (llen > 0) {
             foreach (i; 0 .. 3) {
                 lightNode[i] /= llen;
@@ -198,58 +270,161 @@ struct Renderer {
         lightNode[3] = 0;
         voxels.updateCommonUbo(core.device, vp, invp, fogDensity, time, lightNode);
 
-        renderVoxelsFrame(
-            core.device,
-            core.graphicsQueue,
-            swapState.swapchain,
-            swapState.commandBuffer,
-            swapState.renderPass,
-            swapState.framebuffers,
-            extent,
-            swapState.imageAvailableSemaphore,
-            swapState.renderFinishedSemaphore,
-            swapState.inFlightFence,
-            voxels.pipeline,
-            voxels.pipelineLayout,
-            voxels.commonSet,
-            voxels.staticSet,
-            voxels.transformsVbo.buffer,
-            currentChunkCount,
-            dimension,
-            &extract,
-            &fog,
-        );
+        vkResetFences(core.device, 1, &swapState.inFlightFence);
+        uint imageIndex;
+        vkAcquireNextImageKHR(core.device, swapState.swapchain, ulong.max,
+            swapState.imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+
+        auto cmd = swapState.commandBuffer;
+        vkResetCommandBuffer(cmd, 0);
+        VkCommandBufferBeginInfo bi;
+        bi.sType = VkStructureType.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        vkBeginCommandBuffer(cmd, &bi);
+
+        if (tasks.length > 0) {
+            extract.recordExtract(core.device, cmd, tasks);
+        }
+
+        VkClearValue[2] clears;
+        clears[0].color.float32 = [0.5f, 0.65f, 0.9f, 1.0f];
+        clears[1].depthStencil.depth = 0.0f;
+
+        VkRenderPassBeginInfo rp;
+        rp.sType = VkStructureType.VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        rp.renderPass = swapState.renderPass;
+        rp.framebuffer = swapState.framebuffers[imageIndex];
+        rp.renderArea.extent = extent;
+        rp.clearValueCount = 2;
+        rp.pClearValues = clears.ptr;
+        vkCmdBeginRenderPass(cmd, &rp, VkSubpassContents.VK_SUBPASS_CONTENTS_INLINE);
+
+        vkCmdBindPipeline(cmd, VkPipelineBindPoint.VK_PIPELINE_BIND_POINT_GRAPHICS,
+            voxels.pipeline);
+
+        VkViewport viewport;
+        viewport.x = 0;
+        viewport.y = 0;
+        viewport.width = cast(float) extent.width;
+        viewport.height = cast(float) extent.height;
+        viewport.minDepth = 0;
+        viewport.maxDepth = 1;
+        vkCmdSetViewport(cmd, 0, 1, &viewport);
+
+        VkRect2D scissor;
+        scissor.extent = extent;
+        vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+        VkDescriptorSet[2] dsets = [voxels.commonSet, voxels.staticSet];
+        vkCmdBindDescriptorSets(cmd,
+            VkPipelineBindPoint.VK_PIPELINE_BIND_POINT_GRAPHICS,
+            voxels.pipelineLayout, 0, 2, dsets.ptr, 0, null);
+
+        VkDeviceSize vboOff = 0;
+        vkCmdBindVertexBuffers(cmd, 0, 1, &voxels.transformsVbo.buffer, &vboOff);
+
+        uint dim = dimension;
+        vkCmdPushConstants(cmd, voxels.pipelineLayout,
+            VkShaderStageFlagBits.VK_SHADER_STAGE_VERTEX_BIT, 0, 4, &dim);
+
+        foreach (slot; activeSlots) {
+            vkCmdDrawIndirect(cmd, extract.indirectBuf.buffer,
+                extract.indirectOffset(slot), 1, INDIRECT_SIZE);
+        }
+
+        vkCmdNextSubpass(cmd, VkSubpassContents.VK_SUBPASS_CONTENTS_INLINE);
+        fog.draw(cmd, fog.pipelineLayout, voxels.commonSet);
+
+        vkCmdEndRenderPass(cmd);
+        vkEndCommandBuffer(cmd);
+
+        uint waitStage = VkPipelineStageFlagBits.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        VkSubmitInfo si;
+        si.sType = VkStructureType.VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        si.waitSemaphoreCount = 1;
+        si.pWaitSemaphores = &swapState.imageAvailableSemaphore;
+        si.pWaitDstStageMask = &waitStage;
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &cmd;
+        si.signalSemaphoreCount = 1;
+        si.pSignalSemaphores = &swapState.renderFinishedSemaphore;
+        vkQueueSubmit(core.graphicsQueue, 1, &si, swapState.inFlightFence);
+
+        VkPresentInfoKHR pi;
+        pi.sType = VkStructureType.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+        pi.waitSemaphoreCount = 1;
+        pi.pWaitSemaphores = &swapState.renderFinishedSemaphore;
+        pi.swapchainCount = 1;
+        pi.pSwapchains = &swapState.swapchain;
+        pi.pImageIndices = &imageIndex;
+        vkQueuePresentKHR(core.graphicsQueue, &pi);
     }
 
-    private void updateVisibleChunks() {
-        ensureNearby(graph, camPos.node, camPos.local, viewRadius);
-        auto nodes = nearbyNodes(graph, camPos.node, camPos.local, viewRadius);
-        uint count = cast(uint)(nodes.length * VERTEX_COUNT);
-        if (count > maxChunks) {
-            count = maxChunks;
-        }
-        // Map the transforms VBO and overwrite.
-        void* mapped;
-        vkMapMemory(core.device, voxels.transformsVbo.memory, 0, count * 64, 0, &mapped);
-        auto buf = cast(float*) mapped;
-        uint idx = 0;
-        outer: foreach (nn; nodes) {
-            foreach (i; 0 .. VERTEX_COUNT) {
-                auto v = cast(Vertex) i;
-                auto m = nn.transform.mat * vertexChunkToNode(v);
-                foreach (col; 0 .. 4) {
-                    foreach (row; 0 .. 4) {
-                        buf[idx * 16 + col * 4 + row] = m.data[col][row];
-                    }
-                }
-                idx++;
-                if (idx >= maxChunks) {
-                    break outer;
+    private static ubyte[] extractCore(M)(M[] paddedData, uint dim) {
+        uint paddedDim = dim + 2;
+        auto arr = new ubyte[](dim * dim * dim);
+        for (uint z = 0; z < dim; z++) {
+            for (uint y = 0; y < dim; y++) {
+                for (uint x = 0; x < dim; x++) {
+                    uint src = (x + 1)
+                        + (y + 1) * paddedDim
+                        + (z + 1) * paddedDim * paddedDim;
+                    arr[x + y * dim + z * dim * dim] = cast(ubyte) paddedData[src];
                 }
             }
         }
-        vkUnmapMemory(core.device, voxels.transformsVbo.memory);
-        currentChunkCount = idx;
+        return arr;
+    }
+
+    void breakBlock() {
+        import common.collision_math : Ray;
+        import common.graph_ray_casting : rayCast;
+        import std.math : isNaN;
+
+        auto ray = Ray.create(
+            MPoint!float.origin(),
+            MVector!float(0, 0, -1, 0).normalizedDirection());
+        bool oob;
+        auto hit = rayCast(graph, camPos.node, camPos.local, ray, 5.0f, oob);
+        if (isNaN(hit.tanhDistance)) {
+            return;
+        }
+        auto c = &graph[hit.chunk.node].chunks.values[hit.chunk.vertex];
+        if (c.state != ChunkState.Populated) {
+            return;
+        }
+        auto idx = hit.voxelCoords.toIndex(cast(ubyte) dimension);
+        c.voxels.dataMut(cast(ubyte) dimension)[idx] = Material.Void;
+        slotMap.remove(hit.chunk);
+    }
+
+    void placeBlock(ushort material) {
+        import common.collision_math : Ray;
+        import common.graph_ray_casting : rayCast;
+        import std.math : isNaN;
+
+        auto ray = Ray.create(
+            MPoint!float.origin(),
+            MVector!float(0, 0, -1, 0).normalizedDirection());
+        bool oob;
+        auto hit = rayCast(graph, camPos.node, camPos.local, ray, 5.0f, oob);
+        if (isNaN(hit.tanhDistance)) {
+            return;
+        }
+        auto c = &graph[hit.chunk.node].chunks.values[hit.chunk.vertex];
+        if (c.state != ChunkState.Populated) {
+            return;
+        }
+        auto coords = hit.voxelCoords.data;
+        if (hit.faceSign == CoordSign.Plus) {
+            coords[hit.faceAxis] = cast(ubyte)(coords[hit.faceAxis] + 1);
+        } else {
+            coords[hit.faceAxis] = cast(ubyte)(coords[hit.faceAxis] - 1);
+        }
+        if (coords[hit.faceAxis] < dimension) {
+            auto idx = Coords(coords).toIndex(cast(ubyte) dimension);
+            c.voxels.dataMut(cast(ubyte) dimension)[idx] = cast(Material) material;
+            slotMap.remove(hit.chunk);
+        }
     }
 
     void cleanup() {
@@ -261,11 +436,8 @@ struct Renderer {
             swapState.cleanup(core.device);
         }
         core.cleanup();
-        writeln("Renderer cleaned up");
     }
 }
-
-// ---- math helpers (column-major mat4) ----
 
 private float[16] matToFlat(M)(M m) {
     float[16] r;
@@ -282,9 +454,11 @@ private MIsometry!float rotationY(float angle) {
     float c = cos(angle);
     float s = sin(angle);
     Matrix4!float m;
-    m.data[0][0] = c;  m.data[2][0] = -s;
+    m.data[0][0] = c;
+    m.data[2][0] = -s;
     m.data[1][1] = 1;
-    m.data[0][2] = s;  m.data[2][2] = c;
+    m.data[0][2] = s;
+    m.data[2][2] = c;
     m.data[3][3] = 1;
     return MIsometry!float(m);
 }
@@ -295,33 +469,12 @@ private MIsometry!float rotationX(float angle) {
     float s = sin(angle);
     Matrix4!float m;
     m.data[0][0] = 1;
-    m.data[1][1] = c;  m.data[2][1] = s;
-    m.data[1][2] = -s; m.data[2][2] = c;
+    m.data[1][1] = c;
+    m.data[2][1] = s;
+    m.data[1][2] = -s;
+    m.data[2][2] = c;
     m.data[3][3] = 1;
     return MIsometry!float(m);
-}
-
-private float[16] perspective(float fovY, float aspect, float near, float far) {
-    float[16] m = 0;
-    float f = 1.0f / tan(fovY * 0.5f);
-    m[0] = f / aspect;
-    m[5] = -f;
-    m[10] = far / (near - far);
-    m[11] = -1;
-    m[14] = (near * far) / (near - far);
-    return m;
-}
-
-private float[16] lookAt(float[3] eye, float[3] target, float[3] up) {
-    float[3] f = nrm([target[0]-eye[0], target[1]-eye[1], target[2]-eye[2]]);
-    float[3] s = nrm(cr(f, up));
-    float[3] u = cr(s, f);
-    float[16] m = 0;
-    m[0] = s[0]; m[4] = s[1]; m[8]  = s[2];  m[12] = -dt(s, eye);
-    m[1] = u[0]; m[5] = u[1]; m[9]  = u[2];  m[13] = -dt(u, eye);
-    m[2] = -f[0]; m[6] = -f[1]; m[10] = -f[2]; m[14] = dt(f, eye);
-    m[15] = 1;
-    return m;
 }
 
 private float[16] matMul(float[16] a, float[16] b) {
@@ -330,161 +483,56 @@ private float[16] matMul(float[16] a, float[16] b) {
         foreach (row; 0 .. 4) {
             float s = 0;
             foreach (k; 0 .. 4) {
-                s += a[k*4+row] * b[col*4+k];
+                s += a[k * 4 + row] * b[col * 4 + k];
             }
-            r[col*4+row] = s;
+            r[col * 4 + row] = s;
         }
     }
     return r;
 }
 
 private float[16] matInverse(float[16] m) {
-    // Generic 4x4 inverse via cofactor expansion (column-major)
-    float[16] inv;
     float a00 = m[0], a01 = m[1], a02 = m[2], a03 = m[3];
     float a10 = m[4], a11 = m[5], a12 = m[6], a13 = m[7];
     float a20 = m[8], a21 = m[9], a22 = m[10], a23 = m[11];
     float a30 = m[12], a31 = m[13], a32 = m[14], a33 = m[15];
 
-    float b00 = a00*a11 - a01*a10;
-    float b01 = a00*a12 - a02*a10;
-    float b02 = a00*a13 - a03*a10;
-    float b03 = a01*a12 - a02*a11;
-    float b04 = a01*a13 - a03*a11;
-    float b05 = a02*a13 - a03*a12;
-    float b06 = a20*a31 - a21*a30;
-    float b07 = a20*a32 - a22*a30;
-    float b08 = a20*a33 - a23*a30;
-    float b09 = a21*a32 - a22*a31;
-    float b10 = a21*a33 - a23*a31;
-    float b11 = a22*a33 - a23*a32;
+    float b00 = a00 * a11 - a01 * a10;
+    float b01 = a00 * a12 - a02 * a10;
+    float b02 = a00 * a13 - a03 * a10;
+    float b03 = a01 * a12 - a02 * a11;
+    float b04 = a01 * a13 - a03 * a11;
+    float b05 = a02 * a13 - a03 * a12;
+    float b06 = a20 * a31 - a21 * a30;
+    float b07 = a20 * a32 - a22 * a30;
+    float b08 = a20 * a33 - a23 * a30;
+    float b09 = a21 * a32 - a22 * a31;
+    float b10 = a21 * a33 - a23 * a31;
+    float b11 = a22 * a33 - a23 * a32;
 
-    float det = b00*b11 - b01*b10 + b02*b09 + b03*b08 - b04*b07 + b05*b06;
+    float det = b00 * b11 - b01 * b10 + b02 * b09
+              + b03 * b08 - b04 * b07 + b05 * b06;
     if (det == 0) {
         return m;
     }
-    float invDet = 1.0f / det;
+    float id = 1.0f / det;
 
-    inv[0]  = ( a11*b11 - a12*b10 + a13*b09) * invDet;
-    inv[1]  = (-a01*b11 + a02*b10 - a03*b09) * invDet;
-    inv[2]  = ( a31*b05 - a32*b04 + a33*b03) * invDet;
-    inv[3]  = (-a21*b05 + a22*b04 - a23*b03) * invDet;
-    inv[4]  = (-a10*b11 + a12*b08 - a13*b07) * invDet;
-    inv[5]  = ( a00*b11 - a02*b08 + a03*b07) * invDet;
-    inv[6]  = (-a30*b05 + a32*b02 - a33*b01) * invDet;
-    inv[7]  = ( a20*b05 - a22*b02 + a23*b01) * invDet;
-    inv[8]  = ( a10*b10 - a11*b08 + a13*b06) * invDet;
-    inv[9]  = (-a00*b10 + a01*b08 - a03*b06) * invDet;
-    inv[10] = ( a30*b04 - a31*b02 + a33*b00) * invDet;
-    inv[11] = (-a20*b04 + a21*b02 - a23*b00) * invDet;
-    inv[12] = (-a10*b09 + a11*b07 - a12*b06) * invDet;
-    inv[13] = ( a00*b09 - a01*b07 + a02*b06) * invDet;
-    inv[14] = (-a30*b03 + a31*b01 - a32*b00) * invDet;
-    inv[15] = ( a20*b03 - a21*b01 + a22*b00) * invDet;
-
+    float[16] inv;
+    inv[0] = (a11 * b11 - a12 * b10 + a13 * b09) * id;
+    inv[1] = (-a01 * b11 + a02 * b10 - a03 * b09) * id;
+    inv[2] = (a31 * b05 - a32 * b04 + a33 * b03) * id;
+    inv[3] = (-a21 * b05 + a22 * b04 - a23 * b03) * id;
+    inv[4] = (-a10 * b11 + a12 * b08 - a13 * b07) * id;
+    inv[5] = (a00 * b11 - a02 * b08 + a03 * b07) * id;
+    inv[6] = (-a30 * b05 + a32 * b02 - a33 * b01) * id;
+    inv[7] = (a20 * b05 - a22 * b02 + a23 * b01) * id;
+    inv[8] = (a10 * b10 - a11 * b08 + a13 * b06) * id;
+    inv[9] = (-a00 * b10 + a01 * b08 - a03 * b06) * id;
+    inv[10] = (a30 * b04 - a31 * b02 + a33 * b00) * id;
+    inv[11] = (-a20 * b04 + a21 * b02 - a23 * b00) * id;
+    inv[12] = (-a10 * b09 + a11 * b07 - a12 * b06) * id;
+    inv[13] = (a00 * b09 - a01 * b07 + a02 * b06) * id;
+    inv[14] = (-a30 * b03 + a31 * b01 - a32 * b00) * id;
+    inv[15] = (a20 * b03 - a21 * b01 + a22 * b00) * id;
     return inv;
-}
-
-private float[3] nrm(float[3] v) {
-    float l = sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]);
-    if (l == 0) {
-        return v;
-    }
-    return [v[0]/l, v[1]/l, v[2]/l];
-}
-private float[3] cr(float[3] a, float[3] b) {
-    return [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
-}
-private float dt(float[3] a, float[3] b) { return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]; }
-
-private void renderVoxelsFrame(
-    VkDevice device, VkQueue queue,
-    VkSwapchainKHR swapchain, VkCommandBuffer cmd,
-    VkRenderPass renderPass, VkFramebuffer[] framebuffers, VkExtent2D extent,
-    VkSemaphore imageAvailable, VkSemaphore renderFinished, VkFence fence,
-    VkPipeline pipeline, VkPipelineLayout layout,
-    VkDescriptorSet commonSet, VkDescriptorSet staticSet,
-    ulong transformsBuf, uint chunkCount, uint dimension,
-    SurfaceExtraction* extract,
-    FogPipeline* fogPipeline) {
-
-    vkWaitForFences(device, 1, &fence, 1, ulong.max);
-    vkResetFences(device, 1, &fence);
-
-    uint imageIndex;
-    vkAcquireNextImageKHR(device, swapchain, ulong.max, imageAvailable, VK_NULL_HANDLE, &imageIndex);
-
-    vkResetCommandBuffer(cmd, 0);
-    VkCommandBufferBeginInfo bi;
-    bi.sType = VkStructureType.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    vkBeginCommandBuffer(cmd, &bi);
-
-    // GPU surface extraction (compute) before the render pass begins
-    extract.recordExtract(cmd, chunkCount);
-
-    VkClearValue[2] clears;
-    clears[0].color.float32 = [0.0f, 0.0f, 0.0f, 0.0f]; // fog provides sky color
-    // Reverse-Z: far plane = 0.0
-    clears[1].depthStencil.depth = 0.0f;
-
-    VkRenderPassBeginInfo rp;
-    rp.sType = VkStructureType.VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rp.renderPass = renderPass;
-    rp.framebuffer = framebuffers[imageIndex];
-    rp.renderArea.extent = extent;
-    rp.clearValueCount = 2;
-    rp.pClearValues = clears.ptr;
-    vkCmdBeginRenderPass(cmd, &rp, VkSubpassContents.VK_SUBPASS_CONTENTS_INLINE);
-
-    vkCmdBindPipeline(cmd, VkPipelineBindPoint.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-
-    VkViewport vp;
-    vp.x = 0; vp.y = 0;
-    vp.width = cast(float) extent.width; vp.height = cast(float) extent.height;
-    vp.minDepth = 0; vp.maxDepth = 1;
-    vkCmdSetViewport(cmd, 0, 1, &vp);
-
-    VkRect2D scissor;
-    scissor.extent = extent;
-    vkCmdSetScissor(cmd, 0, 1, &scissor);
-
-    VkDescriptorSet[2] sets = [commonSet, staticSet];
-    vkCmdBindDescriptorSets(cmd, VkPipelineBindPoint.VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 2, sets.ptr, 0, null);
-
-    VkDeviceSize offset = 0;
-    vkCmdBindVertexBuffers(cmd, 0, 1, &transformsBuf, &offset);
-
-    uint dim = dimension;
-    vkCmdPushConstants(cmd, layout, VkShaderStageFlagBits.VK_SHADER_STAGE_VERTEX_BIT, 0, 4, &dim);
-
-    // Draw indirect: vertex_count was written by compute extraction
-    vkCmdDrawIndirect(cmd, extract.indirectBuf.buffer, 0, 1, 16);
-
-    // Subpass 1: fog post-process
-    vkCmdNextSubpass(cmd, VkSubpassContents.VK_SUBPASS_CONTENTS_INLINE);
-    fogPipeline.draw(cmd, fogPipeline.pipelineLayout, commonSet);
-
-    vkCmdEndRenderPass(cmd);
-    vkEndCommandBuffer(cmd);
-
-    uint waitStage = VkPipelineStageFlagBits.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    VkSubmitInfo si;
-    si.sType = VkStructureType.VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    si.waitSemaphoreCount = 1;
-    si.pWaitSemaphores = &imageAvailable;
-    si.pWaitDstStageMask = &waitStage;
-    si.commandBufferCount = 1;
-    si.pCommandBuffers = &cmd;
-    si.signalSemaphoreCount = 1;
-    si.pSignalSemaphores = &renderFinished;
-    vkQueueSubmit(queue, 1, &si, fence);
-
-    VkPresentInfoKHR pi;
-    pi.sType = VkStructureType.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-    pi.waitSemaphoreCount = 1;
-    pi.pWaitSemaphores = &renderFinished;
-    pi.swapchainCount = 1;
-    pi.pSwapchains = &swapchain;
-    pi.pImageIndices = &imageIndex;
-    vkQueuePresentKHR(queue, &pi);
 }

@@ -8,8 +8,8 @@ struct FogPipeline {
     VkPipeline pipeline;
 
     bool init(VkDevice device, VkRenderPass renderPass, VkDescriptorSetLayout commonLayout) {
-        static immutable ubyte[] vertSpv = cast(ubyte[]) import("fullscreen.vert.spv");
-        static immutable ubyte[] fragSpv = cast(ubyte[]) import("fog.frag.spv");
+        static immutable ubyte[] vertSpv = cast(immutable(ubyte)[]) import("fullscreen.vert.spv");
+        static immutable ubyte[] fragSpv = cast(immutable(ubyte)[]) import("fog.frag.spv");
 
         VkShaderModule vertShader, fragShader;
         if (!createShader(device, vertSpv, vertShader)) {
@@ -58,6 +58,9 @@ struct FogPipeline {
         rs.polygonMode = VkPolygonMode.VK_POLYGON_MODE_FILL;
         rs.cullMode = VkCullModeFlagBits.VK_CULL_MODE_NONE;
         rs.frontFace = VkFrontFace.VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        rs.depthBiasConstantFactor = 0;
+        rs.depthBiasClamp = 0;
+        rs.depthBiasSlopeFactor = 0;
         rs.lineWidth = 1.0f;
 
         VkPipelineMultisampleStateCreateInfo ms;

@@ -46,11 +46,12 @@ struct Sim {
 
             // Mark as generating then populate
             c.state = ChunkState.Generating;
+            import common.worldgen.plane : Plane;
             auto params = ChunkParams(
                 cfg.chunkSize,
                 vertex,
                 ChunkIncidentEnviroFactors.init,
-                (float[8]).init,
+                Plane.init,
                 false, false, 0
             );
             auto voxelData = generateVoxels(params);
