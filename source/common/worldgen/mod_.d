@@ -504,7 +504,7 @@ private float rngNormal(ulong* state, float stddev) {
 private float hashToUniform(ulong seed, uint idx) {
     ulong s = seed ^ (cast(ulong) idx * 0x517cc1b727220a95);
     ulong v = rngNext(&s);
-    return (cast(float)(v >> 40) / cast(float)(1UL << 24)) - 1.0f;
+    return (cast(float)(v >> 40) / cast(float)(1UL << 24)) * 2.0f - 1.0f;
 }
 
 private float hashToNormal(ulong seed, uint idx) {

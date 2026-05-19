@@ -1,0 +1,3 @@
+# Wait for terrain to load, take a screenshot, quit.
+3.0  screenshot /tmp/mined_final.png
+3.5  quit

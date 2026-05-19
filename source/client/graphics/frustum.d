@@ -1,6 +1,7 @@
 module client.graphics.frustum;
 
-import std.math : tan, atan;
+import std.math : tan, atan, sin, cos, sinh, cosh;
+import common.math : MVector, MDirection, MPoint;
 
 /// Port of hypermine's Frustum (client/src/graphics/frustum.rs).
 struct Frustum {
@@ -17,6 +18,26 @@ struct Frustum {
         f.down = -vfov;
         f.up = vfov;
         return f;
+    }
+
+    MDirection!float[5] planes() const {
+        return [
+            MDirection!float(MVector!float(cos(left), 0, -sin(left), 0)),
+            MDirection!float(MVector!float(-cos(right), 0, sin(right), 0)),
+            MDirection!float(MVector!float(0, cos(down), -sin(down), 0)),
+            MDirection!float(MVector!float(0, -cos(up), sin(up), 0)),
+            MDirection!float(MVector!float(0, 0, -1, 0)),
+        ];
+    }
+
+    bool sphereOutside(const ref MDirection!float[5] fp, const ref MPoint!float center, float radius) const {
+        float threshold = sinh(radius);
+        foreach (ref p; fp) {
+            if (p.mip(center) > threshold) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /// Right-handed y-up inverse-Z perspective projection with far plane at 1.0.

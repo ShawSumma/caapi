@@ -1,11 +1,11 @@
 module client.worldgen_driver;
 
-import common.dodeca : Vertex, VERTEX_COUNT, CHUNK_BOUNDING_SPHERE_RADIUS;
+import common.dodeca : Vertex, VERTEX_COUNT, CHUNK_BOUNDING_SPHERE_RADIUS,
+    vertexChunkBoundingSphereCenter;
 import common.graph : Graph, NodeId;
-import common.math : MIsometry, MPoint;
+import common.math : MPoint, MIsometry;
 import common.node : ChunkId, ChunkState, VoxelData;
-import common.proto : Position;
-import common.traversal : ensureNearby, NearbyNode, nearbyNodes;
+import common.traversal : NearbyNode;
 import common.worldgen : ChunkParams, ChunkIncidentEnviroFactors, generateVoxels;
 import common.margins : fixMargins;
 import common.voxel_math : ChunkDirection, CoordSign;
@@ -19,15 +19,21 @@ struct WorldgenDriver {
         return w;
     }
 
-    void drive(Position view, float chunkGenerationDistance, ref Graph graph, ubyte chunkSize) {
-        if (!graph.contains(view.node)) {
-            return;
-        }
+    enum MAX_GENERATE_PER_FRAME = 8;
 
-        ensureNearby(graph, view.node, view.local, chunkGenerationDistance);
-        auto nearby = nearbyNodes(graph, view.node, view.local, chunkGenerationDistance);
+    void drive(
+        const(NearbyNode)[] nearby,
+        MIsometry!float camLocal,
+        float distance,
+        ref Graph graph,
+        ubyte chunkSize,
+    ) {
+        import std.math : cosh;
+        float threshold = cosh(distance + CHUNK_BOUNDING_SPHERE_RADIUS);
+        auto startP = camLocal * MPoint!float.origin();
+        uint generated = 0;
 
-        foreach (nn; nearby) {
+        foreach (ref nn; nearby) {
             foreach (vIdx; 0 .. VERTEX_COUNT) {
                 auto vertex = cast(Vertex) vIdx;
                 auto chunkId = ChunkId(nn.id, vertex);
@@ -36,14 +42,23 @@ struct WorldgenDriver {
                     continue;
                 }
 
+                auto chunkCenter = nn.transform * vertexChunkBoundingSphereCenter(vertex);
+                if (-startP.mip(chunkCenter.vec) > threshold) {
+                    continue;
+                }
+
                 if (auto voxelData = chunkId in preloadedVoxelData) {
                     c.state = ChunkState.Populated;
                     c.voxels = *voxelData;
                     preloadedVoxelData.remove(chunkId);
                 } else {
+                    if (generated >= MAX_GENERATE_PER_FRAME) {
+                        continue;
+                    }
                     auto params = ChunkParams.create(graph, chunkId);
                     auto voxels = generateVoxels(params);
                     populateChunk(graph, chunkId, voxels, chunkSize);
+                    generated++;
                 }
             }
         }

@@ -10,13 +10,14 @@ import client.graphics.fog : FogPipeline;
 import client.graphics.frustum : Frustum;
 import client.worldgen_driver : WorldgenDriver;
 import common.dodeca : Vertex, VERTEX_COUNT, Side, SIDE_COUNT,
+    BOUNDING_SPHERE_RADIUS,
     vertexChunkToNode, vertexChunkBoundingSphereCenter,
     sideReflection, sideIsFacing, vertexParity;
 import common.math : MPoint, MIsometry, MVector;
 import common.graph : Graph, NodeId;
 import common.node : ChunkId, ChunkState;
 import common.proto : Position;
-import common.traversal : ensureNearby, NearbyNode, nearbyNodes;
+import common.traversal : ensureNearby, ensureAndCollectNearby, collectNearby, NearbyNode;
 import common.voxel_math : Coords, CoordSign, CoordAxis;
 import common.world : Material;
 
@@ -31,16 +32,19 @@ struct Renderer {
     float time = 0;
     Position camPos;
     Graph graph;
-    float viewRadius = 1.5f;
+    float viewRadius = 5.0f;
+    enum float RENDER_RADIUS = 2.0f;
 
-    enum MAX_SLOTS = 1024;
-    enum CONCURRENCY = 64;
+    enum MAX_SLOTS = 4096;
+    enum CONCURRENCY = 128;
 
     uint[ChunkId] slotMap;
     uint[ChunkId] slotGeneration;
     uint nextSlot = 0;
-    uint[] freeSlots;
-    uint[] activeSlots;
+    uint[MAX_SLOTS] freeSlotsBuf;
+    uint freeCount;
+    uint[MAX_SLOTS] activeSlotsBuf;
+    uint activeCount;
     ExtractTask[CONCURRENCY] tasksBuf;
     uint tasksLen;
 
@@ -68,6 +72,8 @@ struct Renderer {
         migratePosition();
         camPos.local = camPos.local.renormalized();
     }
+
+    private NodeId lastNode;
 
     private void migratePosition() {
         foreach (_; 0 .. SIDE_COUNT) {
@@ -129,54 +135,47 @@ struct Renderer {
 
         worldgenDriver = WorldgenDriver.create();
 
-        auto skyNode = graph.ensureNeighbor(NodeId.ROOT, Side.A);
-        camPos.node = skyNode;
-        camPos.local = MIsometry!float.translation(
-            MPoint!float.origin(),
-            vertexChunkBoundingSphereCenter(Vertex.A));
+        camPos.node = NodeId.ROOT;
+        camPos.local = MIsometry!float.translationAlong([0.0f, 1.4f, 0.0f]);
 
         writeln("Renderer initialized successfully");
         return true;
     }
 
+
+    float exploredRadius = 0;
+    NearbyNode[] cachedNodes;
+    bool nodesDirty = true;
+
     void render(float dt) {
+        import common.dodeca : CHUNK_BOUNDING_SPHERE_RADIUS, vertexChunkToNodeF64;
         time += dt;
-        ensureNearby(graph, camPos.node, camPos.local, viewRadius);
-        worldgenDriver.drive(
-            Position(camPos.node, camPos.local),
-            viewRadius, graph, cast(ubyte) dimension);
-        auto nodes = nearbyNodes(graph, camPos.node, camPos.local, viewRadius);
+
+        if (camPos.node != lastNode) {
+            exploredRadius = RENDER_RADIUS;
+            lastNode = camPos.node;
+            nodesDirty = true;
+        }
+
+        if (nodesDirty) {
+            cachedNodes = ensureAndCollectNearby(graph, camPos.node, camPos.local, RENDER_RADIUS);
+            nodesDirty = false;
+        }
+
+        worldgenDriver.drive(cachedNodes, camPos.local, RENDER_RADIUS, graph, cast(ubyte) dimension);
 
         tasksLen = 0;
-        activeSlots.length = 0;
+        activeCount = 0;
 
         vkWaitForFences(core.device, 1, &swapState.inFlightFence, 1, ulong.max);
 
-        // Evict non-visible chunks from slotMap
-        ChunkId[512] removeBuf;
-        uint removeLen = 0;
-        foreach (cid, slot; slotMap) {
-            bool visible = false;
-            if (graph.contains(cid.node)) {
-                auto c = &graph[cid.node].chunks.values[cid.vertex];
-                if (c.state == ChunkState.Populated && !c.voxels.isSolid()) {
-                    foreach (nn; nodes) {
-                        if (nn.id == cid.node) {
-                            visible = true;
-                            break;
-                        }
-                    }
-                }
-            }
-            if (!visible && removeLen < removeBuf.length) {
-                removeBuf[removeLen++] = cid;
-                freeSlots ~= slot;
-            }
-        }
-        foreach (i; 0 .. removeLen) {
-            slotMap.remove(removeBuf[i]);
-            slotGeneration.remove(removeBuf[i]);
-        }
+        bool[MAX_SLOTS] slotUsed = false;
+
+        auto extent = swapState.extent;
+        float aspect = cast(float) extent.width / cast(float) extent.height;
+        auto frustum = Frustum.fromVfov(45.0f * (PI / 180.0f), aspect);
+        auto frustumPlanes = frustum.planes();
+        auto camInverse = camPos.local.inverse();
 
         void* tfMapped;
         vkMapMemory(core.device, voxels.transformsVbo.memory,
@@ -185,7 +184,7 @@ struct Renderer {
 
         auto voxelsMapped = extract.mapVoxels(core.device);
 
-        foreach (nn; nodes) {
+        foreach (ref nn; cachedNodes) {
             if (!graph.contains(nn.id)) {
                 continue;
             }
@@ -196,9 +195,16 @@ struct Renderer {
                     continue;
                 }
 
+                auto chunkCenter = nn.transform * vertexChunkBoundingSphereCenter(v);
+                auto centerCam = camInverse * chunkCenter;
+                if (frustum.sphereOutside(frustumPlanes, centerCam, CHUNK_BOUNDING_SPHERE_RADIUS * 3.0f)) {
+                    continue;
+                }
+
                 auto chunkId = ChunkId(nn.id, v);
                 uint slot;
                 bool needsExtract = false;
+                bool slotHasData = false;
 
                 if (auto p = chunkId in slotMap) {
                     slot = *p;
@@ -206,11 +212,12 @@ struct Renderer {
                     if (gen is null || *gen != c.generation) {
                         needsExtract = true;
                     }
+                    slotHasData = gen !is null;
                 } else {
                     needsExtract = true;
-                    if (freeSlots.length > 0) {
-                        slot = freeSlots[$ - 1];
-                        freeSlots = freeSlots[0 .. $ - 1];
+                    if (freeCount > 0) {
+                        freeCount--;
+                        slot = freeSlotsBuf[freeCount];
                     } else if (nextSlot < MAX_SLOTS) {
                         slot = nextSlot++;
                     } else {
@@ -231,6 +238,11 @@ struct Renderer {
                         slot);
                     tasksLen++;
                     slotGeneration[chunkId] = c.generation;
+                    slotHasData = true;
+                }
+
+                if (!slotHasData) {
+                    continue;
                 }
 
                 auto m = nn.transform.mat * vertexChunkToNode(v);
@@ -239,25 +251,37 @@ struct Renderer {
                         tfBuf[slot * 16 + col * 4 + row] = m.data[col][row];
                     }
                 }
-                activeSlots ~= slot;
+                slotUsed[slot] = true;
+                activeSlotsBuf[activeCount++] = slot;
             }
         }
         extract.unmapVoxels(core.device);
         vkUnmapMemory(core.device, voxels.transformsVbo.memory);
+
+        // Sweep: evict slots not used this frame
+        ChunkId[MAX_SLOTS] removeBuf;
+        uint removeLen = 0;
+        foreach (cid, slot; slotMap) {
+            if (!slotUsed[slot] && removeLen < removeBuf.length) {
+                removeBuf[removeLen++] = cid;
+                freeSlotsBuf[freeCount++] = slot;
+            }
+        }
+        foreach (i; 0 .. removeLen) {
+            slotMap.remove(removeBuf[i]);
+            slotGeneration.remove(removeBuf[i]);
+        }
 
         static int lastSecond = -1;
         int currentSecond = cast(int) time;
         if (currentSecond != lastSecond) {
             lastSecond = currentSecond;
             writefln("[t=%ss] active=%d slots=%d new=%d graph=%d",
-                currentSecond, activeSlots.length, nextSlot,
+                currentSecond, activeCount, nextSlot,
                 tasksLen, graph.len);
             stdout.flush();
         }
 
-        auto extent = swapState.extent;
-        float aspect = cast(float) extent.width / cast(float) extent.height;
-        auto frustum = Frustum.fromVfov(45.0f * (PI / 180.0f), aspect);
         auto proj = frustum.projection(1.0e-4f);
         auto view = matToFlat(camPos.local.inverse().mat);
         auto vp = matMul(proj, view);
@@ -340,9 +364,11 @@ struct Renderer {
         vkCmdPushConstants(cmd, voxels.pipelineLayout,
             VkShaderStageFlagBits.VK_SHADER_STAGE_VERTEX_BIT, 0, 4, &dim);
 
-        foreach (slot; activeSlots) {
-            vkCmdDrawIndirect(cmd, extract.indirectBuf.buffer,
-                extract.indirectOffset(slot), 1, INDIRECT_SIZE);
+        auto activeSlots = activeSlotsBuf[0 .. activeCount];
+        if (activeCount > 0) {
+            extract.recordPackIndirect(cmd, activeSlots);
+            vkCmdDrawIndirect(cmd, extract.packedIndirectBuf.buffer,
+                0, activeCount, INDIRECT_SIZE);
         }
 
         vkCmdNextSubpass(cmd, VkSubpassContents.VK_SUBPASS_CONTENTS_INLINE);

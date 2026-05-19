@@ -138,9 +138,9 @@ void main(string[] args) {
         simTime += dt;
 
         framesSinceReport++;
-        if (nowTicks - lastFpsReport >= 5000) {
+        if (nowTicks - lastFpsReport >= 1000) {
             float fps = framesSinceReport * 1000.0f / (nowTicks - lastFpsReport);
-            writefln("FPS=%.0f", fps);
+            writefln("FPS=%.1f", fps);
             stdout.flush();
             framesSinceReport = 0;
             lastFpsReport = nowTicks;

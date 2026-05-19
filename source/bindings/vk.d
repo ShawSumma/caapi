@@ -979,8 +979,15 @@ extern(C) nothrow @nogc {
     void vkCmdNextSubpass(VkCommandBuffer, VkSubpassContents);
     VkResult vkCreateSampler(VkDevice, const(VkSamplerCreateInfo)*, const(void)*, VkSampler*);
     void vkDestroySampler(VkDevice, VkSampler, const(void)*);
+    void vkCmdCopyBuffer(VkCommandBuffer, ulong, ulong, uint, const(VkBufferCopy)*);
     void vkCmdCopyBufferToImage(VkCommandBuffer, ulong, VkImage, int, uint, const(VkBufferImageCopy)*);
     VkResult vkQueueWaitIdle(VkQueue);
+}
+
+struct VkBufferCopy {
+    VkDeviceSize srcOffset;
+    VkDeviceSize dstOffset;
+    VkDeviceSize size;
 }
 
 struct VkSamplerCreateInfo {
@@ -1051,6 +1058,7 @@ enum VK_FILTER_LINEAR = 1;
 enum VK_SAMPLER_MIPMAP_MODE_NEAREST = 0;
 enum VK_SAMPLER_ADDRESS_MODE_REPEAT = 0;
 enum VK_QUEUE_FAMILY_IGNORED = ~0U;
+enum VK_ACCESS_TRANSFER_READ_BIT = 0x00000800;
 enum VK_ACCESS_TRANSFER_WRITE_BIT = 0x00001000;
 enum VK_DEPENDENCY_BY_REGION_BIT = 0x00000001;
 

@@ -338,6 +338,30 @@ struct Matrix4(N) if (isFloatingPoint!N) {
              - data[1][0] * (data[0][1] * data[2][2] - data[2][1] * data[0][2])
              + data[2][0] * (data[0][1] * data[1][2] - data[1][1] * data[0][2]);
     }
+
+    N determinant() const {
+        N det = 0;
+        foreach (col; 0 .. 4) {
+            N minor = 0;
+            // 3x3 cofactor of (row=0, col)
+            N[3][3] m;
+            foreach (c2; 0 .. 4) {
+                if (c2 == col) {
+                    continue;
+                }
+                size_t mc = c2 < col ? c2 : c2 - 1;
+                foreach (r2; 1 .. 4) {
+                    m[mc][r2 - 1] = data[c2][r2];
+                }
+            }
+            minor = m[0][0] * (m[1][1] * m[2][2] - m[2][1] * m[1][2])
+                  - m[1][0] * (m[0][1] * m[2][2] - m[2][1] * m[0][2])
+                  + m[2][0] * (m[0][1] * m[1][2] - m[1][1] * m[0][2]);
+            N sign = (col % 2 == 0) ? 1 : -1;
+            det += sign * data[col][0] * minor;
+        }
+        return det;
+    }
 }
 
 /// A 4x4 Minkowski isometry matrix preserving the Minkowski inner product.
@@ -417,7 +441,7 @@ struct MIsometry(N) if (isFloatingPoint!N) {
 
     /// Whether the isometry reverses winding
     bool parity() const {
-        return mat.determinant3x3() < 0;
+        return mat.determinant() < 0;
     }
 
     /// Apply isometry to a vector

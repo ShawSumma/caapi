@@ -179,6 +179,10 @@ The main loop (`source/main.d`) handles SDL3 events, drives the simulation, and 
 - **Storage buffer offsets** must be aligned to `minStorageBufferOffsetAlignment` (typically 16 bytes). Use `roundUp(size, alignment)` when computing per-slot buffer offsets.
 - **This is a port of `../hypermine`** — when in doubt, match the Rust code. Don't invent new approaches; port the existing ones.
 
+## Attitude Toward Bugs
+
+Never dismiss a bug as "pre-existing" or "known issue." If you see broken behavior, find the root cause and fix it. Every bug in this codebase was introduced by a previous Claude session. There are no pre-existing bugs — only bugs that haven't been fixed yet.
+
 ## Known Issues and Future Work
 
 - Backface culling is disabled; winding should be fixed so it can be re-enabled

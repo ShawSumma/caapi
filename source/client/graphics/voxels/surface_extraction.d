@@ -32,8 +32,8 @@ uint packPaddedVoxelsInto(const(ushort)[] padded, uint dim, uint[] outBuf) {
 struct ExtractTask {
     ulong indirectOffset;
     ulong faceOffset;
-    uint index;       // scratch slot index (0..concurrency-1)
-    uint drawId;      // first_instance = transform slot
+    uint index;
+    uint drawId;
 }
 
 /// GPU compute surface extraction with per-slot descriptor sets.
@@ -56,6 +56,7 @@ struct SurfaceExtraction {
 
     // Draw buffers (persistent, one slot per chunk)
     GpuBuffer indirectBuf;  // maxSlots * INDIRECT_SIZE
+    GpuBuffer packedIndirectBuf;  // packed contiguous draw commands
     GpuBuffer facesBuf;     // maxSlots * faceBufUnit
 
     uint dimension;
@@ -162,6 +163,12 @@ struct SurfaceExtraction {
         ubyte[] indirInit = new ubyte[INDIRECT_SIZE * maxSlots];
         indirectBuf = GpuBuffer.create(phys, device, indirInit,
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+            VkBufferUsageFlagBits.VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+            VkBufferUsageFlagBits.VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+            VkBufferUsageFlagBits.VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+
+        ubyte[] packedInit = new ubyte[INDIRECT_SIZE * maxSlots];
+        packedIndirectBuf = GpuBuffer.create(phys, device, packedInit,
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_TRANSFER_DST_BIT);
 
@@ -312,7 +319,7 @@ struct SurfaceExtraction {
             vkCmdDispatch(cmd, gx, gy, gz);
         }
 
-        // Barrier: compute → vertex shader + draw indirect
+        // Barrier: compute → transfer + vertex shader
         VkBufferMemoryBarrier[2] postBar;
         postBar[0].sType = VkStructureType.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
         postBar[0].srcAccessMask = VkAccessFlagBits.VK_ACCESS_SHADER_WRITE_BIT;
@@ -323,11 +330,38 @@ struct SurfaceExtraction {
         postBar[0].size = VK_WHOLE_SIZE;
         postBar[1] = postBar[0];
         postBar[1].buffer = indirectBuf.buffer;
-        postBar[1].dstAccessMask = VkAccessFlagBits.VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+        postBar[1].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
         vkCmdPipelineBarrier(cmd, VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
-            VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+            VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_TRANSFER_BIT,
             0, 0, null, 2, postBar.ptr, 0, null);
+    }
+
+    void recordPackIndirect(VkCommandBuffer cmd, const(uint)[] activeSlots) {
+        if (activeSlots.length == 0) {
+            return;
+        }
+        auto count = cast(uint) activeSlots.length;
+        VkBufferCopy[4096] copies = void;
+        foreach (i; 0 .. count) {
+            copies[i].srcOffset = cast(VkDeviceSize) activeSlots[i] * INDIRECT_SIZE;
+            copies[i].dstOffset = cast(VkDeviceSize) i * INDIRECT_SIZE;
+            copies[i].size = INDIRECT_SIZE;
+        }
+        vkCmdCopyBuffer(cmd, indirectBuf.buffer, packedIndirectBuf.buffer, count, copies.ptr);
+
+        VkBufferMemoryBarrier bar;
+        bar.sType = VkStructureType.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        bar.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        bar.dstAccessMask = VkAccessFlagBits.VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+        bar.srcQueueFamilyIndex = ~0u;
+        bar.dstQueueFamilyIndex = ~0u;
+        bar.buffer = packedIndirectBuf.buffer;
+        bar.size = VK_WHOLE_SIZE;
+        vkCmdPipelineBarrier(cmd,
+            VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+            0, 0, null, 1, &bar, 0, null);
     }
 
     ulong faceOffset(uint slot) { return cast(ulong) slot * faceBufUnit; }
@@ -344,6 +378,7 @@ struct SurfaceExtraction {
         voxelsBuf.cleanup(device);
         stateBuf.cleanup(device);
         indirectBuf.cleanup(device);
+        packedIndirectBuf.cleanup(device);
         facesBuf.cleanup(device);
     }
 }

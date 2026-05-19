@@ -1,0 +1,6 @@
+# Benchmark: walk forward on terrain for 20s
+0.0  key w down
+5.0  screenshot /tmp/mined_bench5.png
+15.0  screenshot /tmp/mined_bench15.png
+20.0  key w up
+20.5  quit
