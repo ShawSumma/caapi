@@ -6,6 +6,7 @@ import bindings.vk;
 import client.graphics.core;
 import client.graphics.base;
 import client.graphics.voxels;
+import client.graphics.voxels.surface_extraction : WorldgenParamsGPU;
 import client.graphics.fog : FogPipeline;
 import client.graphics.frustum : Frustum;
 import client.worldgen_driver : WorldgenDriver;
@@ -16,6 +17,7 @@ import common.dodeca : Vertex, VERTEX_COUNT, Side, SIDE_COUNT,
 import common.math : MPoint, MIsometry, MVector;
 import common.graph : Graph, NodeId;
 import common.node : ChunkId, ChunkState;
+import common.worldgen : ChunkParams, generateVoxels;
 import common.proto : Position;
 import common.traversal : ensureNearby, ensureAndCollectNearby, collectNearby, NearbyNode;
 import common.voxel_math : Coords, CoordSign, CoordAxis;
@@ -47,6 +49,8 @@ struct Renderer {
     uint activeCount;
     ExtractTask[CONCURRENCY] tasksBuf;
     uint tasksLen;
+    uint[CONCURRENCY] wgenOffsets;
+    bool[CONCURRENCY] wgenMask;
 
     void rotateCamera(float yawDelta, float pitchDelta, float rollDelta = 0) {
         if (yawDelta != 0) {
@@ -72,8 +76,6 @@ struct Renderer {
         migratePosition();
         camPos.local = camPos.local.renormalized();
     }
-
-    private NodeId lastNode;
 
     private void migratePosition() {
         foreach (_; 0 .. SIDE_COUNT) {
@@ -143,25 +145,13 @@ struct Renderer {
     }
 
 
-    float exploredRadius = 0;
     NearbyNode[] cachedNodes;
-    bool nodesDirty = true;
 
     void render(float dt) {
         import common.dodeca : CHUNK_BOUNDING_SPHERE_RADIUS, vertexChunkToNodeF64;
         time += dt;
 
-        if (camPos.node != lastNode) {
-            exploredRadius = RENDER_RADIUS;
-            lastNode = camPos.node;
-            nodesDirty = true;
-        }
-
-        if (nodesDirty) {
-            cachedNodes = ensureAndCollectNearby(graph, camPos.node, camPos.local, RENDER_RADIUS);
-            nodesDirty = false;
-        }
-
+        cachedNodes = ensureAndCollectNearby(graph, camPos.node, camPos.local, RENDER_RADIUS);
         worldgenDriver.drive(cachedNodes, camPos.local, RENDER_RADIUS, graph, cast(ubyte) dimension);
 
         tasksLen = 0;
@@ -192,12 +182,6 @@ struct Renderer {
                 auto v = cast(Vertex) vIdx;
                 auto c = &graph[nn.id].chunks.values[v];
                 if (c.state != ChunkState.Populated || c.voxels.isSolid()) {
-                    continue;
-                }
-
-                auto chunkCenter = nn.transform * vertexChunkBoundingSphereCenter(v);
-                auto centerCam = camInverse * chunkCenter;
-                if (frustum.sphereOutside(frustumPlanes, centerCam, CHUNK_BOUNDING_SPHERE_RADIUS * 3.0f)) {
                     continue;
                 }
 

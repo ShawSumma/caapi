@@ -60,6 +60,32 @@ Material terraingenVoronoi(float elev, float rain, float temp, float dist) {
 
 private float sqr(float x) { return x * x; }
 
+struct VoronoiEntryGPU {
+    float rain;
+    float temp;
+    uint material;
+    uint _pad;
+}
+
+/// Build the Voronoi table for GPU upload: 8 strata × 113 entries.
+/// Order: GENERAL_HIGH, GENERAL_MED, GENERAL_LOW, GENERAL_DEEP,
+///        SURFACE_DEEP, SURFACE_LOW, SURFACE_MED, SURFACE_HIGH
+VoronoiEntryGPU[] buildVoronoiTableGPU() {
+    auto result = new VoronoiEntryGPU[8 * 113];
+    static immutable tables = [
+        &GENERAL_HIGH, &GENERAL_MED, &GENERAL_LOW, &GENERAL_DEEP,
+        &SURFACE_DEEP, &SURFACE_LOW, &SURFACE_MED, &SURFACE_HIGH,
+    ];
+    foreach (t; 0 .. 8) {
+        foreach (i; 0 .. 113) {
+            auto e = (*tables[t])[i];
+            result[t * 113 + i] = VoronoiEntryGPU(
+                e.location[0], e.location[1], cast(uint) e.material, 0);
+        }
+    }
+    return result;
+}
+
 // ============================================================================
 // Voronoi lookup tables
 // ============================================================================

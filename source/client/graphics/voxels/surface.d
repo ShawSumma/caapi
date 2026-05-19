@@ -246,7 +246,7 @@ struct SurfacePipeline {
         VkPipelineRasterizationStateCreateInfo rs;
         rs.sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
         rs.polygonMode = VkPolygonMode.VK_POLYGON_MODE_FILL;
-        rs.cullMode = VkCullModeFlagBits.VK_CULL_MODE_BACK_BIT;
+        rs.cullMode = VkCullModeFlagBits.VK_CULL_MODE_NONE;
         rs.frontFace = VkFrontFace.VK_FRONT_FACE_COUNTER_CLOCKWISE;
         rs.depthBiasConstantFactor = 0;
         rs.depthBiasClamp = 0;

@@ -80,32 +80,46 @@ struct Graph {
     }
 
     NodeId insertChild(NodeId node, Side side) {
-        // Simplified: compute hash from parent + side
+        // Collect all parents of the subject, ensuring they exist.
+        // Matches Rust's populate_parents_of_subject.
+        // Each parent is (side shared with subject, parent NodeId).
+        // Sorted by side enum order since we iterate in order.
+        struct ParentEntry {
+            Side side;
+            NodeId id;
+        }
+        ParentEntry[3] parents;
+        int parentCount = 0;
+
+        foreach (cs; 0 .. SIDE_COUNT) {
+            auto candidateSide = cast(Side) cs;
+            if (candidateSide == side) {
+                parents[parentCount++] = ParentEntry(side, node);
+            } else if (sideAdjacentTo(candidateSide, side)
+                       && isParentSide(node, candidateSide))
+            {
+                auto parentOfNode = neighbor(node, candidateSide);
+                auto parentOfSubject = ensureNeighbor(parentOfNode, side);
+                parents[parentCount++] = ParentEntry(candidateSide, parentOfSubject);
+            }
+        }
+
+        // First parent in enum order is the canonical primary parent.
+        auto primarySide = parents[0].side;
+        auto primaryParent = parents[0].id;
+
         MurmurHash3!128 hasher;
-        hasher.put(cast(ubyte[])(node.value[]));
-        hasher.put(cast(ubyte) side);
+        hasher.put(cast(ubyte[])(primaryParent.value[]));
+        hasher.put(cast(ubyte) primarySide);
         auto hash = hasher.finish();
         NodeId id;
         (cast(ubyte[])id.value[])[] = hash[0 .. 16];
 
         uint d = nodes[node].depth + 1;
-        nodes[id] = NodeContainer.create(side, true, d);
+        nodes[id] = NodeContainer.create(primarySide, true, d);
 
-        // Link neighbors
-        linkNeighbors(id, node, side);
-
-        // Link other parents
-        foreach (candidateSide; 0 .. SIDE_COUNT) {
-            auto cs = cast(Side) candidateSide;
-            if (cs == side) continue;
-            if (!sideAdjacentTo(cs, side)) continue;
-            if (!isParentSide(node, cs)) continue;
-            auto parentOfNode = neighbor(node, cs);
-            if (parentOfNode == NodeId.init) continue;
-            auto parentOfSubject = ensureNeighbor(parentOfNode, side);
-            if (parentOfSubject != NodeId.init) {
-                linkNeighbors(id, parentOfSubject, cs);
-            }
+        foreach (i; 0 .. parentCount) {
+            linkNeighbors(id, parents[i].id, parents[i].side);
         }
 
         return id;
