@@ -10,13 +10,15 @@ import common.worldgen.mod_ : ChunkParams, ChunkIncidentEnviroFactors, generateV
 /// Emits a face whenever a solid voxel has an empty neighbor in -X/-Y/-Z (matching extract.comp).
 Surface[] cpuExtract(const(ubyte)[] voxels, uint dim) {
     Surface[] out_;
-    auto idx = (int x, int y, int z) => x + y * cast(int)dim + z * cast(int)dim * cast(int)dim;
-    auto getVoxel = (int x, int y, int z) {
+    int idx(int x, int y, int z) {
+        return x + y * cast(int) dim + z * cast(int) dim * cast(int) dim;
+    }
+    bool getVoxel(int x, int y, int z) {
         if (x < 0 || y < 0 || z < 0 || x >= dim || y >= dim || z >= dim) {
             return false;
         }
         return voxels[idx(x, y, z)] != 0;
-    };
+    }
 
     // Per-world-vertex AO: for each face corner, check the 4 voxels
     // touching that world vertex on the occluding side. This gives
@@ -95,7 +97,7 @@ ubyte[] makeTestVoxels(uint dim) {
     // 0) so the compute extractor's chunk-margin skip doesn't drop the outward
     // faces. Each chunk's "corner" sits at a dodecahedron vertex, producing
     // the honeycomb skeleton when the 20-chunks-per-node × N-nodes are drawn.
-    auto data = new ubyte[dim * dim * dim];
+    ubyte[] data = new ubyte[dim * dim * dim];
     int N = cast(int) dim;
     for (int z = 0; z < N; z++) {
         for (int y = 0; y < N; y++) {

@@ -1,10 +1,9 @@
 module common.sim_config;
 
 import core.time : Duration, dur;
-import common.math : MVector, MPoint;
+import common.math : MIsometry, MVector, MPoint;
 import common.dodeca : vertexChunkToNode, Vertex;
 
-/// Complete simulation config parameters
 struct SimConfig {
     Duration stepInterval;
     float viewDistance;
@@ -36,7 +35,6 @@ struct SimConfig {
     }
 }
 
-/// Manually specified simulation config parameters
 struct SimConfigRaw {
     ushort rate;
     float viewDistance;
@@ -49,7 +47,6 @@ struct SimConfigRaw {
     CharacterConfigRaw character;
 }
 
-/// Static configuration for character physics
 struct CharacterConfig {
     float noClipMovementSpeed;
     float maxGroundSpeed;
@@ -97,18 +94,17 @@ struct CharacterConfigRaw {
     float blockReach;
 }
 
-private float metersToAbsoluteCalc(ubyte chunkSize, float voxelSize) {
+float metersToAbsoluteCalc(ubyte chunkSize, float voxelSize) {
 
-    auto m = vertexChunkToNode(Vertex.A);
-    // Compute distance between two points in the chunk
-    auto va = MVector!float(1.0f, 0.5f, 0.5f, 1.0f);
-    auto vb = MVector!float(0.0f, 0.5f, 0.5f, 1.0f);
+    MIsometry!float m = vertexChunkToNode(Vertex.A);
+    MVector!float va = MVector!float(1.0f, 0.5f, 0.5f, 1.0f);
+    MVector!float vb = MVector!float(0.0f, 0.5f, 0.5f, 1.0f);
 
     MVector!float transformedA = m * va;
     MVector!float transformedB = m * vb;
 
-    auto a = transformedA.normalizedPoint();
-    auto b = transformedB.normalizedPoint();
+    MPoint!float a = transformedA.normalizedPoint();
+    MPoint!float b = transformedB.normalizedPoint();
     float minChunkFaceSeparation = a.distance(b);
     float absoluteVoxelSize = minChunkFaceSeparation / cast(float) chunkSize;
     return absoluteVoxelSize / voxelSize;

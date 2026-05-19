@@ -9,7 +9,6 @@ import common.world;
 import common.node;
 import common.dodeca;
 
-/// Client-side game state
 struct ClientSim {
     Graph graph;
     GraphEntities graphEntities;
@@ -18,7 +17,6 @@ struct ClientSim {
     Position localPosition;
     int step;
 
-    // Input state
     float[3] movementInput = [0, 0, 0];
     bool jumpInput;
     bool noClipInput;
@@ -33,17 +31,12 @@ struct ClientSim {
         return s;
     }
 
-    /// Apply a spawns message from the server
-    void applySpawns(/* Spawns data */) {
-        // Apply new nodes, voxel data, block updates, etc.
+    void applySpawns() {
     }
 
-    /// Apply a state delta from the server
-    void applyStateDelta(/* StateDelta data */) {
-        // Update positions, character states
+    void applyStateDelta() {
     }
 
-    /// Build the command to send to the server
     CharacterInput buildCommand() {
         CharacterInput input;
         input.movement = movementInput;
@@ -52,7 +45,6 @@ struct ClientSim {
         return input;
     }
 
-    /// Material palette for block placement
     static immutable Material[10] MATERIAL_PALETTE = [
         Material.WoodPlanks,
         Material.Grass,

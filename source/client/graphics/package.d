@@ -10,13 +10,13 @@ import client.graphics.voxels.surface_extraction : WorldgenParamsGPU;
 import client.graphics.fog : FogPipeline;
 import client.graphics.frustum : Frustum;
 import client.worldgen_driver : WorldgenDriver;
-import common.dodeca : Vertex, VERTEX_COUNT, Side, SIDE_COUNT,
+import common.dodeca : Vertex, Side,
     BOUNDING_SPHERE_RADIUS,
     vertexChunkToNode, vertexChunkBoundingSphereCenter,
     sideReflection, sideIsFacing, vertexParity;
-import common.math : MPoint, MIsometry, MVector;
+import common.math : Matrix4, MDirection, MPoint, MIsometry, MVector;
 import common.graph : Graph, NodeId;
-import common.node : ChunkId, ChunkState;
+import common.node : Chunk, ChunkId, ChunkState;
 import common.worldgen : ChunkParams, generateVoxels;
 import common.proto : Position;
 import common.traversal : ensureNearby, ensureAndCollectNearby, collectNearby, NearbyNode;
@@ -77,16 +77,16 @@ struct Renderer {
         camPos.local = camPos.local.renormalized();
     }
 
-    private void migratePosition() {
-        foreach (_; 0 .. SIDE_COUNT) {
-            auto col3 = MVector!float(
+    void migratePosition() {
+        foreach (_; 0 .. 12) {
+            MVector!float col3 = MVector!float(
                 camPos.local.mat.data[3][0], camPos.local.mat.data[3][1],
                 camPos.local.mat.data[3][2], camPos.local.mat.data[3][3]);
-            auto p = MPoint!float(col3);
+            MPoint!float p = MPoint!float(col3);
             bool any = false;
             Side facing;
-            foreach (sideIdx; 0 .. SIDE_COUNT) {
-                auto side = cast(Side) sideIdx;
+            foreach (sideIdx; 0 .. 12) {
+                Side side = cast(Side) sideIdx;
                 if (sideIsFacing(side, p)) {
                     facing = side;
                     any = true;
@@ -96,7 +96,7 @@ struct Renderer {
             if (!any) {
                 return;
             }
-            auto neighbor = graph.ensureNeighbor(camPos.node, facing);
+            NodeId neighbor = graph.ensureNeighbor(camPos.node, facing);
             if (neighbor == NodeId.init) {
                 return;
             }
@@ -161,38 +161,38 @@ struct Renderer {
 
         bool[MAX_SLOTS] slotUsed = false;
 
-        auto extent = swapState.extent;
+        VkExtent2D extent = swapState.extent;
         float aspect = cast(float) extent.width / cast(float) extent.height;
-        auto frustum = Frustum.fromVfov(45.0f * (PI / 180.0f), aspect);
-        auto frustumPlanes = frustum.planes();
-        auto camInverse = camPos.local.inverse();
+        Frustum frustum = Frustum.fromVfov(45.0f * (PI / 180.0f), aspect);
+        MDirection!float[5] frustumPlanes = frustum.planes();
+        MIsometry!float camInverse = camPos.local.inverse();
 
         void* tfMapped;
         vkMapMemory(core.device, voxels.transformsVbo.memory,
                      0, MAX_SLOTS * 64, 0, &tfMapped);
-        auto tfBuf = cast(float*) tfMapped;
+        float* tfBuf = cast(float*) tfMapped;
 
-        auto voxelsMapped = extract.mapVoxels(core.device);
+        void* voxelsMapped = extract.mapVoxels(core.device);
 
         foreach (ref nn; cachedNodes) {
             if (!graph.contains(nn.id)) {
                 continue;
             }
-            foreach (vIdx; 0 .. VERTEX_COUNT) {
-                auto v = cast(Vertex) vIdx;
-                auto c = &graph[nn.id].chunks.values[v];
+            foreach (vIdx; 0 .. 20) {
+                Vertex v = cast(Vertex) vIdx;
+                Chunk* c = &graph[nn.id].chunks.values[v];
                 if (c.state != ChunkState.Populated || c.voxels.isSolid()) {
                     continue;
                 }
 
-                auto chunkId = ChunkId(nn.id, v);
+                ChunkId chunkId = ChunkId(nn.id, v);
                 uint slot;
                 bool needsExtract = false;
                 bool slotHasData = false;
 
-                if (auto p = chunkId in slotMap) {
+                if (uint* p = chunkId in slotMap) {
                     slot = *p;
-                    auto gen = chunkId in slotGeneration;
+                    uint* gen = chunkId in slotGeneration;
                     if (gen is null || *gen != c.generation) {
                         needsExtract = true;
                     }
@@ -229,7 +229,7 @@ struct Renderer {
                     continue;
                 }
 
-                auto m = nn.transform.mat * vertexChunkToNode(v);
+                Matrix4!float m = nn.transform.mat * vertexChunkToNode(v);
                 foreach (col; 0 .. 4) {
                     foreach (row; 0 .. 4) {
                         tfBuf[slot * 16 + col * 4 + row] = m.data[col][row];
@@ -242,7 +242,6 @@ struct Renderer {
         extract.unmapVoxels(core.device);
         vkUnmapMemory(core.device, voxels.transformsVbo.memory);
 
-        // Sweep: evict slots not used this frame
         ChunkId[MAX_SLOTS] removeBuf;
         uint removeLen = 0;
         foreach (cid, slot; slotMap) {
@@ -266,10 +265,10 @@ struct Renderer {
             stdout.flush();
         }
 
-        auto proj = frustum.projection(1.0e-4f);
-        auto view = matToFlat(camPos.local.inverse().mat);
-        auto vp = matMul(proj, view);
-        auto invp = matInverse(proj);
+        float[16] proj = frustum.projection(1.0e-4f);
+        float[16] view = matToFlat(camPos.local.inverse().mat);
+        float[16] vp = matMul(proj, view);
+        float[16] invp = matInverse(proj);
         float fogDensity = pow(log(1.0f / 1e-3f), 1.0f / 5.0f) / 75.0f;
 
         float[4] lightCam = [0.3f, 0.8f, 0.4f, 0];
@@ -297,7 +296,7 @@ struct Renderer {
         vkAcquireNextImageKHR(core.device, swapState.swapchain, ulong.max,
             swapState.imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
 
-        auto cmd = swapState.commandBuffer;
+        VkCommandBuffer cmd = swapState.commandBuffer;
         vkResetCommandBuffer(cmd, 0);
         VkCommandBufferBeginInfo bi;
         bi.sType = VkStructureType.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -348,7 +347,7 @@ struct Renderer {
         vkCmdPushConstants(cmd, voxels.pipelineLayout,
             VkShaderStageFlagBits.VK_SHADER_STAGE_VERTEX_BIT, 0, 4, &dim);
 
-        auto activeSlots = activeSlotsBuf[0 .. activeCount];
+        uint[] activeSlots = activeSlotsBuf[0 .. activeCount];
         if (activeCount > 0) {
             extract.recordPackIndirect(cmd, activeSlots);
             vkCmdDrawIndirect(cmd, extract.packedIndirectBuf.buffer,
@@ -385,51 +384,51 @@ struct Renderer {
 
     void breakBlock() {
         import common.collision_math : Ray;
-        import common.graph_ray_casting : rayCast;
+        import common.graph_ray_casting : GraphCastHit, rayCast;
         import std.math : isNaN;
 
-        auto ray = Ray.create(
+        Ray ray = Ray.create(
             MPoint!float.origin(),
             MVector!float(0, 0, -1, 0).normalizedDirection());
         bool oob;
-        auto hit = rayCast(graph, camPos.node, camPos.local, ray, 5.0f, oob);
+        GraphCastHit hit = rayCast(graph, camPos.node, camPos.local, ray, 5.0f, oob);
         if (isNaN(hit.tanhDistance)) {
             return;
         }
-        auto c = &graph[hit.chunk.node].chunks.values[hit.chunk.vertex];
+        Chunk* c = &graph[hit.chunk.node].chunks.values[hit.chunk.vertex];
         if (c.state != ChunkState.Populated) {
             return;
         }
-        auto idx = hit.voxelCoords.toIndex(cast(ubyte) dimension);
+        ulong idx = hit.voxelCoords.toIndex(cast(ubyte) dimension);
         c.voxels.dataMut(cast(ubyte) dimension)[idx] = Material.Void;
         c.generation++;
     }
 
     void placeBlock(ushort material) {
         import common.collision_math : Ray;
-        import common.graph_ray_casting : rayCast;
+        import common.graph_ray_casting : GraphCastHit, rayCast;
         import std.math : isNaN;
 
-        auto ray = Ray.create(
+        Ray ray = Ray.create(
             MPoint!float.origin(),
             MVector!float(0, 0, -1, 0).normalizedDirection());
         bool oob;
-        auto hit = rayCast(graph, camPos.node, camPos.local, ray, 5.0f, oob);
+        GraphCastHit hit = rayCast(graph, camPos.node, camPos.local, ray, 5.0f, oob);
         if (isNaN(hit.tanhDistance)) {
             return;
         }
-        auto c = &graph[hit.chunk.node].chunks.values[hit.chunk.vertex];
+        Chunk* c = &graph[hit.chunk.node].chunks.values[hit.chunk.vertex];
         if (c.state != ChunkState.Populated) {
             return;
         }
-        auto coords = hit.voxelCoords.data;
+        ubyte[3] coords = hit.voxelCoords.data;
         if (hit.faceSign == CoordSign.Plus) {
             coords[hit.faceAxis] = cast(ubyte)(coords[hit.faceAxis] + 1);
         } else {
             coords[hit.faceAxis] = cast(ubyte)(coords[hit.faceAxis] - 1);
         }
         if (coords[hit.faceAxis] < dimension) {
-            auto idx = Coords(coords).toIndex(cast(ubyte) dimension);
+            size_t idx = Coords(coords).toIndex(cast(ubyte) dimension);
             c.voxels.dataMut(cast(ubyte) dimension)[idx] = cast(Material) material;
             c.generation++;
         }
@@ -447,7 +446,7 @@ struct Renderer {
     }
 }
 
-private float[16] matToFlat(M)(M m) {
+float[16] matToFlat(M)(M m) {
     float[16] r;
     foreach (col; 0 .. 4) {
         foreach (row; 0 .. 4) {
@@ -457,7 +456,7 @@ private float[16] matToFlat(M)(M m) {
     return r;
 }
 
-private MIsometry!float rotationY(float angle) {
+MIsometry!float rotationY(float angle) {
     import common.math : Matrix4;
     float c = cos(angle);
     float s = sin(angle);
@@ -471,7 +470,7 @@ private MIsometry!float rotationY(float angle) {
     return MIsometry!float(m);
 }
 
-private MIsometry!float rotationX(float angle) {
+MIsometry!float rotationX(float angle) {
     import common.math : Matrix4;
     float c = cos(angle);
     float s = sin(angle);
@@ -485,7 +484,7 @@ private MIsometry!float rotationX(float angle) {
     return MIsometry!float(m);
 }
 
-private MIsometry!float rotationZ(float angle) {
+MIsometry!float rotationZ(float angle) {
     import common.math : Matrix4;
     float c = cos(angle);
     float s = sin(angle);
@@ -499,7 +498,7 @@ private MIsometry!float rotationZ(float angle) {
     return MIsometry!float(m);
 }
 
-private float[16] matMul(float[16] a, float[16] b) {
+float[16] matMul(float[16] a, float[16] b) {
     float[16] r = 0;
     foreach (col; 0 .. 4) {
         foreach (row; 0 .. 4) {
@@ -513,11 +512,23 @@ private float[16] matMul(float[16] a, float[16] b) {
     return r;
 }
 
-private float[16] matInverse(float[16] m) {
-    float a00 = m[0], a01 = m[1], a02 = m[2], a03 = m[3];
-    float a10 = m[4], a11 = m[5], a12 = m[6], a13 = m[7];
-    float a20 = m[8], a21 = m[9], a22 = m[10], a23 = m[11];
-    float a30 = m[12], a31 = m[13], a32 = m[14], a33 = m[15];
+float[16] matInverse(float[16] m) {
+    float a00 = m[0];
+    float a01 = m[1];
+    float a02 = m[2];
+    float a03 = m[3];
+    float a10 = m[4];
+    float a11 = m[5];
+    float a12 = m[6];
+    float a13 = m[7];
+    float a20 = m[8];
+    float a21 = m[9];
+    float a22 = m[10];
+    float a23 = m[11];
+    float a30 = m[12];
+    float a31 = m[13];
+    float a32 = m[14];
+    float a33 = m[15];
 
     float b00 = a00 * a11 - a01 * a10;
     float b01 = a00 * a12 - a02 * a10;

@@ -2,14 +2,12 @@ module common.voxel_math;
 
 import common.dodeca : Side;
 
-/// Represents a particular axis in a voxel grid
 enum CoordAxis : ubyte {
     X = 0,
     Y = 1,
     Z = 2,
 }
 
-/// Represents a direction in a particular axis
 enum CoordSign : byte {
     Plus = 1,
     Minus = -1,
@@ -19,7 +17,6 @@ CoordSign mul(CoordSign a, CoordSign b) {
     return a == b ? CoordSign.Plus : CoordSign.Minus;
 }
 
-/// Coordinates for a discrete voxel within a chunk, not including margins
 struct Coords {
     ubyte[3] data;
 
@@ -31,7 +28,6 @@ struct Coords {
         data = [x, y, z];
     }
 
-    /// Returns the array index in VoxelData corresponding to these coordinates
     size_t toIndex(ubyte chunkSize) const {
         size_t csm = chunkSize + 2;
         return (data[0] + 1)
@@ -39,7 +35,6 @@ struct Coords {
              + (data[2] + 1) * csm * csm;
     }
 
-    /// Returns the boundary coordinate for a given sign
     static ubyte boundaryCoord(ubyte chunkSize, CoordSign sign) {
         return sign == CoordSign.Plus ? cast(ubyte)(chunkSize - 1) : 0;
     }
@@ -53,7 +48,6 @@ struct Coords {
     }
 }
 
-/// One of the six main directions within a chunk
 struct ChunkDirection {
     CoordAxis axis;
     CoordSign sign;
@@ -70,7 +64,6 @@ struct ChunkDirection {
     ];
 }
 
-/// Represents one of the 6 possible axis permutations for a chunk
 struct ChunkAxisPermutation {
     CoordAxis[3] axes = [CoordAxis.X, CoordAxis.Y, CoordAxis.Z];
 

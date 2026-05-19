@@ -14,7 +14,6 @@ struct ChunkRayCastHit {
     CoordSign faceSign;
 }
 
-/// Performs ray casting against the voxels in a chunk
 ChunkRayCastHit chunkRayCast(
     const ref VoxelData voxelData,
     const ref ChunkLayout layout,
@@ -25,7 +24,7 @@ ChunkRayCastHit chunkRayCast(
     hit.tanhDistance = float.nan;
 
     foreach (tAxis; 0 .. 3) {
-        auto newHit = findFaceCollision(voxelData, layout, tAxis, ray,
+        ChunkRayCastHit newHit = findFaceCollision(voxelData, layout, tAxis, ray,
             !isNaN(hit.tanhDistance) ? hit.tanhDistance : tanhDistance);
         if (!isNaN(newHit.tanhDistance)) {
             hit = newHit;
@@ -35,7 +34,7 @@ ChunkRayCastHit chunkRayCast(
     return hit;
 }
 
-private ChunkRayCastHit findFaceCollision(
+ChunkRayCastHit findFaceCollision(
     const ref VoxelData voxelData,
     const ref ChunkLayout layout,
     size_t tAxis,
@@ -49,43 +48,55 @@ private ChunkRayCastHit findFaceCollision(
     size_t vAxis = (tAxis + 2) % 3;
 
     foreach (t; 0 .. layout.dimension + 1) {
-        // Normal to the grid plane
         float[4] nData = [0, 0, 0, 0];
         nData[tAxis] = 1.0f;
         nData[3] = layout.gridToDual(cast(ubyte) t);
-        auto normal = MVector!float(nData[0], nData[1], nData[2], nData[3]).normalizedDirection();
+        MDirection!float normal = MVector!float(nData[0], nData[1], nData[2], nData[3]).normalizedDirection();
 
         float newTanhDist = ray.solvePointPlaneIntersection(normal);
-        if (isNaN(newTanhDist)) continue;
-        if (newTanhDist >= (!isNaN(hit.tanhDistance) ? hit.tanhDistance : tanhDistance)) continue;
+        if (isNaN(newTanhDist)) {
+            continue;
+        }
+        if (newTanhDist >= (!isNaN(hit.tanhDistance) ? hit.tanhDistance : tanhDistance)) {
+            continue;
+        }
 
-        // Determine face sign and voxel_t
         CoordSign faceSign;
         ubyte voxelT;
         if (ray.direction.mip(normal) < 0.0f) {
-            if (t == 0) continue;
+            if (t == 0) {
+                continue;
+            }
             faceSign = CoordSign.Plus;
             voxelT = cast(ubyte)(t - 1);
-        } else {
-            if (t == layout.dimension) continue;
+        }
+        else {
+            if (t == layout.dimension) {
+                continue;
+            }
             faceSign = CoordSign.Minus;
             voxelT = cast(ubyte) t;
         }
 
-        auto rayEndpoint = ray.rayPoint(newTanhDist);
-        auto contact = rayEndpoint - normal.vec * rayEndpoint.mip(normal.vec);
+        MVector!float rayEndpoint = ray.rayPoint(newTanhDist);
+        MVector!float contact = rayEndpoint - normal.vec * rayEndpoint.mip(normal.vec);
 
         int voxelU = layout.dualToVoxel(contact.data[uAxis] / contact.data[3]);
-        if (voxelU < 0) continue;
+        if (voxelU < 0) {
+            continue;
+        }
         int voxelV = layout.dualToVoxel(contact.data[vAxis] / contact.data[3]);
-        if (voxelV < 0) continue;
+        if (voxelV < 0) {
+            continue;
+        }
 
-        // Check if voxel is solid
         ubyte[3] coords;
         coords[tAxis] = voxelT;
         coords[uAxis] = cast(ubyte) voxelU;
         coords[vAxis] = cast(ubyte) voxelV;
-        if (!voxelIsSolid(voxelData, layout, coords)) continue;
+        if (!voxelIsSolid(voxelData, layout, coords)) {
+            continue;
+        }
 
         hit.tanhDistance = newTanhDist;
         hit.voxelCoords = Coords(coords);
@@ -96,6 +107,6 @@ private ChunkRayCastHit findFaceCollision(
     return hit;
 }
 
-private bool voxelIsSolid(const ref VoxelData voxelData, const ref ChunkLayout layout, ubyte[3] coords) {
+bool voxelIsSolid(const ref VoxelData voxelData, const ref ChunkLayout layout, ubyte[3] coords) {
     return voxelData.get(Coords(coords).toIndex(layout.dimension)) != Material.Void;
 }

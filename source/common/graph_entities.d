@@ -4,12 +4,11 @@ import common.graph : NodeId;
 
 alias Entity = ulong;
 
-/// Maps graph nodes to entities located at them
 struct GraphEntities {
-    private Entity[][NodeId] map;
+    Entity[][NodeId] map;
 
     Entity[] get(NodeId node) {
-        if (auto p = node in map) {
+        if (Entity[]* p = node in map) {
             return *p;
         }
         return [];
@@ -20,9 +19,9 @@ struct GraphEntities {
     }
 
     void remove(NodeId node, Entity entity) {
-        auto p = node in map;
+        Entity[]* p = node in map;
         assert(p !is null);
-        auto vec = *p;
+        Entity[] vec = *p;
         foreach (i, e; vec) {
             if (e == entity) {
                 vec[i] = vec[$ - 1];

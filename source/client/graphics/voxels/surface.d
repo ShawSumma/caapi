@@ -4,7 +4,6 @@ import std.stdio;
 import bindings.vk;
 import client.graphics.pipeline : GpuBuffer;
 
-// Matches surface-extraction/surface.h
 struct Surface {
     uint pos_axis;
     uint occlusion_mat;
@@ -19,7 +18,6 @@ struct Surface {
     }
 }
 
-/// Port of hypermine's Surface (rendering pipeline + descriptor set wiring).
 struct SurfacePipeline {
     VkShaderModule vertShader;
     VkShaderModule fragShader;
@@ -31,9 +29,9 @@ struct SurfacePipeline {
     VkPipelineLayout pipelineLayout;
     VkPipeline pipeline;
 
-    GpuBuffer commonUbo;     // set=0 binding=0
-    GpuBuffer surfacesSsbo;  // set=1 binding=0
-    GpuBuffer transformsVbo; // per-instance mat4
+    GpuBuffer commonUbo;
+    GpuBuffer surfacesSsbo;
+    GpuBuffer transformsVbo;
     VkImage textureImage;
     VkDeviceMemory textureMemory;
     VkImageView textureView;
@@ -56,8 +54,6 @@ struct SurfacePipeline {
             return false;
         }
 
-        // --- Descriptor set layouts ---
-        // set 0: binding 0 = Common UBO, binding 1 = depth input attachment (fog)
         VkDescriptorSetLayoutBinding[2] commonBinds;
         commonBinds[0].binding = 0;
         commonBinds[0].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -74,7 +70,6 @@ struct SurfacePipeline {
         commonCi.pBindings = commonBinds.ptr;
         vkCreateDescriptorSetLayout(device, &commonCi, null, &commonLayout);
 
-        // set 1: binding 0 = Surfaces SSBO (vert), binding 1 = texture array (frag)
         VkDescriptorSetLayoutBinding[2] staticBinds;
         staticBinds[0].binding = 0;
         staticBinds[0].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -90,7 +85,6 @@ struct SurfacePipeline {
         staticCi.pBindings = staticBinds.ptr;
         vkCreateDescriptorSetLayout(device, &staticCi, null, &staticLayout);
 
-        // --- Descriptor pool + sets ---
         VkDescriptorPoolSize[4] sizes;
         sizes[0].type = VkDescriptorType.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         sizes[0].descriptorCount = 1;
@@ -118,17 +112,14 @@ struct SurfacePipeline {
         commonSet = allocated[0];
         staticSet = allocated[1];
 
-        // --- Buffers ---
-        // Common UBO: mat4 vp, mat4 invp, float fog, float time, vec2 pad → 144 bytes
         ubyte[160] commonInit = 0;
         commonUbo = GpuBuffer.create(phys, device, commonInit[],
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
 
         if (externalSurfacesBuf != 0) {
             surfacesSsbo.buffer = externalSurfacesBuf;
-            // We don't own this buffer; cleanup() will skip it.
             surfacesSsbo.memory = 0;
-            surfaceCount = 0; // unknown (will use draw indirect)
+            surfaceCount = 0;
         } else {
             surfacesSsbo = GpuBuffer.create(phys, device, cast(void[]) surfaces,
                 VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
@@ -139,13 +130,11 @@ struct SurfacePipeline {
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
         chunkCount = cast(uint) transforms.length;
 
-        // --- Create texture array ---
         if (!createTextureArray(phys, device, queue, cmdPool)) {
             writeln("Failed to create texture array");
             return false;
         }
 
-        // --- Write descriptors ---
         VkDescriptorBufferInfo commonInfo;
         commonInfo.buffer = commonUbo.buffer;
         commonInfo.offset = 0;
@@ -189,7 +178,6 @@ struct SurfacePipeline {
         writes[3].pImageInfo = cast(const(void)*) &imgInfo;
         vkUpdateDescriptorSets(device, 4, writes.ptr, 0, null);
 
-        // --- Pipeline layout ---
         VkPushConstantRange pcr;
         pcr.stageFlags = VkShaderStageFlagBits.VK_SHADER_STAGE_VERTEX_BIT;
         pcr.offset = 0;
@@ -200,10 +188,12 @@ struct SurfacePipeline {
         plci.pSetLayouts = setLayouts.ptr;
         plci.pushConstantRangeCount = 1;
         plci.pPushConstantRanges = &pcr;
-        auto res = vkCreatePipelineLayout(device, &plci, null, &pipelineLayout);
-        if (res != VkResult.VK_SUCCESS) { writeln("voxels pipeline layout failed"); return false; }
+        VkResult res = vkCreatePipelineLayout(device, &plci, null, &pipelineLayout);
+        if (res != VkResult.VK_SUCCESS) {
+            writeln("voxels pipeline layout failed");
+            return false;
+        }
 
-        // --- Pipeline ---
         VkPipelineShaderStageCreateInfo[2] stages;
         stages[0].sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         stages[0].stage = VkShaderStageFlagBits.VK_SHADER_STAGE_VERTEX_BIT;
@@ -216,14 +206,14 @@ struct SurfacePipeline {
 
         VkVertexInputBindingDescription binding;
         binding.binding = 0;
-        binding.stride = 64; // mat4
+        binding.stride = 64;
         binding.inputRate = cast(VkVertexInputRate) VkVertexInputRateExt.VK_VERTEX_INPUT_RATE_INSTANCE;
 
         VkVertexInputAttributeDescription[4] attrs;
         foreach (i; 0 .. 4) {
             attrs[i].location = cast(uint) i;
             attrs[i].binding = 0;
-            attrs[i].format = 109; // VK_FORMAT_R32G32B32A32_SFLOAT
+            attrs[i].format = 109;
             attrs[i].offset = cast(uint)(i * 16);
         }
 
@@ -261,8 +251,6 @@ struct SurfacePipeline {
         dssci.sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
         dssci.depthTestEnable = 1;
         dssci.depthWriteEnable = 1;
-        // Beltrami-Klein projection from frustum.d is reverse-Z (near=1.0, far=0.0),
-        // so we keep larger depth values (closer geometry).
         dssci.depthCompareOp = VkCompareOp.VK_COMPARE_OP_GREATER;
 
         VkPipelineColorBlendAttachmentState cba;
@@ -294,21 +282,23 @@ struct SurfacePipeline {
         gpci.renderPass = renderPass;
 
         res = vkCreateGraphicsPipelines(device, 0, 1, &gpci, null, &pipeline);
-        if (res != VkResult.VK_SUCCESS) { writefln("voxels pipeline create failed: %s", res); return false; }
+        if (res != VkResult.VK_SUCCESS) {
+            writefln("voxels pipeline create failed: %s", res);
+            return false;
+        }
         writefln("Voxels pipeline created (%d surfaces, %d chunks)", surfaceCount, chunkCount);
         return true;
     }
 
-    private bool createTextureArray(VkPhysicalDevice phys, VkDevice device,
+    bool createTextureArray(VkPhysicalDevice phys, VkDevice device,
                                      VkQueue queue, VkCommandPool cmdPool) {
         import common.world : MATERIAL_COUNT;
         import core.stdc.string : memcpy, memset;
         import client.graphics.png_loader : loadPngRgba;
         import std.format : format;
 
-        enum LAYER_COUNT = MATERIAL_COUNT - 1; // exclude Void
+        enum LAYER_COUNT = MATERIAL_COUNT - 1;
 
-        // Try to load PNG textures from the hypermine assets directory
         string[] searchPaths = [
             "../hypermine/assets/materials",
             "assets/materials",
@@ -328,23 +318,23 @@ struct SurfacePipeline {
         ubyte[] allPixels;
 
         if (materialsDir.length > 0) {
-            // Load real textures from PNG files, searching by numeric prefix
             import std.file : dirEntries, SpanMode;
             import std.path : baseName;
             import std.algorithm : startsWith;
 
-            // Collect filenames sorted by index
             string[] filenames;
             filenames.length = LAYER_COUNT;
             try {
                 foreach (entry; dirEntries(materialsDir, SpanMode.shallow)) {
                     string name = baseName(entry.name);
                     if (name.length >= 6 && name[$ - 4 .. $] == ".png") {
-                        // Parse the 5-digit prefix
                         uint idx = 0;
                         bool valid = true;
                         foreach (ch; name[0 .. 5]) {
-                            if (ch < '0' || ch > '9') { valid = false; break; }
+                            if (ch < '0' || ch > '9') {
+                                valid = false;
+                                break;
+                            }
                             idx = idx * 10 + (ch - '0');
                         }
                         if (valid && idx >= 1 && idx <= LAYER_COUNT) {
@@ -362,7 +352,7 @@ struct SurfacePipeline {
                 }
                 if (pixels is null) {
                     pixels = new ubyte[](texSize * texSize * 4);
-                    auto c = fallbackColor(cast(uint) i);
+                    ubyte[3] c = fallbackColor(cast(uint) i);
                     for (size_t j = 0; j < pixels.length; j += 4) {
                         pixels[j] = c[0];
                         pixels[j+1] = c[1];
@@ -398,12 +388,13 @@ struct SurfacePipeline {
             pixelBytes = texSize * texSize * 4;
             allPixels = new ubyte[](pixelBytes * LAYER_COUNT);
             for (size_t i = 0; i < allPixels.length; i += 4) {
-                allPixels[i] = 178; allPixels[i+1] = 178;
-                allPixels[i+2] = 178; allPixels[i+3] = 255;
+                allPixels[i] = 178;
+                allPixels[i+1] = 178;
+                allPixels[i+2] = 178;
+                allPixels[i+3] = 255;
             }
         }
 
-        // Create image
         VkImageCreateInfo ici;
         ici.sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         ici.imageType = VkImageType.VK_IMAGE_TYPE_2D;
@@ -417,12 +408,11 @@ struct SurfacePipeline {
                   | VkImageUsageFlagBits.VK_IMAGE_USAGE_SAMPLED_BIT;
         ici.sharingMode = VkSharingMode.VK_SHARING_MODE_EXCLUSIVE;
         ici.initialLayout = VkImageLayout.VK_IMAGE_LAYOUT_UNDEFINED;
-        auto res = vkCreateImage(device, &ici, null, &textureImage);
+        VkResult res = vkCreateImage(device, &ici, null, &textureImage);
         if (res != VkResult.VK_SUCCESS) {
             return false;
         }
 
-        // Allocate device-local memory
         VkMemoryRequirements req;
         vkGetImageMemoryRequirements(device, textureImage, &req);
         VkPhysicalDeviceMemoryProperties memProps;
@@ -445,11 +435,9 @@ struct SurfacePipeline {
         vkAllocateMemory(device, &mai, null, &textureMemory);
         vkBindImageMemory(device, textureImage, textureMemory, 0);
 
-        // Create staging buffer
-        auto staging = GpuBuffer.create(phys, device, allPixels,
+        GpuBuffer staging = GpuBuffer.create(phys, device, allPixels,
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
 
-        // Upload via command buffer
         VkCommandBufferAllocateInfo cbai;
         cbai.sType = VkStructureType.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
         cbai.commandPool = cmdPool;
@@ -462,7 +450,6 @@ struct SurfacePipeline {
         beginInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         vkBeginCommandBuffer(cmd, &beginInfo);
 
-        // Transition to TRANSFER_DST
         VkImageMemoryBarrier barrier;
         barrier.sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
         barrier.srcAccessMask = 0;
@@ -479,7 +466,6 @@ struct SurfacePipeline {
             VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_TRANSFER_BIT,
             0, 0, null, 0, null, 1, &barrier);
 
-        // Copy buffer to image
         VkBufferImageCopy region;
         region.bufferOffset = 0;
         region.bufferRowLength = 0;
@@ -491,7 +477,6 @@ struct SurfacePipeline {
         vkCmdCopyBufferToImage(cmd, staging.buffer, textureImage,
             VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
-        // Transition to SHADER_READ_ONLY
         barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         barrier.dstAccessMask = VkAccessFlagBits.VK_ACCESS_SHADER_READ_BIT;
         barrier.oldLayout = VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
@@ -512,7 +497,6 @@ struct SurfacePipeline {
 
         staging.cleanup(device);
 
-        // Create image view
         VkImageViewCreateInfo ivci;
         ivci.sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         ivci.image = textureImage;
@@ -525,7 +509,6 @@ struct SurfacePipeline {
             return false;
         }
 
-        // Create sampler (linear filtering, matching Rust reference)
         VkSamplerCreateInfo sci;
         sci.sType = VkStructureType.VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
         sci.magFilter = VK_FILTER_LINEAR;
@@ -549,13 +532,6 @@ struct SurfacePipeline {
 
     void updateCommonUbo(VkDevice device, float[16] vp, float[16] invp,
                          float fogDensity, float time, float[4] lightDir) {
-        // common UBO layout (std140):
-        //   mat4 vp         0..63
-        //   mat4 invp      64..127
-        //   float fog      128
-        //   float time     132
-        //   <pad>          136..143
-        //   vec4 lightDir  144..159
         ubyte[160] data = 0;
         import core.stdc.string : memcpy;
         memcpy(data.ptr + 0,   vp.ptr,   64);
@@ -611,47 +587,47 @@ struct SurfacePipeline {
     }
 }
 
-private ubyte[3] fallbackColor(uint index) {
+ubyte[3] fallbackColor(uint index) {
     static immutable ubyte[3][] palette = [
-        [139, 119,  101], // dirt
-        [194, 178,  128], // sand
-        [160, 140,  120], // silt
-        [180, 140,  100], // clay
-        [100,  80,   60], // mud
-        [170, 155,  120], // sandy loam
-        [150, 135,  115], // silty loam
-        [165, 130,  100], // clay loam
-        [200, 120,   80], // red sand
-        [210, 210,  200], // limestone
-        [130, 130,  130], // shale
-        [200, 195,  180], // dolomite
-        [215, 200,  165], // sandstone
-        [185, 110,   80], // red sandstone
-        [235, 230,  225], // marble
-        [110, 115,  120], // slate
-        [160, 155,  150], // granite
-        [170, 170,  165], // diorite
-        [140, 140,  135], // andesite
-        [ 60,  60,   65], // gabbro
-        [100, 100,  105], // basalt
-        [ 55,  55,   55], // obsidian
-        [190, 180,  175], // chalk
-        [120, 110,  100], // mudstone
-        [180, 170,  155], // travertine
-        [200, 200,  195], // quartzite
-        [110, 110,  110], // coal
-        [200, 180,  140], // gold
-        [200, 200,  200], // iron
-        [ 80, 120,   60], // grass
-        [100, 140,   70], // moss
-        [120,  80,   50], // wood
-        [160, 140,  100], // wood planks
-        [180, 140,   90], // wood planks light
-        [  0, 100,  180], // water
-        [220, 220,  230], // snow
-        [180, 200,  220], // ice
-        [140, 160,  140], // lichen
-        [100, 130,  100], // fern
+        [139, 119,  101],
+        [194, 178,  128],
+        [160, 140,  120],
+        [180, 140,  100],
+        [100,  80,   60],
+        [170, 155,  120],
+        [150, 135,  115],
+        [165, 130,  100],
+        [200, 120,   80],
+        [210, 210,  200],
+        [130, 130,  130],
+        [200, 195,  180],
+        [215, 200,  165],
+        [185, 110,   80],
+        [235, 230,  225],
+        [110, 115,  120],
+        [160, 155,  150],
+        [170, 170,  165],
+        [140, 140,  135],
+        [ 60,  60,   65],
+        [100, 100,  105],
+        [ 55,  55,   55],
+        [190, 180,  175],
+        [120, 110,  100],
+        [180, 170,  155],
+        [200, 200,  195],
+        [110, 110,  110],
+        [200, 180,  140],
+        [200, 200,  200],
+        [ 80, 120,   60],
+        [100, 140,   70],
+        [120,  80,   50],
+        [160, 140,  100],
+        [180, 140,   90],
+        [  0, 100,  180],
+        [220, 220,  230],
+        [180, 200,  220],
+        [140, 160,  140],
+        [100, 130,  100],
     ];
     if (index < palette.length) {
         return palette[index];
@@ -660,7 +636,7 @@ private ubyte[3] fallbackColor(uint index) {
     return [cast(ubyte)(h & 0xFF), cast(ubyte)((h >> 3) & 0xFF), cast(ubyte)((h >> 6) & 0xFF)];
 }
 
-private bool createShader(VkDevice device, const(ubyte)[] spv, ref VkShaderModule mod) {
+bool createShader(VkDevice device, const(ubyte)[] spv, ref VkShaderModule mod) {
     VkShaderModuleCreateInfo ci;
     ci.sType = VkStructureType.VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     ci.codeSize = spv.length;

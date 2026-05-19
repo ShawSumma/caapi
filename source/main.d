@@ -35,7 +35,7 @@ void main(string[] args) {
     }
 
     if (!SDL_Init(SDL_INIT_VIDEO)) {
-        auto err = SDL_GetError();
+        const(char)* err = SDL_GetError();
         if (err !is null) {
             writefln("SDL init failed: %s", err[0 .. strlen(err)]);
         }
@@ -45,7 +45,7 @@ void main(string[] args) {
         SDL_Quit();
     }
 
-    auto window = SDL_CreateWindow("mined", 1280, 720, WINDOW_VULKAN | WINDOW_RESIZABLE);
+    SDL_Window* window = SDL_CreateWindow("mined", 1280, 720, WINDOW_VULKAN | WINDOW_RESIZABLE);
     if (window is null) {
         writeln("Window creation failed");
         return;
@@ -54,7 +54,7 @@ void main(string[] args) {
         SDL_DestroyWindow(window);
     }
 
-    auto props = SDL_GetWindowProperties(window);
+    uint props = SDL_GetWindowProperties(window);
     ulong xWindowId = SDL_GetNumberProperty(props, "SDL.window.x11.window", 0);
 
     Renderer renderer;
@@ -80,7 +80,7 @@ void main(string[] args) {
     ulong lastFpsReport = lastTicks;
 
     while (running) {
-        auto nowTicks = SDL_GetTicks();
+        ulong nowTicks = SDL_GetTicks();
         float dt = (nowTicks - lastTicks) / 1000.0f;
         lastTicks = nowTicks;
         if (dt > 0.1f) {
@@ -148,7 +148,7 @@ void main(string[] args) {
     }
 }
 
-private void processInteractiveInput(
+void processInteractiveInput(
     ref SDL_Event ev,
     SDL_Window* window,
     ref CameraInput cam,
@@ -171,8 +171,8 @@ private void processInteractiveInput(
                 running = false;
             }
         } else if (ev.key.key == SDLK_F12) {
-            auto path = format("/tmp/mined_shot_%03d.png", shotIndex++);
-            auto cmd = format("import -window 0x%x %s", xWindowId, path);
+            string path = format("/tmp/mined_shot_%03d.png", shotIndex++);
+            string cmd = format("import -window 0x%x %s", xWindowId, path);
             writefln("F12 screenshot -> %s", path);
             system(cmd.toStringz);
         } else {
@@ -220,7 +220,7 @@ struct CameraInput {
     float vert = 0;
 }
 
-private void handleKeyDown(uint key, ref CameraInput cam) {
+void handleKeyDown(uint key, ref CameraInput cam) {
     enum float TURN = 1.5f;
     enum float MOVE = 1.0f;
     if (key == SDLK_LEFT) {
@@ -261,7 +261,7 @@ private void handleKeyDown(uint key, ref CameraInput cam) {
     }
 }
 
-private void handleKeyUp(uint key, ref CameraInput cam) {
+void handleKeyUp(uint key, ref CameraInput cam) {
     if (key == SDLK_LEFT || key == SDLK_RIGHT) {
         cam.yawRate = 0;
     }

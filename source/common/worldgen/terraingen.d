@@ -3,7 +3,7 @@ module common.worldgen.terraingen;
 
 import common.world;
 
-private enum float TERRAIN_SURFACE_THICKNESS = 0.2f;
+enum float TERRAIN_SURFACE_THICKNESS = 0.2f;
 
 struct VoronoiInfo {
     float[2] location;
@@ -58,7 +58,7 @@ Material terraingenVoronoi(float elev, float rain, float temp, float dist) {
     return voxelMat;
 }
 
-private float sqr(float x) { return x * x; }
+float sqr(float x) { return x * x; }
 
 struct VoronoiEntryGPU {
     float rain;
@@ -71,14 +71,14 @@ struct VoronoiEntryGPU {
 /// Order: GENERAL_HIGH, GENERAL_MED, GENERAL_LOW, GENERAL_DEEP,
 ///        SURFACE_DEEP, SURFACE_LOW, SURFACE_MED, SURFACE_HIGH
 VoronoiEntryGPU[] buildVoronoiTableGPU() {
-    auto result = new VoronoiEntryGPU[8 * 113];
+    VoronoiEntryGPU[] result = new VoronoiEntryGPU[8 * 113];
     static immutable tables = [
         &GENERAL_HIGH, &GENERAL_MED, &GENERAL_LOW, &GENERAL_DEEP,
         &SURFACE_DEEP, &SURFACE_LOW, &SURFACE_MED, &SURFACE_HIGH,
     ];
     foreach (t; 0 .. 8) {
         foreach (i; 0 .. 113) {
-            auto e = (*tables[t])[i];
+            VoronoiInfo e = (*tables[t])[i];
             result[t * 113 + i] = VoronoiEntryGPU(
                 e.location[0], e.location[1], cast(uint) e.material, 0);
         }
@@ -90,7 +90,7 @@ VoronoiEntryGPU[] buildVoronoiTableGPU() {
 // Voronoi lookup tables
 // ============================================================================
 
-private immutable VoronoiInfo[113] GENERAL_HIGH = [
+immutable VoronoiInfo[113] GENERAL_HIGH = [
     VoronoiInfo([10.50f, -10.50f], Material.ClayLoam),
     VoronoiInfo([10.50f, -7.50f], Material.ClayLoam),
     VoronoiInfo([10.50f, -4.50f], Material.SiltyLoam),
@@ -206,7 +206,7 @@ private immutable VoronoiInfo[113] GENERAL_HIGH = [
     VoronoiInfo([-10.50f, 10.50f], Material.RedSandstone),
 ];
 
-private immutable VoronoiInfo[113] GENERAL_MED = [
+immutable VoronoiInfo[113] GENERAL_MED = [
     VoronoiInfo([10.50f, -10.50f], Material.Clay),
     VoronoiInfo([10.50f, -7.50f], Material.Clay),
     VoronoiInfo([10.50f, -4.50f], Material.SiltyLoam),
@@ -322,7 +322,7 @@ private immutable VoronoiInfo[113] GENERAL_MED = [
     VoronoiInfo([-10.50f, 10.50f], Material.RedSandstone),
 ];
 
-private immutable VoronoiInfo[113] GENERAL_LOW = [
+immutable VoronoiInfo[113] GENERAL_LOW = [
     VoronoiInfo([10.50f, -10.50f], Material.Dolomite),
     VoronoiInfo([10.50f, -7.50f], Material.Limestone),
     VoronoiInfo([10.50f, -4.50f], Material.Limestone),
@@ -438,7 +438,7 @@ private immutable VoronoiInfo[113] GENERAL_LOW = [
     VoronoiInfo([-10.50f, 10.50f], Material.Shale),
 ];
 
-private immutable VoronoiInfo[113] GENERAL_DEEP = [
+immutable VoronoiInfo[113] GENERAL_DEEP = [
     VoronoiInfo([10.50f, -10.50f], Material.Water),
     VoronoiInfo([10.50f, -7.50f], Material.Diorite),
     VoronoiInfo([10.50f, -4.50f], Material.Diorite),
@@ -554,7 +554,7 @@ private immutable VoronoiInfo[113] GENERAL_DEEP = [
     VoronoiInfo([-10.50f, 10.50f], Material.Lava),
 ];
 
-private immutable VoronoiInfo[113] SURFACE_HIGH = [
+immutable VoronoiInfo[113] SURFACE_HIGH = [
     VoronoiInfo([10.50f, -10.50f], Material.Dirt),
     VoronoiInfo([10.50f, -7.50f], Material.Dirt),
     VoronoiInfo([10.50f, -4.50f], Material.Grass),
@@ -670,7 +670,7 @@ private immutable VoronoiInfo[113] SURFACE_HIGH = [
     VoronoiInfo([-10.50f, 10.50f], Material.RedSand),
 ];
 
-private immutable VoronoiInfo[113] SURFACE_MED = [
+immutable VoronoiInfo[113] SURFACE_MED = [
     VoronoiInfo([10.50f, -10.50f], Material.Dirt),
     VoronoiInfo([10.50f, -7.50f], Material.Dirt),
     VoronoiInfo([10.50f, -4.50f], Material.Grass),
@@ -786,7 +786,7 @@ private immutable VoronoiInfo[113] SURFACE_MED = [
     VoronoiInfo([-10.50f, 10.50f], Material.RedSand),
 ];
 
-private immutable VoronoiInfo[113] SURFACE_LOW = [
+immutable VoronoiInfo[113] SURFACE_LOW = [
     VoronoiInfo([10.50f, -10.50f], Material.Dirt),
     VoronoiInfo([10.50f, -7.50f], Material.Dirt),
     VoronoiInfo([10.50f, -4.50f], Material.Dirt),
@@ -902,7 +902,7 @@ private immutable VoronoiInfo[113] SURFACE_LOW = [
     VoronoiInfo([-10.50f, 10.50f], Material.Limestone),
 ];
 
-private immutable VoronoiInfo[113] SURFACE_DEEP = [
+immutable VoronoiInfo[113] SURFACE_DEEP = [
     VoronoiInfo([10.50f, -10.50f], Material.Water),
     VoronoiInfo([10.50f, -7.50f], Material.CaveGrass),
     VoronoiInfo([10.50f, -4.50f], Material.CaveGrass),

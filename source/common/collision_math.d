@@ -3,7 +3,6 @@ module common.collision_math;
 import common.math;
 import std.math : sqrt, isFinite;
 
-/// A ray in hyperbolic space. Position and direction must be orthogonal.
 struct Ray {
     MPoint!float position;
     MDirection!float direction;
@@ -12,12 +11,10 @@ struct Ray {
         return Ray(pos, dir);
     }
 
-    /// Returns an unnormalized vector representing a point along this ray
     MVector!float rayPoint(float tanhDistance) const {
         return position.vec + direction.vec * tanhDistance;
     }
 
-    /// Sphere-plane intersection
     float solveSphereePlaneIntersection(const ref MDirection!float planeNormal, float sinhRadius) const {
         float mipPosA = position.mip(planeNormal);
         float mipDirA = direction.mip(planeNormal);
@@ -28,7 +25,6 @@ struct Ray {
         );
     }
 
-    /// Sphere-line intersection
     float solveSpherLineIntersection(
         const ref MDirection!float lineNormal1,
         const ref MDirection!float lineNormal0,
@@ -45,7 +41,6 @@ struct Ray {
         );
     }
 
-    /// Sphere-point intersection
     float solveSpherePointIntersection(
         const ref MDirection!float n0,
         const ref MDirection!float n1,
@@ -65,7 +60,6 @@ struct Ray {
         );
     }
 
-    /// Point-plane intersection
     float solvePointPlaneIntersection(const ref MDirection!float planeNormal) const {
         float mipPosA = position.mip(planeNormal);
         float mipDirA = direction.mip(planeNormal);
@@ -77,7 +71,6 @@ struct Ray {
     }
 }
 
-/// Transform a ray by an isometry
 Ray transformRay(const ref MIsometry!float iso, const ref Ray ray) {
     return Ray(
         iso * ray.position,
@@ -85,9 +78,7 @@ Ray transformRay(const ref MIsometry!float iso, const ref Ray ray) {
     );
 }
 
-/// Solve quadratic: constant + 2*halfLinear*x + quadratic*x^2 == 0
-/// Returns the lower non-negative solution, or NaN if none exists.
-private float solveQuadratic(float constantTerm, float halfLinearTerm, float quadraticTerm) {
+float solveQuadratic(float constantTerm, float halfLinearTerm, float quadraticTerm) {
     enum float EPSILON = 1e-4f;
 
     if (halfLinearTerm >= 0.0f) {

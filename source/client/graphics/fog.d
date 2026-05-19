@@ -19,17 +19,15 @@ struct FogPipeline {
             return false;
         }
 
-        // Pipeline layout uses only the common descriptor set (set 0)
         VkPipelineLayoutCreateInfo plci;
         plci.sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         plci.setLayoutCount = 1;
         plci.pSetLayouts = &commonLayout;
-        auto res = vkCreatePipelineLayout(device, &plci, null, &pipelineLayout);
+        VkResult res = vkCreatePipelineLayout(device, &plci, null, &pipelineLayout);
         if (res != VkResult.VK_SUCCESS) {
             return false;
         }
 
-        // Shader stages
         VkPipelineShaderStageCreateInfo[2] stages;
         stages[0].sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         stages[0].stage = VkShaderStageFlagBits.VK_SHADER_STAGE_VERTEX_BIT;
@@ -40,7 +38,6 @@ struct FogPipeline {
         stages[1].mod = fragShader;
         stages[1].pName = "main";
 
-        // No vertex input (fullscreen triangle from vertex index)
         VkPipelineVertexInputStateCreateInfo vi;
         vi.sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
 
@@ -67,22 +64,20 @@ struct FogPipeline {
         ms.sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
         ms.rasterizationSamples = 1;
 
-        // No depth test/write for fullscreen fog pass
         VkPipelineDepthStencilStateCreateInfo dssci;
         dssci.sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
         dssci.depthTestEnable = 0;
         dssci.depthWriteEnable = 0;
 
-        // Blending: result = fogColor * (1 - fogAlpha) + framebuffer * fogAlpha
         VkPipelineColorBlendAttachmentState cba;
         cba.blendEnable = 1;
         cba.srcColorBlendFactor = VkBlendFactor.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
         cba.dstColorBlendFactor = VkBlendFactor.VK_BLEND_FACTOR_SRC_ALPHA;
         cba.colorBlendOp = VkBlendOp.VK_BLEND_OP_ADD;
-        cba.srcAlphaBlendFactor = 0; // ZERO
-        cba.dstAlphaBlendFactor = 0; // ZERO
+        cba.srcAlphaBlendFactor = 0;
+        cba.dstAlphaBlendFactor = 0;
         cba.alphaBlendOp = VkBlendOp.VK_BLEND_OP_ADD;
-        cba.colorWriteMask = 0x7; // R | G | B (no alpha)
+        cba.colorWriteMask = 0x7;
 
         VkPipelineColorBlendStateCreateInfo cb;
         cb.sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
@@ -109,7 +104,7 @@ struct FogPipeline {
         gpci.pDynamicState = &ds;
         gpci.layout = pipelineLayout;
         gpci.renderPass = renderPass;
-        gpci.subpass = 1; // fog runs in subpass 1
+        gpci.subpass = 1;
 
         res = vkCreateGraphicsPipelines(device, 0, 1, &gpci, null, &pipeline);
 
@@ -140,7 +135,7 @@ struct FogPipeline {
     }
 }
 
-private bool createShader(VkDevice device, const(ubyte)[] spv, ref VkShaderModule mod) {
+bool createShader(VkDevice device, const(ubyte)[] spv, ref VkShaderModule mod) {
     VkShaderModuleCreateInfo ci;
     ci.sType = VkStructureType.VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     ci.codeSize = spv.length;

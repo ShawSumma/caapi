@@ -7,7 +7,7 @@ import common.math;
 import common.node;
 import common.voxel_math;
 import std.math : isNaN;
-import common.dodeca : Vertex, VERTEX_COUNT;
+import common.dodeca : Vertex;
 
 struct GraphCastHit {
     float tanhDistance;
@@ -19,9 +19,6 @@ struct GraphCastHit {
 
 struct OutOfBounds {}
 
-/// Performs ray casting against the voxels in the graph.
-/// Returns null hit (tanhDistance == NaN) on miss, throws nothing.
-/// Sets outOfBounds if not enough chunks are generated.
 GraphCastHit rayCast(
     const ref Graph graph,
     NodeId posNode,
@@ -35,16 +32,15 @@ GraphCastHit rayCast(
     hit.tanhDistance = float.nan;
     outOfBounds = false;
 
-    // TODO: Implement RayTraverser for proper multi-chunk traversal
-    // For now, simplified single-chunk cast
+    foreach (vIdx; 0 .. 20) {
+        Vertex vertex = cast(Vertex) vIdx;
+        ChunkId chunk = ChunkId(posNode, vertex);
+        const(VoxelData)* chunkData = getChunkVoxels(graph, chunk);
+        if (chunkData is null) {
+            continue;
+        }
 
-    foreach (vIdx; 0 .. VERTEX_COUNT) {
-        auto vertex = cast(Vertex) vIdx;
-        auto chunk = ChunkId(posNode, vertex);
-        auto chunkData = getChunkVoxels(graph, chunk);
-        if (chunkData is null) continue;
-
-        auto chunkHit = chunkRayCast(*chunkData, graph.layout(), ray, tanhDistance);
+        ChunkRayCastHit chunkHit = chunkRayCast(*chunkData, graph.layout(), ray, tanhDistance);
         if (!isNaN(chunkHit.tanhDistance)) {
             tanhDistance = chunkHit.tanhDistance;
             hit.tanhDistance = chunkHit.tanhDistance;
@@ -58,10 +54,14 @@ GraphCastHit rayCast(
     return hit;
 }
 
-private const(VoxelData)* getChunkVoxels(const ref Graph graph, ChunkId chunk) {
-    if (!graph.contains(chunk.node)) return null;
-    auto n = &graph[chunk.node];
-    auto c = &n.chunks.values[chunk.vertex];
-    if (c.state != ChunkState.Populated) return null;
+const(VoxelData)* getChunkVoxels(const ref Graph graph, ChunkId chunk) {
+    if (!graph.contains(chunk.node)) {
+        return null;
+    }
+    const(Node)* n = &graph[chunk.node];
+    const(Chunk)* c = &n.chunks.values[chunk.vertex];
+    if (c.state != ChunkState.Populated) {
+        return null;
+    }
     return &c.voxels;
 }

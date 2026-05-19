@@ -21,17 +21,15 @@ struct SwapchainState {
     VkFence inFlightFence;
 
     bool init(VkPhysicalDevice physDevice, VkDevice device, VkSurfaceKHR surface, uint queueFamily) {
-        // Get surface capabilities
         VkSurfaceCapabilitiesKHR caps;
         vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physDevice, surface, &caps);
 
-        // Get surface format
         uint formatCount;
         vkGetPhysicalDeviceSurfaceFormatsKHR(physDevice, surface, &formatCount, null);
-        auto formats = new VkSurfaceFormatKHR[](formatCount);
+        VkSurfaceFormatKHR[] formats = new VkSurfaceFormatKHR[](formatCount);
         vkGetPhysicalDeviceSurfaceFormatsKHR(physDevice, surface, &formatCount, formats.ptr);
         format = formats[0].format;
-        auto colorSpace = formats[0].colorSpace;
+        VkColorSpaceKHR colorSpace = formats[0].colorSpace;
 
         extent = caps.currentExtent;
         writefln("Swapchain extent: %dx%d", extent.width, extent.height);
@@ -40,7 +38,6 @@ struct SwapchainState {
             imageCount = caps.maxImageCount;
         }
 
-        // Create swapchain
         VkSwapchainCreateInfoKHR sci;
         sci.sType = VkStructureType.VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
         sci.surface = surface;
@@ -56,19 +53,17 @@ struct SwapchainState {
         sci.presentMode = selectPresentMode(physDevice, surface);
         sci.clipped = 1;
 
-        auto res = vkCreateSwapchainKHR(device, &sci, null, &swapchain);
+        VkResult res = vkCreateSwapchainKHR(device, &sci, null, &swapchain);
         if (res != VkResult.VK_SUCCESS) {
             writefln("vkCreateSwapchainKHR failed: %s", res);
             return false;
         }
 
-        // Get swapchain images
         uint imgCount;
         vkGetSwapchainImagesKHR(device, swapchain, &imgCount, null);
         images = new VkImage[](imgCount);
         vkGetSwapchainImagesKHR(device, swapchain, &imgCount, images.ptr);
 
-        // Create image views
         imageViews = new VkImageView[](imgCount);
         for (uint i = 0; i < imgCount; i++) {
             VkImageViewCreateInfo ivci;
@@ -88,7 +83,6 @@ struct SwapchainState {
             vkCreateImageView(device, &ivci, null, &imageViews[i]);
         }
 
-        // Depth image
         VkImageCreateInfo dci;
         dci.sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         dci.imageType = VkImageType.VK_IMAGE_TYPE_2D;
@@ -114,7 +108,8 @@ struct SwapchainState {
         for (uint i = 0; i < dmp.memoryTypeCount; i++) {
             if ((dreq.memoryTypeBits & (1u << i)) &&
                 (dmp.memoryTypes[i].propertyFlags & VkMemoryPropertyFlagBits.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
-                dmti = i; break;
+                dmti = i;
+                break;
             }
         }
         VkMemoryAllocateInfo dmai;
@@ -134,7 +129,6 @@ struct SwapchainState {
         dvci.subresourceRange.layerCount = 1;
         vkCreateImageView(device, &dvci, null, &depthView);
 
-        // Create render pass (2 subpasses: voxels, then fog post-process)
         VkAttachmentDescription[2] attachments;
         attachments[0].format = format;
         attachments[0].samples = 1;
@@ -150,7 +144,6 @@ struct SwapchainState {
         attachments[1].initialLayout = VkImageLayout.VK_IMAGE_LAYOUT_UNDEFINED;
         attachments[1].finalLayout = VkImageLayout.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
-        // Subpass 0: voxels — writes color + depth
         VkAttachmentReference colorRef;
         colorRef.attachment = 0;
         colorRef.layout = VkImageLayout.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -158,7 +151,6 @@ struct SwapchainState {
         depthRef.attachment = 1;
         depthRef.layout = VkImageLayout.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
-        // Subpass 1: fog — reads depth as input attachment, writes color
         VkAttachmentReference depthInputRef;
         depthInputRef.attachment = 1;
         depthInputRef.layout = VkImageLayout.VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
@@ -176,7 +168,6 @@ struct SwapchainState {
         subpasses[1].pInputAttachments = &depthInputRef;
 
         VkSubpassDependency[2] deps;
-        // EXTERNAL → subpass 0
         deps[0].srcSubpass = VK_SUBPASS_EXTERNAL;
         deps[0].dstSubpass = 0;
         deps[0].srcStageMask = VkPipelineStageFlagBits.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
@@ -189,7 +180,6 @@ struct SwapchainState {
                               | VkAccessFlagBits.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT
                               | VkAccessFlagBits.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 
-        // Subpass 0 → subpass 1 (depth write → input attachment read)
         deps[1].srcSubpass = 0;
         deps[1].dstSubpass = 1;
         deps[1].srcStageMask = VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
@@ -210,7 +200,6 @@ struct SwapchainState {
 
         vkCreateRenderPass(device, &rpci, null, &renderPass);
 
-        // Create framebuffers
         framebuffers = new VkFramebuffer[](imgCount);
         for (uint i = 0; i < imgCount; i++) {
             VkImageView[2] fbAttach = [imageViews[i], depthView];
@@ -225,7 +214,6 @@ struct SwapchainState {
             vkCreateFramebuffer(device, &fbci, null, &framebuffers[i]);
         }
 
-        // Command pool and buffer
         VkCommandPoolCreateInfo cpci;
         cpci.sType = VkStructureType.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
         cpci.flags = VkCommandPoolCreateFlagBits.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -239,7 +227,6 @@ struct SwapchainState {
         cbai.commandBufferCount = 1;
         vkAllocateCommandBuffers(device, &cbai, &commandBuffer);
 
-        // Sync objects
         VkSemaphoreCreateInfo semCI;
         semCI.sType = VkStructureType.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
         vkCreateSemaphore(device, &semCI, null, &imageAvailableSemaphore);
@@ -279,10 +266,10 @@ struct SwapchainState {
     }
 }
 
-private VkPresentModeKHR selectPresentMode(VkPhysicalDevice phys, VkSurfaceKHR surface) {
+VkPresentModeKHR selectPresentMode(VkPhysicalDevice phys, VkSurfaceKHR surface) {
     uint count;
     vkGetPhysicalDeviceSurfacePresentModesKHR(phys, surface, &count, null);
-    auto modes = new VkPresentModeKHR[](count);
+    VkPresentModeKHR[] modes = new VkPresentModeKHR[](count);
     vkGetPhysicalDeviceSurfacePresentModesKHR(phys, surface, &count, modes.ptr);
     foreach (m; modes) {
         if (m == VkPresentModeKHR.VK_PRESENT_MODE_MAILBOX_KHR) {

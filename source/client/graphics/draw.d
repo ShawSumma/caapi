@@ -3,13 +3,15 @@ module client.graphics.draw;
 import std.math : sin, cos, tan, sqrt, PI;
 import bindings.vk;
 
-// Column-major mat4
 struct Mat4 {
     float[16] m = 0;
 
     static Mat4 identity() {
         Mat4 r;
-        r.m[0] = 1; r.m[5] = 1; r.m[10] = 1; r.m[15] = 1;
+        r.m[0] = 1;
+        r.m[5] = 1;
+        r.m[10] = 1;
+        r.m[15] = 1;
         return r;
     }
 
@@ -31,7 +33,7 @@ struct Mat4 {
         Mat4 r;
         float f = 1.0f / tan(fovY * 0.5f);
         r.m[0] = f / aspect;
-        r.m[5] = -f; // Vulkan Y-flip
+        r.m[5] = -f;
         r.m[10] = far / (near - far);
         r.m[11] = -1;
         r.m[14] = (near * far) / (near - far);
@@ -43,25 +45,34 @@ struct Mat4 {
         float[3] s = normalize(cross(f, up));
         float[3] u = cross(s, f);
         Mat4 r;
-        r.m[0] = s[0]; r.m[4] = s[1]; r.m[8]  = s[2];  r.m[12] = -dot(s, eye);
-        r.m[1] = u[0]; r.m[5] = u[1]; r.m[9]  = u[2];  r.m[13] = -dot(u, eye);
-        r.m[2] = -f[0]; r.m[6] = -f[1]; r.m[10] = -f[2]; r.m[14] = dot(f, eye);
+        r.m[0] = s[0];
+        r.m[4] = s[1];
+        r.m[8] = s[2];
+        r.m[12] = -dot(s, eye);
+        r.m[1] = u[0];
+        r.m[5] = u[1];
+        r.m[9] = u[2];
+        r.m[13] = -dot(u, eye);
+        r.m[2] = -f[0];
+        r.m[6] = -f[1];
+        r.m[10] = -f[2];
+        r.m[14] = dot(f, eye);
         r.m[15] = 1;
         return r;
     }
 }
 
-private float[3] normalize(float[3] v) {
+float[3] normalize(float[3] v) {
     float l = sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
     if (l == 0) {
         return v;
     }
     return [v[0]/l, v[1]/l, v[2]/l];
 }
-private float[3] cross(float[3] a, float[3] b) {
+float[3] cross(float[3] a, float[3] b) {
     return [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
 }
-private float dot(float[3] a, float[3] b) {
+float dot(float[3] a, float[3] b) {
     return a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
 }
 
@@ -95,7 +106,6 @@ void renderFrame(VkDevice device, VkQueue queue,
 
     VkClearValue[2] clears;
     clears[0].color.float32 = [0.05f, 0.07f, 0.12f, 1.0f];
-    // Reverse-Z: far plane = 0.0
     clears[1].depthStencil.depth = 0.0f;
 
     VkRenderPassBeginInfo rpBegin;
@@ -125,9 +135,8 @@ void renderFrame(VkDevice device, VkQueue queue,
     scissor.extent = extent;
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-    // Build MVP
     float aspect = cast(float) extent.width / cast(float) extent.height;
-    auto proj = Mat4.perspective(60.0f * (cast(float) PI / 180.0f), aspect, 0.1f, 200.0f);
+    Mat4 proj = Mat4.perspective(60.0f * (cast(float) PI / 180.0f), aspect, 0.1f, 200.0f);
     float r = chunkSize * 2.0f;
     float cx = chunkSize * 0.5f + cos(time * 0.5f) * r;
     float cz = chunkSize * 0.5f + sin(time * 0.5f) * r;
@@ -135,8 +144,8 @@ void renderFrame(VkDevice device, VkQueue queue,
     float[3] eye = [cx, cy, cz];
     float[3] center = [chunkSize * 0.5f, chunkSize * 0.5f, chunkSize * 0.5f];
     float[3] up = [0, 1, 0];
-    auto view = Mat4.lookAt(eye, center, up);
-    auto mvp = Mat4.mul(proj, view);
+    Mat4 view = Mat4.lookAt(eye, center, up);
+    Mat4 mvp = Mat4.mul(proj, view);
 
     vkCmdPushConstants(cmd, layout, VkShaderStageFlagBits.VK_SHADER_STAGE_VERTEX_BIT, 0, 64, mvp.m.ptr);
 

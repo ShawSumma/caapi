@@ -63,7 +63,7 @@ CubeMesh generateChunkEdges(int chunkSize, float voxelSize) {
 
                 foreach (face; 0 .. 6) {
                     uint base = cast(uint) mesh.vertices.length;
-                    auto color = faceColors[face];
+                    float[3] color = faceColors[face];
                     foreach (corner; faceCorners[face]) {
                         Vertex v;
                         v.pos = [bx + corner[0] * voxelSize,

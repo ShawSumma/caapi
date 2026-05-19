@@ -14,11 +14,10 @@ ubyte[] loadPngRgba(string path) {
     return decodePng(fileData);
 }
 
-private ubyte[] decodePng(ubyte[] data) {
+ubyte[] decodePng(ubyte[] data) {
     if (data.length < 8) {
         return null;
     }
-    // Check PNG signature
     static immutable ubyte[8] sig = [137, 80, 78, 71, 13, 10, 26, 10];
     if (data[0 .. 8] != sig) {
         return null;
@@ -52,12 +51,11 @@ private ubyte[] decodePng(ubyte[] data) {
         return null;
     }
 
-    // Determine bytes per pixel based on color type
     uint bpp;
     if (colorType == 6) {
-        bpp = 4; // RGBA
+        bpp = 4;
     } else if (colorType == 2) {
-        bpp = 3; // RGB
+        bpp = 3;
     } else {
         writefln("Unsupported PNG color type: %d", colorType);
         return null;
@@ -68,7 +66,6 @@ private ubyte[] decodePng(ubyte[] data) {
         return null;
     }
 
-    // Decompress
     size_t rawSize = height * (1 + width * bpp);
     ubyte[] raw;
     try {
@@ -82,7 +79,6 @@ private ubyte[] decodePng(ubyte[] data) {
         return null;
     }
 
-    // Unfilter rows
     uint stride = width * bpp;
     ubyte[] pixels = new ubyte[](width * height * bpp);
 
@@ -96,12 +92,10 @@ private ubyte[] decodePng(ubyte[] data) {
         applyFilter(filterType, rowData, outRow, prevRow, bpp);
     }
 
-    // Convert to RGBA if needed
     if (bpp == 4) {
         return pixels;
     }
 
-    // RGB → RGBA
     ubyte[] rgba = new ubyte[](width * height * 4);
     for (uint i = 0; i < width * height; i++) {
         rgba[i * 4 + 0] = pixels[i * 3 + 0];
@@ -112,7 +106,7 @@ private ubyte[] decodePng(ubyte[] data) {
     return rgba;
 }
 
-private void applyFilter(ubyte filterType, ubyte[] rowData, ubyte[] outRow, ubyte[] prevRow, uint bpp) {
+void applyFilter(ubyte filterType, ubyte[] rowData, ubyte[] outRow, ubyte[] prevRow, uint bpp) {
     for (uint i = 0; i < cast(uint) rowData.length; i++) {
         ubyte x = rowData[i];
         ubyte a = (i >= bpp) ? outRow[i - bpp] : 0;
@@ -120,19 +114,19 @@ private void applyFilter(ubyte filterType, ubyte[] rowData, ubyte[] outRow, ubyt
         ubyte c = (prevRow !is null && i >= bpp) ? prevRow[i - bpp] : cast(ubyte) 0;
 
         switch (filterType) {
-        case 0: // None
+        case 0:
             outRow[i] = x;
             break;
-        case 1: // Sub
+        case 1:
             outRow[i] = cast(ubyte)(x + a);
             break;
-        case 2: // Up
+        case 2:
             outRow[i] = cast(ubyte)(x + b);
             break;
-        case 3: // Average
+        case 3:
             outRow[i] = cast(ubyte)(x + ((cast(int) a + cast(int) b) / 2));
             break;
-        case 4: // Paeth
+        case 4:
             outRow[i] = cast(ubyte)(x + paethPredictor(a, b, c));
             break;
         default:
@@ -142,7 +136,7 @@ private void applyFilter(ubyte filterType, ubyte[] rowData, ubyte[] outRow, ubyt
     }
 }
 
-private ubyte paethPredictor(ubyte a, ubyte b, ubyte c) {
+ubyte paethPredictor(ubyte a, ubyte b, ubyte c) {
     int p = cast(int) a + cast(int) b - cast(int) c;
     int pa = p > a ? p - a : a - p;
     int pb = p > b ? p - b : b - p;
@@ -156,6 +150,6 @@ private ubyte paethPredictor(ubyte a, ubyte b, ubyte c) {
     return c;
 }
 
-private uint bigEndian32(ubyte[] b) {
+uint bigEndian32(ubyte[] b) {
     return (cast(uint) b[0] << 24) | (cast(uint) b[1] << 16) | (cast(uint) b[2] << 8) | cast(uint) b[3];
 }

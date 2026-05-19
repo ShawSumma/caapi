@@ -27,41 +27,38 @@ struct Sim {
         return s;
     }
 
-    /// Advance the simulation by one step
     void doStep() {
         step++;
     }
 
-    /// Ensure the graph is populated near a position
     void ensureNearbyGenerated(Position pos) {
         ensureNearby(graph, pos.node, pos.local, cfg.chunkGenerationDistance);
 
-        // Generate voxels for unpopulated chunks
-        foreach (vIdx; 0 .. VERTEX_COUNT) {
-            auto vertex = cast(Vertex) vIdx;
-            auto chunk = ChunkId(pos.node, vertex);
-            if (!graph.contains(pos.node)) continue;
-            auto c = &graph[pos.node].chunks.values[vertex];
-            if (c.state != ChunkState.Fresh) continue;
+        foreach (vIdx; 0 .. 20) {
+            Vertex vertex = cast(Vertex) vIdx;
+            ChunkId chunk = ChunkId(pos.node, vertex);
+            if (!graph.contains(pos.node)) {
+                continue;
+            }
+            Chunk* c = &graph[pos.node].chunks.values[vertex];
+            if (c.state != ChunkState.Fresh) {
+                continue;
+            }
 
-            // Mark as generating then populate
             c.state = ChunkState.Generating;
-            import common.worldgen.plane : Plane;
-            auto params = ChunkParams(
+            ChunkParams params = ChunkParams(
                 cfg.chunkSize,
                 vertex,
                 ChunkIncidentEnviroFactors.init,
                 Plane.init,
                 false, false, 0
             );
-            auto voxelData = generateVoxels(params);
+            VoxelData voxelData = generateVoxels(params);
             c.state = ChunkState.Populated;
             c.voxels = voxelData;
         }
     }
 
-    /// Process a character's input command
     void command(Entity entity, CharacterInput input) {
-        // Apply movement - simplified
     }
 }

@@ -10,7 +10,9 @@ import common.world;
 struct CoordsWithMargins {
     ubyte[3] data;
 
-    this(ubyte[3] d) { data = d; }
+    this(ubyte[3] d) {
+        data = d;
+    }
 
     size_t toIndex(ubyte chunkSize) const {
         size_t csm = chunkSize + 2;
@@ -46,14 +48,14 @@ CoordsWithMargins permuteCoordsWithMargins(ChunkAxisPermutation perm, CoordsWith
     return result;
 }
 
-private ChunkAxisPermutation neighborAxisPermutation(Vertex vertex, ChunkDirection direction) {
+ChunkAxisPermutation neighborAxisPermutation(Vertex vertex, ChunkDirection direction) {
     if (direction.sign == CoordSign.Plus) {
         return vertexChunkAxisPermutations(vertex)[direction.axis];
     }
     return ChunkAxisPermutation.IDENTITY;
 }
 
-private ubyte[3] tuvToXyz(ubyte[3] input, size_t tAxis) {
+ubyte[3] tuvToXyz(ubyte[3] input, size_t tAxis) {
     ubyte[3] r = input;
     r[tAxis] = input[0];
     r[(tAxis + 1) % 3] = input[1];
@@ -69,7 +71,7 @@ void fixMargins(
     ChunkDirection direction,
     ref VoxelData neighborVoxels
 ) {
-    auto neighborPerm = neighborAxisPermutation(vertex, direction);
+    ChunkAxisPermutation neighborPerm = neighborAxisPermutation(vertex, direction);
 
     ubyte marginC = CoordsWithMargins.marginCoord(dimension, direction.sign);
     ubyte boundaryC = CoordsWithMargins.boundaryCoord(dimension, direction.sign);
@@ -81,15 +83,15 @@ void fixMargins(
         }
     }
 
-    auto voxelData = voxels.dataMut(dimension);
-    auto neighborVoxelData = neighborVoxels.dataMut(dimension);
+    Material[] voxelData = voxels.dataMut(dimension);
+    Material[] neighborVoxelData = neighborVoxels.dataMut(dimension);
 
     foreach (j; 0 .. dimension) {
         foreach (i; 0 .. dimension) {
-            auto boundaryCoords = CoordsWithMargins(tuvToXyz(
+            CoordsWithMargins boundaryCoords = CoordsWithMargins(tuvToXyz(
                 [boundaryC, cast(ubyte)(i + 1), cast(ubyte)(j + 1)], direction.axis
             ));
-            auto marginCoords = CoordsWithMargins(tuvToXyz(
+            CoordsWithMargins marginCoords = CoordsWithMargins(tuvToXyz(
                 [marginC, cast(ubyte)(i + 1), cast(ubyte)(j + 1)], direction.axis
             ));
 
@@ -103,18 +105,20 @@ void fixMargins(
 
 /// Initialize margins by copying boundary voxels outward
 void initializeMargins(ubyte dimension, ref VoxelData voxels) {
-    if (voxels.isSolid()) return;
+    if (voxels.isSolid()) {
+        return;
+    }
 
     foreach (dir; ChunkDirection.ALL) {
         ubyte marginC = CoordsWithMargins.marginCoord(dimension, dir.sign);
         ubyte boundaryC = CoordsWithMargins.boundaryCoord(dimension, dir.sign);
-        auto data = voxels.dataMut(dimension);
+        Material[] data = voxels.dataMut(dimension);
         foreach (j; 0 .. dimension) {
             foreach (i; 0 .. dimension) {
-                auto bc = CoordsWithMargins(tuvToXyz(
+                CoordsWithMargins bc = CoordsWithMargins(tuvToXyz(
                     [boundaryC, cast(ubyte)(i + 1), cast(ubyte)(j + 1)], dir.axis
                 ));
-                auto mc = CoordsWithMargins(tuvToXyz(
+                CoordsWithMargins mc = CoordsWithMargins(tuvToXyz(
                     [marginC, cast(ubyte)(i + 1), cast(ubyte)(j + 1)], dir.axis
                 ));
                 data[mc.toIndex(dimension)] = data[bc.toIndex(dimension)];

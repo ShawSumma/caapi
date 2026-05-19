@@ -3,7 +3,6 @@ module client.graphics.frustum;
 import std.math : tan, atan, sin, cos, sinh, cosh;
 import common.math : MVector, MDirection, MPoint;
 
-/// Port of hypermine's Frustum (client/src/graphics/frustum.rs).
 struct Frustum {
     float left;
     float right;
@@ -40,8 +39,6 @@ struct Frustum {
         return false;
     }
 
-    /// Right-handed y-up inverse-Z perspective projection with far plane at 1.0.
-    /// The Beltrami-Klein vertices fall within a ball of radius 1, so far=1 is the natural choice.
     float[16] projection(float znear) const {
         float zfar = 1.0f;
         float l = tan(left);
@@ -54,7 +51,6 @@ struct Frustum {
         float sy = d + u;
         float za = -znear / (znear - zfar);
         float zb = -(znear * zfar) / (znear - zfar);
-        // Column-major flat array
         float[16] m = 0;
         m[0]  = 2.0f * idx;
         m[5]  = 2.0f * idy;

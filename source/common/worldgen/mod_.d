@@ -12,12 +12,12 @@ import common.worldgen.terraingen : terraingenVoronoi;
 import std.math;
 import core.bitop : rol;
 
-private enum NodeStateKind { Sky, DeepSky, Land, DeepLand }
-private enum NodeStateRoad { East, DeepEast, West, DeepWest }
+enum NodeStateKind { Sky, DeepSky, Land, DeepLand }
+enum NodeStateRoad { East, DeepEast, West, DeepWest }
 
-private enum float TERRAIN_SMOOTHNESS = 10.0f;
+enum float TERRAIN_SMOOTHNESS = 10.0f;
 
-private NodeStateKind childKind(NodeStateKind self, Side side) {
+NodeStateKind childKind(NodeStateKind self, Side side) {
     if (self == NodeStateKind.Sky && side == Side.A) {
         return NodeStateKind.Land;
     }
@@ -33,7 +33,7 @@ private NodeStateKind childKind(NodeStateKind self, Side side) {
     return self;
 }
 
-private NodeStateRoad childRoad(NodeStateRoad self, Side side) {
+NodeStateRoad childRoad(NodeStateRoad self, Side side) {
     if (self == NodeStateRoad.East && side == Side.B) {
         return NodeStateRoad.West;
     }
@@ -58,7 +58,7 @@ struct NodeState {
 
     static NodeState* create(ref Graph graph, NodeId node) {
         int pcount;
-        auto ps = graph.parents(node, pcount);
+        Graph.ParentResult[3] ps = graph.parents(node, pcount);
 
         EnviroFactors env;
         NodeStateKind kind;
@@ -69,18 +69,18 @@ struct NodeState {
             kind = NodeStateKind.Land;
             road = NodeStateRoad.West;
         } else if (pcount == 1) {
-            auto parentState = graph.nodeState(ps[0].id);
+            const(NodeState)* parentState = graph.nodeState(ps[0].id);
             ulong spice = graph.hashOf(node);
             env = EnviroFactors.variedFrom(parentState.enviro, spice);
             kind = childKind(parentState.kind, ps[0].side);
             road = childRoad(parentState.roadState, ps[0].side);
         } else {
-            auto pA = graph.nodeState(ps[0].id);
-            auto pB = graph.nodeState(ps[1].id);
-            auto abNode = graph.neighbor(ps[0].id, ps[1].side);
+            const(NodeState)* pA = graph.nodeState(ps[0].id);
+            const(NodeState)* pB = graph.nodeState(ps[1].id);
+            NodeId abNode = graph.neighbor(ps[0].id, ps[1].side);
             if (abNode != NodeId.init) {
                 graph.ensureNodeState(abNode);
-                auto abState = graph.nodeState(abNode);
+                const(NodeState)* abState = graph.nodeState(abNode);
                 env = EnviroFactors.continueFrom(pA.enviro, pB.enviro, abState.enviro);
             } else {
                 ulong spice = graph.hashOf(node);
@@ -96,13 +96,13 @@ struct NodeState {
         } else if (kind == NodeStateKind.Sky) {
             surf = -Plane.fromSide(Side.A);
         } else if (pcount > 0) {
-            auto pState = graph.nodeState(ps[0].id);
+            const(NodeState)* pState = graph.nodeState(ps[0].id);
             surf = pState.surface.reflectAcross(ps[0].side);
         } else {
             surf = Plane.fromSide(Side.A);
         }
 
-        auto state = new NodeState;
+        NodeState* state = new NodeState;
         state.kind = kind;
         state.roadState = road;
         state.enviro = env;
@@ -160,8 +160,8 @@ struct ChunkParams {
 
     static ChunkParams create(ref Graph graph, ChunkId chunkId) {
         graph.ensureNodeState(chunkId.node);
-        auto env = chunkIncidentEnviroFactors(graph, chunkId);
-        auto ns = graph.nodeState(chunkId.node);
+        ChunkIncidentEnviroFactors env = chunkIncidentEnviroFactors(graph, chunkId);
+        const(NodeState)* ns = graph.nodeState(chunkId.node);
 
         ChunkParams p;
         p.dimension = graph.layout().dimension;
@@ -179,7 +179,7 @@ struct ChunkParams {
 
 /// Generate voxels for a chunk
 VoxelData generateVoxels(const ref ChunkParams params) {
-    auto voxels = VoxelData.solid(Material.Void);
+    VoxelData voxels = VoxelData.solid(Material.Void);
     ulong rngState = hash(params.nodeSpice, params.chunk);
 
     generateTerrain(params, voxels, rngState);
@@ -196,7 +196,7 @@ VoxelData generateVoxels(const ref ChunkParams params) {
     return voxels;
 }
 
-private void generateTerrain(const ref ChunkParams params, ref VoxelData voxels, ref ulong rng) {
+void generateTerrain(const ref ChunkParams params, ref VoxelData voxels, ref ulong rng) {
     ubyte dim = params.dimension;
 
     float meMin = params.env.maxElevations[0];
@@ -256,7 +256,7 @@ private void generateTerrain(const ref ChunkParams params, ref VoxelData voxels,
                 }
 
                 if (dist >= 0.0f) {
-                    auto mat = terraingenVoronoi(elev, rain, temp, dist);
+                    Material mat = terraingenVoronoi(elev, rain, temp, dist);
                     size_t idx = index(dim, x, y, z);
                     voxels.dataMut(dim)[idx] = mat;
                 }
@@ -265,8 +265,8 @@ private void generateTerrain(const ref ChunkParams params, ref VoxelData voxels,
     }
 }
 
-private void generateRoad(const ref ChunkParams params, ref VoxelData voxels) {
-    auto plane = -Plane.fromSide(Side.B);
+void generateRoad(const ref ChunkParams params, ref VoxelData voxels) {
+    Plane plane = -Plane.fromSide(Side.B);
     ubyte dim = params.dimension;
 
     foreach (x; 0 .. dim) {
@@ -295,12 +295,12 @@ private void generateRoad(const ref ChunkParams params, ref VoxelData voxels) {
     }
 }
 
-private void generateRoadSupport(const ref ChunkParams params, ref VoxelData voxels) {
+void generateRoadSupport(const ref ChunkParams params, ref VoxelData voxels) {
     if (voxels.isSolid() && voxels.get(0) != Material.Void) {
         return;
     }
 
-    auto plane = -Plane.fromSide(Side.B);
+    Plane plane = -Plane.fromSide(Side.B);
     ubyte dim = params.dimension;
 
     foreach (x; 0 .. dim) {
@@ -328,7 +328,7 @@ private void generateRoadSupport(const ref ChunkParams params, ref VoxelData vox
     }
 }
 
-private bool trussingAt(ubyte dimension, ubyte x, ubyte y, ubyte z) {
+bool trussingAt(ubyte dimension, ubyte x, ubyte y, ubyte z) {
     uint criteriaMet = 0;
     ubyte offset = dimension / 3;
     criteriaMet += (x == offset) ? 1 : 0;
@@ -340,7 +340,7 @@ private bool trussingAt(ubyte dimension, ubyte x, ubyte y, ubyte z) {
     return criteriaMet >= 2;
 }
 
-private void generateTrees(const ref ChunkParams params, ref VoxelData voxels, ref ulong rng) {
+void generateTrees(const ref ChunkParams params, ref VoxelData voxels, ref ulong rng) {
     if (voxels.isSolid()) {
         return;
     }
@@ -380,7 +380,7 @@ private void generateTrees(const ref ChunkParams params, ref VoxelData voxels, r
             int nx = lx + offsets[d][0];
             int ny = ly + offsets[d][1];
             int nz = lz + offsets[d][2];
-            auto nmat = voxels.get(index(dim, nx, ny, nz));
+            Material nmat = voxels.get(index(dim, nx, ny, nz));
             if (nmat == Material.Void) {
                 numVoidNeighbors++;
             } else if (nmat == Material.Dirt || nmat == Material.Grass ||
@@ -402,7 +402,7 @@ private void generateTrees(const ref ChunkParams params, ref VoxelData voxels, r
     }
 }
 
-private float serp(float v0, float v1, float t, float threshold) {
+float serp(float v0, float v1, float t, float threshold) {
     if (t < threshold) {
         return v0;
     } else if (t < 1.0f - threshold) {
@@ -413,18 +413,18 @@ private float serp(float v0, float v1, float t, float threshold) {
     }
 }
 
-private float terracingDiff(float elevRaw, float block, float scale, float strength, float limiter) {
+float terracingDiff(float elevRaw, float block, float scale, float strength, float limiter) {
     float threshold = strength / (1.0f + pow(2.0f, limiter - block));
     float elevFloor = floor(elevRaw / scale);
     float elevRem = elevRaw / scale - elevFloor;
     return scale * elevFloor + serp(0.0f, scale, elevRem, threshold) - elevRaw;
 }
 
-private float sqr(float x) {
+float sqr(float x) {
     return x * x;
 }
 
-private float[3] voxelCenter(ubyte dimension, int x, int y, int z) {
+float[3] voxelCenter(ubyte dimension, int x, int y, int z) {
     float d = cast(float) dimension;
     return [
         (cast(float) x + 0.5f) / d,
@@ -433,7 +433,7 @@ private float[3] voxelCenter(ubyte dimension, int x, int y, int z) {
     ];
 }
 
-private size_t index(ubyte dimension, int x, int y, int z) {
+size_t index(ubyte dimension, int x, int y, int z) {
     size_t lwm = dimension + 2;
     return (x + 1) + (y + 1) * lwm + (z + 1) * lwm * lwm;
 }
@@ -450,8 +450,8 @@ float trilerp(const ref float[8] values, float[3] t) {
     );
 }
 
-private ChunkIncidentEnviroFactors chunkIncidentEnviroFactors(ref Graph graph, ChunkId chunk) {
-    auto sides = vertexCanonicalSides(chunk.vertex);
+ChunkIncidentEnviroFactors chunkIncidentEnviroFactors(ref Graph graph, ChunkId chunk) {
+    Side[3] sides = vertexCanonicalSides(chunk.vertex);
     Side a = sides[0], b = sides[1], c = sides[2];
 
     Side[][] paths = [
@@ -473,8 +473,8 @@ private ChunkIncidentEnviroFactors chunkIncidentEnviroFactors(ref Graph graph, C
             node = graph.ensureNeighbor(node, side);
         }
         graph.ensureNodeState(node);
-        auto ns = graph.nodeState(node);
-        auto enviro = ns.enviro;
+        const(NodeState)* ns = graph.nodeState(node);
+        EnviroFactors enviro = ns.enviro;
         result.maxElevations[i] = enviro.maxElevation;
         result.temperatures[i] = enviro.temperature;
         result.rainfalls[i] = enviro.rainfall;
@@ -485,7 +485,7 @@ private ChunkIncidentEnviroFactors chunkIncidentEnviroFactors(ref Graph graph, C
 }
 
 // Simple splitmix64-based RNG
-private ulong rngNext(ulong* state) {
+ulong rngNext(ulong* state) {
     *state += 0x9e3779b97f4a7c15;
     ulong z = *state;
     z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9;
@@ -493,7 +493,7 @@ private ulong rngNext(ulong* state) {
     return z ^ (z >> 31);
 }
 
-private float rngNormal(ulong* state, float stddev) {
+float rngNormal(ulong* state, float stddev) {
     ulong v1 = rngNext(state);
     ulong v2 = rngNext(state);
     float u1 = (cast(float)((v1 >> 40) + 1)) / cast(float)((1UL << 24) + 2);
@@ -501,13 +501,13 @@ private float rngNormal(ulong* state, float stddev) {
     return sqrt(-2.0f * log(u1)) * cos(2.0f * PI * u2) * stddev;
 }
 
-private float hashToUniform(ulong seed, uint idx) {
+float hashToUniform(ulong seed, uint idx) {
     ulong s = seed ^ (cast(ulong) idx * 0x517cc1b727220a95);
     ulong v = rngNext(&s);
     return (cast(float)(v >> 40) / cast(float)(1UL << 24)) * 2.0f - 1.0f;
 }
 
-private float hashToNormal(ulong seed, uint idx) {
+float hashToNormal(ulong seed, uint idx) {
     ulong s = seed ^ (cast(ulong) idx * 0x9e3779b97f4a7c15);
     ulong v1 = rngNext(&s);
     ulong v2 = rngNext(&s);
@@ -516,6 +516,6 @@ private float hashToNormal(ulong seed, uint idx) {
     return sqrt(-2.0f * log(u1)) * cos(2.0f * PI * u2);
 }
 
-private ulong hash(ulong a, ulong b) {
+ulong hash(ulong a, ulong b) {
     return (rol(a, 5) ^ b) * 0x517c_c1b7_2722_0a95;
 }

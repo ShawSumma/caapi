@@ -8,12 +8,10 @@ import client.graphics.voxels.surface : Surface;
 enum uint FACE_SIZE = 8;
 enum uint INDIRECT_SIZE = 16;
 
-private uint roundUp(uint value, uint alignment) {
+uint roundUp(uint value, uint alignment) {
     return (value + alignment - 1) / alignment * alignment;
 }
 
-/// Pack already-padded (dim+2)³ ushort materials into u32 pairs in-place.
-/// Writes into the provided buffer and returns the number of uint elements written.
 uint packPaddedVoxelsInto(const(ushort)[] padded, uint dim, uint[] outBuf) {
     uint paddedSize = (dim + 2) * (dim + 2) * (dim + 2);
     if (padded.length < paddedSize) {
@@ -36,27 +34,25 @@ struct ExtractTask {
     uint drawId;
 }
 
-/// Per-chunk worldgen parameters uploaded to GPU UBO (256 bytes, std140).
 struct WorldgenParamsGPU {
 align(1):
-    float[16] chunkToNode;   // mat4 at offset 0
-    float[4] surfaceNormal;  // vec4 at 64
-    float[4] roadPlaneNormal;// vec4 at 80
-    float[4] scalars;        // vec4 at 96: surfExp, roadExp, uintBitsAsFloat(flags), 0
-    uint[2] rngSeed;         // uvec2 at 112
-    float[2] _pad;           // at 120
-    float[4] elev0;          // vec4 at 128
-    float[4] elev1;          // vec4 at 144
-    float[4] temp0;          // vec4 at 160
-    float[4] temp1;          // vec4 at 176
-    float[4] rain0;          // vec4 at 192
-    float[4] rain1;          // vec4 at 208
-    float[4] block0;         // vec4 at 224
-    float[4] block1;         // vec4 at 240
+    float[16] chunkToNode;
+    float[4] surfaceNormal;
+    float[4] roadPlaneNormal;
+    float[4] scalars;
+    uint[2] rngSeed;
+    float[2] _pad;
+    float[4] elev0;
+    float[4] elev1;
+    float[4] temp0;
+    float[4] temp1;
+    float[4] rain0;
+    float[4] rain1;
+    float[4] block0;
+    float[4] block1;
 }
 static assert(WorldgenParamsGPU.sizeof == 256);
 
-/// Per-entry in the Voronoi table (16 bytes for GPU alignment).
 struct VoronoiEntryGPU {
     float rain;
     float temp;
@@ -65,10 +61,7 @@ struct VoronoiEntryGPU {
 }
 static assert(VoronoiEntryGPU.sizeof == 16);
 
-/// GPU compute surface extraction with per-slot descriptor sets.
-/// Matches hypermine's SurfaceExtraction + ScratchBuffer + DrawBuffer.
 struct SurfaceExtraction {
-    // Pipeline
     VkShaderModule compShader;
     VkDescriptorSetLayout paramsLayout;
     VkDescriptorSetLayout dataLayout;
@@ -76,17 +69,15 @@ struct SurfaceExtraction {
     VkPipeline pipeline;
     VkDescriptorPool descPool;
     VkDescriptorSet paramsSet;
-    VkDescriptorSet[] dataSets;  // one per concurrency slot
+    VkDescriptorSet[] dataSets;
 
-    // Scratch buffers (for extraction tasks)
     GpuBuffer paramsBuf;
-    GpuBuffer voxelsBuf;    // concurrency * voxelBufUnit
-    GpuBuffer stateBuf;     // concurrency * stateBufUnit
+    GpuBuffer voxelsBuf;
+    GpuBuffer stateBuf;
 
-    // Draw buffers (persistent, one slot per chunk)
-    GpuBuffer indirectBuf;  // maxSlots * INDIRECT_SIZE
-    GpuBuffer packedIndirectBuf;  // packed contiguous draw commands
-    GpuBuffer facesBuf;     // maxSlots * faceBufUnit
+    GpuBuffer indirectBuf;
+    GpuBuffer packedIndirectBuf;
+    GpuBuffer facesBuf;
 
     uint dimension;
     uint concurrency;
@@ -97,7 +88,6 @@ struct SurfaceExtraction {
     uint maxFaces;
     uint[] packBuf;
 
-    // GPU worldgen
     VkShaderModule wgenShader;
     VkDescriptorSetLayout wgenParamsLayout;
     VkPipelineLayout wgenPipelineLayout;
@@ -113,7 +103,7 @@ struct SurfaceExtraction {
         concurrency = conc;
         maxSlots = slots;
         maxFaces = 3 * (dim * dim * dim + dim * dim);
-        enum ALIGN = 16; // minStorageBufferOffsetAlignment
+        enum ALIGN = 16;
         voxelBufUnit = roundUp(cast(uint)((dim + 2) * (dim + 2) * (dim + 2)) * 2, ALIGN);
         stateBufUnit = roundUp(4, ALIGN);
         faceBufUnit = roundUp(maxFaces * FACE_SIZE, ALIGN);
@@ -127,7 +117,6 @@ struct SurfaceExtraction {
             return false;
         }
 
-        // Layouts
         VkDescriptorSetLayoutBinding pb;
         pb.binding = 0;
         pb.descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -152,7 +141,6 @@ struct SurfaceExtraction {
         dci.pBindings = db.ptr;
         vkCreateDescriptorSetLayout(device, &dci, null, &dataLayout);
 
-        // Descriptor pool: 1 params + concurrency data sets
         VkDescriptorPoolSize[2] sizes;
         sizes[0].type = VkDescriptorType.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         sizes[0].descriptorCount = 1;
@@ -165,7 +153,6 @@ struct SurfaceExtraction {
         dpci.pPoolSizes = sizes.ptr;
         vkCreateDescriptorPool(device, &dpci, null, &descPool);
 
-        // Allocate params set
         VkDescriptorSetAllocateInfo pai;
         pai.sType = VkStructureType.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
         pai.descriptorPool = descPool;
@@ -173,8 +160,7 @@ struct SurfaceExtraction {
         pai.pSetLayouts = &paramsLayout;
         vkAllocateDescriptorSets(device, &pai, &paramsSet);
 
-        // Allocate per-slot data sets
-        auto dataLayouts = new VkDescriptorSetLayout[concurrency];
+        VkDescriptorSetLayout[] dataLayouts = new VkDescriptorSetLayout[concurrency];
         dataLayouts[] = dataLayout;
         dataSets = new VkDescriptorSet[concurrency];
         VkDescriptorSetAllocateInfo dai;
@@ -184,17 +170,16 @@ struct SurfaceExtraction {
         dai.pSetLayouts = dataLayouts.ptr;
         vkAllocateDescriptorSets(device, &dai, dataSets.ptr);
 
-        // Buffers
         int[4] dimData = [cast(int) dim, 0, 0, 0];
         paramsBuf = GpuBuffer.create(phys, device, cast(void[]) dimData[],
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
 
-        auto voxelsSize = voxelBufUnit * concurrency;
+        uint voxelsSize = voxelBufUnit * concurrency;
         ubyte[] voxInit = new ubyte[voxelsSize];
         voxelsBuf = GpuBuffer.create(phys, device, voxInit,
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
-        auto stateSize = stateBufUnit * concurrency;
+        uint stateSize = stateBufUnit * concurrency;
         ubyte[] stateInit = new ubyte[stateSize];
         stateBuf = GpuBuffer.create(phys, device, stateInit,
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
@@ -217,7 +202,6 @@ struct SurfaceExtraction {
         facesBuf = GpuBuffer.create(phys, device, facesInitData,
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
-        // Write params descriptor
         VkDescriptorBufferInfo pi;
         pi.buffer = paramsBuf.buffer;
         pi.range = VK_WHOLE_SIZE;
@@ -230,7 +214,6 @@ struct SurfaceExtraction {
         pw.pBufferInfo = &pi;
         vkUpdateDescriptorSets(device, 1, &pw, 0, null);
 
-        // Pipeline layout
         VkDescriptorSetLayout[2] layouts = [paramsLayout, dataLayout];
         VkPipelineLayoutCreateInfo plci;
         plci.sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -263,8 +246,8 @@ struct SurfaceExtraction {
         return true;
     }
 
-    private bool initWorldgen(VkPhysicalDevice phys, VkDevice device) {
-        import common.worldgen.terraingen : buildVoronoiTableGPU;
+    bool initWorldgen(VkPhysicalDevice phys, VkDevice device) {
+        import common.worldgen.terraingen : TerrainVoronoiEntry = VoronoiEntryGPU, buildVoronoiTableGPU;
 
         static immutable ubyte[] wgenSpv = cast(immutable(ubyte)[]) import("worldgen.comp.spv");
         VkShaderModuleCreateInfo smci;
@@ -275,7 +258,6 @@ struct SurfaceExtraction {
             return false;
         }
 
-        // Worldgen params layout: binding 0 = params UBO (shared), binding 1 = worldgen UBO, binding 2 = Voronoi SSBO
         VkDescriptorSetLayoutBinding[3] wgb;
         wgb[0].binding = 0;
         wgb[0].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -295,7 +277,6 @@ struct SurfaceExtraction {
         wgci.pBindings = wgb.ptr;
         vkCreateDescriptorSetLayout(device, &wgci, null, &wgenParamsLayout);
 
-        // Pipeline layout: set 0 = worldgen params, set 1 = data (shared with extract)
         VkDescriptorSetLayout[2] wgLayouts = [wgenParamsLayout, dataLayout];
         VkPipelineLayoutCreateInfo wgplci;
         wgplci.sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -314,13 +295,11 @@ struct SurfaceExtraction {
             return false;
         }
 
-        // Descriptor pool for worldgen
         VkDescriptorPoolSize[2] wgps;
         wgps[0].type = VkDescriptorType.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
         wgps[0].descriptorCount = 1;
         wgps[1].type = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         wgps[1].descriptorCount = 1;
-        // Also need 1 regular UBO for shared params
         VkDescriptorPoolSize wgps2;
         wgps2.type = VkDescriptorType.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         wgps2.descriptorCount = 1;
@@ -332,7 +311,6 @@ struct SurfaceExtraction {
         wgdpci.pPoolSizes = allps.ptr;
         vkCreateDescriptorPool(device, &wgdpci, null, &wgenDescPool);
 
-        // Allocate worldgen params descriptor set
         wgenParamsSets = new VkDescriptorSet[1];
         VkDescriptorSetAllocateInfo wgdai;
         wgdai.sType = VkStructureType.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -341,18 +319,15 @@ struct SurfaceExtraction {
         wgdai.pSetLayouts = &wgenParamsLayout;
         vkAllocateDescriptorSets(device, &wgdai, wgenParamsSets.ptr);
 
-        // Create worldgen params buffer (space for concurrency chunks)
         uint wgenParamsSize = roundUp(WorldgenParamsGPU.sizeof, 256) * concurrency;
         ubyte[] wpInit = new ubyte[wgenParamsSize];
         wgenParamsBuf = GpuBuffer.create(phys, device, wpInit,
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
 
-        // Create Voronoi table buffer
-        auto voronoiData = buildVoronoiTableGPU();
+        TerrainVoronoiEntry[] voronoiData = buildVoronoiTableGPU();
         voronoiTableBuf = GpuBuffer.create(phys, device, cast(void[]) voronoiData,
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
-        // Write worldgen descriptors
         VkDescriptorBufferInfo[3] wgbi;
         wgbi[0].buffer = paramsBuf.buffer;
         wgbi[0].range = 16;
@@ -377,7 +352,6 @@ struct SurfaceExtraction {
         return true;
     }
 
-    /// Upload worldgen params for a scratch slot and return the dynamic offset.
     uint uploadWorldgenParams(VkDevice device, uint scratchIndex, const ref WorldgenParamsGPU params) {
         uint offset = roundUp(WorldgenParamsGPU.sizeof, 256) * scratchIndex;
         void* mapped;
@@ -388,13 +362,11 @@ struct SurfaceExtraction {
         return offset;
     }
 
-    /// Record worldgen dispatches for a batch of tasks.
     void recordWorldgen(VkDevice device, VkCommandBuffer cmd, ExtractTask[] tasks, uint[] wgenOffsets) {
         if (tasks.length == 0 || !wgenReady) {
             return;
         }
 
-        // Clear voxel scratch slots for worldgen tasks
         foreach (ref task; tasks) {
             vkCmdFillBuffer(cmd, voxelsBuf.buffer,
                 cast(ulong) task.index * voxelBufUnit, voxelBufUnit, 0);
@@ -402,7 +374,7 @@ struct SurfaceExtraction {
 
         VkBufferMemoryBarrier clearBar;
         clearBar.sType = VkStructureType.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-        clearBar.srcAccessMask = 0x1000; // TRANSFER_WRITE
+        clearBar.srcAccessMask = 0x1000;
         clearBar.dstAccessMask = VkAccessFlagBits.VK_ACCESS_SHADER_READ_BIT | VkAccessFlagBits.VK_ACCESS_SHADER_WRITE_BIT;
         clearBar.srcQueueFamilyIndex = ~0u;
         clearBar.dstQueueFamilyIndex = ~0u;
@@ -411,7 +383,6 @@ struct SurfaceExtraction {
         vkCmdPipelineBarrier(cmd, 0x1000, VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             0, 0, null, 1, &clearBar, 0, null);
 
-        // Update data descriptor sets for worldgen tasks (must happen before dispatch)
         foreach (i, ref task; tasks) {
             VkDescriptorBufferInfo[4] infos;
             infos[0].buffer = voxelsBuf.buffer;
@@ -454,7 +425,6 @@ struct SurfaceExtraction {
             vkCmdDispatch(cmd, gx, gy, gz);
         }
 
-        // Barrier: worldgen writes → extract reads
         VkBufferMemoryBarrier wgenBar;
         wgenBar.sType = VkStructureType.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
         wgenBar.srcAccessMask = VkAccessFlagBits.VK_ACCESS_SHADER_WRITE_BIT;
@@ -468,7 +438,6 @@ struct SurfaceExtraction {
             0, 0, null, 1, &wgenBar, 0, null);
     }
 
-    /// Upload voxel data into scratch slot using pre-mapped memory.
     void uploadVoxels(void* voxelsMapped, uint scratchIndex, const(ushort)[] paddedData) {
         import core.stdc.string : memcpy;
         uint count = packPaddedVoxelsInto(paddedData, dimension, packBuf);
@@ -483,30 +452,24 @@ struct SurfaceExtraction {
         memcpy(cast(ubyte*) voxelsMapped + offset, packBuf.ptr, size);
     }
 
-    /// Map voxels buffer for batch upload.
     void* mapVoxels(VkDevice device) {
         void* mapped;
         vkMapMemory(device, voxelsBuf.memory, 0, voxelBufUnit * concurrency, 0, &mapped);
         return mapped;
     }
 
-    /// Unmap voxels buffer after batch upload.
     void unmapVoxels(VkDevice device) {
         vkUnmapMemory(device, voxelsBuf.memory);
     }
 
-    /// Record extraction for a batch of tasks.
     void recordExtract(VkDevice device, VkCommandBuffer cmd, ExtractTask[] tasks) {
         if (tasks.length == 0) {
             return;
         }
 
-        // Fill state buffer with zeros
         vkCmdFillBuffer(cmd, stateBuf.buffer, 0, stateBufUnit * concurrency, 0);
 
-        // Update per-task descriptor sets and initialize indirect commands
         foreach (ref task; tasks) {
-            // Update descriptor set for this scratch slot
             VkDescriptorBufferInfo[4] infos;
             infos[0].buffer = voxelsBuf.buffer;
             infos[0].offset = cast(ulong) task.index * voxelBufUnit;
@@ -532,7 +495,6 @@ struct SurfaceExtraction {
             }
             vkUpdateDescriptorSets(device, 4, writes.ptr, 0, null);
 
-            // Initialize indirect command
             uint firstVertex = cast(uint)(task.faceOffset / FACE_SIZE) * 6;
             vkCmdFillBuffer(cmd, indirectBuf.buffer, task.indirectOffset, 4, 0);
             vkCmdFillBuffer(cmd, indirectBuf.buffer, task.indirectOffset + 4, 4, 1);
@@ -540,7 +502,6 @@ struct SurfaceExtraction {
             vkCmdFillBuffer(cmd, indirectBuf.buffer, task.indirectOffset + 12, 4, task.drawId);
         }
 
-        // Barrier: fills → compute
         VkBufferMemoryBarrier[2] preBar;
         preBar[0].sType = VkStructureType.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
         preBar[0].srcAccessMask = 0x1000;
@@ -554,7 +515,6 @@ struct SurfaceExtraction {
         vkCmdPipelineBarrier(cmd, 0x1000, VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             0, 0, null, 2, preBar.ptr, 0, null);
 
-        // Bind compute pipeline and params
         vkCmdBindPipeline(cmd, cast(VkPipelineBindPoint) 1, pipeline);
         vkCmdBindDescriptorSets(cmd, cast(VkPipelineBindPoint) 1, pipelineLayout, 0, 1, &paramsSet, 0, null);
 
@@ -562,14 +522,12 @@ struct SurfaceExtraction {
         uint gy = ((dimension + 1) + 3) / 4;
         uint gz = ((dimension + 1) + 3) / 4;
 
-        // Dispatch per task with per-slot descriptor set
         foreach (ref task; tasks) {
             vkCmdBindDescriptorSets(cmd, cast(VkPipelineBindPoint) 1, pipelineLayout,
                 1, 1, &dataSets[task.index], 0, null);
             vkCmdDispatch(cmd, gx, gy, gz);
         }
 
-        // Barrier: compute → transfer + vertex shader
         VkBufferMemoryBarrier[2] postBar;
         postBar[0].sType = VkStructureType.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
         postBar[0].srcAccessMask = VkAccessFlagBits.VK_ACCESS_SHADER_WRITE_BIT;
@@ -591,7 +549,7 @@ struct SurfaceExtraction {
         if (activeSlots.length == 0) {
             return;
         }
-        auto count = cast(uint) activeSlots.length;
+        uint count = cast(uint) activeSlots.length;
         VkBufferCopy[4096] copies = void;
         foreach (i; 0 .. count) {
             copies[i].srcOffset = cast(VkDeviceSize) activeSlots[i] * INDIRECT_SIZE;
@@ -614,16 +572,32 @@ struct SurfaceExtraction {
             0, 0, null, 1, &bar, 0, null);
     }
 
-    ulong faceOffset(uint slot) { return cast(ulong) slot * faceBufUnit; }
-    ulong indirectOffset(uint slot) { return cast(ulong) slot * INDIRECT_SIZE; }
+    ulong faceOffset(uint slot) {
+        return cast(ulong) slot * faceBufUnit;
+    }
+    ulong indirectOffset(uint slot) {
+        return cast(ulong) slot * INDIRECT_SIZE;
+    }
 
     void cleanup(VkDevice device) {
-        if (pipeline) { vkDestroyPipeline(device, pipeline, null); }
-        if (pipelineLayout) { vkDestroyPipelineLayout(device, pipelineLayout, null); }
-        if (descPool) { vkDestroyDescriptorPool(device, descPool, null); }
-        if (paramsLayout) { vkDestroyDescriptorSetLayout(device, paramsLayout, null); }
-        if (dataLayout) { vkDestroyDescriptorSetLayout(device, dataLayout, null); }
-        if (compShader) { vkDestroyShaderModule(device, compShader, null); }
+        if (pipeline) {
+            vkDestroyPipeline(device, pipeline, null);
+        }
+        if (pipelineLayout) {
+            vkDestroyPipelineLayout(device, pipelineLayout, null);
+        }
+        if (descPool) {
+            vkDestroyDescriptorPool(device, descPool, null);
+        }
+        if (paramsLayout) {
+            vkDestroyDescriptorSetLayout(device, paramsLayout, null);
+        }
+        if (dataLayout) {
+            vkDestroyDescriptorSetLayout(device, dataLayout, null);
+        }
+        if (compShader) {
+            vkDestroyShaderModule(device, compShader, null);
+        }
         paramsBuf.cleanup(device);
         voxelsBuf.cleanup(device);
         stateBuf.cleanup(device);

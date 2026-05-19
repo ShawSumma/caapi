@@ -4,9 +4,9 @@ import common.dodeca;
 import common.math;
 import common.node;
 import common.chunks;
+import common.worldgen.mod_ : NodeState;
 import std.digest.murmurhash : MurmurHash3;
 
-/// Unique 128-bit identifier for a dodecahedral node in the graph.
 struct NodeId {
     ulong[2] value;
 
@@ -21,10 +21,9 @@ struct NodeId {
     }
 }
 
-/// Graph of the right dodecahedral tiling of H^3
 struct Graph {
-    private NodeContainer[NodeId] nodes;
-    private ChunkLayout layout_;
+    NodeContainer[NodeId] nodes;
+    ChunkLayout layout_;
 
     static Graph create(ubyte dimension) {
         Graph g;
@@ -46,10 +45,15 @@ struct Graph {
     }
 
     NodeId neighbor(NodeId node, Side which) const {
-        auto nc = node in nodes;
-        if (nc is null) return NodeId.init;
-        auto n = (*nc).neighbors[which];
-        return n.valid ? n.id : NodeId.init;
+        const(NodeContainer)* nc = node in nodes;
+        if (nc is null) {
+            return NodeId.init;
+        }
+        OptionalNodeId n = (*nc).neighbors[which];
+        if (n.valid) {
+            return n.id;
+        }
+        return NodeId.init;
     }
 
     uint depth(NodeId node) const {
@@ -60,30 +64,35 @@ struct Graph {
         return nodes[id].value;
     }
 
-    /// Ensures that the neighbor node exists
     NodeId ensureNeighbor(NodeId node, Side side) {
-        auto nc = node in nodes;
-        if (nc is null) return NodeId.init;
-        auto n = (*nc).neighbors[side];
-        if (n.valid) return n.id;
+        NodeContainer* nc = node in nodes;
+        if (nc is null) {
+            return NodeId.init;
+        }
+        OptionalNodeId n = (*nc).neighbors[side];
+        if (n.valid) {
+            return n.id;
+        }
         return insertChild(node, side);
     }
 
     bool isParentSide(NodeId node, Side side) const {
-        auto nc = node in nodes;
-        if (nc is null) return false;
-        auto n = (*nc).neighbors[side];
-        if (!n.valid) return false;
-        auto neighborNC = n.id in nodes;
-        if (neighborNC is null) return false;
+        const(NodeContainer)* nc = node in nodes;
+        if (nc is null) {
+            return false;
+        }
+        OptionalNodeId n = (*nc).neighbors[side];
+        if (!n.valid) {
+            return false;
+        }
+        const(NodeContainer)* neighborNC = n.id in nodes;
+        if (neighborNC is null) {
+            return false;
+        }
         return (*neighborNC).depth < (*nc).depth;
     }
 
     NodeId insertChild(NodeId node, Side side) {
-        // Collect all parents of the subject, ensuring they exist.
-        // Matches Rust's populate_parents_of_subject.
-        // Each parent is (side shared with subject, parent NodeId).
-        // Sorted by side enum order since we iterate in order.
         struct ParentEntry {
             Side side;
             NodeId id;
@@ -91,27 +100,27 @@ struct Graph {
         ParentEntry[3] parents;
         int parentCount = 0;
 
-        foreach (cs; 0 .. SIDE_COUNT) {
-            auto candidateSide = cast(Side) cs;
+        foreach (cs; 0 .. cast(int)(Side.max + 1)) {
+            Side candidateSide = cast(Side) cs;
             if (candidateSide == side) {
                 parents[parentCount++] = ParentEntry(side, node);
-            } else if (sideAdjacentTo(candidateSide, side)
+            }
+            else if (sideAdjacentTo(candidateSide, side)
                        && isParentSide(node, candidateSide))
             {
-                auto parentOfNode = neighbor(node, candidateSide);
-                auto parentOfSubject = ensureNeighbor(parentOfNode, side);
+                NodeId parentOfNode = neighbor(node, candidateSide);
+                NodeId parentOfSubject = ensureNeighbor(parentOfNode, side);
                 parents[parentCount++] = ParentEntry(candidateSide, parentOfSubject);
             }
         }
 
-        // First parent in enum order is the canonical primary parent.
-        auto primarySide = parents[0].side;
-        auto primaryParent = parents[0].id;
+        Side primarySide = parents[0].side;
+        NodeId primaryParent = parents[0].id;
 
         MurmurHash3!128 hasher;
         hasher.put(cast(ubyte[])(primaryParent.value[]));
         hasher.put(cast(ubyte) primarySide);
-        auto hash = hasher.finish();
+        ubyte[16] hash = hasher.finish();
         NodeId id;
         (cast(ubyte[])id.value[])[] = hash[0 .. 16];
 
@@ -125,33 +134,37 @@ struct Graph {
         return id;
     }
 
-    private void linkNeighbors(NodeId a, NodeId b, Side side) {
-        if (auto nc = a in nodes) {
-            (*nc).neighbors[side] = OptionalNodeId(b, true);
+    void linkNeighbors(NodeId a, NodeId b, Side side) {
+        NodeContainer* nca = a in nodes;
+        if (nca !is null) {
+            (*nca).neighbors[side] = OptionalNodeId(b, true);
         }
-        if (auto nc = b in nodes) {
-            (*nc).neighbors[side] = OptionalNodeId(a, true);
+        NodeContainer* ncb = b in nodes;
+        if (ncb !is null) {
+            (*ncb).neighbors[side] = OptionalNodeId(a, true);
         }
     }
 
-    struct ParentResult { Side side; NodeId id; }
+    struct ParentResult {
+        Side side;
+        NodeId id;
+    }
 
-    /// Returns up to 3 parent (side, nodeId) pairs — neighbors with lower depth.
     ParentResult[3] parents(NodeId node, out int count) const {
         ParentResult[3] results;
         count = 0;
-        auto nc = node in nodes;
+        const(NodeContainer)* nc = node in nodes;
         if (nc is null) {
             return results;
         }
         uint nodeDepth = (*nc).depth;
-        foreach (sideIdx; 0 .. SIDE_COUNT) {
-            auto side = cast(Side) sideIdx;
-            auto n = (*nc).neighbors[side];
+        foreach (sideIdx; 0 .. cast(int)(Side.max + 1)) {
+            Side side = cast(Side) sideIdx;
+            OptionalNodeId n = (*nc).neighbors[side];
             if (!n.valid) {
                 continue;
             }
-            auto neighborNC = n.id in nodes;
+            const(NodeContainer)* neighborNC = n.id in nodes;
             if (neighborNC is null) {
                 continue;
             }
@@ -165,53 +178,46 @@ struct Graph {
         return results;
     }
 
-    /// The node ID is already its hash (matches Rust graph.hash_of).
     ulong hashOf(NodeId node) const {
         return node.value[0] ^ node.value[1];
     }
 
-    /// Lazily compute and return the NodeState for a node.
     void ensureNodeState(NodeId nodeId) {
-        import common.worldgen.mod_ : NodeState;
-        auto nc = nodeId in nodes;
+        NodeContainer* nc = nodeId in nodes;
         if (nc is null) {
             return;
         }
         if ((*nc).value.state !is null) {
             return;
         }
-        // Ensure parents have state first
         int pcount;
-        auto ps = parents(nodeId, pcount);
+        ParentResult[3] ps = parents(nodeId, pcount);
         foreach (i; 0 .. pcount) {
             ensureNodeState(ps[i].id);
         }
         (*nc).value.state = cast(void*) NodeState.create(this, nodeId);
     }
 
-    /// Return the NodeState (must have been ensured first).
-    auto nodeState(NodeId nodeId) const {
-        import common.worldgen.mod_ : NodeState;
+    const(NodeState)* nodeState(NodeId nodeId) const {
         return cast(const(NodeState)*) nodes[nodeId].value.state;
     }
 
-    /// Normalize a transform to find the closest node
     NodeId normalizeTransform(NodeId reference, ref MIsometry!float transform) const {
-        auto location = transform * MPoint!float.origin();
+        MPoint!float location = transform * MPoint!float.origin();
         bool moved = true;
         while (moved) {
             moved = false;
-            foreach (sideIdx; 0 .. SIDE_COUNT) {
-                auto side = cast(Side) sideIdx;
+            foreach (sideIdx; 0 .. cast(int)(Side.max + 1)) {
+                Side side = cast(Side) sideIdx;
                 if (!sideIsFacing(side, location)) {
                     continue;
                 }
-                auto n = neighbor(reference, side);
+                NodeId n = neighbor(reference, side);
                 if (n == NodeId.init) {
                     continue;
                 }
                 reference = n;
-                auto refl = sideReflection(side);
+                MIsometry!float refl = sideReflection(side);
                 location = refl * location;
                 transform = refl * transform;
                 moved = true;
@@ -222,17 +228,17 @@ struct Graph {
     }
 }
 
-private struct OptionalNodeId {
+struct OptionalNodeId {
     NodeId id;
     bool valid;
 }
 
-private struct NodeContainer {
+struct NodeContainer {
     Node value;
     Side primaryParentSide;
     bool hasPrimaryParent;
     uint depth;
-    OptionalNodeId[SIDE_COUNT] neighbors;
+    OptionalNodeId[Side.max + 1] neighbors;
 
     static NodeContainer create(Side primaryParentSide, bool hasPrimary, uint depth) {
         NodeContainer nc;

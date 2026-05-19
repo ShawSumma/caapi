@@ -6,7 +6,7 @@ import common.graph;
 import common.math;
 import common.node;
 import std.math : isNaN;
-import common.dodeca : Vertex, VERTEX_COUNT;
+import common.dodeca : Vertex;
 
 struct GraphCollisionHit {
     float tanhDistance;
@@ -16,7 +16,6 @@ struct GraphCollisionHit {
 
 struct OutOfBounds {}
 
-/// Performs sphere casting against the voxels in the graph
 GraphCollisionHit sphereCast(
     float colliderRadius,
     const ref Graph graph,
@@ -31,15 +30,19 @@ GraphCollisionHit sphereCast(
     hit.tanhDistance = float.nan;
     outOfBounds = false;
 
-    foreach (vIdx; 0 .. VERTEX_COUNT) {
-        auto vertex = cast(Vertex) vIdx;
-        auto chunk = ChunkId(posNode, vertex);
+    foreach (vIdx; 0 .. 20) {
+        Vertex vertex = cast(Vertex) vIdx;
+        ChunkId chunk = ChunkId(posNode, vertex);
 
-        if (!graph.contains(posNode)) continue;
-        auto c = &graph[posNode].chunks.values[vertex];
-        if (c.state != ChunkState.Populated) continue;
+        if (!graph.contains(posNode)) {
+            continue;
+        }
+        const(Chunk)* c = &graph[posNode].chunks.values[vertex];
+        if (c.state != ChunkState.Populated) {
+            continue;
+        }
 
-        auto chunkHit = chunkSphereCast(colliderRadius, c.voxels, graph.layout(), ray, tanhDistance);
+        ChunkCollisionHit chunkHit = chunkSphereCast(colliderRadius, c.voxels, graph.layout(), ray, tanhDistance);
         if (!isNaN(chunkHit.tanhDistance)) {
             tanhDistance = chunkHit.tanhDistance;
             hit.tanhDistance = chunkHit.tanhDistance;

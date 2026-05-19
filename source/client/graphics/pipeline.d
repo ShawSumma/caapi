@@ -75,7 +75,7 @@ struct CubePipeline {
 
         VkPipelineColorBlendAttachmentState cba;
         cba.blendEnable = 0;
-        cba.colorWriteMask = 0xf; // RGBA
+        cba.colorWriteMask = 0xf;
 
         VkPipelineColorBlendStateCreateInfo cb;
         cb.sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
@@ -91,15 +91,18 @@ struct CubePipeline {
         VkPushConstantRange pcr;
         pcr.stageFlags = VkShaderStageFlagBits.VK_SHADER_STAGE_VERTEX_BIT;
         pcr.offset = 0;
-        pcr.size = 64; // mat4
+        pcr.size = 64;
 
         VkPipelineLayoutCreateInfo plci;
         plci.sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         plci.pushConstantRangeCount = 1;
         plci.pPushConstantRanges = &pcr;
 
-        auto res = vkCreatePipelineLayout(device, &plci, null, &layout);
-        if (res != VkResult.VK_SUCCESS) { writeln("pipeline layout failed"); return false; }
+        VkResult res = vkCreatePipelineLayout(device, &plci, null, &layout);
+        if (res != VkResult.VK_SUCCESS) {
+            writeln("pipeline layout failed");
+            return false;
+        }
 
         VkGraphicsPipelineCreateInfo gpci;
         gpci.sType = VkStructureType.VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -124,7 +127,10 @@ struct CubePipeline {
         gpci.subpass = 0;
 
         res = vkCreateGraphicsPipelines(device, 0, 1, &gpci, null, &pipeline);
-        if (res != VkResult.VK_SUCCESS) { writefln("pipeline create failed: %s", res); return false; }
+        if (res != VkResult.VK_SUCCESS) {
+            writefln("pipeline create failed: %s", res);
+            return false;
+        }
         writeln("Cube pipeline created");
         return true;
     }
@@ -145,12 +151,12 @@ struct CubePipeline {
     }
 }
 
-private bool createShader(VkDevice device, const(ubyte)[] spv, ref VkShaderModule mod) {
+bool createShader(VkDevice device, const(ubyte)[] spv, ref VkShaderModule mod) {
     VkShaderModuleCreateInfo ci;
     ci.sType = VkStructureType.VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     ci.codeSize = spv.length;
     ci.pCode = cast(const(uint)*) spv.ptr;
-    auto res = vkCreateShaderModule(device, &ci, null, &mod);
+    VkResult res = vkCreateShaderModule(device, &ci, null, &mod);
     return res == VkResult.VK_SUCCESS;
 }
 
