@@ -1,0 +1,35 @@
+#version 450
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer NodeTransforms {
+    mat4 nodeTransforms[];
+};
+
+layout(set = 0, binding = 1, std430) readonly buffer VertexTransforms {
+    mat4 vertexTransforms[20];
+};
+
+layout(set = 0, binding = 2, std430) readonly buffer SlotTasks {
+    uvec4 slotTasks[]; // x = nodeIndex, y = vertexId, z = slotId
+};
+
+layout(set = 0, binding = 3, std430) writeonly buffer OutputTransforms {
+    mat4 outTransforms[];
+};
+
+layout(push_constant) uniform PushConstants {
+    uint activeCount;
+};
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= activeCount) return;
+
+    uvec4 task = slotTasks[idx];
+    uint nodeIdx = task.x;
+    uint vertexId = task.y;
+    uint slotId = task.z;
+
+    outTransforms[slotId] = nodeTransforms[nodeIdx] * vertexTransforms[vertexId];
+}

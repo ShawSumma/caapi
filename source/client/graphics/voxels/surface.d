@@ -127,7 +127,8 @@ struct SurfacePipeline {
         }
 
         transformsVbo = GpuBuffer.create(phys, device, cast(void[]) transforms,
-            VkBufferUsageFlagBits.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+            VkBufferUsageFlagBits.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+            VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
         chunkCount = cast(uint) transforms.length;
 
         if (!createTextureArray(phys, device, queue, cmdPool)) {

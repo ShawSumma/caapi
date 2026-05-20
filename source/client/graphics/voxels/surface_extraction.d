@@ -88,6 +88,20 @@ struct SurfaceExtraction {
     uint maxFaces;
     uint[] packBuf;
 
+    VkShaderModule tfCompShader;
+    VkDescriptorSetLayout tfLayout;
+    VkPipelineLayout tfPipelineLayout;
+    VkPipeline tfPipeline;
+    VkDescriptorPool tfDescPool;
+    VkDescriptorSet tfDescSet;
+    GpuBuffer nodeTransformsBuf;
+    GpuBuffer vertexTransformsBuf;
+    GpuBuffer slotTasksBuf;
+    void* nodeTransformsMapped;
+    void* slotTasksMapped;
+    bool tfReady;
+    enum MAX_NODES = 1024;
+
     VkShaderModule wgenShader;
     VkDescriptorSetLayout wgenParamsLayout;
     VkPipelineLayout wgenPipelineLayout;
@@ -96,6 +110,7 @@ struct SurfaceExtraction {
     VkDescriptorSet[] wgenParamsSets;
     GpuBuffer wgenParamsBuf;
     GpuBuffer voronoiTableBuf;
+    void* wgenParamsMapped;
     bool wgenReady;
 
     bool init(VkPhysicalDevice phys, VkDevice device, uint dim, uint conc, uint slots) {
@@ -243,7 +258,159 @@ struct SurfaceExtraction {
         if (wgenReady) {
             writeln("GPU worldgen initialized");
         }
+        tfReady = initTransformCompute(phys, device, slots);
+        if (tfReady) {
+            writeln("GPU transform compute initialized");
+        }
         return true;
+    }
+
+    bool initTransformCompute(VkPhysicalDevice phys, VkDevice device, uint slots) {
+        import common.dodeca : Vertex, vertexChunkToNode;
+        import common.math : Matrix4;
+
+        static immutable ubyte[] tfSpv = cast(immutable(ubyte)[]) import("transforms.comp.spv");
+        VkShaderModuleCreateInfo smci;
+        smci.sType = VkStructureType.VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        smci.codeSize = tfSpv.length;
+        smci.pCode = cast(const(uint)*) tfSpv.ptr;
+        if (vkCreateShaderModule(device, &smci, null, &tfCompShader) != VkResult.VK_SUCCESS) {
+            return false;
+        }
+
+        VkDescriptorSetLayoutBinding[4] binds;
+        foreach (i; 0 .. 4) {
+            binds[i].binding = cast(uint) i;
+            binds[i].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            binds[i].descriptorCount = 1;
+            binds[i].stageFlags = VkShaderStageFlagBits.VK_SHADER_STAGE_COMPUTE_BIT;
+        }
+        VkDescriptorSetLayoutCreateInfo dlci;
+        dlci.sType = VkStructureType.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        dlci.bindingCount = 4;
+        dlci.pBindings = binds.ptr;
+        vkCreateDescriptorSetLayout(device, &dlci, null, &tfLayout);
+
+        VkPushConstantRange pcr;
+        pcr.stageFlags = VkShaderStageFlagBits.VK_SHADER_STAGE_COMPUTE_BIT;
+        pcr.offset = 0;
+        pcr.size = 4;
+        VkPipelineLayoutCreateInfo plci;
+        plci.sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        plci.setLayoutCount = 1;
+        plci.pSetLayouts = &tfLayout;
+        plci.pushConstantRangeCount = 1;
+        plci.pPushConstantRanges = &pcr;
+        vkCreatePipelineLayout(device, &plci, null, &tfPipelineLayout);
+
+        VkComputePipelineCreateInfo cpci;
+        cpci.sType = VkStructureType.VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        cpci.stage.sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        cpci.stage.stage = VkShaderStageFlagBits.VK_SHADER_STAGE_COMPUTE_BIT;
+        cpci.stage.mod = tfCompShader;
+        cpci.stage.pName = "main";
+        cpci.layout = tfPipelineLayout;
+        if (vkCreateComputePipelines(device, 0, 1, &cpci, null, &tfPipeline) != VkResult.VK_SUCCESS) {
+            return false;
+        }
+
+        VkDescriptorPoolSize poolSize;
+        poolSize.type = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        poolSize.descriptorCount = 4;
+        VkDescriptorPoolCreateInfo dpci;
+        dpci.sType = VkStructureType.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        dpci.maxSets = 1;
+        dpci.poolSizeCount = 1;
+        dpci.pPoolSizes = &poolSize;
+        vkCreateDescriptorPool(device, &dpci, null, &tfDescPool);
+
+        VkDescriptorSetAllocateInfo dsai;
+        dsai.sType = VkStructureType.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        dsai.descriptorPool = tfDescPool;
+        dsai.descriptorSetCount = 1;
+        dsai.pSetLayouts = &tfLayout;
+        vkAllocateDescriptorSets(device, &dsai, &tfDescSet);
+
+        nodeTransformsBuf = GpuBuffer.createHostVisible(phys, device,
+            MAX_NODES * 64, VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        vkMapMemory(device, nodeTransformsBuf.memory, 0, MAX_NODES * 64, 0, &nodeTransformsMapped);
+
+        slotTasksBuf = GpuBuffer.createHostVisible(phys, device,
+            slots * 16, VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        vkMapMemory(device, slotTasksBuf.memory, 0, slots * 16, 0, &slotTasksMapped);
+
+        float[20 * 16] vtxData;
+        foreach (vi; 0 .. 20) {
+            Matrix4!float m = vertexChunkToNode(cast(Vertex) vi);
+            foreach (col; 0 .. 4) {
+                foreach (row; 0 .. 4) {
+                    vtxData[vi * 16 + col * 4 + row] = m.data[col][row];
+                }
+            }
+        }
+        vertexTransformsBuf = GpuBuffer.create(phys, device, cast(void[]) vtxData[],
+            VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+
+        VkDescriptorBufferInfo[4] infos;
+        infos[0].buffer = nodeTransformsBuf.buffer;
+        infos[0].range = VK_WHOLE_SIZE;
+        infos[1].buffer = vertexTransformsBuf.buffer;
+        infos[1].range = VK_WHOLE_SIZE;
+        infos[2].buffer = slotTasksBuf.buffer;
+        infos[2].range = VK_WHOLE_SIZE;
+
+        VkWriteDescriptorSet[3] writes;
+        foreach (i; 0 .. 3) {
+            writes[i].sType = VkStructureType.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[i].dstSet = tfDescSet;
+            writes[i].dstBinding = cast(uint) i;
+            writes[i].descriptorCount = 1;
+            writes[i].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[i].pBufferInfo = &infos[i];
+        }
+        vkUpdateDescriptorSets(device, 3, writes.ptr, 0, null);
+
+        return true;
+    }
+
+    void bindTransformOutput(VkDevice device, ulong transformsBuf) {
+        VkDescriptorBufferInfo info;
+        info.buffer = transformsBuf;
+        info.range = VK_WHOLE_SIZE;
+        VkWriteDescriptorSet w;
+        w.sType = VkStructureType.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w.dstSet = tfDescSet;
+        w.dstBinding = 3;
+        w.descriptorCount = 1;
+        w.descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        w.pBufferInfo = &info;
+        vkUpdateDescriptorSets(device, 1, &w, 0, null);
+    }
+
+    void recordTransformCompute(VkCommandBuffer cmd, uint activeCount, ulong transformsBuf) {
+        if (!tfReady || activeCount == 0) {
+            return;
+        }
+
+        vkCmdBindPipeline(cmd, cast(VkPipelineBindPoint) 1, tfPipeline);
+        vkCmdBindDescriptorSets(cmd, cast(VkPipelineBindPoint) 1, tfPipelineLayout,
+            0, 1, &tfDescSet, 0, null);
+        vkCmdPushConstants(cmd, tfPipelineLayout,
+            VkShaderStageFlagBits.VK_SHADER_STAGE_COMPUTE_BIT, 0, 4, &activeCount);
+        vkCmdDispatch(cmd, (activeCount + 63) / 64, 1, 1);
+
+        VkBufferMemoryBarrier bar;
+        bar.sType = VkStructureType.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        bar.srcAccessMask = VkAccessFlagBits.VK_ACCESS_SHADER_WRITE_BIT;
+        bar.dstAccessMask = VkAccessFlagBits.VK_ACCESS_SHADER_READ_BIT;
+        bar.srcQueueFamilyIndex = ~0u;
+        bar.dstQueueFamilyIndex = ~0u;
+        bar.buffer = transformsBuf;
+        bar.size = VK_WHOLE_SIZE;
+        vkCmdPipelineBarrier(cmd,
+            VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+            0, 0, null, 1, &bar, 0, null);
     }
 
     bool initWorldgen(VkPhysicalDevice phys, VkDevice device) {
@@ -320,9 +487,9 @@ struct SurfaceExtraction {
         vkAllocateDescriptorSets(device, &wgdai, wgenParamsSets.ptr);
 
         uint wgenParamsSize = roundUp(WorldgenParamsGPU.sizeof, 256) * concurrency;
-        ubyte[] wpInit = new ubyte[wgenParamsSize];
-        wgenParamsBuf = GpuBuffer.create(phys, device, wpInit,
+        wgenParamsBuf = GpuBuffer.createHostVisible(phys, device, wgenParamsSize,
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+        vkMapMemory(device, wgenParamsBuf.memory, 0, wgenParamsSize, 0, &wgenParamsMapped);
 
         TerrainVoronoiEntry[] voronoiData = buildVoronoiTableGPU();
         voronoiTableBuf = GpuBuffer.create(phys, device, cast(void[]) voronoiData,
@@ -353,12 +520,9 @@ struct SurfaceExtraction {
     }
 
     uint uploadWorldgenParams(VkDevice device, uint scratchIndex, const ref WorldgenParamsGPU params) {
-        uint offset = roundUp(WorldgenParamsGPU.sizeof, 256) * scratchIndex;
-        void* mapped;
-        vkMapMemory(device, wgenParamsBuf.memory, offset, WorldgenParamsGPU.sizeof, 0, &mapped);
         import core.stdc.string : memcpy;
-        memcpy(mapped, &params, WorldgenParamsGPU.sizeof);
-        vkUnmapMemory(device, wgenParamsBuf.memory);
+        uint offset = roundUp(WorldgenParamsGPU.sizeof, 256) * scratchIndex;
+        memcpy(cast(ubyte*) wgenParamsMapped + offset, &params, WorldgenParamsGPU.sizeof);
         return offset;
     }
 

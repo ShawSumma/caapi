@@ -17,7 +17,7 @@ import common.dodeca : Vertex, Side,
 import common.math : Matrix4, MDirection, MPoint, MIsometry, MVector;
 import common.graph : Graph, NodeId;
 import common.node : Chunk, ChunkId, ChunkState;
-import common.worldgen : ChunkParams, generateVoxels;
+import common.worldgen : ChunkParams, generateVoxels, hash;
 import common.proto : Position;
 import common.traversal : ensureNearby, ensureAndCollectNearby, collectNearby, NearbyNode;
 import common.voxel_math : Coords, CoordSign, CoordAxis;
@@ -35,10 +35,10 @@ struct Renderer {
     Position camPos;
     Graph graph;
     float viewRadius = 5.0f;
-    enum float RENDER_RADIUS = 2.0f;
+    enum float RENDER_RADIUS = 2.5f;
 
     enum MAX_SLOTS = 4096;
-    enum CONCURRENCY = 128;
+    enum CONCURRENCY = 512;
 
     uint[ChunkId] slotMap;
     uint[ChunkId] slotGeneration;
@@ -51,6 +51,58 @@ struct Renderer {
     uint tasksLen;
     uint[CONCURRENCY] wgenOffsets;
     bool[CONCURRENCY] wgenMask;
+
+    WorldgenParamsGPU fillWorldgenParams(ChunkParams params) {
+        import common.dodeca : vertexChunkToNode;
+        import common.worldgen.plane : Plane;
+        import core.bitop : rol;
+
+        WorldgenParamsGPU gp;
+
+        Matrix4!float ctn = vertexChunkToNode(params.chunk);
+        foreach (col; 0 .. 4) {
+            foreach (row; 0 .. 4) {
+                gp.chunkToNode[col * 4 + row] = ctn.data[col][row];
+            }
+        }
+
+        gp.surfaceNormal = [
+            params.surface.scaledNormal.data[0],
+            params.surface.scaledNormal.data[1],
+            params.surface.scaledNormal.data[2],
+            params.surface.scaledNormal.data[3],
+        ];
+
+        Plane roadPlane = -Plane.fromSide(Side.B);
+        gp.roadPlaneNormal = [
+            roadPlane.scaledNormal.data[0],
+            roadPlane.scaledNormal.data[1],
+            roadPlane.scaledNormal.data[2],
+            roadPlane.scaledNormal.data[3],
+        ];
+
+        uint flags = (params.isRoad ? 1u : 0u) | (params.isRoadSupport ? 2u : 0u);
+        gp.scalars = [
+            params.surface.exponent,
+            roadPlane.exponent,
+            *cast(float*)&flags,
+            0.0f,
+        ];
+
+        ulong seed = hash(params.nodeSpice, params.chunk);
+        gp.rngSeed = [cast(uint)(seed & 0xFFFFFFFF), cast(uint)(seed >> 32)];
+
+        gp.elev0 = params.env.maxElevations[0 .. 4];
+        gp.elev1 = params.env.maxElevations[4 .. 8];
+        gp.temp0 = params.env.temperatures[0 .. 4];
+        gp.temp1 = params.env.temperatures[4 .. 8];
+        gp.rain0 = params.env.rainfalls[0 .. 4];
+        gp.rain1 = params.env.rainfalls[4 .. 8];
+        gp.block0 = params.env.blockinesses[0 .. 4];
+        gp.block1 = params.env.blockinesses[4 .. 8];
+
+        return gp;
+    }
 
     void rotateCamera(float yawDelta, float pitchDelta, float rollDelta = 0) {
         if (yawDelta != 0) {
@@ -135,6 +187,10 @@ struct Renderer {
             return false;
         }
 
+        if (extract.tfReady) {
+            extract.bindTransformOutput(core.device, voxels.transformsVbo.buffer);
+        }
+
         worldgenDriver = WorldgenDriver.create();
 
         camPos.node = NodeId.ROOT;
@@ -167,80 +223,186 @@ struct Renderer {
         MDirection!float[5] frustumPlanes = frustum.planes();
         MIsometry!float camInverse = camPos.local.inverse();
 
-        void* tfMapped;
-        vkMapMemory(core.device, voxels.transformsVbo.memory,
-                     0, MAX_SLOTS * 64, 0, &tfMapped);
-        float* tfBuf = cast(float*) tfMapped;
+        void* voxelsMapped = null;
 
-        void* voxelsMapped = extract.mapVoxels(core.device);
+        float* nodeTfBuf = cast(float*) extract.nodeTransformsMapped;
+        uint* slotTaskBuf = cast(uint*) extract.slotTasksMapped;
+
+        uint wgenTaskCount = 0;
+        uint nodeIndex = 0;
 
         foreach (ref nn; cachedNodes) {
             if (!graph.contains(nn.id)) {
                 continue;
             }
+            uint thisNodeIndex = nodeIndex;
+            bool nodeUploaded = false;
+            nodeIndex++;
+
             foreach (vIdx; 0 .. 20) {
                 Vertex v = cast(Vertex) vIdx;
                 Chunk* c = &graph[nn.id].chunks.values[v];
-                if (c.state != ChunkState.Populated || c.voxels.isSolid()) {
-                    continue;
-                }
-
                 ChunkId chunkId = ChunkId(nn.id, v);
-                uint slot;
-                bool needsExtract = false;
-                bool slotHasData = false;
 
-                if (uint* p = chunkId in slotMap) {
-                    slot = *p;
-                    uint* gen = chunkId in slotGeneration;
-                    if (gen is null || *gen != c.generation) {
-                        needsExtract = true;
-                    }
-                    slotHasData = gen !is null;
-                } else {
-                    needsExtract = true;
-                    if (freeCount > 0) {
-                        freeCount--;
-                        slot = freeSlotsBuf[freeCount];
-                    } else if (nextSlot < MAX_SLOTS) {
-                        slot = nextSlot++;
+                if (c.state == ChunkState.Populated && !c.voxels.isSolid()) {
+                    uint slot;
+                    bool needsExtract = false;
+                    bool slotHasData = false;
+
+                    if (uint* p = chunkId in slotMap) {
+                        slot = *p;
+                        uint* gen = chunkId in slotGeneration;
+                        if (gen is null || *gen != c.generation) {
+                            needsExtract = true;
+                        }
+                        slotHasData = gen !is null;
                     } else {
+                        needsExtract = true;
+                        if (freeCount > 0) {
+                            freeCount--;
+                            slot = freeSlotsBuf[freeCount];
+                        } else if (nextSlot < MAX_SLOTS) {
+                            slot = nextSlot++;
+                        } else {
+                            continue;
+                        }
+                        slotMap[chunkId] = slot;
+                    }
+
+                    if (needsExtract && tasksLen < CONCURRENCY) {
+                        if (voxelsMapped is null) {
+                            voxelsMapped = extract.mapVoxels(core.device);
+                        }
+                        wgenMask[tasksLen] = false;
+                        extract.uploadVoxels(
+                            voxelsMapped, tasksLen,
+                            cast(const(ushort)[]) c.voxels.denseData);
+
+                        tasksBuf[tasksLen] = ExtractTask(
+                            extract.indirectOffset(slot),
+                            extract.faceOffset(slot),
+                            tasksLen,
+                            slot);
+                        tasksLen++;
+                        slotGeneration[chunkId] = c.generation;
+                        slotHasData = true;
+                    }
+
+                    if (!slotHasData) {
                         continue;
                     }
-                    slotMap[chunkId] = slot;
-                }
 
-                if (needsExtract && tasksLen < CONCURRENCY) {
-                    extract.uploadVoxels(
-                        voxelsMapped, tasksLen,
-                        cast(const(ushort)[]) c.voxels.denseData);
-
-                    tasksBuf[tasksLen] = ExtractTask(
-                        extract.indirectOffset(slot),
-                        extract.faceOffset(slot),
-                        tasksLen,
-                        slot);
-                    tasksLen++;
-                    slotGeneration[chunkId] = c.generation;
-                    slotHasData = true;
-                }
-
-                if (!slotHasData) {
-                    continue;
-                }
-
-                Matrix4!float m = nn.transform.mat * vertexChunkToNode(v);
-                foreach (col; 0 .. 4) {
-                    foreach (row; 0 .. 4) {
-                        tfBuf[slot * 16 + col * 4 + row] = m.data[col][row];
+                    if (!nodeUploaded) {
+                        foreach (col; 0 .. 4) {
+                            foreach (row; 0 .. 4) {
+                                nodeTfBuf[thisNodeIndex * 16 + col * 4 + row] = nn.transform.mat.data[col][row];
+                            }
+                        }
+                        nodeUploaded = true;
                     }
+                    slotTaskBuf[activeCount * 4] = thisNodeIndex;
+                    slotTaskBuf[activeCount * 4 + 1] = vIdx;
+                    slotTaskBuf[activeCount * 4 + 2] = slot;
+                    slotTaskBuf[activeCount * 4 + 3] = 0;
+                    slotUsed[slot] = true;
+                    activeSlotsBuf[activeCount++] = slot;
+                } else if (c.state == ChunkState.Fresh && extract.wgenReady && tasksLen < CONCURRENCY) {
+                    if (uint* p = chunkId in slotMap) {
+                        uint slot = *p;
+                        if (!nodeUploaded) {
+                            foreach (col; 0 .. 4) {
+                                foreach (row; 0 .. 4) {
+                                    nodeTfBuf[thisNodeIndex * 16 + col * 4 + row] = nn.transform.mat.data[col][row];
+                                }
+                            }
+                            nodeUploaded = true;
+                        }
+                        slotTaskBuf[activeCount * 4] = thisNodeIndex;
+                        slotTaskBuf[activeCount * 4 + 1] = vIdx;
+                        slotTaskBuf[activeCount * 4 + 2] = slot;
+                        slotTaskBuf[activeCount * 4 + 3] = 0;
+                        slotUsed[slot] = true;
+                        activeSlotsBuf[activeCount++] = slot;
+                    } else {
+                        ChunkParams params = ChunkParams.create(graph, chunkId);
+
+                        float meMin = params.env.maxElevations[0];
+                        float meMax = params.env.maxElevations[0];
+                        foreach (me; params.env.maxElevations[1 .. $]) {
+                            if (me < meMin) { meMin = me; }
+                            if (me > meMax) { meMax = me; }
+                        }
+                        float centerElev = params.surface.distanceToChunk(params.chunk, [0.5f, 0.5f, 0.5f]);
+                        enum float ELEV_MARGIN = 0.7f;
+                        enum float TERRAIN_SMOOTH = 10.0f;
+                        if (centerElev - ELEV_MARGIN > meMax / TERRAIN_SMOOTH) {
+                            continue;
+                        }
+                        if (centerElev + ELEV_MARGIN < meMin / TERRAIN_SMOOTH && !params.isRoad) {
+                            continue;
+                        }
+                        WorldgenParamsGPU gp = fillWorldgenParams(params);
+
+                        uint slot;
+                        if (freeCount > 0) {
+                            freeCount--;
+                            slot = freeSlotsBuf[freeCount];
+                        } else if (nextSlot < MAX_SLOTS) {
+                            slot = nextSlot++;
+                        } else {
+                            continue;
+                        }
+                        slotMap[chunkId] = slot;
+
+                        wgenOffsets[tasksLen] = extract.uploadWorldgenParams(core.device, tasksLen, gp);
+                        wgenMask[tasksLen] = true;
+
+                        tasksBuf[tasksLen] = ExtractTask(
+                            extract.indirectOffset(slot),
+                            extract.faceOffset(slot),
+                            tasksLen,
+                            slot);
+                        wgenTaskCount++;
+                        tasksLen++;
+                        slotGeneration[chunkId] = 0;
+
+                        if (!nodeUploaded) {
+                            foreach (col; 0 .. 4) {
+                                foreach (row; 0 .. 4) {
+                                    nodeTfBuf[thisNodeIndex * 16 + col * 4 + row] = nn.transform.mat.data[col][row];
+                                }
+                            }
+                            nodeUploaded = true;
+                        }
+                        slotTaskBuf[activeCount * 4] = thisNodeIndex;
+                        slotTaskBuf[activeCount * 4 + 1] = vIdx;
+                        slotTaskBuf[activeCount * 4 + 2] = slot;
+                        slotTaskBuf[activeCount * 4 + 3] = 0;
+                        slotUsed[slot] = true;
+                        activeSlotsBuf[activeCount++] = slot;
+                    }
+                } else if (uint* p = chunkId in slotMap) {
+                    uint slot = *p;
+                    if (!nodeUploaded) {
+                        foreach (col; 0 .. 4) {
+                            foreach (row; 0 .. 4) {
+                                nodeTfBuf[thisNodeIndex * 16 + col * 4 + row] = nn.transform.mat.data[col][row];
+                            }
+                        }
+                        nodeUploaded = true;
+                    }
+                    slotTaskBuf[activeCount * 4] = thisNodeIndex;
+                    slotTaskBuf[activeCount * 4 + 1] = vIdx;
+                    slotTaskBuf[activeCount * 4 + 2] = slot;
+                    slotTaskBuf[activeCount * 4 + 3] = 0;
+                    slotUsed[slot] = true;
+                    activeSlotsBuf[activeCount++] = slot;
                 }
-                slotUsed[slot] = true;
-                activeSlotsBuf[activeCount++] = slot;
             }
         }
-        extract.unmapVoxels(core.device);
-        vkUnmapMemory(core.device, voxels.transformsVbo.memory);
+        if (voxelsMapped !is null) {
+            extract.unmapVoxels(core.device);
+        }
 
         ChunkId[MAX_SLOTS] removeBuf;
         uint removeLen = 0;
@@ -302,8 +464,24 @@ struct Renderer {
         bi.sType = VkStructureType.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         vkBeginCommandBuffer(cmd, &bi);
 
+        if (wgenTaskCount > 0) {
+            ExtractTask[CONCURRENCY] wgenTasks = void;
+            uint[CONCURRENCY] wgenOff = void;
+            uint wgenLen = 0;
+            foreach (i; 0 .. tasksLen) {
+                if (wgenMask[i]) {
+                    wgenTasks[wgenLen] = tasksBuf[i];
+                    wgenOff[wgenLen] = wgenOffsets[i];
+                    wgenLen++;
+                }
+            }
+            extract.recordWorldgen(core.device, cmd, wgenTasks[0 .. wgenLen], wgenOff[0 .. wgenLen]);
+        }
         if (tasksLen > 0) {
             extract.recordExtract(core.device, cmd, tasksBuf[0 .. tasksLen]);
+        }
+        if (extract.tfReady && activeCount > 0) {
+            extract.recordTransformCompute(cmd, activeCount, voxels.transformsVbo.buffer);
         }
 
         VkClearValue[2] clears;

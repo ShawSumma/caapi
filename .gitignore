@@ -2,3 +2,5 @@
 mined
 mined-server
 mined-test-library
+perf.data*
+*.spv
