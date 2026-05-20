@@ -38,7 +38,7 @@ struct Renderer {
     enum float RENDER_RADIUS = 2.5f;
 
     enum MAX_SLOTS = 4096;
-    enum CONCURRENCY = 512;
+    enum CONCURRENCY = 128;
 
     uint[ChunkId] slotMap;
     uint[ChunkId] slotGeneration;
@@ -225,8 +225,8 @@ struct Renderer {
 
         void* voxelsMapped = null;
 
-        float* nodeTfBuf = cast(float*) extract.nodeTransformsMapped;
-        uint* slotTaskBuf = cast(uint*) extract.slotTasksMapped;
+        float[SurfaceExtraction.MAX_NODES * 16] nodeTfLocal = void;
+        uint[MAX_SLOTS * 4] slotTaskLocal = void;
 
         uint wgenTaskCount = 0;
         uint nodeIndex = 0;
@@ -295,15 +295,15 @@ struct Renderer {
                     if (!nodeUploaded) {
                         foreach (col; 0 .. 4) {
                             foreach (row; 0 .. 4) {
-                                nodeTfBuf[thisNodeIndex * 16 + col * 4 + row] = nn.transform.mat.data[col][row];
+                                nodeTfLocal[thisNodeIndex * 16 + col * 4 + row] = nn.transform.mat.data[col][row];
                             }
                         }
                         nodeUploaded = true;
                     }
-                    slotTaskBuf[activeCount * 4] = thisNodeIndex;
-                    slotTaskBuf[activeCount * 4 + 1] = vIdx;
-                    slotTaskBuf[activeCount * 4 + 2] = slot;
-                    slotTaskBuf[activeCount * 4 + 3] = 0;
+                    slotTaskLocal[activeCount * 4] = thisNodeIndex;
+                    slotTaskLocal[activeCount * 4 + 1] = vIdx;
+                    slotTaskLocal[activeCount * 4 + 2] = slot;
+                    slotTaskLocal[activeCount * 4 + 3] = 0;
                     slotUsed[slot] = true;
                     activeSlotsBuf[activeCount++] = slot;
                 } else if (c.state == ChunkState.Fresh && extract.wgenReady && tasksLen < CONCURRENCY) {
@@ -312,35 +312,19 @@ struct Renderer {
                         if (!nodeUploaded) {
                             foreach (col; 0 .. 4) {
                                 foreach (row; 0 .. 4) {
-                                    nodeTfBuf[thisNodeIndex * 16 + col * 4 + row] = nn.transform.mat.data[col][row];
+                                    nodeTfLocal[thisNodeIndex * 16 + col * 4 + row] = nn.transform.mat.data[col][row];
                                 }
                             }
                             nodeUploaded = true;
                         }
-                        slotTaskBuf[activeCount * 4] = thisNodeIndex;
-                        slotTaskBuf[activeCount * 4 + 1] = vIdx;
-                        slotTaskBuf[activeCount * 4 + 2] = slot;
-                        slotTaskBuf[activeCount * 4 + 3] = 0;
+                        slotTaskLocal[activeCount * 4] = thisNodeIndex;
+                        slotTaskLocal[activeCount * 4 + 1] = vIdx;
+                        slotTaskLocal[activeCount * 4 + 2] = slot;
+                        slotTaskLocal[activeCount * 4 + 3] = 0;
                         slotUsed[slot] = true;
                         activeSlotsBuf[activeCount++] = slot;
                     } else {
                         ChunkParams params = ChunkParams.create(graph, chunkId);
-
-                        float meMin = params.env.maxElevations[0];
-                        float meMax = params.env.maxElevations[0];
-                        foreach (me; params.env.maxElevations[1 .. $]) {
-                            if (me < meMin) { meMin = me; }
-                            if (me > meMax) { meMax = me; }
-                        }
-                        float centerElev = params.surface.distanceToChunk(params.chunk, [0.5f, 0.5f, 0.5f]);
-                        enum float ELEV_MARGIN = 0.7f;
-                        enum float TERRAIN_SMOOTH = 10.0f;
-                        if (centerElev - ELEV_MARGIN > meMax / TERRAIN_SMOOTH) {
-                            continue;
-                        }
-                        if (centerElev + ELEV_MARGIN < meMin / TERRAIN_SMOOTH && !params.isRoad) {
-                            continue;
-                        }
                         WorldgenParamsGPU gp = fillWorldgenParams(params);
 
                         uint slot;
@@ -369,15 +353,15 @@ struct Renderer {
                         if (!nodeUploaded) {
                             foreach (col; 0 .. 4) {
                                 foreach (row; 0 .. 4) {
-                                    nodeTfBuf[thisNodeIndex * 16 + col * 4 + row] = nn.transform.mat.data[col][row];
+                                    nodeTfLocal[thisNodeIndex * 16 + col * 4 + row] = nn.transform.mat.data[col][row];
                                 }
                             }
                             nodeUploaded = true;
                         }
-                        slotTaskBuf[activeCount * 4] = thisNodeIndex;
-                        slotTaskBuf[activeCount * 4 + 1] = vIdx;
-                        slotTaskBuf[activeCount * 4 + 2] = slot;
-                        slotTaskBuf[activeCount * 4 + 3] = 0;
+                        slotTaskLocal[activeCount * 4] = thisNodeIndex;
+                        slotTaskLocal[activeCount * 4 + 1] = vIdx;
+                        slotTaskLocal[activeCount * 4 + 2] = slot;
+                        slotTaskLocal[activeCount * 4 + 3] = 0;
                         slotUsed[slot] = true;
                         activeSlotsBuf[activeCount++] = slot;
                     }
@@ -386,15 +370,15 @@ struct Renderer {
                     if (!nodeUploaded) {
                         foreach (col; 0 .. 4) {
                             foreach (row; 0 .. 4) {
-                                nodeTfBuf[thisNodeIndex * 16 + col * 4 + row] = nn.transform.mat.data[col][row];
+                                nodeTfLocal[thisNodeIndex * 16 + col * 4 + row] = nn.transform.mat.data[col][row];
                             }
                         }
                         nodeUploaded = true;
                     }
-                    slotTaskBuf[activeCount * 4] = thisNodeIndex;
-                    slotTaskBuf[activeCount * 4 + 1] = vIdx;
-                    slotTaskBuf[activeCount * 4 + 2] = slot;
-                    slotTaskBuf[activeCount * 4 + 3] = 0;
+                    slotTaskLocal[activeCount * 4] = thisNodeIndex;
+                    slotTaskLocal[activeCount * 4 + 1] = vIdx;
+                    slotTaskLocal[activeCount * 4 + 2] = slot;
+                    slotTaskLocal[activeCount * 4 + 3] = 0;
                     slotUsed[slot] = true;
                     activeSlotsBuf[activeCount++] = slot;
                 }
@@ -402,6 +386,14 @@ struct Renderer {
         }
         if (voxelsMapped !is null) {
             extract.unmapVoxels(core.device);
+        }
+
+        import core.stdc.string : memcpy;
+        if (nodeIndex > 0) {
+            memcpy(extract.nodeTransformsMapped, nodeTfLocal.ptr, nodeIndex * 64);
+        }
+        if (activeCount > 0) {
+            memcpy(extract.slotTasksMapped, slotTaskLocal.ptr, activeCount * 16);
         }
 
         ChunkId[MAX_SLOTS] removeBuf;
