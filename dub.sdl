@@ -1,5 +1,5 @@
 name "mined"
-description "Hyperbolic voxel engine - D port of hypermine"
+description "Hyperbolic voxel engine"
 license "Apache-2.0"
 targetType "executable"
 targetName "mined"

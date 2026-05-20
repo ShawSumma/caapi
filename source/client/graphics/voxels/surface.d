@@ -300,7 +300,6 @@ struct SurfacePipeline {
         enum LAYER_COUNT = MATERIAL_COUNT - 1;
 
         string[] searchPaths = [
-            "../hypermine/assets/materials",
             "assets/materials",
         ];
 

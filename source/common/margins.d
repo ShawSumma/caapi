@@ -86,13 +86,15 @@ void fixMargins(
     Material[] voxelData = voxels.dataMut(dimension);
     Material[] neighborVoxelData = neighborVoxels.dataMut(dimension);
 
-    foreach (j; 0 .. dimension) {
-        foreach (i; 0 .. dimension) {
+    foreach (j; 0 .. dimension + 2) {
+        foreach (i; 0 .. dimension + 2) {
+            ubyte si = i < 1 ? 1 : (i > dimension ? dimension : cast(ubyte) i);
+            ubyte sj = j < 1 ? 1 : (j > dimension ? dimension : cast(ubyte) j);
             CoordsWithMargins boundaryCoords = CoordsWithMargins(tuvToXyz(
-                [boundaryC, cast(ubyte)(i + 1), cast(ubyte)(j + 1)], direction.axis
+                [boundaryC, si, sj], direction.axis
             ));
             CoordsWithMargins marginCoords = CoordsWithMargins(tuvToXyz(
-                [marginC, cast(ubyte)(i + 1), cast(ubyte)(j + 1)], direction.axis
+                [marginC, cast(ubyte) i, cast(ubyte) j], direction.axis
             ));
 
             voxelData[marginCoords.toIndex(dimension)] =
@@ -113,13 +115,15 @@ void initializeMargins(ubyte dimension, ref VoxelData voxels) {
         ubyte marginC = CoordsWithMargins.marginCoord(dimension, dir.sign);
         ubyte boundaryC = CoordsWithMargins.boundaryCoord(dimension, dir.sign);
         Material[] data = voxels.dataMut(dimension);
-        foreach (j; 0 .. dimension) {
-            foreach (i; 0 .. dimension) {
+        foreach (j; 0 .. dimension + 2) {
+            foreach (i; 0 .. dimension + 2) {
+                ubyte si = i < 1 ? 1 : (i > dimension ? dimension : cast(ubyte) i);
+                ubyte sj = j < 1 ? 1 : (j > dimension ? dimension : cast(ubyte) j);
                 CoordsWithMargins bc = CoordsWithMargins(tuvToXyz(
-                    [boundaryC, cast(ubyte)(i + 1), cast(ubyte)(j + 1)], dir.axis
+                    [boundaryC, si, sj], dir.axis
                 ));
                 CoordsWithMargins mc = CoordsWithMargins(tuvToXyz(
-                    [marginC, cast(ubyte)(i + 1), cast(ubyte)(j + 1)], dir.axis
+                    [cast(ubyte) marginC, cast(ubyte) i, cast(ubyte) j], dir.axis
                 ));
                 data[mc.toIndex(dimension)] = data[bc.toIndex(dimension)];
             }

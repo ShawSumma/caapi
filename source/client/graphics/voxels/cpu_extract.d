@@ -20,16 +20,6 @@ Surface[] cpuExtract(const(ubyte)[] voxels, uint dim) {
         return voxels[idx(x, y, z)] != 0;
     }
 
-    // Per-world-vertex AO: for each face corner, check the 4 voxels
-    // touching that world vertex on the occluding side. This gives
-    // consistent values at shared edges between adjacent coplanar faces,
-    // eliminating seam artifacts.
-    static immutable int[2][3] uvAxes = [
-        [1, 2], // axis 0 (X): u=Y, v=Z
-        [2, 0], // axis 1 (Y): u=Z, v=X
-        [0, 1], // axis 2 (Z): u=X, v=Y
-    ];
-
     for (int z = 0; z < cast(int)dim; z++) {
         for (int y = 0; y < cast(int)dim; y++) {
             for (int x = 0; x < cast(int)dim; x++) {
@@ -47,33 +37,32 @@ Surface[] cpuExtract(const(ubyte)[] voxels, uint dim) {
                     bool inward = here;
                     bool reverse = there;
 
-                    int[3] occBase = [x, y, z];
+                    int[3] base = [x, y, z];
                     if (!inward) {
-                        occBase[axis] -= 1;
+                        base[axis] -= 1;
                     }
 
-                    int uAx = uvAxes[axis][0];
-                    int vAx = uvAxes[axis][1];
+                    int bAx = (axis + 1) % 3;
+                    int cAx = (axis + 2) % 3;
 
                     uint[4] occResult;
                     foreach (ci; 0 .. 4) {
-                        int cu = ci & 1;
-                        int cv = ci >> 1;
-                        int wu = occBase[uAx] + cu;
-                        int wv = occBase[vAx] + cv;
+                        int sb = cast(int)(ci & 1) * 2 - 1;
+                        int sc = cast(int)(ci >> 1) * 2 - 1;
 
-                        int count = 0;
-                        for (int du = -1; du <= 0; du++) {
-                            for (int dv = -1; dv <= 0; dv++) {
-                                int[3] probe = occBase;
-                                probe[uAx] = wu + du;
-                                probe[vAx] = wv + dv;
-                                if (getVoxel(probe[0], probe[1], probe[2])) {
-                                    count++;
-                                }
-                            }
-                        }
-                        occResult[ci] = cast(uint)(4 - count);
+                        int[3] edgeB = base;
+                        edgeB[bAx] += sb;
+                        int[3] edgeC = base;
+                        edgeC[cAx] += sc;
+                        int[3] diag = base;
+                        diag[bAx] += sb;
+                        diag[cAx] += sc;
+
+                        bool ob = getVoxel(edgeB[0], edgeB[1], edgeB[2]);
+                        bool oc = getVoxel(edgeC[0], edgeC[1], edgeC[2]);
+                        bool od = getVoxel(diag[0], diag[1], diag[2]);
+
+                        occResult[ci] = ob && oc ? 0 : 3 - cast(uint)ob - cast(uint)oc - cast(uint)od;
                     }
 
                     bool flip = occResult[1] + occResult[2] > occResult[0] + occResult[3];
