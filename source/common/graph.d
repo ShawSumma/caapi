@@ -10,7 +10,7 @@ import std.digest.murmurhash : MurmurHash3;
 struct NodeId {
     ulong[2] value;
 
-    static immutable NodeId ROOT = NodeId([0, 0]);
+    static immutable NodeId ROOT = NodeId([1, 1]);
 
     bool opEquals(const NodeId other) const {
         return value == other.value;
