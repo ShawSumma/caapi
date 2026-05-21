@@ -242,146 +242,71 @@ struct Renderer {
             foreach (vIdx; 0 .. 20) {
                 Vertex v = cast(Vertex) vIdx;
                 Chunk* c = &graph[nn.id].chunks.values[v];
+                if (c.state != ChunkState.Populated || c.voxels.isSolid()) {
+                    continue;
+                }
+
                 ChunkId chunkId = ChunkId(nn.id, v);
+                uint slot;
+                bool needsExtract = false;
+                bool slotHasData = false;
 
-                if (c.state == ChunkState.Populated && !c.voxels.isSolid()) {
-                    uint slot;
-                    bool needsExtract = false;
-                    bool slotHasData = false;
-
-                    if (uint* p = chunkId in slotMap) {
-                        slot = *p;
-                        uint* gen = chunkId in slotGeneration;
-                        if (gen is null || *gen != c.generation) {
-                            needsExtract = true;
-                        }
-                        slotHasData = gen !is null;
-                    } else {
+                if (uint* p = chunkId in slotMap) {
+                    slot = *p;
+                    uint* gen = chunkId in slotGeneration;
+                    if (gen is null || *gen != c.generation) {
                         needsExtract = true;
-                        if (freeCount > 0) {
-                            freeCount--;
-                            slot = freeSlotsBuf[freeCount];
-                        } else if (nextSlot < MAX_SLOTS) {
-                            slot = nextSlot++;
-                        } else {
-                            continue;
-                        }
-                        slotMap[chunkId] = slot;
                     }
-
-                    if (needsExtract && tasksLen < CONCURRENCY) {
-                        if (voxelsMapped is null) {
-                            voxelsMapped = extract.mapVoxels(core.device);
-                        }
-                        wgenMask[tasksLen] = false;
-                        extract.uploadVoxels(
-                            voxelsMapped, tasksLen,
-                            cast(const(ushort)[]) c.voxels.denseData);
-
-                        tasksBuf[tasksLen] = ExtractTask(
-                            extract.indirectOffset(slot),
-                            extract.faceOffset(slot),
-                            tasksLen,
-                            slot);
-                        tasksLen++;
-                        slotGeneration[chunkId] = c.generation;
-                        slotHasData = true;
-                    }
-
-                    if (!slotHasData) {
+                    slotHasData = gen !is null;
+                } else {
+                    needsExtract = true;
+                    if (freeCount > 0) {
+                        freeCount--;
+                        slot = freeSlotsBuf[freeCount];
+                    } else if (nextSlot < MAX_SLOTS) {
+                        slot = nextSlot++;
+                    } else {
                         continue;
                     }
-
-                    if (!nodeUploaded) {
-                        foreach (col; 0 .. 4) {
-                            foreach (row; 0 .. 4) {
-                                nodeTfLocal[thisNodeIndex * 16 + col * 4 + row] = nn.transform.mat.data[col][row];
-                            }
-                        }
-                        nodeUploaded = true;
-                    }
-                    slotTaskLocal[activeCount * 4] = thisNodeIndex;
-                    slotTaskLocal[activeCount * 4 + 1] = vIdx;
-                    slotTaskLocal[activeCount * 4 + 2] = slot;
-                    slotTaskLocal[activeCount * 4 + 3] = 0;
-                    slotUsed[slot] = true;
-                    activeSlotsBuf[activeCount++] = slot;
-                } else if (c.state == ChunkState.Fresh && extract.wgenReady && tasksLen < CONCURRENCY) {
-                    if (uint* p = chunkId in slotMap) {
-                        uint slot = *p;
-                        if (!nodeUploaded) {
-                            foreach (col; 0 .. 4) {
-                                foreach (row; 0 .. 4) {
-                                    nodeTfLocal[thisNodeIndex * 16 + col * 4 + row] = nn.transform.mat.data[col][row];
-                                }
-                            }
-                            nodeUploaded = true;
-                        }
-                        slotTaskLocal[activeCount * 4] = thisNodeIndex;
-                        slotTaskLocal[activeCount * 4 + 1] = vIdx;
-                        slotTaskLocal[activeCount * 4 + 2] = slot;
-                        slotTaskLocal[activeCount * 4 + 3] = 0;
-                        slotUsed[slot] = true;
-                        activeSlotsBuf[activeCount++] = slot;
-                    } else {
-                        ChunkParams params = ChunkParams.create(graph, chunkId);
-                        WorldgenParamsGPU gp = fillWorldgenParams(params);
-
-                        uint slot;
-                        if (freeCount > 0) {
-                            freeCount--;
-                            slot = freeSlotsBuf[freeCount];
-                        } else if (nextSlot < MAX_SLOTS) {
-                            slot = nextSlot++;
-                        } else {
-                            continue;
-                        }
-                        slotMap[chunkId] = slot;
-
-                        wgenOffsets[tasksLen] = extract.uploadWorldgenParams(core.device, tasksLen, gp);
-                        wgenMask[tasksLen] = true;
-
-                        tasksBuf[tasksLen] = ExtractTask(
-                            extract.indirectOffset(slot),
-                            extract.faceOffset(slot),
-                            tasksLen,
-                            slot);
-                        wgenTaskCount++;
-                        tasksLen++;
-                        slotGeneration[chunkId] = 0;
-
-                        if (!nodeUploaded) {
-                            foreach (col; 0 .. 4) {
-                                foreach (row; 0 .. 4) {
-                                    nodeTfLocal[thisNodeIndex * 16 + col * 4 + row] = nn.transform.mat.data[col][row];
-                                }
-                            }
-                            nodeUploaded = true;
-                        }
-                        slotTaskLocal[activeCount * 4] = thisNodeIndex;
-                        slotTaskLocal[activeCount * 4 + 1] = vIdx;
-                        slotTaskLocal[activeCount * 4 + 2] = slot;
-                        slotTaskLocal[activeCount * 4 + 3] = 0;
-                        slotUsed[slot] = true;
-                        activeSlotsBuf[activeCount++] = slot;
-                    }
-                } else if (uint* p = chunkId in slotMap) {
-                    uint slot = *p;
-                    if (!nodeUploaded) {
-                        foreach (col; 0 .. 4) {
-                            foreach (row; 0 .. 4) {
-                                nodeTfLocal[thisNodeIndex * 16 + col * 4 + row] = nn.transform.mat.data[col][row];
-                            }
-                        }
-                        nodeUploaded = true;
-                    }
-                    slotTaskLocal[activeCount * 4] = thisNodeIndex;
-                    slotTaskLocal[activeCount * 4 + 1] = vIdx;
-                    slotTaskLocal[activeCount * 4 + 2] = slot;
-                    slotTaskLocal[activeCount * 4 + 3] = 0;
-                    slotUsed[slot] = true;
-                    activeSlotsBuf[activeCount++] = slot;
+                    slotMap[chunkId] = slot;
                 }
+
+                if (needsExtract && tasksLen < CONCURRENCY) {
+                    if (voxelsMapped is null) {
+                        voxelsMapped = extract.mapVoxels(core.device);
+                    }
+                    extract.uploadVoxels(
+                        voxelsMapped, tasksLen,
+                        cast(const(ushort)[]) c.voxels.denseData);
+
+                    tasksBuf[tasksLen] = ExtractTask(
+                        extract.indirectOffset(slot),
+                        extract.faceOffset(slot),
+                        tasksLen,
+                        slot);
+                    tasksLen++;
+                    slotGeneration[chunkId] = c.generation;
+                    slotHasData = true;
+                }
+
+                if (!slotHasData) {
+                    continue;
+                }
+
+                if (!nodeUploaded) {
+                    foreach (col; 0 .. 4) {
+                        foreach (row; 0 .. 4) {
+                            nodeTfLocal[thisNodeIndex * 16 + col * 4 + row] = nn.transform.mat.data[col][row];
+                        }
+                    }
+                    nodeUploaded = true;
+                }
+                slotTaskLocal[activeCount * 4] = thisNodeIndex;
+                slotTaskLocal[activeCount * 4 + 1] = vIdx;
+                slotTaskLocal[activeCount * 4 + 2] = slot;
+                slotTaskLocal[activeCount * 4 + 3] = 0;
+                slotUsed[slot] = true;
+                activeSlotsBuf[activeCount++] = slot;
             }
         }
         if (voxelsMapped !is null) {
@@ -456,19 +381,8 @@ struct Renderer {
         bi.sType = VkStructureType.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         vkBeginCommandBuffer(cmd, &bi);
 
-        if (wgenTaskCount > 0) {
-            ExtractTask[CONCURRENCY] wgenTasks = void;
-            uint[CONCURRENCY] wgenOff = void;
-            uint wgenLen = 0;
-            foreach (i; 0 .. tasksLen) {
-                if (wgenMask[i]) {
-                    wgenTasks[wgenLen] = tasksBuf[i];
-                    wgenOff[wgenLen] = wgenOffsets[i];
-                    wgenLen++;
-                }
-            }
-            extract.recordWorldgen(core.device, cmd, wgenTasks[0 .. wgenLen], wgenOff[0 .. wgenLen]);
-        }
+
+
         if (tasksLen > 0) {
             extract.recordExtract(core.device, cmd, tasksBuf[0 .. tasksLen]);
         }
