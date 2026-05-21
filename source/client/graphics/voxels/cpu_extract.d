@@ -1,10 +1,6 @@
 module client.graphics.voxels.cpu_extract;
 
 import client.graphics.voxels.surface : Surface;
-import common.world : Material;
-import common.dodeca : Vertex;
-import common.node : VoxelData;
-import common.worldgen.mod_ : ChunkParams, ChunkIncidentEnviroFactors, generateVoxels;
 
 /// Generate packed Surface faces for a voxel grid. Voxel value 0 = empty, > 0 = material id.
 /// Emits a face whenever a solid voxel has an empty neighbor in -X/-Y/-Z (matching extract.comp).

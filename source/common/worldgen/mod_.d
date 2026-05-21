@@ -1,16 +1,14 @@
 module common.worldgen.mod_;
 
-import common.dodeca;
-import common.graph;
-import common.margins;
-import common.math;
-import common.node;
-import common.voxel_math;
-import common.world;
-import common.worldgen.plane;
-import common.worldgen.terraingen : terraingenVoronoi;
-import std.math;
+import std.math : sqrt, log, cos, PI, floor, pow;
 import core.bitop : rol;
+import common.dodeca : Side, Vertex, vertexCanonicalSides, sideAdjacentTo;
+import common.graph : Graph, NodeId;
+import common.margins : initializeMargins;
+import common.node : ChunkId, VoxelData;
+import common.world : Material;
+import common.worldgen.plane : Plane;
+import common.worldgen.terraingen : terraingenVoronoi;
 
 enum NodeStateKind { Sky, DeepSky, Land, DeepLand }
 enum NodeStateRoad { East, DeepEast, West, DeepWest }
@@ -210,7 +208,7 @@ void generateTerrain(const ref ChunkParams params, ref VoxelData voxels, ref ulo
         }
     }
 
-    enum float ELEVATION_MARGIN = 0.7f;
+    immutable float ELEVATION_MARGIN = 0.7f;
 
     float centerElevation = params.surface.distanceToChunk(params.chunk, [0.5f, 0.5f, 0.5f]);
     if (centerElevation - ELEVATION_MARGIN > meMax / TERRAIN_SMOOTHNESS) {

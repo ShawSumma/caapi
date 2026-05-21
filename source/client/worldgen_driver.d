@@ -1,7 +1,8 @@
 module client.worldgen_driver;
 
+import std.math : cosh;
 import common.dodeca : Vertex, CHUNK_BOUNDING_SPHERE_RADIUS,
-    vertexChunkBoundingSphereCenter;
+    vertexChunkBoundingSphereCenter, vertexCanonicalSides, vertexAdjacentVertices;
 import common.graph : Graph, NodeId;
 import common.math : MPoint, MIsometry;
 import common.node : Chunk, ChunkId, ChunkState, VoxelData;
@@ -18,7 +19,7 @@ struct WorldgenDriver {
         return w;
     }
 
-    enum MAX_GENERATE_PER_FRAME = 8;
+    int maxGeneratePerFrame = 8;
 
     void drive(
         const(NearbyNode)[] nearby,
@@ -27,7 +28,6 @@ struct WorldgenDriver {
         ref Graph graph,
         ubyte chunkSize,
     ) {
-        import std.math : cosh;
         float threshold = cosh(distance + CHUNK_BOUNDING_SPHERE_RADIUS);
         MPoint!float startP = camLocal * MPoint!float.origin();
         uint generated = 0;
@@ -53,7 +53,7 @@ struct WorldgenDriver {
                     preloadedVoxelData.remove(chunkId);
                 }
                 else {
-                    if (generated >= MAX_GENERATE_PER_FRAME) {
+                    if (generated >= maxGeneratePerFrame) {
                         continue;
                     }
                     ChunkParams params = ChunkParams.create(graph, chunkId);
@@ -93,7 +93,6 @@ void populateChunk(ref Graph graph, ChunkId chunk, VoxelData voxels, ubyte dimen
 }
 
 ChunkId getChunkNeighbor(ref Graph graph, ChunkId chunk, ubyte coordAxis, CoordSign coordSign) {
-    import common.dodeca : vertexCanonicalSides, vertexAdjacentVertices;
     if (coordSign == CoordSign.Plus) {
         return ChunkId(chunk.node, vertexAdjacentVertices(chunk.vertex)[coordAxis]);
     }

@@ -1,8 +1,8 @@
 module common.worldgen.plane;
 
 import std.math : asinh, log, exp, fabs, copysign;
-import common.dodeca;
-import common.math;
+import common.dodeca : Side, Vertex, sideNormal, sideReflection, vertexChunkToNode;
+import common.math : Matrix4, MVector, MPoint, MDirection, MIsometry;
 
 struct Plane {
     MVector!float scaledNormal;

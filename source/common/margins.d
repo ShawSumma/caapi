@@ -1,10 +1,9 @@
 module common.margins;
 
-import common.dodeca;
-import common.graph;
-import common.node;
-import common.voxel_math;
-import common.world;
+import common.dodeca : Vertex, vertexChunkAxisPermutations;
+import common.node : VoxelData;
+import common.voxel_math : Coords, CoordAxis, CoordSign, ChunkDirection, ChunkAxisPermutation;
+import common.world : Material;
 
 /// Coordinates for a voxel including margins
 struct CoordsWithMargins {

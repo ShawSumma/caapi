@@ -282,6 +282,7 @@ enum VkIndexType : int {
 
 enum VkFormatExt : int {
     VK_FORMAT_R32G32B32_SFLOAT = 106,
+    VK_FORMAT_R32G32B32A32_SFLOAT = 109,
 }
 
 enum VK_SUBPASS_EXTERNAL = ~0U;

@@ -1,11 +1,10 @@
 module common.graph;
 
-import common.dodeca;
-import common.math;
-import common.node;
-import common.chunks;
-import common.worldgen.mod_ : NodeState;
 import std.digest.murmurhash : MurmurHash3;
+import common.dodeca : Side, sideAdjacentTo, sideIsFacing, sideReflection;
+import common.math : MIsometry, MPoint;
+import common.node : Node, ChunkLayout;
+import common.worldgen.mod_ : NodeState;
 
 struct NodeId {
     ulong[2] value;

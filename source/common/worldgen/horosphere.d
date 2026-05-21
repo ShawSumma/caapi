@@ -1,11 +1,11 @@
 module common.worldgen.horosphere;
 
 import std.math : sqrt;
-import common.dodeca;
-import common.math;
-import common.node;
-import common.voxel_math;
-import common.world;
+import common.dodeca : vertexDualToChunkFactor;
+import common.math : MVector, MPoint, MDirection, MIsometry;
+import common.node : VoxelData;
+import common.voxel_math : Coords;
+import common.world : Material;
 
 struct Horosphere {
     MVector!float pos;

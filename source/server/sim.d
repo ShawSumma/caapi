@@ -1,15 +1,13 @@
 module server.sim;
 
-import common.graph;
-import common.graph_entities;
-import common.math;
-import common.node;
-import common.proto;
-import common.sim_config;
-import common.traversal;
-import common.worldgen;
-import common.dodeca;
-import common.world;
+import common.dodeca : Vertex;
+import common.graph : Graph, NodeId;
+import common.graph_entities : GraphEntities, Entity;
+import common.node : Chunk, ChunkId, ChunkState, VoxelData;
+import common.proto : Position, CharacterInput, EntityId;
+import common.sim_config : SimConfig;
+import common.traversal : ensureNearby;
+import common.worldgen : ChunkParams, ChunkIncidentEnviroFactors, generateVoxels, Plane;
 
 alias Step = int;
 

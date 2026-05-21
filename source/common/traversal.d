@@ -1,10 +1,9 @@
 module common.traversal;
 
-import common.dodeca;
-import common.graph;
-import common.math;
-import common.node;
 import std.math : cosh;
+import common.dodeca : Side, sideReflection, BOUNDING_SPHERE_RADIUS;
+import common.graph : Graph, NodeId;
+import common.math : MIsometry, MPoint;
 
 void ensureNearby(ref Graph graph, NodeId startNode, MIsometry!float startLocal, float distance, size_t maxNewNodes = 256) {
     float maxNodeCenterDistance = distance + BOUNDING_SPHERE_RADIUS;

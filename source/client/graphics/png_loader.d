@@ -2,9 +2,9 @@ module client.graphics.png_loader;
 
 import std.zlib;
 import std.stdio;
+import std.file : read;
 
 ubyte[] loadPngRgba(string path) {
-    import std.file : read;
     ubyte[] fileData;
     try {
         fileData = cast(ubyte[]) read(path);

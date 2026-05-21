@@ -1,12 +1,12 @@
 module common.chunk_collision;
 
-import common.collision_math;
-import common.math;
-import common.node;
-import common.voxel_math;
-import common.world;
 import std.math : isNaN, sinh;
 import std.algorithm : min;
+import common.collision_math : Ray;
+import common.math : MDirection, MVector, MPoint;
+import common.node : VoxelData, ChunkLayout;
+import common.voxel_math : Coords;
+import common.world : Material;
 
 struct ChunkCollisionHit {
     float tanhDistance;

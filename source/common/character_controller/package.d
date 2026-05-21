@@ -100,13 +100,13 @@ bool getGroundNormal(
     const ref Position position,
     ref float[3] outNormal,
 ) {
-    enum MAX_COLLISION_ITERATIONS = 6;
+    int maxCollisionIterations = 6;
     BoundedVectors allowedDisplacement = BoundedVectors.create(
         scale3(neg3(ctx.up), ctx.cfg.groundDistanceTolerance),
         false,
     );
 
-    foreach (_; 0 .. MAX_COLLISION_ITERATIONS) {
+    foreach (_; 0 .. maxCollisionIterations) {
         CollisionCheckingResult collisionResult = checkCollision(
             ctx.collisionContext,
             position,
@@ -181,7 +181,7 @@ void applyVelocity(
     ref bool hasGroundNormal,
     ref float[3] groundNormal,
 ) {
-    enum MAX_COLLISION_ITERATIONS = 6;
+    int maxCollisionIterations = 6;
 
     BoundedVectors boundedVectors = BoundedVectors.create(expectedDisplacement, true, velocity);
     BoundedVectors boundedVectorsWithoutCollisions = boundedVectors.dup();
@@ -189,7 +189,7 @@ void applyVelocity(
     bool groundCollisionHandled = false;
     bool allCollisionsResolved = false;
 
-    foreach (_; 0 .. MAX_COLLISION_ITERATIONS) {
+    foreach (_; 0 .. maxCollisionIterations) {
         CollisionCheckingResult collisionResult = checkCollision(
             ctx.collisionContext,
             position,

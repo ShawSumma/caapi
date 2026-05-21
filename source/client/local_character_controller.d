@@ -1,10 +1,8 @@
 module client.local_character_controller;
 
-import common.math;
+import std.math : atan2, abs, PI, sqrt, sin, cos, fmin, fmax;
+import common.math : MIsometry, Matrix4;
 import common.proto : Position;
-import std.math : atan2, abs, PI, SQRT2, fmin = fmin, fmax = fmax;
-import std.math : sqrt;
-import std.math : sin, cos, sqrt;
 
 struct LocalCharacterController {
     Position position;

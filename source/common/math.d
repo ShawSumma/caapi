@@ -1,8 +1,7 @@
 module common.math;
 
-import std.math;
+import std.math : sqrt, cosh, sinh, acosh, isNaN, isInfinity;
 import std.traits : isFloatingPoint;
-import std.math : isNaN, isInfinity;
 
 struct MVector(N) if (isFloatingPoint!N) {
     N[4] data = [0, 0, 0, 0];

@@ -1,13 +1,10 @@
 module client.sim;
 
-import common.graph;
-import common.graph_entities;
-import common.math;
-import common.proto;
-import common.sim_config;
-import common.world;
-import common.node;
-import common.dodeca;
+import common.graph : Graph;
+import common.graph_entities : GraphEntities;
+import common.proto : Position, CharacterInput, EntityId;
+import common.sim_config : SimConfig;
+import common.world : Material;
 
 struct ClientSim {
     Graph graph;

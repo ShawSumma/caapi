@@ -1,7 +1,7 @@
 module common.collision_math;
 
-import common.math;
 import std.math : sqrt, isFinite;
+import common.math : MPoint, MDirection, MVector, MIsometry;
 
 struct Ray {
     MPoint!float position;
@@ -79,7 +79,7 @@ Ray transformRay(const ref MIsometry!float iso, const ref Ray ray) {
 }
 
 float solveQuadratic(float constantTerm, float halfLinearTerm, float quadraticTerm) {
-    enum float EPSILON = 1e-4f;
+    immutable float EPSILON = 1e-4f;
 
     if (halfLinearTerm >= 0.0f) {
         return float.nan;

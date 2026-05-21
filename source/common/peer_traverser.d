@@ -1,7 +1,7 @@
 module common.peer_traverser;
 
-import common.dodeca;
-import common.graph;
+import common.dodeca : Side, sideAdjacentTo;
+import common.graph : Graph, NodeId;
 
 struct PeerNode {
     NodeId nodeId;

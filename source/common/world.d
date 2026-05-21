@@ -44,10 +44,8 @@ enum Material : ushort {
     CaveGrass = 39,
 }
 
-enum MATERIAL_COUNT = 40;
-
 Material materialFromU16(ushort value) {
-    if (value >= MATERIAL_COUNT) {
+    if (value > Material.max) {
         return Material.Void;
     }
     return cast(Material) value;

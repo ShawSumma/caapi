@@ -1,8 +1,8 @@
 module common.cursor;
 
-import common.dodeca;
-import common.graph;
-import common.node;
+import common.dodeca : Side, Vertex, vertexCanonicalSides, vertexFromThreeSides, sideAdjacentTo;
+import common.graph : Graph, NodeId;
+import common.node : ChunkId;
 
 /// Directions for navigating the cubic dual
 enum Dir {

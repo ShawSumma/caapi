@@ -1,12 +1,12 @@
 module common.graph_collision;
 
-import common.chunk_collision;
-import common.collision_math;
-import common.graph;
-import common.math;
-import common.node;
 import std.math : isNaN;
+import common.chunk_collision : ChunkCollisionHit, chunkSphereCast;
+import common.collision_math : Ray;
 import common.dodeca : Vertex;
+import common.graph : Graph, NodeId;
+import common.math : MIsometry, MVector;
+import common.node : Chunk, ChunkId, ChunkState;
 
 struct GraphCollisionHit {
     float tanhDistance;

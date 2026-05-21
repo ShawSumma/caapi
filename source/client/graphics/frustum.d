@@ -1,6 +1,6 @@
 module client.graphics.frustum;
 
-import std.math : tan, atan, sin, cos, sinh, cosh;
+import std.math : tan, atan, sin, cos, sinh;
 import common.math : MVector, MDirection, MPoint;
 
 struct Frustum {

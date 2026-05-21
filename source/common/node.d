@@ -1,11 +1,10 @@
 module common.node;
 
-import common.chunks;
-import common.dodeca;
-import common.graph;
-import common.voxel_math;
-import common.world;
 import std.math : floor;
+import common.chunks : Chunks;
+import common.dodeca : Vertex, vertexDualToChunkFactor;
+import common.graph : NodeId;
+import common.world : Material;
 
 struct ChunkId {
     NodeId node;

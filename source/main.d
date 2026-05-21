@@ -1,4 +1,5 @@
 import std.stdio;
+import std.file : exists, readText;
 import std.format : format;
 import std.string : toStringz;
 import core.stdc.string : strlen;
@@ -25,7 +26,6 @@ void main(string[] args) {
 
     Script script;
     if (scriptPath.length > 0) {
-        import std.file : exists, readText;
         if (!exists(scriptPath)) {
             writefln("script not found: %s", scriptPath);
             return;
@@ -128,7 +128,7 @@ void main(string[] args) {
             break;
         }
 
-        enum float MOUSE_SENS = 0.003f;
+        immutable float MOUSE_SENS = 0.003f;
         float yaw = cam.yawRate * dt + mouseDx * MOUSE_SENS;
         float pitch = cam.pitchRate * dt + mouseDy * MOUSE_SENS;
         float roll = cam.rollRate * dt;
@@ -221,8 +221,8 @@ struct CameraInput {
 }
 
 void handleKeyDown(uint key, ref CameraInput cam) {
-    enum float TURN = 1.5f;
-    enum float MOVE = 1.0f;
+    immutable float TURN = 1.5f;
+    immutable float MOVE = 1.0f;
     if (key == SDLK_LEFT) {
         cam.yawRate = -TURN;
     }

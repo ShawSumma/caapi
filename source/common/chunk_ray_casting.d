@@ -1,11 +1,11 @@
 module common.chunk_ray_casting;
 
-import common.collision_math;
-import common.math;
-import common.node;
-import common.voxel_math;
-import common.world;
 import std.math : isNaN;
+import common.collision_math : Ray;
+import common.math : MDirection, MVector;
+import common.node : VoxelData, ChunkLayout;
+import common.voxel_math : Coords, CoordAxis, CoordSign;
+import common.world : Material;
 
 struct ChunkRayCastHit {
     float tanhDistance;
