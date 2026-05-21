@@ -16,7 +16,7 @@ struct NodeId {
     }
 
     size_t toHash() const nothrow @safe {
-        return cast(size_t)(value[0] ^ value[1]);
+        return cast(size_t)(value[0] + value[1] * 0x9E3779B97F4A7C15);
     }
 }
 

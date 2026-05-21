@@ -9,6 +9,14 @@ import common.world : Material;
 struct ChunkId {
     NodeId node;
     Vertex vertex;
+
+    bool opEquals(const ChunkId other) const {
+        return node == other.node && vertex == other.vertex;
+    }
+
+    size_t toHash() const nothrow @safe {
+        return cast(size_t)(node.value[0] + node.value[1] * 0x9E3779B97F4A7C15 + cast(ulong) vertex * 0x517CC1B727220A95);
+    }
 }
 
 struct ChunkLayout {
