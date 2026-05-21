@@ -1,8 +1,14 @@
 module client.graphics.voxels.surface;
 
 import std.stdio;
+import std.math : sqrt;
+import std.file : exists, dirEntries, SpanMode;
+import std.path : baseName;
+import core.stdc.string : memcpy;
 import bindings.vk;
 import client.graphics.pipeline : GpuBuffer;
+import client.graphics.png_loader : loadPngRgba;
+import common.world : MATERIAL_COUNT;
 
 struct Surface {
     uint pos_axis;
@@ -293,10 +299,8 @@ struct SurfacePipeline {
 
     bool createTextureArray(VkPhysicalDevice phys, VkDevice device,
                                      VkQueue queue, VkCommandPool cmdPool) {
-        import common.world : MATERIAL_COUNT;
-        import core.stdc.string : memcpy, memset;
-        import client.graphics.png_loader : loadPngRgba;
-        import std.format : format;
+
+
 
         enum LAYER_COUNT = MATERIAL_COUNT - 1;
 
@@ -306,7 +310,8 @@ struct SurfacePipeline {
 
         string materialsDir;
         foreach (p; searchPaths) {
-            import std.file : exists;
+
+
             if (exists(p)) {
                 materialsDir = p;
                 break;
@@ -318,9 +323,8 @@ struct SurfacePipeline {
         ubyte[] allPixels;
 
         if (materialsDir.length > 0) {
-            import std.file : dirEntries, SpanMode;
-            import std.path : baseName;
-            import std.algorithm : startsWith;
+
+
 
             string[] filenames;
             filenames.length = LAYER_COUNT;
@@ -361,7 +365,8 @@ struct SurfacePipeline {
                     }
                 }
                 if (layers.length == 0 && pixels.length > texSize * texSize * 4) {
-                    import std.math : sqrt;
+
+
                     texSize = cast(uint) sqrt(cast(float)(pixels.length / 4));
                 }
                 layers ~= pixels;
@@ -533,7 +538,8 @@ struct SurfacePipeline {
     void updateCommonUbo(VkDevice device, float[16] vp, float[16] invp,
                          float fogDensity, float time, float[4] lightDir) {
         ubyte[160] data = 0;
-        import core.stdc.string : memcpy;
+
+
         memcpy(data.ptr + 0,   vp.ptr,   64);
         memcpy(data.ptr + 64,  invp.ptr, 64);
         memcpy(data.ptr + 128, &fogDensity, 4);

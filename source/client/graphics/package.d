@@ -1,26 +1,25 @@
 module client.graphics;
 
 import std.stdio;
-import std.math : sin, cos, tan, sqrt, PI, log, pow;
+import std.math : sin, cos, sqrt, PI, log, pow, isNaN;
+import std.typecons : Nullable;
+import core.stdc.string : memcpy;
 import bindings.vk;
 import client.graphics.core;
 import client.graphics.base;
 import client.graphics.voxels;
-import client.graphics.voxels.surface_extraction : WorldgenParamsGPU;
 import client.graphics.fog : FogPipeline;
 import client.graphics.frustum : Frustum;
 import client.worldgen_driver : WorldgenDriver;
-import common.dodeca : Vertex, Side,
-    BOUNDING_SPHERE_RADIUS,
-    vertexChunkToNode, vertexChunkBoundingSphereCenter,
-    sideReflection, sideIsFacing, vertexParity;
-import common.math : Matrix4, MDirection, MPoint, MIsometry, MVector;
+import common.collision_math : Ray;
+import common.dodeca : Vertex, Side, sideReflection, sideIsFacing;
+import common.graph_ray_casting : GraphCastHit, rayCast;
+import common.math : Matrix4, MPoint, MIsometry, MVector;
 import common.graph : Graph, NodeId;
 import common.node : Chunk, ChunkId, ChunkState;
-import common.worldgen : ChunkParams, generateVoxels, hash;
 import common.proto : Position;
-import common.traversal : ensureNearby, ensureAndCollectNearby, collectNearby, NearbyNode;
-import common.voxel_math : Coords, CoordSign, CoordAxis;
+import common.traversal : ensureAndCollectNearby, NearbyNode;
+import common.voxel_math : Coords, CoordSign;
 import common.world : Material;
 
 struct Renderer {
@@ -35,74 +34,28 @@ struct Renderer {
     Position camPos;
     Graph graph;
     float viewRadius = 5.0f;
-    enum float RENDER_RADIUS = 2.5f;
+    float renderRadius = 4.5f;
 
-    enum MAX_SLOTS = 4096;
-    enum CONCURRENCY = 128;
+    uint maxSlots = 2^^16;
+    uint concurrency = 128;
 
     uint[ChunkId] slotMap;
     uint[ChunkId] slotGeneration;
     uint nextSlot = 0;
-    uint[MAX_SLOTS] freeSlotsBuf;
+    uint[] freeSlotsBuf;
     uint freeCount;
-    uint[MAX_SLOTS] activeSlotsBuf;
+    uint[] activeSlotsBuf;
     uint activeCount;
-    ExtractTask[CONCURRENCY] tasksBuf;
+    ExtractTask[] tasksBuf;
     uint tasksLen;
-    uint[CONCURRENCY] wgenOffsets;
-    bool[CONCURRENCY] wgenMask;
 
-    WorldgenParamsGPU fillWorldgenParams(ChunkParams params) {
-        import common.dodeca : vertexChunkToNode;
-        import common.worldgen.plane : Plane;
-        import core.bitop : rol;
+    float[] nodeTfLocal;
+    uint[] slotTaskLocal;
+    ubyte[] slotUsedBuf;
+    ChunkId[] removeBuf;
 
-        WorldgenParamsGPU gp;
-
-        Matrix4!float ctn = vertexChunkToNode(params.chunk);
-        foreach (col; 0 .. 4) {
-            foreach (row; 0 .. 4) {
-                gp.chunkToNode[col * 4 + row] = ctn.data[col][row];
-            }
-        }
-
-        gp.surfaceNormal = [
-            params.surface.scaledNormal.data[0],
-            params.surface.scaledNormal.data[1],
-            params.surface.scaledNormal.data[2],
-            params.surface.scaledNormal.data[3],
-        ];
-
-        Plane roadPlane = -Plane.fromSide(Side.B);
-        gp.roadPlaneNormal = [
-            roadPlane.scaledNormal.data[0],
-            roadPlane.scaledNormal.data[1],
-            roadPlane.scaledNormal.data[2],
-            roadPlane.scaledNormal.data[3],
-        ];
-
-        uint flags = (params.isRoad ? 1u : 0u) | (params.isRoadSupport ? 2u : 0u);
-        gp.scalars = [
-            params.surface.exponent,
-            roadPlane.exponent,
-            *cast(float*)&flags,
-            0.0f,
-        ];
-
-        ulong seed = hash(params.nodeSpice, params.chunk);
-        gp.rngSeed = [cast(uint)(seed & 0xFFFFFFFF), cast(uint)(seed >> 32)];
-
-        gp.elev0 = params.env.maxElevations[0 .. 4];
-        gp.elev1 = params.env.maxElevations[4 .. 8];
-        gp.temp0 = params.env.temperatures[0 .. 4];
-        gp.temp1 = params.env.temperatures[4 .. 8];
-        gp.rain0 = params.env.rainfalls[0 .. 4];
-        gp.rain1 = params.env.rainfalls[4 .. 8];
-        gp.block0 = params.env.blockinesses[0 .. 4];
-        gp.block1 = params.env.blockinesses[4 .. 8];
-
-        return gp;
-    }
+    Nullable!uint lastLoggedSecond;
+    NearbyNode[] cachedNodes;
 
     void rotateCamera(float yawDelta, float pitchDelta, float rollDelta = 0) {
         if (yawDelta != 0) {
@@ -158,6 +111,12 @@ struct Renderer {
     }
 
     bool init(void* window) {
+        freeSlotsBuf = new uint[maxSlots];
+        activeSlotsBuf = new uint[maxSlots];
+        slotUsedBuf = new ubyte[maxSlots];
+        removeBuf = new ChunkId[maxSlots];
+        tasksBuf = new ExtractTask[concurrency];
+
         if (!core.init(window)) {
             return false;
         }
@@ -167,13 +126,13 @@ struct Renderer {
 
         graph = Graph.create(cast(ubyte) dimension);
 
-        if (!extract.init(core.physicalDevice, core.device, dimension, CONCURRENCY, MAX_SLOTS)) {
+        if (!extract.init(core.physicalDevice, core.device, dimension, concurrency, maxSlots)) {
             return false;
         }
 
         Surface[] empty;
         float[16][] transforms;
-        transforms.length = MAX_SLOTS;
+        transforms.length = maxSlots;
 
         if (!voxels.init(core.physicalDevice, core.device, swapState.renderPass,
                          empty, transforms,
@@ -189,6 +148,8 @@ struct Renderer {
 
         if (extract.tfReady) {
             extract.bindTransformOutput(core.device, voxels.transformsVbo.buffer);
+            nodeTfLocal = new float[extract.maxNodes * 16];
+            slotTaskLocal = new uint[maxSlots * 4];
         }
 
         worldgenDriver = WorldgenDriver.create();
@@ -200,35 +161,25 @@ struct Renderer {
         return true;
     }
 
-
-    NearbyNode[] cachedNodes;
-
     void render(float dt) {
-        import common.dodeca : CHUNK_BOUNDING_SPHERE_RADIUS, vertexChunkToNodeF64;
         time += dt;
 
-        cachedNodes = ensureAndCollectNearby(graph, camPos.node, camPos.local, RENDER_RADIUS);
-        worldgenDriver.drive(cachedNodes, camPos.local, RENDER_RADIUS, graph, cast(ubyte) dimension);
+        cachedNodes = ensureAndCollectNearby(graph, camPos.node, camPos.local, renderRadius);
+        worldgenDriver.drive(cachedNodes, camPos.local, renderRadius, graph, cast(ubyte) dimension);
 
         tasksLen = 0;
         activeCount = 0;
 
         vkWaitForFences(core.device, 1, &swapState.inFlightFence, 1, ulong.max);
 
-        bool[MAX_SLOTS] slotUsed = false;
+        slotUsedBuf[] = 0;
 
         VkExtent2D extent = swapState.extent;
         float aspect = cast(float) extent.width / cast(float) extent.height;
         Frustum frustum = Frustum.fromVfov(45.0f * (PI / 180.0f), aspect);
-        MDirection!float[5] frustumPlanes = frustum.planes();
         MIsometry!float camInverse = camPos.local.inverse();
 
         void* voxelsMapped = null;
-
-        float[SurfaceExtraction.MAX_NODES * 16] nodeTfLocal = void;
-        uint[MAX_SLOTS * 4] slotTaskLocal = void;
-
-        uint wgenTaskCount = 0;
         uint nodeIndex = 0;
 
         foreach (ref nn; cachedNodes) {
@@ -263,7 +214,7 @@ struct Renderer {
                     if (freeCount > 0) {
                         freeCount--;
                         slot = freeSlotsBuf[freeCount];
-                    } else if (nextSlot < MAX_SLOTS) {
+                    } else if (nextSlot < maxSlots) {
                         slot = nextSlot++;
                     } else {
                         continue;
@@ -271,7 +222,7 @@ struct Renderer {
                     slotMap[chunkId] = slot;
                 }
 
-                if (needsExtract && tasksLen < CONCURRENCY) {
+                if (needsExtract && tasksLen < concurrency) {
                     if (voxelsMapped is null) {
                         voxelsMapped = extract.mapVoxels(core.device);
                     }
@@ -305,7 +256,7 @@ struct Renderer {
                 slotTaskLocal[activeCount * 4 + 1] = vIdx;
                 slotTaskLocal[activeCount * 4 + 2] = slot;
                 slotTaskLocal[activeCount * 4 + 3] = 0;
-                slotUsed[slot] = true;
+                slotUsedBuf[slot] = true;
                 activeSlotsBuf[activeCount++] = slot;
             }
         }
@@ -313,7 +264,6 @@ struct Renderer {
             extract.unmapVoxels(core.device);
         }
 
-        import core.stdc.string : memcpy;
         if (nodeIndex > 0) {
             memcpy(extract.nodeTransformsMapped, nodeTfLocal.ptr, nodeIndex * 64);
         }
@@ -321,10 +271,9 @@ struct Renderer {
             memcpy(extract.slotTasksMapped, slotTaskLocal.ptr, activeCount * 16);
         }
 
-        ChunkId[MAX_SLOTS] removeBuf;
         uint removeLen = 0;
         foreach (cid, slot; slotMap) {
-            if (!slotUsed[slot] && removeLen < removeBuf.length) {
+            if (!slotUsedBuf[slot]) {
                 removeBuf[removeLen++] = cid;
                 freeSlotsBuf[freeCount++] = slot;
             }
@@ -334,10 +283,9 @@ struct Renderer {
             slotGeneration.remove(removeBuf[i]);
         }
 
-        static int lastSecond = -1;
-        int currentSecond = cast(int) time;
-        if (currentSecond != lastSecond) {
-            lastSecond = currentSecond;
+        uint currentSecond = cast(uint) time;
+        if (lastLoggedSecond.isNull || currentSecond != lastLoggedSecond.get) {
+            lastLoggedSecond = currentSecond;
             writefln("[t=%ss] active=%d slots=%d new=%d graph=%d",
                 currentSecond, activeCount, nextSlot,
                 tasksLen, graph.len);
@@ -380,8 +328,6 @@ struct Renderer {
         VkCommandBufferBeginInfo bi;
         bi.sType = VkStructureType.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         vkBeginCommandBuffer(cmd, &bi);
-
-
 
         if (tasksLen > 0) {
             extract.recordExtract(core.device, cmd, tasksBuf[0 .. tasksLen]);
@@ -467,10 +413,6 @@ struct Renderer {
     }
 
     void breakBlock() {
-        import common.collision_math : Ray;
-        import common.graph_ray_casting : GraphCastHit, rayCast;
-        import std.math : isNaN;
-
         Ray ray = Ray.create(
             MPoint!float.origin(),
             MVector!float(0, 0, -1, 0).normalizedDirection());
@@ -489,10 +431,6 @@ struct Renderer {
     }
 
     void placeBlock(ushort material) {
-        import common.collision_math : Ray;
-        import common.graph_ray_casting : GraphCastHit, rayCast;
-        import std.math : isNaN;
-
         Ray ray = Ray.create(
             MPoint!float.origin(),
             MVector!float(0, 0, -1, 0).normalizedDirection());
@@ -541,7 +479,6 @@ float[16] matToFlat(M)(M m) {
 }
 
 MIsometry!float rotationY(float angle) {
-    import common.math : Matrix4;
     float c = cos(angle);
     float s = sin(angle);
     Matrix4!float m;
@@ -555,7 +492,6 @@ MIsometry!float rotationY(float angle) {
 }
 
 MIsometry!float rotationX(float angle) {
-    import common.math : Matrix4;
     float c = cos(angle);
     float s = sin(angle);
     Matrix4!float m;
@@ -569,7 +505,6 @@ MIsometry!float rotationX(float angle) {
 }
 
 MIsometry!float rotationZ(float angle) {
-    import common.math : Matrix4;
     float c = cos(angle);
     float s = sin(angle);
     Matrix4!float m;

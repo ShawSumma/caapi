@@ -1,6 +1,7 @@
 module client.graphics.pipeline;
 
 import std.stdio;
+import core.stdc.string : memcpy;
 import bindings.vk;
 import client.worldgen.dummy : Vertex;
 
@@ -202,7 +203,6 @@ struct GpuBuffer {
 
         void* mapped;
         vkMapMemory(device, b.memory, 0, req.size, 0, &mapped);
-        import core.stdc.string : memcpy;
         memcpy(mapped, data.ptr, data.length);
         vkUnmapMemory(device, b.memory);
 

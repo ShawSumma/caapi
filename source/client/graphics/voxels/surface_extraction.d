@@ -1,12 +1,15 @@
 module client.graphics.voxels.surface_extraction;
 
 import std.stdio;
+import core.stdc.string : memcpy;
 import bindings.vk;
 import client.graphics.pipeline : GpuBuffer;
-import client.graphics.voxels.surface : Surface;
+import common.dodeca : Vertex, vertexChunkToNode;
+import common.math : Matrix4;
+import common.worldgen.terraingen : VoronoiEntryGPU, buildVoronoiTableGPU;
 
-enum uint FACE_SIZE = 8;
-enum uint INDIRECT_SIZE = 16;
+immutable uint FACE_SIZE = 8;
+immutable uint INDIRECT_SIZE = 16;
 
 uint roundUp(uint value, uint alignment) {
     return (value + alignment - 1) / alignment * alignment;
@@ -53,14 +56,6 @@ align(1):
 }
 static assert(WorldgenParamsGPU.sizeof == 256);
 
-struct VoronoiEntryGPU {
-    float rain;
-    float temp;
-    uint material;
-    uint _pad;
-}
-static assert(VoronoiEntryGPU.sizeof == 16);
-
 struct SurfaceExtraction {
     VkShaderModule compShader;
     VkDescriptorSetLayout paramsLayout;
@@ -100,7 +95,7 @@ struct SurfaceExtraction {
     void* nodeTransformsMapped;
     void* slotTasksMapped;
     bool tfReady;
-    enum MAX_NODES = 1024;
+    uint maxNodes;
 
     VkShaderModule wgenShader;
     VkDescriptorSetLayout wgenParamsLayout;
@@ -113,15 +108,16 @@ struct SurfaceExtraction {
     void* wgenParamsMapped;
     bool wgenReady;
 
+    VkBufferCopy[] packIndirectCopies;
+
     bool init(VkPhysicalDevice phys, VkDevice device, uint dim, uint conc, uint slots) {
         dimension = dim;
         concurrency = conc;
         maxSlots = slots;
         maxFaces = 3 * (dim * dim * dim + dim * dim);
-        enum ALIGN = 16;
-        voxelBufUnit = roundUp(cast(uint)((dim + 2) * (dim + 2) * (dim + 2)) * 2, ALIGN);
-        stateBufUnit = roundUp(4, ALIGN);
-        faceBufUnit = roundUp(maxFaces * FACE_SIZE, ALIGN);
+        voxelBufUnit = roundUp(cast(uint)((dim + 2) * (dim + 2) * (dim + 2)) * 2, 16);
+        stateBufUnit = roundUp(4, 16);
+        faceBufUnit = roundUp(maxFaces * FACE_SIZE, 16);
 
         static immutable ubyte[] compSpv = cast(immutable(ubyte)[]) import("extract.comp.spv");
         VkShaderModuleCreateInfo smci;
@@ -251,6 +247,8 @@ struct SurfaceExtraction {
         uint paddedSize = (dim + 2) * (dim + 2) * (dim + 2);
         packBuf = new uint[(paddedSize + 1) / 2];
 
+        packIndirectCopies = new VkBufferCopy[maxSlots];
+
         writefln("Extract: facesBuf=0x%x (%d bytes) indirBuf=0x%x voxBuf=0x%x",
             facesBuf.buffer, facesSize, indirectBuf.buffer, voxelsBuf.buffer);
 
@@ -266,8 +264,7 @@ struct SurfaceExtraction {
     }
 
     bool initTransformCompute(VkPhysicalDevice phys, VkDevice device, uint slots) {
-        import common.dodeca : Vertex, vertexChunkToNode;
-        import common.math : Matrix4;
+        maxNodes = slots;
 
         static immutable ubyte[] tfSpv = cast(immutable(ubyte)[]) import("transforms.comp.spv");
         VkShaderModuleCreateInfo smci;
@@ -332,8 +329,8 @@ struct SurfaceExtraction {
         vkAllocateDescriptorSets(device, &dsai, &tfDescSet);
 
         nodeTransformsBuf = GpuBuffer.createHostVisible(phys, device,
-            MAX_NODES * 64, VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-        vkMapMemory(device, nodeTransformsBuf.memory, 0, MAX_NODES * 64, 0, &nodeTransformsMapped);
+            maxNodes * 64, VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        vkMapMemory(device, nodeTransformsBuf.memory, 0, maxNodes * 64, 0, &nodeTransformsMapped);
 
         slotTasksBuf = GpuBuffer.createHostVisible(phys, device,
             slots * 16, VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
@@ -414,8 +411,6 @@ struct SurfaceExtraction {
     }
 
     bool initWorldgen(VkPhysicalDevice phys, VkDevice device) {
-        import common.worldgen.terraingen : TerrainVoronoiEntry = VoronoiEntryGPU, buildVoronoiTableGPU;
-
         static immutable ubyte[] wgenSpv = cast(immutable(ubyte)[]) import("worldgen.comp.spv");
         VkShaderModuleCreateInfo smci;
         smci.sType = VkStructureType.VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
@@ -491,7 +486,7 @@ struct SurfaceExtraction {
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
         vkMapMemory(device, wgenParamsBuf.memory, 0, wgenParamsSize, 0, &wgenParamsMapped);
 
-        TerrainVoronoiEntry[] voronoiData = buildVoronoiTableGPU();
+        VoronoiEntryGPU[] voronoiData = buildVoronoiTableGPU();
         voronoiTableBuf = GpuBuffer.create(phys, device, cast(void[]) voronoiData,
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
@@ -520,7 +515,6 @@ struct SurfaceExtraction {
     }
 
     uint uploadWorldgenParams(VkDevice device, uint scratchIndex, const ref WorldgenParamsGPU params) {
-        import core.stdc.string : memcpy;
         uint offset = roundUp(WorldgenParamsGPU.sizeof, 256) * scratchIndex;
         memcpy(cast(ubyte*) wgenParamsMapped + offset, &params, WorldgenParamsGPU.sizeof);
         return offset;
@@ -603,7 +597,6 @@ struct SurfaceExtraction {
     }
 
     void uploadVoxels(void* voxelsMapped, uint scratchIndex, const(ushort)[] paddedData) {
-        import core.stdc.string : memcpy;
         uint count = packPaddedVoxelsInto(paddedData, dimension, packBuf);
         if (count == 0) {
             return;
@@ -714,13 +707,12 @@ struct SurfaceExtraction {
             return;
         }
         uint count = cast(uint) activeSlots.length;
-        VkBufferCopy[4096] copies = void;
         foreach (i; 0 .. count) {
-            copies[i].srcOffset = cast(VkDeviceSize) activeSlots[i] * INDIRECT_SIZE;
-            copies[i].dstOffset = cast(VkDeviceSize) i * INDIRECT_SIZE;
-            copies[i].size = INDIRECT_SIZE;
+            packIndirectCopies[i].srcOffset = cast(VkDeviceSize) activeSlots[i] * INDIRECT_SIZE;
+            packIndirectCopies[i].dstOffset = cast(VkDeviceSize) i * INDIRECT_SIZE;
+            packIndirectCopies[i].size = INDIRECT_SIZE;
         }
-        vkCmdCopyBuffer(cmd, indirectBuf.buffer, packedIndirectBuf.buffer, count, copies.ptr);
+        vkCmdCopyBuffer(cmd, indirectBuf.buffer, packedIndirectBuf.buffer, count, packIndirectCopies.ptr);
 
         VkBufferMemoryBarrier bar;
         bar.sType = VkStructureType.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
@@ -739,6 +731,7 @@ struct SurfaceExtraction {
     ulong faceOffset(uint slot) {
         return cast(ulong) slot * faceBufUnit;
     }
+
     ulong indirectOffset(uint slot) {
         return cast(ulong) slot * INDIRECT_SIZE;
     }
