@@ -18,11 +18,6 @@ Build prerequisites: `dub` (D package manager), `cmake`, `glslc` (from Vulkan SD
 c
 Pre-build steps are automatic via `dub.sdl`: cmake builds a static SDL3, then `glslc` compiles all GLSL shaders to `source/shaders/spv/*.spv`.
 
-To run under Xephyr (avoids WASD input leaking to host):
-```bash
-DISPLAY=:7 ./mined
-```
-
 ### Test scripts
 
 Tests use `--script` to drive the engine headlessly:
