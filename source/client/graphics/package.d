@@ -1,6 +1,7 @@
 module client.graphics;
 
 import std.stdio;
+import core.time : MonoTime;
 import std.math : sin, cos, sqrt, PI, log, pow, isNaN;
 import std.typecons : Nullable;
 import core.stdc.string : memcpy;
@@ -12,9 +13,10 @@ import client.graphics.fog : FogPipeline;
 import client.graphics.frustum : Frustum;
 import client.worldgen_driver : WorldgenDriver;
 import common.collision_math : Ray;
-import common.dodeca : Vertex, Side, sideReflection, sideIsFacing;
+import common.dodeca : Vertex, Side, sideReflection, sideIsFacing,
+    CHUNK_BOUNDING_SPHERE_RADIUS, vertexChunkBoundingSphereCenter;
 import common.graph_ray_casting : GraphCastHit, rayCast;
-import common.math : Matrix4, MPoint, MIsometry, MVector;
+import common.math : Matrix4, MPoint, MIsometry, MVector, MDirection;
 import common.graph : Graph, NodeId;
 import common.node : Chunk, ChunkId, ChunkState;
 import common.proto : Position;
@@ -56,6 +58,9 @@ struct Renderer {
 
     Nullable!uint lastLoggedSecond;
     NearbyNode[] cachedNodes;
+    NodeId lastNearbyNode;
+    float[16] lastNearbyLocal;
+    bool hasNearby = false;
 
     void rotateCamera(float yawDelta, float pitchDelta, float rollDelta = 0) {
         if (yawDelta != 0) {
@@ -164,13 +169,37 @@ struct Renderer {
     void render(float dt) {
         time += dt;
 
-        cachedNodes = ensureAndCollectNearby(graph, camPos.node, camPos.local, renderRadius);
+        MonoTime a0 = MonoTime.currTime;
+        bool camMoved = !hasNearby || camPos.node != lastNearbyNode;
+        if (!camMoved) {
+            foreach (col; 0 .. 4) {
+                foreach (row; 0 .. 4) {
+                    if (camPos.local.mat.data[col][row] != lastNearbyLocal[col * 4 + row]) {
+                        camMoved = true;
+                    }
+                }
+            }
+        }
+        if (camMoved) {
+            cachedNodes = ensureAndCollectNearby(graph, camPos.node, camPos.local, renderRadius);
+            lastNearbyNode = camPos.node;
+            foreach (col; 0 .. 4) {
+                foreach (row; 0 .. 4) {
+                    lastNearbyLocal[col * 4 + row] = camPos.local.mat.data[col][row];
+                }
+            }
+            hasNearby = true;
+        }
+        MonoTime a1 = MonoTime.currTime;
         worldgenDriver.drive(cachedNodes, camPos.local, renderRadius, graph, cast(ubyte) dimension);
+        MonoTime a2 = MonoTime.currTime;
 
         tasksLen = 0;
         activeCount = 0;
+        uint inFrustumCount = 0;
 
         vkWaitForFences(core.device, 1, &swapState.inFlightFence, 1, ulong.max);
+        MonoTime a3 = MonoTime.currTime;
 
         slotUsedBuf[] = 0;
 
@@ -178,6 +207,7 @@ struct Renderer {
         float aspect = cast(float) extent.width / cast(float) extent.height;
         Frustum frustum = Frustum.fromVfov(45.0f * (PI / 180.0f), aspect);
         MIsometry!float camInverse = camPos.local.inverse();
+        MDirection!float[5] fplanes = frustum.planes();
 
         void* voxelsMapped = null;
         uint nodeIndex = 0;
@@ -194,6 +224,11 @@ struct Renderer {
                 Vertex v = cast(Vertex) vIdx;
                 Chunk* c = &graph[nn.id].chunks.values[v];
                 if (c.state != ChunkState.Populated || c.voxels.isSolid()) {
+                    continue;
+                }
+
+                MPoint!float camCenter = camInverse * (nn.transform * vertexChunkBoundingSphereCenter(v));
+                if (frustum.sphereOutside(fplanes, camCenter, CHUNK_BOUNDING_SPHERE_RADIUS)) {
                     continue;
                 }
 
@@ -258,6 +293,7 @@ struct Renderer {
                 slotTaskLocal[activeCount * 4 + 3] = 0;
                 slotUsedBuf[slot] = true;
                 activeSlotsBuf[activeCount++] = slot;
+                inFrustumCount++;
             }
         }
         if (voxelsMapped !is null) {
@@ -286,9 +322,15 @@ struct Renderer {
         uint currentSecond = cast(uint) time;
         if (lastLoggedSecond.isNull || currentSecond != lastLoggedSecond.get) {
             lastLoggedSecond = currentSecond;
-            writefln("[t=%ss] active=%d slots=%d new=%d graph=%d",
-                currentSecond, activeCount, nextSlot,
-                tasksLen, graph.len);
+            MonoTime a4 = MonoTime.currTime;
+            double ens = (a1 - a0).total!"usecs" / 1000.0;
+            double drv = (a2 - a1).total!"usecs" / 1000.0;
+            double wait = (a3 - a2).total!"usecs" / 1000.0;
+            double loop = (a4 - a3).total!"usecs" / 1000.0;
+            writefln("[t=%ss] active=%d inFrustum=%d slots=%d new=%d graph=%d nearby=%d | ens=%.1f drv=%.1f wait=%.1f loop=%.1f ms",
+                currentSecond, activeCount, inFrustumCount, nextSlot,
+                tasksLen, graph.len, cachedNodes.length,
+                ens, drv, wait, loop);
             stdout.flush();
         }
 
