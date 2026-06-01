@@ -34,7 +34,9 @@ Dir negateDir(Dir d) {
 /// Navigates the cubic dual of a graph
 struct Cursor {
     NodeId node;
-    Side a, b, c;
+    Side a;
+    Side b;
+    Side c;
 
     static Cursor fromVertex(NodeId node, Vertex vertex) {
         Side[3] sides = vertexCanonicalSides(vertex);

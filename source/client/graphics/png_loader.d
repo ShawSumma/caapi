@@ -23,8 +23,10 @@ ubyte[] decodePng(ubyte[] data) {
         return null;
     }
 
-    uint width, height;
-    ubyte bitDepth, colorType;
+    uint width;
+    uint height;
+    ubyte bitDepth;
+    ubyte colorType;
     ubyte[] idatData;
     size_t pos = 8;
 

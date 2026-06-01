@@ -10,8 +10,19 @@ import common.world : Material;
 import common.worldgen.plane : Plane;
 import common.worldgen.terraingen : terraingenVoronoi;
 
-enum NodeStateKind { Sky, DeepSky, Land, DeepLand }
-enum NodeStateRoad { East, DeepEast, West, DeepWest }
+enum NodeStateKind {
+    Sky,
+    DeepSky,
+    Land,
+    DeepLand,
+}
+
+enum NodeStateRoad {
+    East,
+    DeepEast,
+    West,
+    DeepWest,
+}
 
 enum float TERRAIN_SMOOTHNESS = 10.0f;
 
@@ -450,7 +461,9 @@ float trilerp(const ref float[8] values, float[3] t) {
 
 ChunkIncidentEnviroFactors chunkIncidentEnviroFactors(ref Graph graph, ChunkId chunk) {
     Side[3] sides = vertexCanonicalSides(chunk.vertex);
-    Side a = sides[0], b = sides[1], c = sides[2];
+    Side a = sides[0];
+    Side b = sides[1];
+    Side c = sides[2];
 
     Side[][] paths = [
         [],

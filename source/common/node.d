@@ -46,7 +46,11 @@ struct ChunkLayout {
 }
 
 struct VoxelData {
-    enum Kind { Solid, Dense }
+    enum Kind {
+        Solid,
+        Dense,
+    }
+
     Kind kind;
     Material solidMaterial;
     Material[] denseData;
@@ -89,7 +93,11 @@ struct VoxelData {
     }
 }
 
-enum ChunkState { Fresh, Generating, Populated }
+enum ChunkState {
+    Fresh,
+    Generating,
+    Populated,
+}
 
 struct Chunk {
     ChunkState state = ChunkState.Fresh;

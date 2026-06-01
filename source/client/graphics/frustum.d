@@ -21,10 +21,10 @@ struct Frustum {
 
     MDirection!float[5] planes() const {
         return [
-            MDirection!float(MVector!float(cos(left), 0, -sin(left), 0)),
-            MDirection!float(MVector!float(-cos(right), 0, sin(right), 0)),
-            MDirection!float(MVector!float(0, cos(down), -sin(down), 0)),
-            MDirection!float(MVector!float(0, -cos(up), sin(up), 0)),
+            MDirection!float(MVector!float(cos(left), 0, sin(left), 0)),
+            MDirection!float(MVector!float(-cos(right), 0, -sin(right), 0)),
+            MDirection!float(MVector!float(0, cos(down), sin(down), 0)),
+            MDirection!float(MVector!float(0, -cos(up), -sin(up), 0)),
             MDirection!float(MVector!float(0, 0, -1, 0)),
         ];
     }
@@ -32,7 +32,7 @@ struct Frustum {
     bool sphereOutside(const ref MDirection!float[5] fp, const ref MPoint!float center, float radius) const {
         float threshold = sinh(radius);
         foreach (ref p; fp) {
-            if (p.mip(center) > threshold) {
+            if (p.mip(center) < -threshold) {
                 return true;
             }
         }

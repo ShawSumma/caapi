@@ -11,7 +11,8 @@ struct FogPipeline {
         static immutable ubyte[] vertSpv = cast(immutable(ubyte)[]) import("fullscreen.vert.spv");
         static immutable ubyte[] fragSpv = cast(immutable(ubyte)[]) import("fog.frag.spv");
 
-        VkShaderModule vertShader, fragShader;
+        VkShaderModule vertShader;
+        VkShaderModule fragShader;
         if (!createShader(device, vertSpv, vertShader)) {
             return false;
         }
