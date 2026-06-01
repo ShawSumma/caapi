@@ -8,8 +8,8 @@ import common.dodeca : Vertex, vertexChunkToNode;
 import common.math : Matrix4;
 import common.worldgen.terraingen : VoronoiEntryGPU, buildVoronoiTableGPU;
 
-immutable uint FACE_SIZE = 8;
-immutable uint INDIRECT_SIZE = 16;
+enum uint FACE_SIZE = 8;
+enum uint INDIRECT_SIZE = 16;
 
 uint roundUp(uint value, uint alignment) {
     return (value + alignment - 1) / alignment * alignment;

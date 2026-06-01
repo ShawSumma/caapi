@@ -13,8 +13,7 @@ import client.graphics.fog : FogPipeline;
 import client.graphics.frustum : Frustum;
 import client.worldgen_driver : WorldgenDriver;
 import common.collision_math : Ray;
-import common.dodeca : Vertex, Side, sideReflection, sideIsFacing,
-    CHUNK_BOUNDING_SPHERE_RADIUS, vertexChunkBoundingSphereCenter;
+import common.dodeca : Vertex, Side, sideReflection, sideIsFacing, CHUNK_BOUNDING_SPHERE_RADIUS, vertexChunkBoundingSphereCenter;
 import common.graph_ray_casting : GraphCastHit, rayCast;
 import common.math : Matrix4, MPoint, MIsometry, MVector, MDirection;
 import common.graph : Graph, NodeId;

@@ -5,12 +5,41 @@ import common.math : Matrix4, MIsometry, MVector, MPoint, MDirection;
 import common.voxel_math : ChunkAxisPermutation;
 
 enum Side : ubyte {
-    A, B, C, D, E, F, G, H, I, J, K, L,
+    A,
+    B,
+    C,
+    D,
+    E,
+    F,
+    G,
+    H,
+    I,
+    J,
+    K,
+    L,
 }
 
 enum Vertex : ubyte {
-    A, B, C, D, E, F, G, H, I, J,
-    K, L, M, N, O, P, Q, R, S, T,
+    A,
+    B,
+    C,
+    D,
+    E,
+    F,
+    G,
+    H,
+    I,
+    J,
+    K,
+    L,
+    M,
+    N,
+    O,
+    P,
+    Q,
+    R,
+    S,
+    T,
 }
 
 enum double BOUNDING_SPHERE_RADIUS_F64 = 1.2264568712514068;

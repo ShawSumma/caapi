@@ -79,7 +79,7 @@ Ray transformRay(const ref MIsometry!float iso, const ref Ray ray) {
 }
 
 float solveQuadratic(float constantTerm, float halfLinearTerm, float quadraticTerm) {
-    immutable float EPSILON = 1e-4f;
+    enum float EPSILON = 1e-4f;
 
     if (halfLinearTerm >= 0.0f) {
         return float.nan;

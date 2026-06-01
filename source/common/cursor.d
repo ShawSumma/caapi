@@ -6,7 +6,12 @@ import common.node : ChunkId;
 
 /// Directions for navigating the cubic dual
 enum Dir {
-    Left, Right, Down, Up, Forward, Back,
+    Left,
+    Right,
+    Down,
+    Up,
+    Forward,
+    Back,
 }
 
 Dir negateDir(Dir d) {

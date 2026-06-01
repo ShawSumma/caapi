@@ -128,7 +128,7 @@ void main(string[] args) {
             break;
         }
 
-        immutable float MOUSE_SENS = 0.003f;
+        enum float MOUSE_SENS = 0.003f;
         float yaw = cam.yawRate * dt + mouseDx * MOUSE_SENS;
         float pitch = cam.pitchRate * dt + mouseDy * MOUSE_SENS;
         float roll = cam.rollRate * dt;
@@ -221,8 +221,8 @@ struct CameraInput {
 }
 
 void handleKeyDown(uint key, ref CameraInput cam) {
-    immutable float TURN = 1.5f;
-    immutable float MOVE = 1.0f;
+    enum float TURN = 1.5f;
+    enum float MOVE = 1.0f;
     if (key == SDLK_LEFT) {
         cam.yawRate = -TURN;
     }

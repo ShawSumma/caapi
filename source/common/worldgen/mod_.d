@@ -208,7 +208,7 @@ void generateTerrain(const ref ChunkParams params, ref VoxelData voxels, ref ulo
         }
     }
 
-    immutable float ELEVATION_MARGIN = 0.7f;
+    enum float ELEVATION_MARGIN = 0.7f;
 
     float centerElevation = params.surface.distanceToChunk(params.chunk, [0.5f, 0.5f, 0.5f]);
     if (centerElevation - ELEVATION_MARGIN > meMax / TERRAIN_SMOOTHNESS) {

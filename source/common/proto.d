@@ -38,7 +38,3 @@ struct CharacterState {
     float[3] velocity = [0, 0, 0];
     bool onGround;
 }
-
-struct SimConfigData {
-    // Placeholder for serialized config
-}
