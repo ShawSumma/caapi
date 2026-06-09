@@ -19,7 +19,7 @@ import common.math : Matrix4, MPoint, MIsometry, MVector, MDirection;
 import common.graph : Graph, NodeId;
 import common.node : Chunk, ChunkId, ChunkState;
 import common.proto : Position;
-import common.traversal : ensureAndCollectNearby, NearbyNode;
+import common.traversal : ensureAndCollectNearby, NearbyNode, NearbyScratch;
 import common.voxel_math : Coords, CoordSign;
 import common.world : Material;
 
@@ -57,6 +57,7 @@ struct Renderer {
 
     Nullable!uint lastLoggedSecond;
     NearbyNode[] cachedNodes;
+    NearbyScratch nearbyScratch;
     NodeId lastNearbyNode;
     float[16] lastNearbyLocal;
     bool hasNearby = false;
@@ -180,7 +181,7 @@ struct Renderer {
             }
         }
         if (camMoved) {
-            cachedNodes = ensureAndCollectNearby(graph, camPos.node, camPos.local, renderRadius);
+            cachedNodes = ensureAndCollectNearby(nearbyScratch, graph, camPos.node, camPos.local, renderRadius);
             lastNearbyNode = camPos.node;
             foreach (col; 0 .. 4) {
                 foreach (row; 0 .. 4) {

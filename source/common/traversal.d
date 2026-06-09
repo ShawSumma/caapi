@@ -111,36 +111,41 @@ struct NearbyNode {
     MIsometry!float transform;
 }
 
-NearbyNode[] ensureAndCollectNearby(ref Graph graph, NodeId startNode, MIsometry!float startLocal, float distance) {
-    float maxNodeCenterDistance = distance + BOUNDING_SPHERE_RADIUS;
-    float coshThreshold = cosh(maxNodeCenterDistance);
-
-    struct Pending {
-        NodeId id;
-        MIsometry!float transform;
-    }
-
-    NearbyNode[] result;
-    result.reserve(4096);
-    Pending[] queue;
-    queue.reserve(4096);
-    size_t queueFront = 0;
+// Reusable scratch buffers so the per-frame traversal doesn't reallocate the
+// node array or the visited map. The single `nodes` array doubles as the BFS
+// queue and the result (every queued node is eventually popped, so they hold
+// the same elements in the same order).
+struct NearbyScratch {
+    NearbyNode[] nodes;
     bool[NodeId] visited;
+}
 
-    queue ~= Pending(startNode, MIsometry!float.identity());
-    visited[startNode] = true;
+NearbyNode[] ensureAndCollectNearby(
+    ref NearbyScratch scratch,
+    ref Graph graph,
+    NodeId startNode,
+    MIsometry!float startLocal,
+    float distance
+) {
+    float coshThreshold = cosh(distance + BOUNDING_SPHERE_RADIUS);
+
+    scratch.nodes.length = 0;
+    scratch.nodes.assumeSafeAppend();
+    scratch.visited.clear();
+
+    scratch.nodes ~= NearbyNode(startNode, MIsometry!float.identity());
+    scratch.visited[startNode] = true;
     MPoint!float startP = startLocal * MPoint!float.origin();
 
-    while (queueFront < queue.length) {
-        Pending current = queue[queueFront];
-        queueFront++;
-
-        result ~= NearbyNode(current.id, current.transform);
+    size_t front = 0;
+    while (front < scratch.nodes.length) {
+        NearbyNode current = scratch.nodes[front];
+        front++;
 
         foreach (sideIdx; 0 .. 12) {
             Side side = cast(Side) sideIdx;
             NodeId existing = graph.neighbor(current.id, side);
-            if (existing != NodeId.init && existing in visited) {
+            if (existing != NodeId.init && existing in scratch.visited) {
                 continue;
             }
             MIsometry!float neighborTransform = current.transform * sideReflection(side);
@@ -149,18 +154,20 @@ NearbyNode[] ensureAndCollectNearby(ref Graph graph, NodeId startNode, MIsometry
                 continue;
             }
             NodeId neighbor = graph.ensureNeighbor(current.id, side);
-            if (neighbor == NodeId.init) {
+            if (neighbor == NodeId.init || neighbor in scratch.visited) {
                 continue;
             }
-            if (neighbor in visited) {
-                continue;
-            }
-            visited[neighbor] = true;
-            queue ~= Pending(neighbor, neighborTransform);
+            scratch.visited[neighbor] = true;
+            scratch.nodes ~= NearbyNode(neighbor, neighborTransform);
         }
     }
 
-    return result;
+    return scratch.nodes;
+}
+
+NearbyNode[] ensureAndCollectNearby(ref Graph graph, NodeId startNode, MIsometry!float startLocal, float distance) {
+    NearbyScratch scratch;
+    return ensureAndCollectNearby(scratch, graph, startNode, startLocal, distance);
 }
 
 NearbyNode[] nearbyNodes(const ref Graph graph, NodeId startNode, MIsometry!float startLocal, float distance) {

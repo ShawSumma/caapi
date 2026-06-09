@@ -4,10 +4,12 @@ import std.format : format;
 import std.string : toStringz;
 import core.stdc.string : strlen;
 import core.stdc.stdlib : system;
+import std.conv : to;
 import bindings.sdl3;
 import client.graphics;
 import client.script;
 import common.world;
+import worldcheck : dumpWorld, benchNearby;
 
 enum : ulong {
     WINDOW_VULKAN    = 0x0000000010000000,
@@ -15,6 +17,20 @@ enum : ulong {
 }
 
 void main(string[] args) {
+    foreach (i, a; args) {
+        if (a == "--dump-world") {
+            float radius = (i + 1 < args.length) ? args[i + 1].to!float : 3.0f;
+            dumpWorld(radius, 12);
+            return;
+        }
+        if (a == "--bench-nearby") {
+            float radius = (i + 1 < args.length) ? args[i + 1].to!float : 4.5f;
+            int iters = (i + 2 < args.length) ? args[i + 2].to!int : 50;
+            benchNearby(radius, iters, 12);
+            return;
+        }
+    }
+
     writeln("mined - hyperbolic voxel engine");
 
     string scriptPath;
