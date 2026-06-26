@@ -106,6 +106,55 @@ void dumpWorld(float radius, ubyte dimension) {
     stdout.flush();
 }
 
+// Headless timing of pure world generation. For each iteration a fresh graph is
+// built (so all chunks are Fresh), then every in-radius chunk is generated; only
+// the generation loop is timed. Deterministic; reports total chunks and per-chunk
+// cost so optimization work has a stable number to move.
+void benchWorldgen(float radius, int iters, ubyte dimension) {
+    MIsometry!float identity = MIsometry!float.identity();
+    float threshold = cosh(radius + CHUNK_BOUNDING_SPHERE_RADIUS);
+    MPoint!float startP = identity * MPoint!float.origin();
+
+    double bestMs = double.max;
+    double totalMs = 0;
+    long chunks = 0;
+    foreach (iter; 0 .. iters) {
+        Graph graph = Graph.create(dimension);
+        NearbyNode[] nearby = ensureAndCollectNearby(graph, NodeId.ROOT, identity, radius);
+
+        long genChunks = 0;
+        MonoTime start = MonoTime.currTime;
+        foreach (ref nn; nearby) {
+            foreach (vIdx; 0 .. 20) {
+                Vertex vertex = cast(Vertex) vIdx;
+                Chunk* c = &graph[nn.id].chunks.values[vertex];
+                if (c.state != ChunkState.Fresh) {
+                    continue;
+                }
+                MPoint!float chunkCenter = nn.transform * vertexChunkBoundingSphereCenter(vertex);
+                if (-startP.mip(chunkCenter.vec) > threshold) {
+                    continue;
+                }
+                ChunkId chunkId = ChunkId(nn.id, vertex);
+                ChunkParams params = ChunkParams.create(graph, chunkId);
+                VoxelData voxels = generateVoxels(params);
+                populateChunk(graph, chunkId, voxels, dimension);
+                genChunks++;
+            }
+        }
+        double ms = (MonoTime.currTime - start).total!"usecs" / 1000.0;
+        totalMs += ms;
+        if (ms < bestMs) {
+            bestMs = ms;
+        }
+        chunks = genChunks;
+    }
+    double avgMs = totalMs / iters;
+    writefln("bench-worldgen dim=%d radius=%.1f chunks=%d iters=%d avg=%.2fms best=%.2fms per-chunk=%.1fus",
+        dimension, radius, chunks, iters, avgMs, bestMs, bestMs * 1000.0 / chunks);
+    stdout.flush();
+}
+
 // Headless timing of the per-frame nearby traversal. Builds the graph once,
 // then times the alloc-per-call (4-arg) vs reuse-scratch (5-arg) paths over
 // `iters` iterations from a fixed node. Deterministic; no window/script.

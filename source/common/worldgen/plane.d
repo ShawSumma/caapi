@@ -41,6 +41,14 @@ struct Plane {
 
     float distanceToChunk(Vertex chunk, float[3] coord) const {
         Matrix4!float chunkToNode = vertexChunkToNode(chunk);
+        return distanceToChunkMat(chunkToNode, coord);
+    }
+
+    /// distanceToChunk with the chunk-to-node matrix supplied by the caller, so
+    /// per-chunk loops build it once instead of rebuilding (and re-multiplying
+    /// two 4x4 matrices) for every voxel.
+    pragma(inline, true)
+    float distanceToChunkMat(const ref Matrix4!float chunkToNode, float[3] coord) const {
         MVector!float v = MVector!float(coord[0], coord[1], coord[2], 1.0f);
         MVector!float transformed = chunkToNode * v;
         MPoint!float pos = transformed.normalizedPoint();

@@ -10,7 +10,7 @@ import client.config : ClientConfig;
 import client.graphics;
 import client.script;
 import common.world;
-import worldcheck : dumpWorld, benchNearby;
+import worldcheck : dumpWorld, benchNearby, benchWorldgen;
 
 enum : ulong {
     WINDOW_VULKAN    = 0x0000000010000000,
@@ -61,6 +61,12 @@ void main(string[] args) {
             float radius = (i + 1 < args.length) ? args[i + 1].to!float : 4.5f;
             int iters = (i + 2 < args.length) ? args[i + 2].to!int : 50;
             benchNearby(radius, iters, 12);
+            return;
+        }
+        if (a == "--bench-worldgen") {
+            float radius = (i + 1 < args.length) ? args[i + 1].to!float : 3.0f;
+            int iters = (i + 2 < args.length) ? args[i + 2].to!int : 10;
+            benchWorldgen(radius, iters, 12);
             return;
         }
     }

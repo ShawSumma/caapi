@@ -1,10 +1,12 @@
 module common.worldgen.mod_;
 
-import std.math : sqrt, log, cos, PI, floor, pow;
+import std.math : log, cos, PI, floor;
+import core.stdc.math : sqrt = sqrt, pow = pow;
 import core.bitop : rol;
-import common.dodeca : Side, Vertex, vertexCanonicalSides, sideAdjacentTo;
+import common.dodeca : Side, Vertex, vertexCanonicalSides, sideAdjacentTo, vertexChunkToNode;
 import common.graph : Graph, NodeId;
 import common.margins : initializeMargins;
+import common.math : Matrix4;
 import common.node : ChunkId, VoxelData;
 import common.world : Material;
 import common.worldgen.plane : Plane;
@@ -221,7 +223,11 @@ void generateTerrain(const ref ChunkParams params, ref VoxelData voxels, ref ulo
 
     enum float ELEVATION_MARGIN = 0.7f;
 
-    float centerElevation = params.surface.distanceToChunk(params.chunk, [0.5f, 0.5f, 0.5f]);
+    // chunkToNode is invariant across the chunk; building it per voxel re-did a
+    // full 4x4 matrix multiply each time. Build once and reuse.
+    Matrix4!float chunkToNode = vertexChunkToNode(params.chunk);
+
+    float centerElevation = params.surface.distanceToChunkMat(chunkToNode, [0.5f, 0.5f, 0.5f]);
     if (centerElevation - ELEVATION_MARGIN > meMax / TERRAIN_SMOOTHNESS) {
         voxels = VoxelData.solid(Material.Void);
         return;
@@ -230,6 +236,11 @@ void generateTerrain(const ref ChunkParams params, ref VoxelData voxels, ref ulo
         voxels = VoxelData.solid(Material.Dirt);
         return;
     }
+
+    // Materialized voxel slice, fetched lazily on the first write so an all-void
+    // chunk stays Solid (its VoxelData kind is observable). dataMut() is only a
+    // call+branch but it was on the per-voxel hot path; hoist it behind a flag.
+    Material[] data = null;
 
     foreach (x; 0 .. dim) {
         foreach (y; 0 .. dim) {
@@ -246,7 +257,7 @@ void generateTerrain(const ref ChunkParams params, ref VoxelData voxels, ref ulo
 
                 float elevPreTerracing = trilerp(params.env.maxElevations, trilerpCoords);
                 float block = trilerp(params.env.blockinesses, trilerpCoords);
-                float voxelElevation = params.surface.distanceToChunk(params.chunk, center);
+                float voxelElevation = params.surface.distanceToChunkMat(chunkToNode, center);
                 float strength = 0.4f / (1.0f + sqr(voxelElevation));
                 float terracingSmall = terracingDiff(elevPreTerracing, block, 5.0f, strength, 2.0f);
                 float terracingBig = terracingDiff(elevPreTerracing, block, 15.0f, strength, -1.0f);
@@ -267,7 +278,10 @@ void generateTerrain(const ref ChunkParams params, ref VoxelData voxels, ref ulo
                 if (dist >= 0.0f) {
                     Material mat = terraingenVoronoi(elev, rain, temp, dist);
                     size_t idx = index(dim, x, y, z);
-                    voxels.dataMut(dim)[idx] = mat;
+                    if (data is null) {
+                        data = voxels.dataMut(dim);
+                    }
+                    data[idx] = mat;
                 }
             }
         }
@@ -277,13 +291,14 @@ void generateTerrain(const ref ChunkParams params, ref VoxelData voxels, ref ulo
 void generateRoad(const ref ChunkParams params, ref VoxelData voxels) {
     Plane plane = -Plane.fromSide(Side.B);
     ubyte dim = params.dimension;
+    Matrix4!float chunkToNode = vertexChunkToNode(params.chunk);
 
     foreach (x; 0 .. dim) {
         foreach (y; 0 .. dim) {
             foreach (z; 0 .. dim) {
                 float[3] center = voxelCenter(dim, x, y, z);
-                float horizontalDistance = plane.distanceToChunk(params.chunk, center);
-                float elevation = params.surface.distanceToChunk(params.chunk, center);
+                float horizontalDistance = plane.distanceToChunkMat(chunkToNode, center);
+                float elevation = params.surface.distanceToChunkMat(chunkToNode, center);
 
                 if (horizontalDistance > 0.3f || elevation > 0.9f) {
                     continue;
@@ -311,12 +326,13 @@ void generateRoadSupport(const ref ChunkParams params, ref VoxelData voxels) {
 
     Plane plane = -Plane.fromSide(Side.B);
     ubyte dim = params.dimension;
+    Matrix4!float chunkToNode = vertexChunkToNode(params.chunk);
 
     foreach (x; 0 .. dim) {
         foreach (y; 0 .. dim) {
             foreach (z; 0 .. dim) {
                 float[3] center = voxelCenter(dim, x, y, z);
-                float horizontalDistance = plane.distanceToChunk(params.chunk, center);
+                float horizontalDistance = plane.distanceToChunkMat(chunkToNode, center);
 
                 if (horizontalDistance > 0.3f) {
                     continue;
@@ -423,7 +439,9 @@ float serp(float v0, float v1, float t, float threshold) {
 }
 
 float terracingDiff(float elevRaw, float block, float scale, float strength, float limiter) {
-    float threshold = strength / (1.0f + pow(2.0f, limiter - block));
+    // double pow instead of 80-bit real powl; rounds to the same float threshold.
+    float p = cast(float) pow(2.0, cast(double)(limiter - block));
+    float threshold = strength / (1.0f + p);
     float elevFloor = floor(elevRaw / scale);
     float elevRem = elevRaw / scale - elevFloor;
     return scale * elevFloor + serp(0.0f, scale, elevRem, threshold) - elevRaw;
@@ -509,7 +527,10 @@ float rngNormal(ulong* state, float stddev) {
     ulong v2 = rngNext(state);
     float u1 = (cast(float)((v1 >> 40) + 1)) / cast(float)((1UL << 24) + 2);
     float u2 = cast(float)(v2 >> 40) / cast(float)(1UL << 24);
-    return sqrt(-2.0f * log(u1)) * cos(2.0f * PI * u2) * stddev;
+    // Compute in double rather than 80-bit real: the slow x87 cosl/logl were
+    // ~50% of worldgen time, and double rounds to the same float result here.
+    return cast(float)(sqrt(-2.0 * log(cast(double) u1))
+        * cos(2.0 * cast(double) PI * cast(double) u2) * cast(double) stddev);
 }
 
 float hashToUniform(ulong seed, uint idx) {
@@ -524,7 +545,8 @@ float hashToNormal(ulong seed, uint idx) {
     ulong v2 = rngNext(&s);
     float u1 = (cast(float)((v1 >> 40) + 1)) / cast(float)((1UL << 24) + 2);
     float u2 = cast(float)(v2 >> 40) / cast(float)(1UL << 24);
-    return sqrt(-2.0f * log(u1)) * cos(2.0f * PI * u2);
+    return cast(float)(sqrt(-2.0 * log(cast(double) u1))
+        * cos(2.0 * cast(double) PI * cast(double) u2));
 }
 
 ulong hash(ulong a, ulong b) {
