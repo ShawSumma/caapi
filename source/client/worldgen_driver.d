@@ -1,7 +1,5 @@
 module client.worldgen_driver;
 
-import core.atomic : atomicLoad, atomicStore;
-import core.thread : Thread;
 import std.math : cosh;
 import common.dodeca : Vertex, CHUNK_BOUNDING_SPHERE_RADIUS,
     vertexChunkBoundingSphereCenter, vertexCanonicalSides, vertexAdjacentVertices;
@@ -13,36 +11,13 @@ import common.worldgen : ChunkParams, ChunkIncidentEnviroFactors, generateVoxels
 import common.margins : fixMargins;
 import common.voxel_math : ChunkDirection, CoordSign;
 
-__gshared ChunkParams gParams;
-__gshared VoxelData gResult;
-shared int gState = 0; // 0=idle, 1=request, 2=done
-shared bool gStopping = false;
-
-void workerFunc() {
-    while (!atomicLoad(gStopping)) {
-        if (atomicLoad(gState) != 1) {
-            Thread.yield();
-            continue;
-        }
-        gResult = generateVoxels(gParams);
-        atomicStore(gState, 2);
-    }
-}
-
 struct WorldgenDriver {
     VoxelData[ChunkId] preloadedVoxelData;
-
-    Thread worker;
 
     int maxGeneratePerFrame = 8;
 
     static WorldgenDriver create() {
         WorldgenDriver w;
-        atomicStore(gState, 0);
-        atomicStore(gStopping, false);
-        w.worker = new Thread(&workerFunc);
-        w.worker.isDaemon = true;
-        w.worker.start();
         return w;
     }
 
@@ -84,22 +59,11 @@ struct WorldgenDriver {
                 }
 
                 ChunkParams params = ChunkParams.create(graph, chunkId);
-                VoxelData voxels = generateOnWorker(params);
+                VoxelData voxels = generateVoxels(params);
                 populateChunk(graph, chunkId, voxels, chunkSize);
                 generated++;
             }
         }
-    }
-
-    static VoxelData generateOnWorker(ChunkParams params) {
-        gParams = params;
-        atomicStore(gState, 1);
-        while (atomicLoad(gState) != 2) {
-            Thread.yield();
-        }
-        VoxelData result = gResult;
-        atomicStore(gState, 0);
-        return result;
     }
 
     void applyVoxelData(ChunkId chunkId, VoxelData voxelData) {

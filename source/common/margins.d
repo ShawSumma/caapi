@@ -110,10 +110,11 @@ void initializeMargins(ubyte dimension, ref VoxelData voxels) {
         return;
     }
 
+    // Fetch the dense slice once; it was being re-fetched for every cell.
+    Material[] data = voxels.dataMut(dimension);
     foreach (dir; ChunkDirection.ALL) {
         ubyte marginC = CoordsWithMargins.marginCoord(dimension, dir.sign);
         ubyte boundaryC = CoordsWithMargins.boundaryCoord(dimension, dir.sign);
-        Material[] data = voxels.dataMut(dimension);
         foreach (j; 0 .. dimension + 2) {
             foreach (i; 0 .. dimension + 2) {
                 ubyte si = i < 1 ? 1 : (i > dimension ? dimension : cast(ubyte) i);

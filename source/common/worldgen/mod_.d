@@ -483,23 +483,27 @@ ChunkIncidentEnviroFactors chunkIncidentEnviroFactors(ref Graph graph, ChunkId c
     Side b = sides[1];
     Side c = sides[2];
 
-    Side[][] paths = [
-        [],
-        [c],
-        [b],
-        [b, c],
-        [a],
-        [a, c],
-        [a, b],
+    // The 8 incident corners correspond to the subsets of {a,b,c}. Encode each
+    // path as a fixed (sides, length) pair so this runs allocation-free; the old
+    // Side[][] literal heap-allocated 9 arrays on every chunk.
+    Side[3][8] pathSides = [
+        [a, a, a],
+        [c, a, a],
+        [b, a, a],
+        [b, c, a],
+        [a, a, a],
+        [a, c, a],
+        [a, b, a],
         [a, b, c],
     ];
+    static immutable ubyte[8] pathLen = [0, 1, 1, 2, 1, 2, 2, 3];
 
     ChunkIncidentEnviroFactors result;
 
     foreach (i; 0 .. 8) {
         NodeId node = chunk.node;
-        foreach (side; paths[i]) {
-            node = graph.ensureNeighbor(node, side);
+        foreach (k; 0 .. pathLen[i]) {
+            node = graph.ensureNeighbor(node, pathSides[i][k]);
         }
         graph.ensureNodeState(node);
         const(NodeState)* ns = graph.nodeState(node);
