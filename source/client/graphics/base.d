@@ -4,6 +4,8 @@ import std.stdio;
 import bindings.vk;
 
 struct SwapchainState {
+    VkPhysicalDevice physDevice;
+    VkSurfaceKHR surface;
     VkSwapchainKHR swapchain;
     VkFormat format;
     VkExtent2D extent;
@@ -21,8 +23,73 @@ struct SwapchainState {
     VkFence inFlightFence;
 
     bool init(VkPhysicalDevice physDevice, VkDevice device, VkSurfaceKHR surface, uint queueFamily) {
+        this.physDevice = physDevice;
+        this.surface = surface;
+
+        if (!createSwapchainResources(device)) {
+            return false;
+        }
+
+        VkCommandPoolCreateInfo cpci;
+        cpci.sType = VkStructureType.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        cpci.flags = VkCommandPoolCreateFlagBits.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        cpci.queueFamilyIndex = queueFamily;
+        vkCreateCommandPool(device, &cpci, null, &commandPool);
+
+        VkCommandBufferAllocateInfo cbai;
+        cbai.sType = VkStructureType.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        cbai.commandPool = commandPool;
+        cbai.level = VkCommandBufferLevel.VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cbai.commandBufferCount = 1;
+        vkAllocateCommandBuffers(device, &cbai, &commandBuffer);
+
+        VkSemaphoreCreateInfo semCI;
+        semCI.sType = VkStructureType.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        vkCreateSemaphore(device, &semCI, null, &imageAvailableSemaphore);
+        vkCreateSemaphore(device, &semCI, null, &renderFinishedSemaphore);
+
+        VkFenceCreateInfo fenceCI;
+        fenceCI.sType = VkStructureType.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        fenceCI.flags = VkFenceCreateFlagBits.VK_FENCE_CREATE_SIGNALED_BIT;
+        vkCreateFence(device, &fenceCI, null, &inFlightFence);
+
+        writeln("Swapchain and render pass created");
+        return true;
+    }
+
+    /// Tear down and rebuild everything that depends on the surface size.
+    /// Returns false if the surface currently has zero area (e.g. minimized);
+    /// callers should skip rendering and retry later.
+    bool recreate(VkDevice device) {
+        vkDeviceWaitIdle(device);
+        destroySwapchainResources(device);
+
+        // The acquire semaphore may be left signaled by an acquire whose image
+        // was never presented; recreate both semaphores to get a clean state.
+        vkDestroySemaphore(device, imageAvailableSemaphore, null);
+        vkDestroySemaphore(device, renderFinishedSemaphore, null);
+        VkSemaphoreCreateInfo semCI;
+        semCI.sType = VkStructureType.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        vkCreateSemaphore(device, &semCI, null, &imageAvailableSemaphore);
+        vkCreateSemaphore(device, &semCI, null, &renderFinishedSemaphore);
+
+        return createSwapchainResources(device);
+    }
+
+    private bool createSwapchainResources(VkDevice device) {
         VkSurfaceCapabilitiesKHR caps;
         vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physDevice, surface, &caps);
+
+        VkExtent2D previous = extent;
+        extent = caps.currentExtent;
+        if (extent.width == uint.max) {
+            // Surface lets us pick; clamp the previous extent into the valid range.
+            extent.width = clamp(previous.width, caps.minImageExtent.width, caps.maxImageExtent.width);
+            extent.height = clamp(previous.height, caps.minImageExtent.height, caps.maxImageExtent.height);
+        }
+        if (extent.width == 0 || extent.height == 0) {
+            return false;
+        }
 
         uint formatCount;
         vkGetPhysicalDeviceSurfaceFormatsKHR(physDevice, surface, &formatCount, null);
@@ -31,8 +98,6 @@ struct SwapchainState {
         format = formats[0].format;
         VkColorSpaceKHR colorSpace = formats[0].colorSpace;
 
-        extent = caps.currentExtent;
-        writefln("Swapchain extent: %dx%d", extent.width, extent.height);
         uint imageCount = caps.minImageCount + 1;
         if (caps.maxImageCount > 0 && imageCount > caps.maxImageCount) {
             imageCount = caps.maxImageCount;
@@ -129,6 +194,32 @@ struct SwapchainState {
         dvci.subresourceRange.layerCount = 1;
         vkCreateImageView(device, &dvci, null, &depthView);
 
+        // The render pass only depends on the image formats, which are stable;
+        // pipelines reference it, so create it once and keep it across resizes.
+        if (!renderPass) {
+            if (!createRenderPass(device)) {
+                return false;
+            }
+        }
+
+        framebuffers = new VkFramebuffer[](imgCount);
+        for (uint i = 0; i < imgCount; i++) {
+            VkImageView[2] fbAttach = [imageViews[i], depthView];
+            VkFramebufferCreateInfo fbci;
+            fbci.sType = VkStructureType.VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+            fbci.renderPass = renderPass;
+            fbci.attachmentCount = 2;
+            fbci.pAttachments = fbAttach.ptr;
+            fbci.width = extent.width;
+            fbci.height = extent.height;
+            fbci.layers = 1;
+            vkCreateFramebuffer(device, &fbci, null, &framebuffers[i]);
+        }
+
+        return true;
+    }
+
+    private bool createRenderPass(VkDevice device) {
         VkAttachmentDescription[2] attachments;
         attachments[0].format = format;
         attachments[0].samples = 1;
@@ -198,47 +289,40 @@ struct SwapchainState {
         rpci.dependencyCount = 2;
         rpci.pDependencies = deps.ptr;
 
-        vkCreateRenderPass(device, &rpci, null, &renderPass);
-
-        framebuffers = new VkFramebuffer[](imgCount);
-        for (uint i = 0; i < imgCount; i++) {
-            VkImageView[2] fbAttach = [imageViews[i], depthView];
-            VkFramebufferCreateInfo fbci;
-            fbci.sType = VkStructureType.VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-            fbci.renderPass = renderPass;
-            fbci.attachmentCount = 2;
-            fbci.pAttachments = fbAttach.ptr;
-            fbci.width = extent.width;
-            fbci.height = extent.height;
-            fbci.layers = 1;
-            vkCreateFramebuffer(device, &fbci, null, &framebuffers[i]);
+        VkResult res = vkCreateRenderPass(device, &rpci, null, &renderPass);
+        if (res != VkResult.VK_SUCCESS) {
+            writefln("vkCreateRenderPass failed: %s", res);
+            return false;
         }
-
-        VkCommandPoolCreateInfo cpci;
-        cpci.sType = VkStructureType.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-        cpci.flags = VkCommandPoolCreateFlagBits.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-        cpci.queueFamilyIndex = queueFamily;
-        vkCreateCommandPool(device, &cpci, null, &commandPool);
-
-        VkCommandBufferAllocateInfo cbai;
-        cbai.sType = VkStructureType.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        cbai.commandPool = commandPool;
-        cbai.level = VkCommandBufferLevel.VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        cbai.commandBufferCount = 1;
-        vkAllocateCommandBuffers(device, &cbai, &commandBuffer);
-
-        VkSemaphoreCreateInfo semCI;
-        semCI.sType = VkStructureType.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-        vkCreateSemaphore(device, &semCI, null, &imageAvailableSemaphore);
-        vkCreateSemaphore(device, &semCI, null, &renderFinishedSemaphore);
-
-        VkFenceCreateInfo fenceCI;
-        fenceCI.sType = VkStructureType.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-        fenceCI.flags = VkFenceCreateFlagBits.VK_FENCE_CREATE_SIGNALED_BIT;
-        vkCreateFence(device, &fenceCI, null, &inFlightFence);
-
-        writeln("Swapchain and render pass created");
         return true;
+    }
+
+    private void destroySwapchainResources(VkDevice device) {
+        foreach (fb; framebuffers) {
+            vkDestroyFramebuffer(device, fb, null);
+        }
+        framebuffers = null;
+        if (depthView) {
+            vkDestroyImageView(device, depthView, null);
+            depthView = 0;
+        }
+        if (depthImage) {
+            vkDestroyImage(device, depthImage, null);
+            depthImage = 0;
+        }
+        if (depthMemory) {
+            vkFreeMemory(device, depthMemory, null);
+            depthMemory = 0;
+        }
+        foreach (iv; imageViews) {
+            vkDestroyImageView(device, iv, null);
+        }
+        imageViews = null;
+        images = null;
+        if (swapchain) {
+            vkDestroySwapchainKHR(device, swapchain, null);
+            swapchain = 0;
+        }
     }
 
     void cleanup(VkDevice device) {
@@ -246,24 +330,13 @@ struct SwapchainState {
         vkDestroySemaphore(device, renderFinishedSemaphore, null);
         vkDestroySemaphore(device, imageAvailableSemaphore, null);
         vkDestroyCommandPool(device, commandPool, null);
-        foreach (fb; framebuffers) {
-            vkDestroyFramebuffer(device, fb, null);
-        }
+        destroySwapchainResources(device);
         vkDestroyRenderPass(device, renderPass, null);
-        if (depthView) {
-            vkDestroyImageView(device, depthView, null);
-        }
-        if (depthImage) {
-            vkDestroyImage(device, depthImage, null);
-        }
-        if (depthMemory) {
-            vkFreeMemory(device, depthMemory, null);
-        }
-        foreach (iv; imageViews) {
-            vkDestroyImageView(device, iv, null);
-        }
-        vkDestroySwapchainKHR(device, swapchain, null);
     }
+}
+
+private uint clamp(uint v, uint lo, uint hi) {
+    return v < lo ? lo : (v > hi ? hi : v);
 }
 
 VkPresentModeKHR selectPresentMode(VkPhysicalDevice phys, VkSurfaceKHR surface) {
@@ -276,10 +349,7 @@ VkPresentModeKHR selectPresentMode(VkPhysicalDevice phys, VkSurfaceKHR surface) 
             return m;
         }
     }
-    foreach (m; modes) {
-        if (m == VkPresentModeKHR.VK_PRESENT_MODE_IMMEDIATE_KHR) {
-            return m;
-        }
-    }
+    // FIFO is always available and vsynced; prefer it over IMMEDIATE so we
+    // don't tear and spin the GPU on hardware without mailbox support.
     return VkPresentModeKHR.VK_PRESENT_MODE_FIFO_KHR;
 }

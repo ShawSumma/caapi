@@ -2,8 +2,8 @@ module common.graph_collision;
 
 import std.math : isNaN;
 import common.chunk_collision : ChunkCollisionHit, chunkSphereCast;
-import common.collision_math : Ray;
-import common.dodeca : Vertex;
+import common.collision_math : Ray, transformRay;
+import common.dodeca : Vertex, vertexNodeToDual;
 import common.graph : Graph, NodeId;
 import common.math : MIsometry, MVector;
 import common.node : Chunk, ChunkId, ChunkState;
@@ -42,11 +42,16 @@ GraphCollisionHit sphereCast(
             continue;
         }
 
-        ChunkCollisionHit chunkHit = chunkSphereCast(colliderRadius, c.voxels, graph.layout(), ray, tanhDistance);
+        // chunkSphereCast works in the chunk's dual frame; bring the
+        // caster-local ray there, and return the hit normal back in the
+        // caster's frame so callers can use it directly.
+        MIsometry!float localToDual = vertexNodeToDual(vertex) * posLocal;
+        Ray chunkRay = transformRay(localToDual, ray);
+        ChunkCollisionHit chunkHit = chunkSphereCast(colliderRadius, c.voxels, graph.layout(), chunkRay, tanhDistance);
         if (!isNaN(chunkHit.tanhDistance)) {
             tanhDistance = chunkHit.tanhDistance;
             hit.tanhDistance = chunkHit.tanhDistance;
-            hit.normal = chunkHit.normal;
+            hit.normal = localToDual.inverse().mat * chunkHit.normal;
             hit.chunk = chunk;
         }
     }

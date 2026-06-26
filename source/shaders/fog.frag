@@ -18,4 +18,14 @@ void main() {
     float dist = view_length >= 1.0 ? INFINITY : atanh(view_length);
     // Exponential^k fog
     fog = vec4(0.5, 0.65, 0.9, exp(-pow(dist * fog_density, 5)));
+
+    // Crosshair overlay, drawn in aspect-corrected NDC so the arms are square.
+    float aspect = abs(inverse_projection[0][0] / inverse_projection[1][1]);
+    vec2 p = texcoords * 2.0 - 1.0;
+    p.x *= aspect;
+    float arm = 0.025;
+    float thick = 0.004;
+    if ((abs(p.x) <= arm && abs(p.y) <= thick) || (abs(p.x) <= thick && abs(p.y) <= arm)) {
+        fog = vec4(1.0, 1.0, 1.0, 0.25);
+    }
 }

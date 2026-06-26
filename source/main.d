@@ -6,6 +6,7 @@ import core.stdc.string : strlen;
 import core.stdc.stdlib : system;
 import std.conv : to;
 import bindings.sdl3;
+import client.config : ClientConfig;
 import client.graphics;
 import client.script;
 import common.world;
@@ -14,6 +15,39 @@ import worldcheck : dumpWorld, benchNearby;
 enum : ulong {
     WINDOW_VULKAN    = 0x0000000010000000,
     WINDOW_RESIZABLE = 0x0000000000000020,
+}
+
+immutable Material[9] MATERIAL_PALETTE = [
+    Material.WoodPlanks,
+    Material.Wood,
+    Material.Leaves,
+    Material.GreyBrick,
+    Material.WhiteBrick,
+    Material.Sandstone,
+    Material.Marble,
+    Material.Granite,
+    Material.Basalt,
+];
+
+/// Held-key state, tracked per key so opposite keys don't cancel each
+/// other's release, and clearable in one go when the window loses focus.
+struct InputState {
+    bool fwd;
+    bool back;
+    bool left;
+    bool right;
+    bool up;
+    bool down;
+    bool rollLeft;
+    bool rollRight;
+    bool yawLeft;
+    bool yawRight;
+    bool pitchUp;
+    bool pitchDown;
+
+    void clear() {
+        this = InputState.init;
+    }
 }
 
 void main(string[] args) {
@@ -34,9 +68,23 @@ void main(string[] args) {
     writeln("mined - hyperbolic voxel engine");
 
     string scriptPath;
+    string configPath = "mined.cfg";
     foreach (i, a; args) {
         if (a == "--script" && i + 1 < args.length) {
             scriptPath = args[i + 1];
+        }
+        if (a == "--config" && i + 1 < args.length) {
+            configPath = args[i + 1];
+        }
+    }
+
+    ClientConfig cfg = ClientConfig.load(configPath);
+    foreach (i, a; args) {
+        if (a == "--sensitivity" && i + 1 < args.length) {
+            cfg.mouseSensitivity = args[i + 1].to!float;
+        }
+        if (a == "--invert-y") {
+            cfg.invertY = true;
         }
     }
 
@@ -81,19 +129,24 @@ void main(string[] args) {
     scope(exit) {
         renderer.cleanup();
     }
+    renderer.reach = cfg.reach;
 
     bool running = true;
     bool mouseCaptured = false;
-    bool skipNextMotion = false;
+    int materialIndex = 0;
     SDL_Event ev;
     CameraInput cam;
+    InputState input;
     int shotIndex = 0;
     float simTime = 0;
     float mouseDx = 0;
     float mouseDy = 0;
+    float lastFps = 0;
     ulong lastTicks = SDL_GetTicks();
     ulong framesSinceReport = 0;
     ulong lastFpsReport = lastTicks;
+
+    updateWindowTitle(window, mouseCaptured, materialIndex, lastFps);
 
     while (running) {
         ulong nowTicks = SDL_GetTicks();
@@ -109,6 +162,7 @@ void main(string[] args) {
 
         mouseDx = 0;
         mouseDy = 0;
+        bool titleDirty = false;
 
         while (SDL_PollEvent(&ev)) {
             if (ev.type == SDL_EVENT_QUIT) {
@@ -117,18 +171,10 @@ void main(string[] args) {
 
             if (script.events.length == 0) {
                 processInteractiveInput(
-                    ev, window, cam, renderer, mouseCaptured,
-                    skipNextMotion, mouseDx, mouseDy,
-                    running, xWindowId, shotIndex);
+                    ev, window, input, renderer, mouseCaptured,
+                    mouseDx, mouseDy, materialIndex, titleDirty,
+                    xWindowId, shotIndex);
             }
-        }
-
-        if (mouseCaptured) {
-            int w = 0;
-            int h = 0;
-            SDL_GetWindowSize(window, &w, &h);
-            SDL_WarpMouseInWindow(window, cast(float)(w / 2), cast(float)(h / 2));
-            skipNextMotion = true;
         }
 
         if (script.events.length > 0) {
@@ -138,15 +184,23 @@ void main(string[] args) {
             cam.vert = script.vert;
             cam.yawRate = script.yawRate;
             cam.pitchRate = script.pitchRate;
+            cam.rollRate = 0;
+        } else {
+            cam.fwd = (axis(input.back) - axis(input.fwd)) * cfg.moveSpeed;
+            cam.strafe = (axis(input.right) - axis(input.left)) * cfg.moveSpeed;
+            cam.vert = (axis(input.up) - axis(input.down)) * cfg.moveSpeed;
+            cam.yawRate = (axis(input.yawRight) - axis(input.yawLeft)) * cfg.turnSpeed;
+            cam.pitchRate = (axis(input.pitchDown) - axis(input.pitchUp)) * cfg.turnSpeed;
+            cam.rollRate = (axis(input.rollLeft) - axis(input.rollRight)) * cfg.turnSpeed;
         }
 
         if (!running) {
             break;
         }
 
-        enum float MOUSE_SENS = 0.003f;
-        float yaw = cam.yawRate * dt + mouseDx * MOUSE_SENS;
-        float pitch = cam.pitchRate * dt + mouseDy * MOUSE_SENS;
+        float invY = cfg.invertY ? -1.0f : 1.0f;
+        float yaw = cam.yawRate * dt + mouseDx * cfg.mouseSensitivity;
+        float pitch = cam.pitchRate * dt + mouseDy * cfg.mouseSensitivity * invY;
         float roll = cam.rollRate * dt;
         renderer.rotateCamera(yaw, pitch, roll);
         renderer.moveCamera(cam.strafe * dt, cam.vert * dt, cam.fwd * dt);
@@ -155,74 +209,108 @@ void main(string[] args) {
 
         framesSinceReport++;
         if (nowTicks - lastFpsReport >= 1000) {
-            float fps = framesSinceReport * 1000.0f / (nowTicks - lastFpsReport);
-            writefln("FPS=%.1f", fps);
+            lastFps = framesSinceReport * 1000.0f / (nowTicks - lastFpsReport);
+            writefln("FPS=%.1f", lastFps);
             stdout.flush();
             framesSinceReport = 0;
             lastFpsReport = nowTicks;
+            titleDirty = true;
         }
+
+        if (titleDirty) {
+            updateWindowTitle(window, mouseCaptured, materialIndex, lastFps);
+        }
+    }
+}
+
+float axis(bool held) {
+    return held ? 1.0f : 0.0f;
+}
+
+void updateWindowTitle(SDL_Window* window, bool mouseCaptured, int materialIndex, float fps) {
+    string title;
+    if (mouseCaptured) {
+        title = format("mined — [%d] %s — Esc to release mouse — FPS %.0f",
+            materialIndex + 1, MATERIAL_PALETTE[materialIndex], fps);
+    } else {
+        title = format("mined — click to capture mouse — FPS %.0f", fps);
+    }
+    SDL_SetWindowTitle(window, title.toStringz);
+}
+
+void setMouseCaptured(SDL_Window* window, ref bool mouseCaptured, ref InputState input, bool captured) {
+    if (mouseCaptured == captured) {
+        return;
+    }
+    SDL_SetWindowRelativeMouseMode(window, captured);
+    mouseCaptured = captured;
+    if (!captured) {
+        input.clear();
     }
 }
 
 void processInteractiveInput(
     ref SDL_Event ev,
     SDL_Window* window,
-    ref CameraInput cam,
+    ref InputState input,
     ref Renderer renderer,
     ref bool mouseCaptured,
-    ref bool skipNextMotion,
     ref float mouseDx,
     ref float mouseDy,
-    ref bool running,
+    ref int materialIndex,
+    ref bool titleDirty,
     ulong xWindowId,
     ref int shotIndex,
 ) {
     if (ev.type == SDL_EVENT_KEY_DOWN) {
         if (ev.key.key == SDLK_ESCAPE) {
             if (mouseCaptured) {
-                SDL_SetWindowMouseGrab(window, false);
-                SDL_ShowCursor();
-                mouseCaptured = false;
-            } else {
-                running = false;
+                setMouseCaptured(window, mouseCaptured, input, false);
+                titleDirty = true;
             }
         } else if (ev.key.key == SDLK_F12) {
             string path = format("/tmp/mined_shot_%03d.png", shotIndex++);
-            string cmd = format("import -window 0x%x %s", xWindowId, path);
+            // Run in the background so capture doesn't stall the frame loop.
+            string cmd = format("import -window 0x%x %s &", xWindowId, path);
             writefln("F12 screenshot -> %s", path);
             system(cmd.toStringz);
+        } else if (ev.key.scancode >= SDL_SCANCODE_1 && ev.key.scancode <= SDL_SCANCODE_9) {
+            int idx = cast(int)(ev.key.scancode - SDL_SCANCODE_1);
+            if (idx < MATERIAL_PALETTE.length && idx != materialIndex) {
+                materialIndex = idx;
+                writefln("material: [%d] %s", idx + 1, MATERIAL_PALETTE[idx]);
+                titleDirty = true;
+            }
         } else {
-            handleKeyDown(ev.key.key, cam);
+            setMovementKey(ev.key.scancode, input, true);
         }
     }
 
     if (ev.type == SDL_EVENT_KEY_UP) {
-        handleKeyUp(ev.key.key, cam);
+        setMovementKey(ev.key.scancode, input, false);
+    }
+
+    if (ev.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
+        // Key-up events stop arriving once focus is gone; drop all held keys
+        // and release the mouse so the player isn't stuck moving or captured.
+        input.clear();
+        setMouseCaptured(window, mouseCaptured, input, false);
+        titleDirty = true;
     }
 
     if (ev.type == SDL_EVENT_MOUSE_MOTION && mouseCaptured) {
-        if (skipNextMotion) {
-            skipNextMotion = false;
-        } else {
-            mouseDx += ev.motion.xrel;
-            mouseDy += ev.motion.yrel;
-        }
+        mouseDx += ev.motion.xrel;
+        mouseDy += ev.motion.yrel;
     }
 
     if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
         if (!mouseCaptured) {
-            SDL_SetWindowMouseGrab(window, true);
-            SDL_HideCursor();
-            int w = 0;
-            int h = 0;
-            SDL_GetWindowSize(window, &w, &h);
-            SDL_WarpMouseInWindow(window, cast(float)(w / 2), cast(float)(h / 2));
-            skipNextMotion = true;
-            mouseCaptured = true;
+            setMouseCaptured(window, mouseCaptured, input, true);
+            titleDirty = true;
         } else if (ev.button.button == SDL_BUTTON_LEFT) {
             renderer.breakBlock();
         } else if (ev.button.button == SDL_BUTTON_RIGHT) {
-            renderer.placeBlock(cast(ushort) Material.WoodPlanks);
+            renderer.placeBlock(cast(ushort) MATERIAL_PALETTE[materialIndex]);
         }
     }
 }
@@ -236,64 +324,22 @@ struct CameraInput {
     float vert = 0;
 }
 
-void handleKeyDown(uint key, ref CameraInput cam) {
-    enum float TURN = 1.5f;
-    enum float MOVE = 1.0f;
-    if (key == SDLK_LEFT) {
-        cam.yawRate = -TURN;
-    }
-    if (key == SDLK_RIGHT) {
-        cam.yawRate = TURN;
-    }
-    if (key == SDLK_UP) {
-        cam.pitchRate = -TURN;
-    }
-    if (key == SDLK_DOWN) {
-        cam.pitchRate = TURN;
-    }
-    if (key == SDLK_W) {
-        cam.fwd = -MOVE;
-    }
-    if (key == SDLK_S) {
-        cam.fwd = MOVE;
-    }
-    if (key == SDLK_A) {
-        cam.strafe = -MOVE;
-    }
-    if (key == SDLK_D) {
-        cam.strafe = MOVE;
-    }
-    if (key == SDLK_Q) {
-        cam.rollRate = TURN;
-    }
-    if (key == SDLK_E) {
-        cam.rollRate = -TURN;
-    }
-    if (key == SDLK_SPACE) {
-        cam.vert = MOVE;
-    }
-    if (key == SDLK_LSHIFT) {
-        cam.vert = -MOVE;
-    }
-}
-
-void handleKeyUp(uint key, ref CameraInput cam) {
-    if (key == SDLK_LEFT || key == SDLK_RIGHT) {
-        cam.yawRate = 0;
-    }
-    if (key == SDLK_UP || key == SDLK_DOWN) {
-        cam.pitchRate = 0;
-    }
-    if (key == SDLK_Q || key == SDLK_E) {
-        cam.rollRate = 0;
-    }
-    if (key == SDLK_W || key == SDLK_S) {
-        cam.fwd = 0;
-    }
-    if (key == SDLK_A || key == SDLK_D) {
-        cam.strafe = 0;
-    }
-    if (key == SDLK_SPACE || key == SDLK_LSHIFT) {
-        cam.vert = 0;
+/// Movement uses scancodes (physical key positions) so WASD stays WASD on
+/// non-QWERTY layouts.
+void setMovementKey(uint scancode, ref InputState input, bool held) {
+    switch (scancode) {
+        case SDL_SCANCODE_W: input.fwd = held; break;
+        case SDL_SCANCODE_S: input.back = held; break;
+        case SDL_SCANCODE_A: input.left = held; break;
+        case SDL_SCANCODE_D: input.right = held; break;
+        case SDL_SCANCODE_Q: input.rollLeft = held; break;
+        case SDL_SCANCODE_E: input.rollRight = held; break;
+        case SDL_SCANCODE_SPACE: input.up = held; break;
+        case SDL_SCANCODE_LSHIFT: input.down = held; break;
+        case SDL_SCANCODE_LEFT: input.yawLeft = held; break;
+        case SDL_SCANCODE_RIGHT: input.yawRight = held; break;
+        case SDL_SCANCODE_UP: input.pitchUp = held; break;
+        case SDL_SCANCODE_DOWN: input.pitchDown = held; break;
+        default: break;
     }
 }

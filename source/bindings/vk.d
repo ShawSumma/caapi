@@ -231,6 +231,7 @@ enum VkVertexInputRate : int {
 }
 
 enum VkPrimitiveTopology : int {
+    VK_PRIMITIVE_TOPOLOGY_LINE_LIST = 1,
     VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST = 3,
 }
 

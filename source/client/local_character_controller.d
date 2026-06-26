@@ -150,8 +150,57 @@ struct Quaternion {
         return Quaternion(cos(halfAngle), axis[0] * invLen, axis[1] * invLen, axis[2] * invLen);
     }
 
+    /// Rotation taking the local +Z axis to `forward` and +Y toward `up`,
+    /// so a level frame (forward = [0,0,1], up = [0,1,0]) maps to identity.
     static Quaternion lookRotation(float[3] forward, float[3] up) {
-        return identity();
+        float flen = sqrt(forward[0] * forward[0] + forward[1] * forward[1] + forward[2] * forward[2]);
+        if (flen < 1e-10) {
+            return identity();
+        }
+        float[3] z = [forward[0] / flen, forward[1] / flen, forward[2] / flen];
+
+        float d = up[0] * z[0] + up[1] * z[1] + up[2] * z[2];
+        float[3] y = [up[0] - z[0] * d, up[1] - z[1] * d, up[2] - z[2] * d];
+        float ylen = sqrt(y[0] * y[0] + y[1] * y[1] + y[2] * y[2]);
+        if (ylen < 1e-10) {
+            // up is parallel to forward; pick any perpendicular axis instead.
+            float[3] alt = abs(z[0]) < 0.9 ? [1.0f, 0, 0] : [0, 1.0f, 0];
+            float ad = alt[0] * z[0] + alt[1] * z[1] + alt[2] * z[2];
+            y = [alt[0] - z[0] * ad, alt[1] - z[1] * ad, alt[2] - z[2] * ad];
+            ylen = sqrt(y[0] * y[0] + y[1] * y[1] + y[2] * y[2]);
+        }
+        y[0] /= ylen;
+        y[1] /= ylen;
+        y[2] /= ylen;
+
+        float[3] x = [
+            y[1] * z[2] - y[2] * z[1],
+            y[2] * z[0] - y[0] * z[2],
+            y[0] * z[1] - y[1] * z[0],
+        ];
+
+        // Columns of the rotation matrix are the basis vectors x, y, z;
+        // convert to a quaternion via the standard branch-on-trace method.
+        float m00 = x[0], m01 = y[0], m02 = z[0];
+        float m10 = x[1], m11 = y[1], m12 = z[1];
+        float m20 = x[2], m21 = y[2], m22 = z[2];
+
+        float trace = m00 + m11 + m22;
+        Quaternion q;
+        if (trace > 0) {
+            float s = 0.5f / sqrt(trace + 1.0f);
+            q = Quaternion(0.25f / s, (m21 - m12) * s, (m02 - m20) * s, (m10 - m01) * s);
+        } else if (m00 > m11 && m00 > m22) {
+            float s = 2.0f * sqrt(1.0f + m00 - m11 - m22);
+            q = Quaternion((m21 - m12) / s, 0.25f * s, (m01 + m10) / s, (m02 + m20) / s);
+        } else if (m11 > m22) {
+            float s = 2.0f * sqrt(1.0f + m11 - m00 - m22);
+            q = Quaternion((m02 - m20) / s, (m01 + m10) / s, 0.25f * s, (m12 + m21) / s);
+        } else {
+            float s = 2.0f * sqrt(1.0f + m22 - m00 - m11);
+            q = Quaternion((m10 - m01) / s, (m02 + m20) / s, (m12 + m21) / s, 0.25f * s);
+        }
+        return q.normalized();
     }
 
     Quaternion opBinary(string op : "*")(Quaternion rhs) const {
@@ -178,6 +227,31 @@ struct Quaternion {
         float inv = 1.0f / len;
         return Quaternion(w * inv, x * inv, y * inv, z * inv);
     }
+}
+
+unittest {
+    import std.math : isClose;
+
+    // Level frame maps to identity.
+    Quaternion q = Quaternion.lookRotation([0, 0, 1], [0, 1, 0]);
+    assert(isClose(q.w, 1.0f, 1e-5));
+
+    // Rotating local +Z by the result must give the requested forward,
+    // and local +Y the requested up, for an arbitrary orthogonal pair.
+    float[3] fwd = [1, 0, 0];
+    float[3] up = [0, 0, 1];
+    q = Quaternion.lookRotation(fwd, up);
+    Quaternion conj = Quaternion(q.w, -q.x, -q.y, -q.z);
+    Quaternion vz = Quaternion(0, 0, 0, 1);
+    Quaternion rz = q * vz * conj;
+    assert(isClose(rz.x, fwd[0], 0.0, 1e-5) && isClose(rz.y, fwd[1], 0.0, 1e-5) && isClose(rz.z, fwd[2], 0.0, 1e-5));
+    Quaternion vy = Quaternion(0, 0, 1, 0);
+    Quaternion ry = q * vy * conj;
+    assert(isClose(ry.x, up[0], 0.0, 1e-5) && isClose(ry.y, up[1], 0.0, 1e-5) && isClose(ry.z, up[2], 0.0, 1e-5));
+
+    // Degenerate input falls back to identity instead of NaN.
+    q = Quaternion.lookRotation([0, 0, 0], [0, 1, 0]);
+    assert(isClose(q.w, 1.0f, 1e-5));
 }
 
 MIsometry!float quaternionToIsometry(Quaternion q) {

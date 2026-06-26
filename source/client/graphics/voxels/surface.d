@@ -563,6 +563,23 @@ struct SurfacePipeline {
         return true;
     }
 
+    /// Re-point the fog subpass's depth input attachment after the swapchain
+    /// (and thus the depth image) has been recreated.
+    void updateDepthDescriptor(VkDevice device, VkImageView depthView) {
+        VkDescriptorImageInfo depthInfo;
+        depthInfo.sampler = 0;
+        depthInfo.imageView = depthView;
+        depthInfo.imageLayout = VkImageLayout.VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+        VkWriteDescriptorSet write;
+        write.sType = VkStructureType.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = commonSet;
+        write.dstBinding = 1;
+        write.descriptorCount = 1;
+        write.descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+        write.pImageInfo = cast(const(void)*) &depthInfo;
+        vkUpdateDescriptorSets(device, 1, &write, 0, null);
+    }
+
     void updateCommonUbo(
         VkDevice device,
         float[16] vp,

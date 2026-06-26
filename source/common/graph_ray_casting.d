@@ -2,8 +2,8 @@ module common.graph_ray_casting;
 
 import std.math : isNaN;
 import common.chunk_ray_casting : ChunkRayCastHit, chunkRayCast;
-import common.collision_math : Ray;
-import common.dodeca : Vertex;
+import common.collision_math : Ray, transformRay;
+import common.dodeca : Vertex, vertexNodeToDual;
 import common.graph : Graph, NodeId;
 import common.math : MIsometry;
 import common.node : Chunk, ChunkId, ChunkState, Node, VoxelData;
@@ -32,6 +32,10 @@ GraphCastHit rayCast(
     hit.tanhDistance = float.nan;
     outOfBounds = false;
 
+    // The ray arrives in the caster's local frame; chunkRayCast works in each
+    // chunk's dual frame, so move it through node space into that frame.
+    Ray nodeRay = transformRay(posLocal, ray);
+
     foreach (vIdx; 0 .. 20) {
         Vertex vertex = cast(Vertex) vIdx;
         ChunkId chunk = ChunkId(posNode, vertex);
@@ -40,7 +44,8 @@ GraphCastHit rayCast(
             continue;
         }
 
-        ChunkRayCastHit chunkHit = chunkRayCast(*chunkData, graph.layout(), ray, tanhDistance);
+        Ray chunkRay = transformRay(vertexNodeToDual(vertex), nodeRay);
+        ChunkRayCastHit chunkHit = chunkRayCast(*chunkData, graph.layout(), chunkRay, tanhDistance);
         if (!isNaN(chunkHit.tanhDistance)) {
             tanhDistance = chunkHit.tanhDistance;
             hit.tanhDistance = chunkHit.tanhDistance;

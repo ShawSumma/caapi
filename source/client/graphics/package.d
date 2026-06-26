@@ -10,17 +10,19 @@ import client.graphics.core;
 import client.graphics.base;
 import client.graphics.voxels;
 import client.graphics.fog : FogPipeline;
+import client.graphics.highlight : HighlightPipeline;
 import client.graphics.frustum : Frustum;
-import client.worldgen_driver : WorldgenDriver;
+import client.worldgen_driver : WorldgenDriver, getChunkNeighbor;
 import common.collision_math : Ray;
-import common.dodeca : Vertex, Side, sideReflection, sideIsFacing, CHUNK_BOUNDING_SPHERE_RADIUS, vertexChunkBoundingSphereCenter;
+import common.dodeca : Vertex, Side, sideReflection, sideIsFacing, CHUNK_BOUNDING_SPHERE_RADIUS, vertexChunkBoundingSphereCenter, vertexChunkToNode;
 import common.graph_ray_casting : GraphCastHit, rayCast;
 import common.math : Matrix4, MPoint, MIsometry, MVector, MDirection;
 import common.graph : Graph, NodeId;
 import common.node : Chunk, ChunkId, ChunkState;
 import common.proto : Position;
 import common.traversal : ensureAndCollectNearby, NearbyNode, NearbyScratch;
-import common.voxel_math : Coords, CoordSign;
+import common.margins : fixMargins, neighborAxisPermutation;
+import common.voxel_math : ChunkDirection, Coords, CoordSign;
 import common.world : Material;
 
 struct Renderer {
@@ -29,6 +31,7 @@ struct Renderer {
     SurfacePipeline voxels;
     SurfaceExtraction extract;
     FogPipeline fog;
+    HighlightPipeline highlight;
     WorldgenDriver worldgenDriver;
     uint dimension = 12;
     float time = 0;
@@ -36,6 +39,7 @@ struct Renderer {
     Graph graph;
     float viewRadius = 5.0f;
     float renderRadius = 4.5f;
+    float reach = 5.0f;
 
     uint maxSlots = 2^^16;
     uint concurrency = 128;
@@ -151,6 +155,10 @@ struct Renderer {
             return false;
         }
 
+        if (!highlight.init(core.device, swapState.renderPass)) {
+            return false;
+        }
+
         if (extract.tfReady) {
             extract.bindTransformOutput(core.device, voxels.transformsVbo.buffer);
             nodeTfLocal = new float[extract.maxNodes * 16];
@@ -168,6 +176,14 @@ struct Renderer {
 
     void render(float dt) {
         time += dt;
+
+        if (swapState.extent.width == 0 || swapState.extent.height == 0) {
+            // Minimized; try to rebuild and skip the frame if still zero-sized.
+            if (!swapState.recreate(core.device)) {
+                return;
+            }
+            voxels.updateDepthDescriptor(core.device, swapState.depthView);
+        }
 
         MonoTime a0 = MonoTime.currTime;
         bool camMoved = !hasNearby || camPos.node != lastNearbyNode;
@@ -319,6 +335,33 @@ struct Renderer {
             slotGeneration.remove(removeBuf[i]);
         }
 
+        float[16] proj = frustum.projection(1.0e-4f);
+        float[16] view = matToFlat(camPos.local.inverse().mat);
+        float[16] vp = matMul(proj, view);
+        float[16] invp = matInverse(proj);
+
+        // Find the voxel the player is aiming at and build the outline's mvp.
+        bool hasTarget = false;
+        float[16] targetMvp;
+        float[3] targetVoxel;
+        GraphCastHit targetHit = castCenterRay(reach);
+        if (!isNaN(targetHit.tanhDistance)) {
+            foreach (ref nn; cachedNodes) {
+                if (nn.id == targetHit.chunk.node) {
+                    float[16] chunkTf = matMul(
+                        matToFlat(nn.transform.mat),
+                        matToFlat(vertexChunkToNode(targetHit.chunk.vertex)));
+                    targetMvp = matMul(vp, chunkTf);
+                    targetVoxel = [
+                        cast(float) targetHit.voxelCoords.data[0],
+                        cast(float) targetHit.voxelCoords.data[1],
+                        cast(float) targetHit.voxelCoords.data[2],
+                    ];
+                    hasTarget = true;
+                    break;
+                }
+            }
+        }
         uint currentSecond = cast(uint) time;
         if (lastLoggedSecond.isNull || currentSecond != lastLoggedSecond.get) {
             lastLoggedSecond = currentSecond;
@@ -327,17 +370,13 @@ struct Renderer {
             double drv = (a2 - a1).total!"usecs" / 1000.0;
             double wait = (a3 - a2).total!"usecs" / 1000.0;
             double loop = (a4 - a3).total!"usecs" / 1000.0;
-            writefln("[t=%ss] active=%d inFrustum=%d slots=%d new=%d graph=%d nearby=%d | ens=%.1f drv=%.1f wait=%.1f loop=%.1f ms",
+            writefln("[t=%ss] active=%d inFrustum=%d slots=%d new=%d graph=%d nearby=%d | ens=%.1f drv=%.1f wait=%.1f loop=%.1f ms | target=%d d=%s",
                 currentSecond, activeCount, inFrustumCount, nextSlot,
                 tasksLen, graph.len, cachedNodes.length,
-                ens, drv, wait, loop);
+                ens, drv, wait, loop, hasTarget ? 1 : 0, targetHit.tanhDistance);
             stdout.flush();
         }
 
-        float[16] proj = frustum.projection(1.0e-4f);
-        float[16] view = matToFlat(camPos.local.inverse().mat);
-        float[16] vp = matMul(proj, view);
-        float[16] invp = matInverse(proj);
         float fogDensity = pow(log(1.0f / 1e-3f), 1.0f / 5.0f) / 75.0f;
 
         float[4] lightCam = [0.3f, 0.8f, 0.4f, 0];
@@ -360,10 +399,18 @@ struct Renderer {
         lightNode[3] = 0;
         voxels.updateCommonUbo(core.device, vp, invp, fogDensity, time, lightNode);
 
-        vkResetFences(core.device, 1, &swapState.inFlightFence);
         uint imageIndex;
-        vkAcquireNextImageKHR(core.device, swapState.swapchain, ulong.max,
+        VkResult acquireRes = vkAcquireNextImageKHR(core.device, swapState.swapchain, ulong.max,
             swapState.imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+        if (acquireRes == VkResult.VK_ERROR_OUT_OF_DATE_KHR) {
+            recreateSwapchain();
+            return;
+        }
+        if (acquireRes != VkResult.VK_SUCCESS && acquireRes != VkResult.VK_SUBOPTIMAL_KHR) {
+            writefln("vkAcquireNextImageKHR failed: %s", acquireRes);
+            return;
+        }
+        vkResetFences(core.device, 1, &swapState.inFlightFence);
 
         VkCommandBuffer cmd = swapState.commandBuffer;
         vkResetCommandBuffer(cmd, 0);
@@ -426,6 +473,10 @@ struct Renderer {
                 0, activeCount, INDIRECT_SIZE);
         }
 
+        if (hasTarget) {
+            highlight.draw(cmd, targetMvp, targetVoxel, cast(float) dimension);
+        }
+
         vkCmdNextSubpass(cmd, VkSubpassContents.VK_SUBPASS_CONTENTS_INLINE);
         fog.draw(cmd, fog.pipelineLayout, voxels.commonSet);
 
@@ -451,56 +502,99 @@ struct Renderer {
         pi.swapchainCount = 1;
         pi.pSwapchains = &swapState.swapchain;
         pi.pImageIndices = &imageIndex;
-        vkQueuePresentKHR(core.graphicsQueue, &pi);
+        VkResult presentRes = vkQueuePresentKHR(core.graphicsQueue, &pi);
+        if (presentRes == VkResult.VK_ERROR_OUT_OF_DATE_KHR
+            || presentRes == VkResult.VK_SUBOPTIMAL_KHR) {
+            recreateSwapchain();
+        }
+    }
+
+    void recreateSwapchain() {
+        if (!swapState.recreate(core.device)) {
+            return;
+        }
+        voxels.updateDepthDescriptor(core.device, swapState.depthView);
+    }
+
+    GraphCastHit castCenterRay(float reachDistance) {
+        Ray ray = Ray.create(
+            MPoint!float.origin(),
+            MVector!float(0, 0, -1, 0).normalizedDirection());
+        bool oob;
+        return rayCast(graph, camPos.node, camPos.local, ray, reachDistance, oob);
     }
 
     void breakBlock() {
-        Ray ray = Ray.create(
-            MPoint!float.origin(),
-            MVector!float(0, 0, -1, 0).normalizedDirection());
-        bool oob;
-        GraphCastHit hit = rayCast(graph, camPos.node, camPos.local, ray, 5.0f, oob);
+        GraphCastHit hit = castCenterRay(reach);
         if (isNaN(hit.tanhDistance)) {
             return;
         }
-        Chunk* c = &graph[hit.chunk.node].chunks.values[hit.chunk.vertex];
-        if (c.state != ChunkState.Populated) {
-            return;
-        }
-        ulong idx = hit.voxelCoords.toIndex(cast(ubyte) dimension);
-        c.voxels.dataMut(cast(ubyte) dimension)[idx] = Material.Void;
-        c.generation++;
+        setVoxel(hit.chunk, hit.voxelCoords, Material.Void);
     }
 
     void placeBlock(ushort material) {
-        Ray ray = Ray.create(
-            MPoint!float.origin(),
-            MVector!float(0, 0, -1, 0).normalizedDirection());
-        bool oob;
-        GraphCastHit hit = rayCast(graph, camPos.node, camPos.local, ray, 5.0f, oob);
+        GraphCastHit hit = castCenterRay(reach);
         if (isNaN(hit.tanhDistance)) {
             return;
         }
-        Chunk* c = &graph[hit.chunk.node].chunks.values[hit.chunk.vertex];
-        if (c.state != ChunkState.Populated) {
-            return;
-        }
-        ubyte[3] coords = hit.voxelCoords.data;
-        if (hit.faceSign == CoordSign.Plus) {
-            coords[hit.faceAxis] = cast(ubyte)(coords[hit.faceAxis] + 1);
+        ChunkId targetChunk = hit.chunk;
+        Coords coords = hit.voxelCoords;
+        int stepped = coords[hit.faceAxis] + (hit.faceSign == CoordSign.Plus ? 1 : -1);
+        if (stepped >= 0 && stepped < dimension) {
+            coords[hit.faceAxis] = cast(ubyte) stepped;
         } else {
-            coords[hit.faceAxis] = cast(ubyte)(coords[hit.faceAxis] - 1);
+            // The cell in front of the hit face lies in the neighboring chunk.
+            // Chunk neighbors meet mirrored, so the crossing lands on the
+            // neighbor's boundary layer for the same direction, with its axes
+            // permuted the same way fixMargins matches them up.
+            ChunkDirection dir = ChunkDirection(hit.faceAxis, hit.faceSign);
+            ChunkId neighbor = getChunkNeighbor(graph, hit.chunk, dir.axis, dir.sign);
+            if (neighbor.node == NodeId.init || !graph.contains(neighbor.node)) {
+                return;
+            }
+            coords[hit.faceAxis] = Coords.boundaryCoord(cast(ubyte) dimension, dir.sign);
+            coords = neighborAxisPermutation(hit.chunk.vertex, dir) * coords;
+            targetChunk = neighbor;
         }
-        if (coords[hit.faceAxis] < dimension) {
-            size_t idx = Coords(coords).toIndex(cast(ubyte) dimension);
-            c.voxels.dataMut(cast(ubyte) dimension)[idx] = cast(Material) material;
-            c.generation++;
+        setVoxel(targetChunk, coords, cast(Material) material);
+    }
+
+    /// Write one voxel and keep the margin copies of adjacent chunks in sync
+    /// so their surfaces re-extract correctly when a boundary voxel changes.
+    bool setVoxel(ChunkId chunkId, Coords coords, Material material) {
+        if (!graph.contains(chunkId.node)) {
+            return false;
         }
+        Chunk* c = &graph[chunkId.node].chunks.values[chunkId.vertex];
+        if (c.state != ChunkState.Populated) {
+            return false;
+        }
+        ubyte dim = cast(ubyte) dimension;
+        c.voxels.dataMut(dim)[coords.toIndex(dim)] = material;
+        c.generation++;
+
+        foreach (dir; ChunkDirection.ALL) {
+            if (coords[dir.axis] != Coords.boundaryCoord(dim, dir.sign)) {
+                continue;
+            }
+            ChunkId neighbor = getChunkNeighbor(graph, chunkId, dir.axis, dir.sign);
+            if (neighbor.node == NodeId.init || !graph.contains(neighbor.node)) {
+                continue;
+            }
+            Chunk* nc = &graph[neighbor.node].chunks.values[neighbor.vertex];
+            if (nc.state != ChunkState.Populated) {
+                continue;
+            }
+            fixMargins(dim, chunkId.vertex, c.voxels, dir, nc.voxels);
+            nc.generation++;
+        }
+        return true;
     }
 
     void cleanup() {
         if (core.device !is null) {
             vkDeviceWaitIdle(core.device);
+            highlight.cleanup(core.device);
             fog.cleanup(core.device);
             voxels.cleanup(core.device);
             extract.cleanup(core.device);
