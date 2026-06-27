@@ -1,351 +1,174 @@
-import std.stdio;
-import std.file : exists, readText;
-import std.format : format;
-import std.string : toStringz;
-import core.stdc.string : strlen;
-import core.stdc.stdlib : system;
-import std.conv : to;
-import bindings.sdl3;
-import client.config : ClientConfig;
-import client.graphics;
-import client.script;
-import common.world;
-import worldcheck : dumpWorld, benchNearby, benchWorldgen;
+module main;
 
-enum : ulong {
-    WINDOW_VULKAN    = 0x0000000010000000,
-    WINDOW_RESIZABLE = 0x0000000000000020,
-}
+import std.stdio : writefln, stdout;
+import client.glfw;
+import client.window : Window;
+import client.renderer : Renderer, CubeMesh;
+import common.math : Matrix4, MVector, translation, rotation, inverseIsometry, hyperbolicDistance;
+import common.graph : Cube, State;
+import common.geometry : FACES;
+import common.worldgen_thread : WorldgenThread;
 
-immutable Material[9] MATERIAL_PALETTE = [
-    Material.WoodPlanks,
-    Material.Wood,
-    Material.Leaves,
-    Material.GreyBrick,
-    Material.WhiteBrick,
-    Material.Sandstone,
-    Material.Marble,
-    Material.Granite,
-    Material.Basalt,
-];
+enum float VIEW_RADIUS = 2.5f;
+enum float WORLDGEN_RADIUS = 2.8f;
 
-/// Held-key state, tracked per key so opposite keys don't cancel each
-/// other's release, and clearable in one go when the window loses focus.
-struct InputState {
-    bool fwd;
-    bool back;
-    bool left;
-    bool right;
-    bool up;
-    bool down;
-    bool rollLeft;
-    bool rollRight;
-    bool yawLeft;
-    bool yawRight;
-    bool pitchUp;
-    bool pitchDown;
-
-    void clear() {
-        this = InputState.init;
-    }
+struct MeshCache {
+    CubeMesh mesh;
+    uint generation;
+    bool present;
 }
 
 void main(string[] args) {
-    foreach (i, a; args) {
-        if (a == "--dump-world") {
-            float radius = (i + 1 < args.length) ? args[i + 1].to!float : 3.0f;
-            dumpWorld(radius, 12);
-            return;
-        }
-        if (a == "--bench-nearby") {
-            float radius = (i + 1 < args.length) ? args[i + 1].to!float : 4.5f;
-            int iters = (i + 2 < args.length) ? args[i + 2].to!int : 50;
-            benchNearby(radius, iters, 12);
-            return;
-        }
-        if (a == "--bench-worldgen") {
-            float radius = (i + 1 < args.length) ? args[i + 1].to!float : 3.0f;
-            int iters = (i + 2 < args.length) ? args[i + 2].to!int : 10;
-            benchWorldgen(radius, iters, 12);
-            return;
+    bool autoDrive = false;
+    foreach (a; args) {
+        if (a == "drive") {
+            autoDrive = true;
         }
     }
 
-    writeln("mined - hyperbolic voxel engine");
-
-    string scriptPath;
-    string configPath = "mined.cfg";
-    foreach (i, a; args) {
-        if (a == "--script" && i + 1 < args.length) {
-            scriptPath = args[i + 1];
-        }
-        if (a == "--config" && i + 1 < args.length) {
-            configPath = args[i + 1];
-        }
-    }
-
-    ClientConfig cfg = ClientConfig.load(configPath);
-    foreach (i, a; args) {
-        if (a == "--sensitivity" && i + 1 < args.length) {
-            cfg.mouseSensitivity = args[i + 1].to!float;
-        }
-        if (a == "--invert-y") {
-            cfg.invertY = true;
-        }
-    }
-
-    Script script;
-    if (scriptPath.length > 0) {
-        if (!exists(scriptPath)) {
-            writefln("script not found: %s", scriptPath);
-            return;
-        }
-        script = Script.parse(readText(scriptPath));
-        writefln("Loaded script %s (%d events)", scriptPath, script.events.length);
-    }
-
-    if (!SDL_Init(SDL_INIT_VIDEO)) {
-        const(char)* err = SDL_GetError();
-        if (err !is null) {
-            writefln("SDL init failed: %s", err[0 .. strlen(err)]);
-        }
-        return;
-    }
-    scope(exit) {
-        SDL_Quit();
-    }
-
-    SDL_Window* window = SDL_CreateWindow("mined", 1280, 720, WINDOW_VULKAN | WINDOW_RESIZABLE);
+    Window* window = Window.open(1280, 800, "hyped - hyperbolic voxels");
     if (window is null) {
-        writeln("Window creation failed");
+        writefln("window creation failed");
         return;
     }
-    scope(exit) {
-        SDL_DestroyWindow(window);
-    }
-
-    uint props = SDL_GetWindowProperties(window);
-    ulong xWindowId = SDL_GetNumberProperty(props, "SDL.window.x11.window", 0);
 
     Renderer renderer;
-    if (!renderer.init(cast(void*) window)) {
-        writeln("Renderer initialization failed");
-        return;
-    }
-    scope(exit) {
-        renderer.cleanup();
-    }
-    renderer.reach = cfg.reach;
+    renderer.init(window.width, window.height);
 
-    bool running = true;
-    bool mouseCaptured = false;
-    int materialIndex = 0;
-    SDL_Event ev;
-    CameraInput cam;
-    InputState input;
-    int shotIndex = 0;
-    float simTime = 0;
-    float mouseDx = 0;
-    float mouseDy = 0;
-    float lastFps = 0;
-    ulong lastTicks = SDL_GetTicks();
-    ulong framesSinceReport = 0;
-    ulong lastFpsReport = lastTicks;
+    Matrix4 camera = translation([0.0f, 0.8f, 0.0f]) * rotation(1, 2, -1.5707963f);
 
-    updateWindowTitle(window, mouseCaptured, materialIndex, lastFps);
+    WorldgenThread* worldgen = WorldgenThread.create(WORLDGEN_RADIUS);
+    worldgen.setCamera(camera);
+    worldgen.start();
 
-    while (running) {
-        ulong nowTicks = SDL_GetTicks();
-        float dt = (nowTicks - lastTicks) / 1000.0f;
-        lastTicks = nowTicks;
-        if (dt > 0.1f) {
-            dt = 0.1f;
-        }
+    MeshCache[Cube*] meshes;
 
-        if (script.events.length > 0) {
-            dt = 0.016f;
-        }
+    double last = glfwGetTime();
+    double fpsTime = last;
+    int frames = 0;
 
-        mouseDx = 0;
-        mouseDy = 0;
-        bool titleDirty = false;
+    while (!window.shouldClose()) {
+        double now = glfwGetTime();
+        float dt = cast(float)(now - last);
+        last = now;
 
-        while (SDL_PollEvent(&ev)) {
-            if (ev.type == SDL_EVENT_QUIT) {
-                running = false;
-            }
+        window.poll();
+        camera = applyInput(window, camera, dt, autoDrive);
+        worldgen.setCamera(camera);
 
-            if (script.events.length == 0) {
-                processInteractiveInput(
-                    ev, window, input, renderer, mouseCaptured,
-                    mouseDx, mouseDy, materialIndex, titleDirty,
-                    xWindowId, shotIndex);
-            }
-        }
+        MVector camPos = (camera * MVector.origin()).normalized();
+        Matrix4 camInverse = inverseIsometry(camera);
+        Cube* anchor = worldgen.currentCube();
 
-        if (script.events.length > 0) {
-            script.tick(simTime, xWindowId, running);
-            cam.fwd = script.fwd;
-            cam.strafe = script.strafe;
-            cam.vert = script.vert;
-            cam.yawRate = script.yawRate;
-            cam.pitchRate = script.pitchRate;
-            cam.rollRate = 0;
-        } else {
-            cam.fwd = (axis(input.back) - axis(input.fwd)) * cfg.moveSpeed;
-            cam.strafe = (axis(input.right) - axis(input.left)) * cfg.moveSpeed;
-            cam.vert = (axis(input.up) - axis(input.down)) * cfg.moveSpeed;
-            cam.yawRate = (axis(input.yawRight) - axis(input.yawLeft)) * cfg.turnSpeed;
-            cam.pitchRate = (axis(input.pitchDown) - axis(input.pitchUp)) * cfg.turnSpeed;
-            cam.rollRate = (axis(input.rollLeft) - axis(input.rollRight)) * cfg.turnSpeed;
-        }
+        int drawn = drawWorld(renderer, anchor, camPos, camInverse, meshes);
+        window.swap();
 
-        if (!running) {
-            break;
-        }
-
-        float invY = cfg.invertY ? -1.0f : 1.0f;
-        float yaw = cam.yawRate * dt + mouseDx * cfg.mouseSensitivity;
-        float pitch = cam.pitchRate * dt + mouseDy * cfg.mouseSensitivity * invY;
-        float roll = cam.rollRate * dt;
-        renderer.rotateCamera(yaw, pitch, roll);
-        renderer.moveCamera(cam.strafe * dt, cam.vert * dt, cam.fwd * dt);
-        renderer.render(dt);
-        simTime += dt;
-
-        framesSinceReport++;
-        if (nowTicks - lastFpsReport >= 1000) {
-            lastFps = framesSinceReport * 1000.0f / (nowTicks - lastFpsReport);
-            writefln("FPS=%.1f", lastFps);
+        frames++;
+        if (now - fpsTime >= 1.0) {
+            writefln(
+                "FPS=%.0f  drawn=%d  cached=%d",
+                frames / (now - fpsTime),
+                drawn,
+                meshes.length,
+            );
             stdout.flush();
-            framesSinceReport = 0;
-            lastFpsReport = nowTicks;
-            titleDirty = true;
-        }
-
-        if (titleDirty) {
-            updateWindowTitle(window, mouseCaptured, materialIndex, lastFps);
+            frames = 0;
+            fpsTime = now;
         }
     }
+
+    worldgen.stop();
+    window.close();
 }
 
-float axis(bool held) {
-    return held ? 1.0f : 0.0f;
-}
+Matrix4 applyInput(Window* window, Matrix4 camera, float dt, bool autoDrive) {
+    float speed = 0.9f * dt;
+    float turn = 1.4f * dt;
 
-void updateWindowTitle(SDL_Window* window, bool mouseCaptured, int materialIndex, float fps) {
-    string title;
-    if (mouseCaptured) {
-        title = format("mined — [%d] %s — Esc to release mouse — FPS %.0f",
-            materialIndex + 1, MATERIAL_PALETTE[materialIndex], fps);
-    } else {
-        title = format("mined — click to capture mouse — FPS %.0f", fps);
+    if (window.key(GLFW_KEY_ESCAPE)) {
+        window.requestClose();
     }
-    SDL_SetWindowTitle(window, title.toStringz);
+    if (autoDrive) {
+        camera = camera * translation([0, 0, -speed * 0.35f]);
+    }
+    if (window.key(GLFW_KEY_W)) {
+        camera = camera * translation([0, 0, -speed]);
+    }
+    if (window.key(GLFW_KEY_S)) {
+        camera = camera * translation([0, 0, speed]);
+    }
+    if (window.key(GLFW_KEY_A)) {
+        camera = camera * translation([-speed, 0, 0]);
+    }
+    if (window.key(GLFW_KEY_D)) {
+        camera = camera * translation([speed, 0, 0]);
+    }
+    if (window.key(GLFW_KEY_SPACE)) {
+        camera = camera * translation([0, speed, 0]);
+    }
+    if (window.key(GLFW_KEY_LEFT_SHIFT)) {
+        camera = camera * translation([0, -speed, 0]);
+    }
+    if (window.key(GLFW_KEY_LEFT)) {
+        camera = camera * rotation(0, 2, -turn);
+    }
+    if (window.key(GLFW_KEY_RIGHT)) {
+        camera = camera * rotation(0, 2, turn);
+    }
+    if (window.key(GLFW_KEY_UP)) {
+        camera = camera * rotation(1, 2, -turn);
+    }
+    if (window.key(GLFW_KEY_DOWN)) {
+        camera = camera * rotation(1, 2, turn);
+    }
+    return camera;
 }
 
-void setMouseCaptured(SDL_Window* window, ref bool mouseCaptured, ref InputState input, bool captured) {
-    if (mouseCaptured == captured) {
-        return;
-    }
-    SDL_SetWindowRelativeMouseMode(window, captured);
-    mouseCaptured = captured;
-    if (!captured) {
-        input.clear();
-    }
-}
-
-void processInteractiveInput(
-    ref SDL_Event ev,
-    SDL_Window* window,
-    ref InputState input,
+int drawWorld(
     ref Renderer renderer,
-    ref bool mouseCaptured,
-    ref float mouseDx,
-    ref float mouseDy,
-    ref int materialIndex,
-    ref bool titleDirty,
-    ulong xWindowId,
-    ref int shotIndex,
+    Cube* anchor,
+    MVector camPos,
+    Matrix4 camInverse,
+    ref MeshCache[Cube*] meshes,
 ) {
-    if (ev.type == SDL_EVENT_KEY_DOWN) {
-        if (ev.key.key == SDLK_ESCAPE) {
-            if (mouseCaptured) {
-                setMouseCaptured(window, mouseCaptured, input, false);
-                titleDirty = true;
-            }
-        } else if (ev.key.key == SDLK_F12) {
-            string path = format("/tmp/mined_shot_%03d.png", shotIndex++);
-            // Run in the background so capture doesn't stall the frame loop.
-            string cmd = format("import -window 0x%x %s &", xWindowId, path);
-            writefln("F12 screenshot -> %s", path);
-            system(cmd.toStringz);
-        } else if (ev.key.scancode >= SDL_SCANCODE_1 && ev.key.scancode <= SDL_SCANCODE_9) {
-            int idx = cast(int)(ev.key.scancode - SDL_SCANCODE_1);
-            if (idx < MATERIAL_PALETTE.length && idx != materialIndex) {
-                materialIndex = idx;
-                writefln("material: [%d] %s", idx + 1, MATERIAL_PALETTE[idx]);
-                titleDirty = true;
-            }
-        } else {
-            setMovementKey(ev.key.scancode, input, true);
+    renderer.beginFrame();
+
+    bool[Cube*] seen;
+    Cube*[] queue = [anchor];
+    seen[anchor] = true;
+    int drawn = 0;
+
+    for (size_t i = 0; i < queue.length; i++) {
+        Cube* c = queue[i];
+
+        MVector center = (c.transform * MVector.origin()).normalized();
+        if (hyperbolicDistance(camPos, center) > VIEW_RADIUS) {
+            continue;
         }
-    }
 
-    if (ev.type == SDL_EVENT_KEY_UP) {
-        setMovementKey(ev.key.scancode, input, false);
-    }
-
-    if (ev.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
-        // Key-up events stop arriving once focus is gone; drop all held keys
-        // and release the mouse so the player isn't stuck moving or captured.
-        input.clear();
-        setMouseCaptured(window, mouseCaptured, input, false);
-        titleDirty = true;
-    }
-
-    if (ev.type == SDL_EVENT_MOUSE_MOTION && mouseCaptured) {
-        mouseDx += ev.motion.xrel;
-        mouseDy += ev.motion.yrel;
-    }
-
-    if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
-        if (!mouseCaptured) {
-            setMouseCaptured(window, mouseCaptured, input, true);
-            titleDirty = true;
-        } else if (ev.button.button == SDL_BUTTON_LEFT) {
-            renderer.breakBlock();
-        } else if (ev.button.button == SDL_BUTTON_RIGHT) {
-            renderer.placeBlock(cast(ushort) MATERIAL_PALETTE[materialIndex]);
+        foreach (f; 0 .. FACES) {
+            Cube* n = c.neighbor(f);
+            if (n !is null && (n in seen) is null) {
+                seen[n] = true;
+                queue ~= n;
+            }
         }
-    }
-}
 
-struct CameraInput {
-    float yawRate = 0;
-    float pitchRate = 0;
-    float rollRate = 0;
-    float fwd = 0;
-    float strafe = 0;
-    float vert = 0;
-}
+        if (c.loadState() != State.Ready) {
+            continue;
+        }
 
-/// Movement uses scancodes (physical key positions) so WASD stays WASD on
-/// non-QWERTY layouts.
-void setMovementKey(uint scancode, ref InputState input, bool held) {
-    switch (scancode) {
-        case SDL_SCANCODE_W: input.fwd = held; break;
-        case SDL_SCANCODE_S: input.back = held; break;
-        case SDL_SCANCODE_A: input.left = held; break;
-        case SDL_SCANCODE_D: input.right = held; break;
-        case SDL_SCANCODE_Q: input.rollLeft = held; break;
-        case SDL_SCANCODE_E: input.rollRight = held; break;
-        case SDL_SCANCODE_SPACE: input.up = held; break;
-        case SDL_SCANCODE_LSHIFT: input.down = held; break;
-        case SDL_SCANCODE_LEFT: input.yawLeft = held; break;
-        case SDL_SCANCODE_RIGHT: input.yawRight = held; break;
-        case SDL_SCANCODE_UP: input.pitchUp = held; break;
-        case SDL_SCANCODE_DOWN: input.pitchDown = held; break;
-        default: break;
+        uint generation = c.loadGeneration();
+        MeshCache* cached = c in meshes;
+        if (cached is null || !cached.present || cached.generation != generation) {
+            CubeMesh built = renderer.upload(c.voxels);
+            meshes[c] = MeshCache(built, generation, true);
+            cached = c in meshes;
+        }
+
+        renderer.draw(cached.mesh, camInverse * c.transform);
+        drawn++;
     }
+
+    return drawn;
 }
