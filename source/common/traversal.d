@@ -2,7 +2,7 @@ module common.traversal;
 
 import std.math : cosh;
 import common.dodeca : Side, sideReflection, BOUNDING_SPHERE_RADIUS;
-import common.graph : Graph, NodeId;
+import common.graph : Graph, NodeId, NO_SLOT;
 import common.math : MIsometry, MPoint;
 
 void ensureNearby(ref Graph graph, NodeId startNode, MIsometry!float startLocal, float distance, size_t maxNewNodes = 256) {
@@ -109,15 +109,19 @@ NearbyNode[] collectNearby(ref Graph graph, NodeId startNode, MIsometry!float st
 struct NearbyNode {
     NodeId id;
     MIsometry!float transform;
+    uint slot = NO_SLOT;
 }
 
 // Reusable scratch buffers so the per-frame traversal doesn't reallocate the
-// node array or the visited map. The single `nodes` array doubles as the BFS
+// node array or the visited set. The single `nodes` array doubles as the BFS
 // queue and the result (every queued node is eventually popped, so they hold
-// the same elements in the same order).
+// the same elements in the same order). Visited tracking is a per-slot stamp
+// array: comparing against the current generation avoids both hashing and
+// clearing between runs.
 struct NearbyScratch {
     NearbyNode[] nodes;
-    bool[NodeId] visited;
+    uint[] stamp;
+    uint generation;
 }
 
 NearbyNode[] ensureAndCollectNearby(
@@ -131,10 +135,18 @@ NearbyNode[] ensureAndCollectNearby(
 
     scratch.nodes.length = 0;
     scratch.nodes.assumeSafeAppend();
-    scratch.visited.clear();
+    scratch.generation++;
+    uint gen = scratch.generation;
+    if (scratch.stamp.length < graph.slotCount()) {
+        scratch.stamp.length = graph.slotCount();
+    }
 
-    scratch.nodes ~= NearbyNode(startNode, MIsometry!float.identity());
-    scratch.visited[startNode] = true;
+    uint startSlot = graph.slotOf(startNode);
+    if (startSlot == NO_SLOT) {
+        return scratch.nodes;
+    }
+    scratch.nodes ~= NearbyNode(startNode, MIsometry!float.identity(), startSlot);
+    scratch.stamp[startSlot] = gen;
     MPoint!float startP = startLocal * MPoint!float.origin();
 
     size_t front = 0;
@@ -144,8 +156,8 @@ NearbyNode[] ensureAndCollectNearby(
 
         foreach (sideIdx; 0 .. 12) {
             Side side = cast(Side) sideIdx;
-            NodeId existing = graph.neighbor(current.id, side);
-            if (existing != NodeId.init && existing in scratch.visited) {
+            uint neighbor = graph.neighborSlot(current.slot, side);
+            if (neighbor != NO_SLOT && scratch.stamp[neighbor] == gen) {
                 continue;
             }
             MIsometry!float neighborTransform = current.transform * sideReflection(side);
@@ -153,12 +165,18 @@ NearbyNode[] ensureAndCollectNearby(
             if (-startP.mip(neighborP.vec) > coshThreshold) {
                 continue;
             }
-            NodeId neighbor = graph.ensureNeighbor(current.id, side);
-            if (neighbor == NodeId.init || neighbor in scratch.visited) {
-                continue;
+            if (neighbor == NO_SLOT) {
+                // Creating a node can add several slots; grow the stamps after.
+                neighbor = graph.ensureNeighborSlot(current.slot, side);
+                if (scratch.stamp.length < graph.slotCount()) {
+                    scratch.stamp.length = graph.slotCount();
+                }
+                if (neighbor == NO_SLOT || scratch.stamp[neighbor] == gen) {
+                    continue;
+                }
             }
-            scratch.visited[neighbor] = true;
-            scratch.nodes ~= NearbyNode(neighbor, neighborTransform);
+            scratch.stamp[neighbor] = gen;
+            scratch.nodes ~= NearbyNode(graph.idAt(neighbor), neighborTransform, neighbor);
         }
     }
 

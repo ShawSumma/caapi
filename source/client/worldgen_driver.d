@@ -1,48 +1,95 @@
 module client.worldgen_driver;
 
-import core.atomic : atomicLoad, atomicStore;
+import core.sync.condition : Condition;
+import core.sync.mutex : Mutex;
 import core.thread : Thread;
 import std.math : cosh;
+import std.parallelism : totalCPUs;
 import common.dodeca : Vertex, CHUNK_BOUNDING_SPHERE_RADIUS,
     vertexChunkBoundingSphereCenter, vertexCanonicalSides, vertexAdjacentVertices;
-import common.graph : Graph, NodeId;
+import common.graph : Graph, NodeId, NO_SLOT;
 import common.math : MPoint, MIsometry;
-import common.node : Chunk, ChunkId, ChunkState, VoxelData;
+import common.node : Chunk, ChunkId, ChunkState, Node, VoxelData;
 import common.traversal : NearbyNode;
 import common.worldgen : ChunkParams, ChunkIncidentEnviroFactors, generateVoxels;
 import common.margins : fixMargins;
 import common.voxel_math : ChunkDirection, CoordSign;
 
-__gshared ChunkParams gParams;
-__gshared VoxelData gResult;
-shared int gState = 0; // 0=idle, 1=request, 2=done
-shared bool gStopping = false;
+struct GenRequest {
+    ChunkId chunk;
+    ChunkParams params;
+}
+
+struct GenResult {
+    ChunkId chunk;
+    VoxelData voxels;
+}
+
+// Work queue shared with the generation worker threads. generateVoxels is a
+// pure function of ChunkParams, so workers never touch the graph: the main
+// thread builds params (which may grow the graph) and integrates results.
+__gshared Mutex gMutex;
+__gshared Condition gCond;
+__gshared GenRequest[] gPending;
+__gshared size_t gPendingHead;
+__gshared GenResult[] gDone;
+__gshared bool gStopping;
 
 void workerFunc() {
-    while (!atomicLoad(gStopping)) {
-        if (atomicLoad(gState) != 1) {
-            Thread.yield();
-            continue;
+    while (true) {
+        GenRequest req;
+        synchronized (gMutex) {
+            while (gPendingHead >= gPending.length && !gStopping) {
+                gCond.wait();
+            }
+            if (gPendingHead >= gPending.length) {
+                return;
+            }
+            req = gPending[gPendingHead++];
+            if (gPendingHead >= gPending.length) {
+                gPending.length = 0;
+                gPending.assumeSafeAppend();
+                gPendingHead = 0;
+            }
         }
-        gResult = generateVoxels(gParams);
-        atomicStore(gState, 2);
+        VoxelData voxels = generateVoxels(req.params);
+        synchronized (gMutex) {
+            gDone ~= GenResult(req.chunk, voxels);
+        }
     }
 }
 
 struct WorldgenDriver {
     VoxelData[ChunkId] preloadedVoxelData;
 
-    Thread worker;
+    Thread[] workers;
+    uint inFlight;
+    GenRequest[] requestBuf;
+    GenResult[] resultBuf;
 
-    int maxGeneratePerFrame = 8;
+    // Enough to keep every worker busy between frames without flooding the
+    // queue with chunks the camera may move away from.
+    enum uint MAX_IN_FLIGHT = 128;
 
     static WorldgenDriver create() {
         WorldgenDriver w;
-        atomicStore(gState, 0);
-        atomicStore(gStopping, false);
-        w.worker = new Thread(&workerFunc);
-        w.worker.isDaemon = true;
-        w.worker.start();
+        gMutex = new Mutex;
+        gCond = new Condition(gMutex);
+        gPending.length = 0;
+        gPendingHead = 0;
+        gDone.length = 0;
+        gStopping = false;
+
+        uint threadCount = totalCPUs > 2 ? totalCPUs - 2 : 1;
+        if (threadCount > 8) {
+            threadCount = 8;
+        }
+        foreach (i; 0 .. threadCount) {
+            Thread t = new Thread(&workerFunc);
+            t.isDaemon = true;
+            t.start();
+            w.workers ~= t;
+        }
         return w;
     }
 
@@ -53,18 +100,41 @@ struct WorldgenDriver {
         ref Graph graph,
         ubyte chunkSize,
     ) {
+        // Integrate whatever the workers finished since last frame.
+        resultBuf.length = 0;
+        resultBuf.assumeSafeAppend();
+        synchronized (gMutex) {
+            if (gDone.length > 0) {
+                resultBuf ~= gDone;
+                gDone.length = 0;
+                gDone.assumeSafeAppend();
+            }
+        }
+        foreach (ref GenResult r; resultBuf) {
+            inFlight--;
+            populateChunk(graph, r.chunk, r.voxels, chunkSize);
+        }
+
+        // Queue fresh chunks in range, nearest-first (BFS order of `nearby`).
         float threshold = cosh(distance + CHUNK_BOUNDING_SPHERE_RADIUS);
         MPoint!float startP = camLocal * MPoint!float.origin();
-        uint generated = 0;
+        requestBuf.length = 0;
+        requestBuf.assumeSafeAppend();
 
-        foreach (ref const NearbyNode nn; nearby) {
+        outer: foreach (ref const NearbyNode nn; nearby) {
+            if (nn.slot == NO_SLOT) {
+                continue;
+            }
             foreach (int vIdx; 0 .. Vertex.max + 1) {
                 Vertex vertex = cast(Vertex) vIdx;
-                ChunkId chunkId = ChunkId(nn.id, vertex);
-                Chunk* c = &graph[nn.id].chunks.values[vertex];
+                // Re-derive from the slot each iteration: ChunkParams.create
+                // below can grow the graph slab, which moves Node memory
+                // (slots stay valid, pointers don't).
+                Chunk* c = &graph.nodeAt(nn.slot).chunks.values[vertex];
                 if (c.state != ChunkState.Fresh) {
                     continue;
                 }
+                ChunkId chunkId = ChunkId(nn.id, vertex);
 
                 MPoint!float chunkCenter = nn.transform * vertexChunkBoundingSphereCenter(vertex);
                 if (-startP.mip(chunkCenter.vec) > threshold) {
@@ -79,27 +149,23 @@ struct WorldgenDriver {
                     continue;
                 }
 
-                if (generated >= maxGeneratePerFrame) {
-                    continue;
+                if (inFlight + requestBuf.length >= MAX_IN_FLIGHT) {
+                    break outer;
                 }
 
                 ChunkParams params = ChunkParams.create(graph, chunkId);
-                VoxelData voxels = generateOnWorker(params);
-                populateChunk(graph, chunkId, voxels, chunkSize);
-                generated++;
+                graph.nodeAt(nn.slot).chunks.values[vertex].state = ChunkState.Generating;
+                requestBuf ~= GenRequest(chunkId, params);
             }
         }
-    }
 
-    static VoxelData generateOnWorker(ChunkParams params) {
-        gParams = params;
-        atomicStore(gState, 1);
-        while (atomicLoad(gState) != 2) {
-            Thread.yield();
+        if (requestBuf.length > 0) {
+            inFlight += cast(uint) requestBuf.length;
+            synchronized (gMutex) {
+                gPending ~= requestBuf;
+                gCond.notifyAll();
+            }
         }
-        VoxelData result = gResult;
-        atomicStore(gState, 0);
-        return result;
     }
 
     void applyVoxelData(ChunkId chunkId, VoxelData voxelData) {

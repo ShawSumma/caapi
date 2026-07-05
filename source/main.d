@@ -10,7 +10,7 @@ import client.config : ClientConfig;
 import client.graphics;
 import client.script;
 import common.world;
-import worldcheck : dumpWorld, benchNearby;
+import worldcheck : dumpWorld, benchNearby, benchGen, benchDrive;
 
 enum : ulong {
     WINDOW_VULKAN    = 0x0000000010000000,
@@ -55,6 +55,16 @@ void main(string[] args) {
         if (a == "--dump-world") {
             float radius = (i + 1 < args.length) ? args[i + 1].to!float : 3.0f;
             dumpWorld(radius, 12);
+            return;
+        }
+        if (a == "--bench-gen") {
+            float radius = (i + 1 < args.length) ? args[i + 1].to!float : 2.5f;
+            benchGen(radius, 12);
+            return;
+        }
+        if (a == "--bench-drive") {
+            float radius = (i + 1 < args.length) ? args[i + 1].to!float : 2.5f;
+            benchDrive(radius, 12);
             return;
         }
         if (a == "--bench-nearby") {
@@ -238,15 +248,45 @@ void updateWindowTitle(SDL_Window* window, bool mouseCaptured, int materialIndex
     SDL_SetWindowTitle(window, title.toStringz);
 }
 
+// True when SDL relative mouse mode is unavailable (e.g. X11 without
+// XInput2) and we emulate it by warping the cursor back to the window
+// center every frame.
+bool warpFallback = false;
+
 void setMouseCaptured(SDL_Window* window, ref bool mouseCaptured, ref InputState input, bool captured) {
     if (mouseCaptured == captured) {
         return;
     }
-    SDL_SetWindowRelativeMouseMode(window, captured);
+    if (captured) {
+        if (!SDL_SetWindowRelativeMouseMode(window, true)) {
+            const(char)* err = SDL_GetError();
+            if (err !is null && !warpFallback) {
+                writefln("relative mouse mode unavailable (%s), using warp fallback", err[0 .. strlen(err)]);
+            }
+            warpFallback = true;
+            SDL_SetWindowMouseGrab(window, true);
+            SDL_HideCursor();
+            warpToCenter(window);
+        }
+    } else {
+        if (warpFallback) {
+            SDL_SetWindowMouseGrab(window, false);
+            SDL_ShowCursor();
+        } else {
+            SDL_SetWindowRelativeMouseMode(window, false);
+        }
+    }
     mouseCaptured = captured;
     if (!captured) {
         input.clear();
     }
+}
+
+void warpToCenter(SDL_Window* window) {
+    int w = 0;
+    int h = 0;
+    SDL_GetWindowSize(window, &w, &h);
+    SDL_WarpMouseInWindow(window, cast(float)(w / 2), cast(float)(h / 2));
 }
 
 void processInteractiveInput(
@@ -269,7 +309,7 @@ void processInteractiveInput(
                 titleDirty = true;
             }
         } else if (ev.key.key == SDLK_F12) {
-            string path = format("/tmp/mined_shot_%03d.png", shotIndex++);
+            string path = format("mined_shot_%03d.png", shotIndex++);
             // Run in the background so capture doesn't stall the frame loop.
             string cmd = format("import -window 0x%x %s &", xWindowId, path);
             writefln("F12 screenshot -> %s", path);
@@ -299,8 +339,24 @@ void processInteractiveInput(
     }
 
     if (ev.type == SDL_EVENT_MOUSE_MOTION && mouseCaptured) {
-        mouseDx += ev.motion.xrel;
-        mouseDy += ev.motion.yrel;
+        if (warpFallback) {
+            // Deltas are measured against the window center and the cursor is
+            // warped straight back, so the warp's own motion event lands at
+            // the center and contributes zero — no events need skipping.
+            int w = 0;
+            int h = 0;
+            SDL_GetWindowSize(window, &w, &h);
+            float cx = cast(float)(w / 2);
+            float cy = cast(float)(h / 2);
+            mouseDx += ev.motion.x - cx;
+            mouseDy += ev.motion.y - cy;
+            if (ev.motion.x != cx || ev.motion.y != cy) {
+                SDL_WarpMouseInWindow(window, cx, cy);
+            }
+        } else {
+            mouseDx += ev.motion.xrel;
+            mouseDy += ev.motion.yrel;
+        }
     }
 
     if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {

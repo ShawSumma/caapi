@@ -2,7 +2,7 @@ module client.graphics;
 
 import std.stdio;
 import core.time : MonoTime;
-import std.math : sin, cos, sqrt, PI, log, pow, isNaN;
+import std.math : sin, cos, cosh, sqrt, PI, log, pow, isNaN;
 import std.typecons : Nullable;
 import core.stdc.string : memcpy;
 import bindings.vk;
@@ -14,11 +14,11 @@ import client.graphics.highlight : HighlightPipeline;
 import client.graphics.frustum : Frustum;
 import client.worldgen_driver : WorldgenDriver, getChunkNeighbor;
 import common.collision_math : Ray;
-import common.dodeca : Vertex, Side, sideReflection, sideIsFacing, CHUNK_BOUNDING_SPHERE_RADIUS, vertexChunkBoundingSphereCenter, vertexChunkToNode;
+import common.dodeca : Vertex, Side, sideReflection, sideIsFacing, BOUNDING_SPHERE_RADIUS, CHUNK_BOUNDING_SPHERE_RADIUS, vertexChunkBoundingSphereCenter, vertexChunkToNode;
 import common.graph_ray_casting : GraphCastHit, rayCast;
 import common.math : Matrix4, MPoint, MIsometry, MVector, MDirection;
-import common.graph : Graph, NodeId;
-import common.node : Chunk, ChunkId, ChunkState;
+import common.graph : Graph, NodeId, NO_SLOT;
+import common.node : Chunk, ChunkId, ChunkState, Node;
 import common.proto : Position;
 import common.traversal : ensureAndCollectNearby, NearbyNode, NearbyScratch;
 import common.margins : fixMargins, neighborAxisPermutation;
@@ -63,8 +63,15 @@ struct Renderer {
     NearbyNode[] cachedNodes;
     NearbyScratch nearbyScratch;
     NodeId lastNearbyNode;
-    float[16] lastNearbyLocal;
+    MPoint!float lastNearbyPos;
     bool hasNearby = false;
+
+    // The nearby set is collected with this much extra radius so it stays
+    // valid until the camera has translated NEARBY_PADDING away from the
+    // collection point; rotation never invalidates it. Node count grows
+    // exponentially with radius in hyperbolic space, so this must stay small:
+    // 0.05 costs ~10% more nodes, while e.g. 0.25 would cost ~65% more.
+    enum float NEARBY_PADDING = 0.05f;
 
     void rotateCamera(float yawDelta, float pitchDelta, float rollDelta = 0) {
         if (yawDelta != 0) {
@@ -186,24 +193,14 @@ struct Renderer {
         }
 
         MonoTime a0 = MonoTime.currTime;
-        bool camMoved = !hasNearby || camPos.node != lastNearbyNode;
-        if (!camMoved) {
-            foreach (col; 0 .. 4) {
-                foreach (row; 0 .. 4) {
-                    if (camPos.local.mat.data[col][row] != lastNearbyLocal[col * 4 + row]) {
-                        camMoved = true;
-                    }
-                }
-            }
-        }
+        MPoint!float camPoint = camPos.local * MPoint!float.origin();
+        bool camMoved = !hasNearby || camPos.node != lastNearbyNode
+            || -lastNearbyPos.mip(camPoint.vec) > cosh(NEARBY_PADDING);
         if (camMoved) {
-            cachedNodes = ensureAndCollectNearby(nearbyScratch, graph, camPos.node, camPos.local, renderRadius);
+            cachedNodes = ensureAndCollectNearby(nearbyScratch, graph, camPos.node, camPos.local,
+                renderRadius + NEARBY_PADDING);
             lastNearbyNode = camPos.node;
-            foreach (col; 0 .. 4) {
-                foreach (row; 0 .. 4) {
-                    lastNearbyLocal[col * 4 + row] = camPos.local.mat.data[col][row];
-                }
-            }
+            lastNearbyPos = camPoint;
             hasNearby = true;
         }
         MonoTime a1 = MonoTime.currTime;
@@ -228,17 +225,31 @@ struct Renderer {
         void* voxelsMapped = null;
         uint nodeIndex = 0;
 
+        // Everything inside a node fits in a sphere of the node's own bounding
+        // radius plus a chunk's; cull whole nodes before touching their chunks.
+        enum float NODE_CULL_RADIUS = BOUNDING_SPHERE_RADIUS + CHUNK_BOUNDING_SPHERE_RADIUS;
+
         foreach (ref nn; cachedNodes) {
-            if (!graph.contains(nn.id)) {
+            if (nn.slot == NO_SLOT) {
                 continue;
             }
+            Node* node = &graph.nodeAt(nn.slot);
+
+            MPoint!float nodeCenter = MPoint!float(MVector!float(
+                nn.transform.mat.data[3][0], nn.transform.mat.data[3][1],
+                nn.transform.mat.data[3][2], nn.transform.mat.data[3][3]));
+            MPoint!float nodeCam = camInverse * nodeCenter;
+            if (frustum.sphereOutside(fplanes, nodeCam, NODE_CULL_RADIUS)) {
+                continue;
+            }
+
             uint thisNodeIndex = nodeIndex;
             bool nodeUploaded = false;
             nodeIndex++;
 
             foreach (vIdx; 0 .. 20) {
                 Vertex v = cast(Vertex) vIdx;
-                Chunk* c = &graph[nn.id].chunks.values[v];
+                Chunk* c = &node.chunks.values[v];
                 if (c.state != ChunkState.Populated || c.voxels.isSolid()) {
                     continue;
                 }

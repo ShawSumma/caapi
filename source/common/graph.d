@@ -20,15 +20,33 @@ struct NodeId {
     }
 }
 
+/// Sentinel for "no node" in slot-based links.
+enum uint NO_SLOT = uint.max;
+
+// Nodes live in one contiguous slab indexed by slot; neighbor links are slot
+// indices, so graph walks are array chasing with no hashing. The `slots` map
+// is only consulted when entering the graph by NodeId. Slots are append-only
+// and never move, but appending may reallocate the slab: never hold a
+// Node/NodeContainer pointer across a call that can insert nodes — re-derive
+// it from the slot instead.
 struct Graph {
-    NodeContainer[NodeId] nodes;
+    NodeContainer[] containers;
+    uint[NodeId] slots;
     ChunkLayout layout_;
 
     static Graph create(ubyte dimension) {
         Graph g;
         g.layout_ = ChunkLayout(dimension);
-        g.nodes[NodeId.ROOT] = NodeContainer.create(Side.init, false, 0);
+        g.containers.reserve(4096);
+        g.addNode(NodeId.ROOT, NodeContainer.create(NodeId.ROOT, Side.init, false, 0));
         return g;
+    }
+
+    private uint addNode(NodeId id, NodeContainer nc) {
+        uint slot = cast(uint) containers.length;
+        containers ~= nc;
+        slots[id] = slot;
+        return slot;
     }
 
     ref const(ChunkLayout) layout() const return {
@@ -36,65 +54,85 @@ struct Graph {
     }
 
     uint len() const {
-        return cast(uint) nodes.length;
+        return cast(uint) containers.length;
+    }
+
+    uint slotCount() const {
+        return cast(uint) containers.length;
+    }
+
+    uint slotOf(NodeId id) const {
+        const(uint)* s = id in slots;
+        return s is null ? NO_SLOT : *s;
+    }
+
+    NodeId idAt(uint slot) const {
+        return containers[slot].id;
+    }
+
+    ref inout(Node) nodeAt(uint slot) inout {
+        return containers[slot].value;
+    }
+
+    uint neighborSlot(uint slot, Side which) const {
+        return containers[slot].neighbors[which];
     }
 
     bool contains(NodeId node) const {
-        return (node in nodes) !is null;
+        return (node in slots) !is null;
     }
 
     NodeId neighbor(NodeId node, Side which) const {
-        const(NodeContainer)* nc = node in nodes;
-        if (nc is null) {
+        uint s = slotOf(node);
+        if (s == NO_SLOT) {
             return NodeId.init;
         }
-        OptionalNodeId n = (*nc).neighbors[which];
-        if (n.valid) {
-            return n.id;
-        }
-        return NodeId.init;
+        uint n = containers[s].neighbors[which];
+        return n == NO_SLOT ? NodeId.init : containers[n].id;
     }
 
     uint depth(NodeId node) const {
-        return nodes[node].depth;
+        return containers[slots[node]].depth;
     }
 
     ref inout(Node) opIndex(NodeId id) inout {
-        return nodes[id].value;
+        return containers[slots[id]].value;
+    }
+
+    /// Single-lookup accessor for hot loops; null if the node doesn't exist.
+    inout(Node)* tryGet(NodeId id) inout {
+        inout(uint)* s = id in slots;
+        return s is null ? null : &containers[*s].value;
     }
 
     NodeId ensureNeighbor(NodeId node, Side side) {
-        NodeContainer* nc = node in nodes;
-        if (nc is null) {
+        uint s = slotOf(node);
+        if (s == NO_SLOT) {
             return NodeId.init;
         }
-        OptionalNodeId n = (*nc).neighbors[side];
-        if (n.valid) {
-            return n.id;
-        }
-        return insertChild(node, side);
+        return containers[ensureNeighborSlot(s, side)].id;
     }
 
-    bool isParentSide(NodeId node, Side side) const {
-        const(NodeContainer)* nc = node in nodes;
-        if (nc is null) {
-            return false;
+    uint ensureNeighborSlot(uint slot, Side side) {
+        uint n = containers[slot].neighbors[side];
+        if (n != NO_SLOT) {
+            return n;
         }
-        OptionalNodeId n = (*nc).neighbors[side];
-        if (!n.valid) {
-            return false;
-        }
-        const(NodeContainer)* neighborNC = n.id in nodes;
-        if (neighborNC is null) {
-            return false;
-        }
-        return (*neighborNC).depth < (*nc).depth;
+        return insertChildSlot(slot, side);
     }
 
     NodeId insertChild(NodeId node, Side side) {
+        uint s = slotOf(node);
+        if (s == NO_SLOT) {
+            return NodeId.init;
+        }
+        return containers[insertChildSlot(s, side)].id;
+    }
+
+    private uint insertChildSlot(uint nodeSlot, Side side) {
         struct ParentEntry {
             Side side;
-            NodeId id;
+            uint slot;
         }
         ParentEntry[3] parents;
         int parentCount = 0;
@@ -102,19 +140,19 @@ struct Graph {
         foreach (cs; 0 .. cast(int)(Side.max + 1)) {
             Side candidateSide = cast(Side) cs;
             if (candidateSide == side) {
-                parents[parentCount++] = ParentEntry(side, node);
+                parents[parentCount++] = ParentEntry(side, nodeSlot);
             }
             else if (sideAdjacentTo(candidateSide, side)
-                       && isParentSide(node, candidateSide))
+                       && isParentSideSlot(nodeSlot, candidateSide))
             {
-                NodeId parentOfNode = neighbor(node, candidateSide);
-                NodeId parentOfSubject = ensureNeighbor(parentOfNode, side);
+                uint parentOfNode = containers[nodeSlot].neighbors[candidateSide];
+                uint parentOfSubject = ensureNeighborSlot(parentOfNode, side);
                 parents[parentCount++] = ParentEntry(candidateSide, parentOfSubject);
             }
         }
 
         Side primarySide = parents[0].side;
-        NodeId primaryParent = parents[0].id;
+        NodeId primaryParent = containers[parents[0].slot].id;
 
         MurmurHash3!128 hasher;
         hasher.put(cast(ubyte[])(primaryParent.value[]));
@@ -123,25 +161,32 @@ struct Graph {
         NodeId id;
         (cast(ubyte[])id.value[])[] = hash[0 .. 16];
 
-        uint d = nodes[node].depth + 1;
-        nodes[id] = NodeContainer.create(primarySide, true, d);
+        // The id is derived from (primary parent, side), so a node reached
+        // through another path may already exist; link instead of clobbering.
+        uint newSlot = slotOf(id);
+        if (newSlot == NO_SLOT) {
+            uint d = containers[nodeSlot].depth + 1;
+            newSlot = addNode(id, NodeContainer.create(id, primarySide, true, d));
+        }
 
         foreach (i; 0 .. parentCount) {
-            linkNeighbors(id, parents[i].id, parents[i].side);
+            linkNeighborSlots(newSlot, parents[i].slot, parents[i].side);
         }
 
-        return id;
+        return newSlot;
     }
 
-    void linkNeighbors(NodeId a, NodeId b, Side side) {
-        NodeContainer* nca = a in nodes;
-        if (nca !is null) {
-            (*nca).neighbors[side] = OptionalNodeId(b, true);
+    private bool isParentSideSlot(uint slot, Side side) const {
+        uint n = containers[slot].neighbors[side];
+        if (n == NO_SLOT) {
+            return false;
         }
-        NodeContainer* ncb = b in nodes;
-        if (ncb !is null) {
-            (*ncb).neighbors[side] = OptionalNodeId(a, true);
-        }
+        return containers[n].depth < containers[slot].depth;
+    }
+
+    private void linkNeighborSlots(uint a, uint b, Side side) {
+        containers[a].neighbors[side] = b;
+        containers[b].neighbors[side] = a;
     }
 
     struct ParentResult {
@@ -152,23 +197,19 @@ struct Graph {
     ParentResult[3] parents(NodeId node, out int count) const {
         ParentResult[3] results;
         count = 0;
-        const(NodeContainer)* nc = node in nodes;
-        if (nc is null) {
+        uint s = slotOf(node);
+        if (s == NO_SLOT) {
             return results;
         }
-        uint nodeDepth = (*nc).depth;
+        uint nodeDepth = containers[s].depth;
         foreach (sideIdx; 0 .. cast(int)(Side.max + 1)) {
             Side side = cast(Side) sideIdx;
-            OptionalNodeId n = (*nc).neighbors[side];
-            if (!n.valid) {
+            uint n = containers[s].neighbors[side];
+            if (n == NO_SLOT) {
                 continue;
             }
-            const(NodeContainer)* neighborNC = n.id in nodes;
-            if (neighborNC is null) {
-                continue;
-            }
-            if ((*neighborNC).depth < nodeDepth) {
-                results[count++] = ParentResult(side, n.id);
+            if (containers[n].depth < nodeDepth) {
+                results[count++] = ParentResult(side, containers[n].id);
                 if (count >= 3) {
                     break;
                 }
@@ -182,11 +223,11 @@ struct Graph {
     }
 
     void ensureNodeState(NodeId nodeId) {
-        NodeContainer* nc = nodeId in nodes;
-        if (nc is null) {
+        uint s = slotOf(nodeId);
+        if (s == NO_SLOT) {
             return;
         }
-        if ((*nc).value.state !is null) {
+        if (containers[s].value.state !is null) {
             return;
         }
         int pcount;
@@ -194,11 +235,11 @@ struct Graph {
         foreach (i; 0 .. pcount) {
             ensureNodeState(ps[i].id);
         }
-        (*nc).value.state = cast(void*) NodeState.create(this, nodeId);
+        containers[s].value.state = cast(void*) NodeState.create(this, nodeId);
     }
 
     const(NodeState)* nodeState(NodeId nodeId) const {
-        return cast(const(NodeState)*) nodes[nodeId].value.state;
+        return cast(const(NodeState)*) containers[slots[nodeId]].value.state;
     }
 
     NodeId normalizeTransform(NodeId reference, ref MIsometry!float transform) const {
@@ -227,20 +268,17 @@ struct Graph {
     }
 }
 
-struct OptionalNodeId {
-    NodeId id;
-    bool valid;
-}
-
 struct NodeContainer {
     Node value;
+    NodeId id;
     Side primaryParentSide;
     bool hasPrimaryParent;
     uint depth;
-    OptionalNodeId[Side.max + 1] neighbors;
+    uint[Side.max + 1] neighbors = NO_SLOT;
 
-    static NodeContainer create(Side primaryParentSide, bool hasPrimary, uint depth) {
+    static NodeContainer create(NodeId id, Side primaryParentSide, bool hasPrimary, uint depth) {
         NodeContainer nc;
+        nc.id = id;
         nc.primaryParentSide = primaryParentSide;
         nc.hasPrimaryParent = hasPrimary;
         nc.depth = depth;
