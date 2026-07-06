@@ -7,7 +7,11 @@ import common.proto : Position;
 struct LocalCharacterController {
     Position position;
     float[3] up = [0, 0, 1];
+    // Yaw-only frame: kept up-aligned (its local +Y is `up`) by construction.
+    // Pitch lives in a separate scalar so it can never bleed into roll, and
+    // clamping it at the poles is a plain scalar clamp.
     Quaternion orientation;
+    float pitchAngle = 0;
 
     static LocalCharacterController create() {
         LocalCharacterController c;
@@ -17,10 +21,15 @@ struct LocalCharacterController {
         return c;
     }
 
+    /// Full view orientation: the up-aligned yaw frame with pitch on top.
+    Quaternion viewOrientation() {
+        return orientation * Quaternion.fromAxisAngle([1, 0, 0], pitchAngle);
+    }
+
     Position orientedPosition() {
         Position p;
         p.node = position.node;
-        p.local = position.local * quaternionToIsometry(orientation);
+        p.local = position.local * quaternionToIsometry(viewOrientation());
         return p;
     }
 
@@ -41,82 +50,35 @@ struct LocalCharacterController {
     }
 
     void lookLevel(float deltaYaw, float deltaPitch) {
+        // Yaw rotates the up-aligned frame about the world up (which is its
+        // own +Y), preserving up-alignment exactly. Pitch is scalar state:
+        // down always means down, saturating precisely at the poles.
         float[3] relUp = orientation.inverseRotate(up);
-
-        // Yaw about the world up, pitch about the view's own axis — both
-        // applied in full with no pole clamping. Gravity alignment (below)
-        // gently rolls the view upright, including recovering from a pitch
-        // carried past the vertical.
         orientation = orientation * Quaternion.fromAxisAngle(relUp, deltaYaw);
-        orientation = orientation * Quaternion.fromAxisAngle([1, 0, 0], deltaPitch);
+
+        enum float PITCH_LIMIT = PI / 2.0f - 1e-3f;
+        pitchAngle += deltaPitch;
+        if (pitchAngle > PITCH_LIMIT) {
+            pitchAngle = PITCH_LIMIT;
+        }
+        if (pitchAngle < -PITCH_LIMIT) {
+            pitchAngle = -PITCH_LIMIT;
+        }
     }
 
-    /// Rolls the view toward gravity-upright, turning at most maxAngle —
-    /// pass a rate×dt budget for a gentle per-frame correction instead of a
-    /// hard snap.
-    void alignToGravity(float maxAngle = float.infinity) {
+    /// Squares the yaw frame back onto `up`. Yaw and the up-transport both
+    /// preserve up-alignment exactly, so what this removes is float noise —
+    /// the correction is never large enough to see.
+    void alignToGravity() {
+        // New local up is rot⁻¹(relUp), so rot must take [0,1,0] to relUp.
         float[3] relUp = orientation.inverseRotate(up);
-
-        if (abs(relUp[2]) < 0.9) {
-            float deltaRoll = -atan2(relUp[0], relUp[1]);
-            orientation = orientation * Quaternion.fromAxisAngle([0, 0, 1], clampAngle(deltaRoll, maxAngle));
-        }
-        else if (relUp[1] > 0.0) {
-            float deltaYaw = atan2(relUp[0], relUp[2]);
-            orientation = orientation * Quaternion.fromAxisAngle([0, 1, 0], clampAngle(deltaYaw, maxAngle));
-        }
-        else {
-            float[3] target = [0, 0, relUp[2] > 0 ? 1.0f : -1.0f];
-            Quaternion rot = rotationBetweenVectors(target, relUp);
-            orientation = orientation * limitAngle(rot, maxAngle);
-        }
-    }
-
-    private static float clampAngle(float a, float maxAngle) {
-        if (a > maxAngle) {
-            return maxAngle;
-        }
-        if (a < -maxAngle) {
-            return -maxAngle;
-        }
-        return a;
-    }
-
-    private static Quaternion limitAngle(Quaternion q, float maxAngle) {
-        if (maxAngle == float.infinity) {
-            return q;
-        }
-        if (q.w < 0) {
-            q = Quaternion(-q.w, -q.x, -q.y, -q.z);
-        }
-        float w = q.w > 1.0f ? 1.0f : q.w;
-        float angle = 2.0f * acos(w);
-        if (angle <= maxAngle || angle < 1e-6f) {
-            return q;
-        }
-        float s = sqrt(1.0f - w * w);
-        if (s < 1e-6f) {
-            return q;
-        }
-        return Quaternion.fromAxisAngle([q.x / s, q.y / s, q.z / s], maxAngle);
+        Quaternion rot = rotationBetweenVectors([0.0f, 1.0f, 0.0f], relUp);
+        orientation = orientation * rot;
     }
 
     Quaternion horizontalOrientation() {
-        float[3] relUp = orientation.inverseRotate(up);
-
-        float[3] forward;
-        if (abs(relUp[0]) < 0.9) {
-            forward = [0.0f, -relUp[2], relUp[1]];
-        }
-        else {
-            forward = [0.0f, 0.0f, 1.0f];
-            float dot = forward[0] * relUp[0] + forward[1] * relUp[1] + forward[2] * relUp[2];
-            forward[0] -= relUp[0] * dot;
-            forward[1] -= relUp[1] * dot;
-            forward[2] -= relUp[2] * dot;
-        }
-
-        return orientation * Quaternion.lookRotation(forward, relUp);
+        // The yaw frame is horizontal by construction.
+        return orientation;
     }
 
     void renormalizeOrientation() {

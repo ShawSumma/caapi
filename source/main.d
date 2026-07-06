@@ -320,7 +320,7 @@ void main(string[] args) {
             CharacterInput cin;
             cin.noClip = noClip;
             if (noClip) {
-                cin.movement = character.orientation.rotate([mx, my, mz]);
+                cin.movement = character.viewOrientation().rotate([mx, my, mz]);
             } else {
                 cin.movement = character.horizontalOrientation().rotate([mx, 0, mz]);
                 cin.jump = input.up;
@@ -334,7 +334,9 @@ void main(string[] args) {
             // around a loop can't accumulate rotation.
             float[3] newUp = getRelativeUp(&renderer.graph, &character.position);
             character.updatePosition(character.position, newUp, true);
-            character.alignToGravity(cfg.rollAlignSpeed * dt);
+            // The yaw frame stays up-aligned by construction; this only
+            // scrubs out accumulated float noise.
+            character.alignToGravity();
             character.renormalizeOrientation();
             renderer.camPos = character.orientedPosition();
         }
