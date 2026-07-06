@@ -10,11 +10,13 @@ struct ClientConfig {
     ushort serverPort = 1234;
     string playerName = "Player";
 
-    float mouseSensitivity = 0.003f;
+    float mouseSensitivity = 0.0015f;
     bool invertY = false;
     float moveSpeed = 1.0f;
     float turnSpeed = 1.5f;
-    float reach = 5.0f;
+    float reach = 10.0f;
+    // How fast the view rolls back toward gravity-upright, radians/second.
+    float rollAlignSpeed = 3.0f;
 
     /// Loads `key = value` lines from path; missing file or bad lines fall
     /// back to defaults so a partial config is always usable.
@@ -41,6 +43,7 @@ struct ClientConfig {
                     case "move_speed": cfg.moveSpeed = value.to!float; break;
                     case "turn_speed": cfg.turnSpeed = value.to!float; break;
                     case "reach": cfg.reach = value.to!float; break;
+                    case "roll_align_speed": cfg.rollAlignSpeed = value.to!float; break;
                     case "server_address": cfg.serverAddress = value; break;
                     case "server_port": cfg.serverPort = value.to!ushort; break;
                     case "player_name": cfg.playerName = value; break;

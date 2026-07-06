@@ -67,6 +67,13 @@ struct WorldgenDriver {
     GenRequest[] requestBuf;
     GenResult[] resultBuf;
 
+    // Per-slot scan skip state. DONE_FOREVER: node has no Fresh chunks left
+    // (Fresh never comes back, so this is permanent). Otherwise it holds the
+    // nearby-set version at which the node had only out-of-range Fresh chunks
+    // — valid to skip until the next recollect moves the range.
+    uint[] doneVersion;
+    enum uint DONE_FOREVER = uint.max;
+
     // Enough to keep every worker busy between frames without flooding the
     // queue with chunks the camera may move away from.
     enum uint MAX_IN_FLIGHT = 128;
@@ -99,6 +106,7 @@ struct WorldgenDriver {
         float distance,
         ref Graph graph,
         ubyte chunkSize,
+        uint nearbyVersion,
     ) {
         // Integrate whatever the workers finished since last frame.
         resultBuf.length = 0;
@@ -121,10 +129,20 @@ struct WorldgenDriver {
         requestBuf.length = 0;
         requestBuf.assumeSafeAppend();
 
+        if (doneVersion.length < graph.slotCount()) {
+            doneVersion.length = graph.slotCount();
+        }
+
         outer: foreach (ref const NearbyNode nn; nearby) {
             if (nn.slot == NO_SLOT) {
                 continue;
             }
+            uint dv = doneVersion[nn.slot];
+            if (dv == DONE_FOREVER || dv == nearbyVersion) {
+                continue;
+            }
+
+            uint freshOutOfRange = 0;
             foreach (int vIdx; 0 .. Vertex.max + 1) {
                 Vertex vertex = cast(Vertex) vIdx;
                 // Re-derive from the slot each iteration: ChunkParams.create
@@ -138,6 +156,7 @@ struct WorldgenDriver {
 
                 MPoint!float chunkCenter = nn.transform * vertexChunkBoundingSphereCenter(vertex);
                 if (-startP.mip(chunkCenter.vec) > threshold) {
+                    freshOutOfRange++;
                     continue;
                 }
 
@@ -150,6 +169,7 @@ struct WorldgenDriver {
                 }
 
                 if (inFlight + requestBuf.length >= MAX_IN_FLIGHT) {
+                    // Not fully scanned; leave the node's skip state untouched.
                     break outer;
                 }
 
@@ -157,6 +177,7 @@ struct WorldgenDriver {
                 graph.nodeAt(nn.slot).chunks.values[vertex].state = ChunkState.Generating;
                 requestBuf ~= GenRequest(chunkId, params);
             }
+            doneVersion[nn.slot] = freshOutOfRange == 0 ? DONE_FOREVER : nearbyVersion;
         }
 
         if (requestBuf.length > 0) {

@@ -1,6 +1,8 @@
 module client.graphics;
 
 import std.stdio;
+import std.format : format;
+import core.memory : GC;
 import core.time : MonoTime;
 import std.math : sin, cos, cosh, sqrt, PI, log, pow, isNaN;
 import std.typecons : Nullable;
@@ -39,7 +41,7 @@ struct Renderer {
     Graph graph;
     float viewRadius = 5.0f;
     float renderRadius = 4.5f;
-    float reach = 5.0f;
+    float reach = 10.0f;
 
     uint maxSlots = 2^^16;
     uint concurrency = 128;
@@ -59,12 +61,23 @@ struct Renderer {
     ubyte[] slotUsedBuf;
     ChunkId[] removeBuf;
 
+    // Per-second frame timing: average and worst-case per pipeline stage.
+    // Smoothness problems live in the max column, not the average.
+    static immutable string[9] STAGE_NAMES =
+        ["ens", "drv", "wait", "loop", "prep", "acq", "rec", "pres", "total"];
+    double[9] stageSum = 0;
+    double[9] stageMax = 0;
+    uint statFrames = 0;
+    ulong lastGcCollections = 0;
+    ulong lastGcPauseUsecs = 0;
+
     Nullable!uint lastLoggedSecond;
     NearbyNode[] cachedNodes;
     NearbyScratch nearbyScratch;
     NodeId lastNearbyNode;
     MPoint!float lastNearbyPos;
     bool hasNearby = false;
+    uint nearbyVersion = 0;
 
     // The nearby set is collected with this much extra radius so it stays
     // valid until the camera has translated NEARBY_PADDING away from the
@@ -202,9 +215,10 @@ struct Renderer {
             lastNearbyNode = camPos.node;
             lastNearbyPos = camPoint;
             hasNearby = true;
+            nearbyVersion++;
         }
         MonoTime a1 = MonoTime.currTime;
-        worldgenDriver.drive(cachedNodes, camPos.local, renderRadius, graph, cast(ubyte) dimension);
+        worldgenDriver.drive(cachedNodes, camPos.local, renderRadius, graph, cast(ubyte) dimension, nearbyVersion);
         MonoTime a2 = MonoTime.currTime;
 
         tasksLen = 0;
@@ -233,8 +247,9 @@ struct Renderer {
             if (nn.slot == NO_SLOT) {
                 continue;
             }
-            Node* node = &graph.nodeAt(nn.slot);
 
+            // Cull from the compact cachedNodes array before touching the
+            // node slab, so invisible nodes cost no scattered memory reads.
             MPoint!float nodeCenter = MPoint!float(MVector!float(
                 nn.transform.mat.data[3][0], nn.transform.mat.data[3][1],
                 nn.transform.mat.data[3][2], nn.transform.mat.data[3][3]));
@@ -242,6 +257,7 @@ struct Renderer {
             if (frustum.sphereOutside(fplanes, nodeCam, NODE_CULL_RADIUS)) {
                 continue;
             }
+            Node* node = &graph.nodeAt(nn.slot);
 
             uint thisNodeIndex = nodeIndex;
             bool nodeUploaded = false;
@@ -373,20 +389,7 @@ struct Renderer {
                 }
             }
         }
-        uint currentSecond = cast(uint) time;
-        if (lastLoggedSecond.isNull || currentSecond != lastLoggedSecond.get) {
-            lastLoggedSecond = currentSecond;
-            MonoTime a4 = MonoTime.currTime;
-            double ens = (a1 - a0).total!"usecs" / 1000.0;
-            double drv = (a2 - a1).total!"usecs" / 1000.0;
-            double wait = (a3 - a2).total!"usecs" / 1000.0;
-            double loop = (a4 - a3).total!"usecs" / 1000.0;
-            writefln("[t=%ss] active=%d inFrustum=%d slots=%d new=%d graph=%d nearby=%d | ens=%.1f drv=%.1f wait=%.1f loop=%.1f ms | target=%d d=%s",
-                currentSecond, activeCount, inFrustumCount, nextSlot,
-                tasksLen, graph.len, cachedNodes.length,
-                ens, drv, wait, loop, hasTarget ? 1 : 0, targetHit.tanhDistance);
-            stdout.flush();
-        }
+        MonoTime a4 = MonoTime.currTime;
 
         float fogDensity = pow(log(1.0f / 1e-3f), 1.0f / 5.0f) / 75.0f;
 
@@ -410,6 +413,8 @@ struct Renderer {
         lightNode[3] = 0;
         voxels.updateCommonUbo(core.device, vp, invp, fogDensity, time, lightNode);
 
+        MonoTime a5 = MonoTime.currTime;
+
         uint imageIndex;
         VkResult acquireRes = vkAcquireNextImageKHR(core.device, swapState.swapchain, ulong.max,
             swapState.imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
@@ -422,6 +427,7 @@ struct Renderer {
             return;
         }
         vkResetFences(core.device, 1, &swapState.inFlightFence);
+        MonoTime a6 = MonoTime.currTime;
 
         VkCommandBuffer cmd = swapState.commandBuffer;
         vkResetCommandBuffer(cmd, 0);
@@ -505,6 +511,7 @@ struct Renderer {
         si.signalSemaphoreCount = 1;
         si.pSignalSemaphores = &swapState.renderFinishedSemaphore;
         vkQueueSubmit(core.graphicsQueue, 1, &si, swapState.inFlightFence);
+        MonoTime a7 = MonoTime.currTime;
 
         VkPresentInfoKHR pi;
         pi.sType = VkStructureType.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -517,6 +524,53 @@ struct Renderer {
         if (presentRes == VkResult.VK_ERROR_OUT_OF_DATE_KHR
             || presentRes == VkResult.VK_SUBOPTIMAL_KHR) {
             recreateSwapchain();
+        }
+        MonoTime a8 = MonoTime.currTime;
+
+        double[9] stages = [
+            (a1 - a0).total!"usecs" / 1000.0,
+            (a2 - a1).total!"usecs" / 1000.0,
+            (a3 - a2).total!"usecs" / 1000.0,
+            (a4 - a3).total!"usecs" / 1000.0,
+            (a5 - a4).total!"usecs" / 1000.0,
+            (a6 - a5).total!"usecs" / 1000.0,
+            (a7 - a6).total!"usecs" / 1000.0,
+            (a8 - a7).total!"usecs" / 1000.0,
+            (a8 - a0).total!"usecs" / 1000.0,
+        ];
+        foreach (i; 0 .. 9) {
+            stageSum[i] += stages[i];
+            if (stages[i] > stageMax[i]) {
+                stageMax[i] = stages[i];
+            }
+        }
+        statFrames++;
+
+        uint currentSecond = cast(uint) time;
+        if (lastLoggedSecond.isNull || currentSecond != lastLoggedSecond.get) {
+            lastLoggedSecond = currentSecond;
+
+            GC.ProfileStats gcStats = GC.profileStats();
+            ulong gcCollections = gcStats.numCollections;
+            ulong gcPauseUsecs = gcStats.totalPauseTime.total!"usecs";
+
+            string line = format("[t=%ss] frames=%d active=%d slots=%d graph=%d nearby=%d",
+                currentSecond, statFrames, activeCount, nextSlot, graph.len, cachedNodes.length);
+            foreach (i; 0 .. 9) {
+                line ~= format(" %s=%.1f/%.1f", STAGE_NAMES[i],
+                    statFrames > 0 ? stageSum[i] / statFrames : 0.0, stageMax[i]);
+            }
+            line ~= format(" | gc n=%d pause=%.1fms",
+                gcCollections - lastGcCollections,
+                (gcPauseUsecs - lastGcPauseUsecs) / 1000.0);
+            writeln(line);
+            stdout.flush();
+
+            lastGcCollections = gcCollections;
+            lastGcPauseUsecs = gcPauseUsecs;
+            stageSum[] = 0;
+            stageMax[] = 0;
+            statFrames = 0;
         }
     }
 
@@ -535,19 +589,28 @@ struct Renderer {
         return rayCast(graph, camPos.node, camPos.local, ray, reachDistance, oob);
     }
 
+    uint castHits;
+    uint castMisses;
+
     void breakBlock() {
         GraphCastHit hit = castCenterRay(reach);
         if (isNaN(hit.tanhDistance)) {
+            castMisses++;
+            writefln("break: miss (%d/%d hit)", castHits, castHits + castMisses);
             return;
         }
+        castHits++;
         setVoxel(hit.chunk, hit.voxelCoords, Material.Void);
     }
 
     void placeBlock(ushort material) {
         GraphCastHit hit = castCenterRay(reach);
         if (isNaN(hit.tanhDistance)) {
+            castMisses++;
+            writefln("place: miss (%d/%d hit)", castHits, castHits + castMisses);
             return;
         }
+        castHits++;
         ChunkId targetChunk = hit.chunk;
         Coords coords = hit.voxelCoords;
         int stepped = coords[hit.faceAxis] + (hit.faceSign == CoordSign.Plus ? 1 : -1);

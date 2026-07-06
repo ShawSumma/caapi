@@ -182,7 +182,7 @@ void benchDrive(float radius, ubyte dimension) {
     uint idleFrames = 0;
     uint frames = 0;
     while (idleFrames < 3 && frames < 100_000) {
-        driver.drive(nearby, identity, radius, graph, dimension);
+        driver.drive(nearby, identity, radius, graph, dimension, 1);
         frames++;
         if (driver.inFlight == 0) {
             idleFrames++;
@@ -203,6 +203,16 @@ void benchDrive(float radius, ubyte dimension) {
     }
     writefln("bench-drive dim=%d radius=%.2f populated=%d frames=%d total=%.1fms",
         dimension, radius, populated, frames, totalMs);
+
+    // Steady state: everything generated, nothing to do — this is the pure
+    // per-frame scan cost the render loop pays forever after.
+    MonoTime idleStart = MonoTime.currTime;
+    enum idleIters = 200;
+    foreach (_; 0 .. idleIters) {
+        driver.drive(nearby, identity, radius, graph, dimension, 1);
+    }
+    double idleMs = (MonoTime.currTime - idleStart).total!"usecs" / 1000.0 / idleIters;
+    writefln("bench-drive idle scan=%.3fms/frame (%d nodes)", idleMs, cast(uint) nearby.length);
 }
 
 // Headless timing of the per-frame nearby traversal. Builds the graph once,

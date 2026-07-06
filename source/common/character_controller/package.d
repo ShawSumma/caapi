@@ -2,8 +2,9 @@ module common.character_controller;
 
 import std.math : sqrt, exp, isNaN;
 
-import common.math : MIsometry, MPoint, projectToPlane, sanitizeMotionInput;
+import common.math : MIsometry, MPoint, MVector, projectToPlane, sanitizeMotionInput;
 import common.graph : Graph, NodeId;
+import common.worldgen.mod_ : NodeState;
 import common.proto : Position, CharacterInput;
 import common.sim_config : SimConfig, CharacterConfig;
 import common.character_controller.collision : CollisionContext, CollisionCheckingResult, Collision, checkCollision;
@@ -274,8 +275,50 @@ float[3] capMagnitude(float[3] v, float maxMag) {
     return v;
 }
 
+/// "Up" at a place, derived from the world rather than carried along with
+/// the character: the direction of increasing distance to the node's terrain
+/// surface plane, expressed in the character's local frame. Re-anchoring to
+/// this every step is what keeps holonomy from accumulating into the frame —
+/// transporting a frame around a loop in hyperbolic space rotates it, but a
+/// reference recomputed from world geometry can't drift.
 float[3] getRelativeUp(const Graph* graph, const Position* position) {
-    return [0.0f, 1.0f, 0.0f];
+    const(NodeState)* state = null;
+    if (graph.contains(position.node)) {
+        state = graph.nodeState(position.node);
+    }
+    if (state is null) {
+        return [0.0f, 1.0f, 0.0f];
+    }
+
+    // The gradient of the plane's signed distance, projected into the tangent
+    // space at the character's origin, is just the spatial part of the plane
+    // normal expressed in that frame.
+    MVector!float n = position.local.inverse() * state.surface.scaledNormal;
+    float[3] up = n.xyz();
+    float len = sqrt(up[0] * up[0] + up[1] * up[1] + up[2] * up[2]);
+    if (len < 1e-9f || isNaN(len)) {
+        return [0.0f, 1.0f, 0.0f];
+    }
+    return [up[0] / len, up[1] / len, up[2] / len];
+}
+
+unittest {
+    // Moving along the reported up direction must increase the distance to
+    // the node's surface plane.
+    Graph graph = Graph.create(12);
+    graph.ensureNodeState(NodeId.ROOT);
+    Position pos = Position.origin();
+
+    float[3] up = getRelativeUp(&graph, &pos);
+    const(NodeState)* state = graph.nodeState(NodeId.ROOT);
+    MPoint!float p0 = pos.local * MPoint!float.origin();
+    float d0 = state.surface.distanceTo(p0);
+
+    pos.local = pos.local * MIsometry!float.translationAlong([up[0] * 0.1f, up[1] * 0.1f, up[2] * 0.1f]);
+    MPoint!float p1 = pos.local * MPoint!float.origin();
+    float d1 = state.surface.distanceTo(p1);
+
+    assert(d1 > d0 + 0.05f);
 }
 
 struct CharacterControllerContext {

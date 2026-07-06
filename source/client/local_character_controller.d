@@ -1,6 +1,6 @@
 module client.local_character_controller;
 
-import std.math : atan2, abs, PI, sqrt, sin, cos, fmin, fmax;
+import std.math : acos, atan2, abs, PI, sqrt, sin, cos, fmin, fmax;
 import common.math : MIsometry, Matrix4;
 import common.proto : Position;
 
@@ -43,37 +43,62 @@ struct LocalCharacterController {
     void lookLevel(float deltaYaw, float deltaPitch) {
         float[3] relUp = orientation.inverseRotate(up);
 
+        // Yaw about the world up, pitch about the view's own axis — both
+        // applied in full with no pole clamping. Gravity alignment (below)
+        // gently rolls the view upright, including recovering from a pitch
+        // carried past the vertical.
         orientation = orientation * Quaternion.fromAxisAngle(relUp, deltaYaw);
-
-        if (abs(relUp[0]) < 0.9) {
-            float currentPitch = -atan2(relUp[2], relUp[1]);
-            float targetPitch = currentPitch + deltaPitch;
-            if (deltaPitch > 0.0) {
-                targetPitch = fmax(currentPitch, fmin(targetPitch, PI / 2.0));
-            }
-            else {
-                targetPitch = fmin(currentPitch, fmax(targetPitch, -PI / 2.0));
-            }
-            orientation = orientation * Quaternion.fromAxisAngle([1, 0, 0], targetPitch - currentPitch);
-        }
+        orientation = orientation * Quaternion.fromAxisAngle([1, 0, 0], deltaPitch);
     }
 
-    void alignToGravity() {
+    /// Rolls the view toward gravity-upright, turning at most maxAngle —
+    /// pass a rate×dt budget for a gentle per-frame correction instead of a
+    /// hard snap.
+    void alignToGravity(float maxAngle = float.infinity) {
         float[3] relUp = orientation.inverseRotate(up);
 
         if (abs(relUp[2]) < 0.9) {
             float deltaRoll = -atan2(relUp[0], relUp[1]);
-            orientation = orientation * Quaternion.fromAxisAngle([0, 0, 1], deltaRoll);
+            orientation = orientation * Quaternion.fromAxisAngle([0, 0, 1], clampAngle(deltaRoll, maxAngle));
         }
         else if (relUp[1] > 0.0) {
             float deltaYaw = atan2(relUp[0], relUp[2]);
-            orientation = orientation * Quaternion.fromAxisAngle([0, 1, 0], deltaYaw);
+            orientation = orientation * Quaternion.fromAxisAngle([0, 1, 0], clampAngle(deltaYaw, maxAngle));
         }
         else {
             float[3] target = [0, 0, relUp[2] > 0 ? 1.0f : -1.0f];
             Quaternion rot = rotationBetweenVectors(target, relUp);
-            orientation = orientation * rot;
+            orientation = orientation * limitAngle(rot, maxAngle);
         }
+    }
+
+    private static float clampAngle(float a, float maxAngle) {
+        if (a > maxAngle) {
+            return maxAngle;
+        }
+        if (a < -maxAngle) {
+            return -maxAngle;
+        }
+        return a;
+    }
+
+    private static Quaternion limitAngle(Quaternion q, float maxAngle) {
+        if (maxAngle == float.infinity) {
+            return q;
+        }
+        if (q.w < 0) {
+            q = Quaternion(-q.w, -q.x, -q.y, -q.z);
+        }
+        float w = q.w > 1.0f ? 1.0f : q.w;
+        float angle = 2.0f * acos(w);
+        if (angle <= maxAngle || angle < 1e-6f) {
+            return q;
+        }
+        float s = sqrt(1.0f - w * w);
+        if (s < 1e-6f) {
+            return q;
+        }
+        return Quaternion.fromAxisAngle([q.x / s, q.y / s, q.z / s], maxAngle);
     }
 
     Quaternion horizontalOrientation() {
@@ -212,6 +237,13 @@ struct Quaternion {
         );
     }
 
+    float[3] rotate(float[3] v) const {
+        Quaternion conj = Quaternion(w, -x, -y, -z);
+        Quaternion vq = Quaternion(0, v[0], v[1], v[2]);
+        Quaternion result = this * vq * conj;
+        return [result.x, result.y, result.z];
+    }
+
     float[3] inverseRotate(float[3] v) const {
         Quaternion conj = Quaternion(w, -x, -y, -z);
         Quaternion vq = Quaternion(0, v[0], v[1], v[2]);
@@ -252,6 +284,47 @@ unittest {
     // Degenerate input falls back to identity instead of NaN.
     q = Quaternion.lookRotation([0, 0, 0], [0, 1, 0]);
     assert(isClose(q.w, 1.0f, 1e-5));
+}
+
+unittest {
+    // Holonomy regression: translating around a closed loop in hyperbolic
+    // space rotates a parallel-transported frame. Re-anchoring `up` from the
+    // world each step (getRelativeUp) and re-aligning must keep the view
+    // roll-free after the loop instead of accumulating the loop's holonomy.
+    import common.character_controller : getRelativeUp;
+    import common.graph : Graph, NodeId;
+    import common.math : MIsometry;
+
+    Graph graph = Graph.create(12);
+    graph.ensureNodeState(NodeId.ROOT);
+
+    LocalCharacterController c = LocalCharacterController.create();
+    c.position = Position.origin();
+    c.up = getRelativeUp(&graph, &c.position);
+    c.alignToGravity();
+
+    // A closed square loop, 0.2 units per side, 10 steps per side, in the
+    // horizontal plane of the character's frame.
+    static immutable float[3][4] legs = [
+        [1, 0, 0], [0, 0, 1], [-1, 0, 0], [0, 0, -1],
+    ];
+    foreach (leg; legs) {
+        foreach (_; 0 .. 10) {
+            float[3] step = [leg[0] * 0.02f, leg[1] * 0.02f, leg[2] * 0.02f];
+            c.position.local = c.position.local * MIsometry!float.translationAlong(step);
+            c.position.local = c.position.local.renormalized();
+            float[3] newUp = getRelativeUp(&graph, &c.position);
+            c.updatePosition(c.position, newUp, true);
+            c.alignToGravity();
+            c.renormalizeOrientation();
+        }
+    }
+
+    // After the loop the local up must sit in the view's Y axis with no roll
+    // (x component ~ 0) and no upside-down flip (y component ~ 1).
+    float[3] relUp = c.orientation.inverseRotate(c.up);
+    assert(relUp[0] > -1e-3 && relUp[0] < 1e-3);
+    assert(relUp[1] > 0.999f);
 }
 
 MIsometry!float quaternionToIsometry(Quaternion q) {
