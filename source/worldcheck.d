@@ -84,14 +84,15 @@ void dumpWorld(float radius, ubyte dimension) {
     }
 
     ChunkLine[] lines;
-    foreach (ref container; graph.containers) {
+    foreach (slot; 0 .. graph.slotCount()) {
         foreach (vIdx; 0 .. 20) {
-            const(Chunk)* c = &container.value.chunks.values[cast(Vertex) vIdx];
+            const(Chunk)* c = &graph.container(slot).value.chunks.values[cast(Vertex) vIdx];
             if (c.state != ChunkState.Populated) {
                 continue;
             }
+            NodeId id = graph.idAt(slot);
             lines ~= ChunkLine(
-                container.id.value[0], container.id.value[1], cast(ubyte) vIdx,
+                id.value[0], id.value[1], cast(ubyte) vIdx,
                 chunkHash(cast(ubyte) vIdx, c.voxels));
         }
     }
@@ -194,9 +195,9 @@ void benchDrive(float radius, ubyte dimension) {
     double totalMs = (MonoTime.currTime - start).total!"usecs" / 1000.0;
 
     uint populated = 0;
-    foreach (ref container; graph.containers) {
+    foreach (slot; 0 .. graph.slotCount()) {
         foreach (vIdx; 0 .. 20) {
-            if (container.value.chunks.values[cast(Vertex) vIdx].state == ChunkState.Populated) {
+            if (graph.container(slot).value.chunks.values[cast(Vertex) vIdx].state == ChunkState.Populated) {
                 populated++;
             }
         }

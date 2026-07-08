@@ -3,7 +3,7 @@ module common.traversal;
 import std.math : cosh;
 import common.dodeca : Side, sideReflection, BOUNDING_SPHERE_RADIUS;
 import common.graph : Graph, NodeId, NO_SLOT;
-import common.math : MIsometry, MPoint;
+import common.math : MIsometry, MPoint, MVector;
 
 void ensureNearby(ref Graph graph, NodeId startNode, MIsometry!float startLocal, float distance, size_t maxNewNodes = 256) {
     float maxNodeCenterDistance = distance + BOUNDING_SPHERE_RADIUS;
@@ -122,6 +122,9 @@ struct NearbyScratch {
     NearbyNode[] nodes;
     uint[] stamp;
     uint generation;
+    // True when the last collection ran out of node-creation budget; the
+    // caller should collect again soon to finish expanding the frontier.
+    bool creationCapped;
 }
 
 NearbyNode[] ensureAndCollectNearby(
@@ -129,9 +132,12 @@ NearbyNode[] ensureAndCollectNearby(
     ref Graph graph,
     NodeId startNode,
     MIsometry!float startLocal,
-    float distance
+    float distance,
+    size_t maxNewNodes = 1024
 ) {
     float coshThreshold = cosh(distance + BOUNDING_SPHERE_RADIUS);
+    size_t created = 0;
+    scratch.creationCapped = false;
 
     scratch.nodes.length = 0;
     scratch.nodes.assumeSafeAppend();
@@ -160,14 +166,29 @@ NearbyNode[] ensureAndCollectNearby(
             if (neighbor != NO_SLOT && scratch.stamp[neighbor] == gen) {
                 continue;
             }
-            MIsometry!float neighborTransform = current.transform * sideReflection(side);
-            MPoint!float neighborP = neighborTransform * MPoint!float.origin();
-            if (-startP.mip(neighborP.vec) > coshThreshold) {
+            // Cull on the translation column alone (one matrix-vector product)
+            // before paying for the full transform of an accepted node.
+            MIsometry!float refl = sideReflection(side);
+            MVector!float reflOrigin = MVector!float(
+                refl.mat.data[3][0], refl.mat.data[3][1],
+                refl.mat.data[3][2], refl.mat.data[3][3]);
+            MVector!float neighborOrigin = current.transform * reflOrigin;
+            if (-startP.mip(neighborOrigin) > coshThreshold) {
                 continue;
             }
+            MIsometry!float neighborTransform = current.transform * refl;
             if (neighbor == NO_SLOT) {
-                // Creating a node can add several slots; grow the stamps after.
+                // Creating a node can add several slots; grow the stamps
+                // after. Creation is budgeted per call: entering unexplored
+                // territory expands the graph across several rebuilds instead
+                // of flooding one frame (BFS order creates nearest first).
+                if (created >= maxNewNodes) {
+                    scratch.creationCapped = true;
+                    continue;
+                }
+                uint before = graph.slotCount();
                 neighbor = graph.ensureNeighborSlot(current.slot, side);
+                created += graph.slotCount() - before;
                 if (scratch.stamp.length < graph.slotCount()) {
                     scratch.stamp.length = graph.slotCount();
                 }

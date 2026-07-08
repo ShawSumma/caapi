@@ -74,6 +74,14 @@ struct WorldgenDriver {
     uint[] doneVersion;
     enum uint DONE_FOREVER = uint.max;
 
+    // Scan state: after a nearby-set rebuild every boundary node needs a
+    // rescan; doing all ~30k in one frame is a visible hitch, so the scan
+    // resumes from a cursor with a per-frame node budget instead.
+    uint scanCursor;
+    uint scanVersion;
+    enum uint MAX_SCAN_NODES_PER_FRAME = 4096;
+    enum uint MAX_REQUESTS_PER_FRAME = 32;
+
     // Enough to keep every worker busy between frames without flooding the
     // queue with chunks the camera may move away from.
     enum uint MAX_IN_FLIGHT = 128;
@@ -132,8 +140,20 @@ struct WorldgenDriver {
         if (doneVersion.length < graph.slotCount()) {
             doneVersion.length = graph.slotCount();
         }
+        if (scanVersion != nearbyVersion) {
+            scanVersion = nearbyVersion;
+            scanCursor = 0;
+        }
 
-        outer: foreach (ref const NearbyNode nn; nearby) {
+        uint requestBudget = MAX_IN_FLIGHT - inFlight;
+        if (requestBudget > MAX_REQUESTS_PER_FRAME) {
+            requestBudget = MAX_REQUESTS_PER_FRAME;
+        }
+
+        uint scanned = 0;
+        size_t idx = scanCursor;
+        outer: for (; idx < nearby.length && scanned < MAX_SCAN_NODES_PER_FRAME; idx++) {
+            const NearbyNode nn = nearby[idx];
             if (nn.slot == NO_SLOT) {
                 continue;
             }
@@ -141,6 +161,7 @@ struct WorldgenDriver {
             if (dv == DONE_FOREVER || dv == nearbyVersion) {
                 continue;
             }
+            scanned++;
 
             uint freshOutOfRange = 0;
             foreach (int vIdx; 0 .. Vertex.max + 1) {
@@ -168,8 +189,8 @@ struct WorldgenDriver {
                     continue;
                 }
 
-                if (inFlight + requestBuf.length >= MAX_IN_FLIGHT) {
-                    // Not fully scanned; leave the node's skip state untouched.
+                if (requestBuf.length >= requestBudget) {
+                    // Out of request budget mid-node; resume here next frame.
                     break outer;
                 }
 
@@ -179,6 +200,7 @@ struct WorldgenDriver {
             }
             doneVersion[nn.slot] = freshOutOfRange == 0 ? DONE_FOREVER : nearbyVersion;
         }
+        scanCursor = cast(uint) idx;
 
         if (requestBuf.length > 0) {
             inFlight += cast(uint) requestBuf.length;

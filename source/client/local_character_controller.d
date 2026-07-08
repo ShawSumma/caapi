@@ -12,6 +12,24 @@ struct LocalCharacterController {
     // clamping it at the poles is a plain scalar clamp.
     Quaternion orientation;
     float pitchAngle = 0;
+    // Camera height above the character position (body center), along up.
+    float eyeOffset = 0;
+    // Low-passed grounded vertical motion: step quantization is smoothed out
+    // of the camera (the body may pop up a stair; the eye glides).
+    float eyeLag = 0;
+
+    void smoothEyeVertical(float groundedRise, float dt) {
+        import std.math : exp;
+        eyeLag += groundedRise;
+        eyeLag *= exp(-12.0f * dt);
+        enum float LIMIT = 0.12f;
+        if (eyeLag > LIMIT) {
+            eyeLag = LIMIT;
+        }
+        if (eyeLag < -LIMIT) {
+            eyeLag = -LIMIT;
+        }
+    }
 
     static LocalCharacterController create() {
         LocalCharacterController c;
@@ -29,7 +47,13 @@ struct LocalCharacterController {
     Position orientedPosition() {
         Position p;
         p.node = position.node;
-        p.local = position.local * quaternionToIsometry(viewOrientation());
+        p.local = position.local;
+        float h = eyeOffset - eyeLag;
+        if (h != 0) {
+            float[3] eye = [up[0] * h, up[1] * h, up[2] * h];
+            p.local = p.local * MIsometry!float.translationAlong(eye);
+        }
+        p.local = p.local * quaternionToIsometry(viewOrientation());
         return p;
     }
 

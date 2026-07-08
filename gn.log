@@ -1,0 +1,42 @@
+mined - hyperbolic voxel engine
+flat worldgen enabled
+replaying 1091 action lines from tests/walk_h0.actions
+Vulkan core initialized
+Swapchain and render pass created
+Extract: facesBuf=0x59054892ede0 (2944401408 bytes) indirBuf=0x5905487c3d60 voxBuf=0x590547fbc300
+GPU worldgen initialized
+GPU transform compute initialized
+Warning: materials directory not found, using gray textures
+Voxels pipeline created (0 surfaces, 65536 chunks)
+Renderer initialized successfully
+FPS=652.2 frame max=4ms | mode=fly ground=false vel=[0.000 0.000 0.000] traveled=0.020 vacc=81.31
+FPS=4285.7 frame max=1ms | mode=fly ground=false vel=[0.000 0.000 0.000] traveled=0.020 vacc=0.00
+FPS=2069.0 frame max=4ms | mode=walk ground=true vel=[0.000 -0.000 0.000] traveled=0.226 vacc=25.50
+FPS=2608.7 frame max=1ms | mode=walk ground=true vel=[-0.000 0.000 0.000] traveled=0.250 vacc=0.01
+FPS=2307.7 frame max=2ms | mode=walk ground=true vel=[0.000 0.000 0.000] traveled=0.273 vacc=0.00
+VEL pre-apply=[-0.0104914, -0.011099, 0] gn=true([0.686937, 0.726717, 0]) mv=[0, 0, 0]
+VEL post-apply=[0, 0, 0] gn=true([0.686937, 0.726717, 0])
+FPS=2222.2 frame max=1ms | mode=walk ground=true vel=[0.000 0.000 0.000] traveled=0.297 vacc=0.00
+GN hit=true n=[0.686928, 0.726708, -0.00504834] up=[0.686928, 0.726708, -0.00504832]
+FPS=1428.6 frame max=7ms | mode=walk ground=true vel=[-0.001 -0.001 -0.191] traveled=0.475 vacc=0.00
+FPS=1463.4 frame max=5ms | mode=walk ground=true vel=[-0.002 -0.002 -0.191] traveled=0.657 vacc=0.00
+FPS=1538.5 frame max=4ms | mode=walk ground=true vel=[-0.003 -0.003 -0.191] traveled=0.841 vacc=0.00
+VEL pre-apply=[-0.013694, -0.014487, -0.190383] gn=true([0.686606, 0.726368, -0.0310077]) mv=[-0.0213004, -0.0225339, -0.999519]
+VEL post-apply=[-0.00406798, -0.00430356, -0.190817] gn=true([0.686606, 0.726368, -0.0310195])
+FPS=1333.3 frame max=5ms | mode=walk ground=true vel=[-0.004 -0.004 -0.191] traveled=1.021 vacc=0.01
+GN hit=true n=[0.686478, 0.726233, -0.0365124] up=[0.686478, 0.726234, -0.0365124]
+FPS=1304.3 frame max=6ms | mode=walk ground=true vel=[-0.005 -0.005 -0.191] traveled=1.204 vacc=0.01
+FPS=1395.3 frame max=6ms | mode=walk ground=true vel=[-0.006 -0.006 -0.191] traveled=1.388 vacc=0.00
+FPS=1304.3 frame max=8ms | mode=walk ground=true vel=[-0.007 -0.008 -0.191] traveled=1.572 vacc=0.00
+VEL pre-apply=[-0.0186425, -0.0197221, -0.189585] gn=true([0.685594, 0.725301, -0.0624414]) mv=[-0.0428932, -0.0453773, -0.998049]
+VEL post-apply=[-0.00765428, -0.00809756, -0.190585] gn=true([0.684363, 0.726801, -0.0583656])
+FPS=1132.1 frame max=6ms | mode=walk ground=true vel=[-0.008 -0.008 -0.191] traveled=1.756 vacc=0.01
+GN hit=true n=[0.685347, 0.72504, -0.0679375] up=[0.685347, 0.725041, -0.0679375]
+FPS=895.5 frame max=6ms | mode=walk ground=true vel=[-0.009 -0.010 -0.190] traveled=1.940 vacc=0.01
+FPS=504.2 frame max=7ms | mode=walk ground=true vel=[-0.010 -0.011 -0.190] traveled=2.120 vacc=0.00
+FPS=674.2 frame max=8ms | mode=walk ground=true vel=[-0.011 -0.012 -0.190] traveled=2.304 vacc=0.01
+VEL pre-apply=[-0.0104472, -0.0110523, 0.00139997] gn=true([0.684042, 0.72366, -0.0916647]) mv=[0, 0, 0]
+VEL post-apply=[-9.31323e-10, -9.31323e-10, 1.16415e-10] gn=true([0.684042, 0.72366, -0.0916647])
+FPS=857.1 frame max=7ms | mode=walk ground=true vel=[-0.000 0.000 -0.000] traveled=2.432 vacc=0.22
+replay finished
+session: traveled=2.432

@@ -186,8 +186,17 @@ struct ChunkParams {
     }
 }
 
+// Debug worldgen: fill strictly below the unmodified surface plane. The base
+// plane is lattice-aligned, so this produces a genuinely flat voxel floor
+// with gravity exactly perpendicular — isolates physics from terrain shape.
+__gshared bool gFlatWorldgen = false;
+
 /// Generate voxels for a chunk
 VoxelData generateVoxels(const ref ChunkParams params) {
+    if (gFlatWorldgen) {
+        return generateFlatVoxels(params);
+    }
+
     VoxelData voxels = VoxelData.solid(Material.Void);
     ulong rngState = hash(params.nodeSpice, params.chunk);
 
@@ -202,6 +211,32 @@ VoxelData generateVoxels(const ref ChunkParams params) {
     generateTrees(params, voxels, rngState);
 
     initializeMargins(params.dimension, voxels);
+    return voxels;
+}
+
+VoxelData generateFlatVoxels(const ref ChunkParams params) {
+    ubyte dim = params.dimension;
+    enum float MARGIN = 0.7f;
+
+    float centerElevation = params.surface.distanceToChunk(params.chunk, [0.5f, 0.5f, 0.5f]);
+    if (centerElevation - MARGIN > 0) {
+        return VoxelData.solid(Material.Void);
+    }
+    if (centerElevation + MARGIN < 0) {
+        return VoxelData.solid(Material.Dirt);
+    }
+
+    VoxelData voxels = VoxelData.solid(Material.Void);
+    foreach (x; 0 .. dim) {
+        foreach (y; 0 .. dim) {
+            foreach (z; 0 .. dim) {
+                if (params.surface.distanceToChunk(params.chunk, voxelCenter(dim, x, y, z)) < 0) {
+                    voxels.dataMut(dim)[index(dim, x, y, z)] = Material.Dirt;
+                }
+            }
+        }
+    }
+    initializeMargins(dim, voxels);
     return voxels;
 }
 

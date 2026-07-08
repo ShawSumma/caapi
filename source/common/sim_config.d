@@ -46,6 +46,7 @@ struct SimConfigRaw {
 
 struct CharacterConfig {
     float noClipMovementSpeed;
+    float flyMovementSpeed;
     float maxGroundSpeed;
     float speedCap;
     float maxGroundSlope;
@@ -55,12 +56,22 @@ struct CharacterConfig {
     float airResistance;
     float jumpSpeed;
     float groundDistanceTolerance;
+    // Max ledge height climbed/descended without jumping (stair traversal).
+    float stepHeight;
+    // Launch speed of the automatic stair mini-hop, and the rate limit for
+    // snap descent. Sized to just clear one block (v²/2g).
+    float autoClimbSpeed;
     float characterRadius;
+    // Cylinder collider half-height (position is the body center).
+    float characterHalfHeight;
+    // Camera height above the character position (body center).
+    float eyeOffset;
     float blockReach;
 
     static CharacterConfig fromRaw(CharacterConfigRaw x, float m2a) {
         CharacterConfig c;
         c.noClipMovementSpeed = x.noClipMovementSpeed * m2a;
+        c.flyMovementSpeed = x.flyMovementSpeed * m2a;
         c.maxGroundSpeed = x.maxGroundSpeed * m2a;
         c.speedCap = x.speedCap * m2a;
         c.maxGroundSlope = x.maxGroundSlope;
@@ -70,7 +81,11 @@ struct CharacterConfig {
         c.airResistance = x.airResistance;
         c.jumpSpeed = x.jumpSpeed * m2a;
         c.groundDistanceTolerance = x.groundDistanceTolerance * m2a;
+        c.stepHeight = x.stepHeight * m2a;
+        c.autoClimbSpeed = x.autoClimbSpeed * m2a;
         c.characterRadius = x.characterRadius * m2a;
+        c.characterHalfHeight = x.characterHeight / 2.0f * m2a;
+        c.eyeOffset = (x.eyeHeight - x.characterHeight / 2.0f) * m2a;
         c.blockReach = x.blockReach * m2a;
         return c;
     }
@@ -78,16 +93,26 @@ struct CharacterConfig {
 
 struct CharacterConfigRaw {
     float noClipMovementSpeed = 12.0f;
+    float flyMovementSpeed = 8.0f;
     float maxGroundSpeed = 4.0f;
     float speedCap = 30.0f;
     float maxGroundSlope = 1.73f;
-    float groundAcceleration = 20.0f;
-    float airAcceleration = 2.0f;
-    float gravityAcceleration = 20.0f;
+    float groundAcceleration = 50.0f;
+    float airAcceleration = 20.0f;
+    float gravityAcceleration = 32.0f;
     float airResistance = 0.2f;
-    float jumpSpeed = 8.0f;
+    float jumpSpeed = 9.0f;
     float groundDistanceTolerance = 0.2f;
+    // Gravity is diagonal to the voxel lattice in this world, so walkable
+    // terrain is corrugated 1-block staircases; step traversal must clear a
+    // full block or walking is useless.
+    float stepHeight = 1.1f;
+    float autoClimbSpeed = 9.0f;
+    // Minecraft-ish body that FITS INSIDE a 1x2x1 hole: clearance on every
+    // side, or flush contacts wedge the collider against opposing faces.
     float characterRadius = 0.4f;
+    float characterHeight = 1.8f;
+    float eyeHeight = 1.5f;
     float blockReach = 10.0f;
 }
 

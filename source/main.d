@@ -5,14 +5,15 @@ import std.string : split, splitLines, startsWith, strip, toStringz;
 import core.stdc.string : strlen;
 import core.stdc.stdlib : system;
 import std.conv : to;
-import std.math : tanh;
+import std.math : acosh, tanh;
 import bindings.sdl3;
 import client.config : ClientConfig;
 import client.graphics;
 import client.local_character_controller : LocalCharacterController;
 import client.script;
 import common.character_controller : runCharacterStep, getRelativeUp;
-import common.proto : CharacterInput;
+import common.math : MIsometry, MPoint;
+import common.proto : CharacterInput, Position;
 import common.sim_config : SimConfig, SimConfigRaw;
 import common.world;
 import worldcheck : dumpWorld, benchNearby, benchGen, benchDrive;
@@ -84,6 +85,7 @@ void main(string[] args) {
     string configPath = "mined.cfg";
     string recordPath;
     string replayPath;
+    bool headlessMode = false;
     foreach (i, a; args) {
         if (a == "--script" && i + 1 < args.length) {
             scriptPath = args[i + 1];
@@ -96,6 +98,14 @@ void main(string[] args) {
         }
         if (a == "--replay" && i + 1 < args.length) {
             replayPath = args[i + 1];
+        }
+        if (a == "--headless") {
+            headlessMode = true;
+        }
+        if (a == "--flat") {
+            import common.worldgen.mod_ : gFlatWorldgen;
+            gFlatWorldgen = true;
+            writeln("flat worldgen enabled");
         }
     }
 
@@ -179,13 +189,16 @@ void main(string[] args) {
     // Config reach is in voxel-meters; the caster wants the tanh of the
     // absolute hyperbolic distance.
     renderer.reach = tanh(cfg.reach * simCfg.metersToAbsolute);
+    renderer.headless = headlessMode;
     LocalCharacterController character = LocalCharacterController.create();
     character.position = renderer.camPos;
     character.up = getRelativeUp(&renderer.graph, &character.position);
+    character.eyeOffset = simCfg.character.eyeOffset;
     character.alignToGravity();
     float[3] velocity = [0, 0, 0];
     bool onGround = false;
-    bool noClip = true;
+    bool flyMode = true;
+    bool noClip = false;
 
     bool running = true;
     bool mouseCaptured = false;
@@ -202,9 +215,17 @@ void main(string[] args) {
     ulong framesSinceReport = 0;
     ulong lastFpsReport = lastTicks;
 
-    updateWindowTitle(window, mouseCaptured, materialIndex, noClip, lastFps);
+    updateWindowTitle(window, mouseCaptured, materialIndex, flyMode, noClip, lastFps);
 
     float frameMaxMs = 0;
+    float traveled = 0;
+    Position odoPrev = character.position;
+
+    // Vertical camera kinematics monitor: worst |acceleration| per window.
+    Position camPrev = renderer.camPos;
+    float prevVertVel = 0;
+    bool haveVertVel = false;
+    float vaccMax = 0;
 
     while (running) {
         ulong nowTicks = SDL_GetTicks();
@@ -237,7 +258,7 @@ void main(string[] args) {
             } else if (script.events.length == 0) {
                 processInteractiveInput(
                     ev, window, input, renderer, mouseCaptured,
-                    mouseDx, mouseDy, materialIndex, noClip, titleDirty,
+                    mouseDx, mouseDy, materialIndex, flyMode, noClip, titleDirty,
                     xWindowId, shotIndex);
             }
         }
@@ -265,6 +286,8 @@ void main(string[] args) {
                 } else if (line.startsWith("m ")) {
                     materialIndex = line.split()[1].to!int;
                 } else if (line == "v") {
+                    flyMode = !flyMode;
+                } else if (line == "n") {
                     noClip = !noClip;
                 }
             }
@@ -317,10 +340,19 @@ void main(string[] args) {
             float my = axis(input.up) - axis(input.down);
             float mz = axis(input.back) - axis(input.fwd);
 
+            Position beforeStep = character.position;
+            bool wasGround = onGround;
+
             CharacterInput cin;
             cin.noClip = noClip;
+            cin.fly = flyMode;
             if (noClip) {
+                // Debug free-flight: fully view-relative.
                 cin.movement = character.viewOrientation().rotate([mx, my, mz]);
+            } else if (flyMode) {
+                // Creative flight: forward/strafe in the yaw plane, and
+                // Space/Shift along actual world up/down.
+                cin.movement = character.horizontalOrientation().rotate([mx, my, mz]);
             } else {
                 cin.movement = character.horizontalOrientation().rotate([mx, 0, mz]);
                 cin.jump = input.up;
@@ -333,20 +365,68 @@ void main(string[] args) {
             // and any residual roll is aligned away — so carrying the frame
             // around a loop can't accumulate rotation.
             float[3] newUp = getRelativeUp(&renderer.graph, &character.position);
+
+            // Smooth grounded vertical motion (stair steps, hop launches and
+            // landings) out of the eye.
+            float groundedRise = 0;
+            if ((wasGround || onGround) && beforeStep.node == character.position.node) {
+                import common.character_controller.vector_bounds : dot3;
+                MPoint!float moved = (beforeStep.local.inverse() * character.position.local)
+                    * MPoint!float.origin();
+                groundedRise = dot3(moved.vec.xyz(), newUp);
+            }
+            character.smoothEyeVertical(groundedRise, dt);
+
             character.updatePosition(character.position, newUp, true);
             // The yaw frame stays up-aligned by construction; this only
             // scrubs out accumulated float noise.
             character.alignToGravity();
             character.renormalizeOrientation();
             renderer.camPos = character.orientedPosition();
+
+            // Vertical camera acceleration (what the eye feels).
+            if (renderer.camPos.node == camPrev.node && dt > 1e-6f) {
+                import common.character_controller.vector_bounds : dot3;
+                MPoint!float camMoved = (camPrev.local.inverse() * renderer.camPos.local)
+                    * MPoint!float.origin();
+                float vertVel = dot3(camMoved.vec.xyz(), newUp) / dt;
+                if (haveVertVel) {
+                    float vacc = (vertVel - prevVertVel) / dt;
+                    if (vacc < 0) {
+                        vacc = -vacc;
+                    }
+                    if (vacc > vaccMax) {
+                        vaccMax = vacc;
+                    }
+                }
+                prevVertVel = vertVel;
+                haveVertVel = true;
+            } else {
+                haveVertVel = false;
+            }
+            camPrev = renderer.camPos;
+
+            // Odometer: real distance covered, robust across node changes.
+            if (character.position.node == odoPrev.node) {
+                MPoint!float a = odoPrev.local * MPoint!float.origin();
+                MPoint!float b = character.position.local * MPoint!float.origin();
+                float m = -a.mip(b.vec);
+                if (m > 1.0f) {
+                    traveled += acosh(m);
+                }
+            }
+            odoPrev = character.position;
         }
         renderer.render(dt);
         simTime += dt;
 
         framesSinceReport++;
-        if (nowTicks - lastFpsReport >= 1000) {
+        if (nowTicks - lastFpsReport >= 1000 || (replayMode && framesSinceReport >= 60)) {
             lastFps = framesSinceReport * 1000.0f / (nowTicks - lastFpsReport);
-            writefln("FPS=%.1f frame max=%.0fms", lastFps, frameMaxMs);
+            writefln("FPS=%.1f frame max=%.0fms | mode=%s ground=%s vel=[%.3f %.3f %.3f] traveled=%.3f vacc=%.2f",
+                lastFps, frameMaxMs, modeName(flyMode, noClip), onGround,
+                velocity[0], velocity[1], velocity[2], traveled, vaccMax);
+            vaccMax = 0;
             stdout.flush();
             framesSinceReport = 0;
             frameMaxMs = 0;
@@ -355,7 +435,7 @@ void main(string[] args) {
         }
 
         if (titleDirty) {
-            updateWindowTitle(window, mouseCaptured, materialIndex, noClip, lastFps);
+            updateWindowTitle(window, mouseCaptured, materialIndex, flyMode, noClip, lastFps);
         }
     }
 
@@ -364,14 +444,22 @@ void main(string[] args) {
         recordFile.close();
         writefln("recording saved to %s", recordPath);
     }
+    writefln("session: traveled=%.3f", traveled);
 }
 
 float axis(bool held) {
     return held ? 1.0f : 0.0f;
 }
 
-void updateWindowTitle(SDL_Window* window, bool mouseCaptured, int materialIndex, bool noClip, float fps) {
-    string mode = noClip ? "fly" : "walk";
+string modeName(bool flyMode, bool noClip) {
+    if (noClip) {
+        return "noclip";
+    }
+    return flyMode ? "fly" : "walk";
+}
+
+void updateWindowTitle(SDL_Window* window, bool mouseCaptured, int materialIndex, bool flyMode, bool noClip, float fps) {
+    string mode = modeName(flyMode, noClip);
     string title;
     if (mouseCaptured) {
         title = format("mined — %s (V) — [%d] %s — Esc to release mouse — FPS %.0f",
@@ -472,6 +560,7 @@ void processInteractiveInput(
     ref float mouseDx,
     ref float mouseDy,
     ref int materialIndex,
+    ref bool flyMode,
     ref bool noClip,
     ref bool titleDirty,
     ulong xWindowId,
@@ -490,9 +579,14 @@ void processInteractiveInput(
             writefln("F12 screenshot -> %s", path);
             system(cmd.toStringz);
         } else if (ev.key.scancode == SDL_SCANCODE_V && !ev.key.repeat) {
-            noClip = !noClip;
-            writefln("mode: %s", noClip ? "fly" : "walk");
+            flyMode = !flyMode;
+            writefln("mode: %s", modeName(flyMode, noClip));
             recordEvent("v");
+            titleDirty = true;
+        } else if (ev.key.scancode == SDL_SCANCODE_N && !ev.key.repeat) {
+            noClip = !noClip;
+            writefln("mode: %s", modeName(flyMode, noClip));
+            recordEvent("n");
             titleDirty = true;
         } else if (ev.key.scancode >= SDL_SCANCODE_1 && ev.key.scancode <= SDL_SCANCODE_9) {
             int idx = cast(int)(ev.key.scancode - SDL_SCANCODE_1);

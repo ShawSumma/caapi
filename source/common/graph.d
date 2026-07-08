@@ -23,28 +23,39 @@ struct NodeId {
 /// Sentinel for "no node" in slot-based links.
 enum uint NO_SLOT = uint.max;
 
-// Nodes live in one contiguous slab indexed by slot; neighbor links are slot
+// Nodes live in fixed-size slabs indexed by slot; neighbor links are slot
 // indices, so graph walks are array chasing with no hashing. The `slots` map
-// is only consulted when entering the graph by NodeId. Slots are append-only
-// and never move, but appending may reallocate the slab: never hold a
-// Node/NodeContainer pointer across a call that can insert nodes — re-derive
-// it from the slot instead.
+// is only consulted when entering the graph by NodeId. Growth never moves
+// existing nodes (a flat array at ~1KB/node memcpys tens of MB on doubling —
+// a visible frame hitch), so slots and node pointers are both stable.
+enum uint SLAB_SHIFT = 12;
+enum uint SLAB_SIZE = 1u << SLAB_SHIFT;
+enum uint SLAB_MASK = SLAB_SIZE - 1;
+
 struct Graph {
-    NodeContainer[] containers;
+    NodeContainer[][] slabs;
+    uint nodeCount;
     uint[NodeId] slots;
     ChunkLayout layout_;
+
+    ref inout(NodeContainer) container(uint slot) inout {
+        return slabs[slot >> SLAB_SHIFT][slot & SLAB_MASK];
+    }
 
     static Graph create(ubyte dimension) {
         Graph g;
         g.layout_ = ChunkLayout(dimension);
-        g.containers.reserve(4096);
         g.addNode(NodeId.ROOT, NodeContainer.create(NodeId.ROOT, Side.init, false, 0));
         return g;
     }
 
     private uint addNode(NodeId id, NodeContainer nc) {
-        uint slot = cast(uint) containers.length;
-        containers ~= nc;
+        uint slot = nodeCount;
+        if ((slot >> SLAB_SHIFT) == slabs.length) {
+            slabs ~= new NodeContainer[SLAB_SIZE];
+        }
+        container(slot) = nc;
+        nodeCount++;
         slots[id] = slot;
         return slot;
     }
@@ -54,11 +65,11 @@ struct Graph {
     }
 
     uint len() const {
-        return cast(uint) containers.length;
+        return nodeCount;
     }
 
     uint slotCount() const {
-        return cast(uint) containers.length;
+        return nodeCount;
     }
 
     uint slotOf(NodeId id) const {
@@ -67,15 +78,15 @@ struct Graph {
     }
 
     NodeId idAt(uint slot) const {
-        return containers[slot].id;
+        return container(slot).id;
     }
 
     ref inout(Node) nodeAt(uint slot) inout {
-        return containers[slot].value;
+        return container(slot).value;
     }
 
     uint neighborSlot(uint slot, Side which) const {
-        return containers[slot].neighbors[which];
+        return container(slot).neighbors[which];
     }
 
     bool contains(NodeId node) const {
@@ -87,22 +98,22 @@ struct Graph {
         if (s == NO_SLOT) {
             return NodeId.init;
         }
-        uint n = containers[s].neighbors[which];
-        return n == NO_SLOT ? NodeId.init : containers[n].id;
+        uint n = container(s).neighbors[which];
+        return n == NO_SLOT ? NodeId.init : container(n).id;
     }
 
     uint depth(NodeId node) const {
-        return containers[slots[node]].depth;
+        return container(slots[node]).depth;
     }
 
     ref inout(Node) opIndex(NodeId id) inout {
-        return containers[slots[id]].value;
+        return container(slots[id]).value;
     }
 
     /// Single-lookup accessor for hot loops; null if the node doesn't exist.
     inout(Node)* tryGet(NodeId id) inout {
         inout(uint)* s = id in slots;
-        return s is null ? null : &containers[*s].value;
+        return s is null ? null : &container(*s).value;
     }
 
     NodeId ensureNeighbor(NodeId node, Side side) {
@@ -110,11 +121,11 @@ struct Graph {
         if (s == NO_SLOT) {
             return NodeId.init;
         }
-        return containers[ensureNeighborSlot(s, side)].id;
+        return container(ensureNeighborSlot(s, side)).id;
     }
 
     uint ensureNeighborSlot(uint slot, Side side) {
-        uint n = containers[slot].neighbors[side];
+        uint n = container(slot).neighbors[side];
         if (n != NO_SLOT) {
             return n;
         }
@@ -126,7 +137,7 @@ struct Graph {
         if (s == NO_SLOT) {
             return NodeId.init;
         }
-        return containers[insertChildSlot(s, side)].id;
+        return container(insertChildSlot(s, side)).id;
     }
 
     private uint insertChildSlot(uint nodeSlot, Side side) {
@@ -145,14 +156,14 @@ struct Graph {
             else if (sideAdjacentTo(candidateSide, side)
                        && isParentSideSlot(nodeSlot, candidateSide))
             {
-                uint parentOfNode = containers[nodeSlot].neighbors[candidateSide];
+                uint parentOfNode = container(nodeSlot).neighbors[candidateSide];
                 uint parentOfSubject = ensureNeighborSlot(parentOfNode, side);
                 parents[parentCount++] = ParentEntry(candidateSide, parentOfSubject);
             }
         }
 
         Side primarySide = parents[0].side;
-        NodeId primaryParent = containers[parents[0].slot].id;
+        NodeId primaryParent = container(parents[0].slot).id;
 
         MurmurHash3!128 hasher;
         hasher.put(cast(ubyte[])(primaryParent.value[]));
@@ -165,7 +176,7 @@ struct Graph {
         // through another path may already exist; link instead of clobbering.
         uint newSlot = slotOf(id);
         if (newSlot == NO_SLOT) {
-            uint d = containers[nodeSlot].depth + 1;
+            uint d = container(nodeSlot).depth + 1;
             newSlot = addNode(id, NodeContainer.create(id, primarySide, true, d));
         }
 
@@ -177,16 +188,16 @@ struct Graph {
     }
 
     private bool isParentSideSlot(uint slot, Side side) const {
-        uint n = containers[slot].neighbors[side];
+        uint n = container(slot).neighbors[side];
         if (n == NO_SLOT) {
             return false;
         }
-        return containers[n].depth < containers[slot].depth;
+        return container(n).depth < container(slot).depth;
     }
 
     private void linkNeighborSlots(uint a, uint b, Side side) {
-        containers[a].neighbors[side] = b;
-        containers[b].neighbors[side] = a;
+        container(a).neighbors[side] = b;
+        container(b).neighbors[side] = a;
     }
 
     struct ParentResult {
@@ -201,15 +212,15 @@ struct Graph {
         if (s == NO_SLOT) {
             return results;
         }
-        uint nodeDepth = containers[s].depth;
+        uint nodeDepth = container(s).depth;
         foreach (sideIdx; 0 .. cast(int)(Side.max + 1)) {
             Side side = cast(Side) sideIdx;
-            uint n = containers[s].neighbors[side];
+            uint n = container(s).neighbors[side];
             if (n == NO_SLOT) {
                 continue;
             }
-            if (containers[n].depth < nodeDepth) {
-                results[count++] = ParentResult(side, containers[n].id);
+            if (container(n).depth < nodeDepth) {
+                results[count++] = ParentResult(side, container(n).id);
                 if (count >= 3) {
                     break;
                 }
@@ -227,7 +238,7 @@ struct Graph {
         if (s == NO_SLOT) {
             return;
         }
-        if (containers[s].value.state !is null) {
+        if (container(s).value.state !is null) {
             return;
         }
         int pcount;
@@ -235,11 +246,11 @@ struct Graph {
         foreach (i; 0 .. pcount) {
             ensureNodeState(ps[i].id);
         }
-        containers[s].value.state = cast(void*) NodeState.create(this, nodeId);
+        container(s).value.state = cast(void*) NodeState.create(this, nodeId);
     }
 
     const(NodeState)* nodeState(NodeId nodeId) const {
-        return cast(const(NodeState)*) containers[slots[nodeId]].value.state;
+        return cast(const(NodeState)*) container(slots[nodeId]).value.state;
     }
 
     NodeId normalizeTransform(NodeId reference, ref MIsometry!float transform) const {

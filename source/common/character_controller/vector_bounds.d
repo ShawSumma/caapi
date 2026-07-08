@@ -226,3 +226,22 @@ struct BoundedVectors {
         return bounds ~ tempBounds;
     }
 }
+
+unittest {
+    // Exact numbers from the frozen-walk replay: standing on flat ground,
+    // walking forward. The ground bound must slide the displacement along
+    // the surface, not annihilate it.
+    float[3] disp = [-8.39314e-05, -8.87924e-05, -0.000122182];
+    float[3] vel = [-0.0104914, -0.011099, -0.0152727];
+    float[3] n = [0.670735, 0.741697, -4.62294e-06];
+    float[3] up = [0.686935, 0.726719, 0];
+
+    BoundedVectors bv = BoundedVectors.create(disp, true, vel);
+    bv.addTempBound(VectorBound.create(n, up, false));
+    bv.addBound(VectorBound.create(n, up, true));
+    assert(!isZero3(bv.getDisplacement()), "ground bound annihilated displacement");
+    assert(!isZero3(bv.getVelocity()), "ground bound annihilated velocity");
+    // Forward (z) component must survive sliding along the ground plane.
+    assert(bv.getDisplacement()[2] < -1e-4);
+    assert(bv.getVelocity()[2] < -1e-2);
+}

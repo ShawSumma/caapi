@@ -5,26 +5,30 @@ import std.math : sqrt, tanh, atanh, isNaN;
 import common.math : MPoint, MDirection, MIsometry, MVector;
 import common.collision_math : Ray;
 import common.graph : Graph, NodeId;
-import common.graph_collision : GraphCollisionHit, sphereCast;
+import common.graph_collision : GraphCollisionHit, shapeCast;
 import common.proto : Position;
-import common.character_controller.vector_bounds : magnitude3, scale3, zero3;
+import common.character_controller.vector_bounds : dot3, magnitude3, scale3, zero3;
 
 struct CollisionContext {
     const(Graph)* graph;
     float radius;
+    float halfHeight;
+    float[3] up = [0, 1, 0];
 }
 
 struct CollisionCheckingResult {
     float[3] displacementVector;
     MIsometry!float displacementTransform;
-    Collision* collision;
-    Collision _collisionStorage;
+    // Stored by value: a self-pointer here dangles when the struct is
+    // returned without NRVO, which silently corrupted collision normals.
+    bool hasCollision;
+    Collision collision;
 
     static CollisionCheckingResult stationary() {
         CollisionCheckingResult r;
         r.displacementVector = zero3();
         r.displacementTransform = MIsometry!float.identity();
-        r.collision = null;
+        r.hasCollision = false;
         return r;
     }
 }
@@ -60,8 +64,10 @@ CollisionCheckingResult checkCollision(
     float tanhDist = tanh(displacementNorm);
 
     bool outOfBounds;
-    GraphCollisionHit castHit = sphereCast(
+    GraphCollisionHit castHit = shapeCast(
         collisionContext.radius,
+        collisionContext.halfHeight,
+        collisionContext.up,
         *collisionContext.graph,
         position.node,
         position.local,
@@ -70,8 +76,29 @@ CollisionCheckingResult checkCollision(
         outOfBounds,
     );
 
-    float hitTanhDist = tanhDist;
     bool hasHit = !isNaN(castHit.tanhDistance);
+    float[3] hitNormal = [0.0f, 1.0f, 0.0f];
+    if (hasHit) {
+        // Normal back in the caster frame at the hit position.
+        MIsometry!float hitTransform = MIsometry!float.translationAlong(
+            scale3(displacementNormalized, atanh(castHit.tanhDistance)));
+        MVector!float transformedNormal = hitTransform.inverse().mat * castHit.normal;
+        float[3] normalXyz = transformedNormal.xyz();
+        float normalMag = magnitude3(normalXyz);
+        if (normalMag > 1e-16) {
+            hitNormal = scale3(normalXyz, 1.0f / normalMag);
+        }
+
+        // Grazing guard: a contact whose normal is (near-)orthogonal to the
+        // motion cannot oppose it — the solver's touch zone plus float noise
+        // otherwise wedges flush contacts against tangent sweeps (e.g. the
+        // stair raise sliding along a wall the walker is pressed against).
+        if (dot3(displacementNormalized, hitNormal) > -1e-3f) {
+            hasHit = false;
+        }
+    }
+
+    float hitTanhDist = tanhDist;
     if (hasHit) {
         hitTanhDist = castHit.tanhDistance;
     }
@@ -84,27 +111,9 @@ CollisionCheckingResult checkCollision(
     CollisionCheckingResult result;
     result.displacementVector = displacementVector;
     result.displacementTransform = displacementTransform;
-
+    result.hasCollision = hasHit;
     if (hasHit) {
-        MIsometry!float invTransform = displacementTransform.inverse();
-        MVector!float transformedNormal = invTransform.mat * castHit.normal;
-        float[3] normalXyz = transformedNormal.xyz();
-
-        float normalMag = magnitude3(normalXyz);
-        if (normalMag > 1e-16) {
-            result._collisionStorage = Collision([
-                normalXyz[0] / normalMag,
-                normalXyz[1] / normalMag,
-                normalXyz[2] / normalMag,
-            ]);
-        }
-        else {
-            result._collisionStorage = Collision([0.0f, 1.0f, 0.0f]);
-        }
-        result.collision = &result._collisionStorage;
-    }
-    else {
-        result.collision = null;
+        result.collision = Collision(hitNormal);
     }
 
     return result;

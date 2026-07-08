@@ -42,6 +42,9 @@ struct Renderer {
     float viewRadius = 5.0f;
     float renderRadius = 4.5f;
     float reach = 10.0f;
+    // Skip all GPU work; world generation and simulation still run. Used by
+    // headless replays so they aren't paced (or stalled) by presentation.
+    bool headless = false;
 
     uint maxSlots = 2^^16;
     uint concurrency = 128;
@@ -208,6 +211,7 @@ struct Renderer {
         MonoTime a0 = MonoTime.currTime;
         MPoint!float camPoint = camPos.local * MPoint!float.origin();
         bool camMoved = !hasNearby || camPos.node != lastNearbyNode
+            || nearbyScratch.creationCapped
             || -lastNearbyPos.mip(camPoint.vec) > cosh(NEARBY_PADDING);
         if (camMoved) {
             cachedNodes = ensureAndCollectNearby(nearbyScratch, graph, camPos.node, camPos.local,
@@ -220,6 +224,10 @@ struct Renderer {
         MonoTime a1 = MonoTime.currTime;
         worldgenDriver.drive(cachedNodes, camPos.local, renderRadius, graph, cast(ubyte) dimension, nearbyVersion);
         MonoTime a2 = MonoTime.currTime;
+
+        if (headless) {
+            return;
+        }
 
         tasksLen = 0;
         activeCount = 0;

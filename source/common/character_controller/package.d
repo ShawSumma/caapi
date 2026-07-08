@@ -19,9 +19,11 @@ void runCharacterStep(
     const ref CharacterInput input,
     float dtSeconds,
 ) {
+    float[3] up = getRelativeUp(&graph, &position);
     CharacterControllerContext ctx = CharacterControllerContext(
-        CollisionContext(&graph, simConfig.character.characterRadius),
-        getRelativeUp(&graph, &position),
+        CollisionContext(&graph, simConfig.character.characterRadius,
+            simConfig.character.characterHalfHeight, up),
+        up,
         &simConfig.character,
         dtSeconds,
         sanitizeMotionInput(input.movement),
@@ -32,7 +34,23 @@ void runCharacterStep(
         runNoClipCharacterStep(ctx, position, velocity, onGround);
     }
     else {
-        runStandardCharacterStep(ctx, position, velocity, onGround);
+        // Unloaded world is impassable: freeze until generation catches up,
+        // or async chunks would materialize around the body and embed it.
+        import common.graph_collision : regionPopulated;
+        float regionReach = simConfig.character.characterHalfHeight
+            + simConfig.character.characterRadius
+            + simConfig.character.groundDistanceTolerance;
+        if (!regionPopulated(graph, position.node, position.local, regionReach)) {
+            velocity = [0, 0, 0];
+            return;
+        }
+
+        if (input.fly) {
+            runFlyCharacterStep(ctx, position, velocity, onGround);
+        }
+        else {
+            runStandardCharacterStep(ctx, position, velocity, onGround);
+        }
     }
 
     position.local = position.local.renormalized();
@@ -48,6 +66,7 @@ void runStandardCharacterStep(
     ref float[3] velocity,
     ref bool onGround,
 ) {
+    bool startedOnGround = onGround;
     bool hasGroundNormal = false;
     float[3] groundNormal = zero3();
 
@@ -80,9 +99,157 @@ void runStandardCharacterStep(
     float[3] averageVelocity = scale3(add3(velocity, oldVelocity), 0.5f);
 
     float[3] expectedDisplacement = scale3(averageVelocity, ctx.dtSeconds);
+
+    Position startPos = position;
     applyVelocity(ctx, expectedDisplacement, position, velocity, hasGroundNormal, groundNormal);
 
+    float expUp = dot3(expectedDisplacement, ctx.up);
+    float[3] expHorizontal = sub3(expectedDisplacement, scale3(ctx.up, expUp));
+    float expHMag = magnitude3(expHorizontal);
+    float[3] expDir = expHMag > 1e-9f ? scale3(expHorizontal, 1.0f / expHMag) : zero3();
+    float progress = horizontalProgress(ctx, expDir, startPos, position);
+
+    bool climbing = false;
+    if (startedOnGround && !ctx.jumpInput && expHMag > 1e-6f && progress < expHMag * 0.5f) {
+        // Grounded motion is blocked. With gravity diagonal to the voxel
+        // lattice the terrain is corrugated staircases; a steppable riser is
+        // cleared with a minimal ballistic hop (just over one block — the
+        // flight arc supplies the forward travel a single frame can't), and
+        // the camera smoothing absorbs the vertical motion. Probe first so
+        // walls and low ceilings don't trigger hopping.
+        if (canHopOver(ctx, position, expDir, expHMag)) {
+            float[3] runVelocity = scale3(ctx.movementInput, ctx.cfg.maxGroundSpeed);
+            velocity = add3(runVelocity, scale3(ctx.up, ctx.cfg.autoClimbSpeed));
+            hasGroundNormal = false;
+            climbing = true;
+        }
+    }
+
+    // Ground snap: a grounded character that didn't jump is constrained to
+    // the walking surface — including down a step. The descent is rate
+    // limited so stepping off a ledge glides instead of teleporting; drops
+    // deeper than stepHeight leave the ground normally.
+    if (startedOnGround && !ctx.jumpInput && !climbing && !hasGroundNormal) {
+        float[3] snapNormal = zero3();
+        Position snapped = position;
+        if (settleToGround(ctx, snapped,
+                ctx.cfg.stepHeight + ctx.cfg.groundDistanceTolerance, snapNormal)) {
+            float drop = -verticalGain(ctx, position, snapped);
+            float budget = ctx.cfg.autoClimbSpeed * ctx.dtSeconds;
+            if (drop <= budget) {
+                position = snapped;
+            } else {
+                position.local = position.local
+                    * MIsometry!float.translationAlong(scale3(neg3(ctx.up), budget));
+            }
+            hasGroundNormal = true;
+            groundNormal = snapNormal;
+        }
+    }
+
+    // While grounded, velocity lives in the contact plane: project out any
+    // residual vertical component (kept for slopes by projecting along up).
+    // Climb frames keep their injected vertical velocity.
+    if (hasGroundNormal && !climbing) {
+        projectToPlane(velocity, groundNormal, ctx.up, 0.0f);
+    }
+
     onGround = hasGroundNormal;
+}
+
+/// Probe for auto-jump: is there headroom above, and does the space at
+/// raised height open up in the direction of travel? Tall walls fail the
+/// forward probe; low ceilings fail the headroom probe.
+bool canHopOver(
+    const ref CharacterControllerContext ctx,
+    const ref Position pos,
+    const float[3] expDir,
+    float expHMag,
+) {
+    Position probe = pos;
+    float[3] dummyVel = zero3();
+    bool dummyGround = false;
+    float[3] dummyNormal = zero3();
+
+    applyVelocity(ctx, scale3(ctx.up, ctx.cfg.stepHeight),
+        probe, dummyVel, dummyGround, dummyNormal);
+    if (verticalGain(ctx, pos, probe) < ctx.cfg.stepHeight * 0.5f) {
+        return false;
+    }
+
+    Position raised = probe;
+    float probeDist = ctx.cfg.characterRadius + expHMag;
+    dummyGround = false;
+    applyVelocity(ctx, scale3(expDir, probeDist),
+        probe, dummyVel, dummyGround, dummyNormal);
+    return horizontalProgress(ctx, expDir, raised, probe) > ctx.cfg.characterRadius * 0.5f;
+}
+
+float verticalGain(
+    const ref CharacterControllerContext ctx,
+    const ref Position start,
+    const ref Position end,
+) {
+    MIsometry!float rel = start.local.inverse() * end.local;
+    MPoint!float p = rel * MPoint!float.origin();
+    return dot3(p.vec.xyz(), ctx.up);
+}
+
+/// Sweeps the position down by `dist` with constraint sliding and reports
+/// whether it ends up standing on walkable ground; only then is the position
+/// updated.
+bool settleToGround(
+    const ref CharacterControllerContext ctx,
+    ref Position pos,
+    float dist,
+    ref float[3] outNormal,
+) {
+    float[3] dummyVel = zero3();
+    bool ground = false;
+    float[3] normal = zero3();
+    Position p = pos;
+    applyVelocity(ctx, scale3(neg3(ctx.up), dist), p, dummyVel, ground, normal);
+    if (!ground) {
+        ground = getGroundNormal(ctx, p, normal);
+    }
+    if (ground) {
+        pos = p;
+        outNormal = normal;
+        return true;
+    }
+    return false;
+}
+
+/// Progress along the intended horizontal direction between two positions in
+/// the same node frame (small-displacement approximation in the start frame).
+/// Directional on purpose: sliding sideways along a wall is not progress.
+float horizontalProgress(
+    const ref CharacterControllerContext ctx,
+    const float[3] intendedDir,
+    const ref Position start,
+    const ref Position end,
+) {
+    MIsometry!float rel = start.local.inverse() * end.local;
+    MPoint!float p = rel * MPoint!float.origin();
+    float[3] d = p.vec.xyz();
+    float dUp = dot3(d, ctx.up);
+    float[3] horizontal = sub3(d, scale3(ctx.up, dUp));
+    return dot3(horizontal, intendedDir);
+}
+
+/// Creative-style flight: no gravity, full collision.
+void runFlyCharacterStep(
+    const ref CharacterControllerContext ctx,
+    ref Position position,
+    ref float[3] velocity,
+    ref bool onGround,
+) {
+    velocity = scale3(ctx.movementInput, ctx.cfg.flyMovementSpeed);
+    onGround = false;
+    float[3] displacement = scale3(velocity, ctx.dtSeconds);
+    bool hasGroundNormal = false;
+    float[3] groundNormal = zero3();
+    applyVelocity(ctx, displacement, position, velocity, hasGroundNormal, groundNormal);
 }
 
 void runNoClipCharacterStep(
@@ -113,7 +280,7 @@ bool getGroundNormal(
             position,
             allowedDisplacement.getDisplacement(),
         );
-        if (collisionResult.collision !is null) {
+        if (collisionResult.hasCollision) {
             if (isGround(ctx, collisionResult.collision.normal)) {
                 outNormal = collisionResult.collision.normal;
                 return true;
@@ -198,7 +365,7 @@ void applyVelocity(
         );
         position.local = position.local * collisionResult.displacementTransform;
 
-        if (collisionResult.collision !is null) {
+        if (collisionResult.hasCollision) {
             float dispMag = magnitude3(boundedVectors.getDisplacement());
             float reductionFactor = 1.0f;
             if (dispMag > 1e-16) {
@@ -209,7 +376,7 @@ void applyVelocity(
 
             handleCollision(
                 ctx,
-                *collisionResult.collision,
+                collisionResult.collision,
                 boundedVectorsWithoutCollisions,
                 boundedVectors,
                 hasGroundNormal,
