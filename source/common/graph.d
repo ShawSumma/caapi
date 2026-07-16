@@ -4,7 +4,7 @@ import std.digest.murmurhash : MurmurHash3;
 import common.dodeca : Side, sideAdjacentTo, sideIsFacing, sideReflection;
 import common.math : MIsometry, MPoint;
 import common.node : Node, ChunkLayout;
-import common.worldgen.mod_ : NodeState;
+import common.worldgen : NodeState;
 
 struct NodeId {
     ulong[2] value;
@@ -49,7 +49,7 @@ struct Graph {
         return g;
     }
 
-    private uint addNode(NodeId id, NodeContainer nc) {
+    uint addNode(NodeId id, NodeContainer nc) {
         uint slot = nodeCount;
         if ((slot >> SLAB_SHIFT) == slabs.length) {
             slabs ~= new NodeContainer[SLAB_SIZE];
@@ -140,7 +140,7 @@ struct Graph {
         return container(insertChildSlot(s, side)).id;
     }
 
-    private uint insertChildSlot(uint nodeSlot, Side side) {
+    uint insertChildSlot(uint nodeSlot, Side side) {
         struct ParentEntry {
             Side side;
             uint slot;
@@ -187,7 +187,7 @@ struct Graph {
         return newSlot;
     }
 
-    private bool isParentSideSlot(uint slot, Side side) const {
+    bool isParentSideSlot(uint slot, Side side) const {
         uint n = container(slot).neighbors[side];
         if (n == NO_SLOT) {
             return false;
@@ -195,7 +195,7 @@ struct Graph {
         return container(n).depth < container(slot).depth;
     }
 
-    private void linkNeighborSlots(uint a, uint b, Side side) {
+    void linkNeighborSlots(uint a, uint b, Side side) {
         container(a).neighbors[side] = b;
         container(b).neighbors[side] = a;
     }

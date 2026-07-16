@@ -7,7 +7,8 @@ import common.node : Chunk, ChunkId, ChunkState, VoxelData;
 import common.proto : Position, CharacterInput, EntityId;
 import common.sim_config : SimConfig;
 import common.traversal : ensureNearby;
-import common.worldgen : ChunkParams, ChunkIncidentEnviroFactors, generateVoxels, Plane;
+import common.worldgen : ChunkParams, ChunkIncidentEnviroFactors, generateVoxels;
+import common.worldgen.plane : Plane;
 
 alias Step = int;
 

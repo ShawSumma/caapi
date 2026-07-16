@@ -57,6 +57,6 @@ struct ClientConfig {
     }
 }
 
-private bool parseBool(string value) {
+bool parseBool(string value) {
     return value == "1" || value == "true" || value == "yes" || value == "on";
 }

@@ -4,7 +4,8 @@ import std.math : sqrt, exp, isNaN;
 
 import common.math : MIsometry, MPoint, MVector, projectToPlane, sanitizeMotionInput;
 import common.graph : Graph, NodeId;
-import common.worldgen.mod_ : NodeState;
+import common.graph_collision : regionPopulated;
+import common.worldgen : NodeState;
 import common.proto : Position, CharacterInput;
 import common.sim_config : SimConfig, CharacterConfig;
 import common.character_controller.collision : CollisionContext, CollisionCheckingResult, Collision, checkCollision;
@@ -36,7 +37,6 @@ void runCharacterStep(
     else {
         // Unloaded world is impassable: freeze until generation catches up,
         // or async chunks would materialize around the body and embed it.
-        import common.graph_collision : regionPopulated;
         float regionReach = simConfig.character.characterHalfHeight
             + simConfig.character.characterRadius
             + simConfig.character.groundDistanceTolerance;

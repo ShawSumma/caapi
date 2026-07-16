@@ -47,13 +47,13 @@ struct SweptShape {
 
 // Grid-index window the sweep can touch; the sweep is a fraction of a voxel
 // long, so this bounds the surface enumeration to a handful of cells.
-private struct GridRange {
+struct GridRange {
     int[3] lo;
     int[3] hi;
     bool empty;
 }
 
-private GridRange sweepGridRange(
+GridRange sweepGridRange(
     const ref ChunkLayout layout,
     const ref Ray ray,
     float tanhDistance,
@@ -85,7 +85,7 @@ private GridRange sweepGridRange(
 
 // One exposed surface face: solid cell, empty neighbor across `axis` in
 // direction `sign` — exactly the faces the renderer's extraction emits.
-private struct SurfaceFace {
+struct SurfaceFace {
     ubyte[3] cell;
     ubyte axis;    // t axis
     byte sign;     // +1: face on the cell's high side, -1: low side
@@ -170,19 +170,19 @@ ChunkCollisionHit chunkShapeCast(
     return hit;
 }
 
-private MIsometry!float axisTranslation(const ref Ray ray, MVector!float axis, float offset) {
+MIsometry!float axisTranslation(const ref Ray ray, MVector!float axis, float offset) {
     MPoint!float target = MPoint!float(ray.position.vec * cosh(offset) + axis * sinh(offset));
     return MIsometry!float.translation(MPoint!float(ray.position.vec), target);
 }
 
-private MDirection!float gridPlane(const ref ChunkLayout layout, size_t axis, int t) {
+MDirection!float gridPlane(const ref ChunkLayout layout, size_t axis, int t) {
     float[4] nData = [0, 0, 0, 0];
     nData[axis] = 1.0f;
     nData[3] = layout.gridToDual(cast(ubyte) t);
     return MVector!float(nData[0], nData[1], nData[2], nData[3]).normalizedDirection();
 }
 
-private void faceContact(
+void faceContact(
     const ref SweptShape shape,
     const ref ChunkLayout layout,
     const ref Ray ray,
@@ -258,7 +258,7 @@ private void faceContact(
     hit.isFace = true;
 }
 
-private void faceBoundaryContacts(
+void faceBoundaryContacts(
     const ref SweptShape shape,
     const ref ChunkLayout layout,
     const ref Ray sectionRay,
@@ -354,7 +354,7 @@ private void faceBoundaryContacts(
 // Distance from the segment (center c, direction d, half-length L) to the
 // unit cell [cx, cx+1] x [cy, cy+1], by sampling the segment and taking
 // point-to-rect distances (segments here are at most ~2 cells long).
-private float segmentRectDistance(
+float segmentRectDistance(
     float cx0, float cy0, float dirU, float dirV, float halfLen,
     float rectU, float rectV
 ) {

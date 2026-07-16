@@ -1,6 +1,8 @@
 module client.local_character_controller;
 
-import std.math : acos, atan2, abs, PI, sqrt, sin, cos, fmin, fmax;
+import std.math : acos, atan2, abs, exp, PI, sqrt, sin, cos, fmin, fmax;
+import common.character_controller : getRelativeUp;
+import common.graph : Graph, NodeId;
 import common.math : MIsometry, Matrix4;
 import common.proto : Position;
 
@@ -19,7 +21,6 @@ struct LocalCharacterController {
     float eyeLag = 0;
 
     void smoothEyeVertical(float groundedRise, float dt) {
-        import std.math : exp;
         eyeLag += groundedRise;
         eyeLag *= exp(-12.0f * dt);
         enum float LIMIT = 0.12f;
@@ -277,10 +278,6 @@ unittest {
     // space rotates a parallel-transported frame. Re-anchoring `up` from the
     // world each step (getRelativeUp) and re-aligning must keep the view
     // roll-free after the loop instead of accumulating the loop's holonomy.
-    import common.character_controller : getRelativeUp;
-    import common.graph : Graph, NodeId;
-    import common.math : MIsometry;
-
     Graph graph = Graph.create(12);
     graph.ensureNodeState(NodeId.ROOT);
 

@@ -12,6 +12,7 @@ import client.graphics;
 import client.local_character_controller : LocalCharacterController;
 import client.script;
 import common.character_controller : runCharacterStep, getRelativeUp;
+import common.character_controller.vector_bounds : dot3;
 import common.math : MIsometry, MPoint;
 import common.proto : CharacterInput, Position;
 import common.sim_config : SimConfig, SimConfigRaw;
@@ -86,6 +87,7 @@ void main(string[] args) {
     string recordPath;
     string replayPath;
     bool headlessMode = false;
+    bool flatWorldgen = false;
     foreach (i, a; args) {
         if (a == "--script" && i + 1 < args.length) {
             scriptPath = args[i + 1];
@@ -103,8 +105,7 @@ void main(string[] args) {
             headlessMode = true;
         }
         if (a == "--flat") {
-            import common.worldgen.mod_ : gFlatWorldgen;
-            gFlatWorldgen = true;
+            flatWorldgen = true;
             writeln("flat worldgen enabled");
         }
     }
@@ -119,10 +120,11 @@ void main(string[] args) {
         }
     }
 
+    Session session;
     if (recordPath.length > 0 && replayPath.length == 0 && scriptPath.length == 0) {
-        recordFile = File(recordPath, "w");
-        recordFile.writeln("# mined-actions v1");
-        recording = true;
+        session.recordFile = File(recordPath, "w");
+        session.recordFile.writeln("# mined-actions v1");
+        session.recording = true;
         writefln("recording actions to %s", recordPath);
     }
 
@@ -190,6 +192,7 @@ void main(string[] args) {
     // absolute hyperbolic distance.
     renderer.reach = tanh(cfg.reach * simCfg.metersToAbsolute);
     renderer.headless = headlessMode;
+    renderer.worldgenDriver.flatWorldgen = flatWorldgen;
     LocalCharacterController character = LocalCharacterController.create();
     character.position = renderer.camPos;
     character.up = getRelativeUp(&renderer.graph, &character.position);
@@ -257,7 +260,7 @@ void main(string[] args) {
                 }
             } else if (script.events.length == 0) {
                 processInteractiveInput(
-                    ev, window, input, renderer, mouseCaptured,
+                    ev, window, input, renderer, session, mouseCaptured,
                     mouseDx, mouseDy, materialIndex, flyMode, noClip, titleDirty,
                     xWindowId, shotIndex);
             }
@@ -320,11 +323,11 @@ void main(string[] args) {
             yaw = replayYaw;
             pitch = replayPitch;
         }
-        if (recording) {
+        if (session.recording) {
             // One line per frame: dt, final look deltas (sensitivity and
             // invert baked in), and the held-key bits. Event lines (b/p/m/v)
             // are written as they happen and precede their frame line.
-            recordFile.writefln("f %.6f %.6f %.6f %x", dt, yaw, pitch, packInput(input));
+            session.recordFile.writefln("f %.6f %.6f %.6f %x", dt, yaw, pitch, packInput(input));
         }
 
         if (script.events.length > 0) {
@@ -370,7 +373,6 @@ void main(string[] args) {
             // landings) out of the eye.
             float groundedRise = 0;
             if ((wasGround || onGround) && beforeStep.node == character.position.node) {
-                import common.character_controller.vector_bounds : dot3;
                 MPoint!float moved = (beforeStep.local.inverse() * character.position.local)
                     * MPoint!float.origin();
                 groundedRise = dot3(moved.vec.xyz(), newUp);
@@ -386,7 +388,6 @@ void main(string[] args) {
 
             // Vertical camera acceleration (what the eye feels).
             if (renderer.camPos.node == camPrev.node && dt > 1e-6f) {
-                import common.character_controller.vector_bounds : dot3;
                 MPoint!float camMoved = (camPrev.local.inverse() * renderer.camPos.local)
                     * MPoint!float.origin();
                 float vertVel = dot3(camMoved.vec.xyz(), newUp) / dt;
@@ -439,9 +440,9 @@ void main(string[] args) {
         }
     }
 
-    if (recording) {
-        recording = false;
-        recordFile.close();
+    if (session.recording) {
+        session.recording = false;
+        session.recordFile.close();
         writefln("recording saved to %s", recordPath);
     }
     writefln("session: traveled=%.3f", traveled);
@@ -470,18 +471,20 @@ void updateWindowTitle(SDL_Window* window, bool mouseCaptured, int materialIndex
     SDL_SetWindowTitle(window, title.toStringz);
 }
 
-// True when SDL relative mouse mode is unavailable (e.g. X11 without
-// XInput2) and we emulate it by warping the cursor back to the window
-// center every frame.
-bool warpFallback = false;
+// Per-run interaction state threaded through the input handlers.
+struct Session {
+    // True when SDL relative mouse mode is unavailable (e.g. X11 without
+    // XInput2) and we emulate it by warping the cursor back to the window
+    // center every frame.
+    bool warpFallback;
+    // Action recording (--record): open sink for event/frame lines.
+    File recordFile;
+    bool recording;
+}
 
-// Action recording (--record): open sink for event/frame lines.
-File recordFile;
-bool recording = false;
-
-void recordEvent(string line) {
-    if (recording) {
-        recordFile.writeln(line);
+void recordEvent(ref Session session, string line) {
+    if (session.recording) {
+        session.recordFile.writeln(line);
     }
 }
 
@@ -515,23 +518,23 @@ InputState unpackInput(uint b) {
     return s;
 }
 
-void setMouseCaptured(SDL_Window* window, ref bool mouseCaptured, ref InputState input, bool captured) {
+void setMouseCaptured(SDL_Window* window, ref Session session, ref bool mouseCaptured, ref InputState input, bool captured) {
     if (mouseCaptured == captured) {
         return;
     }
     if (captured) {
         if (!SDL_SetWindowRelativeMouseMode(window, true)) {
             const(char)* err = SDL_GetError();
-            if (err !is null && !warpFallback) {
+            if (err !is null && !session.warpFallback) {
                 writefln("relative mouse mode unavailable (%s), using warp fallback", err[0 .. strlen(err)]);
             }
-            warpFallback = true;
+            session.warpFallback = true;
             SDL_SetWindowMouseGrab(window, true);
             SDL_HideCursor();
             warpToCenter(window);
         }
     } else {
-        if (warpFallback) {
+        if (session.warpFallback) {
             SDL_SetWindowMouseGrab(window, false);
             SDL_ShowCursor();
         } else {
@@ -556,6 +559,7 @@ void processInteractiveInput(
     SDL_Window* window,
     ref InputState input,
     ref Renderer renderer,
+    ref Session session,
     ref bool mouseCaptured,
     ref float mouseDx,
     ref float mouseDy,
@@ -569,7 +573,7 @@ void processInteractiveInput(
     if (ev.type == SDL_EVENT_KEY_DOWN) {
         if (ev.key.key == SDLK_ESCAPE) {
             if (mouseCaptured) {
-                setMouseCaptured(window, mouseCaptured, input, false);
+                setMouseCaptured(window, session, mouseCaptured, input, false);
                 titleDirty = true;
             }
         } else if (ev.key.key == SDLK_F12) {
@@ -581,19 +585,19 @@ void processInteractiveInput(
         } else if (ev.key.scancode == SDL_SCANCODE_V && !ev.key.repeat) {
             flyMode = !flyMode;
             writefln("mode: %s", modeName(flyMode, noClip));
-            recordEvent("v");
+            recordEvent(session, "v");
             titleDirty = true;
         } else if (ev.key.scancode == SDL_SCANCODE_N && !ev.key.repeat) {
             noClip = !noClip;
             writefln("mode: %s", modeName(flyMode, noClip));
-            recordEvent("n");
+            recordEvent(session, "n");
             titleDirty = true;
         } else if (ev.key.scancode >= SDL_SCANCODE_1 && ev.key.scancode <= SDL_SCANCODE_9) {
             int idx = cast(int)(ev.key.scancode - SDL_SCANCODE_1);
             if (idx < MATERIAL_PALETTE.length && idx != materialIndex) {
                 materialIndex = idx;
                 writefln("material: [%d] %s", idx + 1, MATERIAL_PALETTE[idx]);
-                recordEvent(format("m %d", idx));
+                recordEvent(session, format("m %d", idx));
                 titleDirty = true;
             }
         } else {
@@ -609,12 +613,12 @@ void processInteractiveInput(
         // Key-up events stop arriving once focus is gone; drop all held keys
         // and release the mouse so the player isn't stuck moving or captured.
         input.clear();
-        setMouseCaptured(window, mouseCaptured, input, false);
+        setMouseCaptured(window, session, mouseCaptured, input, false);
         titleDirty = true;
     }
 
     if (ev.type == SDL_EVENT_MOUSE_MOTION && mouseCaptured) {
-        if (warpFallback) {
+        if (session.warpFallback) {
             // Deltas are measured against the window center and the cursor is
             // warped straight back, so the warp's own motion event lands at
             // the center and contributes zero — no events need skipping.
@@ -636,14 +640,14 @@ void processInteractiveInput(
 
     if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
         if (!mouseCaptured) {
-            setMouseCaptured(window, mouseCaptured, input, true);
+            setMouseCaptured(window, session, mouseCaptured, input, true);
             titleDirty = true;
         } else if (ev.button.button == SDL_BUTTON_LEFT) {
             renderer.breakBlock();
-            recordEvent("b");
+            recordEvent(session, "b");
         } else if (ev.button.button == SDL_BUTTON_RIGHT) {
             renderer.placeBlock(cast(ushort) MATERIAL_PALETTE[materialIndex]);
-            recordEvent("p");
+            recordEvent(session, "p");
         }
     }
 }

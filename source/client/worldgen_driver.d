@@ -28,33 +28,35 @@ struct GenResult {
 // Work queue shared with the generation worker threads. generateVoxels is a
 // pure function of ChunkParams, so workers never touch the graph: the main
 // thread builds params (which may grow the graph) and integrates results.
-__gshared Mutex gMutex;
-__gshared Condition gCond;
-__gshared GenRequest[] gPending;
-__gshared size_t gPendingHead;
-__gshared GenResult[] gDone;
-__gshared bool gStopping;
+struct GenQueue {
+    Mutex mutex;
+    Condition cond;
+    GenRequest[] pending;
+    size_t pendingHead;
+    GenResult[] done;
+    bool stopping;
+}
 
-void workerFunc() {
+void workerLoop(GenQueue* queue) {
     while (true) {
         GenRequest req;
-        synchronized (gMutex) {
-            while (gPendingHead >= gPending.length && !gStopping) {
-                gCond.wait();
+        synchronized (queue.mutex) {
+            while (queue.pendingHead >= queue.pending.length && !queue.stopping) {
+                queue.cond.wait();
             }
-            if (gPendingHead >= gPending.length) {
+            if (queue.pendingHead >= queue.pending.length) {
                 return;
             }
-            req = gPending[gPendingHead++];
-            if (gPendingHead >= gPending.length) {
-                gPending.length = 0;
-                gPending.assumeSafeAppend();
-                gPendingHead = 0;
+            req = queue.pending[queue.pendingHead++];
+            if (queue.pendingHead >= queue.pending.length) {
+                queue.pending.length = 0;
+                queue.pending.assumeSafeAppend();
+                queue.pendingHead = 0;
             }
         }
         VoxelData voxels = generateVoxels(req.params);
-        synchronized (gMutex) {
-            gDone ~= GenResult(req.chunk, voxels);
+        synchronized (queue.mutex) {
+            queue.done ~= GenResult(req.chunk, voxels);
         }
     }
 }
@@ -62,7 +64,9 @@ void workerFunc() {
 struct WorldgenDriver {
     VoxelData[ChunkId] preloadedVoxelData;
 
+    GenQueue* queue;
     Thread[] workers;
+    bool flatWorldgen;
     uint inFlight;
     GenRequest[] requestBuf;
     GenResult[] resultBuf;
@@ -88,19 +92,17 @@ struct WorldgenDriver {
 
     static WorldgenDriver create() {
         WorldgenDriver w;
-        gMutex = new Mutex;
-        gCond = new Condition(gMutex);
-        gPending.length = 0;
-        gPendingHead = 0;
-        gDone.length = 0;
-        gStopping = false;
+        w.queue = new GenQueue();
+        w.queue.mutex = new Mutex();
+        w.queue.cond = new Condition(w.queue.mutex);
+        GenQueue* queue = w.queue;
 
         uint threadCount = totalCPUs > 2 ? totalCPUs - 2 : 1;
         if (threadCount > 8) {
             threadCount = 8;
         }
         foreach (i; 0 .. threadCount) {
-            Thread t = new Thread(&workerFunc);
+            Thread t = new Thread(() => workerLoop(queue));
             t.isDaemon = true;
             t.start();
             w.workers ~= t;
@@ -119,11 +121,11 @@ struct WorldgenDriver {
         // Integrate whatever the workers finished since last frame.
         resultBuf.length = 0;
         resultBuf.assumeSafeAppend();
-        synchronized (gMutex) {
-            if (gDone.length > 0) {
-                resultBuf ~= gDone;
-                gDone.length = 0;
-                gDone.assumeSafeAppend();
+        synchronized (queue.mutex) {
+            if (queue.done.length > 0) {
+                resultBuf ~= queue.done;
+                queue.done.length = 0;
+                queue.done.assumeSafeAppend();
             }
         }
         foreach (ref GenResult r; resultBuf) {
@@ -194,7 +196,7 @@ struct WorldgenDriver {
                     break outer;
                 }
 
-                ChunkParams params = ChunkParams.create(graph, chunkId);
+                ChunkParams params = ChunkParams.create(graph, chunkId, flatWorldgen);
                 graph.nodeAt(nn.slot).chunks.values[vertex].state = ChunkState.Generating;
                 requestBuf ~= GenRequest(chunkId, params);
             }
@@ -204,9 +206,9 @@ struct WorldgenDriver {
 
         if (requestBuf.length > 0) {
             inFlight += cast(uint) requestBuf.length;
-            synchronized (gMutex) {
-                gPending ~= requestBuf;
-                gCond.notifyAll();
+            synchronized (queue.mutex) {
+                queue.pending ~= requestBuf;
+                queue.cond.notifyAll();
             }
         }
     }

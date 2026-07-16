@@ -9,7 +9,8 @@ module worldcheck;
 import std.stdio;
 import std.algorithm : sort;
 import std.math : cosh;
-import core.time : MonoTime;
+import core.thread : Thread;
+import core.time : MonoTime, msecs;
 import std.digest.murmurhash : MurmurHash3;
 import common.graph : Graph, NodeId;
 import common.node : Chunk, ChunkId, ChunkState, VoxelData;
@@ -17,9 +18,9 @@ import common.dodeca : Vertex, CHUNK_BOUNDING_SPHERE_RADIUS, vertexChunkBounding
 import common.math : MIsometry, MPoint;
 import common.traversal : ensureAndCollectNearby, NearbyNode, NearbyScratch;
 import common.worldgen : ChunkParams, generateVoxels;
-import client.worldgen_driver : populateChunk;
+import client.worldgen_driver : WorldgenDriver, populateChunk;
 
-private ubyte[16] chunkHash(ubyte vertex, const ref VoxelData v) {
+ubyte[16] chunkHash(ubyte vertex, const ref VoxelData v) {
     MurmurHash3!128 h;
     ubyte[2] head = [vertex, cast(ubyte) v.kind];
     h.put(head[]);
@@ -32,7 +33,7 @@ private ubyte[16] chunkHash(ubyte vertex, const ref VoxelData v) {
     return h.finish();
 }
 
-private void hex32(ref char[32] buf, const(ubyte)[] d) {
+void hex32(ref char[32] buf, const(ubyte)[] d) {
     static immutable digits = "0123456789abcdef";
     foreach (i; 0 .. 16) {
         buf[i * 2] = digits[d[i] >> 4];
@@ -169,10 +170,6 @@ void benchGen(float radius, ubyte dimension) {
 // populated, then reports chunk count and wall time. The populated count must
 // match dumpWorld/benchGen for the same radius.
 void benchDrive(float radius, ubyte dimension) {
-    import core.thread : Thread;
-    import core.time : msecs;
-    import client.worldgen_driver : WorldgenDriver;
-
     Graph graph = Graph.create(dimension);
     MIsometry!float identity = MIsometry!float.identity();
     NearbyScratch scratch;

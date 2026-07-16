@@ -96,10 +96,19 @@ coordinates (projective, `ChunkLayout.dualToGridFactor` maps between them).
 ## Style
 
 - 4-space indent, braces on the same line, every body braced.
-- Explicit types, plain structs and free functions, minimal templates, no
-  classes without need.
-- Imports at the top: std first, then project modules, each importing a
+- Explicit types, plain structs and free functions, minimal templates. No
+  classes — reference semantics come from a pointer to a struct (see
+  `GenQueue`). No `private`; module boundaries are the visibility unit.
+- Imports at the top of the module, always — never scoped inside functions
+  or unittest blocks. std first, then project modules, each importing a
   named symbol list.
+- No module-level mutable state: no `__gshared`, no thread-local globals.
+  State lives in structs owned by whoever uses it; state shared with worker
+  threads lives in an object handed to them (see `GenQueue`).
+- No `static this`. Lookup tables are built by a plain function evaluated
+  with CTFE into `immutable` (see `dodeca.d`). CTFE has a known aliasing bug
+  with copy-then-mutate of static arrays — build fresh arrays element-wise.
+- Subpackage entry points are `package.d`, never `mod_.d` or similar.
 - Comments are rare. One short comment for a non-obvious invariant is fine;
   paragraph-length narration, restating what code does, or leaving TEMP
   diagnostics in place is not. Delete instrumentation after it answers its

@@ -76,7 +76,7 @@ struct SwapchainState {
         return createSwapchainResources(device);
     }
 
-    private bool createSwapchainResources(VkDevice device) {
+    bool createSwapchainResources(VkDevice device) {
         VkSurfaceCapabilitiesKHR caps;
         vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physDevice, surface, &caps);
 
@@ -219,7 +219,7 @@ struct SwapchainState {
         return true;
     }
 
-    private bool createRenderPass(VkDevice device) {
+    bool createRenderPass(VkDevice device) {
         VkAttachmentDescription[2] attachments;
         attachments[0].format = format;
         attachments[0].samples = 1;
@@ -297,7 +297,7 @@ struct SwapchainState {
         return true;
     }
 
-    private void destroySwapchainResources(VkDevice device) {
+    void destroySwapchainResources(VkDevice device) {
         foreach (fb; framebuffers) {
             vkDestroyFramebuffer(device, fb, null);
         }
@@ -335,7 +335,7 @@ struct SwapchainState {
     }
 }
 
-private uint clamp(uint v, uint lo, uint hi) {
+uint clamp(uint v, uint lo, uint hi) {
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
