@@ -1,16 +1,15 @@
 module main;
 
 import std.stdio : writefln, stdout;
+import std.math : tanh;
 import client.glfw;
 import client.window : Window;
 import client.renderer : Renderer, CubeMesh;
-import common.math : Matrix4, MVector, translation, rotation, inverseIsometry, hyperbolicDistance;
-import common.graph : Cube, State;
-import common.geometry : FACES;
-import common.worldgen_thread : WorldgenThread;
-
-enum float VIEW_RADIUS = 2.5f;
-enum float WORLDGEN_RADIUS = 2.8f;
+import common.math : Matrix4, MVector, translation, rotation, inverseIsometry;
+import common.graph : Node, Chunk, State;
+import common.geometry : SIDES, sideTransform, inRadius, faceNormalF;
+import common.walk : Placed, walk;
+import common.worldgen_thread : WorldgenThread, SHELLS;
 
 struct MeshCache {
     CubeMesh mesh;
@@ -35,13 +34,16 @@ void main(string[] args) {
     Renderer renderer;
     renderer.init(window.width, window.height);
 
-    Matrix4 camera = translation([0.0f, 0.8f, 0.0f]) * rotation(1, 2, -1.5707963f);
-
-    WorldgenThread* worldgen = WorldgenThread.create(WORLDGEN_RADIUS);
-    worldgen.setCamera(camera);
+    WorldgenThread* worldgen = WorldgenThread.create();
     worldgen.start();
 
-    MeshCache[Cube*] meshes;
+    // Camera pose RELATIVE TO THE CURRENT ROOT NODE. It never accumulates a global
+    // position: when the camera crosses a face, we re-root and rebase this pose by
+    // the inverse side reflection, so it stays small and bounded.
+    Node* root = worldgen.currentRoot();
+    Matrix4 camera = translation([0.0f, 0.8f, 0.0f]) * rotation(1, 2, -1.5707963f);
+
+    MeshCache[Chunk*] meshes;
 
     double last = glfwGetTime();
     double fpsTime = last;
@@ -54,13 +56,13 @@ void main(string[] args) {
 
         window.poll();
         camera = applyInput(window, camera, dt, autoDrive);
-        worldgen.setCamera(camera);
 
-        MVector camPos = (camera * MVector.origin()).normalized();
+        // Re-root if the camera left the root node through one of its faces.
+        reroot(root, camera);
+        worldgen.setRoot(root);
+
         Matrix4 camInverse = inverseIsometry(camera);
-        Cube* anchor = worldgen.currentCube();
-
-        int drawn = drawWorld(renderer, anchor, camPos, camInverse, meshes);
+        int drawn = drawWorld(renderer, root, camInverse, meshes);
         window.swap();
 
         frames++;
@@ -79,6 +81,51 @@ void main(string[] args) {
 
     worldgen.stop();
     window.close();
+}
+
+/// If the camera has moved past one of the root's faces, step the root to that
+/// neighbor and rebase the camera pose into the new root's frame. Repeats until
+/// the camera is inside the root. Pure topology + the local side reflection; no
+/// global position is ever formed.
+void reroot(ref Node* root, ref Matrix4 camera) {
+    foreach (_; 0 .. 8) {
+        MVector camPos = (camera * MVector.origin()).normalized();
+        int crossed = sideExited(camPos);
+        if (crossed < 0) {
+            return;
+        }
+        Node* n = root.neighbor(crossed);
+        if (n is null) {
+            return; // not generated yet; stay put this frame
+        }
+        // Move into the neighbor: the new root is n, and the camera expressed in
+        // n's frame is the inverse face reflection applied to the old pose.
+        Matrix4 refl = sideTransform(crossed);
+        camera = inverseIsometry(refl) * camera;
+        root = n;
+    }
+}
+
+/// Which face (if any) the camera position lies beyond, in the root's frame.
+/// Returns -1 if the camera is still inside the root cell. The cell boundary
+/// along a face is at Klein coordinate tanh(in-radius) toward that face normal.
+int sideExited(MVector camPos) {
+    float bound = cast(float) tanh(inRadius());
+    int best = -1;
+    float worst = bound;
+    foreach (side; 0 .. SIDES) {
+        float[3] d = faceNormalF(side);
+        // Klein coordinate of the camera projected onto this face normal.
+        float kx = camPos.data[0] / camPos.data[3];
+        float ky = camPos.data[1] / camPos.data[3];
+        float kz = camPos.data[2] / camPos.data[3];
+        float along = kx * d[0] + ky * d[1] + kz * d[2];
+        if (along > worst) {
+            worst = along;
+            best = side;
+        }
+    }
+    return best;
 }
 
 Matrix4 applyInput(Window* window, Matrix4 camera, float dt, bool autoDrive) {
@@ -126,48 +173,33 @@ Matrix4 applyInput(Window* window, Matrix4 camera, float dt, bool autoDrive) {
 
 int drawWorld(
     ref Renderer renderer,
-    Cube* anchor,
-    MVector camPos,
+    Node* root,
     Matrix4 camInverse,
-    ref MeshCache[Cube*] meshes,
+    ref MeshCache[Chunk*] meshes,
 ) {
     renderer.beginFrame();
 
-    bool[Cube*] seen;
-    Cube*[] queue = [anchor];
-    seen[anchor] = true;
+    Placed[] placed = walk(root, SHELLS);
     int drawn = 0;
 
-    for (size_t i = 0; i < queue.length; i++) {
-        Cube* c = queue[i];
-
-        MVector center = (c.transform * MVector.origin()).normalized();
-        if (hyperbolicDistance(camPos, center) > VIEW_RADIUS) {
-            continue;
-        }
-
-        foreach (f; 0 .. FACES) {
-            Cube* n = c.neighbor(f);
-            if (n !is null && (n in seen) is null) {
-                seen[n] = true;
-                queue ~= n;
+    foreach (ref p; placed) {
+        foreach (side; 0 .. SIDES) {
+            Chunk* chunk = &p.node.chunks[side];
+            if (chunk.loadState() != State.Ready) {
+                continue;
             }
-        }
 
-        if (c.loadState() != State.Ready) {
-            continue;
-        }
+            uint generation = chunk.loadGeneration();
+            MeshCache* cached = chunk in meshes;
+            if (cached is null || !cached.present || cached.generation != generation) {
+                CubeMesh built = renderer.upload(chunk.voxels);
+                meshes[chunk] = MeshCache(built, generation, true);
+                cached = chunk in meshes;
+            }
 
-        uint generation = c.loadGeneration();
-        MeshCache* cached = c in meshes;
-        if (cached is null || !cached.present || cached.generation != generation) {
-            CubeMesh built = renderer.upload(c.voxels);
-            meshes[c] = MeshCache(built, generation, true);
-            cached = c in meshes;
+            renderer.draw(cached.mesh, camInverse * p.frame * sideTransform(side));
+            drawn++;
         }
-
-        renderer.draw(cached.mesh, camInverse * c.transform);
-        drawn++;
     }
 
     return drawn;

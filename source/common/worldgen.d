@@ -3,37 +3,32 @@ module common.worldgen;
 import std.math : floor;
 import common.math : Matrix4, MVector;
 import common.world : DIM, Material, voxelIndex;
-import common.graph : Cube, State;
+import common.graph : Node, Chunk;
 
-/// Generate voxels for a single cube. Pure function of the cube's transform, so
-/// it is deterministic and thread-safe: it reads only `c.transform` and writes a
-/// fresh voxel array, then publishes it.
-void generate(Cube* c) {
+/// Generate one chunk's voxels. `frame` is the chunk's local Minkowski frame
+/// relative to the current root (built transiently within the render horizon, so
+/// it never overflows). Terrain is a function of the world point each voxel maps
+/// to through that frame, so it is continuous across node boundaries.
+void generate(Node* node, int side, Chunk* chunk, Matrix4 frame) {
     ushort[] v = new ushort[DIM * DIM * DIM];
 
     foreach (z; 0 .. DIM) {
         foreach (y; 0 .. DIM) {
             foreach (x; 0 .. DIM) {
-                // Voxel center in cube-local coords, range roughly [-0.5, 0.5].
                 float lx = (x + 0.5f) / DIM - 0.5f;
                 float ly = (y + 0.5f) / DIM - 0.5f;
                 float lz = (z + 0.5f) / DIM - 0.5f;
 
-                // Map through the cube transform into the root frame so the world
-                // is continuous across cube boundaries.
                 MVector local = MVector(lx, ly, lz, 1.0f);
-                MVector world = (c.transform * local).normalized();
-
+                MVector world = (frame * local).normalized();
                 v[voxelIndex(x, y, z)] = cast(ushort) materialAt(world);
             }
         }
     }
 
-    c.voxels = v;
+    chunk.voxels = v;
 }
 
-/// Terrain material at a world point. A gently rolling surface (value noise)
-/// separates air above from grass, dirt and stone below.
 private Material materialAt(MVector p) {
     float x = p.data[0];
     float y = p.data[1];

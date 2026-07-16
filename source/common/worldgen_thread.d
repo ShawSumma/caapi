@@ -2,32 +2,27 @@ module common.worldgen_thread;
 
 import core.thread : Thread;
 import core.atomic : atomicLoad, atomicStore, MemoryOrder;
-import core.sync.mutex : Mutex;
-import common.math : Matrix4, MVector, hyperbolicDistance;
-import common.geometry : FACES;
-import common.graph : Graph, Cube, State;
+import common.geometry : SIDES, sideTransform;
+import common.graph : Graph, Node, Chunk, State;
+import common.walk : Placed, walk;
 import common.worldgen : generate;
+import common.math : Matrix4;
 
-/// Owns the cube graph and grows it on a dedicated thread. The render thread
-/// reads the graph by atomic pointer load and only writes the camera transform.
+enum int SHELLS = 3;
+
+/// Owns the node graph and fills it on a dedicated thread. Purely local: it keeps
+/// the root's N-shell neighborhood generated. The render thread re-roots by
+/// reporting which side the camera crossed (setRoot); there are no positions.
 struct WorldgenThread {
     private Graph* graph;
     private Thread thread;
     private shared bool stopping;
-    private Mutex camLock;
-    private Matrix4 camTransform;
-    private float radius;
-    private Cube* anchor;
-    private shared(Cube)* published; // camera's cube, for the render thread
-    private Cube*[] queue;
-    private bool[Cube*] seen;
+    private shared(Node)* root;
 
-    static WorldgenThread* create(float radius) {
+    static WorldgenThread* create() {
         WorldgenThread* w = new WorldgenThread;
         w.graph = Graph.create();
-        w.camTransform = Matrix4.identity();
-        w.radius = radius;
-        w.camLock = new Mutex();
+        atomicStore!(MemoryOrder.rel)(w.root, cast(shared(Node)*) w.graph.root);
         w.thread = new Thread(&w.run);
         w.thread.isDaemon = true;
         return w;
@@ -42,76 +37,45 @@ struct WorldgenThread {
         thread.join();
     }
 
-    void setCamera(Matrix4 t) {
-        camLock.lock();
-        camTransform = t;
-        camLock.unlock();
+    /// Render thread -> worldgen thread: the player crossed into this node; make
+    /// it the new root so the N-shell neighborhood recenters on it.
+    void setRoot(Node* node) {
+        atomicStore!(MemoryOrder.rel)(root, cast(shared(Node)*) node);
     }
 
-    /// The cube the camera is currently in, for the render thread's read-only
-    /// walk. Returns the root until the worldgen thread has run its first pass.
-    Cube* currentCube() {
-        Cube* c = cast(Cube*) atomicLoad!(MemoryOrder.acq)(published);
-        return c is null ? graph.root : c;
-    }
-
-    Cube* rootCube() {
-        return graph.root;
+    Node* currentRoot() {
+        return cast(Node*) atomicLoad!(MemoryOrder.acq)(root);
     }
 
     private void run() {
         while (!atomicLoad!(MemoryOrder.acq)(stopping)) {
-            camLock.lock();
-            Matrix4 cam = camTransform;
-            camLock.unlock();
-
-            if (step(cam) == 0) {
+            Node* r = currentRoot();
+            int generated = fill(r);
+            if (generated == 0) {
                 Thread.yield();
             }
         }
     }
 
-    private int step(Matrix4 cam) {
-        MVector camPos = (cam * MVector.origin()).normalized();
-
-        if (anchor is null) {
-            anchor = graph.root;
-        }
-        anchor = graph.findCube(anchor, camPos);
-        atomicStore!(MemoryOrder.rel)(published, cast(shared(Cube)*) anchor);
-
-        // BFS outward from the camera's cube, generating any Empty cube within
-        // radius. Stop after a bounded number of generations per pass: hyperbolic
-        // volume grows exponentially, so the in-radius ball holds a huge number of
-        // cubes — re-walking all of them every pass would starve the camera
-        // follow above. Capping keeps each pass short and the anchor fresh.
-        enum int MAX_PER_PASS = 32;
-
-        queue.length = 0;
-        seen.clear();
-        queue ~= anchor;
-        seen[anchor] = true;
+    /// Ensure the N-shell neighborhood of `r` exists and every chunk is generated.
+    /// Returns how many chunks it generated this pass.
+    private int fill(Node* r) {
+        // Create + link the topology out to N shells, then walk it to get each
+        // node's transient local frame for terrain generation.
+        graph.neighborhoodFrom(r, SHELLS);
+        Placed[] placed = walk(r, SHELLS);
 
         int generated = 0;
-        for (size_t i = 0; i < queue.length && generated < MAX_PER_PASS; i++) {
-            Cube* c = queue[i];
-
-            if (hyperbolicDistance(camPos, graph.center(c)) > radius) {
-                continue;
-            }
-
-            if (c.loadState() == State.Empty) {
-                c.setState(State.Generating);
-                generate(c);
-                c.setState(State.Ready);
-                generated++;
-            }
-
-            foreach (f; 0 .. FACES) {
-                Cube* n = graph.ensureNeighbor(c, f);
-                if (n !is null && (n in seen) is null) {
-                    seen[n] = true;
-                    queue ~= n;
+        foreach (ref p; placed) {
+            foreach (side; 0 .. SIDES) {
+                Chunk* chunk = &p.node.chunks[side];
+                if (chunk.loadState() == State.Empty) {
+                    chunk.setState(State.Generating);
+                    // The chunk sits across face `side`; its frame is the node
+                    // frame reflected across that face.
+                    generate(p.node, side, chunk, p.frame * sideTransform(side));
+                    chunk.setState(State.Ready);
+                    generated++;
                 }
             }
         }
