@@ -19,9 +19,14 @@ import common.sim_config : SimConfig, SimConfigRaw;
 import common.world;
 import worldcheck : dumpWorld, benchNearby, benchGen, benchDrive;
 
+// On macOS the ImportC'd SDL headers re-export the SDK's size_t typedef,
+// which collides with object.size_t; shadow the imports with one alias.
+alias size_t = object.size_t;
+
 enum : ulong {
     WINDOW_VULKAN    = 0x0000000010000000,
     WINDOW_RESIZABLE = 0x0000000000000020,
+    WINDOW_HIDDEN    = 0x0000000000000008,
 }
 
 immutable Material[9] MATERIAL_PALETTE = [
@@ -86,9 +91,24 @@ void main(string[] args) {
     string configPath = "mined.cfg";
     string recordPath;
     string replayPath;
+    string shotPath;
+    bool shotHiddenWindow = false;
+    int shotFrame = 120;
     bool headlessMode = false;
     bool flatWorldgen = false;
     foreach (i, a; args) {
+        if (a == "--shot" && i + 1 < args.length) {
+            shotPath = args[i + 1];
+        }
+        // Like --shot, but renders through the real swapchain into a hidden
+        // window instead of an offscreen framebuffer.
+        if (a == "--shot-window" && i + 1 < args.length) {
+            shotPath = args[i + 1];
+            shotHiddenWindow = true;
+        }
+        if (a == "--shot-frame" && i + 1 < args.length) {
+            shotFrame = args[i + 1].to!int;
+        }
         if (a == "--script" && i + 1 < args.length) {
             scriptPath = args[i + 1];
         }
@@ -156,6 +176,13 @@ void main(string[] args) {
         writefln("Loaded script %s (%d events)", scriptPath, script.events.length);
     }
 
+    if (shotPath.length > 0 && !shotHiddenWindow) {
+        // Capture mode renders to an offscreen framebuffer; force SDL's
+        // offscreen video driver so no window ever appears.
+        import core.sys.posix.stdlib : setenv;
+        setenv("SDL_VIDEO_DRIVER", "offscreen", 1);
+    }
+
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         const(char)* err = SDL_GetError();
         if (err !is null) {
@@ -167,7 +194,11 @@ void main(string[] args) {
         SDL_Quit();
     }
 
-    SDL_Window* window = SDL_CreateWindow("mined", 1280, 720, WINDOW_VULKAN | WINDOW_RESIZABLE);
+    ulong windowFlags = WINDOW_VULKAN | WINDOW_RESIZABLE;
+    if (shotHiddenWindow) {
+        windowFlags |= WINDOW_HIDDEN;
+    }
+    SDL_Window* window = SDL_CreateWindow("mined", 1280, 720, windowFlags);
     if (window is null) {
         writeln("Window creation failed");
         return;
@@ -180,6 +211,7 @@ void main(string[] args) {
     ulong xWindowId = SDL_GetNumberProperty(props, "SDL.window.x11.window", 0);
 
     Renderer renderer;
+    renderer.swapState.offscreen = shotPath.length > 0 && !shotHiddenWindow;
     if (!renderer.init(cast(void*) window)) {
         writeln("Renderer initialization failed");
         return;
@@ -420,6 +452,14 @@ void main(string[] args) {
         }
         renderer.render(dt);
         simTime += dt;
+
+        if (shotPath.length > 0) {
+            if (renderer.captureDone) {
+                running = false;
+            } else if (--shotFrame <= 0) {
+                renderer.capturePath = shotPath;
+            }
+        }
 
         framesSinceReport++;
         if (nowTicks - lastFpsReport >= 1000 || (replayMode && framesSinceReport >= 60)) {

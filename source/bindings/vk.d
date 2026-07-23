@@ -114,6 +114,7 @@ enum VkImageLayout : int {
     VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL = 3,
     VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL = 4,
     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL = 5,
+    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL = 6,
     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL = 7,
     VK_IMAGE_LAYOUT_PRESENT_SRC_KHR = 1000001002,
 }
@@ -172,6 +173,7 @@ enum VkSharingMode : int {
 }
 
 enum VkImageUsageFlagBits : uint {
+    VK_IMAGE_USAGE_TRANSFER_SRC_BIT = 0x00000001,
     VK_IMAGE_USAGE_TRANSFER_DST_BIT = 0x00000002,
     VK_IMAGE_USAGE_SAMPLED_BIT = 0x00000004,
     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT = 0x00000010,
@@ -390,6 +392,12 @@ struct VkInstanceCreateInfo {
     uint enabledExtensionCount;
     const(char*)* ppEnabledExtensionNames;
 }
+
+// 55 VkBool32 feature flags; indexed via the FEATURE_* constants below.
+struct VkPhysicalDeviceFeatures {
+    VkBool32[55] flags;
+}
+enum FEATURE_MULTI_DRAW_INDIRECT = 9;
 
 struct VkDeviceQueueCreateInfo {
     VkStructureType sType;
@@ -905,6 +913,7 @@ extern(C) nothrow @nogc {
     void vkDestroyInstance(VkInstance, const(void)*);
     VkResult vkEnumeratePhysicalDevices(VkInstance, uint*, VkPhysicalDevice*);
     void vkGetPhysicalDeviceQueueFamilyProperties(VkPhysicalDevice, uint*, VkQueueFamilyProperties*);
+    void vkGetPhysicalDeviceFeatures(VkPhysicalDevice, VkPhysicalDeviceFeatures*);
     VkResult vkCreateDevice(VkPhysicalDevice, const(VkDeviceCreateInfo)*, const(void)*, VkDevice*);
     void vkDestroyDevice(VkDevice, const(void)*);
     void vkGetDeviceQueue(VkDevice, uint, uint, VkQueue*);
@@ -984,6 +993,8 @@ extern(C) nothrow @nogc {
     void vkDestroySampler(VkDevice, VkSampler, const(void)*);
     void vkCmdCopyBuffer(VkCommandBuffer, ulong, ulong, uint, const(VkBufferCopy)*);
     void vkCmdCopyBufferToImage(VkCommandBuffer, ulong, VkImage, int, uint, const(VkBufferImageCopy)*);
+    void vkCmdCopyImageToBuffer(VkCommandBuffer, VkImage, int, ulong, uint, const(VkBufferImageCopy)*);
+    void vkFreeCommandBuffers(VkDevice, VkCommandPool, uint, const(VkCommandBuffer)*);
     VkResult vkQueueWaitIdle(VkQueue);
 }
 

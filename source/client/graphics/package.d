@@ -46,6 +46,11 @@ struct Renderer {
     // headless replays so they aren't paced (or stalled) by presentation.
     bool headless = false;
 
+    // When set, the next rendered frame is read back from the swapchain and
+    // written to this path as a BMP, then captureDone flips true.
+    string capturePath;
+    bool captureDone;
+
     uint maxSlots = 2^^16;
     uint concurrency = 128;
 
@@ -423,16 +428,18 @@ struct Renderer {
 
         MonoTime a5 = MonoTime.currTime;
 
-        uint imageIndex;
-        VkResult acquireRes = vkAcquireNextImageKHR(core.device, swapState.swapchain, ulong.max,
-            swapState.imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
-        if (acquireRes == VkResult.VK_ERROR_OUT_OF_DATE_KHR) {
-            recreateSwapchain();
-            return;
-        }
-        if (acquireRes != VkResult.VK_SUCCESS && acquireRes != VkResult.VK_SUBOPTIMAL_KHR) {
-            writefln("vkAcquireNextImageKHR failed: %s", acquireRes);
-            return;
+        uint imageIndex = 0;
+        if (!swapState.offscreen) {
+            VkResult acquireRes = vkAcquireNextImageKHR(core.device, swapState.swapchain, ulong.max,
+                swapState.imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+            if (acquireRes == VkResult.VK_ERROR_OUT_OF_DATE_KHR) {
+                recreateSwapchain();
+                return;
+            }
+            if (acquireRes != VkResult.VK_SUCCESS && acquireRes != VkResult.VK_SUBOPTIMAL_KHR) {
+                writefln("vkAcquireNextImageKHR failed: %s", acquireRes);
+                return;
+            }
         }
         vkResetFences(core.device, 1, &swapState.inFlightFence);
         MonoTime a6 = MonoTime.currTime;
@@ -443,11 +450,17 @@ struct Renderer {
         bi.sType = VkStructureType.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         vkBeginCommandBuffer(cmd, &bi);
 
+        uint[] activeSlots = activeSlotsBuf[0 .. activeCount];
         if (tasksLen > 0) {
             extract.recordExtract(core.device, cmd, tasksBuf[0 .. tasksLen]);
         }
         if (extract.tfReady && activeCount > 0) {
             extract.recordTransformCompute(cmd, activeCount, voxels.transformsVbo.buffer);
+        }
+        // Buffer copies are illegal inside a render pass, so the indirect
+        // command packing has to happen before the pass begins.
+        if (activeCount > 0) {
+            extract.recordPackIndirect(cmd, activeSlots);
         }
 
         VkClearValue[2] clears;
@@ -491,11 +504,16 @@ struct Renderer {
         vkCmdPushConstants(cmd, voxels.pipelineLayout,
             VkShaderStageFlagBits.VK_SHADER_STAGE_VERTEX_BIT, 0, 4, &dim);
 
-        uint[] activeSlots = activeSlotsBuf[0 .. activeCount];
         if (activeCount > 0) {
-            extract.recordPackIndirect(cmd, activeSlots);
-            vkCmdDrawIndirect(cmd, extract.packedIndirectBuf.buffer,
-                0, activeCount, INDIRECT_SIZE);
+            if (core.multiDrawIndirect) {
+                vkCmdDrawIndirect(cmd, extract.packedIndirectBuf.buffer,
+                    0, activeCount, INDIRECT_SIZE);
+            } else {
+                foreach (i; 0 .. activeCount) {
+                    vkCmdDrawIndirect(cmd, extract.packedIndirectBuf.buffer,
+                        cast(VkDeviceSize) i * INDIRECT_SIZE, 1, INDIRECT_SIZE);
+                }
+            }
         }
 
         if (hasTarget) {
@@ -511,27 +529,35 @@ struct Renderer {
         uint waitStage = VkPipelineStageFlagBits.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSubmitInfo si;
         si.sType = VkStructureType.VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        si.waitSemaphoreCount = 1;
-        si.pWaitSemaphores = &swapState.imageAvailableSemaphore;
-        si.pWaitDstStageMask = &waitStage;
+        if (!swapState.offscreen) {
+            si.waitSemaphoreCount = 1;
+            si.pWaitSemaphores = &swapState.imageAvailableSemaphore;
+            si.pWaitDstStageMask = &waitStage;
+            si.signalSemaphoreCount = 1;
+            si.pSignalSemaphores = &swapState.renderFinishedSemaphores[imageIndex];
+        }
         si.commandBufferCount = 1;
         si.pCommandBuffers = &cmd;
-        si.signalSemaphoreCount = 1;
-        si.pSignalSemaphores = &swapState.renderFinishedSemaphore;
         vkQueueSubmit(core.graphicsQueue, 1, &si, swapState.inFlightFence);
         MonoTime a7 = MonoTime.currTime;
 
-        VkPresentInfoKHR pi;
-        pi.sType = VkStructureType.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-        pi.waitSemaphoreCount = 1;
-        pi.pWaitSemaphores = &swapState.renderFinishedSemaphore;
-        pi.swapchainCount = 1;
-        pi.pSwapchains = &swapState.swapchain;
-        pi.pImageIndices = &imageIndex;
-        VkResult presentRes = vkQueuePresentKHR(core.graphicsQueue, &pi);
-        if (presentRes == VkResult.VK_ERROR_OUT_OF_DATE_KHR
-            || presentRes == VkResult.VK_SUBOPTIMAL_KHR) {
-            recreateSwapchain();
+        if (capturePath.length > 0 && !captureDone) {
+            captureSwapchainImage(imageIndex);
+        }
+
+        if (!swapState.offscreen) {
+            VkPresentInfoKHR pi;
+            pi.sType = VkStructureType.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+            pi.waitSemaphoreCount = 1;
+            pi.pWaitSemaphores = &swapState.renderFinishedSemaphores[imageIndex];
+            pi.swapchainCount = 1;
+            pi.pSwapchains = &swapState.swapchain;
+            pi.pImageIndices = &imageIndex;
+            VkResult presentRes = vkQueuePresentKHR(core.graphicsQueue, &pi);
+            if (presentRes == VkResult.VK_ERROR_OUT_OF_DATE_KHR
+                || presentRes == VkResult.VK_SUBOPTIMAL_KHR) {
+                recreateSwapchain();
+            }
         }
         MonoTime a8 = MonoTime.currTime;
 
@@ -580,6 +606,157 @@ struct Renderer {
             stageMax[] = 0;
             statFrames = 0;
         }
+    }
+
+    /// Debug readback: copy the just-rendered swapchain image to host memory
+    /// and write it as a 32-bit BMP. Runs between submit and present.
+    void captureSwapchainImage(uint imageIndex) {
+        import std.file : write;
+
+        vkWaitForFences(core.device, 1, &swapState.inFlightFence, 1, ulong.max);
+
+        VkExtent2D ext = swapState.extent;
+        VkDeviceSize byteSize = cast(VkDeviceSize) ext.width * ext.height * 4;
+
+        VkBufferCreateInfo bci;
+        bci.sType = VkStructureType.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bci.size = byteSize;
+        bci.usage = VkBufferUsageFlagBits.VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        bci.sharingMode = VkSharingMode.VK_SHARING_MODE_EXCLUSIVE;
+        ulong buf;
+        vkCreateBuffer(core.device, &bci, null, &buf);
+
+        VkMemoryRequirements req;
+        vkGetBufferMemoryRequirements(core.device, buf, &req);
+        VkPhysicalDeviceMemoryProperties mp;
+        vkGetPhysicalDeviceMemoryProperties(core.physicalDevice, &mp);
+        uint mti = uint.max;
+        enum wanted = VkMemoryPropertyFlagBits.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+                    | VkMemoryPropertyFlagBits.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        foreach (i; 0 .. mp.memoryTypeCount) {
+            if ((req.memoryTypeBits & (1u << i))
+                && (mp.memoryTypes[i].propertyFlags & wanted) == wanted) {
+                mti = i;
+                break;
+            }
+        }
+        VkMemoryAllocateInfo mai;
+        mai.sType = VkStructureType.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        mai.allocationSize = req.size;
+        mai.memoryTypeIndex = mti;
+        VkDeviceMemory mem;
+        vkAllocateMemory(core.device, &mai, null, &mem);
+        vkBindBufferMemory(core.device, buf, mem, 0);
+
+        VkCommandBufferAllocateInfo cbai;
+        cbai.sType = VkStructureType.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        cbai.commandPool = swapState.commandPool;
+        cbai.level = VkCommandBufferLevel.VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cbai.commandBufferCount = 1;
+        VkCommandBuffer cmd;
+        vkAllocateCommandBuffers(core.device, &cbai, &cmd);
+
+        VkCommandBufferBeginInfo bi;
+        bi.sType = VkStructureType.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        vkBeginCommandBuffer(cmd, &bi);
+
+        VkImageMemoryBarrier toSrc;
+        toSrc.sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        toSrc.srcAccessMask = VkAccessFlagBits.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        toSrc.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        toSrc.oldLayout = swapState.offscreen
+            ? VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
+            : VkImageLayout.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        toSrc.newLayout = VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        toSrc.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toSrc.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toSrc.image = swapState.images[imageIndex];
+        toSrc.subresourceRange.aspectMask = VkImageAspectFlagBits.VK_IMAGE_ASPECT_COLOR_BIT;
+        toSrc.subresourceRange.levelCount = 1;
+        toSrc.subresourceRange.layerCount = 1;
+        vkCmdPipelineBarrier(cmd,
+            VkPipelineStageFlagBits.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0, 0, null, 0, null, 1, &toSrc);
+
+        VkBufferImageCopy region;
+        region.imageSubresource.aspectMask = VkImageAspectFlagBits.VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.layerCount = 1;
+        region.imageExtent = VkExtent3D(ext.width, ext.height, 1);
+        vkCmdCopyImageToBuffer(cmd, swapState.images[imageIndex],
+            VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &region);
+
+        if (!swapState.offscreen) {
+            VkImageMemoryBarrier toPresent = toSrc;
+            toPresent.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            toPresent.dstAccessMask = 0;
+            toPresent.oldLayout = VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            toPresent.newLayout = VkImageLayout.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+            vkCmdPipelineBarrier(cmd,
+                VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VkPipelineStageFlagBits.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                0, 0, null, 0, null, 1, &toPresent);
+        }
+
+        vkEndCommandBuffer(cmd);
+        VkSubmitInfo si;
+        si.sType = VkStructureType.VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &cmd;
+        vkQueueSubmit(core.graphicsQueue, 1, &si, VK_NULL_HANDLE);
+        vkQueueWaitIdle(core.graphicsQueue);
+
+        void* mapped;
+        vkMapMemory(core.device, mem, 0, byteSize, 0, &mapped);
+        const(ubyte)[] pixels = (cast(const(ubyte)*) mapped)[0 .. cast(size_t) byteSize];
+
+        bool isRgba = swapState.format == VkFormat.VK_FORMAT_R8G8B8A8_UNORM
+                   || swapState.format == VkFormat.VK_FORMAT_R8G8B8A8_SRGB;
+
+        uint w = ext.width;
+        uint h = ext.height;
+        uint dataSize = w * h * 4;
+        ubyte[] bmp = new ubyte[54 + dataSize];
+        void put32(size_t off, uint v) {
+            bmp[off] = v & 0xff;
+            bmp[off + 1] = (v >> 8) & 0xff;
+            bmp[off + 2] = (v >> 16) & 0xff;
+            bmp[off + 3] = (v >> 24) & 0xff;
+        }
+        bmp[0] = 'B';
+        bmp[1] = 'M';
+        put32(2, 54 + dataSize);
+        put32(10, 54);
+        put32(14, 40);
+        put32(18, w);
+        put32(22, h);
+        bmp[26] = 1;
+        bmp[28] = 32;
+        put32(34, dataSize);
+
+        // BMP rows are bottom-up; the readback is top-down BGRA (or RGBA).
+        foreach (y; 0 .. h) {
+            size_t srcRow = cast(size_t) (h - 1 - y) * w * 4;
+            size_t dstRow = 54 + cast(size_t) y * w * 4;
+            if (isRgba) {
+                foreach (x; 0 .. w) {
+                    bmp[dstRow + x * 4] = pixels[srcRow + x * 4 + 2];
+                    bmp[dstRow + x * 4 + 1] = pixels[srcRow + x * 4 + 1];
+                    bmp[dstRow + x * 4 + 2] = pixels[srcRow + x * 4];
+                    bmp[dstRow + x * 4 + 3] = pixels[srcRow + x * 4 + 3];
+                }
+            } else {
+                bmp[dstRow .. dstRow + w * 4] = pixels[srcRow .. srcRow + w * 4];
+            }
+        }
+        vkUnmapMemory(core.device, mem);
+        vkFreeCommandBuffers(core.device, swapState.commandPool, 1, &cmd);
+        vkDestroyBuffer(core.device, buf, null);
+        vkFreeMemory(core.device, mem, null);
+
+        write(capturePath, bmp);
+        writefln("captured frame -> %s (%dx%d format=%d)", capturePath, w, h, swapState.format);
+        captureDone = true;
     }
 
     void recreateSwapchain() {

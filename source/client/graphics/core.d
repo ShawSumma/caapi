@@ -10,6 +10,7 @@ struct VulkanCore {
     VkQueue graphicsQueue;
     uint graphicsQueueFamily;
     VkSurfaceKHR surface;
+    bool multiDrawIndirect;
 
     bool init(void* window) {
         uint extCount;
@@ -32,6 +33,17 @@ struct VulkanCore {
         createInfo.pApplicationInfo = &appInfo;
         createInfo.enabledExtensionCount = extCount;
         createInfo.ppEnabledExtensionNames = extNames;
+
+        version (OSX) {
+            // MoltenVK is a non-conformant (portability) implementation; the
+            // loader hides it unless portability enumeration is requested.
+            const(char)*[] osxExts = extNames[0 .. extCount].dup;
+            osxExts ~= "VK_KHR_portability_enumeration".ptr;
+            createInfo.enabledExtensionCount = cast(uint) osxExts.length;
+            createInfo.ppEnabledExtensionNames = osxExts.ptr;
+            enum VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR = 0x00000001;
+            createInfo.flags = VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+        }
 
         VkResult res = vkCreateInstance(&createInfo, null, &instance);
         if (res != VkResult.VK_SUCCESS) {
@@ -82,14 +94,30 @@ struct VulkanCore {
         queueCreateInfo.queueCount = 1;
         queueCreateInfo.pQueuePriorities = &queuePriority;
 
-        const(char)*[1] deviceExtensions = ["VK_KHR_swapchain".ptr];
+        const(char)*[] deviceExtensions = ["VK_KHR_swapchain".ptr];
+        version (OSX) {
+            // Required whenever the device advertises it (MoltenVK does).
+            deviceExtensions ~= "VK_KHR_portability_subset".ptr;
+        }
+
+        // vkCmdDrawIndirect with drawCount > 1 needs this feature enabled;
+        // when unsupported the renderer falls back to one draw per slot.
+        VkPhysicalDeviceFeatures supported;
+        vkGetPhysicalDeviceFeatures(physicalDevice, &supported);
+        multiDrawIndirect = supported.flags[FEATURE_MULTI_DRAW_INDIRECT] != 0;
+        VkPhysicalDeviceFeatures enabled;
+        enabled.flags[] = 0;
+        if (multiDrawIndirect) {
+            enabled.flags[FEATURE_MULTI_DRAW_INDIRECT] = 1;
+        }
 
         VkDeviceCreateInfo deviceCreateInfo;
         deviceCreateInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
         deviceCreateInfo.queueCreateInfoCount = 1;
         deviceCreateInfo.pQueueCreateInfos = &queueCreateInfo;
-        deviceCreateInfo.enabledExtensionCount = 1;
+        deviceCreateInfo.enabledExtensionCount = cast(uint) deviceExtensions.length;
         deviceCreateInfo.ppEnabledExtensionNames = deviceExtensions.ptr;
+        deviceCreateInfo.pEnabledFeatures = &enabled;
 
         res = vkCreateDevice(physicalDevice, &deviceCreateInfo, null, &device);
         if (res != VkResult.VK_SUCCESS) {

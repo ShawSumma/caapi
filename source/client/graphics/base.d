@@ -7,6 +7,10 @@ struct SwapchainState {
     VkPhysicalDevice physDevice;
     VkSurfaceKHR surface;
     VkSwapchainKHR swapchain;
+    // Offscreen mode: render into an owned image instead of a swapchain, so
+    // frames can be captured at full size with no window and no present.
+    bool offscreen;
+    VkDeviceMemory colorMemory;
     VkFormat format;
     VkExtent2D extent;
     VkImage[] images;
@@ -19,7 +23,10 @@ struct SwapchainState {
     VkCommandPool commandPool;
     VkCommandBuffer commandBuffer;
     VkSemaphore imageAvailableSemaphore;
-    VkSemaphore renderFinishedSemaphore;
+    // One per swapchain image: a present operation may still hold the
+    // semaphore for its image after the next frame's acquire returns, so a
+    // single render-finished semaphore is not safely reusable.
+    VkSemaphore[] renderFinishedSemaphores;
     VkFence inFlightFence;
 
     bool init(VkPhysicalDevice physDevice, VkDevice device, VkSurfaceKHR surface, uint queueFamily) {
@@ -46,7 +53,7 @@ struct SwapchainState {
         VkSemaphoreCreateInfo semCI;
         semCI.sType = VkStructureType.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
         vkCreateSemaphore(device, &semCI, null, &imageAvailableSemaphore);
-        vkCreateSemaphore(device, &semCI, null, &renderFinishedSemaphore);
+        createRenderFinishedSemaphores(device);
 
         VkFenceCreateInfo fenceCI;
         fenceCI.sType = VkStructureType.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
@@ -65,18 +72,96 @@ struct SwapchainState {
         destroySwapchainResources(device);
 
         // The acquire semaphore may be left signaled by an acquire whose image
-        // was never presented; recreate both semaphores to get a clean state.
+        // was never presented; recreate all semaphores to get a clean state.
         vkDestroySemaphore(device, imageAvailableSemaphore, null);
-        vkDestroySemaphore(device, renderFinishedSemaphore, null);
+        destroyRenderFinishedSemaphores(device);
         VkSemaphoreCreateInfo semCI;
         semCI.sType = VkStructureType.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
         vkCreateSemaphore(device, &semCI, null, &imageAvailableSemaphore);
-        vkCreateSemaphore(device, &semCI, null, &renderFinishedSemaphore);
 
-        return createSwapchainResources(device);
+        if (!createSwapchainResources(device)) {
+            return false;
+        }
+        createRenderFinishedSemaphores(device);
+        return true;
+    }
+
+    void createRenderFinishedSemaphores(VkDevice device) {
+        VkSemaphoreCreateInfo semCI;
+        semCI.sType = VkStructureType.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        renderFinishedSemaphores = new VkSemaphore[](images.length);
+        foreach (ref s; renderFinishedSemaphores) {
+            vkCreateSemaphore(device, &semCI, null, &s);
+        }
+    }
+
+    void destroyRenderFinishedSemaphores(VkDevice device) {
+        foreach (s; renderFinishedSemaphores) {
+            vkDestroySemaphore(device, s, null);
+        }
+        renderFinishedSemaphores = null;
+    }
+
+    bool createOffscreenTarget(VkDevice device) {
+        extent = VkExtent2D(1280, 720);
+        format = VkFormat.VK_FORMAT_B8G8R8A8_UNORM;
+
+        VkImageCreateInfo ici;
+        ici.sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        ici.imageType = VkImageType.VK_IMAGE_TYPE_2D;
+        ici.format = format;
+        ici.extent = VkExtent3D(extent.width, extent.height, 1);
+        ici.mipLevels = 1;
+        ici.arrayLayers = 1;
+        ici.samples = 1;
+        ici.tiling = VkImageTiling.VK_IMAGE_TILING_OPTIMAL;
+        ici.usage = VkImageUsageFlagBits.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+                  | VkImageUsageFlagBits.VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        ici.sharingMode = VkSharingMode.VK_SHARING_MODE_EXCLUSIVE;
+        ici.initialLayout = VkImageLayout.VK_IMAGE_LAYOUT_UNDEFINED;
+        VkImage colorImage;
+        vkCreateImage(device, &ici, null, &colorImage);
+
+        VkMemoryRequirements req;
+        vkGetImageMemoryRequirements(device, colorImage, &req);
+        VkPhysicalDeviceMemoryProperties mp;
+        vkGetPhysicalDeviceMemoryProperties(physDevice, &mp);
+        uint mti = uint.max;
+        for (uint i = 0; i < mp.memoryTypeCount; i++) {
+            if ((req.memoryTypeBits & (1u << i)) &&
+                (mp.memoryTypes[i].propertyFlags & VkMemoryPropertyFlagBits.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+                mti = i;
+                break;
+            }
+        }
+        VkMemoryAllocateInfo mai;
+        mai.sType = VkStructureType.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        mai.allocationSize = req.size;
+        mai.memoryTypeIndex = mti;
+        vkAllocateMemory(device, &mai, null, &colorMemory);
+        vkBindImageMemory(device, colorImage, colorMemory, 0);
+
+        images = [colorImage];
+        imageViews = new VkImageView[](1);
+        VkImageViewCreateInfo ivci;
+        ivci.sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        ivci.image = colorImage;
+        ivci.viewType = VkImageViewType.VK_IMAGE_VIEW_TYPE_2D;
+        ivci.format = format;
+        ivci.subresourceRange.aspectMask = VkImageAspectFlagBits.VK_IMAGE_ASPECT_COLOR_BIT;
+        ivci.subresourceRange.levelCount = 1;
+        ivci.subresourceRange.layerCount = 1;
+        vkCreateImageView(device, &ivci, null, &imageViews[0]);
+        return true;
     }
 
     bool createSwapchainResources(VkDevice device) {
+        if (offscreen) {
+            if (images.length == 0 && !createOffscreenTarget(device)) {
+                return false;
+            }
+            return createDepthAndFramebuffers(device);
+        }
         VkSurfaceCapabilitiesKHR caps;
         vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physDevice, surface, &caps);
 
@@ -111,7 +196,8 @@ struct SwapchainState {
         sci.imageColorSpace = colorSpace;
         sci.imageExtent = extent;
         sci.imageArrayLayers = 1;
-        sci.imageUsage = VkImageUsageFlagBits.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        sci.imageUsage = VkImageUsageFlagBits.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+                       | VkImageUsageFlagBits.VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
         sci.imageSharingMode = VkSharingMode.VK_SHARING_MODE_EXCLUSIVE;
         sci.preTransform = caps.currentTransform;
         sci.compositeAlpha = VkCompositeAlphaFlagBitsKHR.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
@@ -148,6 +234,10 @@ struct SwapchainState {
             vkCreateImageView(device, &ivci, null, &imageViews[i]);
         }
 
+        return createDepthAndFramebuffers(device);
+    }
+
+    bool createDepthAndFramebuffers(VkDevice device) {
         VkImageCreateInfo dci;
         dci.sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         dci.imageType = VkImageType.VK_IMAGE_TYPE_2D;
@@ -202,6 +292,7 @@ struct SwapchainState {
             }
         }
 
+        uint imgCount = cast(uint) images.length;
         framebuffers = new VkFramebuffer[](imgCount);
         for (uint i = 0; i < imgCount; i++) {
             VkImageView[2] fbAttach = [imageViews[i], depthView];
@@ -226,7 +317,9 @@ struct SwapchainState {
         attachments[0].loadOp = VkAttachmentLoadOp.VK_ATTACHMENT_LOAD_OP_CLEAR;
         attachments[0].storeOp = VkAttachmentStoreOp.VK_ATTACHMENT_STORE_OP_STORE;
         attachments[0].initialLayout = VkImageLayout.VK_IMAGE_LAYOUT_UNDEFINED;
-        attachments[0].finalLayout = VkImageLayout.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        attachments[0].finalLayout = offscreen
+            ? VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
+            : VkImageLayout.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
         attachments[1].format = VkFormat.VK_FORMAT_D32_SFLOAT;
         attachments[1].samples = 1;
@@ -327,7 +420,7 @@ struct SwapchainState {
 
     void cleanup(VkDevice device) {
         vkDestroyFence(device, inFlightFence, null);
-        vkDestroySemaphore(device, renderFinishedSemaphore, null);
+        destroyRenderFinishedSemaphores(device);
         vkDestroySemaphore(device, imageAvailableSemaphore, null);
         vkDestroyCommandPool(device, commandPool, null);
         destroySwapchainResources(device);
