@@ -2,9 +2,7 @@ module client.script;
 
 import std.stdio;
 import std.conv : to;
-import std.string : strip, split, splitLines, startsWith, toStringz;
-import std.format : format;
-import core.stdc.stdlib : system;
+import std.string : strip, split, splitLines, startsWith;
 
 struct ScriptEvent {
     float time;
@@ -18,7 +16,7 @@ struct ScriptEvent {
 /// Lines starting with # are comments. Blank lines ignored.
 ///
 /// Commands:
-///   screenshot <path>    - capture window to PNG via ImageMagick import
+///   screenshot <path>    - capture the rendered frame to PNG (GPU readback)
 ///   quit                 - exit
 struct Script {
     ScriptEvent[] events;
@@ -56,13 +54,12 @@ struct Script {
     float yawRate = 0;
     float pitchRate = 0;
 
-    void tick(float now, ulong xwid, ref bool running) {
+    void tick(float now, ref bool running, ref string screenshot) {
         while (cursor < events.length && events[cursor].time <= now) {
             auto e = events[cursor++];
             if (e.command == "screenshot") {
-                auto cmd = format("import -window 0x%x %s", xwid, e.arg);
-                writefln("[script t=%s] %s", e.time, cmd);
-                system(cmd.toStringz);
+                writefln("[script t=%s] screenshot -> %s", e.time, e.arg);
+                screenshot = e.arg;
             } else if (e.command == "quit") {
                 running = false;
             } else if (e.command == "key_down" || e.command == "key_up") {

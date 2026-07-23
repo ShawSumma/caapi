@@ -11,11 +11,11 @@ dub build
 ```
 
 The `preBuildCommands` in `dub.sdl` handle everything:
-1. Builds SDL3 as a static library (X11 only, no Wayland, no audio/joystick/haptic)
+1. Compiles the Cocoa windowing shim (`source/bindings/cocoa.m`) with `clang` into `obj/cocoa.o`
 2. Compiles all GLSL shaders to SPIR-V via `glslc`
 3. Compiles and links the D code
 
-Dependencies live in `deps/` as git submodules: `SDL3` and `Vulkan-Headers`.
+There are no bundled dependencies or submodules. The build needs these tools/libraries from Homebrew: `ldc`, `dub`, `shaderc` (for `glslc`), `vulkan-loader`, and `molten-vk`. Windowing is native Cocoa (a minimal Objective-C shim exposing a C API in `source/bindings/cocoa.d`); the Vulkan surface is created with `VK_EXT_metal_surface` from a `CAMetalLayer`. MoltenVK requires `VK_KHR_portability_enumeration` at instance creation and `VK_KHR_portability_subset` at device creation — both are wired up in `source/client/graphics/core.d`.
 
 Shaders that use `#include` need `-I source/shaders` passed to `glslc`. The vertex shader and compute shader need this; the fragment shader currently does not. If you add `#include "common.h"` to a shader, update the corresponding `glslc` line in `dub.sdl`.
 
@@ -25,13 +25,11 @@ SPIR-V binaries in `source/shaders/spv/` are embedded into the D binary via `str
 
 ## Testing Visually
 
-Run on Xephyr to avoid stealing keyboard focus:
-
 ```
-DISPLAY=:7 ./mined --script tests/screenshot.script
+./mined --script tests/screenshot.script
 ```
 
-A persistent Xephyr instance should already be running on `:7`. Do NOT restart it between runs. Test scripts live in `tests/` and support timed screenshots:
+This opens a real window briefly. Test scripts live in `tests/` and support timed screenshots:
 
 ```
 # Wait for terrain to load, take a screenshot, quit.
@@ -39,7 +37,7 @@ A persistent Xephyr instance should already be running on `:7`. Do NOT restart i
 2.5  quit
 ```
 
-Scripts use a fixed dt of 0.016s. Screenshots are taken via ImageMagick's `import -window` command. Read the resulting PNG files to visually inspect the output.
+Scripts use a fixed dt of 0.016s. Screenshots are captured by the engine itself: the swapchain image is copied to a host-visible buffer (GPU readback in `source/client/graphics/screenshot.d`), written as BMP, and converted to PNG with macOS `sips`. No screen-recording permission is needed. Read the resulting PNG files to visually inspect the output. F12 does the same interactively.
 
 ## Architecture Overview
 
@@ -121,7 +119,7 @@ The terrain surface is defined by a `Plane` per node (Side.A for Land, -Side.A f
 
 ### Input and Simulation
 
-The main loop (`source/main.d`) handles SDL3 events, drives the simulation, and calls the renderer. WASD moves the camera in hyperbolic space. Mouse look is implemented. The simulation tick applies hyperbolic translation to the camera's `Position` (node + local isometry).
+The main loop (`source/main.d`) polls Cocoa events through the shim (`minedPollEvent`), drives the simulation, and calls the renderer. Keyboard input uses macOS virtual keycodes (constants in `source/bindings/cocoa.d`). Mouse capture hides the cursor and freezes it (`CGAssociateMouseAndMouseCursorPosition`), with relative deltas from `NSEvent`. WASD moves the camera in hyperbolic space. Mouse look is implemented. The simulation tick applies hyperbolic translation to the camera's `Position` (node + local isometry).
 
 `--script` mode replaces real-time input with a deterministic script: fixed dt (0.016s), timed key events, screenshots, and quit. This is essential for reproducible visual testing.
 
@@ -162,7 +160,7 @@ The main loop (`source/main.d`) handles SDL3 events, drives the simulation, and 
 - **Function parameters** — when a signature wraps, each parameter gets its own line. Don't pack multiple parameters onto one line:
   ```d
   // WRONG
-  void processInput(ref SDL_Event ev, void* window, ref CameraInput cam, ref Renderer renderer,
+  void processInput(ref MinedEvent ev, void* window, ref CameraInput cam, ref Renderer renderer,
       ref bool mouseCaptured, ref float mouseDx, ref float mouseDy) {
 
   // RIGHT — but also reconsider the API; too many ref params is a smell
@@ -172,7 +170,7 @@ The main loop (`source/main.d`) handles SDL3 events, drives the simulation, and 
 ### Architecture
 
 - **Vulkan bindings** are minimal — only declare what you use, in `source/bindings/vk.d`
-- **No Wayland** — SDL3 is built with X11 only
+- **macOS only** — windowing is native Cocoa via the Objective-C shim; there is no X11/Wayland/SDL path
 - **Shader changes** require manual SPIR-V recompilation or `dub build --force`
 - **SPIR-V imports** — use `cast(immutable(ubyte)[]) import("file.spv")` for LDC2 compatibility
 - **Vulkan struct fields** — D initializes floats to `nan` by default. Always explicitly zero fields like `depthBiasClamp`, `minDepth`, viewport `x`/`y`, etc.

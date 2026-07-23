@@ -75,6 +75,7 @@ enum VkStructureType : int {
     VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO = 31,
     VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER = 44,
     VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER = 45,
+    VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT = 1000217000,
 }
 
 enum VkDescriptorType : int {
@@ -113,6 +114,7 @@ enum VkImageLayout : int {
     VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL = 3,
     VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL = 4,
     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL = 5,
+    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL = 6,
     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL = 7,
     VK_IMAGE_LAYOUT_PRESENT_SRC_KHR = 1000001002,
 }
@@ -171,6 +173,7 @@ enum VkSharingMode : int {
 }
 
 enum VkImageUsageFlagBits : uint {
+    VK_IMAGE_USAGE_TRANSFER_SRC_BIT = 0x00000001,
     VK_IMAGE_USAGE_TRANSFER_DST_BIT = 0x00000002,
     VK_IMAGE_USAGE_SAMPLED_BIT = 0x00000004,
     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT = 0x00000010,
@@ -890,10 +893,23 @@ struct VkPresentInfoKHR {
     VkResult* pResults;
 }
 
-// SDL Vulkan functions (from libSDL3)
+enum uint VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR = 0x00000001;
+
+struct VkMetalSurfaceCreateInfoEXT {
+    VkStructureType sType;
+    const(void)* pNext;
+    VkFlags flags;
+    const(void)* pLayer;
+}
+
+alias PFN_vkCreateMetalSurfaceEXT = extern(C) VkResult function(
+    VkInstance,
+    const(VkMetalSurfaceCreateInfoEXT)*,
+    const(void)*,
+    VkSurfaceKHR*) nothrow @nogc;
+
 extern(C) nothrow @nogc {
-    const(char)** SDL_Vulkan_GetInstanceExtensions(uint* count);
-    bool SDL_Vulkan_CreateSurface(void* window, VkInstance instance, const(void)* allocator, VkSurfaceKHR* surface);
+    void* vkGetInstanceProcAddr(VkInstance, const(char)*);
 }
 
 // Vulkan functions - linked from libvulkan.so
@@ -980,6 +996,7 @@ extern(C) nothrow @nogc {
     VkResult vkCreateSampler(VkDevice, const(VkSamplerCreateInfo)*, const(void)*, VkSampler*);
     void vkDestroySampler(VkDevice, VkSampler, const(void)*);
     void vkCmdCopyBufferToImage(VkCommandBuffer, ulong, VkImage, int, uint, const(VkBufferImageCopy)*);
+    void vkCmdCopyImageToBuffer(VkCommandBuffer, VkImage, int, ulong, uint, const(VkBufferImageCopy)*);
     VkResult vkQueueWaitIdle(VkQueue);
 }
 
@@ -1051,6 +1068,7 @@ enum VK_FILTER_LINEAR = 1;
 enum VK_SAMPLER_MIPMAP_MODE_NEAREST = 0;
 enum VK_SAMPLER_ADDRESS_MODE_REPEAT = 0;
 enum VK_QUEUE_FAMILY_IGNORED = ~0U;
+enum VK_ACCESS_TRANSFER_READ_BIT = 0x00000800;
 enum VK_ACCESS_TRANSFER_WRITE_BIT = 0x00001000;
 enum VK_DEPENDENCY_BY_REGION_BIT = 0x00000001;
 

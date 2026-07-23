@@ -11,14 +11,12 @@ struct VulkanCore {
     uint graphicsQueueFamily;
     VkSurfaceKHR surface;
 
-    bool init(void* window) {
-        // Get required extensions from SDL
-        uint extCount;
-        auto extNames = SDL_Vulkan_GetInstanceExtensions(&extCount);
-        if (extNames is null) {
-            writeln("Failed to get Vulkan instance extensions from SDL");
-            return false;
-        }
+    bool init(void* metalLayer) {
+        const(char)*[3] extNames = [
+            "VK_KHR_surface".ptr,
+            "VK_EXT_metal_surface".ptr,
+            "VK_KHR_portability_enumeration".ptr,
+        ];
 
         // Create instance
         VkApplicationInfo appInfo;
@@ -32,8 +30,9 @@ struct VulkanCore {
         VkInstanceCreateInfo createInfo;
         createInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
         createInfo.pApplicationInfo = &appInfo;
-        createInfo.enabledExtensionCount = extCount;
-        createInfo.ppEnabledExtensionNames = extNames;
+        createInfo.flags = VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+        createInfo.enabledExtensionCount = cast(uint) extNames.length;
+        createInfo.ppEnabledExtensionNames = extNames.ptr;
 
         auto res = vkCreateInstance(&createInfo, null, &instance);
         if (res != VkResult.VK_SUCCESS) {
@@ -41,9 +40,17 @@ struct VulkanCore {
             return false;
         }
 
-        // Create surface via SDL
-        if (!SDL_Vulkan_CreateSurface(window, instance, null, &surface)) {
-            writeln("SDL_Vulkan_CreateSurface failed");
+        auto createMetalSurface = cast(PFN_vkCreateMetalSurfaceEXT) vkGetInstanceProcAddr(instance, "vkCreateMetalSurfaceEXT");
+        if (createMetalSurface is null) {
+            writeln("vkCreateMetalSurfaceEXT not available");
+            return false;
+        }
+        VkMetalSurfaceCreateInfoEXT surfaceInfo;
+        surfaceInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT;
+        surfaceInfo.pLayer = metalLayer;
+        res = createMetalSurface(instance, &surfaceInfo, null, &surface);
+        if (res != VkResult.VK_SUCCESS) {
+            writefln("vkCreateMetalSurfaceEXT failed: %s", res);
             return false;
         }
 
@@ -88,13 +95,17 @@ struct VulkanCore {
         queueCreateInfo.queueCount = 1;
         queueCreateInfo.pQueuePriorities = &queuePriority;
 
-        const(char)*[1] deviceExtensions = ["VK_KHR_swapchain".ptr];
+        // MoltenVK requires VK_KHR_portability_subset to be enabled when advertised
+        const(char)*[2] deviceExtensions = [
+            "VK_KHR_swapchain".ptr,
+            "VK_KHR_portability_subset".ptr,
+        ];
 
         VkDeviceCreateInfo deviceCreateInfo;
         deviceCreateInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
         deviceCreateInfo.queueCreateInfoCount = 1;
         deviceCreateInfo.pQueueCreateInfos = &queueCreateInfo;
-        deviceCreateInfo.enabledExtensionCount = 1;
+        deviceCreateInfo.enabledExtensionCount = cast(uint) deviceExtensions.length;
         deviceCreateInfo.ppEnabledExtensionNames = deviceExtensions.ptr;
 
         res = vkCreateDevice(physicalDevice, &deviceCreateInfo, null, &device);

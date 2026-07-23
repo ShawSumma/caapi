@@ -7,6 +7,8 @@ import client.graphics.core;
 import client.graphics.base;
 import client.graphics.voxels;
 import client.graphics.fog : FogPipeline;
+import client.graphics.pipeline : GpuBuffer;
+import client.graphics.screenshot : writePngScreenshot;
 import client.graphics.frustum : Frustum;
 import client.worldgen_driver : WorldgenDriver;
 import common.dodeca : Vertex, VERTEX_COUNT, Side, SIDE_COUNT,
@@ -43,6 +45,13 @@ struct Renderer {
     uint[] activeSlots;
     ExtractTask[CONCURRENCY] tasksBuf;
     uint tasksLen;
+
+    string screenshotPath;
+    GpuBuffer screenshotBuf;
+
+    void requestScreenshot(string path) {
+        screenshotPath = path;
+    }
 
     void rotateCamera(float yawDelta, float pitchDelta, float rollDelta = 0) {
         if (yawDelta != 0) {
@@ -97,8 +106,8 @@ struct Renderer {
         }
     }
 
-    bool init(void* window) {
-        if (!core.init(window)) {
+    bool init(void* metalLayer) {
+        if (!core.init(metalLayer)) {
             return false;
         }
         if (!swapState.init(core.physicalDevice, core.device, core.surface, core.graphicsQueueFamily)) {
@@ -349,6 +358,19 @@ struct Renderer {
         fog.draw(cmd, fog.pipelineLayout, voxels.commonSet);
 
         vkCmdEndRenderPass(cmd);
+
+        if (screenshotPath.length > 0) {
+            if (screenshotBuf.buffer == 0) {
+                auto zeros = new ubyte[](extent.width * extent.height * 4);
+                screenshotBuf = GpuBuffer.create(
+                    core.physicalDevice,
+                    core.device,
+                    zeros,
+                    VkBufferUsageFlagBits.VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+            }
+            recordScreenshotCopy(cmd, swapState.images[imageIndex], extent);
+        }
+
         vkEndCommandBuffer(cmd);
 
         uint waitStage = VkPipelineStageFlagBits.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -371,6 +393,67 @@ struct Renderer {
         pi.pSwapchains = &swapState.swapchain;
         pi.pImageIndices = &imageIndex;
         vkQueuePresentKHR(core.graphicsQueue, &pi);
+
+        if (screenshotPath.length > 0) {
+            vkWaitForFences(core.device, 1, &swapState.inFlightFence, 1, ulong.max);
+            uint pixelCount = extent.width * extent.height;
+            void* mapped;
+            vkMapMemory(core.device, screenshotBuf.memory, 0, pixelCount * 4, 0, &mapped);
+            auto pixels = (cast(ubyte*) mapped)[0 .. pixelCount * 4].dup;
+            vkUnmapMemory(core.device, screenshotBuf.memory);
+            foreach (i; 0 .. pixelCount) {
+                pixels[i * 4 + 3] = 255;
+            }
+            writePngScreenshot(screenshotPath, extent.width, extent.height, pixels);
+            writefln("screenshot -> %s", screenshotPath);
+            stdout.flush();
+            screenshotPath = null;
+        }
+    }
+
+    private void recordScreenshotCopy(VkCommandBuffer cmd, VkImage image, VkExtent2D extent) {
+        VkImageMemoryBarrier toSrc;
+        toSrc.sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        toSrc.srcAccessMask = VkAccessFlagBits.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        toSrc.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        toSrc.oldLayout = VkImageLayout.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        toSrc.newLayout = VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        toSrc.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toSrc.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toSrc.image = image;
+        toSrc.subresourceRange.aspectMask = VkImageAspectFlagBits.VK_IMAGE_ASPECT_COLOR_BIT;
+        toSrc.subresourceRange.levelCount = 1;
+        toSrc.subresourceRange.layerCount = 1;
+        vkCmdPipelineBarrier(
+            cmd,
+            VkPipelineStageFlagBits.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0, 0, null, 0, null, 1, &toSrc);
+
+        VkBufferImageCopy region;
+        region.imageSubresource.aspectMask = VkImageAspectFlagBits.VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.layerCount = 1;
+        region.imageExtent.width = extent.width;
+        region.imageExtent.height = extent.height;
+        region.imageExtent.depth = 1;
+        vkCmdCopyImageToBuffer(
+            cmd,
+            image,
+            VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            screenshotBuf.buffer,
+            1,
+            &region);
+
+        VkImageMemoryBarrier toPresent = toSrc;
+        toPresent.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        toPresent.dstAccessMask = 0;
+        toPresent.oldLayout = VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        toPresent.newLayout = VkImageLayout.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        vkCmdPipelineBarrier(
+            cmd,
+            VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VkPipelineStageFlagBits.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            0, 0, null, 0, null, 1, &toPresent);
     }
 
     void breakBlock() {
@@ -428,6 +511,9 @@ struct Renderer {
     void cleanup() {
         if (core.device !is null) {
             vkDeviceWaitIdle(core.device);
+            if (screenshotBuf.buffer != 0) {
+                screenshotBuf.cleanup(core.device);
+            }
             fog.cleanup(core.device);
             voxels.cleanup(core.device);
             extract.cleanup(core.device);
