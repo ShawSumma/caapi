@@ -19,10 +19,6 @@ import common.sim_config : SimConfig, SimConfigRaw;
 import common.world;
 import worldcheck : dumpWorld, benchNearby, benchGen, benchDrive;
 
-// On macOS the ImportC'd SDL headers re-export the SDK's size_t typedef,
-// which collides with object.size_t; shadow the imports with one alias.
-alias size_t = object.size_t;
-
 enum : ulong {
     WINDOW_VULKAN    = 0x0000000010000000,
     WINDOW_RESIZABLE = 0x0000000000000020,
@@ -100,8 +96,6 @@ void main(string[] args) {
         if (a == "--shot" && i + 1 < args.length) {
             shotPath = args[i + 1];
         }
-        // Like --shot, but renders through the real swapchain into a hidden
-        // window instead of an offscreen framebuffer.
         if (a == "--shot-window" && i + 1 < args.length) {
             shotPath = args[i + 1];
             shotHiddenWindow = true;
@@ -149,7 +143,7 @@ void main(string[] args) {
     }
 
     string[] replayLines;
-    size_t replayCursor = 0;
+    object.size_t replayCursor = 0;
     bool replayMode = false;
     if (replayPath.length > 0) {
         if (!exists(replayPath)) {
@@ -177,8 +171,6 @@ void main(string[] args) {
     }
 
     if (shotPath.length > 0 && !shotHiddenWindow) {
-        // Capture mode renders to an offscreen framebuffer; force SDL's
-        // offscreen video driver so no window ever appears.
         import core.sys.posix.stdlib : setenv;
         setenv("SDL_VIDEO_DRIVER", "offscreen", 1);
     }

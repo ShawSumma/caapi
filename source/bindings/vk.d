@@ -291,6 +291,7 @@ enum VkFormatExt : int {
 enum VK_SUBPASS_EXTERNAL = ~0U;
 enum VK_NULL_HANDLE = 0;
 enum VK_QUEUE_GRAPHICS_BIT = 0x00000001;
+enum VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR = 0x00000001;
 
 struct VkExtent2D {
     uint width;
@@ -393,7 +394,7 @@ struct VkInstanceCreateInfo {
     const(char*)* ppEnabledExtensionNames;
 }
 
-// 55 VkBool32 feature flags; indexed via the FEATURE_* constants below.
+// 55 VkBool32 feature flags, indexed by position in the C struct.
 struct VkPhysicalDeviceFeatures {
     VkBool32[55] flags;
 }

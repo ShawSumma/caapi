@@ -7,14 +7,13 @@ struct SwapchainState {
     VkPhysicalDevice physDevice;
     VkSurfaceKHR surface;
     VkSwapchainKHR swapchain;
-    // Offscreen mode: render into an owned image instead of a swapchain, so
-    // frames can be captured at full size with no window and no present.
+    // Render into an owned image instead of a swapchain; no surface, no present.
     bool offscreen;
-    VkDeviceMemory colorMemory;
     VkFormat format;
     VkExtent2D extent;
     VkImage[] images;
     VkImageView[] imageViews;
+    VkDeviceMemory colorMemory;
     VkImage depthImage;
     VkDeviceMemory depthMemory;
     VkImageView depthView;
@@ -23,9 +22,7 @@ struct SwapchainState {
     VkCommandPool commandPool;
     VkCommandBuffer commandBuffer;
     VkSemaphore imageAvailableSemaphore;
-    // One per swapchain image: a present operation may still hold the
-    // semaphore for its image after the next frame's acquire returns, so a
-    // single render-finished semaphore is not safely reusable.
+    // Per image: present can still hold an image's semaphore after the next acquire.
     VkSemaphore[] renderFinishedSemaphores;
     VkFence inFlightFence;
 

@@ -45,9 +45,6 @@ struct Renderer {
     // Skip all GPU work; world generation and simulation still run. Used by
     // headless replays so they aren't paced (or stalled) by presentation.
     bool headless = false;
-
-    // When set, the next rendered frame is read back from the swapchain and
-    // written to this path as a BMP, then captureDone flips true.
     string capturePath;
     bool captureDone;
 
@@ -457,8 +454,7 @@ struct Renderer {
         if (extract.tfReady && activeCount > 0) {
             extract.recordTransformCompute(cmd, activeCount, voxels.transformsVbo.buffer);
         }
-        // Buffer copies are illegal inside a render pass, so the indirect
-        // command packing has to happen before the pass begins.
+        // vkCmdCopyBuffer is illegal inside a render pass.
         if (activeCount > 0) {
             extract.recordPackIndirect(cmd, activeSlots);
         }
@@ -608,8 +604,7 @@ struct Renderer {
         }
     }
 
-    /// Debug readback: copy the just-rendered swapchain image to host memory
-    /// and write it as a 32-bit BMP. Runs between submit and present.
+    /// Debug readback of the just-rendered frame as a 32-bit BMP.
     void captureSwapchainImage(uint imageIndex) {
         import std.file : write;
 
@@ -734,7 +729,6 @@ struct Renderer {
         bmp[28] = 32;
         put32(34, dataSize);
 
-        // BMP rows are bottom-up; the readback is top-down BGRA (or RGBA).
         foreach (y; 0 .. h) {
             size_t srcRow = cast(size_t) (h - 1 - y) * w * 4;
             size_t dstRow = 54 + cast(size_t) y * w * 4;
