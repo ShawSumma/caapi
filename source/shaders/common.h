@@ -10,6 +10,7 @@ layout(set = 0, binding = 0) uniform Common {
     float fog_density;
     float time;
     vec4 light_dir; // xyz = light direction in node-local frame, w unused
+    vec4 palette[5]; // the five voxel colors, rgb used, w unused
 };
 
 #endif

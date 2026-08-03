@@ -51,6 +51,15 @@ struct Renderer {
     uint maxSlots = 2^^16;
     uint concurrency = 128;
 
+    // The five voxel colors. Indices carry no fixed meaning; change freely.
+    float[4][5] palette = [
+        [0.85f, 0.35f, 0.30f, 0],
+        [0.90f, 0.80f, 0.30f, 0],
+        [0.30f, 0.75f, 0.40f, 0],
+        [0.30f, 0.55f, 0.90f, 0],
+        [0.70f, 0.40f, 0.85f, 0],
+    ];
+
     uint[ChunkId] slotMap;
     uint[ChunkId] slotGeneration;
     uint nextSlot = 0;
@@ -170,7 +179,6 @@ struct Renderer {
 
         if (!voxels.init(core.physicalDevice, core.device, swapState.renderPass,
                          empty, transforms,
-                         core.graphicsQueue, swapState.commandPool,
                          extract.facesBuf.buffer,
                          swapState.depthView)) {
             return false;
@@ -421,7 +429,7 @@ struct Renderer {
             }
         }
         lightNode[3] = 0;
-        voxels.updateCommonUbo(core.device, vp, invp, fogDensity, time, lightNode);
+        voxels.updateCommonUbo(core.device, vp, invp, fogDensity, time, lightNode, palette);
 
         MonoTime a5 = MonoTime.currTime;
 

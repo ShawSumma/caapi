@@ -5,7 +5,7 @@
 
 layout(location = 0) in mat4 transform;
 
-layout(location = 0) out vec3 texcoords_out;
+layout(location = 0) out flat vec3 voxel_color;
 layout(location = 1) out float occlusion;
 
 layout(set = 1, binding = 0) readonly restrict buffer Surfaces {
@@ -41,6 +41,13 @@ const uvec2 texcoords[4][6] = {
     {{0, 1}, {0, 0}, {1, 0}, {1, 0}, {1, 1}, {0, 1}},
 };
 
+float voxel_noise(uvec3 p) {
+    uint h = p.x * 374761393u + p.y * 668265263u + p.z * 3266489917u;
+    h = (h ^ (h >> 13)) * 1274126177u;
+    h = h ^ (h >> 16);
+    return float(h & 0xFFFFu) / 65535.0;
+}
+
 void main() {
     uint index = gl_VertexIndex / 6;
     uint vertex = gl_VertexIndex % 6;
@@ -55,7 +62,9 @@ void main() {
         else { axis -= 3; }
     }
     uvec2 uv = texcoords[axis / 3][vertex];
-    texcoords_out = vec3(uv, get_mat(s) - 1);
+    uint mat = get_mat(s) - 1;
+    float shade = mix(0.85, 1.15, voxel_noise(pos));
+    voxel_color = palette[mat % 5u].rgb * shade;
     occlusion = get_occlusion(s, uv);
     vec3 relative_coords = vertices[axis][vertex] + pos;
     gl_Position = view_projection * transform * vec4(relative_coords / dimension, 1);
