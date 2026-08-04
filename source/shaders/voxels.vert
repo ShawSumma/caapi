@@ -4,9 +4,20 @@
 #include "surface-extraction/surface.h"
 
 layout(location = 0) in mat4 transform;
+// Low 5 bits: which of the 20 chunks of the node this is. Upper bits: a hash
+// of the node's id, which persists as the graph grows and so never moves.
+layout(location = 4) in uint chunk_info;
 
-layout(location = 0) out flat vec3 voxel_color;
+layout(set = 1, binding = 2) readonly restrict buffer ChunkToNode {
+    mat4 chunk_to_node[];
+};
+
+layout(location = 0) out flat uint voxel_value;
 layout(location = 1) out float occlusion;
+layout(location = 2) out flat float shade;
+layout(location = 3) out vec3 node_pos;
+layout(location = 4) out flat vec3 chunk_normal;
+layout(location = 5) out flat uint node_seed;
 
 layout(set = 1, binding = 0) readonly restrict buffer Surfaces {
     Surface surfaces[];
@@ -54,6 +65,10 @@ void main() {
     Surface s = surfaces[index];
     uvec3 pos = get_pos(s);
     uint axis = get_axis(s);
+    // The winding flip below depends on a camera-relative determinant, so it
+    // moves as the player does. Keep the unflipped axis for anything that has
+    // to stay put.
+    uint stable_axis = axis;
     float det4 = determinant(view_projection * transform);
     if (det4 < 0.0) {
         if (axis < 3) { axis += 3; }
@@ -62,10 +77,31 @@ void main() {
         else { axis -= 3; }
     }
     uvec2 uv = texcoords[axis / 3][vertex];
-    uint mat = get_mat(s) - 1;
-    float shade = mix(0.85, 1.15, voxel_noise(pos));
-    voxel_color = palette[mat % 5u].rgb * shade;
+    // Spread the material enum across the 241 non-reserved values so the
+    // five-trit tuples actually vary. 97 is coprime with 241, so this is a
+    // bijection, and the +1 keeps black (0) and white (242) out of reach.
+    voxel_value = 1u + (get_mat(s) * 97u) % 241u;
+    shade = mix(0.85, 1.15, voxel_noise(pos));
     occlusion = get_occlusion(s, uv);
     vec3 relative_coords = vertices[axis][vertex] + pos;
-    gl_Position = view_projection * transform * vec4(relative_coords / dimension, 1);
+
+    vec3 chunk_pos = relative_coords / dimension;
+
+    // Node-local: one frame covering all 20 chunks of a node, so a field
+    // evaluated here runs continuously across chunk seams instead of tiling
+    // per chunk. It is fixed to the node, not to the camera, so unlike
+    // anything built from `transform` it does not shift when the player
+    // crosses into the next node.
+    vec4 np = chunk_to_node[chunk_info & 31u] * vec4(chunk_pos, 1);
+    node_pos = np.xyz / max(np.w, 1e-4);
+    node_seed = chunk_info >> 5u;
+
+    // Faces 0-2 and 6-8 point down their axis, 3-5 and 9-11 point up it. No
+    // transform is applied: the linear part of a Lorentz isometry shears, and
+    // there is no global parallel frame to carry a normal into anyway.
+    uint na = stable_axis % 3u;
+    chunk_normal = vec3(0.0);
+    chunk_normal[na] = ((stable_axis / 3u) % 2u == 1u) ? 1.0 : -1.0;
+
+    gl_Position = view_projection * transform * vec4(chunk_pos, 1);
 }

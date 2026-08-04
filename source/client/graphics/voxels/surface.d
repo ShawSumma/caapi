@@ -43,6 +43,10 @@ struct SurfacePipeline {
     GpuBuffer commonUbo;
     GpuBuffer surfacesSsbo;
     GpuBuffer transformsVbo;
+    /// The 20 chunk-to-node isometries, one per dodecahedral vertex. Constant,
+    /// uploaded once. Lets the vertex stage put a chunk-local position into its
+    /// node's frame, which is stable and covers all 20 chunks continuously.
+    GpuBuffer chunkToNodeBuf;
     uint surfaceCount;
     uint chunkCount;
 
@@ -54,6 +58,9 @@ struct SurfacePipeline {
         float[16][] transforms,
         ulong externalSurfacesBuf = 0,
         VkImageView depthView = 0,
+        VkImageView fieldView = 0,
+        VkSampler fieldSampler = 0,
+        float[] chunkToNode = null,
     ) {
         static immutable ubyte[] vertSpv = cast(immutable(ubyte)[]) import("voxels.vert.spv");
         static immutable ubyte[] fragSpv = cast(immutable(ubyte)[]) import("voxels.frag.spv");
@@ -82,28 +89,38 @@ struct SurfacePipeline {
         commonCi.pBindings = commonBinds.ptr;
         vkCreateDescriptorSetLayout(device, &commonCi, null, &commonLayout);
 
-        VkDescriptorSetLayoutBinding staticBind;
-        staticBind.binding = 0;
-        staticBind.descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        staticBind.descriptorCount = 1;
-        staticBind.stageFlags = VkShaderStageFlagBits.VK_SHADER_STAGE_VERTEX_BIT;
+        VkDescriptorSetLayoutBinding[3] staticBinds;
+        staticBinds[0].binding = 0;
+        staticBinds[0].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        staticBinds[0].descriptorCount = 1;
+        staticBinds[0].stageFlags = VkShaderStageFlagBits.VK_SHADER_STAGE_VERTEX_BIT;
+        staticBinds[1].binding = 1;
+        staticBinds[1].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        staticBinds[1].descriptorCount = 1;
+        staticBinds[1].stageFlags = VkShaderStageFlagBits.VK_SHADER_STAGE_FRAGMENT_BIT;
+        staticBinds[2].binding = 2;
+        staticBinds[2].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        staticBinds[2].descriptorCount = 1;
+        staticBinds[2].stageFlags = VkShaderStageFlagBits.VK_SHADER_STAGE_VERTEX_BIT;
         VkDescriptorSetLayoutCreateInfo staticCi;
         staticCi.sType = VkStructureType.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        staticCi.bindingCount = 1;
-        staticCi.pBindings = &staticBind;
+        staticCi.bindingCount = 3;
+        staticCi.pBindings = staticBinds.ptr;
         vkCreateDescriptorSetLayout(device, &staticCi, null, &staticLayout);
 
-        VkDescriptorPoolSize[3] sizes;
+        VkDescriptorPoolSize[4] sizes;
         sizes[0].type = VkDescriptorType.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         sizes[0].descriptorCount = 1;
         sizes[1].type = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        sizes[1].descriptorCount = 1;
+        sizes[1].descriptorCount = 2;
         sizes[2].type = VkDescriptorType.VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
         sizes[2].descriptorCount = 1;
+        sizes[3].type = VkDescriptorType.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        sizes[3].descriptorCount = 1;
         VkDescriptorPoolCreateInfo poolCi;
         poolCi.sType = VkStructureType.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         poolCi.maxSets = 2;
-        poolCi.poolSizeCount = 3;
+        poolCi.poolSizeCount = 4;
         poolCi.pPoolSizes = sizes.ptr;
         vkCreateDescriptorPool(device, &poolCi, null, &descPool);
 
@@ -143,6 +160,12 @@ struct SurfacePipeline {
         );
         chunkCount = cast(uint) transforms.length;
 
+        chunkToNodeBuf = GpuBuffer.create(
+            phys, device, cast(void[]) chunkToNode,
+            VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        );
+
+
         VkDescriptorBufferInfo commonInfo;
         commonInfo.buffer = commonUbo.buffer;
         commonInfo.offset = 0;
@@ -155,7 +178,15 @@ struct SurfacePipeline {
         depthInfo.sampler = 0;
         depthInfo.imageView = depthView;
         depthInfo.imageLayout = VkImageLayout.VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-        VkWriteDescriptorSet[3] writes;
+        VkDescriptorImageInfo fieldInfo;
+        fieldInfo.sampler = fieldSampler;
+        fieldInfo.imageView = fieldView;
+        fieldInfo.imageLayout = VkImageLayout.VK_IMAGE_LAYOUT_GENERAL;
+        VkDescriptorBufferInfo c2nInfo;
+        c2nInfo.buffer = chunkToNodeBuf.buffer;
+        c2nInfo.offset = 0;
+        c2nInfo.range = VK_WHOLE_SIZE;
+        VkWriteDescriptorSet[5] writes;
         writes[0].sType = VkStructureType.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].dstSet = commonSet;
         writes[0].dstBinding = 0;
@@ -174,7 +205,19 @@ struct SurfacePipeline {
         writes[2].descriptorCount = 1;
         writes[2].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         writes[2].pBufferInfo = &ssboInfo;
-        vkUpdateDescriptorSets(device, 3, writes.ptr, 0, null);
+        writes[3].sType = VkStructureType.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[3].dstSet = staticSet;
+        writes[3].dstBinding = 1;
+        writes[3].descriptorCount = 1;
+        writes[3].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[3].pImageInfo = cast(const(void)*) &fieldInfo;
+        writes[4].sType = VkStructureType.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[4].dstSet = staticSet;
+        writes[4].dstBinding = 2;
+        writes[4].descriptorCount = 1;
+        writes[4].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[4].pBufferInfo = &c2nInfo;
+        vkUpdateDescriptorSets(device, 5, writes.ptr, 0, null);
 
         VkPushConstantRange pcr;
         pcr.stageFlags = VkShaderStageFlagBits.VK_SHADER_STAGE_VERTEX_BIT;
@@ -202,24 +245,35 @@ struct SurfacePipeline {
         stages[1].mod = fragShader;
         stages[1].pName = "main";
 
-        VkVertexInputBindingDescription binding;
-        binding.binding = 0;
-        binding.stride = 64;
-        binding.inputRate = cast(VkVertexInputRate) VkVertexInputRateExt.VK_VERTEX_INPUT_RATE_INSTANCE;
+        VkVertexInputBindingDescription[2] bindings;
+        bindings[0].binding = 0;
+        bindings[0].stride = 64;
+        bindings[0].inputRate = cast(VkVertexInputRate) VkVertexInputRateExt.VK_VERTEX_INPUT_RATE_INSTANCE;
+        // Per-chunk identity, on the same instance rate as the transform so it
+        // is indexed identically however the draw sets firstInstance.
+        bindings[1].binding = 1;
+        bindings[1].stride = 4;
+        bindings[1].inputRate = cast(VkVertexInputRate) VkVertexInputRateExt.VK_VERTEX_INPUT_RATE_INSTANCE;
 
-        VkVertexInputAttributeDescription[4] attrs;
+        VkVertexInputAttributeDescription[5] attrs;
         foreach (i; 0 .. 4) {
             attrs[i].location = cast(uint) i;
             attrs[i].binding = 0;
             attrs[i].format = VkFormatExt.VK_FORMAT_R32G32B32A32_SFLOAT;
             attrs[i].offset = cast(uint)(i * 16);
         }
+        attrs[4].location = 4;
+        attrs[4].binding = 1;
+        // The other attributes use VkFormatExt; this one only exists in
+        // VkFormat, so convert rather than duplicate the value.
+        attrs[4].format = cast(typeof(attrs[4].format)) VkFormat.VK_FORMAT_R32_UINT;
+        attrs[4].offset = 0;
 
         VkPipelineVertexInputStateCreateInfo vi;
         vi.sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-        vi.vertexBindingDescriptionCount = 1;
-        vi.pVertexBindingDescriptions = &binding;
-        vi.vertexAttributeDescriptionCount = 4;
+        vi.vertexBindingDescriptionCount = 2;
+        vi.pVertexBindingDescriptions = bindings.ptr;
+        vi.vertexAttributeDescriptionCount = 5;
         vi.pVertexAttributeDescriptions = attrs.ptr;
 
         VkPipelineInputAssemblyStateCreateInfo ia;
@@ -315,7 +369,11 @@ struct SurfacePipeline {
         float fogDensity,
         float time,
         float[4] lightDir,
-        float[4][5] palette,
+        float[4] rotBase,
+        float[4] rotGain,
+        float[4] trip,
+        float[4] viewport,
+        float[4] fieldInfo,
     ) {
         ubyte[240] data = 0;
         memcpy(data.ptr + 0, vp.ptr, 64);
@@ -323,7 +381,11 @@ struct SurfacePipeline {
         memcpy(data.ptr + 128, &fogDensity, 4);
         memcpy(data.ptr + 132, &time, 4);
         memcpy(data.ptr + 144, lightDir.ptr, 16);
-        memcpy(data.ptr + 160, palette.ptr, 80);
+        memcpy(data.ptr + 160, rotBase.ptr, 16);
+        memcpy(data.ptr + 176, rotGain.ptr, 16);
+        memcpy(data.ptr + 192, trip.ptr, 16);
+        memcpy(data.ptr + 208, viewport.ptr, 16);
+        memcpy(data.ptr + 224, fieldInfo.ptr, 16);
         void* mapped;
         vkMapMemory(device, commonUbo.memory, 0, 240, 0, &mapped);
         memcpy(mapped, data.ptr, 240);
@@ -357,6 +419,7 @@ struct SurfacePipeline {
             surfacesSsbo.cleanup(device);
         }
         transformsVbo.cleanup(device);
+        chunkToNodeBuf.cleanup(device);
     }
 }
 

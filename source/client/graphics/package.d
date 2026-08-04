@@ -11,6 +11,8 @@ import bindings.vk;
 import client.graphics.core;
 import client.graphics.base;
 import client.graphics.voxels;
+import client.graphics.field : PerceptionField, PRODUCER_NONE, PRODUCER_DIFFUSION, PRODUCER_CYCLIC;
+import client.graphics.pipeline : GpuBuffer;
 import client.graphics.fog : FogPipeline;
 import client.graphics.highlight : HighlightPipeline;
 import client.graphics.frustum : Frustum;
@@ -34,6 +36,7 @@ struct Renderer {
     SurfaceExtraction extract;
     FogPipeline fog;
     HighlightPipeline highlight;
+    PerceptionField field;
     WorldgenDriver worldgenDriver;
     uint dimension = 12;
     float time = 0;
@@ -51,14 +54,46 @@ struct Renderer {
     uint maxSlots = 2^^16;
     uint concurrency = 128;
 
-    // The five voxel colors. Indices carry no fixed meaning; change freely.
-    float[4][5] palette = [
-        [0.85f, 0.35f, 0.30f, 0],
-        [0.90f, 0.80f, 0.30f, 0],
-        [0.30f, 0.75f, 0.40f, 0],
-        [0.30f, 0.55f, 0.90f, 0],
-        [0.70f, 0.40f, 0.85f, 0],
+    // Channels 0, 1, 2 drive red, green, blue; 3 and 4 start out of sight.
+    // Turning a triple about its shared diagonal relabels which channel drives
+    // which primary — a third of a turn is an exact relabel, a sixth stops
+    // between primaries. The diagonal is the axis, so black and white are
+    // fixed points of every rotation and stay reserved for free.
+    //
+    // rotBase is where the space rests; rotGain is how far the field turns it.
+    float[4] rotBase = [0, 0, 0, 0];
+    float[4] rotGain = [
+        2.0f * PI / 3.0f,
+        PI / 3.0f,
+        PI / 3.0f,
+        0,
     ];
+
+    // Sixths of a turn, so cycling walks primaries -> secondaries -> relabel.
+    uint rotStep = 0;
+
+    // When set, a screen-space spiral selects the mapping per fragment instead
+    // of using channelMapIndex, so perception varies across the view.
+    bool trip = false;
+    // What fills the field texture: none, diffusion, or the cyclic automaton.
+    uint producer = PRODUCER_DIFFUSION;
+    // How it is sampled: 0 screen-space, 1 triplanar, 2 volumetric noise,
+    // 3 surface normal. Orthogonal to the producer — 2 and 3 never touch the
+    // texture at all.
+    uint fieldMode = 1;
+    // How far the field pushes the rotations, and the spatial frequency it is
+    // sampled at.
+    float tripGain = 6.5f;
+    float tripScale = 0.28f;
+
+    string channelMapName() {
+        return format("%d/6 turn", rotStep);
+    }
+
+    void cycleChannelMap() {
+        rotStep = (rotStep + 1) % 6;
+        rotBase[0] = rotStep * (PI / 3.0f);
+    }
 
     uint[ChunkId] slotMap;
     uint[ChunkId] slotGeneration;
@@ -69,6 +104,12 @@ struct Renderer {
     uint activeCount;
     ExtractTask[] tasksBuf;
     uint tasksLen;
+
+    // Per-slot chunk identity for the vertex stage: chunk index within its
+    // node in the low 5 bits, a hash of the node id above. Written straight to
+    // mapped memory as slots are filled, so nothing is copied in bulk.
+    GpuBuffer chunkInfoBuf;
+    void* chunkInfoMapped;
 
     float[] nodeTfLocal;
     uint[] slotTaskLocal;
@@ -173,14 +214,34 @@ struct Renderer {
             return false;
         }
 
+        if (!field.init(core.physicalDevice, core.device)) {
+            return false;
+        }
+
         Surface[] empty;
         float[16][] transforms;
         transforms.length = maxSlots;
 
+        // The 20 chunk-to-node isometries are constant, so upload them once
+        // and let the vertex stage put chunk-local positions into node space.
+        float[] chunkToNode = new float[20 * 16];
+        foreach (v; 0 .. 20) {
+            float[16] m = matToFlat(vertexChunkToNode(cast(Vertex) v));
+            chunkToNode[v * 16 .. v * 16 + 16] = m[];
+        }
+
+        auto chunkInfoInit = new uint[maxSlots];
+        chunkInfoBuf = GpuBuffer.create(
+            core.physicalDevice, core.device, cast(void[]) chunkInfoInit,
+            VkBufferUsageFlagBits.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+        vkMapMemory(core.device, chunkInfoBuf.memory, 0, maxSlots * 4, 0, &chunkInfoMapped);
+
         if (!voxels.init(core.physicalDevice, core.device, swapState.renderPass,
                          empty, transforms,
                          extract.facesBuf.buffer,
-                         swapState.depthView)) {
+                         swapState.depthView,
+                         field.views[0], field.sampler,
+                         chunkToNode)) {
             return false;
         }
 
@@ -352,6 +413,12 @@ struct Renderer {
                 slotTaskLocal[activeCount * 4 + 1] = vIdx;
                 slotTaskLocal[activeCount * 4 + 2] = slot;
                 slotTaskLocal[activeCount * 4 + 3] = 0;
+
+                // Indexed by slot, matching the instance-rate transform.
+                // The node id is stable as the graph grows, so this identity
+                // survives both chunk seams and the camera changing nodes.
+                (cast(uint*) chunkInfoMapped)[slot] =
+                    (vIdx & 31) | (cast(uint) nn.id.hashOf() << 5);
                 slotUsedBuf[slot] = true;
                 activeSlotsBuf[activeCount++] = slot;
                 inFrustumCount++;
@@ -429,7 +496,21 @@ struct Renderer {
             }
         }
         lightNode[3] = 0;
-        voxels.updateCommonUbo(core.device, vp, invp, fogDensity, time, lightNode, palette);
+        float[4] tripParams = [
+            trip ? 1.0f : 0.0f,
+            tripGain,
+            tripScale,
+            cast(float) fieldMode,
+        ];
+        float[4] viewportParams = [
+            cast(float) extent.width,
+            cast(float) extent.height,
+            0,
+            0,
+        ];
+        float[4] fieldInfo = [cast(float) producer, 0, 0, 0];
+        voxels.updateCommonUbo(core.device, vp, invp, fogDensity, time, lightNode,
+            rotBase, rotGain, tripParams, viewportParams, fieldInfo);
 
         MonoTime a5 = MonoTime.currTime;
 
@@ -467,6 +548,8 @@ struct Renderer {
             extract.recordPackIndirect(cmd, activeSlots);
         }
 
+        field.recordSteps(cmd, trip ? producer : PRODUCER_NONE, dt);
+
         VkClearValue[2] clears;
         clears[0].color.float32 = [0.5f, 0.65f, 0.9f, 1.0f];
         clears[1].depthStencil.depth = 0.0f;
@@ -501,8 +584,9 @@ struct Renderer {
             VkPipelineBindPoint.VK_PIPELINE_BIND_POINT_GRAPHICS,
             voxels.pipelineLayout, 0, 2, dsets.ptr, 0, null);
 
-        VkDeviceSize vboOff = 0;
-        vkCmdBindVertexBuffers(cmd, 0, 1, &voxels.transformsVbo.buffer, &vboOff);
+        ulong[2] vertexBufs = [voxels.transformsVbo.buffer, chunkInfoBuf.buffer];
+        VkDeviceSize[2] vertexOffs = [0, 0];
+        vkCmdBindVertexBuffers(cmd, 0, 2, vertexBufs.ptr, vertexOffs.ptr);
 
         uint dim = dimension;
         vkCmdPushConstants(cmd, voxels.pipelineLayout,
@@ -856,6 +940,8 @@ struct Renderer {
         if (core.device !is null) {
             vkDeviceWaitIdle(core.device);
             highlight.cleanup(core.device);
+            chunkInfoBuf.cleanup(core.device);
+            field.cleanup(core.device);
             fog.cleanup(core.device);
             voxels.cleanup(core.device);
             extract.cleanup(core.device);

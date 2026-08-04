@@ -1,0 +1,65 @@
+#version 450
+
+// Cyclic cellular automaton — rock/paper/scissors generalised to N states.
+// A cell in state s is eaten by neighbours in state s+1, so nothing is ever
+// stable and the lattice organises itself into rotating spiral waves.
+//
+// The state is cyclic, which suits driving a rotation: a driver running 0→1
+// and wrapping is a full turn of the colour space and has no seam.
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0, rgba32f) uniform image2D src;
+layout(set = 0, binding = 1, rgba32f) uniform image2D dst;
+
+layout(push_constant) uniform Push {
+    float threshold; // how many neighbours it takes to be eaten
+    float states;
+    float unused_c;
+    uint seeding;
+};
+
+const float TAU = 6.28318530718;
+
+float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+/// rg carries the state as a unit vector so that bilinear filtering and
+/// blurring average across the wrap correctly; b keeps the raw index, which is
+/// what the rule needs.
+void store(ivec2 p, float state) {
+    float theta = TAU * state / states;
+    imageStore(dst, p, vec4(cos(theta), sin(theta), state, 1.0));
+}
+
+void main() {
+    ivec2 size = imageSize(src);
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= size.x || p.y >= size.y) {
+        return;
+    }
+
+    if (seeding != 0u) {
+        store(p, floor(hash(vec2(p)) * states));
+        return;
+    }
+
+    float s = imageLoad(src, p).b;
+    float next = mod(s + 1.0, states);
+
+    int count = 0;
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            if (dx == 0 && dy == 0) {
+                continue;
+            }
+            ivec2 q = (p + ivec2(dx, dy) + size) % size;
+            if (abs(imageLoad(src, q).b - next) < 0.5) {
+                count++;
+            }
+        }
+    }
+
+    store(p, count >= int(threshold) ? next : s);
+}

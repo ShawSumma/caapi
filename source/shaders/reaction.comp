@@ -1,0 +1,62 @@
+#version 450
+
+// Gray-Scott reaction-diffusion. One producer for the perception field: it
+// writes a texture, and the voxel shader samples that texture without knowing
+// or caring what generated it.
+//
+// The lattice wraps, so the field is toroidal and tiles seamlessly however it
+// is sampled on screen.
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0, rgba32f) uniform image2D src;
+layout(set = 0, binding = 1, rgba32f) uniform image2D dst;
+
+layout(push_constant) uniform Push {
+    float feed;
+    float kill;
+    float dt;
+    uint seeding;
+};
+
+const float DU = 0.16;
+const float DV = 0.08;
+
+float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+vec2 fetch(ivec2 q, ivec2 size) {
+    return imageLoad(src, (q + size) % size).rg;
+}
+
+void main() {
+    ivec2 size = imageSize(src);
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= size.x || p.y >= size.y) {
+        return;
+    }
+
+    if (seeding != 0u) {
+        // U saturated everywhere, V as a sparse scatter that grows outward.
+        float v = hash(vec2(p)) > 0.995 ? 1.0 : 0.0;
+        imageStore(dst, p, vec4(1.0, v, 0.0, 1.0));
+        return;
+    }
+
+    vec2 c = imageLoad(src, p).rg;
+
+    vec2 lap = -c;
+    lap += 0.2 * (fetch(p + ivec2(1, 0), size) + fetch(p + ivec2(-1, 0), size)
+                + fetch(p + ivec2(0, 1), size) + fetch(p + ivec2(0, -1), size));
+    lap += 0.05 * (fetch(p + ivec2(1, 1), size) + fetch(p + ivec2(1, -1), size)
+                 + fetch(p + ivec2(-1, 1), size) + fetch(p + ivec2(-1, -1), size));
+
+    float u = c.r;
+    float v = c.g;
+    float uvv = u * v * v;
+    u += (DU * lap.r - uvv + feed * (1.0 - u)) * dt;
+    v += (DV * lap.g + uvv - (feed + kill) * v) * dt;
+
+    imageStore(dst, p, vec4(clamp(u, 0.0, 1.0), clamp(v, 0.0, 1.0), 0.0, 1.0));
+}

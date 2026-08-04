@@ -92,6 +92,9 @@ void main(string[] args) {
     int shotFrame = 120;
     bool headlessMode = false;
     bool flatWorldgen = false;
+    bool tripMode = false;
+    uint fieldMode = 1;
+    uint producer = 1;
     foreach (i, a; args) {
         if (a == "--shot" && i + 1 < args.length) {
             shotPath = args[i + 1];
@@ -121,6 +124,28 @@ void main(string[] args) {
         if (a == "--flat") {
             flatWorldgen = true;
             writeln("flat worldgen enabled");
+        }
+        if (a == "--trip") {
+            tripMode = true;
+            // Optional producer: none, diffusion, rps.
+            if (i + 1 < args.length && !args[i + 1].startsWith("-")) {
+                string which = args[i + 1];
+                if (which == "none") {
+                    tripMode = false;
+                } else if (which == "rps" || which == "cyclic") {
+                    producer = 2;
+                } else if (which == "diffusion") {
+                    producer = 1;
+                } else {
+                    writefln("unknown --trip option: %s", which);
+                    return;
+                }
+            }
+            writefln("trip: %s", tripMode ? (producer == 2 ? "rps" : "diffusion") : "none");
+        }
+        if (a == "--field" && i + 1 < args.length) {
+            tripMode = true;
+            fieldMode = args[i + 1].to!uint;
         }
     }
 
@@ -217,6 +242,9 @@ void main(string[] args) {
     renderer.reach = tanh(cfg.reach * simCfg.metersToAbsolute);
     renderer.headless = headlessMode;
     renderer.worldgenDriver.flatWorldgen = flatWorldgen;
+    renderer.trip = tripMode;
+    renderer.fieldMode = fieldMode;
+    renderer.producer = producer;
     LocalCharacterController character = LocalCharacterController.create();
     character.position = renderer.camPos;
     character.up = getRelativeUp(&renderer.graph, &character.position);
@@ -316,6 +344,8 @@ void main(string[] args) {
                     flyMode = !flyMode;
                 } else if (line == "n") {
                     noClip = !noClip;
+                } else if (line == "c") {
+                    renderer.cycleChannelMap();
                 }
             }
             if (!gotFrame) {
@@ -624,6 +654,10 @@ void processInteractiveInput(
             writefln("mode: %s", modeName(flyMode, noClip));
             recordEvent(session, "n");
             titleDirty = true;
+        } else if (ev.key.scancode == SDL_SCANCODE_C && !ev.key.repeat) {
+            renderer.cycleChannelMap();
+            writefln("channel map: %s", renderer.channelMapName());
+            recordEvent(session, "c");
         } else if (ev.key.scancode >= SDL_SCANCODE_1 && ev.key.scancode <= SDL_SCANCODE_9) {
             int idx = cast(int)(ev.key.scancode - SDL_SCANCODE_1);
             if (idx < MATERIAL_PALETTE.length && idx != materialIndex) {
