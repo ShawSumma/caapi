@@ -27,22 +27,21 @@ layout(push_constant) uniform PushConstants {
     uint dimension;
 };
 
+// Rows 0 to 5 face down then up each axis; rows 6 to 11 repeat that with the
+// winding reversed.
 const uvec3 vertices[12][6] = {
-    {{0, 0, 0}, {0, 0, 1}, {0, 1, 1}, {0, 1, 1}, {0, 1, 0}, {0, 0, 0}}, // -X
-    {{0, 0, 0}, {1, 0, 0}, {1, 0, 1}, {1, 0, 1}, {0, 0, 1}, {0, 0, 0}}, // -Y
-    {{0, 0, 0}, {0, 1, 0}, {1, 1, 0}, {1, 1, 0}, {1, 0, 0}, {0, 0, 0}}, // -Z
-
-    {{0, 0, 0}, {0, 1, 0}, {0, 1, 1}, {0, 1, 1}, {0, 0, 1}, {0, 0, 0}}, // +X
-    {{0, 0, 0}, {0, 0, 1}, {1, 0, 1}, {1, 0, 1}, {1, 0, 0}, {0, 0, 0}}, // +Y
-    {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {1, 1, 0}, {0, 1, 0}, {0, 0, 0}}, // +Z
-
-    {{0, 0, 1}, {0, 1, 1}, {0, 1, 0}, {0, 1, 0}, {0, 0, 0}, {0, 0, 1}}, // -X
-    {{1, 0, 0}, {1, 0, 1}, {0, 0, 1}, {0, 0, 1}, {0, 0, 0}, {1, 0, 0}}, // -Y
-    {{0, 1, 0}, {1, 1, 0}, {1, 0, 0}, {1, 0, 0}, {0, 0, 0}, {0, 1, 0}}, // -Z
-
-    {{0, 0, 1}, {0, 0, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 1}, {0, 0, 1}}, // +X
-    {{1, 0, 0}, {0, 0, 0}, {0, 0, 1}, {0, 0, 1}, {1, 0, 1}, {1, 0, 0}}, // +Y
-    {{0, 1, 0}, {0, 0, 0}, {1, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}}  // +Z
+    {{0, 0, 0}, {0, 0, 1}, {0, 1, 1}, {0, 1, 1}, {0, 1, 0}, {0, 0, 0}},
+    {{0, 0, 0}, {1, 0, 0}, {1, 0, 1}, {1, 0, 1}, {0, 0, 1}, {0, 0, 0}},
+    {{0, 0, 0}, {0, 1, 0}, {1, 1, 0}, {1, 1, 0}, {1, 0, 0}, {0, 0, 0}},
+    {{0, 0, 0}, {0, 1, 0}, {0, 1, 1}, {0, 1, 1}, {0, 0, 1}, {0, 0, 0}},
+    {{0, 0, 0}, {0, 0, 1}, {1, 0, 1}, {1, 0, 1}, {1, 0, 0}, {0, 0, 0}},
+    {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {1, 1, 0}, {0, 1, 0}, {0, 0, 0}},
+    {{0, 0, 1}, {0, 1, 1}, {0, 1, 0}, {0, 1, 0}, {0, 0, 0}, {0, 0, 1}},
+    {{1, 0, 0}, {1, 0, 1}, {0, 0, 1}, {0, 0, 1}, {0, 0, 0}, {1, 0, 0}},
+    {{0, 1, 0}, {1, 1, 0}, {1, 0, 0}, {1, 0, 0}, {0, 0, 0}, {0, 1, 0}},
+    {{0, 0, 1}, {0, 0, 0}, {0, 1, 0}, {0, 1, 0}, {0, 1, 1}, {0, 0, 1}},
+    {{1, 0, 0}, {0, 0, 0}, {0, 0, 1}, {0, 0, 1}, {1, 0, 1}, {1, 0, 0}},
+    {{0, 1, 0}, {0, 0, 0}, {1, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}},
 };
 
 const uvec2 texcoords[4][6] = {
@@ -60,48 +59,60 @@ float voxel_noise(uvec3 p) {
 }
 
 void main() {
-    uint index = gl_VertexIndex / 6;
-    uint vertex = gl_VertexIndex % 6;
+    uint index = gl_VertexIndex / 6u;
+    uint vertex = gl_VertexIndex % 6u;
     Surface s = surfaces[index];
     uvec3 pos = get_pos(s);
     uint axis = get_axis(s);
+
     // The winding flip below depends on a camera-relative determinant, so it
     // moves as the player does. Keep the unflipped axis for anything that has
     // to stay put.
     uint stable_axis = axis;
     float det4 = determinant(view_projection * transform);
     if (det4 < 0.0) {
-        if (axis < 3) { axis += 3; }
-        else if (axis < 6) { axis -= 3; }
-        else if (axis < 9) { axis += 3; }
-        else { axis -= 3; }
+        if (axis < 3u) {
+            axis = axis + 3u;
+        } else if (axis < 6u) {
+            axis = axis - 3u;
+        } else if (axis < 9u) {
+            axis = axis + 3u;
+        } else {
+            axis = axis - 3u;
+        }
     }
-    uvec2 uv = texcoords[axis / 3][vertex];
+
+    uvec2 uv = texcoords[axis / 3u][vertex];
+
     // Spread the material enum across the 241 non-reserved values so the
     // five-trit tuples actually vary. 97 is coprime with 241, so this is a
-    // bijection, and the +1 keeps black (0) and white (242) out of reach.
+    // bijection, and the offset of one keeps black and white out of reach.
     voxel_value = 1u + (get_mat(s) * 97u) % 241u;
     shade = mix(0.85, 1.15, voxel_noise(pos));
     occlusion = get_occlusion(s, uv);
-    vec3 relative_coords = vertices[axis][vertex] + pos;
 
+    vec3 relative_coords = vertices[axis][vertex] + pos;
     vec3 chunk_pos = relative_coords / dimension;
 
     // Node-local: one frame covering all 20 chunks of a node, so a field
     // evaluated here runs continuously across chunk seams instead of tiling
     // per chunk. It is fixed to the node, not to the camera, so unlike
-    // anything built from `transform` it does not shift when the player
+    // anything built from the transform it does not shift when the player
     // crosses into the next node.
-    vec4 np = chunk_to_node[chunk_info & 31u] * vec4(chunk_pos, 1);
+    vec4 np = chunk_to_node[chunk_info & 31u] * vec4(chunk_pos, 1.0);
     node_pos = np.xyz / max(np.w, 1e-4);
     node_seed = chunk_info >> 5u;
 
-    // Faces 0-2 and 6-8 point down their axis, 3-5 and 9-11 point up it. No
-    // transform is applied: the linear part of a Lorentz isometry shears, and
-    // there is no global parallel frame to carry a normal into anyway.
-    uint na = stable_axis % 3u;
+    // Faces 0 to 2 and 6 to 8 point down their axis, 3 to 5 and 9 to 11 point
+    // up it. No transform is applied: the linear part of a Lorentz isometry
+    // shears, and there is no global parallel frame to carry a normal into.
+    uint normal_axis = stable_axis % 3u;
     chunk_normal = vec3(0.0);
-    chunk_normal[na] = ((stable_axis / 3u) % 2u == 1u) ? 1.0 : -1.0;
+    if ((stable_axis / 3u) % 2u == 1u) {
+        chunk_normal[normal_axis] = 1.0;
+    } else {
+        chunk_normal[normal_axis] = -1.0;
+    }
 
-    gl_Position = view_projection * transform * vec4(chunk_pos, 1);
+    gl_Position = view_projection * transform * vec4(chunk_pos, 1.0);
 }

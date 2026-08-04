@@ -4,28 +4,50 @@ import std.stdio;
 import core.stdc.string : memcpy;
 import bindings.vk;
 import client.graphics.pipeline : GpuBuffer;
+import client.graphics.fog : createShader;
+
+struct PackedSurface {
+    uint posAxis;
+    uint occMat;
+}
 
 struct Surface {
     uint pos_axis;
     uint occlusion_mat;
 
-    static uint pack(
-        uint x, uint y, uint z,
-        uint axis, bool reverse, bool flip,
-        uint mat, uint[4] occlusion,
-        out uint posAxis, out uint occMat,
+    static PackedSurface pack(
+        uint x,
+        uint y,
+        uint z,
+        uint axis,
+        bool reverse,
+        bool flip,
+        uint mat,
+        uint[4] occlusion,
     ) {
-        uint a = axis + 3u * (reverse ? 1u : 0u) + 6u * (flip ? 1u : 0u);
-        posAxis = (x & 0xFF)
-            | ((y & 0xFF) << 8)
-            | ((z & 0xFF) << 16)
-            | (a << 24);
-        occMat = (mat & 0xFFFF)
-            | (occlusion[0] << 24)
-            | (occlusion[1] << 26)
-            | (occlusion[2] << 28)
-            | (occlusion[3] << 30);
-        return posAxis;
+        uint oriented = axis;
+        if (reverse) {
+            oriented = oriented + 3u;
+        }
+        if (flip) {
+            oriented = oriented + 6u;
+        }
+
+        uint packedPos = x & 0xFF;
+        packedPos = packedPos | ((y & 0xFF) << 8);
+        packedPos = packedPos | ((z & 0xFF) << 16);
+        packedPos = packedPos | (oriented << 24);
+
+        uint packedOcc = mat & 0xFFFF;
+        packedOcc = packedOcc | (occlusion[0] << 24);
+        packedOcc = packedOcc | (occlusion[1] << 26);
+        packedOcc = packedOcc | (occlusion[2] << 28);
+        packedOcc = packedOcc | (occlusion[3] << 30);
+
+        PackedSurface result;
+        result.posAxis = packedPos;
+        result.occMat = packedOcc;
+        return result;
     }
 }
 
@@ -43,9 +65,9 @@ struct SurfacePipeline {
     GpuBuffer commonUbo;
     GpuBuffer surfacesSsbo;
     GpuBuffer transformsVbo;
-    /// The 20 chunk-to-node isometries, one per dodecahedral vertex. Constant,
-    /// uploaded once. Lets the vertex stage put a chunk-local position into its
-    /// node's frame, which is stable and covers all 20 chunks continuously.
+    // The 20 chunk-to-node isometries, one per dodecahedral vertex. Constant,
+    // uploaded once. Lets the vertex stage put a chunk-local position into its
+    // node's frame, which is stable and covers all 20 chunks continuously.
     GpuBuffer chunkToNodeBuf;
     uint surfaceCount;
     uint chunkCount;
@@ -65,10 +87,12 @@ struct SurfacePipeline {
         static immutable ubyte[] vertSpv = cast(immutable(ubyte)[]) import("voxels.vert.spv");
         static immutable ubyte[] fragSpv = cast(immutable(ubyte)[]) import("voxels.frag.spv");
 
-        if (!createShader(device, vertSpv, vertShader)) {
+        vertShader = createShader(device, vertSpv);
+        if (vertShader == VK_NULL_HANDLE) {
             return false;
         }
-        if (!createShader(device, fragSpv, fragShader)) {
+        fragShader = createShader(device, fragSpv);
+        if (fragShader == VK_NULL_HANDLE) {
             return false;
         }
 
@@ -76,9 +100,9 @@ struct SurfacePipeline {
         commonBinds[0].binding = 0;
         commonBinds[0].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         commonBinds[0].descriptorCount = 1;
-        commonBinds[0].stageFlags =
-            VkShaderStageFlagBits.VK_SHADER_STAGE_VERTEX_BIT
-            | VkShaderStageFlagBits.VK_SHADER_STAGE_FRAGMENT_BIT;
+        uint vertexStage = VkShaderStageFlagBits.VK_SHADER_STAGE_VERTEX_BIT;
+        uint fragmentStage = VkShaderStageFlagBits.VK_SHADER_STAGE_FRAGMENT_BIT;
+        commonBinds[0].stageFlags = vertexStage | fragmentStage;
         commonBinds[1].binding = 1;
         commonBinds[1].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
         commonBinds[1].descriptorCount = 1;
@@ -137,7 +161,9 @@ struct SurfacePipeline {
 
         ubyte[240] commonInit = 0;
         commonUbo = GpuBuffer.create(
-            phys, device, commonInit[],
+            phys,
+            device,
+            commonInit[],
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
         );
 
@@ -147,22 +173,29 @@ struct SurfacePipeline {
             surfaceCount = 0;
         } else {
             surfacesSsbo = GpuBuffer.create(
-                phys, device, cast(void[]) surfaces,
+                phys,
+                device,
+                cast(void[]) surfaces,
                 VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
             );
             surfaceCount = cast(uint) surfaces.length;
         }
 
+        uint vertexBufferBit = VkBufferUsageFlagBits.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        uint storageBufferBit = VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         transformsVbo = GpuBuffer.create(
-            phys, device, cast(void[]) transforms,
-            VkBufferUsageFlagBits.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
-            | VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            phys,
+            device,
+            cast(void[]) transforms,
+            vertexBufferBit | storageBufferBit,
         );
         chunkCount = cast(uint) transforms.length;
 
         chunkToNodeBuf = GpuBuffer.create(
-            phys, device, cast(void[]) chunkToNode,
-            VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            phys,
+            device,
+            cast(void[]) chunkToNode,
+            storageBufferBit,
         );
 
 
@@ -393,25 +426,25 @@ struct SurfacePipeline {
     }
 
     void cleanup(VkDevice device) {
-        if (pipeline) {
+        if (pipeline != VK_NULL_HANDLE) {
             vkDestroyPipeline(device, pipeline, null);
         }
-        if (pipelineLayout) {
+        if (pipelineLayout != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(device, pipelineLayout, null);
         }
-        if (descPool) {
+        if (descPool != VK_NULL_HANDLE) {
             vkDestroyDescriptorPool(device, descPool, null);
         }
-        if (commonLayout) {
+        if (commonLayout != VK_NULL_HANDLE) {
             vkDestroyDescriptorSetLayout(device, commonLayout, null);
         }
-        if (staticLayout) {
+        if (staticLayout != VK_NULL_HANDLE) {
             vkDestroyDescriptorSetLayout(device, staticLayout, null);
         }
-        if (vertShader) {
+        if (vertShader != VK_NULL_HANDLE) {
             vkDestroyShaderModule(device, vertShader, null);
         }
-        if (fragShader) {
+        if (fragShader != VK_NULL_HANDLE) {
             vkDestroyShaderModule(device, fragShader, null);
         }
         commonUbo.cleanup(device);
@@ -421,12 +454,4 @@ struct SurfacePipeline {
         transformsVbo.cleanup(device);
         chunkToNodeBuf.cleanup(device);
     }
-}
-
-bool createShader(VkDevice device, const(ubyte)[] spv, ref VkShaderModule mod) {
-    VkShaderModuleCreateInfo ci;
-    ci.sType = VkStructureType.VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    ci.codeSize = spv.length;
-    ci.pCode = cast(const(uint)*) spv.ptr;
-    return vkCreateShaderModule(device, &ci, null, &mod) == VkResult.VK_SUCCESS;
 }

@@ -7,15 +7,15 @@ enum uint PRODUCER_NONE = 0;
 enum uint PRODUCER_DIFFUSION = 1;
 enum uint PRODUCER_CYCLIC = 2;
 
-/// The field that drives perception.
-///
-/// The interface is deliberately narrow: this owns a texture, and the voxel
-/// shader samples it. Anything able to fill an image is a valid producer, so
-/// replacing Gray-Scott means writing a different compute shader and changing
-/// nothing downstream.
+// The field that drives perception.
+//
+// The interface is deliberately narrow: this owns a texture, and the voxel
+// shader samples it. Anything able to fill an image is a valid producer, so
+// replacing Gray-Scott means writing a different compute shader and changing
+// nothing downstream.
 struct PerceptionField {
-    /// Simulation resolution, independent of the window. The lattice wraps,
-    /// so the field is toroidal and tiles seamlessly over any viewport.
+    // Simulation resolution, independent of the window. The lattice wraps, so
+    // the field is toroidal and tiles seamlessly over any viewport.
     enum uint SIZE = 512;
     enum uint WORKGROUP = 16;
 
@@ -37,22 +37,24 @@ struct PerceptionField {
     bool transitioned;
     bool seeded;
 
-    // Gray-Scott. Feed/kill is a narrow window — most pairs either die out to
-    // a flat field or saturate. This one keeps growing and rearranging.
+    // Gray-Scott. Feed and kill sit in a narrow window. Most pairs either die
+    // out to a flat field or saturate; this one keeps growing and rearranging.
     float feed = 0.055f;
     float kill = 0.062f;
     float dt = 1.0f;
-    /// Steps per second, not per frame, so the pattern moves at the same speed
-    /// whatever the framerate. Diffusion is a slow PDE and needs a lot of them;
-    /// the cyclic automaton advances a whole cell per step, so a wavefront
-    /// crosses the field in `SIZE / rate` seconds and the rate wants to be low.
+
+    // Steps per second, not per frame, so the pattern moves at the same speed
+    // whatever the framerate. Diffusion is a slow partial differential
+    // equation and needs a lot of them. The cyclic automaton advances a whole
+    // cell per step, so a wavefront crosses the field in SIZE over rate
+    // seconds, and the rate wants to be low.
     float diffusionRate = 1200.0f;
     float cyclicRate = 8.0f;
-    private float stepAccum = 0;
+    float stepAccum = 0;
 
-    // Cyclic automaton. Threshold is the sensitive one: at 1 the waves sweep
-    // and organise into spirals, while higher values leave it stuck in a
-    // metastable speckle that never resolves.
+    // Threshold is the sensitive one. At one the waves sweep and organise into
+    // spirals; higher values leave it stuck in a metastable speckle that never
+    // resolves.
     float cyclicThreshold = 1.0f;
     float cyclicStates = 16.0f;
 
@@ -77,8 +79,9 @@ struct PerceptionField {
             ici.arrayLayers = 1;
             ici.samples = 1;
             ici.tiling = VkImageTiling.VK_IMAGE_TILING_OPTIMAL;
-            ici.usage = VkImageUsageFlagBits.VK_IMAGE_USAGE_STORAGE_BIT
-                      | VkImageUsageFlagBits.VK_IMAGE_USAGE_SAMPLED_BIT;
+            uint storageBit = VkImageUsageFlagBits.VK_IMAGE_USAGE_STORAGE_BIT;
+            uint sampledBit = VkImageUsageFlagBits.VK_IMAGE_USAGE_SAMPLED_BIT;
+            ici.usage = storageBit | sampledBit;
             ici.sharingMode = VkSharingMode.VK_SHARING_MODE_EXCLUSIVE;
             ici.initialLayout = VkImageLayout.VK_IMAGE_LAYOUT_UNDEFINED;
             if (vkCreateImage(device, &ici, null, &images[i]) != VkResult.VK_SUCCESS) {
@@ -88,10 +91,11 @@ struct PerceptionField {
             VkMemoryRequirements req;
             vkGetImageMemoryRequirements(device, images[i], &req);
             uint memIdx = uint.max;
-            for (uint j = 0; j < memProps.memoryTypeCount; j++) {
-                if ((req.memoryTypeBits & (1u << j))
-                    && (memProps.memoryTypes[j].propertyFlags
-                        & VkMemoryPropertyFlagBits.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+            for (uint j = 0; j < memProps.memoryTypeCount; j = j + 1) {
+                bool typeAllowed = (req.memoryTypeBits & (1u << j)) != 0;
+                uint deviceLocal = VkMemoryPropertyFlagBits.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+                bool isDeviceLocal = (memProps.memoryTypes[j].propertyFlags & deviceLocal) != 0;
+                if (typeAllowed && isDeviceLocal) {
                     memIdx = j;
                     break;
                 }
@@ -99,6 +103,7 @@ struct PerceptionField {
             if (memIdx == uint.max) {
                 return false;
             }
+
             VkMemoryAllocateInfo mai;
             mai.sType = VkStructureType.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
             mai.allocationSize = req.size;
@@ -111,8 +116,7 @@ struct PerceptionField {
             ivci.image = images[i];
             ivci.viewType = VkImageViewType.VK_IMAGE_VIEW_TYPE_2D;
             ivci.format = VkFormat.VK_FORMAT_R32G32B32A32_SFLOAT;
-            ivci.subresourceRange = VkImageSubresourceRange(
-                VkImageAspectFlagBits.VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1);
+            ivci.subresourceRange = colorRange();
             if (vkCreateImageView(device, &ivci, null, &views[i]) != VkResult.VK_SUCCESS) {
                 return false;
             }
@@ -181,7 +185,8 @@ struct PerceptionField {
             return false;
         }
 
-        // sets[0] reads 0 writes 1, sets[1] reads 1 writes 0.
+        // The first set reads image zero and writes image one; the second set
+        // does the reverse.
         VkDescriptorImageInfo[4] infos;
         uint[4] viewIndex = [0, 1, 1, 0];
         foreach (i; 0 .. 4) {
@@ -221,12 +226,14 @@ struct PerceptionField {
         cpci.stage.mod = diffusionShader;
         cpci.stage.pName = "main";
         cpci.layout = pipelineLayout;
-        if (vkCreateComputePipelines(device, 0, 1, &cpci, null, &diffusionPipeline) != VkResult.VK_SUCCESS) {
+        VkResult res = vkCreateComputePipelines(device, 0, 1, &cpci, null, &diffusionPipeline);
+        if (res != VkResult.VK_SUCCESS) {
             return false;
         }
 
         cpci.stage.mod = cyclicShader;
-        if (vkCreateComputePipelines(device, 0, 1, &cpci, null, &cyclicPipeline) != VkResult.VK_SUCCESS) {
+        res = vkCreateComputePipelines(device, 0, 1, &cpci, null, &cyclicPipeline);
+        if (res != VkResult.VK_SUCCESS) {
             return false;
         }
 
@@ -235,33 +242,42 @@ struct PerceptionField {
         return true;
     }
 
-    /// Advances the field. Recorded before the render pass, since the voxel
-    /// shader samples the result in the same frame. Producer 0 is none, in
-    /// which case nothing samples the image and it is only transitioned so its
-    /// descriptor stays valid.
-    /// Steps are always emitted in pairs so the result lands back in images[0],
-    /// which is the image the voxel shader samples — its descriptor is written
-    /// once at init and never touched again.
-    private uint dueSteps(float dt, bool cyclic) {
+    // Steps are always emitted in pairs so the result lands back in the first
+    // image, which is the one the voxel shader samples. Its descriptor is
+    // written once at init and never touched again.
+    uint dueSteps(float frameDt, bool cyclic) {
         if (!seeded) {
             // Both producers start from noise and need a lot of steps to
             // organise, but should crawl once they have. Pay that cost once up
             // front instead of making the player watch static resolve.
-            return cyclic ? 400 : 2;
+            if (cyclic) {
+                return 400;
+            }
+            return 2;
         }
-        stepAccum += dt * (cyclic ? cyclicRate : diffusionRate);
+
+        float rate = diffusionRate;
+        if (cyclic) {
+            rate = cyclicRate;
+        }
+        stepAccum = stepAccum + frameDt * rate;
+
         uint pairs = cast(uint) (stepAccum * 0.5f);
-        // After a long stall, catch up a little rather than all at once.
         if (pairs > 32) {
+            // After a long stall, catch up a little rather than all at once.
             pairs = 32;
             stepAccum = 0;
         } else {
-            stepAccum -= pairs * 2.0f;
+            stepAccum = stepAccum - pairs * 2.0f;
         }
         return pairs * 2;
     }
 
-    void recordSteps(VkCommandBuffer cmd, uint producer, float dt) {
+    // Advances the field. Recorded before the render pass, since the voxel
+    // shader samples the result in the same frame. With no producer nothing
+    // samples the image, and it is only transitioned so its descriptor stays
+    // valid.
+    void recordSteps(VkCommandBuffer cmd, uint producer, float frameDt) {
         if (!ready) {
             return;
         }
@@ -269,15 +285,27 @@ struct PerceptionField {
         if (!transitioned) {
             VkImageMemoryBarrier[2] toGeneral;
             foreach (i; 0 .. 2) {
-                toGeneral[i] = barrier(images[i], 0,
+                toGeneral[i] = barrier(
+                    images[i],
+                    0,
                     VkAccessFlagBits.VK_ACCESS_SHADER_WRITE_BIT,
                     VkImageLayout.VK_IMAGE_LAYOUT_UNDEFINED,
-                    VkImageLayout.VK_IMAGE_LAYOUT_GENERAL);
+                    VkImageLayout.VK_IMAGE_LAYOUT_GENERAL
+                );
             }
-            vkCmdPipelineBarrier(cmd,
-                VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                0, 0, null, 0, null, 2, toGeneral.ptr);
+            uint computeStage = VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+            vkCmdPipelineBarrier(
+                cmd,
+                computeStage,
+                computeStage,
+                0,
+                0,
+                null,
+                0,
+                null,
+                2,
+                toGeneral.ptr
+            );
             transitioned = true;
         }
 
@@ -286,95 +314,148 @@ struct PerceptionField {
         }
 
         bool cyclic = producer == PRODUCER_CYCLIC;
-        VkPipeline pipeline = cyclic ? cyclicPipeline : diffusionPipeline;
-        uint steps = dueSteps(dt, cyclic);
+        VkPipeline pipeline = diffusionPipeline;
+        if (cyclic) {
+            pipeline = cyclicPipeline;
+        }
+
+        uint steps = dueSteps(frameDt, cyclic);
+        uint computeStage = VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
         if (steps > 0) {
-            vkCmdBindPipeline(cmd,
-                VkPipelineBindPoint.VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+            vkCmdBindPipeline(cmd, VkPipelineBindPoint.VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
             uint groups = (SIZE + WORKGROUP - 1) / WORKGROUP;
 
             foreach (step; 0 .. steps) {
                 Push push;
-                push.feed = cyclic ? cyclicThreshold : feed;
-                push.kill = cyclic ? cyclicStates : kill;
+                push.feed = feed;
+                push.kill = kill;
+                if (cyclic) {
+                    push.feed = cyclicThreshold;
+                    push.kill = cyclicStates;
+                }
                 push.dt = dt;
-                push.seeding = (!seeded && step == 0) ? 1 : 0;
+                push.seeding = 0;
+                if (!seeded && step == 0) {
+                    push.seeding = 1;
+                }
 
-                vkCmdBindDescriptorSets(cmd,
+                vkCmdBindDescriptorSets(
+                    cmd,
                     VkPipelineBindPoint.VK_PIPELINE_BIND_POINT_COMPUTE,
-                    pipelineLayout, 0, 1, &sets[step % 2], 0, null);
-                vkCmdPushConstants(cmd, pipelineLayout,
+                    pipelineLayout,
+                    0,
+                    1,
+                    &sets[step % 2],
+                    0,
+                    null
+                );
+                vkCmdPushConstants(
+                    cmd,
+                    pipelineLayout,
                     VkShaderStageFlagBits.VK_SHADER_STAGE_COMPUTE_BIT,
-                    0, Push.sizeof, &push);
+                    0,
+                    Push.sizeof,
+                    &push
+                );
                 vkCmdDispatch(cmd, groups, groups, 1);
 
                 VkImageMemoryBarrier[2] between;
                 foreach (i; 0 .. 2) {
-                    between[i] = barrier(images[i],
+                    between[i] = barrier(
+                        images[i],
                         VkAccessFlagBits.VK_ACCESS_SHADER_WRITE_BIT,
                         VkAccessFlagBits.VK_ACCESS_SHADER_READ_BIT,
                         VkImageLayout.VK_IMAGE_LAYOUT_GENERAL,
-                        VkImageLayout.VK_IMAGE_LAYOUT_GENERAL);
+                        VkImageLayout.VK_IMAGE_LAYOUT_GENERAL
+                    );
                 }
-                vkCmdPipelineBarrier(cmd,
-                    VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                    VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                    0, 0, null, 0, null, 2, between.ptr);
+                vkCmdPipelineBarrier(
+                    cmd,
+                    computeStage,
+                    computeStage,
+                    0,
+                    0,
+                    null,
+                    0,
+                    null,
+                    2,
+                    between.ptr
+                );
             }
             seeded = true;
         }
 
-        VkImageMemoryBarrier toSample = barrier(images[0],
+        VkImageMemoryBarrier toSample = barrier(
+            images[0],
             VkAccessFlagBits.VK_ACCESS_SHADER_WRITE_BIT,
             VkAccessFlagBits.VK_ACCESS_SHADER_READ_BIT,
             VkImageLayout.VK_IMAGE_LAYOUT_GENERAL,
-            VkImageLayout.VK_IMAGE_LAYOUT_GENERAL);
-        vkCmdPipelineBarrier(cmd,
-            VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VkImageLayout.VK_IMAGE_LAYOUT_GENERAL
+        );
+        vkCmdPipelineBarrier(
+            cmd,
+            computeStage,
             VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-            0, 0, null, 0, null, 1, &toSample);
+            0,
+            0,
+            null,
+            0,
+            null,
+            1,
+            &toSample
+        );
     }
 
     void cleanup(VkDevice device) {
-        if (diffusionPipeline) {
+        if (diffusionPipeline != VK_NULL_HANDLE) {
             vkDestroyPipeline(device, diffusionPipeline, null);
         }
-        if (cyclicPipeline) {
+        if (cyclicPipeline != VK_NULL_HANDLE) {
             vkDestroyPipeline(device, cyclicPipeline, null);
         }
-        if (pipelineLayout) {
+        if (pipelineLayout != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(device, pipelineLayout, null);
         }
-        if (descPool) {
+        if (descPool != VK_NULL_HANDLE) {
             vkDestroyDescriptorPool(device, descPool, null);
         }
-        if (setLayout) {
+        if (setLayout != VK_NULL_HANDLE) {
             vkDestroyDescriptorSetLayout(device, setLayout, null);
         }
-        if (diffusionShader) {
+        if (diffusionShader != VK_NULL_HANDLE) {
             vkDestroyShaderModule(device, diffusionShader, null);
         }
-        if (cyclicShader) {
+        if (cyclicShader != VK_NULL_HANDLE) {
             vkDestroyShaderModule(device, cyclicShader, null);
         }
-        if (sampler) {
+        if (sampler != VK_NULL_HANDLE) {
             vkDestroySampler(device, sampler, null);
         }
         foreach (i; 0 .. 2) {
-            if (views[i]) {
+            if (views[i] != VK_NULL_HANDLE) {
                 vkDestroyImageView(device, views[i], null);
             }
-            if (images[i]) {
+            if (images[i] != VK_NULL_HANDLE) {
                 vkDestroyImage(device, images[i], null);
             }
-            if (memory[i]) {
+            if (memory[i] != VK_NULL_HANDLE) {
                 vkFreeMemory(device, memory[i], null);
             }
         }
     }
 }
 
-private VkImageMemoryBarrier barrier(
+VkImageSubresourceRange colorRange() {
+    return VkImageSubresourceRange(
+        VkImageAspectFlagBits.VK_IMAGE_ASPECT_COLOR_BIT,
+        0,
+        1,
+        0,
+        1
+    );
+}
+
+VkImageMemoryBarrier barrier(
     VkImage image,
     uint srcAccess,
     uint dstAccess,
@@ -390,7 +471,6 @@ private VkImageMemoryBarrier barrier(
     b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.image = image;
-    b.subresourceRange = VkImageSubresourceRange(
-        VkImageAspectFlagBits.VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1);
+    b.subresourceRange = colorRange();
     return b;
 }

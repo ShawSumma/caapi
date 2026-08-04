@@ -1,6 +1,6 @@
 module client.graphics.fog;
 
-import std.stdio;
+import core.stdc.stdio : printf;
 import bindings.vk;
 
 struct FogPipeline {
@@ -11,12 +11,12 @@ struct FogPipeline {
         static immutable ubyte[] vertSpv = cast(immutable(ubyte)[]) import("fullscreen.vert.spv");
         static immutable ubyte[] fragSpv = cast(immutable(ubyte)[]) import("fog.frag.spv");
 
-        VkShaderModule vertShader;
-        VkShaderModule fragShader;
-        if (!createShader(device, vertSpv, vertShader)) {
+        VkShaderModule vertShader = createShader(device, vertSpv);
+        if (vertShader == VK_NULL_HANDLE) {
             return false;
         }
-        if (!createShader(device, fragSpv, fragShader)) {
+        VkShaderModule fragShader = createShader(device, fragSpv);
+        if (fragShader == VK_NULL_HANDLE) {
             return false;
         }
 
@@ -113,7 +113,7 @@ struct FogPipeline {
         vkDestroyShaderModule(device, fragShader, null);
 
         if (res != VkResult.VK_SUCCESS) {
-            writefln("fog pipeline create failed: %s", res);
+            printf("fog pipeline create failed: %d\n", cast(int) res);
             return false;
         }
         return true;
@@ -121,25 +121,38 @@ struct FogPipeline {
 
     void draw(VkCommandBuffer cmd, VkPipelineLayout layout, VkDescriptorSet commonSet) {
         vkCmdBindPipeline(cmd, VkPipelineBindPoint.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-        vkCmdBindDescriptorSets(cmd, VkPipelineBindPoint.VK_PIPELINE_BIND_POINT_GRAPHICS,
-            pipelineLayout, 0, 1, &commonSet, 0, null);
+        vkCmdBindDescriptorSets(
+            cmd,
+            VkPipelineBindPoint.VK_PIPELINE_BIND_POINT_GRAPHICS,
+            pipelineLayout,
+            0,
+            1,
+            &commonSet,
+            0,
+            null,
+        );
         vkCmdDraw(cmd, 3, 1, 0, 0);
     }
 
     void cleanup(VkDevice device) {
-        if (pipeline) {
+        if (pipeline != VK_NULL_HANDLE) {
             vkDestroyPipeline(device, pipeline, null);
         }
-        if (pipelineLayout) {
+        if (pipelineLayout != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(device, pipelineLayout, null);
         }
     }
 }
 
-bool createShader(VkDevice device, const(ubyte)[] spv, ref VkShaderModule mod) {
+// Returns a null handle on failure rather than writing through a parameter.
+VkShaderModule createShader(VkDevice device, const(ubyte)[] spv) {
     VkShaderModuleCreateInfo ci;
     ci.sType = VkStructureType.VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     ci.codeSize = spv.length;
     ci.pCode = cast(const(uint)*) spv.ptr;
-    return vkCreateShaderModule(device, &ci, null, &mod) == VkResult.VK_SUCCESS;
+    VkShaderModule mod;
+    if (vkCreateShaderModule(device, &ci, null, &mod) != VkResult.VK_SUCCESS) {
+        return VK_NULL_HANDLE;
+    }
+    return mod;
 }

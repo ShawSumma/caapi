@@ -1,9 +1,15 @@
 module client.graphics.core;
 
-import std.stdio;
+import core.stdc.stdio : printf;
 import bindings.vk;
 
 struct VulkanCore {
+    // Caps for the fixed buffers below. Enumerations that exceed them are
+    // truncated rather than allocated for.
+    enum uint MAX_PHYSICAL_DEVICES = 16;
+    enum uint MAX_QUEUE_FAMILIES = 32;
+    enum uint MAX_INSTANCE_EXTENSIONS = 16;
+
     VkInstance instance;
     VkPhysicalDevice physicalDevice;
     VkDevice device;
@@ -16,7 +22,7 @@ struct VulkanCore {
         uint extCount;
         const(char*)* extNames = SDL_Vulkan_GetInstanceExtensions(&extCount);
         if (extNames is null) {
-            writeln("Failed to get Vulkan instance extensions from SDL");
+            printf("Failed to get Vulkan instance extensions from SDL\n");
             return false;
         }
 
@@ -34,54 +40,79 @@ struct VulkanCore {
         createInfo.enabledExtensionCount = extCount;
         createInfo.ppEnabledExtensionNames = extNames;
 
+        // Declared out here because the create info keeps a pointer into it
+        // until vkCreateInstance has run.
+        const(char)*[MAX_INSTANCE_EXTENSIONS] instanceExts;
         version (OSX) {
             // The loader hides MoltenVK unless portability enumeration is on.
-            const(char)*[] osxExts = extNames[0 .. extCount].dup;
-            osxExts ~= "VK_KHR_portability_enumeration".ptr;
-            createInfo.enabledExtensionCount = cast(uint) osxExts.length;
-            createInfo.ppEnabledExtensionNames = osxExts.ptr;
+            uint copied = extCount;
+            if (copied > MAX_INSTANCE_EXTENSIONS - 1) {
+                copied = MAX_INSTANCE_EXTENSIONS - 1;
+            }
+            foreach (i; 0 .. copied) {
+                instanceExts[i] = extNames[i];
+            }
+            instanceExts[copied] = "VK_KHR_portability_enumeration".ptr;
+            createInfo.enabledExtensionCount = copied + 1;
+            createInfo.ppEnabledExtensionNames = instanceExts.ptr;
             createInfo.flags = VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
         }
 
         VkResult res = vkCreateInstance(&createInfo, null, &instance);
         if (res != VkResult.VK_SUCCESS) {
-            writefln("vkCreateInstance failed: %s", res);
+            printf("vkCreateInstance failed: %d\n", cast(int) res);
             return false;
         }
 
         if (!SDL_Vulkan_CreateSurface(window, instance, null, &surface)) {
-            writeln("SDL_Vulkan_CreateSurface failed");
+            printf("SDL_Vulkan_CreateSurface failed\n");
             return false;
         }
 
         uint deviceCount;
         vkEnumeratePhysicalDevices(instance, &deviceCount, null);
         if (deviceCount == 0) {
-            writeln("No Vulkan devices found");
+            printf("No Vulkan devices found\n");
             return false;
         }
-        VkPhysicalDevice[] devices = new VkPhysicalDevice[](deviceCount);
+        if (deviceCount > MAX_PHYSICAL_DEVICES) {
+            deviceCount = MAX_PHYSICAL_DEVICES;
+        }
+        VkPhysicalDevice[MAX_PHYSICAL_DEVICES] devices;
         vkEnumeratePhysicalDevices(instance, &deviceCount, devices.ptr);
         physicalDevice = devices[0];
 
         uint queueFamilyCount;
         vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, null);
-        VkQueueFamilyProperties[] queueFamilies = new VkQueueFamilyProperties[](queueFamilyCount);
-        vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, queueFamilies.ptr);
+        if (queueFamilyCount > MAX_QUEUE_FAMILIES) {
+            queueFamilyCount = MAX_QUEUE_FAMILIES;
+        }
+        VkQueueFamilyProperties[MAX_QUEUE_FAMILIES] queueFamilies;
+        vkGetPhysicalDeviceQueueFamilyProperties(
+            physicalDevice,
+            &queueFamilyCount,
+            queueFamilies.ptr,
+        );
 
         graphicsQueueFamily = uint.max;
-        for (uint i = 0; i < queueFamilyCount; i++) {
-            if (queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+        for (uint i = 0; i < queueFamilyCount; i = i + 1) {
+            bool doesGraphics = (queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0;
+            if (doesGraphics) {
                 VkBool32 presentSupport;
-                vkGetPhysicalDeviceSurfaceSupportKHR(physicalDevice, i, surface, &presentSupport);
-                if (presentSupport) {
+                vkGetPhysicalDeviceSurfaceSupportKHR(
+                    physicalDevice,
+                    i,
+                    surface,
+                    &presentSupport,
+                );
+                if (presentSupport != 0) {
                     graphicsQueueFamily = i;
                     break;
                 }
             }
         }
         if (graphicsQueueFamily == uint.max) {
-            writeln("No suitable queue family found");
+            printf("No suitable queue family found\n");
             return false;
         }
 
@@ -92,12 +123,16 @@ struct VulkanCore {
         queueCreateInfo.queueCount = 1;
         queueCreateInfo.pQueuePriorities = &queuePriority;
 
-        const(char)*[] deviceExtensions = ["VK_KHR_swapchain".ptr];
+        const(char)*[2] deviceExtensions;
+        uint deviceExtCount = 0;
+        deviceExtensions[deviceExtCount] = "VK_KHR_swapchain".ptr;
+        deviceExtCount = deviceExtCount + 1;
         version (OSX) {
-            deviceExtensions ~= "VK_KHR_portability_subset".ptr;
+            deviceExtensions[deviceExtCount] = "VK_KHR_portability_subset".ptr;
+            deviceExtCount = deviceExtCount + 1;
         }
 
-        // vkCmdDrawIndirect with drawCount > 1 requires this feature.
+        // vkCmdDrawIndirect with a draw count above one requires this feature.
         VkPhysicalDeviceFeatures supported;
         vkGetPhysicalDeviceFeatures(physicalDevice, &supported);
         multiDrawIndirect = supported.flags[FEATURE_MULTI_DRAW_INDIRECT] != 0;
@@ -111,18 +146,18 @@ struct VulkanCore {
         deviceCreateInfo.sType = VkStructureType.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
         deviceCreateInfo.queueCreateInfoCount = 1;
         deviceCreateInfo.pQueueCreateInfos = &queueCreateInfo;
-        deviceCreateInfo.enabledExtensionCount = cast(uint) deviceExtensions.length;
+        deviceCreateInfo.enabledExtensionCount = deviceExtCount;
         deviceCreateInfo.ppEnabledExtensionNames = deviceExtensions.ptr;
         deviceCreateInfo.pEnabledFeatures = &enabled;
 
         res = vkCreateDevice(physicalDevice, &deviceCreateInfo, null, &device);
         if (res != VkResult.VK_SUCCESS) {
-            writefln("vkCreateDevice failed: %s", res);
+            printf("vkCreateDevice failed: %d\n", cast(int) res);
             return false;
         }
 
         vkGetDeviceQueue(device, graphicsQueueFamily, 0, &graphicsQueue);
-        writeln("Vulkan core initialized");
+        printf("Vulkan core initialized\n");
         return true;
     }
 

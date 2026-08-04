@@ -10,9 +10,11 @@ layout(set = 0, binding = 1, std140) uniform WorldgenParams {
     mat4 chunkToNode;
     vec4 surfaceNormal;
     vec4 roadPlaneNormal;
-    vec4 scalars;     // x=surfExponent, y=roadExponent, z=uintBitsToFloat(flags)
-    uvec2 rngSeed;    // initial splitmix64 state as (lo, hi)
-    vec2 _pad;
+    // x = surfExponent, y = roadExponent, z = uintBitsToFloat(flags)
+    vec4 scalars;
+    // Initial splitmix64 state as low then high half.
+    uvec2 rngSeed;
+    vec2 pad;
     vec4 elev0;
     vec4 elev1;
     vec4 temp0;
@@ -27,7 +29,7 @@ struct VoronoiEntry {
     float rain;
     float temp;
     uint material;
-    uint _pad;
+    uint pad;
 };
 
 layout(set = 0, binding = 2, std430) readonly buffer VoronoiTable {
@@ -42,17 +44,21 @@ const float TERRAIN_SMOOTHNESS = 10.0;
 const float TERRAIN_SURFACE_THICKNESS = 0.2;
 const float PI = 3.14159265358979;
 
-// ---- Emulated uint64 arithmetic using uvec2 (lo, hi) ----
+// Emulated uint64 arithmetic using uvec2 as low then high half.
 
 uvec2 u64_add(uvec2 a, uvec2 b) {
     uint lo = a.x + b.x;
-    uint hi = a.y + b.y + uint(lo < a.x);
+    uint carry = 0u;
+    if (lo < a.x) {
+        carry = 1u;
+    }
+    uint hi = a.y + b.y + carry;
     return uvec2(lo, hi);
 }
 
 uvec2 u64_mul(uvec2 a, uvec2 b) {
-    // Full 64-bit multiply: (a.y:a.x) * (b.y:b.x), keep low 64 bits
-    // Split into 16-bit pieces for a.x * b.x to get carry
+    // Full 64-bit multiply keeping the low 64 bits. The low halves are split
+    // into 16-bit pieces so their product's carry can be recovered.
     uint a0 = a.x & 0xFFFFu;
     uint a1 = a.x >> 16;
     uint b0 = b.x & 0xFFFFu;
@@ -64,8 +70,11 @@ uvec2 u64_mul(uvec2 a, uvec2 b) {
     uint p11 = a1 * b1;
 
     uint mid = p01 + (p00 >> 16);
-    mid += p10;
-    uint carry = uint(mid < p10);
+    mid = mid + p10;
+    uint carry = 0u;
+    if (mid < p10) {
+        carry = 1u;
+    }
 
     uint lo = (p00 & 0xFFFFu) | (mid << 16);
     uint hi = p11 + (mid >> 16) + (carry << 16) + a.x * b.y + a.y * b.x;
@@ -86,30 +95,49 @@ uvec2 u64_shr(uvec2 v, uint n) {
     return uvec2((v.x >> n) | (v.y << (32u - n)), v.y >> n);
 }
 
-// Splitmix64: advance state, return full 64-bit result as uvec2
-uvec2 splitmix64_full(inout uvec2 state) {
+// Splitmix64 hands back both the advanced state and the drawn value, so the
+// caller threads the state along rather than having it written back through a
+// parameter.
+struct Draw {
+    uvec2 state;
+    uvec2 value;
+};
+
+Draw splitmix64_full(uvec2 state) {
     const uvec2 INCREMENT = uvec2(0x7F4A7C15u, 0x9E3779B9u);
-    state = u64_add(state, INCREMENT);
-    uvec2 z = state;
+    uvec2 advanced = u64_add(state, INCREMENT);
+    uvec2 z = advanced;
     z = u64_mul(u64_xor(z, u64_shr(z, 30u)), uvec2(0x1CE4E5B9u, 0xBF58476Du));
     z = u64_mul(u64_xor(z, u64_shr(z, 27u)), uvec2(0x133111EBu, 0x94D049BBu));
     z = u64_xor(z, u64_shr(z, 31u));
-    return z;
+
+    Draw result;
+    result.state = advanced;
+    result.value = z;
+    return result;
 }
 
-// Match CPU's rngNormal: Box-Muller using bits 40-63 of two splitmix64 outputs
-float rngNorm(inout uvec2 state, float stddev) {
-    uvec2 v1 = splitmix64_full(state);
-    uvec2 v2 = splitmix64_full(state);
-    // CPU: u1 = ((v1 >> 40) + 1) / ((1 << 24) + 2)
-    // v1 >> 40 = top 24 bits = v1.y >> 8
-    float u1 = float((v1.y >> 8) + 1u) / float((1u << 24) + 2u);
-    // CPU: u2 = (v2 >> 40) / (1 << 24)
-    float u2 = float(v2.y >> 8) / float(1u << 24);
-    return sqrt(-2.0 * log(u1)) * cos(2.0 * PI * u2) * stddev;
+struct NormalDraw {
+    uvec2 state;
+    float value;
+};
+
+// Matches the CPU's rngNormal: Box-Muller over bits 40 to 63 of two
+// splitmix64 outputs. Those bits are the high 24 of the high half.
+NormalDraw rngNorm(uvec2 state, float stddev) {
+    Draw first = splitmix64_full(state);
+    Draw second = splitmix64_full(first.state);
+
+    float u1 = float((first.value.y >> 8) + 1u) / float((1u << 24) + 2u);
+    float u2 = float(second.value.y >> 8) / float(1u << 24);
+
+    NormalDraw result;
+    result.state = second.state;
+    result.value = sqrt(-2.0 * log(u1)) * cos(2.0 * PI * u2) * stddev;
+    return result;
 }
 
-// ---- Hyperbolic geometry ----
+// Hyperbolic geometry.
 
 float mip(vec4 a, vec4 b) {
     return dot(a.xyz, b.xyz) - a.w * b.w;
@@ -117,7 +145,10 @@ float mip(vec4 a, vec4 b) {
 
 vec4 normalizeHyperboloid(vec4 v) {
     float s2 = -mip(v, v);
-    return s2 > 0.0 ? v / sqrt(s2) : vec4(0, 0, 0, 1);
+    if (s2 > 0.0) {
+        return v / sqrt(s2);
+    }
+    return vec4(0, 0, 0, 1);
 }
 
 float planeDist(vec4 normal, float exponent, vec4 point) {
@@ -134,7 +165,7 @@ float planeDistChunk(vec4 normal, float exponent, vec3 coord) {
     return planeDist(normal, exponent, normalizeHyperboloid(v));
 }
 
-// ---- Terrain math ----
+// Terrain math.
 
 float trilerp8(vec4 lo, vec4 hi, vec3 t) {
     float l00 = mix(lo.x, hi.x, t.x);
@@ -145,8 +176,12 @@ float trilerp8(vec4 lo, vec4 hi, vec3 t) {
 }
 
 float serp(float v0, float v1, float t, float th) {
-    if (t < th) return v0;
-    if (t >= 1.0 - th) return v1;
+    if (t < th) {
+        return v0;
+    }
+    if (t >= 1.0 - th) {
+        return v1;
+    }
     return mix(v0, v1, (t - th) / (1.0 - 2.0 * th));
 }
 
@@ -160,16 +195,35 @@ float terracingDiff(float e, float b, float sc, float st, float lim) {
 uint voronoiLookup(float elev, float rain, float temp, float dist) {
     int stratum;
     if (dist <= TERRAIN_SURFACE_THICKNESS) {
-        stratum = elev < -30.0 ? 4 : elev < -12.0 ? 5 : elev < 2.0 ? 6 : 7;
+        if (elev < -30.0) {
+            stratum = 4;
+        } else if (elev < -12.0) {
+            stratum = 5;
+        } else if (elev < 2.0) {
+            stratum = 6;
+        } else {
+            stratum = 7;
+        }
     } else {
-        stratum = elev < -30.0 ? 3 : elev < -12.0 ? 2 : elev < 2.0 ? 1 : 0;
+        if (elev < -30.0) {
+            stratum = 3;
+        } else if (elev < -12.0) {
+            stratum = 2;
+        } else if (elev < 2.0) {
+            stratum = 1;
+        } else {
+            stratum = 0;
+        }
     }
+
     int base = stratum * 113;
     float best = 1e30;
     uint mat = 0u;
-    for (int i = 0; i < 113; i++) {
+    for (int i = 0; i < 113; i = i + 1) {
         VoronoiEntry e = voronoi_data[base + i];
-        float d = (e.rain - rain) * (e.rain - rain) + (e.temp - temp) * (e.temp - temp);
+        float dr = e.rain - rain;
+        float dt = e.temp - temp;
+        float d = dr * dr + dt * dt;
         if (d < best) {
             best = d;
             mat = e.material;
@@ -191,9 +245,13 @@ void writeVoxel(int x, int y, int z, uint mat) {
 void main() {
     int dim = dimension;
     ivec3 v = ivec3(gl_GlobalInvocationID);
-    if (any(greaterThanEqual(v, ivec3(dim)))) return;
+    if (any(greaterThanEqual(v, ivec3(dim)))) {
+        return;
+    }
 
-    int x = v.x, y = v.y, z = v.z;
+    int x = v.x;
+    int y = v.y;
+    int z = v.z;
     vec3 center = (vec3(v) + 0.5) / float(dim);
     vec3 tc = (1.0 - center) * 0.5;
 
@@ -201,25 +259,30 @@ void main() {
     float roadExp = scalars.y;
     uint flags = floatBitsToUint(scalars.z);
 
-    // Compute RNG state for this voxel matching CPU's sequential order:
-    // CPU iterates x outer, y middle, z inner, consuming 6 values per voxel.
+    // RNG state for this voxel, matching the CPU's sequential order: it
+    // iterates x outermost and z innermost, consuming six values per voxel.
     uint linearIdx = uint(x * dim * dim + y * dim + z);
     const uvec2 INCREMENT = uvec2(0x7F4A7C15u, 0x9E3779B9u);
-    // Advance seed by linearIdx * 6 increments
     uvec2 advance = u64_mul(uvec2(linearIdx * 6u, 0u), INCREMENT);
     uvec2 rng = u64_add(rngSeed, advance);
 
-    float rain = trilerp8(rain0, rain1, tc) + rngNorm(rng, 0.03);
-    float temp = trilerp8(temp0, temp1, tc) + rngNorm(rng, 0.03);
+    NormalDraw rainNoise = rngNorm(rng, 0.03);
+    float rain = trilerp8(rain0, rain1, tc) + rainNoise.value;
+
+    NormalDraw tempNoise = rngNorm(rainNoise.state, 0.03);
+    float temp = trilerp8(temp0, temp1, tc) + tempNoise.value;
+
     float ePre = trilerp8(elev0, elev1, tc);
-    float blk  = trilerp8(block0, block1, tc);
+    float blk = trilerp8(block0, block1, tc);
     float vElev = planeDistChunk(surfaceNormal, surfExp, center);
     float str = 0.4 / (1.0 + vElev * vElev);
     float tS = terracingDiff(ePre, blk, 5.0, str, 2.0);
     float tB = terracingDiff(ePre, blk, 15.0, str, -1.0);
     float ePN = ePre + 0.6 * tS + 0.4 * tB;
     float dPN = ePN / TERRAIN_SMOOTHNESS - vElev;
-    float elev = ePN + TERRAIN_SMOOTHNESS * rngNorm(rng, 0.03);
+
+    NormalDraw elevNoise = rngNorm(tempNoise.state, 0.03);
+    float elev = ePN + TERRAIN_SMOOTHNESS * elevNoise.value;
 
     float dist;
     if (dPN > 0.0) {
@@ -239,23 +302,62 @@ void main() {
     if (isRoad) {
         float hD = planeDistChunk(roadPlaneNormal, roadExp, center);
         if (hD <= 0.3 && vElev <= 0.9) {
-            mat = vElev < 0.075 ? (hD < 0.15 ? 29u : 28u) : 0u;
+            if (vElev >= 0.075) {
+                mat = 0u;
+            } else if (hD < 0.15) {
+                mat = 29u;
+            } else {
+                mat = 28u;
+            }
         }
     } else if (isSupport) {
         float hD = planeDistChunk(roadPlaneNormal, roadExp, center);
         if (hD <= 0.3) {
             int off = dim / 3;
-            int cm = int(x==off) + int(y==off) + int(z==off) + int(x==y) + int(y==z) + int(x==z);
-            if (cm >= 2) mat = 27u;
+            int cm = 0;
+            if (x == off) {
+                cm = cm + 1;
+            }
+            if (y == off) {
+                cm = cm + 1;
+            }
+            if (z == off) {
+                cm = cm + 1;
+            }
+            if (x == y) {
+                cm = cm + 1;
+            }
+            if (y == z) {
+                cm = cm + 1;
+            }
+            if (x == z) {
+                cm = cm + 1;
+            }
+            if (cm >= 2) {
+                mat = 27u;
+            }
         }
     }
 
     writeVoxel(x, y, z, mat);
 
-    if (x == 0) writeVoxel(-1, y, z, mat);
-    if (x == dim-1) writeVoxel(dim, y, z, mat);
-    if (y == 0) writeVoxel(x, -1, z, mat);
-    if (y == dim-1) writeVoxel(x, dim, z, mat);
-    if (z == 0) writeVoxel(x, y, -1, mat);
-    if (z == dim-1) writeVoxel(x, y, dim, mat);
+    // The margin layer around the chunk mirrors the boundary voxels.
+    if (x == 0) {
+        writeVoxel(-1, y, z, mat);
+    }
+    if (x == dim - 1) {
+        writeVoxel(dim, y, z, mat);
+    }
+    if (y == 0) {
+        writeVoxel(x, -1, z, mat);
+    }
+    if (y == dim - 1) {
+        writeVoxel(x, dim, z, mat);
+    }
+    if (z == 0) {
+        writeVoxel(x, y, -1, mat);
+    }
+    if (z == dim - 1) {
+        writeVoxel(x, y, dim, mat);
+    }
 }

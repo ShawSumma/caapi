@@ -1,13 +1,13 @@
 module client.graphics.highlight;
 
-import std.stdio;
+import core.stdc.stdio : printf;
 import core.stdc.string : memcpy;
 import bindings.vk;
 import client.graphics.fog : createShader;
 
-/// Wireframe outline around the voxel the player is aiming at.
-/// Drawn as a line list in subpass 0 with depth testing so hidden
-/// edges are occluded by terrain.
+// Wireframe outline around the voxel the player is aiming at. Drawn as a line
+// list in the first subpass with depth testing, so hidden edges are occluded
+// by terrain.
 struct HighlightPipeline {
     VkPipelineLayout pipelineLayout;
     VkPipeline pipeline;
@@ -16,19 +16,20 @@ struct HighlightPipeline {
         static immutable ubyte[] vertSpv = cast(immutable(ubyte)[]) import("highlight.vert.spv");
         static immutable ubyte[] fragSpv = cast(immutable(ubyte)[]) import("highlight.frag.spv");
 
-        VkShaderModule vertShader;
-        VkShaderModule fragShader;
-        if (!createShader(device, vertSpv, vertShader)) {
+        VkShaderModule vertShader = createShader(device, vertSpv);
+        if (vertShader == VK_NULL_HANDLE) {
             return false;
         }
-        if (!createShader(device, fragSpv, fragShader)) {
+        VkShaderModule fragShader = createShader(device, fragSpv);
+        if (fragShader == VK_NULL_HANDLE) {
             return false;
         }
 
         VkPushConstantRange pcr;
         pcr.stageFlags = VkShaderStageFlagBits.VK_SHADER_STAGE_VERTEX_BIT;
         pcr.offset = 0;
-        pcr.size = 80; // mat4 + vec4
+        // One 4x4 matrix plus one 4-vector.
+        pcr.size = 80;
 
         VkPipelineLayoutCreateInfo plci;
         plci.sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -120,7 +121,7 @@ struct HighlightPipeline {
         vkDestroyShaderModule(device, fragShader, null);
 
         if (res != VkResult.VK_SUCCESS) {
-            writefln("highlight pipeline create failed: %s", res);
+            printf("highlight pipeline create failed: %d\n", cast(int) res);
             return false;
         }
         return true;
@@ -134,16 +135,22 @@ struct HighlightPipeline {
         pc[18] = voxelCoords[2];
         pc[19] = dimension;
         vkCmdBindPipeline(cmd, VkPipelineBindPoint.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-        vkCmdPushConstants(cmd, pipelineLayout,
-            VkShaderStageFlagBits.VK_SHADER_STAGE_VERTEX_BIT, 0, 80, pc.ptr);
+        vkCmdPushConstants(
+            cmd,
+            pipelineLayout,
+            VkShaderStageFlagBits.VK_SHADER_STAGE_VERTEX_BIT,
+            0,
+            80,
+            pc.ptr,
+        );
         vkCmdDraw(cmd, 24, 1, 0, 0);
     }
 
     void cleanup(VkDevice device) {
-        if (pipeline) {
+        if (pipeline != VK_NULL_HANDLE) {
             vkDestroyPipeline(device, pipeline, null);
         }
-        if (pipelineLayout) {
+        if (pipelineLayout != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(device, pipelineLayout, null);
         }
     }

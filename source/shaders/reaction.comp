@@ -38,25 +38,35 @@ void main() {
     }
 
     if (seeding != 0u) {
-        // U saturated everywhere, V as a sparse scatter that grows outward.
-        float v = hash(vec2(p)) > 0.995 ? 1.0 : 0.0;
-        imageStore(dst, p, vec4(1.0, v, 0.0, 1.0));
+        // Substrate saturated everywhere, activator as a sparse scatter that
+        // grows outward.
+        float seed = 0.0;
+        if (hash(vec2(p)) > 0.995) {
+            seed = 1.0;
+        }
+        imageStore(dst, p, vec4(1.0, seed, 0.0, 1.0));
         return;
     }
 
     vec2 c = imageLoad(src, p).rg;
 
-    vec2 lap = -c;
-    lap += 0.2 * (fetch(p + ivec2(1, 0), size) + fetch(p + ivec2(-1, 0), size)
-                + fetch(p + ivec2(0, 1), size) + fetch(p + ivec2(0, -1), size));
-    lap += 0.05 * (fetch(p + ivec2(1, 1), size) + fetch(p + ivec2(1, -1), size)
-                 + fetch(p + ivec2(-1, 1), size) + fetch(p + ivec2(-1, -1), size));
+    vec2 edges = fetch(p + ivec2(1, 0), size);
+    edges = edges + fetch(p + ivec2(-1, 0), size);
+    edges = edges + fetch(p + ivec2(0, 1), size);
+    edges = edges + fetch(p + ivec2(0, -1), size);
+
+    vec2 corners = fetch(p + ivec2(1, 1), size);
+    corners = corners + fetch(p + ivec2(1, -1), size);
+    corners = corners + fetch(p + ivec2(-1, 1), size);
+    corners = corners + fetch(p + ivec2(-1, -1), size);
+
+    vec2 lap = -c + 0.2 * edges + 0.05 * corners;
 
     float u = c.r;
     float v = c.g;
     float uvv = u * v * v;
-    u += (DU * lap.r - uvv + feed * (1.0 - u)) * dt;
-    v += (DV * lap.g + uvv - (feed + kill) * v) * dt;
+    u = u + (DU * lap.r - uvv + feed * (1.0 - u)) * dt;
+    v = v + (DV * lap.g + uvv - (feed + kill) * v) * dt;
 
     imageStore(dst, p, vec4(clamp(u, 0.0, 1.0), clamp(v, 0.0, 1.0), 0.0, 1.0));
 }
