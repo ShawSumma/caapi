@@ -62,39 +62,6 @@ float sqr(float x) {
     return x * x;
 }
 
-struct VoronoiEntryGPU {
-    float rain;
-    float temp;
-    uint material;
-    uint pad;
-}
-
-// Built once at compile time; the GPU upload just points at it.
-static immutable VoronoiEntryGPU[VORONOI_TABLE_LENGTH] VORONOI_TABLE_GPU =
-    buildVoronoiTableGPU();
-
-enum size_t VORONOI_STRATA = 8;
-enum size_t VORONOI_ENTRIES = 113;
-enum size_t VORONOI_TABLE_LENGTH = VORONOI_STRATA * VORONOI_ENTRIES;
-
-// Build the Voronoi table for GPU upload: 8 strata x 113 entries.
-// Order: GENERAL_HIGH, GENERAL_MED, GENERAL_LOW, GENERAL_DEEP,
-//        SURFACE_DEEP, SURFACE_LOW, SURFACE_MED, SURFACE_HIGH
-VoronoiEntryGPU[VORONOI_TABLE_LENGTH] buildVoronoiTableGPU() {
-    VoronoiEntryGPU[VORONOI_TABLE_LENGTH] result;
-    static immutable tables = [
-        &GENERAL_HIGH, &GENERAL_MED, &GENERAL_LOW, &GENERAL_DEEP,
-        &SURFACE_DEEP, &SURFACE_LOW, &SURFACE_MED, &SURFACE_HIGH,
-    ];
-    foreach (t; 0 .. VORONOI_STRATA) {
-        foreach (i; 0 .. VORONOI_ENTRIES) {
-            VoronoiInfo e = (*tables[t])[i];
-            result[t * VORONOI_ENTRIES + i] = VoronoiEntryGPU(
-                e.location[0], e.location[1], cast(uint) e.material, 0);
-        }
-    }
-    return result;
-}
 
 // ============================================================================
 // Voronoi lookup tables
