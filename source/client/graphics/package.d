@@ -502,6 +502,19 @@ struct Renderer {
             chunkSlots.remove(removeBuf[i]);
         }
 
+        // Rewrite the active list in ascending slot order. The draw is
+        // indirect and the vertex stage indexes transforms and chunk info by
+        // slot, so draw order is free — and sorted runs let the indirect pack
+        // collapse thousands of 16-byte copies into a handful.
+        uint sortedCount = 0;
+        foreach (slot; 0 .. nextSlot) {
+            if (slotUsedBuf[slot] != 0) {
+                activeSlotsBuf[sortedCount] = slot;
+                sortedCount = sortedCount + 1;
+            }
+        }
+        assert(sortedCount == activeCount, "active slot bookkeeping diverged");
+
         float[16] proj = frustum.projection(1.0e-4f);
         float[16] view = matToFlat(camPos.local.inverse().mat);
         float[16] vp = matMul(proj, view);

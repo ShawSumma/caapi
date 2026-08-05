@@ -1,6 +1,6 @@
 module client.graphics.pipeline;
 
-import core.stdc.string : memcpy;
+import core.stdc.string : memcpy, memset;
 import bindings.vk;
 
 // Both allocators want memory the host can write without flushing, so the
@@ -39,6 +39,25 @@ struct GpuBuffer {
         void* mapped;
         vkMapMemory(device, b.memory, 0, data.length, 0, &mapped);
         memcpy(mapped, data.ptr, data.length);
+        vkUnmapMemory(device, b.memory);
+
+        return b;
+    }
+
+    // Same result as create() with an all-zero source, without the source.
+    // The buffers this serves are gigabytes; staging them through a host
+    // allocation cost that much again in RSS and a full copy on top.
+    static GpuBuffer createZeroed(
+        VkPhysicalDevice phys,
+        VkDevice device,
+        VkDeviceSize sz,
+        uint usage,
+    ) {
+        GpuBuffer b = createHostVisible(phys, device, sz, usage);
+
+        void* mapped;
+        vkMapMemory(device, b.memory, 0, sz, 0, &mapped);
+        memset(mapped, 0, cast(size_t) sz);
         vkUnmapMemory(device, b.memory);
 
         return b;

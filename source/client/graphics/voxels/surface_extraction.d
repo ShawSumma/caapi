@@ -189,41 +189,33 @@ struct SurfaceExtraction {
         paramsBuf = GpuBuffer.create(phys, device, cast(void[]) dimData[],
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
 
-        // These staging blocks exist only to size and zero the device buffers.
-        // calloc keeps them on lazily-faulted zero pages, which matters:
-        // facesSize alone is gigabytes at the default slot count.
         uint voxelsSize = voxelBufUnit * concurrency;
-        ubyte[] voxInit = allocSlice!ubyte(voxelsSize);
-        voxelsBuf = GpuBuffer.create(phys, device, voxInit,
+        voxelsBuf = GpuBuffer.createZeroed(phys, device, voxelsSize,
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-        freeSlice(voxInit);
 
         uint stateSize = stateBufUnit * concurrency;
-        ubyte[] stateInit = allocSlice!ubyte(stateSize);
-        stateBuf = GpuBuffer.create(phys, device, stateInit,
+        stateBuf = GpuBuffer.createZeroed(phys, device, stateSize,
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_TRANSFER_DST_BIT);
-        freeSlice(stateInit);
 
-        ubyte[] indirInit = allocSlice!ubyte(INDIRECT_SIZE * maxSlots);
-        indirectBuf = GpuBuffer.create(phys, device, indirInit,
+        indirectBuf = GpuBuffer.createZeroed(phys, device, INDIRECT_SIZE * maxSlots,
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_TRANSFER_DST_BIT |
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
-        freeSlice(indirInit);
 
-        ubyte[] packedInit = allocSlice!ubyte(INDIRECT_SIZE * maxSlots);
-        packedIndirectBuf = GpuBuffer.create(phys, device, packedInit,
+        packedIndirectBuf = GpuBuffer.createZeroed(phys, device, INDIRECT_SIZE * maxSlots,
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_TRANSFER_DST_BIT);
-        freeSlice(packedInit);
 
+        // Deliberately not zeroed. It is gigabytes, and the extract shader
+        // writes a slot's faces before any draw reads them: the draw count
+        // comes from indirectBuf, which is zeroed and refilled per extract.
+        // Leaving it untouched keeps the pages unfaulted, so resident memory
+        // tracks the slots actually used instead of the worst case.
         ulong facesSize = cast(ulong) faceBufUnit * maxSlots;
-        ubyte[] facesInitData = allocSlice!ubyte(cast(size_t) facesSize);
-        facesBuf = GpuBuffer.create(phys, device, facesInitData,
+        facesBuf = GpuBuffer.createHostVisible(phys, device, facesSize,
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-        freeSlice(facesInitData);
 
         VkDescriptorBufferInfo pi;
         pi.buffer = paramsBuf.buffer;
@@ -723,13 +715,30 @@ struct SurfaceExtraction {
         if (activeSlots.length == 0) {
             return;
         }
+        // activeSlots arrives in ascending order, so consecutive slots are
+        // one contiguous source range. Emitting a region per run instead of
+        // per slot matters a lot on MoltenVK, where every VkBufferCopy region
+        // becomes its own blit command.
         uint count = cast(uint) activeSlots.length;
-        foreach (i; 0 .. count) {
-            packIndirectCopies[i].srcOffset = cast(VkDeviceSize) activeSlots[i] * INDIRECT_SIZE;
-            packIndirectCopies[i].dstOffset = cast(VkDeviceSize) i * INDIRECT_SIZE;
-            packIndirectCopies[i].size = INDIRECT_SIZE;
+        uint regions = 0;
+        uint i = 0;
+        while (i < count) {
+            uint runStart = i;
+            while (i + 1 < count && activeSlots[i + 1] == activeSlots[i] + 1) {
+                i = i + 1;
+            }
+            uint runLength = i - runStart + 1;
+            packIndirectCopies[regions].srcOffset =
+                cast(VkDeviceSize) activeSlots[runStart] * INDIRECT_SIZE;
+            packIndirectCopies[regions].dstOffset =
+                cast(VkDeviceSize) runStart * INDIRECT_SIZE;
+            packIndirectCopies[regions].size =
+                cast(VkDeviceSize) runLength * INDIRECT_SIZE;
+            regions = regions + 1;
+            i = i + 1;
         }
-        vkCmdCopyBuffer(cmd, indirectBuf.buffer, packedIndirectBuf.buffer, count, packIndirectCopies.ptr);
+        vkCmdCopyBuffer(cmd, indirectBuf.buffer, packedIndirectBuf.buffer,
+            regions, packIndirectCopies.ptr);
 
         VkBufferMemoryBarrier bar;
         bar.sType = VkStructureType.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;

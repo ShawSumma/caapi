@@ -157,7 +157,12 @@ struct VulkanCore {
         }
 
         vkGetDeviceQueue(device, graphicsQueueFamily, 0, &graphicsQueue);
-        printf("Vulkan core initialized\n");
+        // Worth surfacing: without it the renderer falls back to one
+        // vkCmdDrawIndirect per chunk, which dominates command recording.
+        printf(
+            "Vulkan core initialized (multiDrawIndirect=%d)\n",
+            cast(int) multiDrawIndirect,
+        );
         return true;
     }
 
