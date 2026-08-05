@@ -1,6 +1,6 @@
 module client.graphics;
 
-import core.stdc.math : coshf, cosf, logf, powf, sinf, sqrtf;
+import core.stdc.math : coshf, cosf, logf, powf, sinf, sinhf, sqrtf;
 import core.stdc.stdio : FILE, fclose, fflush, fopen, fwrite, printf;
 import core.stdc.stdio : snprintf, stdout;
 import core.stdc.string : memcpy;
@@ -139,6 +139,10 @@ struct Renderer {
 
     uint lastLoggedSecond = 0;
     bool hasLoggedSecond = false;
+
+    // Temporary breakdown of the `loop` stage while it is being tuned.
+    double[4] subSum = 0;
+    uint visibleNodes = 0;
     NearbyNode[] cachedNodes;
     NearbyScratch nearbyScratch;
     NodeId lastNearbyNode;
@@ -350,43 +354,63 @@ struct Renderer {
         MIsometry!float camInverse = camPos.local.inverse();
         MDirection!float[5] fplanes = frustum.planes();
 
+        // The Minkowski form is isometry-invariant, so pushing the five
+        // planes into node space once is exactly equivalent to pulling every
+        // node into camera space — and saves a 4x4 product per node, which is
+        // the whole cost of the cull at large radii.
+        MDirection!float[5] worldPlanes;
+        foreach (i; 0 .. 5) {
+            worldPlanes[i] = MDirection!float(camPos.local * fplanes[i].vec);
+        }
+
         void* voxelsMapped = null;
         uint nodeIndex = 0;
 
         // Everything inside a node fits in a sphere of the node's own bounding
         // radius plus a chunk's; cull whole nodes before touching their chunks.
         enum float NODE_CULL_RADIUS = BOUNDING_SPHERE_RADIUS + CHUNK_BOUNDING_SPHERE_RADIUS;
+        float nodeCullSinh = sinhf(NODE_CULL_RADIUS);
+        float chunkCullSinh = sinhf(CHUNK_BOUNDING_SPHERE_RADIUS);
 
-        foreach (ref nn; cachedNodes) {
+        // Cull against the compact centre array first. Only survivors touch
+        // the 88-byte NearbyNode or the node slab, so rejected nodes cost one
+        // 16-byte read instead of pulling a full isometry through cache.
+        double b0 = nowMs();
+        const(MVector!float)[] centers = nearbyScratch.centers.slice();
+        foreach (nodeSlot; 0 .. cachedNodes.length) {
+            MPoint!float nodeCenter = MPoint!float(centers[nodeSlot]);
+            if (frustum.sphereOutsideSinh(worldPlanes, nodeCenter, nodeCullSinh)) {
+                continue;
+            }
+
+            visibleNodes = visibleNodes + 1;
+            NearbyNode nn = cachedNodes[nodeSlot];
             if (nn.slot == NO_SLOT) {
                 continue;
             }
-
-            // Cull from the compact cachedNodes array before touching the
-            // node slab, so invisible nodes cost no scattered memory reads.
-            MPoint!float nodeCenter = MPoint!float(MVector!float(
-                nn.transform.mat.data[3][0], nn.transform.mat.data[3][1],
-                nn.transform.mat.data[3][2], nn.transform.mat.data[3][3]));
-            MPoint!float nodeCam = camInverse * nodeCenter;
-            if (frustum.sphereOutside(fplanes, nodeCam, NODE_CULL_RADIUS)) {
+            Node* node = &graph.nodeAt(nn.slot);
+            // Most nodes reaching here have nothing drawable yet: worldgen
+            // has not caught up, or every chunk is solid. One test beats
+            // twenty.
+            uint renderable = node.renderableMask;
+            if (renderable == 0) {
                 continue;
             }
-            Node* node = &graph.nodeAt(nn.slot);
 
             uint thisNodeIndex = nodeIndex;
             bool nodeUploaded = false;
             nodeIndex = nodeIndex + 1;
 
             foreach (vIdx; 0 .. 20) {
-                Vertex v = cast(Vertex) vIdx;
-                Chunk* c = &node.chunks.values[v];
-                if (c.state != ChunkState.Populated || c.voxels.isSolid()) {
+                if ((renderable & (1u << vIdx)) == 0) {
                     continue;
                 }
+                Vertex v = cast(Vertex) vIdx;
+                Chunk* c = &node.chunks.values[v];
 
-                MPoint!float camCenter =
-                    camInverse * (nn.transform * vertexChunkBoundingSphereCenter(v));
-                if (frustum.sphereOutside(fplanes, camCenter, CHUNK_BOUNDING_SPHERE_RADIUS)) {
+                MPoint!float chunkCenter =
+                    nn.transform * vertexChunkBoundingSphereCenter(v);
+                if (frustum.sphereOutsideSinh(worldPlanes, chunkCenter, chunkCullSinh)) {
                     continue;
                 }
 
@@ -471,6 +495,7 @@ struct Renderer {
                 inFrustumCount = inFrustumCount + 1;
             }
         }
+        double b1 = nowMs();
         if (voxelsMapped !is null) {
             extract.unmapVoxels(core.device);
         }
@@ -482,6 +507,7 @@ struct Renderer {
             memcpy(extract.slotTasksMapped, slotTaskLocal.ptr, activeCount * 16);
         }
 
+        double b2 = nowMs();
         // A flat scan of the table rather than a walk over scattered nodes.
         // Removals are collected first because backward-shift deletion moves
         // entries around, which would disturb an in-progress scan.
@@ -515,6 +541,11 @@ struct Renderer {
         }
         assert(sortedCount == activeCount, "active slot bookkeeping diverged");
 
+        double b3 = nowMs();
+        subSum[0] = subSum[0] + (b1 - b0);
+        subSum[1] = subSum[1] + (b2 - b1);
+        subSum[2] = subSum[2] + (b3 - b2);
+
         float[16] proj = frustum.projection(1.0e-4f);
         float[16] view = matToFlat(camPos.local.inverse().mat);
         float[16] vp = matMul(proj, view);
@@ -544,6 +575,7 @@ struct Renderer {
             }
         }
         double a4 = nowMs();
+        subSum[3] = subSum[3] + (a4 - b3);
 
         float fogDensity = powf(logf(1.0f / 1e-3f), 1.0f / 5.0f) / 75.0f;
 
@@ -788,8 +820,17 @@ struct Renderer {
             }
             printf(" %s=%.1f/%.1f", STAGE_NAMES[i].ptr, avg, stageMax[i]);
         }
+        double frames = statFrames;
+        if (frames < 1) {
+            frames = 1;
+        }
+        printf(" | cull=%.2f mapcpy=%.2f sweep=%.2f target=%.2f visnodes=%.0f",
+            subSum[0] / frames, subSum[1] / frames, subSum[2] / frames,
+            subSum[3] / frames, visibleNodes / frames);
         printf("\n");
         fflush(stdout);
+        subSum[] = 0;
+        visibleNodes = 0;
 
         stageSum[] = 0;
         stageMax[] = 0;
@@ -1035,6 +1076,9 @@ struct Renderer {
         ubyte dim = cast(ubyte) dimension;
         c.voxels.dataMut(dim)[coords.toIndex(dim)] = material;
         c.generation = c.generation + 1;
+        // dataMut may have promoted a solid chunk to dense, which makes it
+        // drawable.
+        graph[chunkId.node].setChunkRenderable(chunkId.vertex, !c.voxels.isSolid());
 
         foreach (dir; ChunkDirection.ALL) {
             if (coords[dir.axis] != Coords.boundaryCoord(dim, dir.sign)) {

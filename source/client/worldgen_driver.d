@@ -218,6 +218,10 @@ struct WorldgenDriver {
                 if (voxelData !is null) {
                     c.state = ChunkState.Populated;
                     c.voxels = *voxelData;
+                    graph.nodeAt(nn.slot).setChunkRenderable(
+                        vertex,
+                        !c.voxels.isSolid(),
+                    );
                     preloadedVoxelData.remove(chunkId);
                     continue;
                 }
@@ -286,10 +290,12 @@ void populateChunk(ref Graph graph, ChunkId chunk, VoxelData voxels, ubyte dimen
         fixMargins(dimension, chunk.vertex, voxels, dir, neighborC.voxels);
         neighborC.generation = neighborC.generation + 1;
     }
-    Chunk* c = &graph[chunk.node].chunks.values[chunk.vertex];
+    Node* node = &graph[chunk.node];
+    Chunk* c = &node.chunks.values[chunk.vertex];
     c.state = ChunkState.Populated;
     c.voxels = voxels;
     c.generation = c.generation + 1;
+    node.setChunkRenderable(chunk.vertex, !voxels.isSolid());
 }
 
 ChunkId getChunkNeighbor(

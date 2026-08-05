@@ -1,0 +1,13 @@
+# Exercises swapchain recreation. Each resize invalidates the surface, which
+# forces recreate(): tear down images, views, framebuffers and semaphores and
+# rebuild them. Repeats so a leak or a stale handle shows up rather than
+# surviving one round by luck.
+0.5 resize 800x600
+1.0 resize 1600x900
+1.5 resize 640x480
+2.0 resize 1280x720
+2.5 resize 1024x768
+# Ends at a size distinct from the 1280x720 startup size, so a captured
+# frame's dimensions prove the swapchain really was rebuilt.
+3.0 resize 960x540
+4.0 quit

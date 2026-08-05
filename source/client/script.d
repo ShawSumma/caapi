@@ -1,6 +1,6 @@
 module client.script;
 
-import core.stdc.stdio : printf, snprintf;
+import core.stdc.stdio : printf, snprintf, sscanf;
 import core.stdc.stdlib : system;
 import common.array : Array;
 import common.text : FileText, ParsedFloat;
@@ -23,6 +23,12 @@ struct Script {
     float vert = 0;
     float yawRate = 0;
     float pitchRate = 0;
+
+    // Set by a `resize <W>x<H>` line. The window belongs to main, so the
+    // request is handed back rather than acted on here.
+    bool resizePending;
+    int resizeWidth;
+    int resizeHeight;
 
     static Script parse(ref FileText text) {
         Script s;
@@ -76,6 +82,15 @@ struct Script {
                 );
                 printf("[script t=%.3f] %s\n", cast(double) e.time, cmd.ptr);
                 system(cmd.ptr);
+            } else if (cstrEq(e.command, "resize")) {
+                int w = 0;
+                int h = 0;
+                if (e.arg !is null && sscanf(e.arg, "%dx%d", &w, &h) == 2) {
+                    resizeWidth = w;
+                    resizeHeight = h;
+                    resizePending = true;
+                    printf("[script t=%.3f] resize %dx%d\n", cast(double) e.time, w, h);
+                }
             } else if (cstrEq(e.command, "quit")) {
                 keepRunning = false;
             } else if (cstrEq(e.command, "key_down")) {

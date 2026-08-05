@@ -87,6 +87,12 @@ struct NearbyNode {
 // clearing between runs.
 struct NearbyScratch {
     Array!NearbyNode nodes;
+    // Parallel to `nodes`, holding just each node's centre. A NearbyNode is
+    // ~88 bytes because it carries a full isometry; the frustum cull only
+    // needs the centre, and at large radii that cull is bound by how much
+    // memory it streams, not by arithmetic. Keeping centres separate lets it
+    // touch 16 bytes per node instead of 88.
+    Array!(MVector!float) centers;
     Array!uint stamp;
     uint generation;
     // True when the last collection ran out of node-creation budget; the
@@ -95,6 +101,7 @@ struct NearbyScratch {
 
     void release() {
         nodes.release();
+        centers.release();
         stamp.release();
     }
 }
@@ -112,6 +119,7 @@ NearbyNode[] ensureAndCollectNearby(
     scratch.creationCapped = false;
 
     scratch.nodes.clear();
+    scratch.centers.clear();
     scratch.generation = scratch.generation + 1;
     uint gen = scratch.generation;
     if (scratch.stamp.length() < graph.slotCount()) {
@@ -125,6 +133,7 @@ NearbyNode[] ensureAndCollectNearby(
     scratch.nodes.push(
         NearbyNode(startNode, MIsometry!float.identity(), startSlot),
     );
+    scratch.centers.push(MVector!float(0, 0, 0, 1));
     scratch.stamp[startSlot] = gen;
     MPoint!float startP = startLocal * MPoint!float.origin();
 
@@ -173,6 +182,9 @@ NearbyNode[] ensureAndCollectNearby(
             scratch.nodes.push(
                 NearbyNode(graph.idAt(neighbor), neighborTransform, neighbor),
             );
+            // neighborTransform's translation column is exactly this, already
+            // computed above for the distance cull.
+            scratch.centers.push(neighborOrigin);
         }
     }
 

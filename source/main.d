@@ -109,6 +109,9 @@ void run(int argc, char** argv) {
     bool tripMode = false;
     uint fieldMode = 1;
     uint producer = PRODUCER_DIFFUSION;
+    // Negative means "leave the renderer's default alone".
+    float renderRadius = -1.0f;
+    bool noVsync = false;
 
     foreach (i; 0 .. argc) {
         char* a = argv[i];
@@ -133,6 +136,12 @@ void run(int argc, char** argv) {
         }
         if (cstrEq(a, "--replay") && i + 1 < argc) {
             replayPath = argv[i + 1];
+        }
+        if (cstrEq(a, "--radius") && i + 1 < argc) {
+            renderRadius = argFloat(argc, argv, i + 1, renderRadius);
+        }
+        if (cstrEq(a, "--novsync")) {
+            noVsync = true;
         }
         if (cstrEq(a, "--headless")) {
             headlessMode = true;
@@ -272,6 +281,7 @@ void run(int argc, char** argv) {
 
     Renderer renderer;
     renderer.swapState.offscreen = shotPath !is null && !shotHiddenWindow;
+    renderer.swapState.preferImmediate = noVsync;
     if (!renderer.init(cast(void*) window)) {
         printf("Renderer initialization failed\n");
         return;
@@ -284,6 +294,11 @@ void run(int argc, char** argv) {
     // absolute hyperbolic distance.
     renderer.reach = tanhf(cfg.reach * simCfg.metersToAbsolute);
     renderer.headless = headlessMode;
+    if (renderRadius > 0) {
+        renderer.renderRadius = renderRadius;
+        renderer.viewRadius = renderRadius + 0.5f;
+        printf("render radius: %.2f\n", cast(double) renderRadius);
+    }
     renderer.worldgenDriver.flatWorldgen = flatWorldgen;
     renderer.trip = tripMode;
     renderer.fieldMode = fieldMode;
@@ -413,6 +428,10 @@ void run(int argc, char** argv) {
         if (scripted) {
             if (!script.tick(simTime, xWindowId)) {
                 running = false;
+            }
+            if (script.resizePending) {
+                SDL_SetWindowSize(window, script.resizeWidth, script.resizeHeight);
+                script.resizePending = false;
             }
             cam.fwd = script.fwd;
             cam.strafe = script.strafe;

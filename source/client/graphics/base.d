@@ -15,6 +15,9 @@ struct SwapchainState {
     VkSwapchainKHR swapchain;
     // Render into an owned image instead of a swapchain; no surface, no present.
     bool offscreen;
+    // Benchmarking: take IMMEDIATE over FIFO so frame time reflects the work
+    // done rather than the display refresh interval.
+    bool preferImmediate;
     VkFormat format;
     VkExtent2D extent;
     VkImage[MAX_SWAPCHAIN_IMAGES] images;
@@ -30,7 +33,10 @@ struct SwapchainState {
     VkCommandBuffer commandBuffer;
     VkSemaphore imageAvailableSemaphore;
     // Per image: present can still hold an image's semaphore after the next acquire.
+    // Counted separately from imageCount because recreate() tears the
+    // swapchain down (zeroing imageCount) before destroying these.
     VkSemaphore[MAX_SWAPCHAIN_IMAGES] renderFinishedSemaphores;
+    uint semaphoreCount;
     VkFence inFlightFence;
 
     bool init(
@@ -101,13 +107,15 @@ struct SwapchainState {
         foreach (i; 0 .. imageCount) {
             vkCreateSemaphore(device, &semCI, null, &renderFinishedSemaphores[i]);
         }
+        semaphoreCount = imageCount;
     }
 
     void destroyRenderFinishedSemaphores(VkDevice device) {
-        foreach (i; 0 .. imageCount) {
+        foreach (i; 0 .. semaphoreCount) {
             vkDestroySemaphore(device, renderFinishedSemaphores[i], null);
             renderFinishedSemaphores[i] = VK_NULL_HANDLE;
         }
+        semaphoreCount = 0;
     }
 
     bool createOffscreenTarget(VkDevice device) {
@@ -209,15 +217,17 @@ struct SwapchainState {
         format = formats[0].format;
         VkColorSpaceKHR colorSpace = formats[0].colorSpace;
 
-        uint imageCount = caps.minImageCount + 1;
-        if (caps.maxImageCount > 0 && imageCount > caps.maxImageCount) {
-            imageCount = caps.maxImageCount;
+        // Named apart from the `imageCount` field: this is what we ask the
+        // surface for, not what the swapchain hands back.
+        uint requestedImages = caps.minImageCount + 1;
+        if (caps.maxImageCount > 0 && requestedImages > caps.maxImageCount) {
+            requestedImages = caps.maxImageCount;
         }
 
         VkSwapchainCreateInfoKHR sci;
         sci.sType = VkStructureType.VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
         sci.surface = surface;
-        sci.minImageCount = imageCount;
+        sci.minImageCount = requestedImages;
         sci.imageFormat = format;
         sci.imageColorSpace = colorSpace;
         sci.imageExtent = extent;
@@ -228,7 +238,7 @@ struct SwapchainState {
         sci.imageSharingMode = VkSharingMode.VK_SHARING_MODE_EXCLUSIVE;
         sci.preTransform = caps.currentTransform;
         sci.compositeAlpha = VkCompositeAlphaFlagBitsKHR.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-        sci.presentMode = selectPresentMode(physDevice, surface);
+        sci.presentMode = selectPresentMode(physDevice, surface, preferImmediate);
         sci.clipped = 1;
 
         VkResult res = vkCreateSwapchainKHR(device, &sci, null, &swapchain);
@@ -334,7 +344,11 @@ struct SwapchainState {
             fbci.width = extent.width;
             fbci.height = extent.height;
             fbci.layers = 1;
-            vkCreateFramebuffer(device, &fbci, null, &framebuffers[i]);
+            VkResult fbres = vkCreateFramebuffer(device, &fbci, null, &framebuffers[i]);
+            if (fbres != VkResult.VK_SUCCESS) {
+                printf("vkCreateFramebuffer failed: %d\n", cast(int) fbres);
+                return false;
+            }
         }
 
         return true;
@@ -476,7 +490,11 @@ uint clamp(uint v, uint lo, uint hi) {
 
 enum uint MAX_PRESENT_MODES = 8;
 
-VkPresentModeKHR selectPresentMode(VkPhysicalDevice phys, VkSurfaceKHR surface) {
+VkPresentModeKHR selectPresentMode(
+    VkPhysicalDevice phys,
+    VkSurfaceKHR surface,
+    bool preferImmediate,
+) {
     uint count;
     vkGetPhysicalDeviceSurfacePresentModesKHR(phys, surface, &count, null);
     if (count > MAX_PRESENT_MODES) {
@@ -484,6 +502,15 @@ VkPresentModeKHR selectPresentMode(VkPhysicalDevice phys, VkSurfaceKHR surface) 
     }
     VkPresentModeKHR[MAX_PRESENT_MODES] modes;
     vkGetPhysicalDeviceSurfacePresentModesKHR(phys, surface, &count, modes.ptr);
+    if (preferImmediate) {
+        foreach (m; modes[0 .. count]) {
+            if (m == VkPresentModeKHR.VK_PRESENT_MODE_IMMEDIATE_KHR) {
+                printf("present mode: IMMEDIATE (vsync off)\n");
+                return m;
+            }
+        }
+        printf("present mode: IMMEDIATE unavailable, falling back\n");
+    }
     foreach (m; modes[0 .. count]) {
         if (m == VkPresentModeKHR.VK_PRESENT_MODE_MAILBOX_KHR) {
             return m;

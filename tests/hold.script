@@ -1,0 +1,4 @@
+# Stationary camera. Fixed 16ms steps, so this is a fixed number of frames
+# regardless of speed, which makes the per-stage timings comparable across
+# builds and render radii. Long enough for worldgen to settle.
+30.0 quit

@@ -1,0 +1,12 @@
+# Smoke test: fly forward while turning, so the camera crosses node
+# boundaries and the worldgen driver has to stream chunks in and evict them.
+# Fixed 16ms steps, so this is reproducible.
+0.0 key_down W
+1.0 key_down LEFT
+3.0 key_up LEFT
+3.0 key_down RIGHT
+5.0 key_up RIGHT
+5.0 key_down SPACE
+6.0 key_up SPACE
+8.0 key_up W
+8.5 quit

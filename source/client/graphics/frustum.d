@@ -29,12 +29,16 @@ struct Frustum {
         float cosUp = cast(float) cos(up);
         float sinUp = cast(float) sin(up);
 
+        // Near plane first. The cull tests planes in order and bails on the
+        // first rejection, and in a ball of nodes roughly half sit behind the
+        // camera — those are exactly what the near plane rejects, so testing
+        // it last made the common case pay for all five.
         MDirection!float[5] result;
-        result[0] = MDirection!float(MVector!float(cosLeft, 0, sinLeft, 0));
-        result[1] = MDirection!float(MVector!float(-cosRight, 0, -sinRight, 0));
-        result[2] = MDirection!float(MVector!float(0, cosDown, sinDown, 0));
-        result[3] = MDirection!float(MVector!float(0, -cosUp, -sinUp, 0));
-        result[4] = MDirection!float(MVector!float(0, 0, -1, 0));
+        result[0] = MDirection!float(MVector!float(0, 0, -1, 0));
+        result[1] = MDirection!float(MVector!float(cosLeft, 0, sinLeft, 0));
+        result[2] = MDirection!float(MVector!float(-cosRight, 0, -sinRight, 0));
+        result[3] = MDirection!float(MVector!float(0, cosDown, sinDown, 0));
+        result[4] = MDirection!float(MVector!float(0, -cosUp, -sinUp, 0));
         return result;
     }
 
@@ -43,9 +47,19 @@ struct Frustum {
         const ref MPoint!float center,
         float radius,
     ) const {
-        float threshold = cast(float) sinh(radius);
+        return sphereOutsideSinh(fp, center, cast(float) sinh(radius));
+    }
+
+    // Takes the radius already passed through sinh. The cull runs over
+    // hundreds of thousands of nodes per frame against radii that are
+    // compile-time constants, so calling sinh per test was pure waste.
+    bool sphereOutsideSinh(
+        const ref MDirection!float[5] fp,
+        const ref MPoint!float center,
+        float sinhRadius,
+    ) const {
         foreach (ref p; fp) {
-            if (p.mip(center) < -threshold) {
+            if (p.mip(center) < -sinhRadius) {
                 return true;
             }
         }

@@ -116,4 +116,17 @@ struct Chunk {
 struct Node {
     Chunks!Chunk chunks;
     void* state;
+    // One bit per vertex: chunk is populated and has surfaces worth drawing.
+    // The render cull reaches far more nodes than have any content, so this
+    // lets it reject a whole node with one test instead of walking 20 chunks.
+    uint renderableMask;
+
+    void setChunkRenderable(Vertex v, bool renderable) {
+        uint bit = 1u << cast(uint) v;
+        if (renderable) {
+            renderableMask = renderableMask | bit;
+        } else {
+            renderableMask = renderableMask & ~bit;
+        }
+    }
 }
