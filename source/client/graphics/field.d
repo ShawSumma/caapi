@@ -1,6 +1,6 @@
 module client.graphics.field;
 
-import std.stdio;
+import core.stdc.stdio : printf;
 import bindings.vk;
 
 enum uint PRODUCER_NONE = 0;
@@ -238,7 +238,7 @@ struct PerceptionField {
         }
 
         ready = true;
-        writefln("Perception field initialized (%dx%d)", SIZE, SIZE);
+        printf("Perception field initialized (%ux%u)\n", SIZE, SIZE);
         return true;
     }
 

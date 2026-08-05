@@ -1,11 +1,11 @@
 module tests.worldgen_determinism;
 
-import std.stdio : writeln, writefln;
-import std.math : cosh;
-import common.dodeca : Vertex, CHUNK_BOUNDING_SPHERE_RADIUS, vertexChunkBoundingSphereCenter,
-    vertexCanonicalSides, vertexAdjacentVertices;
+import core.stdc.stdio : printf;
+import common.dodeca : Vertex, CHUNK_BOUNDING_SPHERE_RADIUS;
+import common.dodeca : vertexChunkBoundingSphereCenter;
+import common.dodeca : vertexCanonicalSides, vertexAdjacentVertices;
 import common.graph : Graph, NodeId;
-import common.math : MIsometry, MPoint;
+import common.math : MIsometry, MPoint, cosh;
 import common.node : Chunk, ChunkId, ChunkState, VoxelData;
 import common.traversal : ensureAndCollectNearby, NearbyNode;
 import common.worldgen : ChunkParams, generateVoxels;
@@ -14,7 +14,7 @@ import common.voxel_math : ChunkDirection, CoordSign;
 import common.world : Material;
 import client.worldgen_driver : WorldgenDriver, populateChunk;
 
-/// Synchronous driver that matches the original pre-threading behavior exactly.
+// Synchronous driver that matches the original pre-threading behaviour exactly.
 int driveSync(
     const(NearbyNode)[] nearby,
     MIsometry!float camLocal,
@@ -47,7 +47,7 @@ int driveSync(
             ChunkParams params = ChunkParams.create(graph, chunkId);
             VoxelData voxels = generateVoxels(params);
             populateChunk(graph, chunkId, voxels, chunkSize);
-            generated++;
+            generated = generated + 1;
         }
     }
     return generated;
@@ -59,7 +59,7 @@ int countPopulated(ref Graph graph, const(NearbyNode)[] nearby) {
         foreach (int vIdx; 0 .. Vertex.max + 1) {
             Vertex vertex = cast(Vertex) vIdx;
             if (graph[nn.id].chunks.values[vertex].state == ChunkState.Populated) {
-                count++;
+                count = count + 1;
             }
         }
     }
@@ -72,7 +72,7 @@ void main() {
     enum int MAX_PER_FRAME = 8;
     MIsometry!float cam = MIsometry!float.identity();
 
-    // --- Synchronous path ---
+    // Synchronous path.
     Graph graphSync = Graph.create(DIM);
     int syncTotal = 0;
     foreach (pass; 0 .. 100_000) {
@@ -85,7 +85,7 @@ void main() {
         }
     }
 
-    // --- Second sync path (control) ---
+    // Second sync path, used as a control.
     Graph graphSync2 = Graph.create(DIM);
     foreach (pass; 0 .. 100_000) {
         NearbyNode[] nearby = ensureAndCollectNearby(graphSync2, NodeId.ROOT, cam, RADIUS);
@@ -97,7 +97,7 @@ void main() {
         }
     }
 
-    // --- Async path ---
+    // Async path.
     Graph graphAsync = Graph.create(DIM);
     WorldgenDriver driver = WorldgenDriver.create();
     foreach (pass; 0 .. 100_000) {
@@ -118,19 +118,31 @@ void main() {
             Vertex vertex = cast(Vertex) vIdx;
             Chunk* sc = &graphSync[nn.id].chunks.values[vertex];
             Chunk* sc2 = &graphSync2[nn.id].chunks.values[vertex];
-            if (sc.state != sc2.state) { ctrlMismatches++; continue; }
-            if (sc.state != ChunkState.Populated) { continue; }
-            if (sc.voxels.kind != sc2.voxels.kind) { ctrlMismatches++; continue; }
+            if (sc.state != sc2.state) {
+                ctrlMismatches = ctrlMismatches + 1;
+                continue;
+            }
+            if (sc.state != ChunkState.Populated) {
+                continue;
+            }
+            if (sc.voxels.kind != sc2.voxels.kind) {
+                ctrlMismatches = ctrlMismatches + 1;
+                continue;
+            }
             if (sc.voxels.kind == VoxelData.Kind.Solid) {
-                if (sc.voxels.solidMaterial != sc2.voxels.solidMaterial) { ctrlMismatches++; }
+                if (sc.voxels.solidMaterial != sc2.voxels.solidMaterial) {
+                    ctrlMismatches = ctrlMismatches + 1;
+                }
             } else {
-                if (sc.voxels.denseData != sc2.voxels.denseData) { ctrlMismatches++; }
+                if (sc.voxels.denseData != sc2.voxels.denseData) {
+                    ctrlMismatches = ctrlMismatches + 1;
+                }
             }
         }
     }
     writefln("Control (sync vs sync2): %d mismatches", ctrlMismatches);
 
-    // --- Compare all chunks ---
+    // Compare all chunks.
     NearbyNode[] nearbyRef = ensureAndCollectNearby(graphSync, NodeId.ROOT, cam, RADIUS);
     int mismatches = 0;
     int compared = 0;
@@ -141,45 +153,61 @@ void main() {
             if (sc.state != ChunkState.Populated) {
                 continue;
             }
-            compared++;
+            compared = compared + 1;
 
             if (!graphAsync.contains(nn.id)) {
                 writefln("MISSING node %s", nn.id);
-                mismatches++;
+                mismatches = mismatches + 1;
                 continue;
             }
             Chunk* ac = &graphAsync[nn.id].chunks.values[vertex];
             if (ac.state != ChunkState.Populated) {
                 writefln("UNPOPULATED %s/%s", nn.id, cast(Vertex) vIdx);
-                mismatches++;
+                mismatches = mismatches + 1;
                 continue;
             }
 
             if (sc.voxels.kind != ac.voxels.kind) {
                 if (mismatches < 20) {
-                    writefln("KIND mismatch %s/%s: %s vs %s", nn.id, cast(Vertex) vIdx, sc.voxels.kind, ac.voxels.kind);
+                    writefln(
+                        "KIND mismatch %s/%s: %s vs %s",
+                        nn.id,
+                        cast(Vertex) vIdx,
+                        sc.voxels.kind,
+                        ac.voxels.kind,
+                    );
                 }
-                mismatches++;
+                mismatches = mismatches + 1;
                 continue;
             }
 
             if (sc.voxels.kind == VoxelData.Kind.Solid) {
                 if (sc.voxels.solidMaterial != ac.voxels.solidMaterial) {
                     if (mismatches < 5) {
-                        writefln("SOLID mismatch %s/%s: sync=%s async=%s", nn.id, cast(Vertex) vIdx,
-                            sc.voxels.solidMaterial, ac.voxels.solidMaterial);
+                        writefln(
+                            "SOLID mismatch %s/%s: sync=%s async=%s",
+                            nn.id,
+                            cast(Vertex) vIdx,
+                            sc.voxels.solidMaterial,
+                            ac.voxels.solidMaterial,
+                        );
                     }
-                    mismatches++;
+                    mismatches = mismatches + 1;
                 }
-            }
-            else {
+            } else {
                 Material[] sd = sc.voxels.denseData;
                 Material[] ad = ac.voxels.denseData;
                 if (sd.length != ad.length) {
                     if (mismatches < 5) {
-                        writefln("LENGTH mismatch %s/%s: %d vs %d", nn.id, cast(Vertex) vIdx, sd.length, ad.length);
+                        writefln(
+                            "LENGTH mismatch %s/%s: %d vs %d",
+                            nn.id,
+                            cast(Vertex) vIdx,
+                            sd.length,
+                            ad.length,
+                        );
                     }
-                    mismatches++;
+                    mismatches = mismatches + 1;
                     continue;
                 }
                 int diffCount = 0;
@@ -189,16 +217,22 @@ void main() {
                         if (diffCount == 0) {
                             firstDiff = i;
                         }
-                        diffCount++;
+                        diffCount = diffCount + 1;
                     }
                 }
                 if (diffCount > 0) {
                     if (mismatches < 5) {
-                        writefln("DATA mismatch %s/%s: %d diffs, first at [%d] sync=%s async=%s",
-                            nn.id, cast(Vertex) vIdx, diffCount, firstDiff,
-                            sd[firstDiff], ad[firstDiff]);
+                        writefln(
+                            "DATA mismatch %s/%s: %d diffs, first at [%d] sync=%s async=%s",
+                            nn.id,
+                            cast(Vertex) vIdx,
+                            diffCount,
+                            firstDiff,
+                            sd[firstDiff],
+                            ad[firstDiff],
+                        );
                     }
-                    mismatches++;
+                    mismatches = mismatches + 1;
                 }
             }
         }
@@ -206,8 +240,7 @@ void main() {
 
     if (mismatches == 0) {
         writefln("PASS: all %d chunks match exactly", compared);
-    }
-    else {
+    } else {
         writefln("FAIL: %d mismatches out of %d chunks", mismatches, compared);
     }
 }

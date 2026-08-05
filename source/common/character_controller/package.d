@@ -1,15 +1,20 @@
 module common.character_controller;
 
-import std.math : sqrt, exp, isNaN;
-
-import common.math : MIsometry, MPoint, MVector, projectToPlane, sanitizeMotionInput;
+import common.math : MIsometry, MPoint, MVector;
+import common.math : projectToPlane, sanitizeMotionInput;
+import common.math : exp, isNaN, sqrt;
 import common.graph : Graph, NodeId;
 import common.graph_collision : regionPopulated;
 import common.worldgen : NodeState;
 import common.proto : Position, CharacterInput;
 import common.sim_config : SimConfig, CharacterConfig;
-import common.character_controller.collision : CollisionContext, CollisionCheckingResult, Collision, checkCollision;
-import common.character_controller.vector_bounds : BoundedVectors, VectorBound, dot3, magnitude3, scale3, add3, sub3, neg3, normalize3, zero3, isZero3;
+import common.character_controller.collision : CollisionContext;
+import common.character_controller.collision : CollisionCheckingResult;
+import common.character_controller.collision : Collision, checkCollision;
+import common.character_controller.vector_bounds : BoundedVectors, VectorBound;
+import common.character_controller.vector_bounds : dot3, magnitude3, scale3;
+import common.character_controller.vector_bounds : add3, sub3, neg3;
+import common.character_controller.vector_bounds : normalize3, zero3, isZero3;
 
 void runCharacterStep(
     const ref SimConfig simConfig,

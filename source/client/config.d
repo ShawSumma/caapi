@@ -1,14 +1,15 @@
 module client.config;
 
-import std.conv : to;
-import std.file : exists, readText;
-import std.stdio : writefln;
-import std.string : indexOf, splitLines, strip;
+import core.stdc.stdio : printf;
+import common.array : Array;
+import common.text : FileText, FixedString, ParsedFloat, ParsedInt;
+import common.text : collectLines, cstrEq, parseFloat, parseInt, readWholeFile;
+import common.text : splitAt, trimInPlace;
 
 struct ClientConfig {
-    string serverAddress = "localhost";
+    FixedString!64 serverAddress = FixedString!64.fromSlice("localhost");
     ushort serverPort = 1234;
-    string playerName = "Player";
+    FixedString!64 playerName = FixedString!64.fromSlice("Player");
 
     float mouseSensitivity = 0.0015f;
     bool invertY = false;
@@ -16,47 +17,94 @@ struct ClientConfig {
     float turnSpeed = 1.5f;
     float reach = 10.0f;
 
-    /// Loads `key = value` lines from path; missing file or bad lines fall
-    /// back to defaults so a partial config is always usable.
-    static ClientConfig load(string path) {
+    // Loads key and value lines from path. A missing file or a bad line falls
+    // back to the default, so a partial config is always usable.
+    static ClientConfig load(const(char)* path) {
         ClientConfig cfg;
-        if (!exists(path)) {
+        FileText text = readWholeFile(path);
+        if (text.data is null) {
             return cfg;
         }
-        foreach (line; readText(path).splitLines()) {
-            string trimmed = line.strip();
-            if (trimmed.length == 0 || trimmed[0] == '#') {
+        scope(exit) {
+            text.release();
+        }
+
+        Array!(char*) lines;
+        scope(exit) {
+            lines.release();
+        }
+        collectLines(text, lines, true);
+
+        foreach (i; 0 .. lines.length()) {
+            char* key = lines[i];
+            char* value = splitAt(key, '=');
+            if (value is null) {
                 continue;
             }
-            ptrdiff_t eq = trimmed.indexOf('=');
-            if (eq < 0) {
-                continue;
-            }
-            string key = trimmed[0 .. eq].strip();
-            string value = trimmed[eq + 1 .. $].strip();
-            try {
-                switch (key) {
-                    case "mouse_sensitivity": cfg.mouseSensitivity = value.to!float; break;
-                    case "invert_y": cfg.invertY = parseBool(value); break;
-                    case "move_speed": cfg.moveSpeed = value.to!float; break;
-                    case "turn_speed": cfg.turnSpeed = value.to!float; break;
-                    case "reach": cfg.reach = value.to!float; break;
-                    case "server_address": cfg.serverAddress = value; break;
-                    case "server_port": cfg.serverPort = value.to!ushort; break;
-                    case "player_name": cfg.playerName = value; break;
-                    default:
-                        writefln("config: unknown key '%s'", key);
-                        break;
-                }
-            }
-            catch (Exception) {
-                writefln("config: bad value for '%s': %s", key, value);
-            }
+            key = trimInPlace(key);
+            cfg.apply(key, value);
         }
         return cfg;
     }
+
+    void apply(const(char)* key, const(char)* value) {
+        if (cstrEq(key, "mouse_sensitivity")) {
+            assignFloat(mouseSensitivity, key, value);
+            return;
+        }
+        if (cstrEq(key, "invert_y")) {
+            invertY = parseBool(value);
+            return;
+        }
+        if (cstrEq(key, "move_speed")) {
+            assignFloat(moveSpeed, key, value);
+            return;
+        }
+        if (cstrEq(key, "turn_speed")) {
+            assignFloat(turnSpeed, key, value);
+            return;
+        }
+        if (cstrEq(key, "reach")) {
+            assignFloat(reach, key, value);
+            return;
+        }
+        if (cstrEq(key, "server_address")) {
+            serverAddress.assign(value);
+            return;
+        }
+        if (cstrEq(key, "server_port")) {
+            ParsedInt parsed = parseInt(value, 10);
+            if (!parsed.ok || parsed.value < 0 || parsed.value > ushort.max) {
+                reportBadValue(key, value);
+                return;
+            }
+            serverPort = cast(ushort) parsed.value;
+            return;
+        }
+        if (cstrEq(key, "player_name")) {
+            playerName.assign(value);
+            return;
+        }
+        printf("config: unknown key '%s'\n", key);
+    }
 }
 
-bool parseBool(string value) {
-    return value == "1" || value == "true" || value == "yes" || value == "on";
+void assignFloat(ref float target, const(char)* key, const(char)* value) {
+    ParsedFloat parsed = parseFloat(value);
+    if (!parsed.ok) {
+        reportBadValue(key, value);
+        return;
+    }
+    target = parsed.value;
+}
+
+void reportBadValue(const(char)* key, const(char)* value) {
+    printf("config: bad value for '%s': %s\n", key, value);
+}
+
+bool parseBool(const(char)* value) {
+    return cstrEq(value, "1")
+        || cstrEq(value, "true")
+        || cstrEq(value, "yes")
+        || cstrEq(value, "on");
 }

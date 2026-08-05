@@ -1,6 +1,8 @@
 module common.graph;
 
-import std.digest.murmurhash : MurmurHash3;
+import common.array : Array, allocSlice, freeSlice;
+import common.hash_map : HashMap;
+import common.murmur : MurmurHash3x64;
 import common.dodeca : Side, sideAdjacentTo, sideIsFacing, sideReflection;
 import common.math : MIsometry, MPoint;
 import common.node : Node, ChunkLayout;
@@ -20,7 +22,7 @@ struct NodeId {
     }
 }
 
-/// Sentinel for "no node" in slot-based links.
+// Sentinel for "no node" in slot-based links.
 enum uint NO_SLOT = uint.max;
 
 // Nodes live in fixed-size slabs indexed by slot; neighbor links are slot
@@ -33,10 +35,10 @@ enum uint SLAB_SIZE = 1u << SLAB_SHIFT;
 enum uint SLAB_MASK = SLAB_SIZE - 1;
 
 struct Graph {
-    NodeContainer[][] slabs;
+    Array!(NodeContainer[]) slabs;
     uint nodeCount;
-    uint[NodeId] slots;
-    ChunkLayout layout_;
+    HashMap!(NodeId, uint) slots;
+    ChunkLayout chunkLayout;
 
     ref inout(NodeContainer) container(uint slot) inout {
         return slabs[slot >> SLAB_SHIFT][slot & SLAB_MASK];
@@ -44,24 +46,33 @@ struct Graph {
 
     static Graph create(ubyte dimension) {
         Graph g;
-        g.layout_ = ChunkLayout(dimension);
+        g.chunkLayout = ChunkLayout(dimension);
         g.addNode(NodeId.ROOT, NodeContainer.create(NodeId.ROOT, Side.init, false, 0));
         return g;
     }
 
+    void release() {
+        foreach (i; 0 .. slabs.length()) {
+            NodeContainer[] slab = slabs[i];
+            freeSlice(slab);
+        }
+        slabs.release();
+        slots.release();
+    }
+
     uint addNode(NodeId id, NodeContainer nc) {
         uint slot = nodeCount;
-        if ((slot >> SLAB_SHIFT) == slabs.length) {
-            slabs ~= new NodeContainer[SLAB_SIZE];
+        if ((slot >> SLAB_SHIFT) == slabs.length()) {
+            slabs.push(allocSlice!NodeContainer(SLAB_SIZE));
         }
         container(slot) = nc;
-        nodeCount++;
-        slots[id] = slot;
+        nodeCount = nodeCount + 1;
+        slots.insert(id, slot);
         return slot;
     }
 
     ref const(ChunkLayout) layout() const return {
-        return layout_;
+        return chunkLayout;
     }
 
     uint len() const {
@@ -73,8 +84,11 @@ struct Graph {
     }
 
     uint slotOf(NodeId id) const {
-        const(uint)* s = id in slots;
-        return s is null ? NO_SLOT : *s;
+        size_t found = slots.findSlot(id);
+        if (found == slots.capacity) {
+            return NO_SLOT;
+        }
+        return slots.values[found];
     }
 
     NodeId idAt(uint slot) const {
@@ -90,7 +104,7 @@ struct Graph {
     }
 
     bool contains(NodeId node) const {
-        return (node in slots) !is null;
+        return slotOf(node) != NO_SLOT;
     }
 
     NodeId neighbor(NodeId node, Side which) const {
@@ -99,21 +113,27 @@ struct Graph {
             return NodeId.init;
         }
         uint n = container(s).neighbors[which];
-        return n == NO_SLOT ? NodeId.init : container(n).id;
+        if (n == NO_SLOT) {
+            return NodeId.init;
+        }
+        return container(n).id;
     }
 
     uint depth(NodeId node) const {
-        return container(slots[node]).depth;
+        return container(slotOf(node)).depth;
     }
 
     ref inout(Node) opIndex(NodeId id) inout {
-        return container(slots[id]).value;
+        return container(slotOf(id)).value;
     }
 
-    /// Single-lookup accessor for hot loops; null if the node doesn't exist.
+    // Single-lookup accessor for hot loops; null if the node doesn't exist.
     inout(Node)* tryGet(NodeId id) inout {
-        inout(uint)* s = id in slots;
-        return s is null ? null : &container(*s).value;
+        uint s = slotOf(id);
+        if (s == NO_SLOT) {
+            return null;
+        }
+        return &container(s).value;
     }
 
     NodeId ensureNeighbor(NodeId node, Side side) {
@@ -151,23 +171,23 @@ struct Graph {
         foreach (cs; 0 .. cast(int)(Side.max + 1)) {
             Side candidateSide = cast(Side) cs;
             if (candidateSide == side) {
-                parents[parentCount++] = ParentEntry(side, nodeSlot);
-            }
-            else if (sideAdjacentTo(candidateSide, side)
-                       && isParentSideSlot(nodeSlot, candidateSide))
-            {
+                parents[parentCount] = ParentEntry(side, nodeSlot);
+                parentCount = parentCount + 1;
+            } else if (sideAdjacentTo(candidateSide, side)
+                    && isParentSideSlot(nodeSlot, candidateSide)) {
                 uint parentOfNode = container(nodeSlot).neighbors[candidateSide];
                 uint parentOfSubject = ensureNeighborSlot(parentOfNode, side);
-                parents[parentCount++] = ParentEntry(candidateSide, parentOfSubject);
+                parents[parentCount] = ParentEntry(candidateSide, parentOfSubject);
+                parentCount = parentCount + 1;
             }
         }
 
         Side primarySide = parents[0].side;
         NodeId primaryParent = container(parents[0].slot).id;
 
-        MurmurHash3!128 hasher;
+        MurmurHash3x64 hasher;
         hasher.put(cast(ubyte[])(primaryParent.value[]));
-        hasher.put(cast(ubyte) primarySide);
+        hasher.putByte(cast(ubyte) primarySide);
         ubyte[16] hash = hasher.finish();
         NodeId id;
         (cast(ubyte[])id.value[])[] = hash[0 .. 16];
@@ -205,12 +225,18 @@ struct Graph {
         NodeId id;
     }
 
-    ParentResult[3] parents(NodeId node, out int count) const {
-        ParentResult[3] results;
-        count = 0;
+    // A node has at most three parents, so the count travels with the array
+    // rather than through an output parameter.
+    struct ParentList {
+        ParentResult[3] items;
+        int count;
+    }
+
+    ParentList parents(NodeId node) const {
+        ParentList result;
         uint s = slotOf(node);
         if (s == NO_SLOT) {
-            return results;
+            return result;
         }
         uint nodeDepth = container(s).depth;
         foreach (sideIdx; 0 .. cast(int)(Side.max + 1)) {
@@ -220,13 +246,14 @@ struct Graph {
                 continue;
             }
             if (container(n).depth < nodeDepth) {
-                results[count++] = ParentResult(side, container(n).id);
-                if (count >= 3) {
+                result.items[result.count] = ParentResult(side, container(n).id);
+                result.count = result.count + 1;
+                if (result.count >= 3) {
                     break;
                 }
             }
         }
-        return results;
+        return result;
     }
 
     ulong hashOf(NodeId node) const {
@@ -241,16 +268,15 @@ struct Graph {
         if (container(s).value.state !is null) {
             return;
         }
-        int pcount;
-        ParentResult[3] ps = parents(nodeId, pcount);
-        foreach (i; 0 .. pcount) {
-            ensureNodeState(ps[i].id);
+        ParentList ps = parents(nodeId);
+        foreach (i; 0 .. ps.count) {
+            ensureNodeState(ps.items[i].id);
         }
         container(s).value.state = cast(void*) NodeState.create(this, nodeId);
     }
 
     const(NodeState)* nodeState(NodeId nodeId) const {
-        return cast(const(NodeState)*) container(slots[nodeId]).value.state;
+        return cast(const(NodeState)*) container(slotOf(nodeId)).value.state;
     }
 
     NodeId normalizeTransform(NodeId reference, ref MIsometry!float transform) const {
@@ -287,7 +313,12 @@ struct NodeContainer {
     uint depth;
     uint[Side.max + 1] neighbors = NO_SLOT;
 
-    static NodeContainer create(NodeId id, Side primaryParentSide, bool hasPrimary, uint depth) {
+    static NodeContainer create(
+        NodeId id,
+        Side primaryParentSide,
+        bool hasPrimary,
+        uint depth,
+    ) {
         NodeContainer nc;
         nc.id = id;
         nc.primaryParentSide = primaryParentSide;

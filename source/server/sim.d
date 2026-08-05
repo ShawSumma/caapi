@@ -1,6 +1,7 @@
 module server.sim;
 
 import common.dodeca : Vertex;
+import common.hash_map : HashMap;
 import common.graph : Graph, NodeId;
 import common.graph_entities : GraphEntities, Entity;
 import common.node : Chunk, ChunkId, ChunkState, VoxelData;
@@ -17,7 +18,7 @@ struct Sim {
     Step step;
     Graph graph;
     GraphEntities graphEntities;
-    EntityId[ulong] entityIds;
+    HashMap!(ulong, EntityId) entityIds;
 
     static Sim create(SimConfig cfg) {
         Sim s;
@@ -26,8 +27,12 @@ struct Sim {
         return s;
     }
 
+    void release() {
+        entityIds.release();
+    }
+
     void doStep() {
-        step++;
+        step = step + 1;
     }
 
     void ensureNearbyGenerated(Position pos) {
@@ -50,7 +55,9 @@ struct Sim {
                 vertex,
                 ChunkIncidentEnviroFactors.init,
                 Plane.init,
-                false, false, 0
+                false,
+                false,
+                0,
             );
             VoxelData voxelData = generateVoxels(params);
             c.state = ChunkState.Populated;

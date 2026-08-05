@@ -1,12 +1,13 @@
 module client.graphics.voxels.surface_extraction;
 
-import std.stdio;
+import core.stdc.stdio : printf;
 import core.stdc.string : memcpy;
+import common.array : allocSlice, freeSlice;
 import bindings.vk;
 import client.graphics.pipeline : GpuBuffer;
 import common.dodeca : Vertex, vertexChunkToNode;
 import common.math : Matrix4;
-import common.worldgen.terraingen : VoronoiEntryGPU, buildVoronoiTableGPU;
+import common.worldgen.terraingen : VoronoiEntryGPU, VORONOI_TABLE_GPU;
 
 enum uint FACE_SIZE = 8;
 enum uint INDIRECT_SIZE = 16;
@@ -171,9 +172,12 @@ struct SurfaceExtraction {
         pai.pSetLayouts = &paramsLayout;
         vkAllocateDescriptorSets(device, &pai, &paramsSet);
 
-        VkDescriptorSetLayout[] dataLayouts = new VkDescriptorSetLayout[concurrency];
+        VkDescriptorSetLayout[] dataLayouts = allocSlice!VkDescriptorSetLayout(concurrency);
+        scope(exit) {
+            freeSlice(dataLayouts);
+        }
         dataLayouts[] = dataLayout;
-        dataSets = new VkDescriptorSet[concurrency];
+        dataSets = allocSlice!VkDescriptorSet(concurrency);
         VkDescriptorSetAllocateInfo dai;
         dai.sType = VkStructureType.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
         dai.descriptorPool = descPool;
@@ -185,33 +189,41 @@ struct SurfaceExtraction {
         paramsBuf = GpuBuffer.create(phys, device, cast(void[]) dimData[],
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
 
+        // These staging blocks exist only to size and zero the device buffers.
+        // calloc keeps them on lazily-faulted zero pages, which matters:
+        // facesSize alone is gigabytes at the default slot count.
         uint voxelsSize = voxelBufUnit * concurrency;
-        ubyte[] voxInit = new ubyte[voxelsSize];
+        ubyte[] voxInit = allocSlice!ubyte(voxelsSize);
         voxelsBuf = GpuBuffer.create(phys, device, voxInit,
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        freeSlice(voxInit);
 
         uint stateSize = stateBufUnit * concurrency;
-        ubyte[] stateInit = new ubyte[stateSize];
+        ubyte[] stateInit = allocSlice!ubyte(stateSize);
         stateBuf = GpuBuffer.create(phys, device, stateInit,
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        freeSlice(stateInit);
 
-        ubyte[] indirInit = new ubyte[INDIRECT_SIZE * maxSlots];
+        ubyte[] indirInit = allocSlice!ubyte(INDIRECT_SIZE * maxSlots);
         indirectBuf = GpuBuffer.create(phys, device, indirInit,
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_TRANSFER_DST_BIT |
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+        freeSlice(indirInit);
 
-        ubyte[] packedInit = new ubyte[INDIRECT_SIZE * maxSlots];
+        ubyte[] packedInit = allocSlice!ubyte(INDIRECT_SIZE * maxSlots);
         packedIndirectBuf = GpuBuffer.create(phys, device, packedInit,
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        freeSlice(packedInit);
 
         ulong facesSize = cast(ulong) faceBufUnit * maxSlots;
-        ubyte[] facesInitData = new ubyte[facesSize];
+        ubyte[] facesInitData = allocSlice!ubyte(cast(size_t) facesSize);
         facesBuf = GpuBuffer.create(phys, device, facesInitData,
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        freeSlice(facesInitData);
 
         VkDescriptorBufferInfo pi;
         pi.buffer = paramsBuf.buffer;
@@ -245,20 +257,25 @@ struct SurfaceExtraction {
             return false;
         }
         uint paddedSize = (dim + 2) * (dim + 2) * (dim + 2);
-        packBuf = new uint[(paddedSize + 1) / 2];
+        packBuf = allocSlice!uint((paddedSize + 1) / 2);
 
-        packIndirectCopies = new VkBufferCopy[maxSlots];
+        packIndirectCopies = allocSlice!VkBufferCopy(maxSlots);
 
-        writefln("Extract: facesBuf=0x%x (%d bytes) indirBuf=0x%x voxBuf=0x%x",
-            facesBuf.buffer, facesSize, indirectBuf.buffer, voxelsBuf.buffer);
+        printf(
+            "Extract: facesBuf=0x%llx (%zu bytes) indirBuf=0x%llx voxBuf=0x%llx\n",
+            cast(ulong) facesBuf.buffer,
+            cast(size_t) facesSize,
+            cast(ulong) indirectBuf.buffer,
+            cast(ulong) voxelsBuf.buffer,
+        );
 
         wgenReady = initWorldgen(phys, device);
         if (wgenReady) {
-            writeln("GPU worldgen initialized");
+            printf("GPU worldgen initialized\n");
         }
         tfReady = initTransformCompute(phys, device, slots);
         if (tfReady) {
-            writeln("GPU transform compute initialized");
+            printf("GPU transform compute initialized\n");
         }
         return true;
     }
@@ -473,7 +490,7 @@ struct SurfaceExtraction {
         wgdpci.pPoolSizes = allps.ptr;
         vkCreateDescriptorPool(device, &wgdpci, null, &wgenDescPool);
 
-        wgenParamsSets = new VkDescriptorSet[1];
+        wgenParamsSets = allocSlice!VkDescriptorSet(1);
         VkDescriptorSetAllocateInfo wgdai;
         wgdai.sType = VkStructureType.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
         wgdai.descriptorPool = wgenDescPool;
@@ -486,8 +503,8 @@ struct SurfaceExtraction {
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
         vkMapMemory(device, wgenParamsBuf.memory, 0, wgenParamsSize, 0, &wgenParamsMapped);
 
-        VoronoiEntryGPU[] voronoiData = buildVoronoiTableGPU();
-        voronoiTableBuf = GpuBuffer.create(phys, device, cast(void[]) voronoiData,
+        const(void)[] voronoiData = cast(const(void)[]) VORONOI_TABLE_GPU[];
+        voronoiTableBuf = GpuBuffer.create(phys, device, voronoiData,
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
         VkDescriptorBufferInfo[3] wgbi;

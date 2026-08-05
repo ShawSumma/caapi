@@ -1,20 +1,59 @@
 module common.peer_traverser;
 
+import common.array : Array;
 import common.dodeca : Side, sideAdjacentTo;
 import common.graph : Graph, NodeId;
 
+// A peer is reached by walking up `pathLength` parent sides and back down the
+// same number of child sides, so both paths are always that one length and
+// never exceed two.
 struct PeerNode {
     NodeId nodeId;
-    Side[] parentPath;
-    Side[] childPath;
+    Side[2] parentSides;
+    Side[2] childSides;
+    ubyte pathLength;
+
+    static PeerNode viaOne(NodeId node, Side parentSide, Side childSide) {
+        PeerNode peer;
+        peer.nodeId = node;
+        peer.parentSides[0] = parentSide;
+        peer.childSides[0] = childSide;
+        peer.pathLength = 1;
+        return peer;
+    }
+
+    static PeerNode viaTwo(
+        NodeId node,
+        Side parentSide0,
+        Side parentSide1,
+        Side childSide0,
+        Side childSide1,
+    ) {
+        PeerNode peer;
+        peer.nodeId = node;
+        peer.parentSides[0] = parentSide0;
+        peer.parentSides[1] = parentSide1;
+        peer.childSides[0] = childSide0;
+        peer.childSides[1] = childSide1;
+        peer.pathLength = 2;
+        return peer;
+    }
 
     NodeId node() const {
         return nodeId;
     }
+
+    const(Side)[] parents() const return {
+        return parentSides[0 .. pathLength];
+    }
+
+    const(Side)[] children() const return {
+        return childSides[0 .. pathLength];
+    }
 }
 
-PeerNode[] ensurePeerNodes(ref Graph graph, NodeId baseNode) {
-    PeerNode[] nodes;
+Array!PeerNode ensurePeerNodes(ref Graph graph, NodeId baseNode) {
+    Array!PeerNode nodes;
 
     foreach (parentSideIdx; 0 .. 12) {
         Side parentSide = cast(Side) parentSideIdx;
@@ -43,7 +82,7 @@ PeerNode[] ensurePeerNodes(ref Graph graph, NodeId baseNode) {
                 continue;
             }
 
-            nodes ~= PeerNode(peerNode, [parentSide], [childSide]);
+            nodes.push(PeerNode.viaOne(peerNode, parentSide, childSide));
         }
     }
 
@@ -88,7 +127,13 @@ PeerNode[] ensurePeerNodes(ref Graph graph, NodeId baseNode) {
                         continue;
                     }
 
-                    nodes ~= PeerNode(peerNode, [parentSide0, parentSide1], [childSide0, childSide1]);
+                    nodes.push(PeerNode.viaTwo(
+                        peerNode,
+                        parentSide0,
+                        parentSide1,
+                        childSide0,
+                        childSide1,
+                    ));
                 }
             }
         }

@@ -1,14 +1,20 @@
 module client.worldgen_driver;
 
-import core.sync.condition : Condition;
-import core.sync.mutex : Mutex;
-import core.thread : Thread;
-import std.math : cosh;
-import std.parallelism : totalCPUs;
-import common.dodeca : Vertex, CHUNK_BOUNDING_SPHERE_RADIUS,
-    vertexChunkBoundingSphereCenter, vertexCanonicalSides, vertexAdjacentVertices;
+import core.stdc.stdlib : calloc, free;
+import core.sys.posix.pthread : pthread_cond_broadcast, pthread_cond_init;
+import core.sys.posix.pthread : pthread_cond_t, pthread_cond_wait;
+import core.sys.posix.pthread : pthread_create, pthread_detach;
+import core.sys.posix.pthread : pthread_mutex_init, pthread_mutex_lock;
+import core.sys.posix.pthread : pthread_mutex_t, pthread_mutex_unlock;
+import core.sys.posix.pthread : pthread_t;
+import core.sys.posix.unistd : _SC_NPROCESSORS_ONLN, sysconf;
+import common.array : Array;
+import common.hash_map : HashMap;
+import common.dodeca : Vertex, CHUNK_BOUNDING_SPHERE_RADIUS;
+import common.dodeca : vertexChunkBoundingSphereCenter;
+import common.dodeca : vertexCanonicalSides, vertexAdjacentVertices;
 import common.graph : Graph, NodeId, NO_SLOT;
-import common.math : MPoint, MIsometry;
+import common.math : MPoint, MIsometry, cosh;
 import common.node : Chunk, ChunkId, ChunkState, Node, VoxelData;
 import common.traversal : NearbyNode;
 import common.worldgen : ChunkParams, ChunkIncidentEnviroFactors, generateVoxels;
@@ -28,54 +34,72 @@ struct GenResult {
 // Work queue shared with the generation worker threads. generateVoxels is a
 // pure function of ChunkParams, so workers never touch the graph: the main
 // thread builds params (which may grow the graph) and integrates results.
+//
+// Raw pthreads rather than core.thread so this survives a betterC build.
 struct GenQueue {
-    Mutex mutex;
-    Condition cond;
-    GenRequest[] pending;
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+    Array!GenRequest pending;
     size_t pendingHead;
-    GenResult[] done;
+    Array!GenResult done;
     bool stopping;
+
+    void lock() {
+        pthread_mutex_lock(&mutex);
+    }
+
+    void unlock() {
+        pthread_mutex_unlock(&mutex);
+    }
+}
+
+extern(C) void* workerMain(void* arg) {
+    workerLoop(cast(GenQueue*) arg);
+    return null;
 }
 
 void workerLoop(GenQueue* queue) {
     while (true) {
         GenRequest req;
-        synchronized (queue.mutex) {
-            while (queue.pendingHead >= queue.pending.length && !queue.stopping) {
-                queue.cond.wait();
-            }
-            if (queue.pendingHead >= queue.pending.length) {
-                return;
-            }
-            req = queue.pending[queue.pendingHead++];
-            if (queue.pendingHead >= queue.pending.length) {
-                queue.pending.length = 0;
-                queue.pending.assumeSafeAppend();
-                queue.pendingHead = 0;
-            }
+        queue.lock();
+        while (queue.pendingHead >= queue.pending.length() && !queue.stopping) {
+            pthread_cond_wait(&queue.cond, &queue.mutex);
         }
+        if (queue.pendingHead >= queue.pending.length()) {
+            queue.unlock();
+            return;
+        }
+        req = queue.pending[queue.pendingHead];
+        queue.pendingHead = queue.pendingHead + 1;
+        if (queue.pendingHead >= queue.pending.length()) {
+            queue.pending.clear();
+            queue.pendingHead = 0;
+        }
+        queue.unlock();
+
         VoxelData voxels = generateVoxels(req.params);
-        synchronized (queue.mutex) {
-            queue.done ~= GenResult(req.chunk, voxels);
-        }
+
+        queue.lock();
+        queue.done.push(GenResult(req.chunk, voxels));
+        queue.unlock();
     }
 }
 
 struct WorldgenDriver {
-    VoxelData[ChunkId] preloadedVoxelData;
+    HashMap!(ChunkId, VoxelData) preloadedVoxelData;
 
     GenQueue* queue;
-    Thread[] workers;
+    Array!pthread_t workers;
     bool flatWorldgen;
     uint inFlight;
-    GenRequest[] requestBuf;
-    GenResult[] resultBuf;
+    Array!GenRequest requestBuf;
+    Array!GenResult resultBuf;
 
     // Per-slot scan skip state. DONE_FOREVER: node has no Fresh chunks left
     // (Fresh never comes back, so this is permanent). Otherwise it holds the
     // nearby-set version at which the node had only out-of-range Fresh chunks
     // — valid to skip until the next recollect moves the range.
-    uint[] doneVersion;
+    Array!uint doneVersion;
     enum uint DONE_FOREVER = uint.max;
 
     // Scan state: after a nearby-set rebuild every boundary node needs a
@@ -92,20 +116,27 @@ struct WorldgenDriver {
 
     static WorldgenDriver create() {
         WorldgenDriver w;
-        w.queue = new GenQueue();
-        w.queue.mutex = new Mutex();
-        w.queue.cond = new Condition(w.queue.mutex);
-        GenQueue* queue = w.queue;
+        w.queue = cast(GenQueue*) calloc(1, GenQueue.sizeof);
+        assert(w.queue !is null, "worldgen queue allocation failed");
+        *w.queue = GenQueue.init;
+        pthread_mutex_init(&w.queue.mutex, null);
+        pthread_cond_init(&w.queue.cond, null);
 
-        uint threadCount = totalCPUs > 2 ? totalCPUs - 2 : 1;
+        long cpus = sysconf(_SC_NPROCESSORS_ONLN);
+        uint threadCount = 1;
+        if (cpus > 2) {
+            threadCount = cast(uint)(cpus - 2);
+        }
         if (threadCount > 8) {
             threadCount = 8;
         }
         foreach (i; 0 .. threadCount) {
-            Thread t = new Thread(() => workerLoop(queue));
-            t.isDaemon = true;
-            t.start();
-            w.workers ~= t;
+            pthread_t tid;
+            if (pthread_create(&tid, null, &workerMain, cast(void*) w.queue) != 0) {
+                continue;
+            }
+            pthread_detach(tid);
+            w.workers.push(tid);
         }
         return w;
     }
@@ -119,28 +150,26 @@ struct WorldgenDriver {
         uint nearbyVersion,
     ) {
         // Integrate whatever the workers finished since last frame.
-        resultBuf.length = 0;
-        resultBuf.assumeSafeAppend();
-        synchronized (queue.mutex) {
-            if (queue.done.length > 0) {
-                resultBuf ~= queue.done;
-                queue.done.length = 0;
-                queue.done.assumeSafeAppend();
-            }
+        resultBuf.clear();
+        queue.lock();
+        if (queue.done.length() > 0) {
+            resultBuf.appendFrom(queue.done);
+            queue.done.clear();
         }
-        foreach (ref GenResult r; resultBuf) {
-            inFlight--;
-            populateChunk(graph, r.chunk, r.voxels, chunkSize);
+        queue.unlock();
+
+        foreach (i; 0 .. resultBuf.length()) {
+            inFlight = inFlight - 1;
+            populateChunk(graph, resultBuf[i].chunk, resultBuf[i].voxels, chunkSize);
         }
 
         // Queue fresh chunks in range, nearest-first (BFS order of `nearby`).
         float threshold = cosh(distance + CHUNK_BOUNDING_SPHERE_RADIUS);
         MPoint!float startP = camLocal * MPoint!float.origin();
-        requestBuf.length = 0;
-        requestBuf.assumeSafeAppend();
+        requestBuf.clear();
 
-        if (doneVersion.length < graph.slotCount()) {
-            doneVersion.length = graph.slotCount();
+        if (doneVersion.length() < graph.slotCount()) {
+            doneVersion.resize(graph.slotCount());
         }
         if (scanVersion != nearbyVersion) {
             scanVersion = nearbyVersion;
@@ -154,8 +183,9 @@ struct WorldgenDriver {
 
         uint scanned = 0;
         size_t idx = scanCursor;
-        outer: for (; idx < nearby.length && scanned < MAX_SCAN_NODES_PER_FRAME; idx++) {
+        outer: while (idx < nearby.length && scanned < MAX_SCAN_NODES_PER_FRAME) {
             const NearbyNode nn = nearby[idx];
+            idx = idx + 1;
             if (nn.slot == NO_SLOT) {
                 continue;
             }
@@ -163,7 +193,7 @@ struct WorldgenDriver {
             if (dv == DONE_FOREVER || dv == nearbyVersion) {
                 continue;
             }
-            scanned++;
+            scanned = scanned + 1;
 
             uint freshOutOfRange = 0;
             foreach (int vIdx; 0 .. Vertex.max + 1) {
@@ -177,9 +207,10 @@ struct WorldgenDriver {
                 }
                 ChunkId chunkId = ChunkId(nn.id, vertex);
 
-                MPoint!float chunkCenter = nn.transform * vertexChunkBoundingSphereCenter(vertex);
+                MPoint!float chunkCenter =
+                    nn.transform * vertexChunkBoundingSphereCenter(vertex);
                 if (-startP.mip(chunkCenter.vec) > threshold) {
-                    freshOutOfRange++;
+                    freshOutOfRange = freshOutOfRange + 1;
                     continue;
                 }
 
@@ -191,30 +222,50 @@ struct WorldgenDriver {
                     continue;
                 }
 
-                if (requestBuf.length >= requestBudget) {
+                if (requestBuf.length() >= requestBudget) {
                     // Out of request budget mid-node; resume here next frame.
+                    idx = idx - 1;
                     break outer;
                 }
 
                 ChunkParams params = ChunkParams.create(graph, chunkId, flatWorldgen);
-                graph.nodeAt(nn.slot).chunks.values[vertex].state = ChunkState.Generating;
-                requestBuf ~= GenRequest(chunkId, params);
+                graph.nodeAt(nn.slot).chunks.values[vertex].state =
+                    ChunkState.Generating;
+                requestBuf.push(GenRequest(chunkId, params));
             }
-            doneVersion[nn.slot] = freshOutOfRange == 0 ? DONE_FOREVER : nearbyVersion;
+            uint mark = nearbyVersion;
+            if (freshOutOfRange == 0) {
+                mark = DONE_FOREVER;
+            }
+            doneVersion[nn.slot] = mark;
         }
         scanCursor = cast(uint) idx;
 
-        if (requestBuf.length > 0) {
-            inFlight += cast(uint) requestBuf.length;
-            synchronized (queue.mutex) {
-                queue.pending ~= requestBuf;
-                queue.cond.notifyAll();
-            }
+        if (requestBuf.length() > 0) {
+            inFlight = inFlight + cast(uint) requestBuf.length();
+            queue.lock();
+            queue.pending.appendFrom(requestBuf);
+            pthread_cond_broadcast(&queue.cond);
+            queue.unlock();
         }
     }
 
     void applyVoxelData(ChunkId chunkId, VoxelData voxelData) {
-        preloadedVoxelData[chunkId] = voxelData;
+        preloadedVoxelData.insert(chunkId, voxelData);
+    }
+
+    void release() {
+        if (queue !is null) {
+            queue.lock();
+            queue.stopping = true;
+            pthread_cond_broadcast(&queue.cond);
+            queue.unlock();
+        }
+        workers.release();
+        requestBuf.release();
+        resultBuf.release();
+        doneVersion.release();
+        preloadedVoxelData.release();
     }
 }
 
@@ -227,28 +278,35 @@ void populateChunk(ref Graph graph, ChunkId chunk, VoxelData voxels, ubyte dimen
         if (!graph.contains(neighborChunk.node)) {
             continue;
         }
-        Chunk* neighborC = &graph[neighborChunk.node].chunks.values[neighborChunk.vertex];
+        Chunk* neighborC =
+            &graph[neighborChunk.node].chunks.values[neighborChunk.vertex];
         if (neighborC.state != ChunkState.Populated) {
             continue;
         }
         fixMargins(dimension, chunk.vertex, voxels, dir, neighborC.voxels);
-        neighborC.generation++;
+        neighborC.generation = neighborC.generation + 1;
     }
     Chunk* c = &graph[chunk.node].chunks.values[chunk.vertex];
     c.state = ChunkState.Populated;
     c.voxels = voxels;
-    c.generation++;
+    c.generation = c.generation + 1;
 }
 
-ChunkId getChunkNeighbor(ref Graph graph, ChunkId chunk, ubyte coordAxis, CoordSign coordSign) {
+ChunkId getChunkNeighbor(
+    ref Graph graph,
+    ChunkId chunk,
+    ubyte coordAxis,
+    CoordSign coordSign,
+) {
     if (coordSign == CoordSign.Plus) {
         return ChunkId(chunk.node, vertexAdjacentVertices(chunk.vertex)[coordAxis]);
     }
-    else {
-        NodeId neighborNode = graph.neighbor(chunk.node, vertexCanonicalSides(chunk.vertex)[coordAxis]);
-        if (neighborNode == NodeId.init) {
-            return ChunkId(NodeId.init, chunk.vertex);
-        }
-        return ChunkId(neighborNode, chunk.vertex);
+    NodeId neighborNode = graph.neighbor(
+        chunk.node,
+        vertexCanonicalSides(chunk.vertex)[coordAxis],
+    );
+    if (neighborNode == NodeId.init) {
+        return ChunkId(NodeId.init, chunk.vertex);
     }
+    return ChunkId(neighborNode, chunk.vertex);
 }

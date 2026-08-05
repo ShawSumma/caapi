@@ -1,7 +1,6 @@
 module common.dodeca;
 
-import std.math : sqrt;
-import common.math : Matrix4, MIsometry, MVector, MPoint, MDirection;
+import common.math : Matrix4, MIsometry, MVector, MPoint, MDirection, sqrt;
 import common.voxel_math : ChunkAxisPermutation;
 
 enum Side : ubyte {

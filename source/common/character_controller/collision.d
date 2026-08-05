@@ -1,8 +1,7 @@
 module common.character_controller.collision;
 
-import std.math : sqrt, tanh, atanh, isNaN;
-
 import common.math : MPoint, MDirection, MIsometry, MVector;
+import common.math : atanh, isNaN, sqrt, tanh;
 import common.collision_math : Ray;
 import common.graph : Graph, NodeId;
 import common.graph_collision : GraphCollisionHit, shapeCast;
@@ -63,7 +62,6 @@ CollisionCheckingResult checkCollision(
     );
     float tanhDist = tanh(displacementNorm);
 
-    bool outOfBounds;
     GraphCollisionHit castHit = shapeCast(
         collisionContext.radius,
         collisionContext.halfHeight,
@@ -73,7 +71,6 @@ CollisionCheckingResult checkCollision(
         position.local,
         ray,
         tanhDist,
-        outOfBounds,
     );
 
     bool hasHit = !isNaN(castHit.tanhDistance);

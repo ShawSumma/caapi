@@ -1,11 +1,12 @@
 module client.prediction;
 
+import common.array : Array;
 import common.graph : Graph;
 import common.proto : CharacterInput, Position;
 import common.sim_config : SimConfig;
 
 struct PredictedMotion {
-    CharacterInput[] log;
+    Array!CharacterInput log;
     ushort generation;
     Position predictedPosition;
     float[3] predictedVelocity = [0, 0, 0];
@@ -19,9 +20,27 @@ struct PredictedMotion {
         return p;
     }
 
-    ushort push(ref const SimConfig cfg, ref Graph graph, const ref CharacterInput input) {
-        runCharacterStep(cfg, graph, predictedPosition, predictedVelocity, predictedOnGround, input);
-        log ~= input;
+    void release() {
+        log.release();
+    }
+
+    ushort push(
+        ref const SimConfig cfg,
+        ref Graph graph,
+        const ref CharacterInput input,
+    ) {
+        CharacterStep stepped = runCharacterStep(
+            cfg,
+            graph,
+            predictedPosition,
+            predictedVelocity,
+            predictedOnGround,
+            input,
+        );
+        predictedPosition = stepped.position;
+        predictedVelocity = stepped.velocity;
+        predictedOnGround = stepped.onGround;
+        log.push(input);
         generation = cast(ushort)(generation + 1);
         return generation;
     }
@@ -34,18 +53,28 @@ struct PredictedMotion {
         float[3] velocity,
         bool onGround,
     ) {
-        ushort firstGen = cast(ushort)(generation - cast(ushort)log.length);
-        size_t obsolete = cast(size_t)cast(ushort)(serverGeneration - firstGen);
-        if (obsolete > log.length || obsolete == 0) {
+        ushort firstGen = cast(ushort)(generation - cast(ushort) log.length());
+        size_t obsolete = cast(size_t) cast(ushort)(serverGeneration - firstGen);
+        if (obsolete > log.length() || obsolete == 0) {
             return;
         }
-        log = log[obsolete .. $];
+        log.dropFront(obsolete);
         predictedPosition = position;
         predictedVelocity = velocity;
         predictedOnGround = onGround;
 
-        foreach (ref input; log) {
-            runCharacterStep(cfg, graph, predictedPosition, predictedVelocity, predictedOnGround, input);
+        foreach (i; 0 .. log.length()) {
+            CharacterStep stepped = runCharacterStep(
+                cfg,
+                graph,
+                predictedPosition,
+                predictedVelocity,
+                predictedOnGround,
+                log[i],
+            );
+            predictedPosition = stepped.position;
+            predictedVelocity = stepped.velocity;
+            predictedOnGround = stepped.onGround;
         }
     }
 
@@ -62,20 +91,33 @@ struct PredictedMotion {
     }
 }
 
-void runCharacterStep(
+struct CharacterStep {
+    Position position;
+    float[3] velocity;
+    bool onGround;
+}
+
+// Only the noClip branch is implemented. Collision-backed prediction still
+// goes through common.character_controller; this stub exists so the client
+// can replay its input log without pulling that in.
+CharacterStep runCharacterStep(
     ref const SimConfig cfg,
     ref Graph graph,
-    ref Position position,
-    ref float[3] velocity,
-    ref bool onGround,
+    Position position,
+    float[3] velocity,
+    bool onGround,
     const ref CharacterInput input,
 ) {
-    float dt = cfg.stepInterval.total!"msecs" / 1000.0f;
+    CharacterStep result;
+    result.position = position;
+    result.velocity = velocity;
+    result.onGround = onGround;
     if (input.noClip) {
-        velocity = [
+        result.velocity = [
             input.movement[0] * 4.0f,
             input.movement[1] * 4.0f,
             input.movement[2] * 4.0f,
         ];
     }
+    return result;
 }

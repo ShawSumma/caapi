@@ -31,8 +31,10 @@ struct BlockUpdate {
 struct CharacterInput {
     float[3] movement = [0, 0, 0];
     bool jump;
-    bool fly;    // no gravity, collides
-    bool noClip; // no gravity, no collision
+    // No gravity, but still collides.
+    bool fly;
+    // No gravity and no collision.
+    bool noClip;
 }
 
 struct CharacterState {

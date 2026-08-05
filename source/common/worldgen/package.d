@@ -4,8 +4,9 @@ public import common.worldgen.plane;
 public import common.worldgen.horosphere;
 public import common.worldgen.terraingen;
 
-import std.math : sqrt, log, cos, PI, floor, pow;
 import core.bitop : rol;
+import core.stdc.stdlib : calloc;
+import common.math : PI, cos, floor, log, pow, sqrt;
 import common.dodeca : Side, Vertex, vertexCanonicalSides, sideAdjacentTo;
 import common.graph : Graph, NodeId;
 import common.margins : initializeMargins;
@@ -62,7 +63,7 @@ NodeStateRoad childRoad(NodeStateRoad self, Side side) {
     return self;
 }
 
-/// Contains all information about a node used for world generation
+// Contains all information about a node used for world generation
 struct NodeState {
     NodeStateKind kind;
     NodeStateRoad roadState;
@@ -70,8 +71,9 @@ struct NodeState {
     Plane surface;
 
     static NodeState* create(ref Graph graph, NodeId node) {
-        int pcount;
-        Graph.ParentResult[3] ps = graph.parents(node, pcount);
+        Graph.ParentList parentList = graph.parents(node);
+        int pcount = parentList.count;
+        Graph.ParentResult[3] ps = parentList.items;
 
         EnviroFactors env;
         NodeStateKind kind;
@@ -115,7 +117,10 @@ struct NodeState {
             surf = Plane.fromSide(Side.A);
         }
 
-        NodeState* state = new NodeState;
+        // Owned by the node it hangs off, which lives as long as the graph.
+        NodeState* state = cast(NodeState*) calloc(1, NodeState.sizeof);
+        assert(state !is null, "node state allocation failed");
+        *state = NodeState.init;
         state.kind = kind;
         state.roadState = road;
         state.enviro = env;
@@ -504,23 +509,21 @@ ChunkIncidentEnviroFactors chunkIncidentEnviroFactors(ref Graph graph, ChunkId c
     Side b = sides[1];
     Side c = sides[2];
 
-    Side[][] paths = [
-        [],
-        [c],
-        [b],
-        [b, c],
-        [a],
-        [a, c],
-        [a, b],
-        [a, b, c],
-    ];
-
     ChunkIncidentEnviroFactors result;
 
+    // The eight samples are the corners of the chunk's dual cube: index i
+    // selects a subset of {a, b, c}, applied in that order. Bit 2 is a, bit 1
+    // is b, bit 0 is c.
     foreach (i; 0 .. 8) {
         NodeId node = chunk.node;
-        foreach (side; paths[i]) {
-            node = graph.ensureNeighbor(node, side);
+        if ((i & 4) != 0) {
+            node = graph.ensureNeighbor(node, a);
+        }
+        if ((i & 2) != 0) {
+            node = graph.ensureNeighbor(node, b);
+        }
+        if ((i & 1) != 0) {
+            node = graph.ensureNeighbor(node, c);
         }
         graph.ensureNodeState(node);
         const(NodeState)* ns = graph.nodeState(node);
@@ -536,7 +539,7 @@ ChunkIncidentEnviroFactors chunkIncidentEnviroFactors(ref Graph graph, ChunkId c
 
 // Simple splitmix64-based RNG
 ulong rngNext(ulong* state) {
-    *state += 0x9e3779b97f4a7c15;
+    *state = *state + 0x9e3779b97f4a7c15;
     ulong z = *state;
     z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9;
     z = (z ^ (z >> 27)) * 0x94d049bb133111eb;

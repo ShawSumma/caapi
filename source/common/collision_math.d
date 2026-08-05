@@ -1,7 +1,6 @@
 module common.collision_math;
 
-import std.math : sqrt, isFinite;
-import common.math : MPoint, MDirection, MVector, MIsometry;
+import common.math : MPoint, MDirection, MVector, MIsometry, isFinite, sqrt;
 
 struct Ray {
     MPoint!float position;
@@ -15,7 +14,10 @@ struct Ray {
         return position.vec + direction.vec * tanhDistance;
     }
 
-    float solveSphereePlaneIntersection(const ref MDirection!float planeNormal, float sinhRadius) const {
+    float solveSphereePlaneIntersection(
+        const ref MDirection!float planeNormal,
+        float sinhRadius,
+    ) const {
         float mipPosA = position.mip(planeNormal);
         float mipDirA = direction.mip(planeNormal);
         return solveQuadratic(
@@ -28,7 +30,7 @@ struct Ray {
     float solveSpherLineIntersection(
         const ref MDirection!float lineNormal1,
         const ref MDirection!float lineNormal0,
-        float sinhRadius
+        float sinhRadius,
     ) const {
         float mipPosA = position.mip(lineNormal0);
         float mipDirA = direction.mip(lineNormal0);
@@ -45,7 +47,7 @@ struct Ray {
         const ref MDirection!float n0,
         const ref MDirection!float n1,
         const ref MDirection!float n2,
-        float sinhRadius
+        float sinhRadius,
     ) const {
         float mipPosA = position.mip(n0);
         float mipDirA = direction.mip(n0);
@@ -86,7 +88,12 @@ float solveQuadratic(float constantTerm, float halfLinearTerm, float quadraticTe
     }
 
     if (constantTerm <= 0.0f) {
-        return constantTerm > -EPSILON ? 0.0f : float.nan;
+        // Just inside the surface counts as a contact at zero distance;
+        // further in is a miss rather than a hit behind the ray.
+        if (constantTerm > -EPSILON) {
+            return 0.0f;
+        }
+        return float.nan;
     }
 
     float discriminant = halfLinearTerm * halfLinearTerm - quadraticTerm * constantTerm;

@@ -1,30 +1,33 @@
 module common.graph_collision;
 
-import std.math : atanh, cosh, isNaN;
-import common.chunk_collision : ChunkCollisionHit, FACE_TIE_EPS, SweptShape, chunkShapeCast;
+import common.chunk_collision : ChunkCollisionHit, FACE_TIE_EPS;
+import common.chunk_collision : SweptShape, chunkShapeCast;
 import common.collision_math : Ray, transformRay;
-import common.dodeca : BOUNDING_SPHERE_RADIUS, CHUNK_BOUNDING_SPHERE_RADIUS,
-    Side, Vertex, sideReflection, vertexChunkBoundingSphereCenter, vertexNodeToDual;
+import common.dodeca : BOUNDING_SPHERE_RADIUS, CHUNK_BOUNDING_SPHERE_RADIUS;
+import common.dodeca : Side, Vertex, sideReflection;
+import common.dodeca : vertexChunkBoundingSphereCenter, vertexNodeToDual;
 import common.graph : Graph, NodeId, NO_SLOT;
-import common.math : MIsometry, MPoint, MVector;
+import common.math : MIsometry, MPoint, MVector, atanh, cosh, isNaN;
 import common.node : Chunk, ChunkId, ChunkState, Node;
 
 struct GraphCollisionHit {
     float tanhDistance;
     MVector!float normal;
     ChunkId chunk;
+    // Carried on the result rather than written back through a parameter.
+    bool outOfBounds;
 }
 
 struct OutOfBounds {}
 
-/// True when every chunk within `dist` of the position exists and is
-/// populated. Unloaded world must read as impassable — otherwise a moving
-/// body can outrun async generation and have terrain materialize around it.
+// True when every chunk within dist of the position exists and is populated.
+// Unloaded world must read as impassable, or a moving body can outrun async
+// generation and have terrain materialise around it.
 bool regionPopulated(
     const ref Graph graph,
     NodeId posNode,
     MIsometry!float posLocal,
-    float dist
+    float dist,
 ) {
     uint startSlot = graph.slotOf(posNode);
     if (startSlot == NO_SLOT) {
@@ -46,7 +49,7 @@ bool regionPopulated(
     while (front < count) {
         uint slot = slots[front];
         MIsometry!float inv = invT[front];
-        front++;
+        front = front + 1;
 
         MVector!float localPos = inv * posPoint;
 
@@ -85,16 +88,16 @@ bool regionPopulated(
             }
             slots[count] = neighbor;
             invT[count] = neighborInv;
-            count++;
+            count = count + 1;
         }
     }
     return true;
 }
 
-/// Sweeps an upright cylinder along a ray (both in the caster's local frame)
-/// against voxels, traversing every node the swept volume could reach so
-/// collision keeps working across node boundaries. `upAxis` is the cylinder
-/// axis in the caster's local frame.
+// Sweeps an upright cylinder along a ray, both in the caster's local frame,
+// against voxels. It traverses every node the swept volume could reach so
+// collision keeps working across node boundaries. upAxis is the cylinder axis
+// in the caster's local frame.
 GraphCollisionHit shapeCast(
     float colliderRadius,
     float colliderHalfHeight,
@@ -104,11 +107,10 @@ GraphCollisionHit shapeCast(
     MIsometry!float posLocal,
     const ref Ray ray,
     float tanhDistance,
-    out bool outOfBounds
 ) {
     GraphCollisionHit hit;
     hit.tanhDistance = float.nan;
-    outOfBounds = false;
+    hit.outOfBounds = false;
 
     uint startSlot = graph.slotOf(posNode);
     if (startSlot == NO_SLOT) {
@@ -118,7 +120,10 @@ GraphCollisionHit shapeCast(
     Ray nodeRay = transformRay(posLocal, ray);
     MVector!float axisLocal = MVector!float(upAxis[0], upAxis[1], upAxis[2], 0);
 
-    float capped = tanhDistance < 0.999f ? tanhDistance : 0.999f;
+    float capped = 0.999f;
+    if (tanhDistance < 0.999f) {
+        capped = tanhDistance;
+    }
     float reachDist = atanh(capped) + colliderRadius + colliderHalfHeight;
     float nodeThreshold = cosh(reachDist + BOUNDING_SPHERE_RADIUS + CHUNK_BOUNDING_SPHERE_RADIUS);
     float chunkThreshold = cosh(reachDist + CHUNK_BOUNDING_SPHERE_RADIUS);
@@ -140,7 +145,7 @@ GraphCollisionHit shapeCast(
     while (front < count) {
         uint slot = slots[front];
         MIsometry!float inv = invT[front];
-        front++;
+        front = front + 1;
 
         Ray localRay = transformRay(inv, nodeRay);
         MVector!float rayStartK = localRay.position.vec;
@@ -164,9 +169,17 @@ GraphCollisionHit shapeCast(
             MIsometry!float localToDual = vertexNodeToDual(vertex) * inv * posLocal;
             Ray chunkRay = transformRay(vertexNodeToDual(vertex), localRay);
             SweptShape shape = SweptShape.cylinder(
-                colliderRadius, colliderHalfHeight, localToDual * axisLocal);
-            ChunkCollisionHit chunkHit = chunkShapeCast(shape, c.voxels, graph.layout(),
-                chunkRay, best + FACE_TIE_EPS);
+                colliderRadius,
+                colliderHalfHeight,
+                localToDual * axisLocal,
+            );
+            ChunkCollisionHit chunkHit = chunkShapeCast(
+                shape,
+                c.voxels,
+                graph.layout(),
+                chunkRay,
+                best + FACE_TIE_EPS,
+            );
             if (isNaN(chunkHit.tanhDistance)) {
                 continue;
             }
@@ -178,7 +191,11 @@ GraphCollisionHit shapeCast(
                 accept = chunkHit.tanhDistance < best
                     || (!bestIsFace && chunkHit.tanhDistance < best + FACE_TIE_EPS);
             } else {
-                accept = chunkHit.tanhDistance < best - (bestIsFace ? FACE_TIE_EPS : 0);
+                float faceMargin = 0;
+                if (bestIsFace) {
+                    faceMargin = FACE_TIE_EPS;
+                }
+                accept = chunkHit.tanhDistance < best - faceMargin;
             }
             if (!accept) {
                 continue;
@@ -215,7 +232,7 @@ GraphCollisionHit shapeCast(
             }
             slots[count] = neighbor;
             invT[count] = neighborInv;
-            count++;
+            count = count + 1;
         }
     }
 

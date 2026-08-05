@@ -1,9 +1,204 @@
 module common.math;
 
-import std.math : sqrt, cosh, sinh, acosh, isNaN, isInfinity;
-import std.traits : isFloatingPoint;
+import cmath = core.stdc.math;
 
-struct MVector(N) if (isFloatingPoint!N) {
+// libc splits these by width instead of overloading, so pick the right one
+// from the element type. Keeps every call site below unchanged.
+N sqrt(N)(N v) {
+    // The dodecahedron tables are built at compile time, and libc has no
+    // source for CTFE to interpret, so that path gets Newton's method.
+    if (__ctfe) {
+        return ctfeSqrt(v);
+    }
+    static if (is(N == float)) {
+        return cmath.sqrtf(v);
+    } else {
+        return cmath.sqrt(v);
+    }
+}
+
+N ctfeSqrt(N)(N v) {
+    if (v <= 0) {
+        return 0;
+    }
+    // Iterate in double regardless of N: for double it is the exact working
+    // precision, and for float the extra bits round off cleanly at the end.
+    double target = cast(double) v;
+    double x = target;
+    foreach (i; 0 .. 200) {
+        double next = (x + target / x) / 2;
+        if (next == x) {
+            break;
+        }
+        x = next;
+    }
+    return cast(N) x;
+}
+
+N cosh(N)(N v) {
+    static if (is(N == float)) {
+        return cmath.coshf(v);
+    } else {
+        return cmath.cosh(v);
+    }
+}
+
+N sinh(N)(N v) {
+    static if (is(N == float)) {
+        return cmath.sinhf(v);
+    } else {
+        return cmath.sinh(v);
+    }
+}
+
+N acosh(N)(N v) {
+    static if (is(N == float)) {
+        return cmath.acoshf(v);
+    } else {
+        return cmath.acosh(v);
+    }
+}
+
+N tanh(N)(N v) {
+    static if (is(N == float)) {
+        return cmath.tanhf(v);
+    } else {
+        return cmath.tanh(v);
+    }
+}
+
+N atanh(N)(N v) {
+    static if (is(N == float)) {
+        return cmath.atanhf(v);
+    } else {
+        return cmath.atanh(v);
+    }
+}
+
+N asinh(N)(N v) {
+    static if (is(N == float)) {
+        return cmath.asinhf(v);
+    } else {
+        return cmath.asinh(v);
+    }
+}
+
+N floor(N)(N v) {
+    static if (is(N == float)) {
+        return cmath.floorf(v);
+    } else {
+        return cmath.floor(v);
+    }
+}
+
+N ceil(N)(N v) {
+    static if (is(N == float)) {
+        return cmath.ceilf(v);
+    } else {
+        return cmath.ceil(v);
+    }
+}
+
+N fabs(N)(N v) {
+    static if (is(N == float)) {
+        return cmath.fabsf(v);
+    } else {
+        return cmath.fabs(v);
+    }
+}
+
+N exp(N)(N v) {
+    static if (is(N == float)) {
+        return cmath.expf(v);
+    } else {
+        return cmath.exp(v);
+    }
+}
+
+N log(N)(N v) {
+    static if (is(N == float)) {
+        return cmath.logf(v);
+    } else {
+        return cmath.log(v);
+    }
+}
+
+N pow(N)(N base, N power) {
+    static if (is(N == float)) {
+        return cmath.powf(base, power);
+    } else {
+        return cmath.pow(base, power);
+    }
+}
+
+N sin(N)(N v) {
+    static if (is(N == float)) {
+        return cmath.sinf(v);
+    } else {
+        return cmath.sin(v);
+    }
+}
+
+N cos(N)(N v) {
+    static if (is(N == float)) {
+        return cmath.cosf(v);
+    } else {
+        return cmath.cos(v);
+    }
+}
+
+N acos(N)(N v) {
+    static if (is(N == float)) {
+        return cmath.acosf(v);
+    } else {
+        return cmath.acos(v);
+    }
+}
+
+N atan2(N)(N y, N x) {
+    static if (is(N == float)) {
+        return cmath.atan2f(y, x);
+    } else {
+        return cmath.atan2(y, x);
+    }
+}
+
+N fmin(N)(N a, N b) {
+    if (a < b) {
+        return a;
+    }
+    return b;
+}
+
+N fmax(N)(N a, N b) {
+    if (a > b) {
+        return a;
+    }
+    return b;
+}
+
+N abs(N)(N v) {
+    if (v < 0) {
+        return -v;
+    }
+    return v;
+}
+
+enum float PI = 3.14159265358979323846f;
+
+bool isNaN(N)(N v) {
+    return v != v;
+}
+
+bool isFinite(N)(N v) {
+    return v == v && v <= N.max && v >= -N.max;
+}
+
+bool isInfinity(N)(N v) {
+    return v > N.max || v < -N.max;
+}
+
+struct MVector(N) if (__traits(isFloating, N)) {
     N[4] data = [0, 0, 0, 0];
 
     @property ref inout(N) x() inout {
@@ -135,7 +330,7 @@ struct MVector(N) if (isFloatingPoint!N) {
         return data[i];
     }
 
-    MVector!N2 toType(N2)() const if (isFloatingPoint!N2) {
+    MVector!N2 toType(N2)() const if (__traits(isFloating, N2)) {
         MVector!N2 r;
         static foreach (i; 0 .. 4) {
             r.data[i] = cast(N2)(data[i]);
@@ -144,7 +339,7 @@ struct MVector(N) if (isFloatingPoint!N) {
     }
 }
 
-struct MPoint(N) if (isFloatingPoint!N) {
+struct MPoint(N) if (__traits(isFloating, N)) {
     MVector!N vec;
 
     this(MVector!N v) {
@@ -186,7 +381,7 @@ struct MPoint(N) if (isFloatingPoint!N) {
         return vec;
     }
 
-    MPoint!N2 toType(N2)() const if (isFloatingPoint!N2) {
+    MPoint!N2 toType(N2)() const if (__traits(isFloating, N2)) {
         return MPoint!N2(vec.toType!N2());
     }
 
@@ -199,7 +394,7 @@ struct MPoint(N) if (isFloatingPoint!N) {
     }
 }
 
-struct MDirection(N) if (isFloatingPoint!N) {
+struct MDirection(N) if (__traits(isFloating, N)) {
     MVector!N vec;
 
     this(MVector!N v) {
@@ -243,7 +438,7 @@ struct MDirection(N) if (isFloatingPoint!N) {
         return MDirection(-vec);
     }
 
-    MDirection!N2 toType(N2)() const if (isFloatingPoint!N2) {
+    MDirection!N2 toType(N2)() const if (__traits(isFloating, N2)) {
         return MDirection!N2(vec.toType!N2());
     }
 
@@ -256,7 +451,7 @@ struct MDirection(N) if (isFloatingPoint!N) {
     }
 }
 
-struct Matrix4(N) if (isFloatingPoint!N) {
+struct Matrix4(N) if (__traits(isFloating, N)) {
     N[4][4] data = 0;
 
     static Matrix4 identity() {
@@ -370,7 +565,7 @@ struct Matrix4(N) if (isFloatingPoint!N) {
     }
 }
 
-struct MIsometry(N) if (isFloatingPoint!N) {
+struct MIsometry(N) if (__traits(isFloating, N)) {
     Matrix4!N mat;
 
     this(Matrix4!N m) {
@@ -470,7 +665,7 @@ struct MIsometry(N) if (isFloatingPoint!N) {
         return r;
     }
 
-    MIsometry!N2 toType(N2)() const if (isFloatingPoint!N2) {
+    MIsometry!N2 toType(N2)() const if (__traits(isFloating, N2)) {
         Matrix4!N2 r;
         foreach (col; 0 .. 4) {
             foreach (row; 0 .. 4) {
@@ -543,7 +738,7 @@ float[3] sanitizeMotionInput(float[3] v) {
     return [v[0] * scale, v[1] * scale, v[2] * scale];
 }
 
-N sinhc(N)(N x) if (isFloatingPoint!N) {
+N sinhc(N)(N x) if (__traits(isFloating, N)) {
     if (x == 0) {
         return 1;
     }
@@ -551,7 +746,7 @@ N sinhc(N)(N x) if (isFloatingPoint!N) {
 }
 
 void projectToPlane(N)(ref N[3] subject, const ref N[3] normal, const ref N[3] projDir, N distance)
-    if (isFloatingPoint!N)
+    if (__traits(isFloating, N))
 {
     N dotSN = 0;
     N dotPN = 0;

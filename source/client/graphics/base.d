@@ -4,6 +4,12 @@ import core.stdc.stdio : printf;
 import bindings.vk;
 
 struct SwapchainState {
+    // Swapchains are a handful of images in practice, so these are fixed
+    // caps rather than allocations rebuilt on every resize. A driver asking
+    // for more than the cap is truncated, matching VulkanCore's approach.
+    enum uint MAX_SWAPCHAIN_IMAGES = 8;
+    enum uint MAX_SURFACE_FORMATS = 16;
+
     VkPhysicalDevice physDevice;
     VkSurfaceKHR surface;
     VkSwapchainKHR swapchain;
@@ -11,22 +17,28 @@ struct SwapchainState {
     bool offscreen;
     VkFormat format;
     VkExtent2D extent;
-    VkImage[] images;
-    VkImageView[] imageViews;
+    VkImage[MAX_SWAPCHAIN_IMAGES] images;
+    VkImageView[MAX_SWAPCHAIN_IMAGES] imageViews;
+    uint imageCount;
     VkDeviceMemory colorMemory;
     VkImage depthImage;
     VkDeviceMemory depthMemory;
     VkImageView depthView;
     VkRenderPass renderPass;
-    VkFramebuffer[] framebuffers;
+    VkFramebuffer[MAX_SWAPCHAIN_IMAGES] framebuffers;
     VkCommandPool commandPool;
     VkCommandBuffer commandBuffer;
     VkSemaphore imageAvailableSemaphore;
     // Per image: present can still hold an image's semaphore after the next acquire.
-    VkSemaphore[] renderFinishedSemaphores;
+    VkSemaphore[MAX_SWAPCHAIN_IMAGES] renderFinishedSemaphores;
     VkFence inFlightFence;
 
-    bool init(VkPhysicalDevice physDevice, VkDevice device, VkSurfaceKHR surface, uint queueFamily) {
+    bool init(
+        VkPhysicalDevice physDevice,
+        VkDevice device,
+        VkSurfaceKHR surface,
+        uint queueFamily,
+    ) {
         this.physDevice = physDevice;
         this.surface = surface;
 
@@ -86,17 +98,16 @@ struct SwapchainState {
     void createRenderFinishedSemaphores(VkDevice device) {
         VkSemaphoreCreateInfo semCI;
         semCI.sType = VkStructureType.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-        renderFinishedSemaphores = new VkSemaphore[](images.length);
-        foreach (ref s; renderFinishedSemaphores) {
-            vkCreateSemaphore(device, &semCI, null, &s);
+        foreach (i; 0 .. imageCount) {
+            vkCreateSemaphore(device, &semCI, null, &renderFinishedSemaphores[i]);
         }
     }
 
     void destroyRenderFinishedSemaphores(VkDevice device) {
-        foreach (s; renderFinishedSemaphores) {
-            vkDestroySemaphore(device, s, null);
+        foreach (i; 0 .. imageCount) {
+            vkDestroySemaphore(device, renderFinishedSemaphores[i], null);
+            renderFinishedSemaphores[i] = VK_NULL_HANDLE;
         }
-        renderFinishedSemaphores = null;
     }
 
     bool createOffscreenTarget(VkDevice device) {
@@ -141,8 +152,8 @@ struct SwapchainState {
         vkAllocateMemory(device, &mai, null, &colorMemory);
         vkBindImageMemory(device, colorImage, colorMemory, 0);
 
-        images = [colorImage];
-        imageViews = new VkImageView[](1);
+        images[0] = colorImage;
+        imageCount = 1;
         VkImageViewCreateInfo ivci;
         ivci.sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         ivci.image = colorImage;
@@ -157,7 +168,7 @@ struct SwapchainState {
 
     bool createSwapchainResources(VkDevice device) {
         if (offscreen) {
-            if (images.length == 0 && !createOffscreenTarget(device)) {
+            if (imageCount == 0 && !createOffscreenTarget(device)) {
                 return false;
             }
             return createDepthAndFramebuffers(device);
@@ -186,7 +197,14 @@ struct SwapchainState {
 
         uint formatCount;
         vkGetPhysicalDeviceSurfaceFormatsKHR(physDevice, surface, &formatCount, null);
-        VkSurfaceFormatKHR[] formats = new VkSurfaceFormatKHR[](formatCount);
+        if (formatCount > MAX_SURFACE_FORMATS) {
+            formatCount = MAX_SURFACE_FORMATS;
+        }
+        if (formatCount == 0) {
+            printf("surface reported no formats\n");
+            return false;
+        }
+        VkSurfaceFormatKHR[MAX_SURFACE_FORMATS] formats;
         vkGetPhysicalDeviceSurfaceFormatsKHR(physDevice, surface, &formatCount, formats.ptr);
         format = formats[0].format;
         VkColorSpaceKHR colorSpace = formats[0].colorSpace;
@@ -221,10 +239,12 @@ struct SwapchainState {
 
         uint imgCount;
         vkGetSwapchainImagesKHR(device, swapchain, &imgCount, null);
-        images = new VkImage[](imgCount);
+        if (imgCount > MAX_SWAPCHAIN_IMAGES) {
+            imgCount = MAX_SWAPCHAIN_IMAGES;
+        }
         vkGetSwapchainImagesKHR(device, swapchain, &imgCount, images.ptr);
+        imageCount = imgCount;
 
-        imageViews = new VkImageView[](imgCount);
         for (uint i = 0; i < imgCount; i = i + 1) {
             VkImageViewCreateInfo ivci;
             ivci.sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -304,9 +324,7 @@ struct SwapchainState {
             }
         }
 
-        uint imgCount = cast(uint) images.length;
-        framebuffers = new VkFramebuffer[](imgCount);
-        for (uint i = 0; i < imgCount; i = i + 1) {
+        for (uint i = 0; i < imageCount; i = i + 1) {
             VkImageView[2] fbAttach = [imageViews[i], depthView];
             VkFramebufferCreateInfo fbci;
             fbci.sType = VkStructureType.VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
@@ -406,10 +424,10 @@ struct SwapchainState {
     }
 
     void destroySwapchainResources(VkDevice device) {
-        foreach (fb; framebuffers) {
-            vkDestroyFramebuffer(device, fb, null);
+        foreach (i; 0 .. imageCount) {
+            vkDestroyFramebuffer(device, framebuffers[i], null);
+            framebuffers[i] = VK_NULL_HANDLE;
         }
-        framebuffers = null;
         if (depthView != VK_NULL_HANDLE) {
             vkDestroyImageView(device, depthView, null);
             depthView = 0;
@@ -422,11 +440,14 @@ struct SwapchainState {
             vkFreeMemory(device, depthMemory, null);
             depthMemory = 0;
         }
-        foreach (iv; imageViews) {
-            vkDestroyImageView(device, iv, null);
+        foreach (i; 0 .. imageCount) {
+            vkDestroyImageView(device, imageViews[i], null);
+            imageViews[i] = VK_NULL_HANDLE;
+            images[i] = VK_NULL_HANDLE;
         }
-        imageViews = null;
-        images = null;
+        // Zeroing the count is what makes the offscreen path rebuild its
+        // target on the next create, matching the old `images = null`.
+        imageCount = 0;
         if (swapchain != VK_NULL_HANDLE) {
             vkDestroySwapchainKHR(device, swapchain, null);
             swapchain = 0;

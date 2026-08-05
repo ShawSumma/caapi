@@ -7,7 +7,7 @@ mainSourceFile "source/main.d"
 sourcePaths "source"
 importPaths "source"
 stringImportPaths "source/shaders/spv"
-dflags "-P-Ideps/SDL3/include" "-P-Ideps/Vulkan-Headers/include"
+dflags "-betterC" "-P-Ideps/SDL3/include" "-P-Ideps/Vulkan-Headers/include"
 
 libs "vulkan"
 libs "dl" platform="linux"

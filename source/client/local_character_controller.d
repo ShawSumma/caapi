@@ -1,6 +1,6 @@
 module client.local_character_controller;
 
-import std.math : acos, atan2, abs, exp, PI, sqrt, sin, cos, fmin, fmax;
+import common.math : PI, abs, acos, atan2, cos, exp, fmax, fmin, sin, sqrt;
 import common.character_controller : getRelativeUp;
 import common.graph : Graph, NodeId;
 import common.math : MIsometry, Matrix4;

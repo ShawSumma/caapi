@@ -1,8 +1,7 @@
 module common.chunk_ray_casting;
 
-import std.math : isNaN;
 import common.collision_math : Ray;
-import common.math : MDirection, MVector;
+import common.math : MDirection, MVector, isNaN;
 import common.node : VoxelData, ChunkLayout;
 import common.voxel_math : Coords, CoordAxis, CoordSign;
 import common.world : Material;
@@ -18,14 +17,24 @@ ChunkRayCastHit chunkRayCast(
     const ref VoxelData voxelData,
     const ref ChunkLayout layout,
     const ref Ray ray,
-    float tanhDistance
+    float tanhDistance,
 ) {
     ChunkRayCastHit hit;
     hit.tanhDistance = float.nan;
 
     foreach (tAxis; 0 .. 3) {
-        ChunkRayCastHit newHit = findFaceCollision(voxelData, layout, tAxis, ray,
-            !isNaN(hit.tanhDistance) ? hit.tanhDistance : tanhDistance);
+        // Each axis only needs to beat the best hit found so far.
+        float limit = tanhDistance;
+        if (!isNaN(hit.tanhDistance)) {
+            limit = hit.tanhDistance;
+        }
+        ChunkRayCastHit newHit = findFaceCollision(
+            voxelData,
+            layout,
+            tAxis,
+            ray,
+            limit,
+        );
         if (!isNaN(newHit.tanhDistance)) {
             hit = newHit;
         }
@@ -39,7 +48,7 @@ ChunkRayCastHit findFaceCollision(
     const ref ChunkLayout layout,
     size_t tAxis,
     const ref Ray ray,
-    float tanhDistance
+    float tanhDistance,
 ) {
     ChunkRayCastHit hit;
     hit.tanhDistance = float.nan;
@@ -51,13 +60,18 @@ ChunkRayCastHit findFaceCollision(
         float[4] nData = [0, 0, 0, 0];
         nData[tAxis] = 1.0f;
         nData[3] = layout.gridToDual(cast(ubyte) t);
-        MDirection!float normal = MVector!float(nData[0], nData[1], nData[2], nData[3]).normalizedDirection();
+        MVector!float normalVec = MVector!float(nData[0], nData[1], nData[2], nData[3]);
+        MDirection!float normal = normalVec.normalizedDirection();
 
         float newTanhDist = ray.solvePointPlaneIntersection(normal);
         if (isNaN(newTanhDist)) {
             continue;
         }
-        if (newTanhDist >= (!isNaN(hit.tanhDistance) ? hit.tanhDistance : tanhDistance)) {
+        float limit = tanhDistance;
+        if (!isNaN(hit.tanhDistance)) {
+            limit = hit.tanhDistance;
+        }
+        if (newTanhDist >= limit) {
             continue;
         }
 
@@ -69,8 +83,7 @@ ChunkRayCastHit findFaceCollision(
             }
             faceSign = CoordSign.Plus;
             voxelT = cast(ubyte)(t - 1);
-        }
-        else {
+        } else {
             if (t == layout.dimension) {
                 continue;
             }
@@ -107,6 +120,10 @@ ChunkRayCastHit findFaceCollision(
     return hit;
 }
 
-bool voxelIsSolid(const ref VoxelData voxelData, const ref ChunkLayout layout, ubyte[3] coords) {
+bool voxelIsSolid(
+    const ref VoxelData voxelData,
+    const ref ChunkLayout layout,
+    ubyte[3] coords,
+) {
     return voxelData.get(Coords(coords).toIndex(layout.dimension)) != Material.Void;
 }

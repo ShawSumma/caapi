@@ -1,12 +1,13 @@
 module common.sim_config;
 
-import core.time : Duration, dur;
 import common.math : MIsometry, MVector, MPoint;
 import common.dodeca : vertexChunkToNode, Vertex;
 
 struct SimConfig {
-    Duration stepInterval;
-    Duration inputQueueSize;
+    // Milliseconds rather than core.time.Duration, which is druntime and so
+    // unavailable under betterC.
+    uint stepIntervalMs;
+    uint inputQueueSizeMs;
     float viewDistance;
     float chunkGenerationDistance;
     float fogDistance;
@@ -19,8 +20,8 @@ struct SimConfig {
         float m2a = metersToAbsoluteCalc(raw.chunkSize, raw.voxelSize);
 
         SimConfig cfg;
-        cfg.stepInterval = dur!"msecs"(1000 / raw.rate);
-        cfg.inputQueueSize = dur!"msecs"(raw.inputQueueSizeMs);
+        cfg.stepIntervalMs = 1000 / raw.rate;
+        cfg.inputQueueSizeMs = raw.inputQueueSizeMs;
         cfg.viewDistance = raw.viewDistance * m2a;
         cfg.chunkGenerationDistance = raw.chunkGenerationDistance * m2a;
         cfg.fogDistance = raw.fogDistance * m2a;

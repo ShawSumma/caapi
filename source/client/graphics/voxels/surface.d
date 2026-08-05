@@ -1,6 +1,6 @@
 module client.graphics.voxels.surface;
 
-import std.stdio;
+import core.stdc.stdio : printf;
 import core.stdc.string : memcpy;
 import bindings.vk;
 import client.graphics.pipeline : GpuBuffer;
@@ -264,7 +264,7 @@ struct SurfacePipeline {
         plci.pPushConstantRanges = &pcr;
         VkResult res = vkCreatePipelineLayout(device, &plci, null, &pipelineLayout);
         if (res != VkResult.VK_SUCCESS) {
-            writeln("voxels pipeline layout failed");
+            printf("voxels pipeline layout failed\n");
             return false;
         }
 
@@ -371,10 +371,14 @@ struct SurfacePipeline {
 
         res = vkCreateGraphicsPipelines(device, 0, 1, &gpci, null, &pipeline);
         if (res != VkResult.VK_SUCCESS) {
-            writefln("voxels pipeline create failed: %s", res);
+            printf("voxels pipeline create failed: %d\n", cast(int) res);
             return false;
         }
-        writefln("Voxels pipeline created (%d surfaces, %d chunks)", surfaceCount, chunkCount);
+        printf(
+            "Voxels pipeline created (%zu surfaces, %zu chunks)\n",
+            cast(size_t) surfaceCount,
+            cast(size_t) chunkCount,
+        );
         return true;
     }
 

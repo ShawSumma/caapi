@@ -1,12 +1,12 @@
 module common.graph_ray_casting;
 
-import std.math : atanh, cosh, isNaN;
 import common.chunk_ray_casting : ChunkRayCastHit, chunkRayCast;
 import common.collision_math : Ray, transformRay;
-import common.dodeca : BOUNDING_SPHERE_RADIUS, CHUNK_BOUNDING_SPHERE_RADIUS,
-    Side, Vertex, sideReflection, vertexChunkBoundingSphereCenter, vertexNodeToDual;
+import common.dodeca : BOUNDING_SPHERE_RADIUS, CHUNK_BOUNDING_SPHERE_RADIUS;
+import common.dodeca : Side, Vertex, sideReflection;
+import common.dodeca : vertexChunkBoundingSphereCenter, vertexNodeToDual;
 import common.graph : Graph, NodeId, NO_SLOT;
-import common.math : MIsometry, MVector;
+import common.math : MIsometry, MVector, atanh, cosh, isNaN;
 import common.node : Chunk, ChunkId, ChunkState, Node, VoxelData;
 import common.voxel_math : Coords, CoordAxis, CoordSign;
 
@@ -16,24 +16,25 @@ struct GraphCastHit {
     Coords voxelCoords;
     CoordAxis faceAxis;
     CoordSign faceSign;
+    // Carried on the result rather than written back through a parameter.
+    bool outOfBounds;
 }
 
 struct OutOfBounds {}
 
-/// Casts a ray (given in the caster's local frame) against voxels, traversing
-/// every node whose bounding sphere the ray segment could reach — blocks just
-/// across a node boundary are as hittable as ones in the caster's own node.
+// Casts a ray, given in the caster's local frame, against voxels. It traverses
+// every node whose bounding sphere the ray segment could reach, so blocks just
+// across a node boundary are as hittable as ones in the caster's own node.
 GraphCastHit rayCast(
     const ref Graph graph,
     NodeId posNode,
     MIsometry!float posLocal,
     const ref Ray ray,
     float tanhDistance,
-    out bool outOfBounds
 ) {
     GraphCastHit hit;
     hit.tanhDistance = float.nan;
-    outOfBounds = false;
+    hit.outOfBounds = false;
 
     uint startSlot = graph.slotOf(posNode);
     if (startSlot == NO_SLOT) {
@@ -44,7 +45,10 @@ GraphCastHit rayCast(
 
     // How far (in real hyperbolic distance) the segment can reach; used to
     // prune nodes and chunks whose bounding spheres it cannot touch.
-    float capped = tanhDistance < 0.999f ? tanhDistance : 0.999f;
+    float capped = 0.999f;
+    if (tanhDistance < 0.999f) {
+        capped = tanhDistance;
+    }
     float reachDist = atanh(capped);
     float nodeThreshold = cosh(reachDist + BOUNDING_SPHERE_RADIUS + CHUNK_BOUNDING_SPHERE_RADIUS);
     float chunkThreshold = cosh(reachDist + CHUNK_BOUNDING_SPHERE_RADIUS);
@@ -63,7 +67,7 @@ GraphCastHit rayCast(
     while (front < count) {
         uint slot = slots[front];
         MIsometry!float inv = invT[front];
-        front++;
+        front = front + 1;
 
         Ray localRay = transformRay(inv, nodeRay);
         MVector!float rayStartK = localRay.position.vec;
@@ -114,7 +118,7 @@ GraphCastHit rayCast(
             }
             slots[count] = neighbor;
             invT[count] = neighborInv;
-            count++;
+            count = count + 1;
         }
     }
 

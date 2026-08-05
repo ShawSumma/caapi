@@ -4,7 +4,7 @@ import common.dodeca : Side, Vertex, vertexCanonicalSides, vertexFromThreeSides,
 import common.graph : Graph, NodeId;
 import common.node : ChunkId;
 
-/// Directions for navigating the cubic dual
+// Directions for navigating the cubic dual.
 enum Dir {
     Left,
     Right,
@@ -31,7 +31,7 @@ Dir negateDir(Dir d) {
     }
 }
 
-/// Navigates the cubic dual of a graph
+// Navigates the cubic dual of a graph.
 struct Cursor {
     NodeId node;
     Side a;
@@ -43,7 +43,7 @@ struct Cursor {
         return Cursor(node, sides[0], sides[1], sides[2]);
     }
 
-    /// Get the neighbor towards dir
+    // Get the neighbour towards dir.
     Cursor step(const ref Graph graph, Dir dir) const {
         Side aPrime = getNeighborSide(a, b, c);
         Side bPrime = getNeighborSide(b, a, c);

@@ -1,24 +1,27 @@
 module client.graphics;
 
-import std.stdio;
-import std.format : format;
-import core.memory : GC;
-import core.time : MonoTime;
-import std.math : sin, cos, cosh, sqrt, PI, log, pow, isNaN;
-import std.typecons : Nullable;
+import core.stdc.math : coshf, cosf, logf, powf, sinf, sqrtf;
+import core.stdc.stdio : FILE, fclose, fflush, fopen, fwrite, printf;
+import core.stdc.stdio : snprintf, stdout;
 import core.stdc.string : memcpy;
+import common.array : Array, allocSlice, freeSlice;
+import common.clock : nowMs;
 import bindings.vk;
 import client.graphics.core;
 import client.graphics.base;
 import client.graphics.voxels;
-import client.graphics.field : PerceptionField, PRODUCER_NONE, PRODUCER_DIFFUSION, PRODUCER_CYCLIC;
+import client.graphics.field : PerceptionField, PRODUCER_NONE;
+import client.graphics.field : PRODUCER_DIFFUSION, PRODUCER_CYCLIC;
 import client.graphics.pipeline : GpuBuffer;
+import common.chunk_slot_map : ChunkSlotMap, ChunkSlot, ChunkSlotLookup;
 import client.graphics.fog : FogPipeline;
 import client.graphics.highlight : HighlightPipeline;
 import client.graphics.frustum : Frustum;
 import client.worldgen_driver : WorldgenDriver, getChunkNeighbor;
 import common.collision_math : Ray;
-import common.dodeca : Vertex, Side, sideReflection, sideIsFacing, BOUNDING_SPHERE_RADIUS, CHUNK_BOUNDING_SPHERE_RADIUS, vertexChunkBoundingSphereCenter, vertexChunkToNode;
+import common.dodeca : Vertex, Side, sideReflection, sideIsFacing;
+import common.dodeca : BOUNDING_SPHERE_RADIUS, CHUNK_BOUNDING_SPHERE_RADIUS;
+import common.dodeca : vertexChunkBoundingSphereCenter, vertexChunkToNode;
 import common.graph_ray_casting : GraphCastHit, rayCast;
 import common.math : Matrix4, MPoint, MIsometry, MVector, MDirection;
 import common.graph : Graph, NodeId, NO_SLOT;
@@ -28,6 +31,12 @@ import common.traversal : ensureAndCollectNearby, NearbyNode, NearbyScratch;
 import common.margins : fixMargins, neighborAxisPermutation;
 import common.voxel_math : ChunkDirection, Coords, CoordSign;
 import common.world : Material;
+
+enum float PI = 3.14159265358979323846f;
+
+bool isNaN(float v) {
+    return v != v;
+}
 
 struct Renderer {
     VulkanCore core;
@@ -48,7 +57,7 @@ struct Renderer {
     // Skip all GPU work; world generation and simulation still run. Used by
     // headless replays so they aren't paced (or stalled) by presentation.
     bool headless = false;
-    string capturePath;
+    const(char)* capturePath;
     bool captureDone;
 
     uint maxSlots = 2^^16;
@@ -86,8 +95,13 @@ struct Renderer {
     float tripGain = 6.5f;
     float tripScale = 0.28f;
 
-    string channelMapName() {
-        return format("%d/6 turn", rotStep);
+    // Written into the renderer's own buffer so the caller can print it
+    // without owning storage. Valid until the next call.
+    char[16] channelMapLabel;
+
+    const(char)* channelMapName() {
+        snprintf(channelMapLabel.ptr, channelMapLabel.length, "%u/6 turn", rotStep);
+        return channelMapLabel.ptr;
     }
 
     void cycleChannelMap() {
@@ -95,8 +109,7 @@ struct Renderer {
         rotBase[0] = rotStep * (PI / 3.0f);
     }
 
-    uint[ChunkId] slotMap;
-    uint[ChunkId] slotGeneration;
+    ChunkSlotMap chunkSlots;
     uint nextSlot = 0;
     uint[] freeSlotsBuf;
     uint freeCount;
@@ -123,10 +136,9 @@ struct Renderer {
     double[9] stageSum = 0;
     double[9] stageMax = 0;
     uint statFrames = 0;
-    ulong lastGcCollections = 0;
-    ulong lastGcPauseUsecs = 0;
 
-    Nullable!uint lastLoggedSecond;
+    uint lastLoggedSecond = 0;
+    bool hasLoggedSecond = false;
     NearbyNode[] cachedNodes;
     NearbyScratch nearbyScratch;
     NodeId lastNearbyNode;
@@ -195,16 +207,22 @@ struct Renderer {
     }
 
     bool init(void* window) {
-        freeSlotsBuf = new uint[maxSlots];
-        activeSlotsBuf = new uint[maxSlots];
-        slotUsedBuf = new ubyte[maxSlots];
-        removeBuf = new ChunkId[maxSlots];
-        tasksBuf = new ExtractTask[concurrency];
+        freeSlotsBuf = allocSlice!uint(maxSlots);
+        activeSlotsBuf = allocSlice!uint(maxSlots);
+        slotUsedBuf = allocSlice!ubyte(maxSlots);
+        removeBuf = allocSlice!ChunkId(maxSlots);
+        tasksBuf = allocSlice!ExtractTask(concurrency);
+        chunkSlots.init(maxSlots);
 
         if (!core.init(window)) {
             return false;
         }
-        if (!swapState.init(core.physicalDevice, core.device, core.surface, core.graphicsQueueFamily)) {
+        if (!swapState.init(
+                core.physicalDevice,
+                core.device,
+                core.surface,
+                core.graphicsQueueFamily,
+            )) {
             return false;
         }
 
@@ -219,18 +237,23 @@ struct Renderer {
         }
 
         Surface[] empty;
-        float[16][] transforms;
-        transforms.length = maxSlots;
+        float[16][] transforms = allocSlice!(float[16])(maxSlots);
+        scope(exit) {
+            freeSlice(transforms);
+        }
 
         // The 20 chunk-to-node isometries are constant, so upload them once
         // and let the vertex stage put chunk-local positions into node space.
-        float[] chunkToNode = new float[20 * 16];
+        float[20 * 16] chunkToNode;
         foreach (v; 0 .. 20) {
             float[16] m = matToFlat(vertexChunkToNode(cast(Vertex) v));
-            chunkToNode[v * 16 .. v * 16 + 16] = m[];
+            memcpy(chunkToNode.ptr + v * 16, m.ptr, 16 * float.sizeof);
         }
 
-        auto chunkInfoInit = new uint[maxSlots];
+        uint[] chunkInfoInit = allocSlice!uint(maxSlots);
+        scope(exit) {
+            freeSlice(chunkInfoInit);
+        }
         chunkInfoBuf = GpuBuffer.create(
             core.physicalDevice, core.device, cast(void[]) chunkInfoInit,
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
@@ -241,7 +264,7 @@ struct Renderer {
                          extract.facesBuf.buffer,
                          swapState.depthView,
                          field.views[0], field.sampler,
-                         chunkToNode)) {
+                         chunkToNode[])) {
             return false;
         }
 
@@ -255,8 +278,8 @@ struct Renderer {
 
         if (extract.tfReady) {
             extract.bindTransformOutput(core.device, voxels.transformsVbo.buffer);
-            nodeTfLocal = new float[extract.maxNodes * 16];
-            slotTaskLocal = new uint[maxSlots * 4];
+            nodeTfLocal = allocSlice!float(extract.maxNodes * 16);
+            slotTaskLocal = allocSlice!uint(maxSlots * 4);
         }
 
         worldgenDriver = WorldgenDriver.create();
@@ -264,7 +287,7 @@ struct Renderer {
         camPos.node = NodeId.ROOT;
         camPos.local = MIsometry!float.translationAlong([0.0f, 1.4f, 0.0f]);
 
-        writeln("Renderer initialized successfully");
+        printf("Renderer initialized successfully\n");
         return true;
     }
 
@@ -279,22 +302,34 @@ struct Renderer {
             voxels.updateDepthDescriptor(core.device, swapState.depthView);
         }
 
-        MonoTime a0 = MonoTime.currTime;
+        double a0 = nowMs();
         MPoint!float camPoint = camPos.local * MPoint!float.origin();
         bool camMoved = !hasNearby || camPos.node != lastNearbyNode
             || nearbyScratch.creationCapped
-            || -lastNearbyPos.mip(camPoint.vec) > cosh(NEARBY_PADDING);
+            || -lastNearbyPos.mip(camPoint.vec) > coshf(NEARBY_PADDING);
         if (camMoved) {
-            cachedNodes = ensureAndCollectNearby(nearbyScratch, graph, camPos.node, camPos.local,
-                renderRadius + NEARBY_PADDING);
+            cachedNodes = ensureAndCollectNearby(
+                nearbyScratch,
+                graph,
+                camPos.node,
+                camPos.local,
+                renderRadius + NEARBY_PADDING,
+            );
             lastNearbyNode = camPos.node;
             lastNearbyPos = camPoint;
             hasNearby = true;
-            nearbyVersion++;
+            nearbyVersion = nearbyVersion + 1;
         }
-        MonoTime a1 = MonoTime.currTime;
-        worldgenDriver.drive(cachedNodes, camPos.local, renderRadius, graph, cast(ubyte) dimension, nearbyVersion);
-        MonoTime a2 = MonoTime.currTime;
+        double a1 = nowMs();
+        worldgenDriver.drive(
+            cachedNodes,
+            camPos.local,
+            renderRadius,
+            graph,
+            cast(ubyte) dimension,
+            nearbyVersion,
+        );
+        double a2 = nowMs();
 
         if (headless) {
             return;
@@ -305,7 +340,7 @@ struct Renderer {
         uint inFrustumCount = 0;
 
         vkWaitForFences(core.device, 1, &swapState.inFlightFence, 1, ulong.max);
-        MonoTime a3 = MonoTime.currTime;
+        double a3 = nowMs();
 
         slotUsedBuf[] = 0;
 
@@ -340,7 +375,7 @@ struct Renderer {
 
             uint thisNodeIndex = nodeIndex;
             bool nodeUploaded = false;
-            nodeIndex++;
+            nodeIndex = nodeIndex + 1;
 
             foreach (vIdx; 0 .. 20) {
                 Vertex v = cast(Vertex) vIdx;
@@ -349,7 +384,8 @@ struct Renderer {
                     continue;
                 }
 
-                MPoint!float camCenter = camInverse * (nn.transform * vertexChunkBoundingSphereCenter(v));
+                MPoint!float camCenter =
+                    camInverse * (nn.transform * vertexChunkBoundingSphereCenter(v));
                 if (frustum.sphereOutside(fplanes, camCenter, CHUNK_BOUNDING_SPHERE_RADIUS)) {
                     continue;
                 }
@@ -359,24 +395,29 @@ struct Renderer {
                 bool needsExtract = false;
                 bool slotHasData = false;
 
-                if (uint* p = chunkId in slotMap) {
-                    slot = *p;
-                    uint* gen = chunkId in slotGeneration;
-                    if (gen is null || *gen != c.generation) {
+                ChunkSlotLookup resident = chunkSlots.lookup(chunkId);
+                if (resident.found) {
+                    slot = resident.value.slot;
+                    slotHasData = resident.value.hasData;
+                    if (!slotHasData || resident.value.generation != c.generation) {
                         needsExtract = true;
                     }
-                    slotHasData = gen !is null;
                 } else {
                     needsExtract = true;
                     if (freeCount > 0) {
-                        freeCount--;
+                        freeCount = freeCount - 1;
                         slot = freeSlotsBuf[freeCount];
                     } else if (nextSlot < maxSlots) {
-                        slot = nextSlot++;
+                        slot = nextSlot;
+                        nextSlot = nextSlot + 1;
                     } else {
                         continue;
                     }
-                    slotMap[chunkId] = slot;
+                    ChunkSlot fresh;
+                    fresh.slot = slot;
+                    fresh.generation = 0;
+                    fresh.hasData = false;
+                    chunkSlots.set(chunkId, fresh);
                 }
 
                 if (needsExtract && tasksLen < concurrency) {
@@ -392,8 +433,12 @@ struct Renderer {
                         extract.faceOffset(slot),
                         tasksLen,
                         slot);
-                    tasksLen++;
-                    slotGeneration[chunkId] = c.generation;
+                    tasksLen = tasksLen + 1;
+                    ChunkSlot extracted;
+                    extracted.slot = slot;
+                    extracted.generation = c.generation;
+                    extracted.hasData = true;
+                    chunkSlots.set(chunkId, extracted);
                     slotHasData = true;
                 }
 
@@ -404,7 +449,8 @@ struct Renderer {
                 if (!nodeUploaded) {
                     foreach (col; 0 .. 4) {
                         foreach (row; 0 .. 4) {
-                            nodeTfLocal[thisNodeIndex * 16 + col * 4 + row] = nn.transform.mat.data[col][row];
+                            nodeTfLocal[thisNodeIndex * 16 + col * 4 + row] =
+                                nn.transform.mat.data[col][row];
                         }
                     }
                     nodeUploaded = true;
@@ -420,8 +466,9 @@ struct Renderer {
                 (cast(uint*) chunkInfoMapped)[slot] =
                     (vIdx & 31) | (cast(uint) nn.id.hashOf() << 5);
                 slotUsedBuf[slot] = true;
-                activeSlotsBuf[activeCount++] = slot;
-                inFrustumCount++;
+                activeSlotsBuf[activeCount] = slot;
+                activeCount = activeCount + 1;
+                inFrustumCount = inFrustumCount + 1;
             }
         }
         if (voxelsMapped !is null) {
@@ -435,16 +482,24 @@ struct Renderer {
             memcpy(extract.slotTasksMapped, slotTaskLocal.ptr, activeCount * 16);
         }
 
+        // A flat scan of the table rather than a walk over scattered nodes.
+        // Removals are collected first because backward-shift deletion moves
+        // entries around, which would disturb an in-progress scan.
         uint removeLen = 0;
-        foreach (cid, slot; slotMap) {
+        foreach (i; 0 .. chunkSlots.capacity) {
+            if (!chunkSlots.isFilled(i)) {
+                continue;
+            }
+            uint slot = chunkSlots.valueAt(i).slot;
             if (!slotUsedBuf[slot]) {
-                removeBuf[removeLen++] = cid;
-                freeSlotsBuf[freeCount++] = slot;
+                removeBuf[removeLen] = chunkSlots.keyAt(i);
+                removeLen = removeLen + 1;
+                freeSlotsBuf[freeCount] = slot;
+                freeCount = freeCount + 1;
             }
         }
         foreach (i; 0 .. removeLen) {
-            slotMap.remove(removeBuf[i]);
-            slotGeneration.remove(removeBuf[i]);
+            chunkSlots.remove(removeBuf[i]);
         }
 
         float[16] proj = frustum.projection(1.0e-4f);
@@ -462,7 +517,8 @@ struct Renderer {
                 if (nn.id == targetHit.chunk.node) {
                     float[16] chunkTf = matMul(
                         matToFlat(nn.transform.mat),
-                        matToFlat(vertexChunkToNode(targetHit.chunk.vertex)));
+                        matToFlat(vertexChunkToNode(targetHit.chunk.vertex)),
+                    );
                     targetMvp = matMul(vp, chunkTf);
                     targetVoxel = [
                         cast(float) targetHit.voxelCoords.data[0],
@@ -474,30 +530,35 @@ struct Renderer {
                 }
             }
         }
-        MonoTime a4 = MonoTime.currTime;
+        double a4 = nowMs();
 
-        float fogDensity = pow(log(1.0f / 1e-3f), 1.0f / 5.0f) / 75.0f;
+        float fogDensity = powf(logf(1.0f / 1e-3f), 1.0f / 5.0f) / 75.0f;
 
         float[4] lightCam = [0.3f, 0.8f, 0.4f, 0];
         float[4] lightNode;
         foreach (row; 0 .. 4) {
             lightNode[row] = 0;
             foreach (k; 0 .. 4) {
-                lightNode[row] += camPos.local.mat.data[k][row] * lightCam[k];
+                lightNode[row] = lightNode[row]
+                    + camPos.local.mat.data[k][row] * lightCam[k];
             }
         }
-        float llen = sqrt(
+        float llen = sqrtf(
             lightNode[0] * lightNode[0] +
             lightNode[1] * lightNode[1] +
             lightNode[2] * lightNode[2]);
         if (llen > 0) {
             foreach (i; 0 .. 3) {
-                lightNode[i] /= llen;
+                lightNode[i] = lightNode[i] / llen;
             }
         }
         lightNode[3] = 0;
+        float tripEnabled = 0.0f;
+        if (trip) {
+            tripEnabled = 1.0f;
+        }
         float[4] tripParams = [
-            trip ? 1.0f : 0.0f,
+            tripEnabled,
             tripGain,
             tripScale,
             cast(float) fieldMode,
@@ -509,26 +570,43 @@ struct Renderer {
             0,
         ];
         float[4] fieldInfo = [cast(float) producer, 0, 0, 0];
-        voxels.updateCommonUbo(core.device, vp, invp, fogDensity, time, lightNode,
-            rotBase, rotGain, tripParams, viewportParams, fieldInfo);
+        voxels.updateCommonUbo(
+            core.device,
+            vp,
+            invp,
+            fogDensity,
+            time,
+            lightNode,
+            rotBase,
+            rotGain,
+            tripParams,
+            viewportParams,
+            fieldInfo,
+        );
 
-        MonoTime a5 = MonoTime.currTime;
+        double a5 = nowMs();
 
         uint imageIndex = 0;
         if (!swapState.offscreen) {
-            VkResult acquireRes = vkAcquireNextImageKHR(core.device, swapState.swapchain, ulong.max,
-                swapState.imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+            VkResult acquireRes = vkAcquireNextImageKHR(
+                core.device,
+                swapState.swapchain,
+                ulong.max,
+                swapState.imageAvailableSemaphore,
+                VK_NULL_HANDLE,
+                &imageIndex,
+            );
             if (acquireRes == VkResult.VK_ERROR_OUT_OF_DATE_KHR) {
                 recreateSwapchain();
                 return;
             }
             if (acquireRes != VkResult.VK_SUCCESS && acquireRes != VkResult.VK_SUBOPTIMAL_KHR) {
-                writefln("vkAcquireNextImageKHR failed: %s", acquireRes);
+                printf("vkAcquireNextImageKHR failed: %d\n", cast(int) acquireRes);
                 return;
             }
         }
         vkResetFences(core.device, 1, &swapState.inFlightFence);
-        MonoTime a6 = MonoTime.currTime;
+        double a6 = nowMs();
 
         VkCommandBuffer cmd = swapState.commandBuffer;
         vkResetCommandBuffer(cmd, 0);
@@ -548,7 +626,11 @@ struct Renderer {
             extract.recordPackIndirect(cmd, activeSlots);
         }
 
-        field.recordSteps(cmd, trip ? producer : PRODUCER_NONE, dt);
+        uint activeProducer = PRODUCER_NONE;
+        if (trip) {
+            activeProducer = producer;
+        }
+        field.recordSteps(cmd, activeProducer, dt);
 
         VkClearValue[2] clears;
         clears[0].color.float32 = [0.5f, 0.65f, 0.9f, 1.0f];
@@ -627,9 +709,9 @@ struct Renderer {
         si.commandBufferCount = 1;
         si.pCommandBuffers = &cmd;
         vkQueueSubmit(core.graphicsQueue, 1, &si, swapState.inFlightFence);
-        MonoTime a7 = MonoTime.currTime;
+        double a7 = nowMs();
 
-        if (capturePath.length > 0 && !captureDone) {
+        if (capturePath !is null && !captureDone) {
             captureSwapchainImage(imageIndex);
         }
 
@@ -647,59 +729,62 @@ struct Renderer {
                 recreateSwapchain();
             }
         }
-        MonoTime a8 = MonoTime.currTime;
+        double a8 = nowMs();
 
         double[9] stages = [
-            (a1 - a0).total!"usecs" / 1000.0,
-            (a2 - a1).total!"usecs" / 1000.0,
-            (a3 - a2).total!"usecs" / 1000.0,
-            (a4 - a3).total!"usecs" / 1000.0,
-            (a5 - a4).total!"usecs" / 1000.0,
-            (a6 - a5).total!"usecs" / 1000.0,
-            (a7 - a6).total!"usecs" / 1000.0,
-            (a8 - a7).total!"usecs" / 1000.0,
-            (a8 - a0).total!"usecs" / 1000.0,
+            a1 - a0,
+            a2 - a1,
+            a3 - a2,
+            a4 - a3,
+            a5 - a4,
+            a6 - a5,
+            a7 - a6,
+            a8 - a7,
+            a8 - a0,
         ];
         foreach (i; 0 .. 9) {
-            stageSum[i] += stages[i];
+            stageSum[i] = stageSum[i] + stages[i];
             if (stages[i] > stageMax[i]) {
                 stageMax[i] = stages[i];
             }
         }
-        statFrames++;
+        statFrames = statFrames + 1;
 
         uint currentSecond = cast(uint) time;
-        if (lastLoggedSecond.isNull || currentSecond != lastLoggedSecond.get) {
+        if (!hasLoggedSecond || currentSecond != lastLoggedSecond) {
             lastLoggedSecond = currentSecond;
-
-            GC.ProfileStats gcStats = GC.profileStats();
-            ulong gcCollections = gcStats.numCollections;
-            ulong gcPauseUsecs = gcStats.totalPauseTime.total!"usecs";
-
-            string line = format("[t=%ss] frames=%d active=%d slots=%d graph=%d nearby=%d",
-                currentSecond, statFrames, activeCount, nextSlot, graph.len, cachedNodes.length);
-            foreach (i; 0 .. 9) {
-                line ~= format(" %s=%.1f/%.1f", STAGE_NAMES[i],
-                    statFrames > 0 ? stageSum[i] / statFrames : 0.0, stageMax[i]);
-            }
-            line ~= format(" | gc n=%d pause=%.1fms",
-                gcCollections - lastGcCollections,
-                (gcPauseUsecs - lastGcPauseUsecs) / 1000.0);
-            writeln(line);
-            stdout.flush();
-
-            lastGcCollections = gcCollections;
-            lastGcPauseUsecs = gcPauseUsecs;
-            stageSum[] = 0;
-            stageMax[] = 0;
-            statFrames = 0;
+            hasLoggedSecond = true;
+            reportStageTimings(currentSecond);
         }
     }
 
-    /// Debug readback of the just-rendered frame as a 32-bit BMP.
-    void captureSwapchainImage(uint imageIndex) {
-        import std.file : write;
+    void reportStageTimings(uint currentSecond) {
+        printf(
+            "[t=%us] frames=%u active=%u slots=%u graph=%zu nearby=%zu",
+            currentSecond,
+            statFrames,
+            activeCount,
+            nextSlot,
+            cast(size_t) graph.len,
+            cachedNodes.length,
+        );
+        foreach (i; 0 .. 9) {
+            double avg = 0;
+            if (statFrames > 0) {
+                avg = stageSum[i] / statFrames;
+            }
+            printf(" %s=%.1f/%.1f", STAGE_NAMES[i].ptr, avg, stageMax[i]);
+        }
+        printf("\n");
+        fflush(stdout);
 
+        stageSum[] = 0;
+        stageMax[] = 0;
+        statFrames = 0;
+    }
+
+    // Debug readback of the just-rendered frame as a 32-bit BMP.
+    void captureSwapchainImage(uint imageIndex) {
         vkWaitForFences(core.device, 1, &swapState.inFlightFence, 1, ulong.max);
 
         VkExtent2D ext = swapState.extent;
@@ -751,9 +836,10 @@ struct Renderer {
         toSrc.sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
         toSrc.srcAccessMask = VkAccessFlagBits.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
         toSrc.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        toSrc.oldLayout = swapState.offscreen
-            ? VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
-            : VkImageLayout.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        toSrc.oldLayout = VkImageLayout.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        if (swapState.offscreen) {
+            toSrc.oldLayout = VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        }
         toSrc.newLayout = VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
         toSrc.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         toSrc.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -803,7 +889,10 @@ struct Renderer {
         uint w = ext.width;
         uint h = ext.height;
         uint dataSize = w * h * 4;
-        ubyte[] bmp = new ubyte[54 + dataSize];
+        ubyte[] bmp = allocSlice!ubyte(54 + dataSize);
+        scope(exit) {
+            freeSlice(bmp);
+        }
         void put32(size_t off, uint v) {
             bmp[off] = v & 0xff;
             bmp[off + 1] = (v >> 8) & 0xff;
@@ -832,7 +921,7 @@ struct Renderer {
                     bmp[dstRow + x * 4 + 3] = pixels[srcRow + x * 4 + 3];
                 }
             } else {
-                bmp[dstRow .. dstRow + w * 4] = pixels[srcRow .. srcRow + w * 4];
+                memcpy(bmp.ptr + dstRow, pixels.ptr + srcRow, w * 4);
             }
         }
         vkUnmapMemory(core.device, mem);
@@ -840,8 +929,20 @@ struct Renderer {
         vkDestroyBuffer(core.device, buf, null);
         vkFreeMemory(core.device, mem, null);
 
-        write(capturePath, bmp);
-        writefln("captured frame -> %s (%dx%d format=%d)", capturePath, w, h, swapState.format);
+        FILE* target = fopen(capturePath, "wb");
+        if (target is null) {
+            printf("capture failed: cannot open %s\n", capturePath);
+            return;
+        }
+        fwrite(bmp.ptr, 1, bmp.length, target);
+        fclose(target);
+        printf(
+            "captured frame -> %s (%ux%u format=%d)\n",
+            capturePath,
+            w,
+            h,
+            cast(int) swapState.format,
+        );
         captureDone = true;
     }
 
@@ -855,9 +956,9 @@ struct Renderer {
     GraphCastHit castCenterRay(float reachDistance) {
         Ray ray = Ray.create(
             MPoint!float.origin(),
-            MVector!float(0, 0, -1, 0).normalizedDirection());
-        bool oob;
-        return rayCast(graph, camPos.node, camPos.local, ray, reachDistance, oob);
+            MVector!float(0, 0, -1, 0).normalizedDirection(),
+        );
+        return rayCast(graph, camPos.node, camPos.local, ray, reachDistance);
     }
 
     uint castHits;
@@ -866,25 +967,29 @@ struct Renderer {
     void breakBlock() {
         GraphCastHit hit = castCenterRay(reach);
         if (isNaN(hit.tanhDistance)) {
-            castMisses++;
-            writefln("break: miss (%d/%d hit)", castHits, castHits + castMisses);
+            castMisses = castMisses + 1;
+            printf("break: miss (%u/%u hit)\n", castHits, castHits + castMisses);
             return;
         }
-        castHits++;
+        castHits = castHits + 1;
         setVoxel(hit.chunk, hit.voxelCoords, Material.Void);
     }
 
     void placeBlock(ushort material) {
         GraphCastHit hit = castCenterRay(reach);
         if (isNaN(hit.tanhDistance)) {
-            castMisses++;
-            writefln("place: miss (%d/%d hit)", castHits, castHits + castMisses);
+            castMisses = castMisses + 1;
+            printf("place: miss (%u/%u hit)\n", castHits, castHits + castMisses);
             return;
         }
-        castHits++;
+        castHits = castHits + 1;
         ChunkId targetChunk = hit.chunk;
         Coords coords = hit.voxelCoords;
-        int stepped = coords[hit.faceAxis] + (hit.faceSign == CoordSign.Plus ? 1 : -1);
+        int faceStep = -1;
+        if (hit.faceSign == CoordSign.Plus) {
+            faceStep = 1;
+        }
+        int stepped = coords[hit.faceAxis] + faceStep;
         if (stepped >= 0 && stepped < dimension) {
             coords[hit.faceAxis] = cast(ubyte) stepped;
         } else {
@@ -904,8 +1009,8 @@ struct Renderer {
         setVoxel(targetChunk, coords, cast(Material) material);
     }
 
-    /// Write one voxel and keep the margin copies of adjacent chunks in sync
-    /// so their surfaces re-extract correctly when a boundary voxel changes.
+    // Write one voxel and keep the margin copies of adjacent chunks in sync
+    // so their surfaces re-extract correctly when a boundary voxel changes.
     bool setVoxel(ChunkId chunkId, Coords coords, Material material) {
         if (!graph.contains(chunkId.node)) {
             return false;
@@ -916,7 +1021,7 @@ struct Renderer {
         }
         ubyte dim = cast(ubyte) dimension;
         c.voxels.dataMut(dim)[coords.toIndex(dim)] = material;
-        c.generation++;
+        c.generation = c.generation + 1;
 
         foreach (dir; ChunkDirection.ALL) {
             if (coords[dir.axis] != Coords.boundaryCoord(dim, dir.sign)) {
@@ -931,7 +1036,7 @@ struct Renderer {
                 continue;
             }
             fixMargins(dim, chunkId.vertex, c.voxels, dir, nc.voxels);
-            nc.generation++;
+            nc.generation = nc.generation + 1;
         }
         return true;
     }
@@ -940,6 +1045,7 @@ struct Renderer {
         if (core.device !is null) {
             vkDeviceWaitIdle(core.device);
             highlight.cleanup(core.device);
+            chunkSlots.cleanup();
             chunkInfoBuf.cleanup(core.device);
             field.cleanup(core.device);
             fog.cleanup(core.device);
@@ -948,6 +1054,13 @@ struct Renderer {
             swapState.cleanup(core.device);
         }
         core.cleanup();
+        freeSlice(freeSlotsBuf);
+        freeSlice(activeSlotsBuf);
+        freeSlice(slotUsedBuf);
+        freeSlice(removeBuf);
+        freeSlice(tasksBuf);
+        freeSlice(nodeTfLocal);
+        freeSlice(slotTaskLocal);
     }
 }
 
@@ -962,8 +1075,8 @@ float[16] matToFlat(M)(M m) {
 }
 
 MIsometry!float rotationY(float angle) {
-    float c = cos(angle);
-    float s = sin(angle);
+    float c = cosf(angle);
+    float s = sinf(angle);
     Matrix4!float m;
     m.data[0][0] = c;
     m.data[2][0] = -s;
@@ -975,8 +1088,8 @@ MIsometry!float rotationY(float angle) {
 }
 
 MIsometry!float rotationX(float angle) {
-    float c = cos(angle);
-    float s = sin(angle);
+    float c = cosf(angle);
+    float s = sinf(angle);
     Matrix4!float m;
     m.data[0][0] = 1;
     m.data[1][1] = c;
@@ -988,8 +1101,8 @@ MIsometry!float rotationX(float angle) {
 }
 
 MIsometry!float rotationZ(float angle) {
-    float c = cos(angle);
-    float s = sin(angle);
+    float c = cosf(angle);
+    float s = sinf(angle);
     Matrix4!float m;
     m.data[0][0] = c;
     m.data[1][0] = -s;
@@ -1006,7 +1119,7 @@ float[16] matMul(float[16] a, float[16] b) {
         foreach (row; 0 .. 4) {
             float s = 0;
             foreach (k; 0 .. 4) {
-                s += a[k * 4 + row] * b[col * 4 + k];
+                s = s + a[k * 4 + row] * b[col * 4 + k];
             }
             r[col * 4 + row] = s;
         }

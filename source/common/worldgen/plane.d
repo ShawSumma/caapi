@@ -1,7 +1,8 @@
 module common.worldgen.plane;
 
-import std.math : asinh, log, exp, fabs, copysign;
-import common.dodeca : Side, Vertex, sideNormal, sideReflection, vertexChunkToNode;
+import core.stdc.math : asinhf, copysignf, expf, fabsf, logf;
+import common.dodeca : Side, Vertex, sideNormal, sideReflection;
+import common.dodeca : vertexChunkToNode;
 import common.math : Matrix4, MVector, MPoint, MDirection, MIsometry;
 
 struct Plane {
@@ -32,11 +33,10 @@ struct Plane {
     float distanceTo(const ref MPoint!float point) const {
         float mipVal = scaledNormal.mip(point.vec);
         if (exponent == 0.0f) {
-            return asinh(mipVal);
-        } else {
-            float mip2 = mipVal * 2.0f;
-            return (log(fabs(mip2)) + exponent) * copysign(1.0f, mip2);
+            return asinhf(mipVal);
         }
+        float mip2 = mipVal * 2.0f;
+        return (logf(fabsf(mip2)) + exponent) * copysignf(1.0f, mip2);
     }
 
     float distanceToChunk(Vertex chunk, float[3] coord) const {
@@ -49,9 +49,9 @@ struct Plane {
 
     Plane updateExponent() {
         Plane result = this;
-        while (fabs(result.scaledNormal.w) > 1.0e8f) {
-            result.scaledNormal = result.scaledNormal * exp(-16.0f);
-            result.exponent += 16.0f;
+        while (fabsf(result.scaledNormal.w) > 1.0e8f) {
+            result.scaledNormal = result.scaledNormal * expf(-16.0f);
+            result.exponent = result.exponent + 16.0f;
         }
         return result;
     }

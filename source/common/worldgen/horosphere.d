@@ -1,6 +1,6 @@
 module common.worldgen.horosphere;
 
-import std.math : sqrt;
+import core.stdc.math : sqrtf;
 import common.dodeca : vertexDualToChunkFactor;
 import common.math : MVector, MPoint, MDirection, MIsometry;
 import common.node : VoxelData;
@@ -24,7 +24,7 @@ struct Horosphere {
 
     void renormalize() {
         float[3] xyz = pos.xyz();
-        pos.w = sqrt(xyz[0] * xyz[0] + xyz[1] * xyz[1] + xyz[2] * xyz[2]);
+        pos.w = sqrtf(xyz[0] * xyz[0] + xyz[1] * xyz[1] + xyz[2] * xyz[2]);
     }
 
     Horosphere transform(const ref MIsometry!float iso) const {
@@ -46,7 +46,12 @@ struct HorosphereChunk {
                         cast(float) chunkSize * vertexDualToChunkFactor(),
                     ).normalizedPoint();
                     if (horosphere.containsPoint(pos)) {
-                        size_t idx = Coords([cast(ubyte) x, cast(ubyte) y, cast(ubyte) z]).toIndex(chunkSize);
+                        ubyte[3] voxel = [
+                            cast(ubyte) x,
+                            cast(ubyte) y,
+                            cast(ubyte) z,
+                        ];
+                        size_t idx = Coords(voxel).toIndex(chunkSize);
                         voxels.dataMut(chunkSize)[idx] = Material.RedSandstone;
                     }
                 }

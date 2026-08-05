@@ -1,6 +1,11 @@
 module common.world;
 
-/// Block materials
+// Block materials.
+//
+// DESIGN.md records that materials were rejected as a concept: a voxel is five
+// channels at three levels each, and the element it names is not derived from
+// its colour. This enum is what worldgen still writes, so it is vestigial and
+// wants replacing rather than extending.
 enum Material : ushort {
     Void = 0,
     Dirt = 1,

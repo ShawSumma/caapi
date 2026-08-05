@@ -1,6 +1,7 @@
 module common.node;
 
-import std.math : floor;
+import core.stdc.math : floorf;
+import common.array : allocSlice;
 import common.chunks : Chunks;
 import common.dodeca : Vertex, vertexDualToChunkFactor;
 import common.graph : NodeId;
@@ -15,7 +16,10 @@ struct ChunkId {
     }
 
     size_t toHash() const nothrow @safe {
-        return cast(size_t)(node.value[0] + node.value[1] * 0x9E3779B97F4A7C15 + cast(ulong) vertex * 0x517CC1B727220A95);
+        ulong mixed = node.value[0]
+            + node.value[1] * 0x9E3779B97F4A7C15
+            + cast(ulong) vertex * 0x517CC1B727220A95;
+        return cast(size_t) mixed;
     }
 }
 
@@ -29,7 +33,7 @@ struct ChunkLayout {
     }
 
     int dualToVoxel(float dualCoord) const {
-        float floorGridCoord = _floor(dualCoord * dualToGridFactor);
+        float floorGridCoord = floorOf(dualCoord * dualToGridFactor);
         if (!(floorGridCoord >= 0.0f && floorGridCoord < cast(float) dimension)) {
             return -1;
         }
@@ -40,8 +44,8 @@ struct ChunkLayout {
         return cast(float) gridCoord / dualToGridFactor;
     }
 
-    static float _floor(float x) {
-        return floor(x);
+    static float floorOf(float x) {
+        return floorf(x);
     }
 }
 
@@ -78,10 +82,12 @@ struct VoxelData {
         }
     }
 
+    // Promoting a solid chunk to dense allocates its voxel block. Chunks live
+    // as long as their node, so this is released by the graph, not here.
     Material[] dataMut(ubyte dimension) {
         if (kind == Kind.Solid) {
             size_t sz = (cast(size_t) dimension + 2) ^^ 3;
-            denseData = new Material[sz];
+            denseData = allocSlice!Material(sz);
             denseData[] = solidMaterial;
             kind = Kind.Dense;
         }

@@ -1,14 +1,15 @@
 module common.character_controller.vector_bounds;
 
+import common.array : Array;
 import common.math : projectToPlane;
-import std.math : sqrt;
+import core.stdc.math : sqrtf;
 
 float dot3(const float[3] a, const float[3] b) {
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
 float magnitude3(const float[3] v) {
-    return sqrt(dot3(v, v));
+    return sqrtf(dot3(v, v));
 }
 
 float[3] normalize3(const float[3] v) {
@@ -73,31 +74,44 @@ struct VectorBound {
         if (frontFacing) {
             return d >= errorMargin * 0.5f;
         }
-        else {
-            return d <= errorMargin * 1.5f;
-        }
+        return d <= errorMargin * 1.5f;
     }
 
-    VectorBound* getSelfConstrainedWithBound(const ref VectorBound bound, ref VectorBound result) const {
+    // Returns an invalid result rather than a null pointer into caller
+    // storage, so there is no output parameter to keep alive.
+    SelfConstrainedBound getSelfConstrainedWithBound(const ref VectorBound bound) const {
+        SelfConstrainedBound result;
+
         float[3] orthoProjDir = projectionDirection;
         projectToPlane(orthoProjDir, bound.normal, bound.projectionDirection, 0.0f);
 
         float m = magnitude3(orthoProjDir);
         if (m < 1e-5) {
-            return null;
+            return result;
         }
 
-        result = VectorBound(normal, [orthoProjDir[0] / m, orthoProjDir[1] / m, orthoProjDir[2] / m], frontFacing);
-        return &result;
+        float[3] dir = [
+            orthoProjDir[0] / m,
+            orthoProjDir[1] / m,
+            orthoProjDir[2] / m,
+        ];
+        result.valid = true;
+        result.bound = VectorBound(normal, dir, frontFacing);
+        return result;
     }
+}
+
+struct SelfConstrainedBound {
+    bool valid;
+    VectorBound bound;
 }
 
 struct BoundedVectors {
     float[3] displacement;
     float[3] velocity;
     bool hasVelocity;
-    VectorBound[] bounds;
-    VectorBound[] tempBounds;
+    Array!VectorBound bounds;
+    Array!VectorBound tempBounds;
     float errorMargin;
 
     static BoundedVectors create(float[3] disp, bool hasVel, float[3] vel = zero3()) {
@@ -105,10 +119,13 @@ struct BoundedVectors {
         bv.displacement = disp;
         bv.velocity = vel;
         bv.hasVelocity = hasVel;
-        bv.bounds = [];
-        bv.tempBounds = [];
         bv.errorMargin = magnitude3(disp) * 1e-4f;
         return bv;
+    }
+
+    void release() {
+        bounds.release();
+        tempBounds.release();
     }
 
     float[3] getDisplacement() const {
@@ -117,7 +134,7 @@ struct BoundedVectors {
 
     void scaleDisplacement(float scaleFactor) {
         displacement = scale3(displacement, scaleFactor);
-        errorMargin *= scaleFactor;
+        errorMargin = errorMargin * scaleFactor;
     }
 
     float[3] getVelocity() const {
@@ -125,21 +142,21 @@ struct BoundedVectors {
     }
 
     const(VectorBound)[] getBounds() const {
-        return bounds;
+        return bounds.slice();
     }
 
     void addBound(VectorBound newBound) {
         applyBound(newBound);
-        bounds ~= newBound;
+        bounds.push(newBound);
     }
 
     void addTempBound(VectorBound newBound) {
         applyBound(newBound);
-        tempBounds ~= newBound;
+        tempBounds.push(newBound);
     }
 
     void clearTempBounds() {
-        tempBounds.length = 0;
+        tempBounds.clear();
     }
 
     BoundedVectors dup() const {
@@ -147,8 +164,8 @@ struct BoundedVectors {
         result.displacement = displacement;
         result.velocity = velocity;
         result.hasVelocity = hasVelocity;
-        result.bounds = bounds.dup;
-        result.tempBounds = tempBounds.dup;
+        result.bounds = bounds.dup();
+        result.tempBounds = tempBounds.dup();
         result.errorMargin = errorMargin;
         return result;
     }
@@ -165,25 +182,13 @@ struct BoundedVectors {
             return;
         }
 
-        foreach (ref bound; allBoundsRange()) {
-            if (bound.checkVector(displacement, errorMargin)) {
-                continue;
+        foreach (i; 0 .. bounds.length()) {
+            if (tryOrthogonalTo(bounds[i], newBound)) {
+                return;
             }
-
-            VectorBound orthoBoundStorage;
-            VectorBound* orthoBound = bound.getSelfConstrainedWithBound(newBound, orthoBoundStorage);
-            if (orthoBound is null) {
-                continue;
-            }
-
-            float[3] candidate = displacement;
-            orthoBound.constrainVector(candidate, errorMargin);
-
-            if (allBoundsSatisfiedFor(candidate)) {
-                displacement = candidate;
-                if (hasVelocity) {
-                    orthoBound.constrainVector(velocity, 0.0f);
-                }
+        }
+        foreach (i; 0 .. tempBounds.length()) {
+            if (tryOrthogonalTo(tempBounds[i], newBound)) {
                 return;
             }
         }
@@ -194,36 +199,48 @@ struct BoundedVectors {
         }
     }
 
-    bool allBoundsSatisfied() const {
-        foreach (ref b; bounds) {
-            if (!b.checkVector(displacement, errorMargin)) {
-                return false;
-            }
+    // Slides along the intersection of an already-violated bound and the one
+    // just added. Reports whether that intersection satisfied every bound.
+    bool tryOrthogonalTo(const ref VectorBound bound, const ref VectorBound newBound) {
+        if (bound.checkVector(displacement, errorMargin)) {
+            return false;
         }
-        foreach (ref b; tempBounds) {
-            if (!b.checkVector(displacement, errorMargin)) {
-                return false;
-            }
+
+        SelfConstrainedBound ortho = bound.getSelfConstrainedWithBound(newBound);
+        if (!ortho.valid) {
+            return false;
+        }
+
+        float[3] candidate = displacement;
+        ortho.bound.constrainVector(candidate, errorMargin);
+
+        if (!allBoundsSatisfiedFor(candidate)) {
+            return false;
+        }
+
+        displacement = candidate;
+        if (hasVelocity) {
+            ortho.bound.constrainVector(velocity, 0.0f);
         }
         return true;
+    }
+
+    bool allBoundsSatisfied() const {
+        return allBoundsSatisfiedFor(displacement);
     }
 
     bool allBoundsSatisfiedFor(const float[3] candidate) const {
-        foreach (ref b; bounds) {
-            if (!b.checkVector(candidate, errorMargin)) {
+        foreach (i; 0 .. bounds.length()) {
+            if (!bounds[i].checkVector(candidate, errorMargin)) {
                 return false;
             }
         }
-        foreach (ref b; tempBounds) {
-            if (!b.checkVector(candidate, errorMargin)) {
+        foreach (i; 0 .. tempBounds.length()) {
+            if (!tempBounds[i].checkVector(candidate, errorMargin)) {
                 return false;
             }
         }
         return true;
-    }
-
-    const(VectorBound)[] allBoundsRange() const {
-        return bounds ~ tempBounds;
     }
 }
 

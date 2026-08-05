@@ -1,32 +1,44 @@
 module common.graph_entities;
 
+import common.array : Array;
 import common.graph : NodeId;
+import common.hash_map : HashMap;
 
 alias Entity = ulong;
 
 struct GraphEntities {
-    Entity[][NodeId] map;
+    HashMap!(NodeId, Array!Entity) map;
 
-    Entity[] get(NodeId node) {
-        if (Entity[]* p = node in map) {
-            return *p;
+    void release() {
+        foreach (ref node, ref list; map) {
+            list.release();
         }
-        return [];
+        map.release();
+    }
+
+    const(Entity)[] get(NodeId node) {
+        Array!Entity* list = node in map;
+        if (list is null) {
+            return null;
+        }
+        return list.slice();
     }
 
     void insert(NodeId node, Entity entity) {
-        map.require(node) ~= entity;
+        Array!Entity* list = map.require(node, Array!Entity.init);
+        list.push(entity);
     }
 
+    // Order is not preserved: the last entity is swapped into the gap.
     void remove(NodeId node, Entity entity) {
-        Entity[]* p = node in map;
-        assert(p !is null);
-        Entity[] vec = *p;
-        foreach (i, e; vec) {
-            if (e == entity) {
-                vec[i] = vec[$ - 1];
-                (*p) = vec[0 .. $ - 1];
-                if ((*p).length == 0) {
+        Array!Entity* list = node in map;
+        assert(list !is null, "no entities at this node");
+        foreach (i; 0 .. list.length()) {
+            if ((*list)[i] == entity) {
+                (*list)[i] = (*list)[list.length() - 1];
+                list.count = list.count - 1;
+                if (list.empty()) {
+                    list.release();
                     map.remove(node);
                 }
                 return;
