@@ -107,12 +107,17 @@ struct WorldgenDriver {
     // resumes from a cursor with a per-frame node budget instead.
     uint scanCursor;
     uint scanVersion;
-    enum uint MAX_SCAN_NODES_PER_FRAME = 4096;
-    enum uint MAX_REQUESTS_PER_FRAME = 32;
+    enum uint MAX_SCAN_NODES_PER_FRAME = 16384;
+    // A worker generates a chunk in ~0.03ms, so eight of them can absorb far
+    // more than the old 32/frame: that cap fed them ~4k chunks/sec at 120fps
+    // while they could take an order of magnitude more. Integration on the
+    // main thread is ~0.002ms per chunk, so a full batch costs well under a
+    // millisecond.
+    enum uint MAX_REQUESTS_PER_FRAME = 512;
 
     // Enough to keep every worker busy between frames without flooding the
     // queue with chunks the camera may move away from.
-    enum uint MAX_IN_FLIGHT = 128;
+    enum uint MAX_IN_FLIGHT = 2048;
 
     static WorldgenDriver create() {
         WorldgenDriver w;
