@@ -31,8 +31,16 @@ import common.traversal : ensureAndCollectNearby, NearbyNode, NearbyScratch;
 import common.margins : fixMargins, neighborAxisPermutation;
 import common.voxel_math : ChunkDirection, Coords, CoordSign;
 import common.world : Material;
+import common.worldgen : ChunkParams, chunkRngSeed, generateVoxels;
+import common.node : VoxelData;
+import client.graphics.voxels.worldgen_gpu : WorldgenGpu, WorldgenParamsGPU;
 
 enum float PI = 3.14159265358979323846f;
+
+size_t voxelIndexOf(ubyte dim, size_t x, size_t y, size_t z) {
+    size_t lwm = cast(size_t) dim + 2;
+    return (x + 1) + (y + 1) * lwm + (z + 1) * lwm * lwm;
+}
 
 bool isNaN(float v) {
     return v != v;
@@ -998,6 +1006,111 @@ struct Renderer {
             cast(int) swapState.format,
         );
         captureDone = true;
+    }
+
+    // Generates every chunk in range both ways and compares voxel for voxel.
+    // Trees are excluded: they are a sequential, order-dependent pass on the
+    // CPU and are not in the shader yet, so chunks containing them are counted
+    // separately rather than silently reported as failures.
+    void compareWorldgen(float radius) {
+        WorldgenGpu gpu;
+        if (!gpu.init(core.physicalDevice, core.device, core.graphicsQueueFamily,
+                dimension)) {
+            printf("gpucheck: GPU worldgen init failed\n");
+            return;
+        }
+        scope(exit) {
+            gpu.cleanup(core.device);
+        }
+
+        MIsometry!float identity = MIsometry!float.identity();
+        NearbyScratch scratch;
+        scope(exit) {
+            scratch.release();
+        }
+        NearbyNode[] nearby =
+            ensureAndCollectNearby(scratch, graph, NodeId.ROOT, identity, radius);
+
+        ubyte dim = cast(ubyte) dimension;
+        size_t padded = cast(size_t) dim + 2;
+        size_t voxelCount = padded * padded * padded;
+
+        size_t chunksChecked = 0;
+        size_t chunksMatching = 0;
+        size_t chunksWithTrees = 0;
+        size_t totalVoxelMismatches = 0;
+        size_t firstBadChunk = size_t.max;
+        uint firstBadCpu = 0;
+        uint firstBadGpu = 0;
+        size_t firstBadIndex = 0;
+
+        foreach (ref nn; nearby) {
+            foreach (vIdx; 0 .. 20) {
+                Vertex vertex = cast(Vertex) vIdx;
+                ChunkId chunkId = ChunkId(nn.id, vertex);
+                ChunkParams cp = ChunkParams.create(graph, chunkId);
+
+                VoxelData cpuVoxels = generateVoxels(cp);
+                WorldgenParamsGPU gp = WorldgenGpu.buildParams(cp, chunkRngSeed(cp));
+                const(uint)[] gpuVoxels = gpu.generate(core.device, core.graphicsQueue, gp);
+
+                chunksChecked = chunksChecked + 1;
+
+                // Interior only: the margin ring is filled by a separate
+                // initializeMargins pass on the CPU that the shader does not
+                // reproduce.
+                bool hasTrees = false;
+                size_t mismatches = 0;
+                foreach (x; 0 .. dim) {
+                    foreach (y; 0 .. dim) {
+                        foreach (z; 0 .. dim) {
+                            size_t i = voxelIndexOf(dim, x, y, z);
+                            uint cpuMat = cast(uint) cpuVoxels.get(i);
+                            uint gpuMat = gpuVoxels[i];
+                            if (cpuMat == cast(uint) Material.Wood
+                                    || cpuMat == cast(uint) Material.Leaves) {
+                                hasTrees = true;
+                            }
+                            if (cpuMat != gpuMat) {
+                                mismatches = mismatches + 1;
+                                if (firstBadChunk == size_t.max) {
+                                    firstBadChunk = chunksChecked - 1;
+                                    firstBadCpu = cpuMat;
+                                    firstBadGpu = gpuMat;
+                                    firstBadIndex = i;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (hasTrees) {
+                    chunksWithTrees = chunksWithTrees + 1;
+                }
+                if (mismatches == 0) {
+                    chunksMatching = chunksMatching + 1;
+                }
+                totalVoxelMismatches = totalVoxelMismatches + mismatches;
+            }
+        }
+
+        printf(
+            "gpucheck: chunks=%zu matching=%zu withTrees=%zu voxelMismatches=%zu\n",
+            chunksChecked,
+            chunksMatching,
+            chunksWithTrees,
+            totalVoxelMismatches,
+        );
+        if (firstBadChunk != size_t.max) {
+            printf(
+                "gpucheck: first mismatch chunk=%zu voxel=%zu cpu=%u gpu=%u\n",
+                firstBadChunk,
+                firstBadIndex,
+                firstBadCpu,
+                firstBadGpu,
+            );
+        }
+        fflush(stdout);
     }
 
     void recreateSwapchain() {

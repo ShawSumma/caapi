@@ -1,0 +1,430 @@
+#version 450
+
+// GPU port of common.worldgen.generateVoxels. This must produce byte-identical
+// output to the CPU generator; --gpucheck compares them chunk by chunk.
+//
+// The CPU draws from one sequential RNG advanced per voxel in x,y,z order,
+// six draws each (three rngNormal calls, two draws apiece). splitmix64
+// advances its state by a fixed constant per draw, so draw k is a pure
+// function of state0 + k*GOLDEN and each invocation can jump straight to its
+// own voxel's position in the stream.
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+// Matches the CPU's terrain early-outs, decided host-side because they depend
+// on whole-chunk values rather than per-voxel ones.
+const uint TERRAIN_DENSE = 0u;
+const uint TERRAIN_SOLID_VOID = 1u;
+const uint TERRAIN_SOLID_DIRT = 2u;
+
+const uint MAT_VOID = 0u;
+const uint MAT_DIRT = 1u;
+const uint MAT_WOOD = 25u;
+const uint MAT_LEAVES = 26u;
+const uint MAT_WOOD_PLANKS = 27u;
+const uint MAT_GREY_BRICK = 28u;
+const uint MAT_WHITE_BRICK = 29u;
+
+const float TERRAIN_SURFACE_THICKNESS = 0.2;
+const uint VORONOI_ENTRIES = 113u;
+
+layout(set = 0, binding = 0) uniform Params {
+    mat4 chunkToNode;
+    vec4 surfaceNormal;
+    vec4 roadNormal;
+    // x: dimension, y: surface exponent, z: road exponent, w: terrain smoothness
+    vec4 scalars;
+    // x: terrain mode, y: isRoad, z: isRoadSupport, w: tree candidate count
+    uvec4 flags;
+    uvec4 rngSeed;
+    vec4 elev0;
+    vec4 elev1;
+    vec4 temp0;
+    vec4 temp1;
+    vec4 rain0;
+    vec4 rain1;
+    vec4 block0;
+    vec4 block1;
+} params;
+
+struct VoronoiEntry {
+    float rain;
+    float temp;
+    uint material;
+    uint pad;
+};
+
+layout(set = 0, binding = 1) readonly buffer VoronoiTable {
+    VoronoiEntry entries[];
+} voronoi;
+
+layout(set = 1, binding = 0) buffer Voxels {
+    uint data[];
+} voxels;
+
+// 64-bit helpers. Metal has no native 64-bit integer, so a u64 is a uvec2 of
+// (low, high).
+uvec2 u64Add(uvec2 a, uvec2 b) {
+    uint low = a.x + b.x;
+    uint carry = (low < a.x) ? 1u : 0u;
+    return uvec2(low, a.y + b.y + carry);
+}
+
+uvec2 u64Xor(uvec2 a, uvec2 b) {
+    return uvec2(a.x ^ b.x, a.y ^ b.y);
+}
+
+uvec2 u64Shr(uvec2 a, uint n) {
+    if (n == 0u) {
+        return a;
+    }
+    if (n < 32u) {
+        return uvec2((a.x >> n) | (a.y << (32u - n)), a.y >> n);
+    }
+    return uvec2(a.y >> (n - 32u), 0u);
+}
+
+uvec2 u64Mul(uvec2 a, uvec2 b) {
+    uint lowHigh;
+    uint lowLow;
+    umulExtended(a.x, b.x, lowHigh, lowLow);
+    uint high = lowHigh + a.x * b.y + a.y * b.x;
+    return uvec2(lowLow, high);
+}
+
+const uvec2 GOLDEN = uvec2(0x7f4a7c15u, 0x9e3779b9u);
+const uvec2 MIX_A = uvec2(0x1ce4e5b9u, 0xbf58476du);
+const uvec2 MIX_B = uvec2(0x133111ebu, 0x94d049bbu);
+
+// splitmix64's finalizer applied to a state that already includes the
+// increment, so callers can index the stream directly.
+uvec2 splitMix(uvec2 state) {
+    uvec2 z = state;
+    z = u64Mul(u64Xor(z, u64Shr(z, 30u)), MIX_A);
+    z = u64Mul(u64Xor(z, u64Shr(z, 27u)), MIX_B);
+    return u64Xor(z, u64Shr(z, 31u));
+}
+
+uvec2 u64MulSmall(uvec2 a, uint k) {
+    return u64Mul(a, uvec2(k, 0u));
+}
+
+// The k-th draw (1-based) from a stream seeded with `seed`.
+uvec2 drawAt(uvec2 seed, uint k) {
+    return splitMix(u64Add(seed, u64MulSmall(GOLDEN, k)));
+}
+
+float u24FromHigh(uvec2 v) {
+    // (v >> 40) as a float: take the top 24 bits of the high word.
+    return float(v.y >> 8);
+}
+
+// Mirrors rngNormal: two draws, Box-Muller.
+float normalAt(uvec2 seed, uint drawIndex, float stddev) {
+    uvec2 v1 = drawAt(seed, drawIndex + 1u);
+    uvec2 v2 = drawAt(seed, drawIndex + 2u);
+    float u1 = (u24FromHigh(v1) + 1.0) / (16777216.0 + 2.0);
+    float u2 = u24FromHigh(v2) / 16777216.0;
+    return sqrt(-2.0 * log(u1)) * cos(2.0 * 3.14159265358979323846 * u2) * stddev;
+}
+
+float mip(vec4 a, vec4 b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z - a.w * b.w;
+}
+
+vec4 normalizedPoint(vec4 v) {
+    float scaleSq = -mip(v, v);
+    if (scaleSq <= 0.0) {
+        return vec4(0.0, 0.0, 0.0, 1.0);
+    }
+    return v / sqrt(scaleSq);
+}
+
+float planeDistance(vec4 planeNormal, float exponent, vec4 point) {
+    float mipVal = mip(planeNormal, point);
+    if (exponent == 0.0) {
+        return asinh(mipVal);
+    }
+    float mip2 = mipVal * 2.0;
+    float sign = (mip2 < 0.0) ? -1.0 : 1.0;
+    return (log(abs(mip2)) + exponent) * sign;
+}
+
+float distanceToChunk(vec4 planeNormal, float exponent, vec3 coord) {
+    vec4 transformed = params.chunkToNode * vec4(coord, 1.0);
+    return planeDistance(planeNormal, exponent, normalizedPoint(transformed));
+}
+
+float lerp1(float v0, float v1, float s) {
+    return v0 * (1.0 - s) + v1 * s;
+}
+
+float bilerp1(float v00, float v01, float v10, float v11, float tx, float ty) {
+    return lerp1(lerp1(v00, v01, tx), lerp1(v10, v11, tx), ty);
+}
+
+// `a` holds values[0..3], `b` holds values[4..7]. The CPU pairs them as
+// bilerp(v0, v4, v2, v6) and bilerp(v1, v5, v3, v7); keep that exactly.
+float trilerp(vec4 a, vec4 b, vec3 t) {
+    float lo = bilerp1(a.x, b.x, a.z, b.z, t.x, t.y);
+    float hi = bilerp1(a.y, b.y, a.w, b.w, t.x, t.y);
+    return lerp1(lo, hi, t.z);
+}
+
+float serp(float v0, float v1, float t, float threshold) {
+    if (t < threshold) {
+        return v0;
+    }
+    if (t < 1.0 - threshold) {
+        float s = (t - threshold) / ((1.0 - threshold) - threshold);
+        return v0 * (1.0 - s) + v1 * s;
+    }
+    return v1;
+}
+
+float terracingDiff(float elevRaw, float block, float scale, float strength, float limiter) {
+    float threshold = strength / (1.0 + pow(2.0, limiter - block));
+    float elevFloor = floor(elevRaw / scale);
+    float elevRem = elevRaw / scale - elevFloor;
+    return scale * elevFloor + serp(0.0, scale, elevRem, threshold) - elevRaw;
+}
+
+uint voronoiStratum(float elev, float dist) {
+    if (dist <= TERRAIN_SURFACE_THICKNESS) {
+        if (elev < -30.0) {
+            return 4u;
+        }
+        if (elev < -12.0) {
+            return 5u;
+        }
+        if (elev < 2.0) {
+            return 6u;
+        }
+        return 7u;
+    }
+    if (elev < -30.0) {
+        return 3u;
+    }
+    if (elev < -12.0) {
+        return 2u;
+    }
+    if (elev < 2.0) {
+        return 1u;
+    }
+    return 0u;
+}
+
+uint terraingenVoronoi(float elev, float rain, float temp, float dist) {
+    uint base = voronoiStratum(elev, dist) * VORONOI_ENTRIES;
+    VoronoiEntry first = voronoi.entries[base];
+    float dr = first.rain - rain;
+    float dt = first.temp - temp;
+    float best = dr * dr + dt * dt;
+    uint mat = first.material;
+    // `<=` so the last minimum wins, matching the CPU loop.
+    for (uint i = 1u; i < VORONOI_ENTRIES; i = i + 1u) {
+        VoronoiEntry e = voronoi.entries[base + i];
+        float er = e.rain - rain;
+        float et = e.temp - temp;
+        float d = er * er + et * et;
+        if (d <= best) {
+            best = d;
+            mat = e.material;
+        }
+    }
+    return mat;
+}
+
+layout(push_constant) uniform Push {
+    // 0: terrain, road and support, parallel over voxels.
+    // 1: trees, which are order-dependent and run in a single invocation.
+    uint pass;
+} push;
+
+uint dim() {
+    return uint(params.scalars.x);
+}
+
+// 64-bit modulo by a small divisor, split into 32-bit pieces:
+// (hi*2^32 + lo) % m == ((hi%m)*(2^32%m) + lo%m) % m. With m small every
+// intermediate stays well inside 32 bits.
+uint u64ModSmall(uvec2 v, uint m) {
+    // 2^32 % m without a 64-bit type: 2^32 == 0xFFFFFFFF + 1.
+    uint twoPow32Mod = ((0xFFFFFFFFu % m) + 1u) % m;
+    return ((v.y % m) * twoPow32Mod + (v.x % m)) % m;
+}
+
+uint voxelIndex(uint x, uint y, uint z) {
+    uint lwm = dim() + 2u;
+    return (x + 1u) + (y + 1u) * lwm + (z + 1u) * lwm * lwm;
+}
+
+vec3 voxelCenter(uint x, uint y, uint z) {
+    float d = params.scalars.x;
+    return vec3((float(x) + 0.5) / d, (float(y) + 0.5) / d, (float(z) + 0.5) / d);
+}
+
+bool trussingAt(uint x, uint y, uint z) {
+    uint offset = dim() / 3u;
+    uint met = 0u;
+    met += (x == offset) ? 1u : 0u;
+    met += (y == offset) ? 1u : 0u;
+    met += (z == offset) ? 1u : 0u;
+    met += (x == y) ? 1u : 0u;
+    met += (y == z) ? 1u : 0u;
+    met += (x == z) ? 1u : 0u;
+    return met >= 2u;
+}
+
+const ivec3 TREE_OFFSETS[6] = ivec3[6](
+    ivec3(-1, 0, 0), ivec3(1, 0, 0),
+    ivec3(0, -1, 0), ivec3(0, 1, 0),
+    ivec3(0, 0, -1), ivec3(0, 0, 1)
+);
+
+bool isGroundMaterial(uint m) {
+    // Dirt, Grass, MudGrass, LushGrass, TanGrass, CoarseGrass.
+    return m == 1u || m == 38u || m == 37u || m == 36u || m == 35u || m == 34u;
+}
+
+uint voxelIndexSigned(int x, int y, int z) {
+    int lwm = int(dim()) + 2;
+    return uint((x + 1) + (y + 1) * lwm + (z + 1) * lwm * lwm);
+}
+
+// Replays generateTrees exactly. Each candidate consumes three draws whether
+// or not it plants anything, and a planted tree changes what later candidates
+// see, so this cannot be split across invocations.
+void runTrees() {
+    uint d = dim();
+    if (d <= 4u) {
+        return;
+    }
+    uint candidates = params.flags.w;
+    uvec2 seed = uvec2(params.rngSeed.x, params.rngSeed.y);
+    uint drawBase = d * d * d * 6u;
+    uint span = d - 2u;
+
+    for (uint k = 0u; k < candidates; k = k + 1u) {
+        uint base = drawBase + k * 3u;
+        int lx = int(1u + u64ModSmall(drawAt(seed, base + 1u), span));
+        int ly = int(1u + u64ModSmall(drawAt(seed, base + 2u), span));
+        int lz = int(1u + u64ModSmall(drawAt(seed, base + 3u), span));
+
+        uint locIdx = voxelIndexSigned(lx, ly, lz);
+        if (voxels.data[locIdx] != MAT_VOID) {
+            continue;
+        }
+
+        int numVoidNeighbors = 0;
+        int groundDir = -1;
+        for (int dd = 0; dd < 6; dd = dd + 1) {
+            ivec3 o = TREE_OFFSETS[dd];
+            uint nmat = voxels.data[voxelIndexSigned(lx + o.x, ly + o.y, lz + o.z)];
+            if (nmat == MAT_VOID) {
+                numVoidNeighbors = numVoidNeighbors + 1;
+            } else if (isGroundMaterial(nmat)) {
+                groundDir = dd;
+            }
+        }
+
+        if (numVoidNeighbors == 5 && groundDir >= 0) {
+            voxels.data[locIdx] = MAT_WOOD;
+            ivec3 o = TREE_OFFSETS[groundDir];
+            int ox = lx - o.x;
+            int oy = ly - o.y;
+            int oz = lz - o.z;
+            if (ox >= 0 && ox < int(d) && oy >= 0 && oy < int(d)
+                    && oz >= 0 && oz < int(d)) {
+                voxels.data[voxelIndexSigned(ox, oy, oz)] = MAT_LEAVES;
+            }
+        }
+    }
+}
+
+void main() {
+    uint d = dim();
+    if (push.pass == 1u) {
+        if (gl_GlobalInvocationID.x == 0u && gl_GlobalInvocationID.y == 0u
+                && gl_GlobalInvocationID.z == 0u) {
+            runTrees();
+        }
+        return;
+    }
+
+    uvec3 c = gl_GlobalInvocationID;
+    if (c.x >= d || c.y >= d || c.z >= d) {
+        return;
+    }
+
+    uint mode = params.flags.x;
+    bool isRoad = params.flags.y != 0u;
+    bool isRoadSupport = params.flags.z != 0u;
+    uint idx = voxelIndex(c.x, c.y, c.z);
+
+    uint mat = MAT_VOID;
+    if (mode == TERRAIN_SOLID_DIRT) {
+        mat = MAT_DIRT;
+    } else if (mode == TERRAIN_DENSE) {
+        vec3 center = voxelCenter(c.x, c.y, c.z);
+        vec3 t = (vec3(1.0) - center) * 0.5;
+
+        // Sequential draw position: voxels are visited x, then y, then z.
+        uint voxelOrdinal = c.x * d * d + c.y * d + c.z;
+        uint drawBase = voxelOrdinal * 6u;
+        uvec2 seed = uvec2(params.rngSeed.x, params.rngSeed.y);
+
+        float rain = trilerp(params.rain0, params.rain1, t)
+            + normalAt(seed, drawBase + 0u, 0.03);
+        float temp = trilerp(params.temp0, params.temp1, t)
+            + normalAt(seed, drawBase + 2u, 0.03);
+
+        float elevPre = trilerp(params.elev0, params.elev1, t);
+        float block = trilerp(params.block0, params.block1, t);
+        float smoothness = params.scalars.w;
+        float voxelElevation = distanceToChunk(
+            params.surfaceNormal, params.scalars.y, center);
+        float strength = 0.4 / (1.0 + voxelElevation * voxelElevation);
+        float terrSmall = terracingDiff(elevPre, block, 5.0, strength, 2.0);
+        float terrBig = terracingDiff(elevPre, block, 15.0, strength, -1.0);
+        float elevPreNoise = elevPre + 0.6 * terrSmall + 0.4 * terrBig;
+
+        float distPreNoise = elevPreNoise / smoothness - voxelElevation;
+        float elev = elevPreNoise + smoothness * normalAt(seed, drawBase + 4u, 0.03);
+
+        float dist;
+        if (distPreNoise > 0.0) {
+            float dd = elev / smoothness - voxelElevation;
+            dist = (dd > 0.0) ? dd : 0.0;
+        } else {
+            dist = distPreNoise;
+        }
+
+        if (dist >= 0.0) {
+            mat = terraingenVoronoi(elev, rain, temp, dist);
+        }
+    }
+
+    // Road and road support overwrite terrain, and never both apply.
+    if (isRoad) {
+        vec3 center = voxelCenter(c.x, c.y, c.z);
+        float horiz = distanceToChunk(params.roadNormal, params.scalars.z, center);
+        float elevation = distanceToChunk(
+            params.surfaceNormal, params.scalars.y, center);
+        if (horiz <= 0.3 && elevation <= 0.9) {
+            uint roadMat = MAT_VOID;
+            if (elevation < 0.075) {
+                roadMat = (horiz < 0.15) ? MAT_WHITE_BRICK : MAT_GREY_BRICK;
+            }
+            mat = roadMat;
+        }
+    } else if (isRoadSupport && mode != TERRAIN_SOLID_DIRT) {
+        vec3 center = voxelCenter(c.x, c.y, c.z);
+        float horiz = distanceToChunk(params.roadNormal, params.scalars.z, center);
+        if (horiz <= 0.3 && trussingAt(c.x, c.y, c.z)) {
+            mat = MAT_WOOD_PLANKS;
+        }
+    }
+
+    voxels.data[idx] = mat;
+}

@@ -58,6 +58,39 @@ Material terraingenVoronoi(float elev, float rain, float temp, float dist) {
     return voxelMat;
 }
 
+enum size_t VORONOI_STRATA = 8;
+enum size_t VORONOI_ENTRIES = 113;
+enum size_t VORONOI_TABLE_LENGTH = VORONOI_STRATA * VORONOI_ENTRIES;
+
+// Flattened for GPU upload. Stratum order must match the shader's:
+// GENERAL_HIGH, GENERAL_MED, GENERAL_LOW, GENERAL_DEEP,
+// SURFACE_DEEP, SURFACE_LOW, SURFACE_MED, SURFACE_HIGH.
+struct VoronoiEntryGPU {
+    float rain;
+    float temp;
+    uint material;
+    uint pad;
+}
+
+VoronoiEntryGPU[VORONOI_TABLE_LENGTH] buildVoronoiTableGPU() {
+    VoronoiEntryGPU[VORONOI_TABLE_LENGTH] result;
+    static immutable tables = [
+        &GENERAL_HIGH, &GENERAL_MED, &GENERAL_LOW, &GENERAL_DEEP,
+        &SURFACE_DEEP, &SURFACE_LOW, &SURFACE_MED, &SURFACE_HIGH,
+    ];
+    foreach (t; 0 .. VORONOI_STRATA) {
+        foreach (i; 0 .. VORONOI_ENTRIES) {
+            VoronoiInfo e = (*tables[t])[i];
+            result[t * VORONOI_ENTRIES + i] = VoronoiEntryGPU(
+                e.location[0], e.location[1], cast(uint) e.material, 0);
+        }
+    }
+    return result;
+}
+
+static immutable VoronoiEntryGPU[VORONOI_TABLE_LENGTH] VORONOI_TABLE_GPU =
+    buildVoronoiTableGPU();
+
 float sqr(float x) {
     return x * x;
 }

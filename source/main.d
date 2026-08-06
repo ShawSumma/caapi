@@ -112,6 +112,8 @@ void run(int argc, char** argv) {
     // Negative means "leave the renderer's default alone".
     float renderRadius = -1.0f;
     bool noVsync = false;
+    bool gpuCheck = false;
+    float gpuCheckRadius = 1.5f;
 
     foreach (i; 0 .. argc) {
         char* a = argv[i];
@@ -142,6 +144,11 @@ void run(int argc, char** argv) {
         }
         if (cstrEq(a, "--novsync")) {
             noVsync = true;
+        }
+        if (cstrEq(a, "--gpucheck")) {
+            gpuCheckRadius = argFloat(argc, argv, i + 1, 1.5f);
+            gpuCheck = true;
+            shotHiddenWindow = true;
         }
         if (cstrEq(a, "--headless")) {
             headlessMode = true;
@@ -293,6 +300,10 @@ void run(int argc, char** argv) {
     // Config reach is in voxel-meters; the caster wants the tanh of the
     // absolute hyperbolic distance.
     renderer.reach = tanhf(cfg.reach * simCfg.metersToAbsolute);
+    if (gpuCheck) {
+        renderer.compareWorldgen(gpuCheckRadius);
+        return;
+    }
     renderer.headless = headlessMode;
     if (renderRadius > 0) {
         renderer.renderRadius = renderRadius;

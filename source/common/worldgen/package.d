@@ -200,6 +200,12 @@ struct ChunkParams {
     }
 }
 
+// The seed for a chunk's noise stream. Shared so the GPU generator derives it
+// the same way rather than reimplementing it.
+ulong chunkRngSeed(const ref ChunkParams params) {
+    return hash(params.nodeSpice, params.chunk);
+}
+
 /// Generate voxels for a chunk
 VoxelData generateVoxels(const ref ChunkParams params) {
     if (params.flat) {
@@ -207,7 +213,7 @@ VoxelData generateVoxels(const ref ChunkParams params) {
     }
 
     VoxelData voxels = VoxelData.solid(Material.Void);
-    ulong rngState = hash(params.nodeSpice, params.chunk);
+    ulong rngState = chunkRngSeed(params);
 
     generateTerrain(params, voxels, rngState);
 
@@ -249,9 +255,19 @@ VoxelData generateFlatVoxels(const ref ChunkParams params) {
     return voxels;
 }
 
-void generateTerrain(const ref ChunkParams params, ref VoxelData voxels, ref ulong rng) {
-    ubyte dim = params.dimension;
+// Whether a chunk's terrain collapses to a single material before any
+// per-voxel work. Shared with the GPU generator, which needs the same answer
+// host-side because it depends on whole-chunk values rather than per-voxel
+// ones; keeping one implementation stops the two drifting.
+enum TerrainMode : uint {
+    Dense = 0,
+    SolidVoid = 1,
+    SolidDirt = 2,
+}
 
+enum float ELEVATION_MARGIN = 0.7f;
+
+TerrainMode terrainModeFor(const ref ChunkParams params) {
     float meMin = params.env.maxElevations[0];
     float meMax = params.env.maxElevations[0];
     foreach (me; params.env.maxElevations[1 .. $]) {
@@ -263,14 +279,25 @@ void generateTerrain(const ref ChunkParams params, ref VoxelData voxels, ref ulo
         }
     }
 
-    enum float ELEVATION_MARGIN = 0.7f;
-
     float centerElevation = params.surface.distanceToChunk(params.chunk, [0.5f, 0.5f, 0.5f]);
     if (centerElevation - ELEVATION_MARGIN > meMax / TERRAIN_SMOOTHNESS) {
+        return TerrainMode.SolidVoid;
+    }
+    if (centerElevation + ELEVATION_MARGIN < meMin / TERRAIN_SMOOTHNESS && !params.isRoad) {
+        return TerrainMode.SolidDirt;
+    }
+    return TerrainMode.Dense;
+}
+
+void generateTerrain(const ref ChunkParams params, ref VoxelData voxels, ref ulong rng) {
+    ubyte dim = params.dimension;
+
+    TerrainMode mode = terrainModeFor(params);
+    if (mode == TerrainMode.SolidVoid) {
         voxels = VoxelData.solid(Material.Void);
         return;
     }
-    if (centerElevation + ELEVATION_MARGIN < meMin / TERRAIN_SMOOTHNESS && !params.isRoad) {
+    if (mode == TerrainMode.SolidDirt) {
         voxels = VoxelData.solid(Material.Dirt);
         return;
     }
