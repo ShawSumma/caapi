@@ -32,6 +32,7 @@ import common.margins : fixMargins, neighborAxisPermutation;
 import common.voxel_math : ChunkDirection, Coords, CoordSign;
 import common.world : Material;
 import common.worldgen : ChunkParams, chunkRngSeed, generateVoxels;
+import common.margins : initializeMargins;
 import common.node : VoxelData;
 import client.graphics.voxels.worldgen_gpu : WorldgenGpu, WorldgenParamsGPU;
 
@@ -1056,17 +1057,26 @@ struct Renderer {
 
                 chunksChecked = chunksChecked + 1;
 
-                // Interior only: the margin ring is filled by a separate
-                // initializeMargins pass on the CPU that the shader does not
-                // reproduce.
+                // The margin ring stays on the host: it is 6*(dim+2)^2 plain
+                // copies against 1728 voxels of real work, so moving it to the
+                // GPU buys nothing. Run it over the GPU interior and compare
+                // the whole padded grid, so the combined path is what is
+                // being checked.
+                VoxelData gpuData = VoxelData.solid(Material.Void);
+                Material[] gpuDense = gpuData.dataMut(dim);
+                foreach (i; 0 .. voxelCount) {
+                    gpuDense[i] = cast(Material) gpuVoxels[i];
+                }
+                initializeMargins(dim, gpuData);
+
                 bool hasTrees = false;
                 size_t mismatches = 0;
-                foreach (x; 0 .. dim) {
-                    foreach (y; 0 .. dim) {
-                        foreach (z; 0 .. dim) {
-                            size_t i = voxelIndexOf(dim, x, y, z);
+                foreach (x; 0 .. voxelCount) {
+                    {
+                        {
+                            size_t i = x;
                             uint cpuMat = cast(uint) cpuVoxels.get(i);
-                            uint gpuMat = gpuVoxels[i];
+                            uint gpuMat = cast(uint) gpuData.get(i);
                             if (cpuMat == cast(uint) Material.Wood
                                     || cpuMat == cast(uint) Material.Leaves) {
                                 hasTrees = true;
@@ -1083,6 +1093,10 @@ struct Renderer {
                         }
                     }
                 }
+
+                freeSlice(gpuDense);
+                Material[] cpuDense = cpuVoxels.denseData;
+                freeSlice(cpuDense);
 
                 if (hasTrees) {
                     chunksWithTrees = chunksWithTrees + 1;
