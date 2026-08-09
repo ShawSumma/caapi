@@ -112,6 +112,7 @@ void run(int argc, char** argv) {
     // Negative means "leave the renderer's default alone".
     float renderRadius = -1.0f;
     bool noVsync = false;
+    bool gpuGen = false;
     bool gpuCheck = false;
     float gpuCheckRadius = 1.5f;
 
@@ -144,6 +145,9 @@ void run(int argc, char** argv) {
         }
         if (cstrEq(a, "--novsync")) {
             noVsync = true;
+        }
+        if (cstrEq(a, "--gpu-gen")) {
+            gpuGen = true;
         }
         if (cstrEq(a, "--gpucheck")) {
             gpuCheckRadius = argFloat(argc, argv, i + 1, 1.5f);
@@ -289,6 +293,7 @@ void run(int argc, char** argv) {
     Renderer renderer;
     renderer.swapState.offscreen = shotPath !is null && !shotHiddenWindow;
     renderer.swapState.preferImmediate = noVsync;
+    renderer.gpuWorldgen = gpuGen;
     if (!renderer.init(cast(void*) window)) {
         printf("Renderer initialization failed\n");
         return;

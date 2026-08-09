@@ -206,6 +206,52 @@ ulong chunkRngSeed(const ref ChunkParams params) {
     return hash(params.nodeSpice, params.chunk);
 }
 
+// Whether generateVoxels would hand back a solid chunk: the terrain collapsed
+// and nothing afterwards promoted it to dense. The renderer skips solid chunks
+// outright, so a GPU-generated chunk has to reach the same representation, not
+// merely the same voxel values.
+bool producesSolidChunk(const ref ChunkParams params) {
+    TerrainMode mode = terrainModeFor(params);
+    if (mode == TerrainMode.Dense) {
+        return false;
+    }
+    // generateRoad writes unconditionally, so a road chunk always goes dense.
+    if (params.isRoad) {
+        return false;
+    }
+    // Road support skips a solid non-void chunk but fills trussing into a
+    // solid void one.
+    if (params.isRoadSupport && mode == TerrainMode.SolidVoid) {
+        return false;
+    }
+    return true;
+}
+
+Material solidChunkMaterial(const ref ChunkParams params) {
+    if (terrainModeFor(params) == TerrainMode.SolidDirt) {
+        return Material.Dirt;
+    }
+    return Material.Void;
+}
+
+// Runs the tree pass over terrain produced elsewhere (the GPU). Trees are
+// sequential and order-dependent, so a single GPU thread has to walk hundreds
+// of dependent neighbour reads and the rest of the batch waits on it; the host
+// does the same work far faster.
+//
+// splitmix64 advances by a constant per draw, so the state terrain left behind
+// is just the seed plus its draw count. Only the dense path draws at all, and
+// only the dense path grows trees, which is why the mode is checked here.
+void generateTreesAfterTerrain(const ref ChunkParams params, ref VoxelData voxels) {
+    if (terrainModeFor(params) != TerrainMode.Dense) {
+        return;
+    }
+    ulong dim = params.dimension;
+    ulong drawsUsed = 6 * dim * dim * dim;
+    ulong rng = chunkRngSeed(params) + drawsUsed * 0x9e3779b97f4a7c15;
+    generateTrees(params, voxels, rng);
+}
+
 /// Generate voxels for a chunk
 VoxelData generateVoxels(const ref ChunkParams params) {
     if (params.flat) {

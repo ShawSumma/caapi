@@ -28,7 +28,7 @@ const uint MAT_WHITE_BRICK = 29u;
 const float TERRAIN_SURFACE_THICKNESS = 0.2;
 const uint VORONOI_ENTRIES = 113u;
 
-layout(set = 0, binding = 0) uniform Params {
+struct ChunkParamsGpu {
     mat4 chunkToNode;
     vec4 surfaceNormal;
     vec4 roadNormal;
@@ -45,7 +45,17 @@ layout(set = 0, binding = 0) uniform Params {
     vec4 rain1;
     vec4 block0;
     vec4 block1;
-} params;
+};
+
+// One entry per chunk in the batch. A storage buffer rather than a uniform so
+// the batch can be indexed directly, with no 256-byte dynamic-offset dance.
+layout(set = 0, binding = 2) readonly buffer ParamsBuf {
+    ChunkParamsGpu items[];
+} paramsBuf;
+
+// Per-invocation copies, set at the top of main.
+ChunkParamsGpu P;
+uint gVoxelBase;
 
 struct VoronoiEntry {
     float rain;
@@ -151,7 +161,7 @@ float planeDistance(vec4 planeNormal, float exponent, vec4 point) {
 }
 
 float distanceToChunk(vec4 planeNormal, float exponent, vec3 coord) {
-    vec4 transformed = params.chunkToNode * vec4(coord, 1.0);
+    vec4 transformed = P.chunkToNode * vec4(coord, 1.0);
     return planeDistance(planeNormal, exponent, normalizedPoint(transformed));
 }
 
@@ -214,16 +224,30 @@ uint voronoiStratum(float elev, float dist) {
     return 0u;
 }
 
+// The whole table is 8 strata x 113 entries x 16 bytes = ~14KB, and every
+// voxel scans all 113 of its stratum. Read straight from the storage buffer
+// that is 113 global loads per thread; staged in threadgroup memory once per
+// workgroup it is 904 loads shared by 64 threads.
+const uint VORONOI_TOTAL = 8u * VORONOI_ENTRIES;
+shared VoronoiEntry sharedVoronoi[VORONOI_TOTAL];
+
+void loadVoronoiShared() {
+    for (uint i = gl_LocalInvocationIndex; i < VORONOI_TOTAL; i = i + 64u) {
+        sharedVoronoi[i] = voronoi.entries[i];
+    }
+    barrier();
+}
+
 uint terraingenVoronoi(float elev, float rain, float temp, float dist) {
     uint base = voronoiStratum(elev, dist) * VORONOI_ENTRIES;
-    VoronoiEntry first = voronoi.entries[base];
+    VoronoiEntry first = sharedVoronoi[base];
     float dr = first.rain - rain;
     float dt = first.temp - temp;
     float best = dr * dr + dt * dt;
     uint mat = first.material;
     // `<=` so the last minimum wins, matching the CPU loop.
     for (uint i = 1u; i < VORONOI_ENTRIES; i = i + 1u) {
-        VoronoiEntry e = voronoi.entries[base + i];
+        VoronoiEntry e = sharedVoronoi[base + i];
         float er = e.rain - rain;
         float et = e.temp - temp;
         float d = er * er + et * et;
@@ -239,10 +263,18 @@ layout(push_constant) uniform Push {
     // 0: terrain, road and support, parallel over voxels.
     // 1: trees, which are order-dependent and run in a single invocation.
     uint pass;
+    // How many chunks are in this batch. One dispatch covers all of them:
+    // per-dispatch overhead dwarfs the work a single chunk represents.
+    uint count;
 } push;
 
 uint dim() {
-    return uint(params.scalars.x);
+    return uint(P.scalars.x);
+}
+
+uint paddedVoxelCount() {
+    uint l = dim() + 2u;
+    return l * l * l;
 }
 
 // 64-bit modulo by a small divisor, split into 32-bit pieces:
@@ -260,7 +292,7 @@ uint voxelIndex(uint x, uint y, uint z) {
 }
 
 vec3 voxelCenter(uint x, uint y, uint z) {
-    float d = params.scalars.x;
+    float d = P.scalars.x;
     return vec3((float(x) + 0.5) / d, (float(y) + 0.5) / d, (float(z) + 0.5) / d);
 }
 
@@ -300,8 +332,8 @@ void runTrees() {
     if (d <= 4u) {
         return;
     }
-    uint candidates = params.flags.w;
-    uvec2 seed = uvec2(params.rngSeed.x, params.rngSeed.y);
+    uint candidates = P.flags.w;
+    uvec2 seed = uvec2(P.rngSeed.x, P.rngSeed.y);
     uint drawBase = d * d * d * 6u;
     uint span = d - 2u;
 
@@ -311,7 +343,7 @@ void runTrees() {
         int ly = int(1u + u64ModSmall(drawAt(seed, base + 2u), span));
         int lz = int(1u + u64ModSmall(drawAt(seed, base + 3u), span));
 
-        uint locIdx = voxelIndexSigned(lx, ly, lz);
+        uint locIdx = gVoxelBase + voxelIndexSigned(lx, ly, lz);
         if (voxels.data[locIdx] != MAT_VOID) {
             continue;
         }
@@ -320,7 +352,7 @@ void runTrees() {
         int groundDir = -1;
         for (int dd = 0; dd < 6; dd = dd + 1) {
             ivec3 o = TREE_OFFSETS[dd];
-            uint nmat = voxels.data[voxelIndexSigned(lx + o.x, ly + o.y, lz + o.z)];
+            uint nmat = voxels.data[gVoxelBase + voxelIndexSigned(lx + o.x, ly + o.y, lz + o.z)];
             if (nmat == MAT_VOID) {
                 numVoidNeighbors = numVoidNeighbors + 1;
             } else if (isGroundMaterial(nmat)) {
@@ -336,30 +368,58 @@ void runTrees() {
             int oz = lz - o.z;
             if (ox >= 0 && ox < int(d) && oy >= 0 && oy < int(d)
                     && oz >= 0 && oz < int(d)) {
-                voxels.data[voxelIndexSigned(ox, oy, oz)] = MAT_LEAVES;
+                voxels.data[gVoxelBase + voxelIndexSigned(ox, oy, oz)] = MAT_LEAVES;
             }
         }
     }
 }
 
 void main() {
+    // Unconditional and before any return: barrier() has to be reached by
+    // every thread in the workgroup or the result is undefined.
+    loadVoronoiShared();
+
+    // The trees pass is one invocation per chunk; the terrain pass slices the
+    // batch along z, with groupsPerChunk workgroups of depth per chunk.
+    uint chunkIndex;
+    uvec3 c;
+    if (push.pass == 1u) {
+        // Flattened: the local size is 4x4x4, so gl_GlobalInvocationID.x alone
+        // only advances four per workgroup and would skip most of the batch.
+        chunkIndex = gl_WorkGroupID.x * 64u + gl_LocalInvocationIndex;
+        if (chunkIndex >= push.count) {
+            return;
+        }
+    } else {
+        uint anyDim = uint(paramsBuf.items[0].scalars.x);
+        uint groupsPerChunk = (anyDim + 3u) / 4u;
+        chunkIndex = gl_WorkGroupID.z / groupsPerChunk;
+        if (chunkIndex >= push.count) {
+            return;
+        }
+        c = uvec3(
+            gl_GlobalInvocationID.x,
+            gl_GlobalInvocationID.y,
+            (gl_WorkGroupID.z % groupsPerChunk) * 4u + gl_LocalInvocationID.z
+        );
+    }
+
+    P = paramsBuf.items[chunkIndex];
+    gVoxelBase = chunkIndex * paddedVoxelCount();
+
     uint d = dim();
     if (push.pass == 1u) {
-        if (gl_GlobalInvocationID.x == 0u && gl_GlobalInvocationID.y == 0u
-                && gl_GlobalInvocationID.z == 0u) {
-            runTrees();
-        }
+        runTrees();
         return;
     }
 
-    uvec3 c = gl_GlobalInvocationID;
     if (c.x >= d || c.y >= d || c.z >= d) {
         return;
     }
 
-    uint mode = params.flags.x;
-    bool isRoad = params.flags.y != 0u;
-    bool isRoadSupport = params.flags.z != 0u;
+    uint mode = P.flags.x;
+    bool isRoad = P.flags.y != 0u;
+    bool isRoadSupport = P.flags.z != 0u;
     uint idx = voxelIndex(c.x, c.y, c.z);
 
     uint mat = MAT_VOID;
@@ -372,18 +432,18 @@ void main() {
         // Sequential draw position: voxels are visited x, then y, then z.
         uint voxelOrdinal = c.x * d * d + c.y * d + c.z;
         uint drawBase = voxelOrdinal * 6u;
-        uvec2 seed = uvec2(params.rngSeed.x, params.rngSeed.y);
+        uvec2 seed = uvec2(P.rngSeed.x, P.rngSeed.y);
 
-        float rain = trilerp(params.rain0, params.rain1, t)
+        float rain = trilerp(P.rain0, P.rain1, t)
             + normalAt(seed, drawBase + 0u, 0.03);
-        float temp = trilerp(params.temp0, params.temp1, t)
+        float temp = trilerp(P.temp0, P.temp1, t)
             + normalAt(seed, drawBase + 2u, 0.03);
 
-        float elevPre = trilerp(params.elev0, params.elev1, t);
-        float block = trilerp(params.block0, params.block1, t);
-        float smoothness = params.scalars.w;
+        float elevPre = trilerp(P.elev0, P.elev1, t);
+        float block = trilerp(P.block0, P.block1, t);
+        float smoothness = P.scalars.w;
         float voxelElevation = distanceToChunk(
-            params.surfaceNormal, params.scalars.y, center);
+            P.surfaceNormal, P.scalars.y, center);
         float strength = 0.4 / (1.0 + voxelElevation * voxelElevation);
         float terrSmall = terracingDiff(elevPre, block, 5.0, strength, 2.0);
         float terrBig = terracingDiff(elevPre, block, 15.0, strength, -1.0);
@@ -408,9 +468,9 @@ void main() {
     // Road and road support overwrite terrain, and never both apply.
     if (isRoad) {
         vec3 center = voxelCenter(c.x, c.y, c.z);
-        float horiz = distanceToChunk(params.roadNormal, params.scalars.z, center);
+        float horiz = distanceToChunk(P.roadNormal, P.scalars.z, center);
         float elevation = distanceToChunk(
-            params.surfaceNormal, params.scalars.y, center);
+            P.surfaceNormal, P.scalars.y, center);
         if (horiz <= 0.3 && elevation <= 0.9) {
             uint roadMat = MAT_VOID;
             if (elevation < 0.075) {
@@ -420,11 +480,11 @@ void main() {
         }
     } else if (isRoadSupport && mode != TERRAIN_SOLID_DIRT) {
         vec3 center = voxelCenter(c.x, c.y, c.z);
-        float horiz = distanceToChunk(params.roadNormal, params.scalars.z, center);
+        float horiz = distanceToChunk(P.roadNormal, P.scalars.z, center);
         if (horiz <= 0.3 && trussingAt(c.x, c.y, c.z)) {
             mat = MAT_WOOD_PLANKS;
         }
     }
 
-    voxels.data[idx] = mat;
+    voxels.data[gVoxelBase + idx] = mat;
 }

@@ -63,10 +63,20 @@ struct WorldgenGpu {
 
     uint dimension;
     uint voxelCount;
+    uint batchCapacity;
+    uint pendingCount;
+    bool inFlight;
     bool ready;
 
-    bool init(VkPhysicalDevice phys, VkDevice device, uint queueFamily, uint dim) {
+    bool init(
+        VkPhysicalDevice phys,
+        VkDevice device,
+        uint queueFamily,
+        uint dim,
+        uint batchSize,
+    ) {
         dimension = dim;
+        batchCapacity = batchSize;
         uint padded = dim + 2;
         voxelCount = padded * padded * padded;
 
@@ -83,11 +93,11 @@ struct WorldgenGpu {
         }
 
         VkDescriptorSetLayoutBinding[2] pb;
-        pb[0].binding = 0;
-        pb[0].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        pb[0].binding = 1;
+        pb[0].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         pb[0].descriptorCount = 1;
         pb[0].stageFlags = VkShaderStageFlagBits.VK_SHADER_STAGE_COMPUTE_BIT;
-        pb[1].binding = 1;
+        pb[1].binding = 2;
         pb[1].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         pb[1].descriptorCount = 1;
         pb[1].stageFlags = VkShaderStageFlagBits.VK_SHADER_STAGE_COMPUTE_BIT;
@@ -114,7 +124,7 @@ struct WorldgenGpu {
         VkPushConstantRange pcr;
         pcr.stageFlags = VkShaderStageFlagBits.VK_SHADER_STAGE_COMPUTE_BIT;
         pcr.offset = 0;
-        pcr.size = 4;
+        pcr.size = 8;
         VkPipelineLayoutCreateInfo lci;
         lci.sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         lci.setLayoutCount = 2;
@@ -137,16 +147,14 @@ struct WorldgenGpu {
             return false;
         }
 
-        VkDescriptorPoolSize[2] sizes;
-        sizes[0].type = VkDescriptorType.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        sizes[0].descriptorCount = 1;
-        sizes[1].type = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        sizes[1].descriptorCount = 2;
+        VkDescriptorPoolSize sizes;
+        sizes.type = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        sizes.descriptorCount = 3;
         VkDescriptorPoolCreateInfo dpci;
         dpci.sType = VkStructureType.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         dpci.maxSets = 2;
-        dpci.poolSizeCount = 2;
-        dpci.pPoolSizes = sizes.ptr;
+        dpci.poolSizeCount = 1;
+        dpci.pPoolSizes = &sizes;
         vkCreateDescriptorPool(device, &dpci, null, &descPool);
 
         VkDescriptorSetAllocateInfo pai;
@@ -163,23 +171,23 @@ struct WorldgenGpu {
         vai.pSetLayouts = &voxelsLayout;
         vkAllocateDescriptorSets(device, &vai, &voxelsSet);
 
-        paramsBuf = GpuBuffer.createHostVisible(phys, device,
-            WorldgenParamsGPU.sizeof,
-            VkBufferUsageFlagBits.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
-        vkMapMemory(device, paramsBuf.memory, 0, WorldgenParamsGPU.sizeof, 0,
-            &paramsMapped);
+        ulong paramsBytes = cast(ulong) WorldgenParamsGPU.sizeof * batchCapacity;
+        paramsBuf = GpuBuffer.createHostVisible(phys, device, paramsBytes,
+            VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        vkMapMemory(device, paramsBuf.memory, 0, paramsBytes, 0, &paramsMapped);
 
         const(void)[] table = cast(const(void)[]) VORONOI_TABLE_GPU[];
         voronoiBuf = GpuBuffer.create(phys, device, table,
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
-        voxelsBuf = GpuBuffer.createZeroed(phys, device, voxelCount * 4,
+        ulong voxelBytes = cast(ulong) voxelCount * 4 * batchCapacity;
+        voxelsBuf = GpuBuffer.createZeroed(phys, device, voxelBytes,
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-        vkMapMemory(device, voxelsBuf.memory, 0, voxelCount * 4, 0, &voxelsMapped);
+        vkMapMemory(device, voxelsBuf.memory, 0, voxelBytes, 0, &voxelsMapped);
 
         VkDescriptorBufferInfo[3] infos;
         infos[0].buffer = paramsBuf.buffer;
-        infos[0].range = WorldgenParamsGPU.sizeof;
+        infos[0].range = VK_WHOLE_SIZE;
         infos[1].buffer = voronoiBuf.buffer;
         infos[1].range = VK_WHOLE_SIZE;
         infos[2].buffer = voxelsBuf.buffer;
@@ -193,8 +201,8 @@ struct WorldgenGpu {
             writes[i].pBufferInfo = &infos[i];
         }
         writes[0].dstSet = paramsSet;
-        writes[0].dstBinding = 0;
-        writes[0].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        writes[0].dstBinding = 2;
+        writes[0].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         writes[1].dstSet = paramsSet;
         writes[1].dstBinding = 1;
         writes[1].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -286,17 +294,54 @@ struct WorldgenGpu {
         return p;
     }
 
-    // Dispatches one chunk and blocks until the result is readable. Returns a
-    // view of the mapped output, one uint per padded voxel.
-    const(uint)[] generate(VkDevice device, VkQueue queue, const ref WorldgenParamsGPU p) {
-        memcpy(paramsMapped, &p, WorldgenParamsGPU.sizeof);
+    void setParams(uint slot, const ref WorldgenParamsGPU p) {
+        assert(slot < batchCapacity, "worldgen batch slot out of range");
+        memcpy(cast(ubyte*) paramsMapped + slot * WorldgenParamsGPU.sizeof,
+            &p, WorldgenParamsGPU.sizeof);
+    }
+
+    const(uint)[] chunkVoxels(uint slot) {
+        size_t base = cast(size_t) slot * voxelCount;
+        return (cast(const(uint)*) voxelsMapped)[base .. base + voxelCount];
+    }
+
+    // Generates `count` chunks whose params were staged with setParams. The
+    // whole batch is one command buffer and one fence, which is the entire
+    // point: per-chunk submit and wait cost far more than the work itself.
+    void generateBatch(VkDevice device, VkQueue queue, uint count) {
+        submitBatch(device, queue, count);
+        if (count > 0) {
+            vkWaitForFences(device, 1, &fence, 1, ulong.max);
+            inFlight = false;
+        }
+    }
+
+    // Non-blocking: the driver submits and picks the result up a later frame,
+    // so the GPU runs alongside the frame instead of stalling it.
+    bool batchReady(VkDevice device) {
+        if (!inFlight) {
+            return false;
+        }
+        if (vkWaitForFences(device, 1, &fence, 1, 0) != VkResult.VK_SUCCESS) {
+            return false;
+        }
+        inFlight = false;
+        return true;
+    }
+
+    void submitBatch(VkDevice device, VkQueue queue, uint count) {
+        if (count == 0) {
+            return;
+        }
+        pendingCount = count;
 
         vkResetCommandBuffer(cmd, 0);
         VkCommandBufferBeginInfo bi;
         bi.sType = VkStructureType.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         vkBeginCommandBuffer(cmd, &bi);
 
-        vkCmdFillBuffer(cmd, voxelsBuf.buffer, 0, voxelCount * 4, 0);
+        vkCmdFillBuffer(cmd, voxelsBuf.buffer, 0,
+            cast(ulong) voxelCount * 4 * count, 0);
         VkBufferMemoryBarrier clearBar;
         clearBar.sType = VkStructureType.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
         clearBar.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -317,27 +362,15 @@ struct WorldgenGpu {
         vkCmdBindDescriptorSets(cmd, cast(VkPipelineBindPoint) 1, pipelineLayout,
             1, 1, &voxelsSet, 0, null);
 
-        uint terrainPass = 0;
-        vkCmdPushConstants(cmd, pipelineLayout,
-            VkShaderStageFlagBits.VK_SHADER_STAGE_COMPUTE_BIT, 0, 4, &terrainPass);
         uint groups = (dimension + 3) / 4;
-        vkCmdDispatch(cmd, groups, groups, groups);
-
-        // Trees read and write voxels the terrain pass produced, so they need
-        // the whole grid finished first.
-        VkBufferMemoryBarrier treeBar = clearBar;
-        treeBar.srcAccessMask = VkAccessFlagBits.VK_ACCESS_SHADER_WRITE_BIT;
-        treeBar.dstAccessMask = VkAccessFlagBits.VK_ACCESS_SHADER_READ_BIT
-            | VkAccessFlagBits.VK_ACCESS_SHADER_WRITE_BIT;
-        vkCmdPipelineBarrier(cmd,
-            VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            0, 0, null, 1, &treeBar, 0, null);
-
-        uint treePass = 1;
+        uint[2] pc;
+        pc[0] = 0;
+        pc[1] = count;
         vkCmdPushConstants(cmd, pipelineLayout,
-            VkShaderStageFlagBits.VK_SHADER_STAGE_COMPUTE_BIT, 0, 4, &treePass);
-        vkCmdDispatch(cmd, 1, 1, 1);
+            VkShaderStageFlagBits.VK_SHADER_STAGE_COMPUTE_BIT, 0, 8, pc.ptr);
+        vkCmdDispatch(cmd, groups, groups, groups * count);
+
+        // Trees deliberately stay on the host: see generateTreesAfterTerrain.
 
         // Host read access / host stage; the minimal vk bindings do not name
         // these, and the fence below is what actually orders the readback.
@@ -359,9 +392,7 @@ struct WorldgenGpu {
         si.commandBufferCount = 1;
         si.pCommandBuffers = &cmd;
         vkQueueSubmit(queue, 1, &si, fence);
-        vkWaitForFences(device, 1, &fence, 1, ulong.max);
-
-        return (cast(const(uint)*) voxelsMapped)[0 .. voxelCount];
+        inFlight = true;
     }
 
     void cleanup(VkDevice device) {

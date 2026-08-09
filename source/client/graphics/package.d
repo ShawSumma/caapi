@@ -32,15 +32,43 @@ import common.margins : fixMargins, neighborAxisPermutation;
 import common.voxel_math : ChunkDirection, Coords, CoordSign;
 import common.world : Material;
 import common.worldgen : ChunkParams, chunkRngSeed, generateVoxels;
+import common.worldgen : generateTreesAfterTerrain;
 import common.margins : initializeMargins;
 import common.node : VoxelData;
 import client.graphics.voxels.worldgen_gpu : WorldgenGpu, WorldgenParamsGPU;
 
 enum float PI = 3.14159265358979323846f;
 
-size_t voxelIndexOf(ubyte dim, size_t x, size_t y, size_t z) {
-    size_t lwm = cast(size_t) dim + 2;
-    return (x + 1) + (y + 1) * lwm + (z + 1) * lwm * lwm;
+// How many chunks go into one GPU dispatch batch. The whole point of batching
+// is amortising the submit and fence, which dominate a single chunk's cost.
+enum uint WORLDGEN_BATCH = 1024;
+
+struct GpuCheckStats {
+    double cpuMs = 0;
+    double gpuMs = 0;
+    size_t chunks = 0;
+    size_t matching = 0;
+    size_t withTrees = 0;
+    size_t voxelMismatches = 0;
+    size_t firstBadChunk = size_t.max;
+    size_t firstBadIndex = 0;
+    uint firstBadCpu = 0;
+    uint firstBadGpu = 0;
+
+    void merge(GpuCheckStats other) {
+        cpuMs = cpuMs + other.cpuMs;
+        gpuMs = gpuMs + other.gpuMs;
+        chunks = chunks + other.chunks;
+        matching = matching + other.matching;
+        withTrees = withTrees + other.withTrees;
+        voxelMismatches = voxelMismatches + other.voxelMismatches;
+        if (firstBadChunk == size_t.max && other.firstBadChunk != size_t.max) {
+            firstBadChunk = other.firstBadChunk;
+            firstBadIndex = other.firstBadIndex;
+            firstBadCpu = other.firstBadCpu;
+            firstBadGpu = other.firstBadGpu;
+        }
+    }
 }
 
 bool isNaN(float v) {
@@ -56,6 +84,8 @@ struct Renderer {
     HighlightPipeline highlight;
     PerceptionField field;
     WorldgenDriver worldgenDriver;
+    WorldgenGpu worldgenGpu;
+    bool gpuWorldgen = false;
     uint dimension = 12;
     float time = 0;
     Position camPos;
@@ -296,6 +326,17 @@ struct Renderer {
         }
 
         worldgenDriver = WorldgenDriver.create();
+        if (gpuWorldgen) {
+            if (worldgenGpu.init(core.physicalDevice, core.device,
+                    core.graphicsQueueFamily, dimension, WORLDGEN_BATCH)) {
+                worldgenDriver.gpu = &worldgenGpu;
+                worldgenDriver.gpuDevice = core.device;
+                worldgenDriver.gpuQueue = core.graphicsQueue;
+                printf("worldgen: GPU generation enabled\n");
+            } else {
+                printf("worldgen: GPU generation unavailable, using CPU\n");
+            }
+        }
 
         camPos.node = NodeId.ROOT;
         camPos.local = MIsometry!float.translationAlong([0.0f, 1.4f, 0.0f]);
@@ -833,6 +874,22 @@ struct Renderer {
         if (frames < 1) {
             frames = 1;
         }
+        size_t populated = 0;
+        size_t dense = 0;
+        foreach (slot; 0 .. graph.slotCount()) {
+            foreach (vIdx; 0 .. 20) {
+                const(Chunk)* ch =
+                    &graph.container(slot).value.chunks.values[cast(Vertex) vIdx];
+                if (ch.state != ChunkState.Populated) {
+                    continue;
+                }
+                populated = populated + 1;
+                if (!ch.voxels.isSolid()) {
+                    dense = dense + 1;
+                }
+            }
+        }
+        printf(" | populated=%zu dense=%zu", populated, dense);
         printf(" | cull=%.2f mapcpy=%.2f sweep=%.2f target=%.2f visnodes=%.0f",
             subSum[0] / frames, subSum[1] / frames, subSum[2] / frames,
             subSum[3] / frames, visibleNodes / frames);
@@ -1016,7 +1073,7 @@ struct Renderer {
     void compareWorldgen(float radius) {
         WorldgenGpu gpu;
         if (!gpu.init(core.physicalDevice, core.device, core.graphicsQueueFamily,
-                dimension)) {
+                dimension, WORLDGEN_BATCH)) {
             printf("gpucheck: GPU worldgen init failed\n");
             return;
         }
@@ -1036,95 +1093,133 @@ struct Renderer {
         size_t padded = cast(size_t) dim + 2;
         size_t voxelCount = padded * padded * padded;
 
-        size_t chunksChecked = 0;
-        size_t chunksMatching = 0;
-        size_t chunksWithTrees = 0;
-        size_t totalVoxelMismatches = 0;
-        size_t firstBadChunk = size_t.max;
-        uint firstBadCpu = 0;
-        uint firstBadGpu = 0;
-        size_t firstBadIndex = 0;
+        GpuCheckStats stats;
+
+        // Chunks are staged into a batch, dispatched together, then compared.
+        Array!ChunkParams pending;
+        scope(exit) {
+            pending.release();
+        }
 
         foreach (ref nn; nearby) {
             foreach (vIdx; 0 .. 20) {
                 Vertex vertex = cast(Vertex) vIdx;
                 ChunkId chunkId = ChunkId(nn.id, vertex);
-                ChunkParams cp = ChunkParams.create(graph, chunkId);
-
-                VoxelData cpuVoxels = generateVoxels(cp);
-                WorldgenParamsGPU gp = WorldgenGpu.buildParams(cp, chunkRngSeed(cp));
-                const(uint)[] gpuVoxels = gpu.generate(core.device, core.graphicsQueue, gp);
-
-                chunksChecked = chunksChecked + 1;
-
-                // The margin ring stays on the host: it is 6*(dim+2)^2 plain
-                // copies against 1728 voxels of real work, so moving it to the
-                // GPU buys nothing. Run it over the GPU interior and compare
-                // the whole padded grid, so the combined path is what is
-                // being checked.
-                VoxelData gpuData = VoxelData.solid(Material.Void);
-                Material[] gpuDense = gpuData.dataMut(dim);
-                foreach (i; 0 .. voxelCount) {
-                    gpuDense[i] = cast(Material) gpuVoxels[i];
+                pending.push(ChunkParams.create(graph, chunkId));
+                if (pending.length() < WORLDGEN_BATCH) {
+                    continue;
                 }
-                initializeMargins(dim, gpuData);
-
-                bool hasTrees = false;
-                size_t mismatches = 0;
-                foreach (x; 0 .. voxelCount) {
-                    {
-                        {
-                            size_t i = x;
-                            uint cpuMat = cast(uint) cpuVoxels.get(i);
-                            uint gpuMat = cast(uint) gpuData.get(i);
-                            if (cpuMat == cast(uint) Material.Wood
-                                    || cpuMat == cast(uint) Material.Leaves) {
-                                hasTrees = true;
-                            }
-                            if (cpuMat != gpuMat) {
-                                mismatches = mismatches + 1;
-                                if (firstBadChunk == size_t.max) {
-                                    firstBadChunk = chunksChecked - 1;
-                                    firstBadCpu = cpuMat;
-                                    firstBadGpu = gpuMat;
-                                    firstBadIndex = i;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                freeSlice(gpuDense);
-                Material[] cpuDense = cpuVoxels.denseData;
-                freeSlice(cpuDense);
-
-                if (hasTrees) {
-                    chunksWithTrees = chunksWithTrees + 1;
-                }
-                if (mismatches == 0) {
-                    chunksMatching = chunksMatching + 1;
-                }
-                totalVoxelMismatches = totalVoxelMismatches + mismatches;
+                stats.merge(checkBatch(gpu, pending, dim, voxelCount, stats.chunks));
+                pending.clear();
             }
         }
+        stats.merge(checkBatch(gpu, pending, dim, voxelCount, stats.chunks));
 
         printf(
             "gpucheck: chunks=%zu matching=%zu withTrees=%zu voxelMismatches=%zu\n",
-            chunksChecked,
-            chunksMatching,
-            chunksWithTrees,
-            totalVoxelMismatches,
+            stats.chunks,
+            stats.matching,
+            stats.withTrees,
+            stats.voxelMismatches,
         );
-        if (firstBadChunk != size_t.max) {
+        printf(
+            "gpucheck: cpu=%.1fms (%.4fms/chunk) gpu=%.1fms (%.4fms/chunk)\n",
+            stats.cpuMs,
+            stats.cpuMs / cast(double) stats.chunks,
+            stats.gpuMs,
+            stats.gpuMs / cast(double) stats.chunks,
+        );
+        if (stats.firstBadChunk != size_t.max) {
             printf(
                 "gpucheck: first mismatch chunk=%zu voxel=%zu cpu=%u gpu=%u\n",
-                firstBadChunk,
-                firstBadIndex,
-                firstBadCpu,
-                firstBadGpu,
+                stats.firstBadChunk,
+                stats.firstBadIndex,
+                stats.firstBadCpu,
+                stats.firstBadGpu,
             );
         }
         fflush(stdout);
+    }
+
+    // Generates one staged batch on both paths and diffs it. Returns the
+    // batch's own tallies so the caller merges them, rather than writing back
+    // through parameters.
+    GpuCheckStats checkBatch(
+        ref WorldgenGpu gpu,
+        ref Array!ChunkParams batch,
+        ubyte dim,
+        size_t voxelCount,
+        size_t chunkNumberBase,
+    ) {
+        GpuCheckStats stats;
+        uint count = cast(uint) batch.length();
+        if (count == 0) {
+            return stats;
+        }
+
+        double g0 = nowMs();
+        foreach (i; 0 .. count) {
+            WorldgenParamsGPU gp =
+                WorldgenGpu.buildParams(batch[i], chunkRngSeed(batch[i]));
+            gpu.setParams(i, gp);
+        }
+        gpu.generateBatch(core.device, core.graphicsQueue, count);
+        double g1 = nowMs();
+        stats.gpuMs = g1 - g0;
+
+        foreach (i; 0 .. count) {
+            double c0 = nowMs();
+            VoxelData cpuVoxels = generateVoxels(batch[i]);
+            stats.cpuMs = stats.cpuMs + (nowMs() - c0);
+
+            // The margin ring stays on the host: it is 6*(dim+2)^2 plain
+            // copies against 1728 voxels of real work, so moving it to the
+            // GPU buys nothing. Running it over the GPU interior means the
+            // combined path is what gets compared.
+            const(uint)[] raw = gpu.chunkVoxels(i);
+            VoxelData gpuData = VoxelData.solid(Material.Void);
+            Material[] gpuDense = gpuData.dataMut(dim);
+            foreach (v; 0 .. voxelCount) {
+                gpuDense[v] = cast(Material) raw[v];
+            }
+            generateTreesAfterTerrain(batch[i], gpuData);
+            initializeMargins(dim, gpuData);
+
+            bool hasTrees = false;
+            size_t mismatches = 0;
+            foreach (v; 0 .. voxelCount) {
+                uint cpuMat = cast(uint) cpuVoxels.get(v);
+                uint gpuMat = cast(uint) gpuData.get(v);
+                if (cpuMat == cast(uint) Material.Wood
+                        || cpuMat == cast(uint) Material.Leaves) {
+                    hasTrees = true;
+                }
+                if (cpuMat == gpuMat) {
+                    continue;
+                }
+                mismatches = mismatches + 1;
+                if (stats.firstBadChunk == size_t.max) {
+                    stats.firstBadChunk = chunkNumberBase + i;
+                    stats.firstBadCpu = cpuMat;
+                    stats.firstBadGpu = gpuMat;
+                    stats.firstBadIndex = v;
+                }
+            }
+
+            Material[] cpuDense = cpuVoxels.denseData;
+            freeSlice(cpuDense);
+            freeSlice(gpuDense);
+
+            stats.chunks = stats.chunks + 1;
+            if (hasTrees) {
+                stats.withTrees = stats.withTrees + 1;
+            }
+            if (mismatches == 0) {
+                stats.matching = stats.matching + 1;
+            }
+            stats.voxelMismatches = stats.voxelMismatches + mismatches;
+        }
+        return stats;
     }
 
     void recreateSwapchain() {
