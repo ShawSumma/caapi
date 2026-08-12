@@ -123,6 +123,14 @@ N log(N)(N v) {
     }
 }
 
+N exp2(N)(N v) {
+    static if (is(N == float)) {
+        return cmath.exp2f(v);
+    } else {
+        return cmath.exp2(v);
+    }
+}
+
 N pow(N)(N base, N power) {
     static if (is(N == float)) {
         return cmath.powf(base, power);

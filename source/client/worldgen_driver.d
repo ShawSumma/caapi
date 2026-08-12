@@ -118,11 +118,11 @@ struct WorldgenDriver {
     // while they could take an order of magnitude more. Integration on the
     // main thread is ~0.002ms per chunk, so a full batch costs well under a
     // millisecond.
-    enum uint MAX_REQUESTS_PER_FRAME = 512;
+    enum uint MAX_REQUESTS_PER_FRAME = 8192;
 
     // Enough to keep every worker busy between frames without flooding the
     // queue with chunks the camera may move away from.
-    enum uint MAX_IN_FLIGHT = 2048;
+    enum uint MAX_IN_FLIGHT = 32768;
 
     static WorldgenDriver create() {
         WorldgenDriver w;

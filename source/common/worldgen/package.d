@@ -6,8 +6,10 @@ public import common.worldgen.terraingen;
 
 import core.bitop : rol;
 import core.stdc.stdlib : calloc;
-import common.math : PI, cos, floor, log, pow, sqrt;
+import common.math : PI, cos, exp2, floor, log, pow, sqrt;
 import common.dodeca : Side, Vertex, vertexCanonicalSides, sideAdjacentTo;
+import common.dodeca : vertexChunkToNode;
+import common.math : Matrix4;
 import common.graph : Graph, NodeId;
 import common.margins : initializeMargins;
 import common.node : ChunkId, VoxelData;
@@ -348,22 +350,40 @@ void generateTerrain(const ref ChunkParams params, ref VoxelData voxels, ref ulo
         return;
     }
 
+    Matrix4!float chunkToNode = vertexChunkToNode(params.chunk);
+    ulong seed = rng;
+
+    // Per-axis voxel centres and their trilerp coordinates. Identical
+    // expressions to voxelCenter, just not recomputed 1728 times.
+    float[256] axisCenter;
+    float[256] axisT;
+    foreach (i; 0 .. dim) {
+        axisCenter[i] = (cast(float) i + 0.5f) / cast(float) dim;
+        axisT[i] = (1.0f - axisCenter[i]) * 0.5f;
+    }
+
     foreach (x; 0 .. dim) {
+        float tx = axisT[x];
         foreach (y; 0 .. dim) {
+            float ty = axisT[y];
+            // Invariant down the z column.
+            float elevLo = trilerpLow(params.env.maxElevations, tx, ty);
+            float elevHi = trilerpHigh(params.env.maxElevations, tx, ty);
+            float blockLo = trilerpLow(params.env.blockinesses, tx, ty);
+            float blockHi = trilerpHigh(params.env.blockinesses, tx, ty);
+
             foreach (z; 0 .. dim) {
-                float[3] center = voxelCenter(dim, x, y, z);
-                float[3] trilerpCoords = [
-                    (1.0f - center[0]) * 0.5f,
-                    (1.0f - center[1]) * 0.5f,
-                    (1.0f - center[2]) * 0.5f,
-                ];
+                float[3] center = [axisCenter[x], axisCenter[y], axisCenter[z]];
+                float[3] trilerpCoords = [tx, ty, axisT[z]];
 
-                float rain = trilerp(params.env.rainfalls, trilerpCoords) + rngNormal(&rng, 0.03f);
-                float temp = trilerp(params.env.temperatures, trilerpCoords) + rngNormal(&rng, 0.03f);
+                // Six draws per voxel in x,y,z order: rain, temp, elev.
+                ulong drawBase = 6 * (cast(ulong) x * dim * dim
+                    + cast(ulong) y * dim + cast(ulong) z);
 
-                float elevPreTerracing = trilerp(params.env.maxElevations, trilerpCoords);
-                float block = trilerp(params.env.blockinesses, trilerpCoords);
-                float voxelElevation = params.surface.distanceToChunk(params.chunk, center);
+                float elevPreTerracing = lerp1(elevLo, elevHi, trilerpCoords[2]);
+                float block = lerp1(blockLo, blockHi, trilerpCoords[2]);
+                float voxelElevation =
+                    params.surface.distanceToChunkWith(chunkToNode, center);
                 float strength = 0.4f / (1.0f + sqr(voxelElevation));
                 float terracingSmall = terracingDiff(elevPreTerracing, block, 5.0f, strength, 2.0f);
                 float terracingBig = terracingDiff(elevPreTerracing, block, 15.0f, strength, -1.0f);
@@ -371,24 +391,49 @@ void generateTerrain(const ref ChunkParams params, ref VoxelData voxels, ref ulo
 
                 float distPreNoise = elevPreNoise / TERRAIN_SMOOTHNESS - voxelElevation;
 
-                float elev = elevPreNoise + TERRAIN_SMOOTHNESS * rngNormal(&rng, 0.03f);
-
+                // Below the surface the elevation noise decides how deep, and
+                // dist is then never negative. Above it, dist is distPreNoise
+                // and the noise never gets looked at, so it is not drawn.
+                float elev = 0.0f;
                 float dist;
                 if (distPreNoise > 0.0f) {
+                    elev = elevPreNoise
+                        + TERRAIN_SMOOTHNESS * rngNormalAt(seed, drawBase + 4, 0.03f);
                     float d = elev / TERRAIN_SMOOTHNESS - voxelElevation;
                     dist = d > 0.0f ? d : 0.0f;
                 } else {
                     dist = distPreNoise;
                 }
 
-                if (dist >= 0.0f) {
-                    Material mat = terraingenVoronoi(elev, rain, temp, dist);
-                    size_t idx = index(dim, x, y, z);
-                    voxels.dataMut(dim)[idx] = mat;
+                if (dist < 0.0f) {
+                    continue;
                 }
+
+                // Only reachable with distPreNoise exactly zero, where the
+                // branch above left elev unset.
+                if (distPreNoise <= 0.0f) {
+                    elev = elevPreNoise
+                        + TERRAIN_SMOOTHNESS * rngNormalAt(seed, drawBase + 4, 0.03f);
+                }
+
+                // Rain and temperature feed nothing but the material lookup,
+                // so they are computed only for voxels that get one.
+                float rain = trilerp(params.env.rainfalls, trilerpCoords)
+                    + rngNormalAt(seed, drawBase + 0, 0.03f);
+                float temp = trilerp(params.env.temperatures, trilerpCoords)
+                    + rngNormalAt(seed, drawBase + 2, 0.03f);
+
+                Material mat = terraingenVoronoi(elev, rain, temp, dist);
+                size_t idx = index(dim, x, y, z);
+                voxels.dataMut(dim)[idx] = mat;
             }
         }
     }
+
+    // Leave the stream where walking it draw by draw would have: six per
+    // voxel, whether or not this loop bothered to evaluate them. generateTrees
+    // continues from here.
+    rng = seed + 6 * (cast(ulong) dim * dim * dim) * 0x9e3779b97f4a7c15;
 }
 
 void generateRoad(const ref ChunkParams params, ref VoxelData voxels) {
@@ -540,7 +585,9 @@ float serp(float v0, float v1, float t, float threshold) {
 }
 
 float terracingDiff(float elevRaw, float block, float scale, float strength, float limiter) {
-    float threshold = strength / (1.0f + pow(2.0f, limiter - block));
+    // exp2 rather than pow(2, x): same value, far cheaper. Verified against
+    // the world hash, which is unchanged by the substitution.
+    float threshold = strength / (1.0f + exp2(limiter - block));
     float elevFloor = floor(elevRaw / scale);
     float elevRem = elevRaw / scale - elevFloor;
     return scale * elevFloor + serp(0.0f, scale, elevRem, threshold) - elevRaw;
@@ -562,6 +609,25 @@ float[3] voxelCenter(ubyte dimension, int x, int y, int z) {
 size_t index(ubyte dimension, int x, int y, int z) {
     size_t lwm = dimension + 2;
     return (x + 1) + (y + 1) * lwm + (z + 1) * lwm * lwm;
+}
+
+// Same expressions trilerp uses, exposed so the terrain loop can hoist the
+// two bilerps: they depend only on x and y, and were being recomputed for
+// every voxel down the z column.
+float lerp1(float v0, float v1, float s) {
+    return v0 * (1.0f - s) + v1 * s;
+}
+
+float bilerp1(float v00, float v01, float v10, float v11, float tx, float ty) {
+    return lerp1(lerp1(v00, v01, tx), lerp1(v10, v11, tx), ty);
+}
+
+float trilerpLow(const ref float[8] values, float tx, float ty) {
+    return bilerp1(values[0], values[4], values[2], values[6], tx, ty);
+}
+
+float trilerpHigh(const ref float[8] values, float tx, float ty) {
+    return bilerp1(values[1], values[5], values[3], values[7], tx, ty);
 }
 
 float trilerp(const ref float[8] values, float[3] t) {
@@ -617,6 +683,25 @@ ulong rngNext(ulong* state) {
     z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9;
     z = (z ^ (z >> 27)) * 0x94d049bb133111eb;
     return z ^ (z >> 31);
+}
+
+// splitmix64 advances its state by a fixed constant per draw, so draw k
+// (1-based) is a pure function of the seed. Indexing the stream directly lets
+// the terrain loop skip draws whose results it is about to discard, without
+// changing a single value it does keep.
+ulong rngDrawAt(ulong seed, ulong k) {
+    ulong z = seed + k * 0x9e3779b97f4a7c15;
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111eb;
+    return z ^ (z >> 31);
+}
+
+float rngNormalAt(ulong seed, ulong drawIndex, float stddev) {
+    ulong v1 = rngDrawAt(seed, drawIndex + 1);
+    ulong v2 = rngDrawAt(seed, drawIndex + 2);
+    float u1 = (cast(float)((v1 >> 40) + 1)) / cast(float)((1UL << 24) + 2);
+    float u2 = cast(float)(v2 >> 40) / cast(float)(1UL << 24);
+    return sqrt(-2.0f * log(u1)) * cos(2.0f * PI * u2) * stddev;
 }
 
 float rngNormal(ulong* state, float stddev) {

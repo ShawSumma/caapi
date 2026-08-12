@@ -41,7 +41,7 @@ enum float PI = 3.14159265358979323846f;
 
 // How many chunks go into one GPU dispatch batch. The whole point of batching
 // is amortising the submit and fence, which dominate a single chunk's cost.
-enum uint WORLDGEN_BATCH = 1024;
+enum uint WORLDGEN_BATCH = 2048;
 
 struct GpuCheckStats {
     double cpuMs = 0;
@@ -874,25 +874,6 @@ struct Renderer {
         if (frames < 1) {
             frames = 1;
         }
-        size_t populated = 0;
-        size_t dense = 0;
-        foreach (slot; 0 .. graph.slotCount()) {
-            foreach (vIdx; 0 .. 20) {
-                const(Chunk)* ch =
-                    &graph.container(slot).value.chunks.values[cast(Vertex) vIdx];
-                if (ch.state != ChunkState.Populated) {
-                    continue;
-                }
-                populated = populated + 1;
-                if (!ch.voxels.isSolid()) {
-                    dense = dense + 1;
-                }
-            }
-        }
-        printf(" | populated=%zu dense=%zu", populated, dense);
-        printf(" | cull=%.2f mapcpy=%.2f sweep=%.2f target=%.2f visnodes=%.0f",
-            subSum[0] / frames, subSum[1] / frames, subSum[2] / frames,
-            subSum[3] / frames, visibleNodes / frames);
         printf("\n");
         fflush(stdout);
         subSum[] = 0;
