@@ -1,6 +1,6 @@
 module client.graphics;
 
-import core.stdc.math : coshf, cosf, logf, powf, sinf, sinhf, sqrtf;
+import core.stdc.math : coshf, cosf, floorf, logf, powf, sinf, sinhf, sqrtf;
 import core.stdc.stdio : FILE, fclose, fflush, fopen, fwrite, printf;
 import core.stdc.stdio : snprintf, stdout;
 import core.stdc.string : memcpy;
@@ -38,6 +38,60 @@ import common.node : VoxelData;
 import client.graphics.voxels.worldgen_gpu : WorldgenGpu, WorldgenParamsGPU;
 
 enum float PI = 3.14159265358979323846f;
+
+enum uint FIELD_WALK = 5;
+
+// Every 3-subset of the five channels. Each generates a rotation fixing the
+// all-ones diagonal, and between them they span all six such dimensions.
+static immutable ubyte[3][10] WALK_TRIPLES = [
+    [0, 1, 2], [0, 1, 3], [0, 1, 4], [0, 2, 3], [0, 2, 4],
+    [0, 3, 4], [1, 2, 3], [1, 2, 4], [1, 3, 4], [2, 3, 4],
+];
+
+enum float WALK_KICK = 0.15f;
+enum float WALK_DAMPING = 0.4f;
+
+// A turn of the colour space per dodecahedral face. A node's turn is the sum
+// along its path from the root, so crossing a face always shifts by one of
+// these and travelling one way keeps shifting that way. Nothing is drawn per
+// node, so the result is directional rather than speckled.
+static immutable float[3][12] SIDE_TURN = [
+    [1, 0, 0], [0, 1, 0], [0, 0, 1],
+    [-1, 0, 0], [0, -1, 0], [0, 0, -1],
+    [1, 1, 0], [0, 1, 1], [1, 0, 1],
+    [-1, -1, 0], [0, -1, -1], [-1, 0, -1],
+];
+
+// Ten bits per angle. Rotations are 2pi-periodic, so the sum needs no bound
+// and the wrap costs nothing.
+uint packTurn(const float[3] turn) {
+    uint packed = 0;
+    foreach (i; 0 .. 3) {
+        float a = turn[i] * (1.0f / (2.0f * PI));
+        a = a - floorf(a);
+        packed = packed | ((cast(uint)(a * 1024.0f) & 1023u) << (i * 10));
+    }
+    return packed;
+}
+
+// Turn columns i, j, k of a 3x5 map about the diagonal they share. Rows keep
+// their sums, so white stays white; all rows turn together, so they stay
+// orthonormal.
+void turnTriple(ref float[5][3] map, const ubyte[3] idx, float theta) {
+    float share = (1.0f - cosf(theta)) / 3.0f;
+    float twist = sinf(theta) * 0.57735026919f;
+    float p = cosf(theta) + share;
+    float q = share - twist;
+    float r = share + twist;
+    foreach (row; 0 .. 3) {
+        float a = map[row][idx[0]];
+        float b = map[row][idx[1]];
+        float c = map[row][idx[2]];
+        map[row][idx[0]] = p * a + q * b + r * c;
+        map[row][idx[1]] = r * a + p * b + q * c;
+        map[row][idx[2]] = q * a + r * b + p * c;
+    }
+}
 
 // How many chunks go into one GPU dispatch batch. The whole point of batching
 // is amortising the submit and fence, which dominate a single chunk's cost.
@@ -146,6 +200,62 @@ struct Renderer {
     void cycleChannelMap() {
         rotStep = (rotStep + 1) % 6;
         rotBase[0] = rotStep * (PI / 3.0f);
+    }
+
+    // Row i is how much of each channel feeds primary i.
+    float[5][3] walkMap = [
+        [1, 0, 0, 0, 0],
+        [0, 1, 0, 0, 0],
+        [0, 0, 1, 0, 0],
+    ];
+
+    // Velocity is what gets kicked and damped, not the angle, so the map holds
+    // a heading for a while instead of jittering.
+    float[10] walkVel = 0;
+    uint walkSeed = 0x9e3779b9;
+
+    void stepWalk(float dt) {
+        float decay = 1.0f - WALK_DAMPING * dt;
+        float kick = WALK_KICK * sqrtf(dt);
+        foreach (t; 0 .. WALK_TRIPLES.length) {
+            walkVel[t] = walkVel[t] * decay + walkNoise() * kick;
+            turnTriple(walkMap, WALK_TRIPLES[t], walkVel[t] * dt);
+        }
+    }
+
+    float walkNoise() {
+        walkSeed = walkSeed * 747796405u + 2891336453u;
+        uint h = ((walkSeed >> ((walkSeed >> 28) + 4u)) ^ walkSeed) * 277803737u;
+        h = h ^ (h >> 22);
+        return cast(float)(h & 0xFFFFFFu) * (1.0f / 8388608.0f) - 1.0f;
+    }
+
+    // Radians of turn per face crossed. Set by --trip walk <step>.
+    float walkStep = 0.07f;
+
+    float[3] nodeTurn(uint slot) const {
+        float[3] turn = [0, 0, 0];
+        uint at = slot;
+        Side side;
+        uint parent;
+        while (graph.primaryParent(at, side, parent)) {
+            foreach (i; 0 .. 3) {
+                turn[i] = turn[i] + SIDE_TURN[side][i] * walkStep;
+            }
+            at = parent;
+        }
+        return turn;
+    }
+
+    // Transposed: the shader wants one vec4 per channel, which is a column.
+    float[20] walkChannels() const {
+        float[20] packed = 0;
+        foreach (c; 0 .. 5) {
+            foreach (row; 0 .. 3) {
+                packed[c * 4 + row] = walkMap[row][c];
+            }
+        }
+        return packed;
     }
 
     ChunkSlotMap chunkSlots;
@@ -293,14 +403,14 @@ struct Renderer {
             memcpy(chunkToNode.ptr + v * 16, m.ptr, 16 * float.sizeof);
         }
 
-        uint[] chunkInfoInit = allocSlice!uint(maxSlots);
+        uint[] chunkInfoInit = allocSlice!uint(maxSlots * 2);
         scope(exit) {
             freeSlice(chunkInfoInit);
         }
         chunkInfoBuf = GpuBuffer.create(
             core.physicalDevice, core.device, cast(void[]) chunkInfoInit,
             VkBufferUsageFlagBits.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-        vkMapMemory(core.device, chunkInfoBuf.memory, 0, maxSlots * 4, 0, &chunkInfoMapped);
+        vkMapMemory(core.device, chunkInfoBuf.memory, 0, maxSlots * 8, 0, &chunkInfoMapped);
 
         if (!voxels.init(core.physicalDevice, core.device, swapState.renderPass,
                          empty, transforms,
@@ -450,6 +560,7 @@ struct Renderer {
             uint thisNodeIndex = nodeIndex;
             bool nodeUploaded = false;
             nodeIndex = nodeIndex + 1;
+            uint turnPacked = packTurn(nodeTurn(nn.slot));
 
             foreach (vIdx; 0 .. 20) {
                 if ((renderable & (1u << vIdx)) == 0) {
@@ -537,8 +648,9 @@ struct Renderer {
                 // Indexed by slot, matching the instance-rate transform.
                 // The node id is stable as the graph grows, so this identity
                 // survives both chunk seams and the camera changing nodes.
-                (cast(uint*) chunkInfoMapped)[slot] =
+                (cast(uint*) chunkInfoMapped)[slot * 2] =
                     (vIdx & 31) | (cast(uint) nn.id.hashOf() << 5);
+                (cast(uint*) chunkInfoMapped)[slot * 2 + 1] = turnPacked;
                 slotUsedBuf[slot] = true;
                 activeSlotsBuf[activeCount] = slot;
                 activeCount = activeCount + 1;
@@ -665,6 +777,9 @@ struct Renderer {
             0,
         ];
         float[4] fieldInfo = [cast(float) producer, 0, 0, 0];
+        if (trip && fieldMode == FIELD_WALK) {
+            stepWalk(dt);
+        }
         voxels.updateCommonUbo(
             core.device,
             vp,
@@ -677,6 +792,7 @@ struct Renderer {
             tripParams,
             viewportParams,
             fieldInfo,
+            walkChannels(),
         );
 
         double a5 = nowMs();

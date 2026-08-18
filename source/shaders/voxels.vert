@@ -6,7 +6,8 @@
 layout(location = 0) in mat4 transform;
 // Low 5 bits: which of the 20 chunks of the node this is. Upper bits: a hash
 // of the node's id, which persists as the graph grows and so never moves.
-layout(location = 4) in uint chunk_info;
+// y packs the node's accumulated turn of the colour space, ten bits an angle.
+layout(location = 4) in uvec2 chunk_info;
 
 layout(set = 1, binding = 2) readonly restrict buffer ChunkToNode {
     mat4 chunk_to_node[];
@@ -18,6 +19,7 @@ layout(location = 2) out flat float shade;
 layout(location = 3) out vec3 node_pos;
 layout(location = 4) out flat vec3 chunk_normal;
 layout(location = 5) out flat uint node_seed;
+layout(location = 6) out flat vec3 node_turn;
 
 layout(set = 1, binding = 0) readonly restrict buffer Surfaces {
     Surface surfaces[];
@@ -99,9 +101,14 @@ void main() {
     // per chunk. It is fixed to the node, not to the camera, so unlike
     // anything built from the transform it does not shift when the player
     // crosses into the next node.
-    vec4 np = chunk_to_node[chunk_info & 31u] * vec4(chunk_pos, 1.0);
+    vec4 np = chunk_to_node[chunk_info.x & 31u] * vec4(chunk_pos, 1.0);
     node_pos = np.xyz / max(np.w, 1e-4);
-    node_seed = chunk_info >> 5u;
+    node_seed = chunk_info.x >> 5u;
+    node_turn = vec3(
+        float(chunk_info.y & 1023u),
+        float((chunk_info.y >> 10u) & 1023u),
+        float((chunk_info.y >> 20u) & 1023u)
+    ) * (2.0 * PI / 1024.0);
 
     // Faces 0 to 2 and 6 to 8 point down their axis, 3 to 5 and 9 to 11 point
     // up it. No transform is applied: the linear part of a Lorentz isometry

@@ -159,7 +159,7 @@ struct SurfacePipeline {
         commonSet = allocated[0];
         staticSet = allocated[1];
 
-        ubyte[240] commonInit = 0;
+        ubyte[320] commonInit = 0;
         commonUbo = GpuBuffer.create(
             phys,
             device,
@@ -285,7 +285,7 @@ struct SurfacePipeline {
         // Per-chunk identity, on the same instance rate as the transform so it
         // is indexed identically however the draw sets firstInstance.
         bindings[1].binding = 1;
-        bindings[1].stride = 4;
+        bindings[1].stride = 8;
         bindings[1].inputRate = cast(VkVertexInputRate) VkVertexInputRateExt.VK_VERTEX_INPUT_RATE_INSTANCE;
 
         VkVertexInputAttributeDescription[5] attrs;
@@ -299,7 +299,7 @@ struct SurfacePipeline {
         attrs[4].binding = 1;
         // The other attributes use VkFormatExt; this one only exists in
         // VkFormat, so convert rather than duplicate the value.
-        attrs[4].format = cast(typeof(attrs[4].format)) VkFormat.VK_FORMAT_R32_UINT;
+        attrs[4].format = cast(typeof(attrs[4].format)) VkFormat.VK_FORMAT_R32G32_UINT;
         attrs[4].offset = 0;
 
         VkPipelineVertexInputStateCreateInfo vi;
@@ -411,8 +411,9 @@ struct SurfacePipeline {
         float[4] trip,
         float[4] viewport,
         float[4] fieldInfo,
+        float[20] walkChannels,
     ) {
-        ubyte[240] data = 0;
+        ubyte[320] data = 0;
         memcpy(data.ptr + 0, vp.ptr, 64);
         memcpy(data.ptr + 64, invp.ptr, 64);
         memcpy(data.ptr + 128, &fogDensity, 4);
@@ -423,9 +424,10 @@ struct SurfacePipeline {
         memcpy(data.ptr + 192, trip.ptr, 16);
         memcpy(data.ptr + 208, viewport.ptr, 16);
         memcpy(data.ptr + 224, fieldInfo.ptr, 16);
+        memcpy(data.ptr + 240, walkChannels.ptr, 80);
         void* mapped;
-        vkMapMemory(device, commonUbo.memory, 0, 240, 0, &mapped);
-        memcpy(mapped, data.ptr, 240);
+        vkMapMemory(device, commonUbo.memory, 0, 320, 0, &mapped);
+        memcpy(mapped, data.ptr, 320);
         vkUnmapMemory(device, commonUbo.memory);
     }
 

@@ -119,6 +119,17 @@ struct Graph {
         return container(n).id;
     }
 
+    // The one parent a node was first reached through. Depth strictly drops
+    // across it, so following it always terminates at the root.
+    bool primaryParent(uint slot, ref Side side, ref uint parentSlot) const {
+        if (!container(slot).hasPrimaryParent) {
+            return false;
+        }
+        side = container(slot).primaryParentSide;
+        parentSlot = container(slot).neighbors[side];
+        return parentSlot != NO_SLOT;
+    }
+
     uint depth(NodeId node) const {
         return container(slotOf(node)).depth;
     }

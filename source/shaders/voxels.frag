@@ -8,6 +8,7 @@ layout(location = 2) in flat float shade;
 layout(location = 3) in vec3 node_pos;
 layout(location = 4) in flat vec3 chunk_normal;
 layout(location = 5) in flat uint node_seed;
+layout(location = 6) in flat vec3 node_turn;
 layout(location = 0) out vec4 color;
 
 layout(set = 1, binding = 1) uniform sampler2D perception_field;
@@ -122,6 +123,10 @@ vec3 drivers() {
     uint mode = uint(trip.w);
     float scale = trip.z;
 
+    if (mode == FIELD_WALK) {
+        return vec3(0.0);
+    }
+
     if (mode == FIELD_TRIPLANAR) {
         // Blend three planar projections by the normal so the pattern wraps
         // the terrain. The weights are a partition summing to one, so this is
@@ -186,5 +191,5 @@ void main() {
         drive = clamp(drivers(), 0.0, 1.0);
     }
 
-    color = vec4(display(levels, drive) * occlusion * shade, 1.0);
+    color = vec4(display(levels, drive, node_turn) * occlusion * shade, 1.0);
 }

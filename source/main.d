@@ -23,6 +23,7 @@ enum ulong WINDOW_VULKAN = 0x0000000010000000;
 enum ulong WINDOW_RESIZABLE = 0x0000000000000020;
 enum ulong WINDOW_HIDDEN = 0x0000000000000008;
 
+enum uint PRODUCER_NONE = 0;
 enum uint PRODUCER_DIFFUSION = 1;
 enum uint PRODUCER_CYCLIC = 2;
 
@@ -108,6 +109,7 @@ void run(int argc, char** argv) {
     bool flatWorldgen = false;
     bool tripMode = false;
     uint fieldMode = 1;
+    float walkStep = 0.07f;
     uint producer = PRODUCER_DIFFUSION;
     // Negative means "leave the renderer's default alone".
     float renderRadius = -1.0f;
@@ -167,16 +169,20 @@ void run(int argc, char** argv) {
                 const(char)* which = argv[i + 1];
                 if (cstrEq(which, "none")) {
                     tripMode = false;
-                } else if (cstrEq(which, "rps") || cstrEq(which, "cyclic")) {
+                } else if (cstrEq(which, "cyclic")) {
                     producer = PRODUCER_CYCLIC;
                 } else if (cstrEq(which, "diffusion")) {
                     producer = PRODUCER_DIFFUSION;
+                } else if (cstrEq(which, "walk")) {
+                    producer = PRODUCER_NONE;
+                    fieldMode = FIELD_WALK;
+                    walkStep = argFloat(argc, argv, i + 2, walkStep);
                 } else {
                     printf("unknown --trip option: %s\n", which);
                     return;
                 }
             }
-            printf("trip: %s\n", producerName(tripMode, producer));
+            printf("trip: %s\n", producerName(tripMode, producer, fieldMode));
         }
         if (cstrEq(a, "--field") && i + 1 < argc) {
             tripMode = true;
@@ -318,6 +324,7 @@ void run(int argc, char** argv) {
     renderer.worldgenDriver.flatWorldgen = flatWorldgen;
     renderer.trip = tripMode;
     renderer.fieldMode = fieldMode;
+    renderer.walkStep = walkStep;
     renderer.producer = producer;
     LocalCharacterController character = LocalCharacterController.create();
     character.position = renderer.camPos;
@@ -671,9 +678,12 @@ int argInt(int argc, char** argv, int index, int fallback) {
     return cast(int) parsed.value;
 }
 
-const(char)* producerName(bool tripMode, uint producer) {
+const(char)* producerName(bool tripMode, uint producer, uint fieldMode) {
     if (!tripMode) {
         return "none";
+    }
+    if (fieldMode == FIELD_WALK) {
+        return "walk";
     }
     if (producer == PRODUCER_CYCLIC) {
         return "rps";
