@@ -1,0 +1,12 @@
+[submodule "deps/lua"]
+	path = deps/lua
+	url = https://github.com/lua/lua
+	branch = v5.5.0
+[submodule "deps/sdl3"]
+	path = deps/sdl3
+	url = https://github.com/libsdl-org/sdl
+	branch = fa2c02b
+[submodule "deps/vulkan-headers"]
+	path = deps/vulkan-headers
+	url = https://github.com/khronosgroup/vulkan-headers
+	branch = vulkan-sdk-1.4.363

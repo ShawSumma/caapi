@@ -57,6 +57,7 @@ void workerLoop(GenQueue* queue) {
         VoxelData voxels = generateVoxels(req.params);
         synchronized (queue.mutex) {
             queue.done ~= GenResult(req.chunk, voxels);
+            queue.cond.notifyAll();
         }
     }
 }
@@ -118,20 +119,7 @@ struct WorldgenDriver {
         ubyte chunkSize,
         uint nearbyVersion,
     ) {
-        // Integrate whatever the workers finished since last frame.
-        resultBuf.length = 0;
-        resultBuf.assumeSafeAppend();
-        synchronized (queue.mutex) {
-            if (queue.done.length > 0) {
-                resultBuf ~= queue.done;
-                queue.done.length = 0;
-                queue.done.assumeSafeAppend();
-            }
-        }
-        foreach (ref GenResult r; resultBuf) {
-            inFlight--;
-            populateChunk(graph, r.chunk, r.voxels, chunkSize);
-        }
+        integrate(graph, chunkSize, false);
 
         // Queue fresh chunks in range, nearest-first (BFS order of `nearby`).
         float threshold = cosh(distance + CHUNK_BOUNDING_SPHERE_RADIUS);
@@ -210,6 +198,48 @@ struct WorldgenDriver {
                 queue.pending ~= requestBuf;
                 queue.cond.notifyAll();
             }
+        }
+    }
+
+    /// Stops and joins the worker threads; the driver is unusable after.
+    void stop() {
+        synchronized (queue.mutex) {
+            queue.stopping = true;
+            queue.cond.notifyAll();
+        }
+        foreach (t; workers) {
+            t.join();
+        }
+        workers = null;
+    }
+
+    /// Blocks until every requested chunk is generated and integrated. With
+    /// this after each drive, what the world contains at each frame no
+    /// longer depends on worker timing, which headless runs require.
+    void settle(ref Graph graph, ubyte chunkSize) {
+        while (inFlight > 0) {
+            integrate(graph, chunkSize, true);
+        }
+    }
+
+    /// Populates chunks the workers have finished. With `wait`, blocks until
+    /// at least one result is available.
+    void integrate(ref Graph graph, ubyte chunkSize, bool wait) {
+        resultBuf.length = 0;
+        resultBuf.assumeSafeAppend();
+        synchronized (queue.mutex) {
+            while (wait && queue.done.length == 0) {
+                queue.cond.wait();
+            }
+            if (queue.done.length > 0) {
+                resultBuf ~= queue.done;
+                queue.done.length = 0;
+                queue.done.assumeSafeAppend();
+            }
+        }
+        foreach (ref GenResult r; resultBuf) {
+            inFlight--;
+            populateChunk(graph, r.chunk, r.voxels, chunkSize);
         }
     }
 

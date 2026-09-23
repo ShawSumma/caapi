@@ -7,3 +7,5 @@ perf.data*
 mined-sever
 mined
 mined-test*
+mined-hadless
+mined-test-application

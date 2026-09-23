@@ -1,108 +1,36 @@
 import std.stdio;
-import std.file : exists, readText;
 import std.format : format;
-import std.string : split, splitLines, startsWith, strip, toStringz;
+import std.string : toStringz;
 import core.stdc.string : strlen;
 import core.stdc.stdlib : system;
 import std.conv : to;
-import std.math : acosh, tanh;
 import bindings.sdl3;
 import client.config : ClientConfig;
+import client.game : Game, FrameInput, InputState, Key, MATERIAL_PALETTE, axis, modeName;
 import client.graphics;
-import client.local_character_controller : LocalCharacterController;
-import client.script;
-import common.character_controller : runCharacterStep, getRelativeUp;
-import common.character_controller.vector_bounds : dot3;
-import common.math : MIsometry, MPoint;
-import common.proto : CharacterInput, Position;
-import common.sim_config : SimConfig, SimConfigRaw;
-import common.world;
-import worldcheck : dumpWorld, benchNearby, benchGen, benchDrive;
+import client.script : ScriptRecorder;
 
 enum : ulong {
     WINDOW_VULKAN    = 0x0000000010000000,
     WINDOW_RESIZABLE = 0x0000000000000020,
 }
 
-immutable Material[9] MATERIAL_PALETTE = [
-    Material.WoodPlanks,
-    Material.Wood,
-    Material.Leaves,
-    Material.GreyBrick,
-    Material.WhiteBrick,
-    Material.Sandstone,
-    Material.Marble,
-    Material.Granite,
-    Material.Basalt,
-];
-
-/// Held-key state, tracked per key so opposite keys don't cancel each
-/// other's release, and clearable in one go when the window loses focus.
-struct InputState {
-    bool fwd;
-    bool back;
-    bool left;
-    bool right;
-    bool up;
-    bool down;
-    bool yawLeft;
-    bool yawRight;
-    bool pitchUp;
-    bool pitchDown;
-
-    void clear() {
-        this = InputState.init;
-    }
-}
+enum ubyte CHUNK_DIMENSION = 12;
+// Longest frame the simulation will take in one step, in seconds.
+enum float MAX_FRAME_SECONDS = 0.1f;
 
 void main(string[] args) {
-    foreach (i, a; args) {
-        if (a == "--dump-world") {
-            float radius = (i + 1 < args.length) ? args[i + 1].to!float : 3.0f;
-            dumpWorld(radius, 12);
-            return;
-        }
-        if (a == "--bench-gen") {
-            float radius = (i + 1 < args.length) ? args[i + 1].to!float : 2.5f;
-            benchGen(radius, 12);
-            return;
-        }
-        if (a == "--bench-drive") {
-            float radius = (i + 1 < args.length) ? args[i + 1].to!float : 2.5f;
-            benchDrive(radius, 12);
-            return;
-        }
-        if (a == "--bench-nearby") {
-            float radius = (i + 1 < args.length) ? args[i + 1].to!float : 4.5f;
-            int iters = (i + 2 < args.length) ? args[i + 2].to!int : 50;
-            benchNearby(radius, iters, 12);
-            return;
-        }
-    }
-
     writeln("mined - hyperbolic voxel engine");
 
-    string scriptPath;
     string configPath = "mined.cfg";
     string recordPath;
-    string replayPath;
-    bool headlessMode = false;
     bool flatWorldgen = false;
     foreach (i, a; args) {
-        if (a == "--script" && i + 1 < args.length) {
-            scriptPath = args[i + 1];
-        }
         if (a == "--config" && i + 1 < args.length) {
             configPath = args[i + 1];
         }
         if (a == "--record" && i + 1 < args.length) {
             recordPath = args[i + 1];
-        }
-        if (a == "--replay" && i + 1 < args.length) {
-            replayPath = args[i + 1];
-        }
-        if (a == "--headless") {
-            headlessMode = true;
         }
         if (a == "--flat") {
             flatWorldgen = true;
@@ -121,39 +49,9 @@ void main(string[] args) {
     }
 
     Session session;
-    if (recordPath.length > 0 && replayPath.length == 0 && scriptPath.length == 0) {
-        session.recordFile = File(recordPath, "w");
-        session.recordFile.writeln("# mined-actions v1");
-        session.recording = true;
-        writefln("recording actions to %s", recordPath);
-    }
-
-    string[] replayLines;
-    size_t replayCursor = 0;
-    bool replayMode = false;
-    if (replayPath.length > 0) {
-        if (!exists(replayPath)) {
-            writefln("replay not found: %s", replayPath);
-            return;
-        }
-        foreach (line; readText(replayPath).splitLines()) {
-            string trimmed = line.strip();
-            if (trimmed.length > 0 && trimmed[0] != '#') {
-                replayLines ~= trimmed;
-            }
-        }
-        replayMode = true;
-        writefln("replaying %d action lines from %s", replayLines.length, replayPath);
-    }
-
-    Script script;
-    if (scriptPath.length > 0) {
-        if (!exists(scriptPath)) {
-            writefln("script not found: %s", scriptPath);
-            return;
-        }
-        script = Script.parse(readText(scriptPath));
-        writefln("Loaded script %s (%d events)", scriptPath, script.events.length);
+    if (recordPath.length > 0) {
+        session.recorder.open(recordPath);
+        writefln("recording to %s", recordPath);
     }
 
     if (!SDL_Init(SDL_INIT_VIDEO)) {
@@ -180,37 +78,20 @@ void main(string[] args) {
     ulong xWindowId = SDL_GetNumberProperty(props, "SDL.window.x11.window", 0);
 
     Renderer renderer;
-    if (!renderer.init(cast(void*) window)) {
+    if (!renderer.init(cast(void*) window, CHUNK_DIMENSION)) {
         writeln("Renderer initialization failed");
         return;
     }
     scope(exit) {
         renderer.cleanup();
     }
-    SimConfig simCfg = SimConfig.fromRaw();
-    // Config reach is in voxel-meters; the caster wants the tanh of the
-    // absolute hyperbolic distance.
-    renderer.reach = tanh(cfg.reach * simCfg.metersToAbsolute);
-    renderer.headless = headlessMode;
-    renderer.worldgenDriver.flatWorldgen = flatWorldgen;
-    LocalCharacterController character = LocalCharacterController.create();
-    character.position = renderer.camPos;
-    character.up = getRelativeUp(&renderer.graph, &character.position);
-    character.eyeOffset = simCfg.character.eyeOffset;
-    character.alignToGravity();
-    float[3] velocity = [0, 0, 0];
-    bool onGround = false;
-    bool flyMode = true;
-    bool noClip = false;
+    Game game = Game.create(CHUNK_DIMENSION, flatWorldgen, cfg.reach);
 
     bool running = true;
     bool mouseCaptured = false;
-    int materialIndex = 0;
     SDL_Event ev;
-    CameraInput cam;
     InputState input;
     int shotIndex = 0;
-    float simTime = 0;
     float mouseDx = 0;
     float mouseDy = 0;
     float lastFps = 0;
@@ -218,16 +99,9 @@ void main(string[] args) {
     ulong framesSinceReport = 0;
     ulong lastFpsReport = lastTicks;
 
-    updateWindowTitle(window, mouseCaptured, materialIndex, flyMode, noClip, lastFps);
+    updateWindowTitle(window, mouseCaptured, game, lastFps);
 
     float frameMaxMs = 0;
-    float traveled = 0;
-    Position odoPrev = character.position;
-
-    // Vertical camera kinematics monitor: worst |acceleration| per window.
-    Position camPrev = renderer.camPos;
-    float prevVertVel = 0;
-    bool haveVertVel = false;
     float vaccMax = 0;
 
     while (running) {
@@ -237,12 +111,8 @@ void main(string[] args) {
         if (dt * 1000.0f > frameMaxMs) {
             frameMaxMs = dt * 1000.0f;
         }
-        if (dt > 0.1f) {
-            dt = 0.1f;
-        }
-
-        if (script.events.length > 0) {
-            dt = 0.016f;
+        if (dt > MAX_FRAME_SECONDS) {
+            dt = MAX_FRAME_SECONDS;
         }
 
         mouseDx = 0;
@@ -253,180 +123,37 @@ void main(string[] args) {
             if (ev.type == SDL_EVENT_QUIT) {
                 running = false;
             }
-
-            if (replayMode) {
-                if (ev.type == SDL_EVENT_KEY_DOWN && ev.key.key == SDLK_ESCAPE) {
-                    running = false;
-                }
-            } else if (script.events.length == 0) {
-                processInteractiveInput(
-                    ev, window, input, renderer, session, mouseCaptured,
-                    mouseDx, mouseDy, materialIndex, flyMode, noClip, titleDirty,
-                    xWindowId, shotIndex);
-            }
+            processInteractiveInput(
+                ev, window, input, game, session, mouseCaptured,
+                mouseDx, mouseDy, titleDirty, xWindowId, shotIndex);
         }
-
-        float replayYaw = 0;
-        float replayPitch = 0;
-        if (replayMode) {
-            bool gotFrame = false;
-            while (replayCursor < replayLines.length) {
-                string line = replayLines[replayCursor++];
-                if (line.startsWith("f ")) {
-                    string[] parts = line.split();
-                    if (parts.length >= 5) {
-                        dt = parts[1].to!float;
-                        replayYaw = parts[2].to!float;
-                        replayPitch = parts[3].to!float;
-                        input = unpackInput(parts[4].to!uint(16));
-                        gotFrame = true;
-                    }
-                    break;
-                } else if (line == "b") {
-                    renderer.breakBlock();
-                } else if (line == "p") {
-                    renderer.placeBlock(cast(ushort) MATERIAL_PALETTE[materialIndex]);
-                } else if (line.startsWith("m ")) {
-                    materialIndex = line.split()[1].to!int;
-                } else if (line == "v") {
-                    flyMode = !flyMode;
-                } else if (line == "n") {
-                    noClip = !noClip;
-                }
-            }
-            if (!gotFrame) {
-                writeln("replay finished");
-                running = false;
-            }
-        }
-
-        if (script.events.length > 0) {
-            script.tick(simTime, xWindowId, running);
-            cam.fwd = script.fwd;
-            cam.strafe = script.strafe;
-            cam.vert = script.vert;
-            cam.yawRate = script.yawRate;
-            cam.pitchRate = script.pitchRate;
-        } else {
-            cam.yawRate = (axis(input.yawRight) - axis(input.yawLeft)) * cfg.turnSpeed;
-            cam.pitchRate = (axis(input.pitchDown) - axis(input.pitchUp)) * cfg.turnSpeed;
-        }
-
         if (!running) {
             break;
         }
 
         float invY = cfg.invertY ? -1.0f : 1.0f;
-        float yaw = cam.yawRate * dt + mouseDx * cfg.mouseSensitivity;
-        float pitch = cam.pitchRate * dt + mouseDy * cfg.mouseSensitivity * invY;
-        if (replayMode) {
-            yaw = replayYaw;
-            pitch = replayPitch;
-        }
-        if (session.recording) {
-            // One line per frame: dt, final look deltas (sensitivity and
-            // invert baked in), and the held-key bits. Event lines (b/p/m/v)
-            // are written as they happen and precede their frame line.
-            session.recordFile.writefln("f %.6f %.6f %.6f %x", dt, yaw, pitch, packInput(input));
+        float yawRate = (axis(input[Key.yawRight]) - axis(input[Key.yawLeft])) * cfg.turnSpeed;
+        float pitchRate = (axis(input[Key.pitchDown]) - axis(input[Key.pitchUp])) * cfg.turnSpeed;
+        FrameInput frame;
+        frame.keys = input;
+        frame.yaw = yawRate * dt + mouseDx * cfg.mouseSensitivity;
+        frame.pitch = pitchRate * dt + mouseDy * cfg.mouseSensitivity * invY;
+        if (session.recorder.isOpen()) {
+            session.recorder.frame(frame, dt);
         }
 
-        if (script.events.length > 0) {
-            // Script mode keeps direct camera control for reproducibility.
-            renderer.rotateCamera(yaw, pitch, 0);
-            renderer.moveCamera(cam.strafe * dt, cam.vert * dt, cam.fwd * dt);
-        } else {
-            // The quaternion axes are mirrored relative to the renderer's
-            // rotation matrices, hence the negated deltas.
-            character.lookLevel(-yaw, -pitch);
-
-            float mx = axis(input.right) - axis(input.left);
-            float my = axis(input.up) - axis(input.down);
-            float mz = axis(input.back) - axis(input.fwd);
-
-            Position beforeStep = character.position;
-            bool wasGround = onGround;
-
-            CharacterInput cin;
-            cin.noClip = noClip;
-            cin.fly = flyMode;
-            if (noClip) {
-                // Debug free-flight: fully view-relative.
-                cin.movement = character.viewOrientation().rotate([mx, my, mz]);
-            } else if (flyMode) {
-                // Creative flight: forward/strafe in the yaw plane, and
-                // Space/Shift along actual world up/down.
-                cin.movement = character.horizontalOrientation().rotate([mx, my, mz]);
-            } else {
-                cin.movement = character.horizontalOrientation().rotate([mx, 0, mz]);
-                cin.jump = input.up;
-            }
-            runCharacterStep(simCfg, renderer.graph, character.position,
-                velocity, onGround, cin, dt);
-
-            // Holonomy mitigation: "down" is re-derived from the world at the
-            // new position every step, the view is transported to follow it,
-            // and any residual roll is aligned away — so carrying the frame
-            // around a loop can't accumulate rotation.
-            float[3] newUp = getRelativeUp(&renderer.graph, &character.position);
-
-            // Smooth grounded vertical motion (stair steps, hop launches and
-            // landings) out of the eye.
-            float groundedRise = 0;
-            if ((wasGround || onGround) && beforeStep.node == character.position.node) {
-                MPoint!float moved = (beforeStep.local.inverse() * character.position.local)
-                    * MPoint!float.origin();
-                groundedRise = dot3(moved.vec.xyz(), newUp);
-            }
-            character.smoothEyeVertical(groundedRise, dt);
-
-            character.updatePosition(character.position, newUp, true);
-            // The yaw frame stays up-aligned by construction; this only
-            // scrubs out accumulated float noise.
-            character.alignToGravity();
-            character.renormalizeOrientation();
-            renderer.camPos = character.orientedPosition();
-
-            // Vertical camera acceleration (what the eye feels).
-            if (renderer.camPos.node == camPrev.node && dt > 1e-6f) {
-                MPoint!float camMoved = (camPrev.local.inverse() * renderer.camPos.local)
-                    * MPoint!float.origin();
-                float vertVel = dot3(camMoved.vec.xyz(), newUp) / dt;
-                if (haveVertVel) {
-                    float vacc = (vertVel - prevVertVel) / dt;
-                    if (vacc < 0) {
-                        vacc = -vacc;
-                    }
-                    if (vacc > vaccMax) {
-                        vaccMax = vacc;
-                    }
-                }
-                prevVertVel = vertVel;
-                haveVertVel = true;
-            } else {
-                haveVertVel = false;
-            }
-            camPrev = renderer.camPos;
-
-            // Odometer: real distance covered, robust across node changes.
-            if (character.position.node == odoPrev.node) {
-                MPoint!float a = odoPrev.local * MPoint!float.origin();
-                MPoint!float b = character.position.local * MPoint!float.origin();
-                float m = -a.mip(b.vec);
-                if (m > 1.0f) {
-                    traveled += acosh(m);
-                }
-            }
-            odoPrev = character.position;
+        game.step(frame, dt);
+        if (game.vacc > vaccMax) {
+            vaccMax = game.vacc;
         }
-        renderer.render(dt);
-        simTime += dt;
+        renderer.render(game.world, dt);
 
         framesSinceReport++;
-        if (nowTicks - lastFpsReport >= 1000 || (replayMode && framesSinceReport >= 60)) {
+        if (nowTicks - lastFpsReport >= 1000) {
             lastFps = framesSinceReport * 1000.0f / (nowTicks - lastFpsReport);
             writefln("FPS=%.1f frame max=%.0fms | mode=%s ground=%s vel=[%.3f %.3f %.3f] traveled=%.3f vacc=%.2f",
-                lastFps, frameMaxMs, modeName(flyMode, noClip), onGround,
-                velocity[0], velocity[1], velocity[2], traveled, vaccMax);
+                lastFps, frameMaxMs, modeName(game.flyMode, game.noClip), game.onGround,
+                game.velocity[0], game.velocity[1], game.velocity[2], game.traveled, vaccMax);
             vaccMax = 0;
             stdout.flush();
             framesSinceReport = 0;
@@ -436,35 +163,23 @@ void main(string[] args) {
         }
 
         if (titleDirty) {
-            updateWindowTitle(window, mouseCaptured, materialIndex, flyMode, noClip, lastFps);
+            updateWindowTitle(window, mouseCaptured, game, lastFps);
         }
     }
 
-    if (session.recording) {
-        session.recording = false;
-        session.recordFile.close();
+    if (session.recorder.isOpen()) {
+        session.recorder.close();
         writefln("recording saved to %s", recordPath);
     }
-    writefln("session: traveled=%.3f", traveled);
+    writefln("session: traveled=%.3f", game.traveled);
 }
 
-float axis(bool held) {
-    return held ? 1.0f : 0.0f;
-}
-
-string modeName(bool flyMode, bool noClip) {
-    if (noClip) {
-        return "noclip";
-    }
-    return flyMode ? "fly" : "walk";
-}
-
-void updateWindowTitle(SDL_Window* window, bool mouseCaptured, int materialIndex, bool flyMode, bool noClip, float fps) {
-    string mode = modeName(flyMode, noClip);
+void updateWindowTitle(SDL_Window* window, bool mouseCaptured, const ref Game game, float fps) {
+    string mode = modeName(game.flyMode, game.noClip);
     string title;
     if (mouseCaptured) {
         title = format("mined — %s (V) — [%d] %s — Esc to release mouse — FPS %.0f",
-            mode, materialIndex + 1, MATERIAL_PALETTE[materialIndex], fps);
+            mode, game.materialIndex + 1, game.material(), fps);
     } else {
         title = format("mined — %s (V) — click to capture mouse — FPS %.0f", mode, fps);
     }
@@ -477,45 +192,14 @@ struct Session {
     // XInput2) and we emulate it by warping the cursor back to the window
     // center every frame.
     bool warpFallback;
-    // Action recording (--record): open sink for event/frame lines.
-    File recordFile;
-    bool recording;
+    // --record: live play written as a replayable Lua script.
+    ScriptRecorder recorder;
 }
 
-void recordEvent(ref Session session, string line) {
-    if (session.recording) {
-        session.recordFile.writeln(line);
+void recordEvent(ref Session session, string call) {
+    if (session.recorder.isOpen()) {
+        session.recorder.event(call);
     }
-}
-
-ushort packInput(const ref InputState s) {
-    ushort b = 0;
-    if (s.fwd) b |= 1;
-    if (s.back) b |= 2;
-    if (s.left) b |= 4;
-    if (s.right) b |= 8;
-    if (s.up) b |= 16;
-    if (s.down) b |= 32;
-    if (s.yawLeft) b |= 64;
-    if (s.yawRight) b |= 128;
-    if (s.pitchUp) b |= 256;
-    if (s.pitchDown) b |= 512;
-    return b;
-}
-
-InputState unpackInput(uint b) {
-    InputState s;
-    s.fwd = (b & 1) != 0;
-    s.back = (b & 2) != 0;
-    s.left = (b & 4) != 0;
-    s.right = (b & 8) != 0;
-    s.up = (b & 16) != 0;
-    s.down = (b & 32) != 0;
-    s.yawLeft = (b & 64) != 0;
-    s.yawRight = (b & 128) != 0;
-    s.pitchUp = (b & 256) != 0;
-    s.pitchDown = (b & 512) != 0;
-    return s;
 }
 
 void setMouseCaptured(SDL_Window* window, ref Session session, ref bool mouseCaptured, ref InputState input, bool captured) {
@@ -558,14 +242,11 @@ void processInteractiveInput(
     ref SDL_Event ev,
     SDL_Window* window,
     ref InputState input,
-    ref Renderer renderer,
+    ref Game game,
     ref Session session,
     ref bool mouseCaptured,
     ref float mouseDx,
     ref float mouseDy,
-    ref int materialIndex,
-    ref bool flyMode,
-    ref bool noClip,
     ref bool titleDirty,
     ulong xWindowId,
     ref int shotIndex,
@@ -583,21 +264,21 @@ void processInteractiveInput(
             writefln("F12 screenshot -> %s", path);
             system(cmd.toStringz);
         } else if (ev.key.scancode == SDL_SCANCODE_V && !ev.key.repeat) {
-            flyMode = !flyMode;
-            writefln("mode: %s", modeName(flyMode, noClip));
-            recordEvent(session, "v");
+            game.flyMode = !game.flyMode;
+            writefln("mode: %s", modeName(game.flyMode, game.noClip));
+            recordModeChange(session, game);
             titleDirty = true;
         } else if (ev.key.scancode == SDL_SCANCODE_N && !ev.key.repeat) {
-            noClip = !noClip;
-            writefln("mode: %s", modeName(flyMode, noClip));
-            recordEvent(session, "n");
+            game.noClip = !game.noClip;
+            writefln("mode: %s", modeName(game.flyMode, game.noClip));
+            recordModeChange(session, game);
             titleDirty = true;
         } else if (ev.key.scancode >= SDL_SCANCODE_1 && ev.key.scancode <= SDL_SCANCODE_9) {
             int idx = cast(int)(ev.key.scancode - SDL_SCANCODE_1);
-            if (idx < MATERIAL_PALETTE.length && idx != materialIndex) {
-                materialIndex = idx;
-                writefln("material: [%d] %s", idx + 1, MATERIAL_PALETTE[idx]);
-                recordEvent(session, format("m %d", idx));
+            if (idx < MATERIAL_PALETTE.length && idx != game.materialIndex) {
+                game.materialIndex = idx;
+                writefln("material: [%d] %s", idx + 1, game.material());
+                recordEvent(session, format("material(%d)", idx + 1));
                 titleDirty = true;
             }
         } else {
@@ -643,37 +324,35 @@ void processInteractiveInput(
             setMouseCaptured(window, session, mouseCaptured, input, true);
             titleDirty = true;
         } else if (ev.button.button == SDL_BUTTON_LEFT) {
-            renderer.breakBlock();
-            recordEvent(session, "b");
+            game.breakBlock();
+            recordEvent(session, "break_block()");
         } else if (ev.button.button == SDL_BUTTON_RIGHT) {
-            renderer.placeBlock(cast(ushort) MATERIAL_PALETTE[materialIndex]);
-            recordEvent(session, "p");
+            game.placeBlock();
+            recordEvent(session, "place_block()");
         }
     }
 }
 
-struct CameraInput {
-    float yawRate = 0;
-    float pitchRate = 0;
-    float fwd = 0;
-    float strafe = 0;
-    float vert = 0;
+/// The noclip and fly toggles don't commute, so the resulting mode is
+/// recorded rather than the keypress.
+void recordModeChange(ref Session session, const ref Game game) {
+    recordEvent(session, format("mode(\"%s\")", modeName(game.flyMode, game.noClip)));
 }
 
 /// Movement uses scancodes (physical key positions) so WASD stays WASD on
 /// non-QWERTY layouts.
 void setMovementKey(uint scancode, ref InputState input, bool held) {
     switch (scancode) {
-        case SDL_SCANCODE_W: input.fwd = held; break;
-        case SDL_SCANCODE_S: input.back = held; break;
-        case SDL_SCANCODE_A: input.left = held; break;
-        case SDL_SCANCODE_D: input.right = held; break;
-        case SDL_SCANCODE_SPACE: input.up = held; break;
-        case SDL_SCANCODE_LSHIFT: input.down = held; break;
-        case SDL_SCANCODE_LEFT: input.yawLeft = held; break;
-        case SDL_SCANCODE_RIGHT: input.yawRight = held; break;
-        case SDL_SCANCODE_UP: input.pitchUp = held; break;
-        case SDL_SCANCODE_DOWN: input.pitchDown = held; break;
+        case SDL_SCANCODE_W: input.held[Key.fwd] = held; break;
+        case SDL_SCANCODE_S: input.held[Key.back] = held; break;
+        case SDL_SCANCODE_A: input.held[Key.left] = held; break;
+        case SDL_SCANCODE_D: input.held[Key.right] = held; break;
+        case SDL_SCANCODE_SPACE: input.held[Key.up] = held; break;
+        case SDL_SCANCODE_LSHIFT: input.held[Key.down] = held; break;
+        case SDL_SCANCODE_LEFT: input.held[Key.yawLeft] = held; break;
+        case SDL_SCANCODE_RIGHT: input.held[Key.yawRight] = held; break;
+        case SDL_SCANCODE_UP: input.held[Key.pitchUp] = held; break;
+        case SDL_SCANCODE_DOWN: input.held[Key.pitchDown] = held; break;
         default: break;
     }
 }

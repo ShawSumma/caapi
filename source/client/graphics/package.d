@@ -14,18 +14,14 @@ import client.graphics.voxels;
 import client.graphics.fog : FogPipeline;
 import client.graphics.highlight : HighlightPipeline;
 import client.graphics.frustum : Frustum;
-import client.worldgen_driver : WorldgenDriver, getChunkNeighbor;
-import common.collision_math : Ray;
-import common.dodeca : Vertex, Side, sideReflection, sideIsFacing, BOUNDING_SPHERE_RADIUS, CHUNK_BOUNDING_SPHERE_RADIUS, vertexChunkBoundingSphereCenter, vertexChunkToNode;
-import common.graph_ray_casting : GraphCastHit, rayCast;
+import client.local_world : LocalWorld;
+import common.dodeca : Vertex, BOUNDING_SPHERE_RADIUS, CHUNK_BOUNDING_SPHERE_RADIUS, vertexChunkBoundingSphereCenter, vertexChunkToNode;
+import common.graph_ray_casting : GraphCastHit;
 import common.math : Matrix4, MPoint, MIsometry, MVector, MDirection;
-import common.graph : Graph, NodeId, NO_SLOT;
+import common.graph : NO_SLOT;
 import common.node : Chunk, ChunkId, ChunkState, Node;
 import common.proto : Position;
-import common.traversal : ensureAndCollectNearby, NearbyNode, NearbyScratch;
-import common.margins : fixMargins, neighborAxisPermutation;
-import common.voxel_math : ChunkDirection, Coords, CoordSign;
-import common.world : Material;
+import common.traversal : NearbyNode;
 
 struct Renderer {
     VulkanCore core;
@@ -34,17 +30,8 @@ struct Renderer {
     SurfaceExtraction extract;
     FogPipeline fog;
     HighlightPipeline highlight;
-    WorldgenDriver worldgenDriver;
-    uint dimension = 12;
+    uint dimension;
     float time = 0;
-    Position camPos;
-    Graph graph;
-    float viewRadius = 5.0f;
-    float renderRadius = 4.5f;
-    float reach = 10.0f;
-    // Skip all GPU work; world generation and simulation still run. Used by
-    // headless replays so they aren't paced (or stalled) by presentation.
-    bool headless = false;
 
     uint maxSlots = 2^^16;
     uint concurrency = 128;
@@ -75,74 +62,9 @@ struct Renderer {
     ulong lastGcPauseUsecs = 0;
 
     Nullable!uint lastLoggedSecond;
-    NearbyNode[] cachedNodes;
-    NearbyScratch nearbyScratch;
-    NodeId lastNearbyNode;
-    MPoint!float lastNearbyPos;
-    bool hasNearby = false;
-    uint nearbyVersion = 0;
 
-    // The nearby set is collected with this much extra radius so it stays
-    // valid until the camera has translated NEARBY_PADDING away from the
-    // collection point; rotation never invalidates it. Node count grows
-    // exponentially with radius in hyperbolic space, so this must stay small:
-    // 0.05 costs ~10% more nodes, while e.g. 0.25 would cost ~65% more.
-    enum float NEARBY_PADDING = 0.05f;
-
-    void rotateCamera(float yawDelta, float pitchDelta, float rollDelta = 0) {
-        if (yawDelta != 0) {
-            camPos.local = camPos.local * rotationY(yawDelta);
-        }
-        if (pitchDelta != 0) {
-            camPos.local = camPos.local * rotationX(pitchDelta);
-        }
-        if (rollDelta != 0) {
-            camPos.local = camPos.local * rotationZ(rollDelta);
-        }
-        if (yawDelta != 0 || pitchDelta != 0 || rollDelta != 0) {
-            camPos.local = camPos.local.renormalized();
-        }
-    }
-
-    void moveCamera(float dx, float dy, float dz) {
-        if (dx == 0 && dy == 0 && dz == 0) {
-            return;
-        }
-        float[3] v = [dx, dy, dz];
-        camPos.local = camPos.local * MIsometry!float.translationAlong(v);
-        migratePosition();
-        camPos.local = camPos.local.renormalized();
-    }
-
-    void migratePosition() {
-        foreach (_; 0 .. 12) {
-            MVector!float col3 = MVector!float(
-                camPos.local.mat.data[3][0], camPos.local.mat.data[3][1],
-                camPos.local.mat.data[3][2], camPos.local.mat.data[3][3]);
-            MPoint!float p = MPoint!float(col3);
-            bool any = false;
-            Side facing;
-            foreach (sideIdx; 0 .. 12) {
-                Side side = cast(Side) sideIdx;
-                if (sideIsFacing(side, p)) {
-                    facing = side;
-                    any = true;
-                    break;
-                }
-            }
-            if (!any) {
-                return;
-            }
-            NodeId neighbor = graph.ensureNeighbor(camPos.node, facing);
-            if (neighbor == NodeId.init) {
-                return;
-            }
-            camPos.node = neighbor;
-            camPos.local = sideReflection(facing) * camPos.local;
-        }
-    }
-
-    bool init(void* window) {
+    bool init(void* window, ubyte chunkDimension) {
+        dimension = chunkDimension;
         freeSlotsBuf = new uint[maxSlots];
         activeSlotsBuf = new uint[maxSlots];
         slotUsedBuf = new ubyte[maxSlots];
@@ -155,8 +77,6 @@ struct Renderer {
         if (!swapState.init(core.physicalDevice, core.device, core.surface, core.graphicsQueueFamily)) {
             return false;
         }
-
-        graph = Graph.create(cast(ubyte) dimension);
 
         if (!extract.init(core.physicalDevice, core.device, dimension, concurrency, maxSlots)) {
             return false;
@@ -188,16 +108,13 @@ struct Renderer {
             slotTaskLocal = new uint[maxSlots * 4];
         }
 
-        worldgenDriver = WorldgenDriver.create();
-
-        camPos.node = NodeId.ROOT;
-        camPos.local = MIsometry!float.translationAlong([0.0f, 1.4f, 0.0f]);
-
         writeln("Renderer initialized successfully");
         return true;
     }
 
-    void render(float dt) {
+    /// Draws `world` as of its last update. The world update's own stage
+    /// timings are folded into the stage log.
+    void render(ref LocalWorld world, float dt) {
         time += dt;
 
         if (swapState.extent.width == 0 || swapState.extent.height == 0) {
@@ -208,26 +125,9 @@ struct Renderer {
             voxels.updateDepthDescriptor(core.device, swapState.depthView);
         }
 
-        MonoTime a0 = MonoTime.currTime;
-        MPoint!float camPoint = camPos.local * MPoint!float.origin();
-        bool camMoved = !hasNearby || camPos.node != lastNearbyNode
-            || nearbyScratch.creationCapped
-            || -lastNearbyPos.mip(camPoint.vec) > cosh(NEARBY_PADDING);
-        if (camMoved) {
-            cachedNodes = ensureAndCollectNearby(nearbyScratch, graph, camPos.node, camPos.local,
-                renderRadius + NEARBY_PADDING);
-            lastNearbyNode = camPos.node;
-            lastNearbyPos = camPoint;
-            hasNearby = true;
-            nearbyVersion++;
-        }
-        MonoTime a1 = MonoTime.currTime;
-        worldgenDriver.drive(cachedNodes, camPos.local, renderRadius, graph, cast(ubyte) dimension, nearbyVersion);
         MonoTime a2 = MonoTime.currTime;
-
-        if (headless) {
-            return;
-        }
+        Position camPos = world.camPos;
+        const(NearbyNode)[] cachedNodes = world.cachedNodes;
 
         tasksLen = 0;
         activeCount = 0;
@@ -265,7 +165,7 @@ struct Renderer {
             if (frustum.sphereOutside(fplanes, nodeCam, NODE_CULL_RADIUS)) {
                 continue;
             }
-            Node* node = &graph.nodeAt(nn.slot);
+            Node* node = &world.graph.nodeAt(nn.slot);
 
             uint thisNodeIndex = nodeIndex;
             bool nodeUploaded = false;
@@ -379,7 +279,7 @@ struct Renderer {
         bool hasTarget = false;
         float[16] targetMvp;
         float[3] targetVoxel;
-        GraphCastHit targetHit = castCenterRay(reach);
+        GraphCastHit targetHit = world.castCenterRay();
         if (!isNaN(targetHit.tanhDistance)) {
             foreach (ref nn; cachedNodes) {
                 if (nn.id == targetHit.chunk.node) {
@@ -536,15 +436,15 @@ struct Renderer {
         MonoTime a8 = MonoTime.currTime;
 
         double[9] stages = [
-            (a1 - a0).total!"usecs" / 1000.0,
-            (a2 - a1).total!"usecs" / 1000.0,
+            world.ensureMs,
+            world.driveMs,
             (a3 - a2).total!"usecs" / 1000.0,
             (a4 - a3).total!"usecs" / 1000.0,
             (a5 - a4).total!"usecs" / 1000.0,
             (a6 - a5).total!"usecs" / 1000.0,
             (a7 - a6).total!"usecs" / 1000.0,
             (a8 - a7).total!"usecs" / 1000.0,
-            (a8 - a0).total!"usecs" / 1000.0,
+            (a8 - a2).total!"usecs" / 1000.0 + world.ensureMs + world.driveMs,
         ];
         foreach (i; 0 .. 9) {
             stageSum[i] += stages[i];
@@ -563,7 +463,7 @@ struct Renderer {
             ulong gcPauseUsecs = gcStats.totalPauseTime.total!"usecs";
 
             string line = format("[t=%ss] frames=%d active=%d slots=%d graph=%d nearby=%d",
-                currentSecond, statFrames, activeCount, nextSlot, graph.len, cachedNodes.length);
+                currentSecond, statFrames, activeCount, nextSlot, world.graph.len, cachedNodes.length);
             foreach (i; 0 .. 9) {
                 line ~= format(" %s=%.1f/%.1f", STAGE_NAMES[i],
                     statFrames > 0 ? stageSum[i] / statFrames : 0.0, stageMax[i]);
@@ -589,90 +489,6 @@ struct Renderer {
         voxels.updateDepthDescriptor(core.device, swapState.depthView);
     }
 
-    GraphCastHit castCenterRay(float reachDistance) {
-        Ray ray = Ray.create(
-            MPoint!float.origin(),
-            MVector!float(0, 0, -1, 0).normalizedDirection());
-        bool oob;
-        return rayCast(graph, camPos.node, camPos.local, ray, reachDistance, oob);
-    }
-
-    uint castHits;
-    uint castMisses;
-
-    void breakBlock() {
-        GraphCastHit hit = castCenterRay(reach);
-        if (isNaN(hit.tanhDistance)) {
-            castMisses++;
-            writefln("break: miss (%d/%d hit)", castHits, castHits + castMisses);
-            return;
-        }
-        castHits++;
-        setVoxel(hit.chunk, hit.voxelCoords, Material.Void);
-    }
-
-    void placeBlock(ushort material) {
-        GraphCastHit hit = castCenterRay(reach);
-        if (isNaN(hit.tanhDistance)) {
-            castMisses++;
-            writefln("place: miss (%d/%d hit)", castHits, castHits + castMisses);
-            return;
-        }
-        castHits++;
-        ChunkId targetChunk = hit.chunk;
-        Coords coords = hit.voxelCoords;
-        int stepped = coords[hit.faceAxis] + (hit.faceSign == CoordSign.Plus ? 1 : -1);
-        if (stepped >= 0 && stepped < dimension) {
-            coords[hit.faceAxis] = cast(ubyte) stepped;
-        } else {
-            // The cell in front of the hit face lies in the neighboring chunk.
-            // Chunk neighbors meet mirrored, so the crossing lands on the
-            // neighbor's boundary layer for the same direction, with its axes
-            // permuted the same way fixMargins matches them up.
-            ChunkDirection dir = ChunkDirection(hit.faceAxis, hit.faceSign);
-            ChunkId neighbor = getChunkNeighbor(graph, hit.chunk, dir.axis, dir.sign);
-            if (neighbor.node == NodeId.init || !graph.contains(neighbor.node)) {
-                return;
-            }
-            coords[hit.faceAxis] = Coords.boundaryCoord(cast(ubyte) dimension, dir.sign);
-            coords = neighborAxisPermutation(hit.chunk.vertex, dir) * coords;
-            targetChunk = neighbor;
-        }
-        setVoxel(targetChunk, coords, cast(Material) material);
-    }
-
-    /// Write one voxel and keep the margin copies of adjacent chunks in sync
-    /// so their surfaces re-extract correctly when a boundary voxel changes.
-    bool setVoxel(ChunkId chunkId, Coords coords, Material material) {
-        if (!graph.contains(chunkId.node)) {
-            return false;
-        }
-        Chunk* c = &graph[chunkId.node].chunks.values[chunkId.vertex];
-        if (c.state != ChunkState.Populated) {
-            return false;
-        }
-        ubyte dim = cast(ubyte) dimension;
-        c.voxels.dataMut(dim)[coords.toIndex(dim)] = material;
-        c.generation++;
-
-        foreach (dir; ChunkDirection.ALL) {
-            if (coords[dir.axis] != Coords.boundaryCoord(dim, dir.sign)) {
-                continue;
-            }
-            ChunkId neighbor = getChunkNeighbor(graph, chunkId, dir.axis, dir.sign);
-            if (neighbor.node == NodeId.init || !graph.contains(neighbor.node)) {
-                continue;
-            }
-            Chunk* nc = &graph[neighbor.node].chunks.values[neighbor.vertex];
-            if (nc.state != ChunkState.Populated) {
-                continue;
-            }
-            fixMargins(dim, chunkId.vertex, c.voxels, dir, nc.voxels);
-            nc.generation++;
-        }
-        return true;
-    }
-
     void cleanup() {
         if (core.device !is null) {
             vkDeviceWaitIdle(core.device);
@@ -694,45 +510,6 @@ float[16] matToFlat(M)(M m) {
         }
     }
     return r;
-}
-
-MIsometry!float rotationY(float angle) {
-    float c = cos(angle);
-    float s = sin(angle);
-    Matrix4!float m;
-    m.data[0][0] = c;
-    m.data[2][0] = -s;
-    m.data[1][1] = 1;
-    m.data[0][2] = s;
-    m.data[2][2] = c;
-    m.data[3][3] = 1;
-    return MIsometry!float(m);
-}
-
-MIsometry!float rotationX(float angle) {
-    float c = cos(angle);
-    float s = sin(angle);
-    Matrix4!float m;
-    m.data[0][0] = 1;
-    m.data[1][1] = c;
-    m.data[2][1] = s;
-    m.data[1][2] = -s;
-    m.data[2][2] = c;
-    m.data[3][3] = 1;
-    return MIsometry!float(m);
-}
-
-MIsometry!float rotationZ(float angle) {
-    float c = cos(angle);
-    float s = sin(angle);
-    Matrix4!float m;
-    m.data[0][0] = c;
-    m.data[1][0] = -s;
-    m.data[0][1] = s;
-    m.data[1][1] = c;
-    m.data[2][2] = 1;
-    m.data[3][3] = 1;
-    return MIsometry!float(m);
 }
 
 float[16] matMul(float[16] a, float[16] b) {
