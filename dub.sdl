@@ -4,32 +4,30 @@ license "Apache-2.0"
 targetType "executable"
 sourcePaths "source"
 importPaths "source"
-stringImportPaths "source/lua"
+stringImportPaths "import"
 
 sourceFiles "deps/lua/lapi.c" "deps/lua/lcode.c" "deps/lua/lctype.c" "deps/lua/ldebug.c" "deps/lua/ldo.c" "deps/lua/ldump.c" "deps/lua/lfunc.c" "deps/lua/lgc.c" "deps/lua/llex.c" "deps/lua/lmem.c" "deps/lua/lobject.c" "deps/lua/lopcodes.c" "deps/lua/lparser.c" "deps/lua/lstate.c" "deps/lua/lstring.c" "deps/lua/ltable.c" "deps/lua/ltm.c" "deps/lua/lundump.c" "deps/lua/lvm.c" "deps/lua/lzio.c" "deps/lua/lauxlib.c" "deps/lua/lbaselib.c" "deps/lua/lcorolib.c" "deps/lua/ldblib.c" "deps/lua/liolib.c" "deps/lua/lmathlib.c" "deps/lua/loadlib.c" "deps/lua/loslib.c" "deps/lua/lstrlib.c" "deps/lua/ltablib.c" "deps/lua/lutf8lib.c" "deps/lua/linit.c"
-dflags "-P-Ideps/lua" "-P-DLUA_USE_LINUX" "-P-DLUA_USE_JUMPTABLE=0"
-libs "dl" "m"
+dflags "-betterC" "-checkaction=halt" "-P-Ideps/lua" "-P-DLUA_USE_LINUX" "-P-DLUA_USE_JUMPTABLE=0"
+libs "dl" "m" "pthread"
 
 configuration "application" {
 	targetName "mined"
 	mainSourceFile "source/main.d"
-	excludedSourceFiles "source/headless.d"
+	excludedSourceFiles "source/headless.d" "source/worldcheck.d" "source/unittests.d"
 	stringImportPaths "source/shaders/spv"
-	dflags "-P-Ideps/sdl3/include" "-P-Ideps/vulkan-headers/include"
-	libs "vulkan"
-	lflags "-Ldeps/sdl3/build" "-l:libSDL3.a"
-	preBuildCommands "cmake -S deps/sdl3 -B deps/sdl3/build -DSDL_SHARED=OFF -DSDL_STATIC=ON -DSDL_VULKAN=ON -DSDL_TEST=OFF -DSDL_TESTS=OFF -DSDL_X11=ON -DSDL_WAYLAND=OFF -DSDL_X11_XCURSOR=OFF -DSDL_X11_XDBE=OFF -DSDL_X11_XFIXES=OFF -DSDL_X11_XINPUT=OFF -DSDL_X11_XRANDR=OFF -DSDL_X11_XSCRNSAVER=OFF -DSDL_X11_XSHAPE=OFF -DSDL_X11_XTEST=OFF -DSDL_HIDAPI=OFF -DSDL_AUDIO=OFF -DSDL_HAPTIC=OFF -DSDL_SENSOR=OFF -DSDL_JOYSTICK=OFF -DCMAKE_BUILD_TYPE=Release" "cmake --build deps/sdl3/build --parallel" "mkdir -p source/shaders/spv" "glslc -I source/shaders source/shaders/voxels.vert -o source/shaders/spv/voxels.vert.spv" "glslc source/shaders/voxels.frag -o source/shaders/spv/voxels.frag.spv" "glslc -I source/shaders --target-env=vulkan1.1 source/shaders/extract.comp -o source/shaders/spv/extract.comp.spv" "glslc source/shaders/fullscreen.vert -o source/shaders/spv/fullscreen.vert.spv" "glslc -I source/shaders source/shaders/fog.frag -o source/shaders/spv/fog.frag.spv" "glslc source/shaders/highlight.vert -o source/shaders/spv/highlight.vert.spv" "glslc source/shaders/highlight.frag -o source/shaders/spv/highlight.frag.spv" "glslc -I source/shaders source/shaders/worldgen.comp -o source/shaders/spv/worldgen.comp.spv" "glslc source/shaders/transforms.comp -o source/shaders/spv/transforms.comp.spv"
+	dflags "-P-Ideps/vulkan-headers/include"
+	libs "vulkan" "X11"
+	preBuildCommands "mkdir -p source/shaders/spv" "glslc -I source/shaders source/shaders/voxels.vert -o source/shaders/spv/voxels.vert.spv" "glslc source/shaders/voxels.frag -o source/shaders/spv/voxels.frag.spv" "glslc -I source/shaders --target-env=vulkan1.1 source/shaders/extract.comp -o source/shaders/spv/extract.comp.spv" "glslc source/shaders/fullscreen.vert -o source/shaders/spv/fullscreen.vert.spv" "glslc -I source/shaders source/shaders/fog.frag -o source/shaders/spv/fog.frag.spv" "glslc source/shaders/highlight.vert -o source/shaders/spv/highlight.vert.spv" "glslc source/shaders/highlight.frag -o source/shaders/spv/highlight.frag.spv" "glslc source/shaders/transforms.comp -o source/shaders/spv/transforms.comp.spv"
 }
 
 configuration "headless" {
 	targetName "mined-headless"
 	mainSourceFile "source/headless.d"
-	excludedSourceFiles "source/main.d" "source/bindings/sdl3.c" "source/bindings/vk.d" "source/client/graphics/*" "source/client/graphics/voxels/*"
+	excludedSourceFiles "source/main.d" "source/unittests.d" "source/bindings/platform.c" "source/client/graphics/*" "source/client/graphics/voxels/*"
 }
 
-// ldc2's ImportC rejects Lua's lstate.h under -unittest; unit tests don't use Lua.
 configuration "unittest" {
 	targetName "mined-unittest"
-	dflags "-main"
-	excludedSourceFiles "source/main.d" "source/headless.d" "source/bindings/*" "source/client/graphics/*" "source/client/graphics/voxels/*" "source/client/script.d" "deps/lua/*"
+	mainSourceFile "source/unittests.d"
+	excludedSourceFiles "source/main.d" "source/headless.d" "source/worldcheck.d" "source/bindings/*" "source/client/graphics/*" "source/client/graphics/voxels/*" "source/client/script.d" "deps/lua/*"
 }

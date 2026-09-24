@@ -1,54 +1,50 @@
 module common.character_controller.vector_bounds;
 
+import core.math : sqrt;
 import common.math : projectToPlane;
-import std.math : sqrt;
 
-float dot3(const float[3] a, const float[3] b) {
+enum uint MAX_BOUNDS = 32;
+enum uint MAX_TEMP_BOUNDS = 8;
+enum float ERROR_MARGIN_FACTOR = 1e-4f;
+enum float FRONT_FACING_MARGIN = 0.5f;
+enum float BACK_FACING_MARGIN = 1.5f;
+enum double MIN_CONSTRAINED_DIRECTION = 1e-5;
+
+float dot3(float[3] a, float[3] b) {
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
-float magnitude3(const float[3] v) {
+float magnitude3(float[3] v) {
     return sqrt(dot3(v, v));
 }
 
-float[3] normalize3(const float[3] v) {
-    float m = magnitude3(v);
-    if (m < 1e-16) {
-        return [0.0f, 0.0f, 0.0f];
-    }
-    return [v[0] / m, v[1] / m, v[2] / m];
+float[3] scale3(float[3] v, float s) {
+    float[3] result = [v[0] * s, v[1] * s, v[2] * s];
+    return result;
 }
 
-float[3] scale3(const float[3] v, float s) {
-    return [v[0] * s, v[1] * s, v[2] * s];
+float[3] add3(float[3] a, float[3] b) {
+    float[3] result = [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+    return result;
 }
 
-float[3] add3(const float[3] a, const float[3] b) {
-    return [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+float[3] sub3(float[3] a, float[3] b) {
+    float[3] result = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    return result;
 }
 
-float[3] sub3(const float[3] a, const float[3] b) {
-    return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+float[3] neg3(float[3] v) {
+    float[3] result = [-v[0], -v[1], -v[2]];
+    return result;
 }
 
-float[3] neg3(const float[3] v) {
-    return [-v[0], -v[1], -v[2]];
-}
-
-float[3] cross3(const float[3] a, const float[3] b) {
-    return [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ];
-}
-
-bool isZero3(const float[3] v) {
+bool isZero3(float[3] v) {
     return v[0] == 0 && v[1] == 0 && v[2] == 0;
 }
 
 float[3] zero3() {
-    return [0.0f, 0.0f, 0.0f];
+    float[3] result = [0.0f, 0.0f, 0.0f];
+    return result;
 }
 
 struct VectorBound {
@@ -56,192 +52,150 @@ struct VectorBound {
     float[3] projectionDirection;
     bool frontFacing;
 
-    static VectorBound create(float[3] normal, float[3] projDir, bool frontFacing) {
-        return VectorBound(normal, projDir, frontFacing);
+    float[3] constrained(float[3] subject, float errorMargin) const {
+        return projectToPlane(subject, normal, projectionDirection, errorMargin);
     }
 
-    void constrainVector(ref float[3] subject, float errorMargin) const {
-        projectToPlane(subject, normal, projectionDirection, errorMargin);
+    bool checkVector(float[3] subject, float errorMargin) const {
+        bool result = true;
+        if (!isZero3(subject)) {
+            float d = dot3(subject, normal);
+            if (frontFacing) {
+                result = d >= errorMargin * FRONT_FACING_MARGIN;
+            } else {
+                result = d <= errorMargin * BACK_FACING_MARGIN;
+            }
+        }
+        return result;
     }
 
-    bool checkVector(const float[3] subject, float errorMargin) const {
-        if (isZero3(subject)) {
-            return true;
+    ConstrainedBound selfConstrainedWithBound(VectorBound bound) const {
+        float[3] orthogonalDirection = projectToPlane(projectionDirection, bound.normal, bound.projectionDirection, 0.0f);
+        float m = magnitude3(orthogonalDirection);
+        ConstrainedBound result;
+        if (!(m < MIN_CONSTRAINED_DIRECTION)) {
+            float[3] direction = [orthogonalDirection[0] / m, orthogonalDirection[1] / m, orthogonalDirection[2] / m];
+            result.bound = VectorBound(normal, direction, frontFacing);
+            result.valid = true;
         }
-
-        float d = dot3(subject, normal);
-        if (frontFacing) {
-            return d >= errorMargin * 0.5f;
-        }
-        else {
-            return d <= errorMargin * 1.5f;
-        }
-    }
-
-    VectorBound* getSelfConstrainedWithBound(const ref VectorBound bound, ref VectorBound result) const {
-        float[3] orthoProjDir = projectionDirection;
-        projectToPlane(orthoProjDir, bound.normal, bound.projectionDirection, 0.0f);
-
-        float m = magnitude3(orthoProjDir);
-        if (m < 1e-5) {
-            return null;
-        }
-
-        result = VectorBound(normal, [orthoProjDir[0] / m, orthoProjDir[1] / m, orthoProjDir[2] / m], frontFacing);
-        return &result;
+        return result;
     }
 }
 
+struct ConstrainedBound {
+    VectorBound bound;
+    bool valid;
+}
+
 struct BoundedVectors {
+    VectorBound[MAX_BOUNDS] bounds;
+    VectorBound[MAX_TEMP_BOUNDS] tempBounds;
     float[3] displacement;
     float[3] velocity;
-    bool hasVelocity;
-    VectorBound[] bounds;
-    VectorBound[] tempBounds;
     float errorMargin;
-
-    static BoundedVectors create(float[3] disp, bool hasVel, float[3] vel = zero3()) {
-        BoundedVectors bv;
-        bv.displacement = disp;
-        bv.velocity = vel;
-        bv.hasVelocity = hasVel;
-        bv.bounds = [];
-        bv.tempBounds = [];
-        bv.errorMargin = magnitude3(disp) * 1e-4f;
-        return bv;
-    }
-
-    float[3] getDisplacement() const {
-        return displacement;
-    }
+    uint boundCount;
+    uint tempBoundCount;
+    bool hasVelocity;
 
     void scaleDisplacement(float scaleFactor) {
         displacement = scale3(displacement, scaleFactor);
         errorMargin *= scaleFactor;
     }
 
-    float[3] getVelocity() const {
-        return velocity;
-    }
-
-    const(VectorBound)[] getBounds() const {
-        return bounds;
-    }
-
     void addBound(VectorBound newBound) {
         applyBound(newBound);
-        bounds ~= newBound;
+        if (boundCount < MAX_BOUNDS) {
+            bounds[boundCount] = newBound;
+            boundCount += 1;
+        }
     }
 
     void addTempBound(VectorBound newBound) {
         applyBound(newBound);
-        tempBounds ~= newBound;
+        if (tempBoundCount < MAX_TEMP_BOUNDS) {
+            tempBounds[tempBoundCount] = newBound;
+            tempBoundCount += 1;
+        }
     }
 
     void clearTempBounds() {
-        tempBounds.length = 0;
+        tempBoundCount = 0;
     }
 
-    BoundedVectors dup() const {
-        BoundedVectors result;
-        result.displacement = displacement;
-        result.velocity = velocity;
-        result.hasVelocity = hasVelocity;
-        result.bounds = bounds.dup;
-        result.tempBounds = tempBounds.dup;
-        result.errorMargin = errorMargin;
+    VectorBound boundAt(uint index) const {
+        VectorBound result;
+        if (index < boundCount) {
+            result = bounds[index];
+        } else {
+            result = tempBounds[index - boundCount];
+        }
         return result;
     }
 
-    void applyBound(const ref VectorBound newBound) {
+    bool allBoundsSatisfiedFor(float[3] candidate) const {
+        bool satisfied = true;
+        foreach (i; 0 .. boundCount + tempBoundCount) {
+            if (!boundAt(i).checkVector(candidate, errorMargin)) {
+                satisfied = false;
+            }
+        }
+        return satisfied;
+    }
+
+    void applyBound(VectorBound newBound) {
         if (!newBound.checkVector(displacement, errorMargin)) {
-            newBound.constrainVector(displacement, errorMargin);
+            displacement = newBound.constrained(displacement, errorMargin);
             if (hasVelocity) {
-                newBound.constrainVector(velocity, 0.0f);
+                velocity = newBound.constrained(velocity, 0.0f);
             }
         }
-
-        if (allBoundsSatisfied()) {
-            return;
-        }
-
-        foreach (ref bound; allBoundsRange()) {
-            if (bound.checkVector(displacement, errorMargin)) {
-                continue;
-            }
-
-            VectorBound orthoBoundStorage;
-            VectorBound* orthoBound = bound.getSelfConstrainedWithBound(newBound, orthoBoundStorage);
-            if (orthoBound is null) {
-                continue;
-            }
-
-            float[3] candidate = displacement;
-            orthoBound.constrainVector(candidate, errorMargin);
-
-            if (allBoundsSatisfiedFor(candidate)) {
-                displacement = candidate;
-                if (hasVelocity) {
-                    orthoBound.constrainVector(velocity, 0.0f);
+        if (!allBoundsSatisfiedFor(displacement)) {
+            bool resolved = false;
+            foreach (i; 0 .. boundCount + tempBoundCount) {
+                VectorBound bound = boundAt(i);
+                if (!resolved && !bound.checkVector(displacement, errorMargin)) {
+                    ConstrainedBound orthogonal = bound.selfConstrainedWithBound(newBound);
+                    if (orthogonal.valid) {
+                        float[3] candidate = orthogonal.bound.constrained(displacement, errorMargin);
+                        if (allBoundsSatisfiedFor(candidate)) {
+                            displacement = candidate;
+                            if (hasVelocity) {
+                                velocity = orthogonal.bound.constrained(velocity, 0.0f);
+                            }
+                            resolved = true;
+                        }
+                    }
                 }
-                return;
+            }
+            if (!resolved) {
+                displacement = zero3();
+                if (hasVelocity) {
+                    velocity = zero3();
+                }
             }
         }
-
-        displacement = zero3();
-        if (hasVelocity) {
-            velocity = zero3();
-        }
-    }
-
-    bool allBoundsSatisfied() const {
-        foreach (ref b; bounds) {
-            if (!b.checkVector(displacement, errorMargin)) {
-                return false;
-            }
-        }
-        foreach (ref b; tempBounds) {
-            if (!b.checkVector(displacement, errorMargin)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    bool allBoundsSatisfiedFor(const float[3] candidate) const {
-        foreach (ref b; bounds) {
-            if (!b.checkVector(candidate, errorMargin)) {
-                return false;
-            }
-        }
-        foreach (ref b; tempBounds) {
-            if (!b.checkVector(candidate, errorMargin)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    const(VectorBound)[] allBoundsRange() const {
-        return bounds ~ tempBounds;
     }
 }
 
-unittest {
-    // Exact numbers from the frozen-walk replay: standing on flat ground,
-    // walking forward. The ground bound must slide the displacement along
-    // the surface, not annihilate it.
-    float[3] disp = [-8.39314e-05, -8.87924e-05, -0.000122182];
-    float[3] vel = [-0.0104914, -0.011099, -0.0152727];
-    float[3] n = [0.670735, 0.741697, -4.62294e-06];
-    float[3] up = [0.686935, 0.726719, 0];
+BoundedVectors createBoundedVectors(float[3] displacement, bool hasVelocity, float[3] velocity) {
+    BoundedVectors result;
+    result.displacement = displacement;
+    result.velocity = velocity;
+    result.hasVelocity = hasVelocity;
+    result.errorMargin = magnitude3(displacement) * ERROR_MARGIN_FACTOR;
+    return result;
+}
 
-    BoundedVectors bv = BoundedVectors.create(disp, true, vel);
-    bv.addTempBound(VectorBound.create(n, up, false));
-    bv.addBound(VectorBound.create(n, up, true));
-    assert(!isZero3(bv.getDisplacement()), "ground bound annihilated displacement");
-    assert(!isZero3(bv.getVelocity()), "ground bound annihilated velocity");
-    // Forward (z) component must survive sliding along the ground plane.
-    assert(bv.getDisplacement()[2] < -1e-4);
-    assert(bv.getVelocity()[2] < -1e-2);
+unittest {
+    float[3] displacement = [-8.39314e-05, -8.87924e-05, -0.000122182];
+    float[3] velocity = [-0.0104914, -0.011099, -0.0152727];
+    float[3] normal = [0.670735, 0.741697, -4.62294e-06];
+    float[3] up = [0.686935, 0.726719, 0];
+    BoundedVectors bounded = createBoundedVectors(displacement, true, velocity);
+    bounded.addTempBound(VectorBound(normal, up, false));
+    bounded.addBound(VectorBound(normal, up, true));
+    assert(!isZero3(bounded.displacement));
+    assert(!isZero3(bounded.velocity));
+    assert(bounded.displacement[2] < -1e-4);
+    assert(bounded.velocity[2] < -1e-2);
 }

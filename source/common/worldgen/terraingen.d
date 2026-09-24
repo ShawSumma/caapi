@@ -1,94 +1,56 @@
-/// Terrain generation material selection via Voronoi lookup tables.
 module common.worldgen.terraingen;
 
-import common.world;
+import common.world : Material;
 
 enum float TERRAIN_SURFACE_THICKNESS = 0.2f;
+enum float DEEP_ELEVATION = -30.0f;
+enum float LOW_ELEVATION = -12.0f;
+enum float MEDIUM_ELEVATION = 2.0f;
 
 struct VoronoiInfo {
     float[2] location;
     Material material;
 }
 
-/// Picks the material using Voronoi lookup in 2D (temp, rain) space.
-/// `elev` determines stratum, `dist` determines surface vs general.
-Material terraingenVoronoi(float elev, float rain, float temp, float dist) {
-    const(VoronoiInfo)[] voronoiChoices;
-    if (dist <= TERRAIN_SURFACE_THICKNESS) {
-        if (elev < -30.0f) {
-            voronoiChoices = SURFACE_DEEP[];
-        }
-        else if (elev < -12.0f) {
-            voronoiChoices = SURFACE_LOW[];
-        }
-        else if (elev < 2.0f) {
-            voronoiChoices = SURFACE_MED[];
-        }
-        else {
-            voronoiChoices = SURFACE_HIGH[];
+Material terraingenVoronoi(float elevation, float rain, float temperature, float distance) {
+    const(VoronoiInfo)[] choices;
+    if (distance <= TERRAIN_SURFACE_THICKNESS) {
+        if (elevation < DEEP_ELEVATION) {
+            choices = SURFACE_DEEP[];
+        } else if (elevation < LOW_ELEVATION) {
+            choices = SURFACE_LOW[];
+        } else if (elevation < MEDIUM_ELEVATION) {
+            choices = SURFACE_MED[];
+        } else {
+            choices = SURFACE_HIGH[];
         }
     } else {
-        if (elev < -30.0f) {
-            voronoiChoices = GENERAL_DEEP[];
-        }
-        else if (elev < -12.0f) {
-            voronoiChoices = GENERAL_LOW[];
-        }
-        else if (elev < 2.0f) {
-            voronoiChoices = GENERAL_MED[];
-        }
-        else {
-            voronoiChoices = GENERAL_HIGH[];
+        if (elevation < DEEP_ELEVATION) {
+            choices = GENERAL_DEEP[];
+        } else if (elevation < LOW_ELEVATION) {
+            choices = GENERAL_LOW[];
+        } else if (elevation < MEDIUM_ELEVATION) {
+            choices = GENERAL_MED[];
+        } else {
+            choices = GENERAL_HIGH[];
         }
     }
 
-    float[2] y = [rain, temp];
-    float distSquared = sqr(voronoiChoices[0].location[0] - y[0])
-        + sqr(voronoiChoices[0].location[1] - y[1]);
-    Material voxelMat = voronoiChoices[0].material;
-
-    foreach (ref vc; voronoiChoices[1 .. $]) {
-        float dSquared = sqr(vc.location[0] - y[0]) + sqr(vc.location[1] - y[1]);
-        if (dSquared <= distSquared) {
-            distSquared = dSquared;
-            voxelMat = vc.material;
+    float bestDistanceSquared = sqr(choices[0].location[0] - rain) + sqr(choices[0].location[1] - temperature);
+    Material material = choices[0].material;
+    foreach (choice; choices[1 .. $]) {
+        float distanceSquared = sqr(choice.location[0] - rain) + sqr(choice.location[1] - temperature);
+        if (distanceSquared <= bestDistanceSquared) {
+            bestDistanceSquared = distanceSquared;
+            material = choice.material;
         }
     }
-
-    return voxelMat;
+    return material;
 }
 
-float sqr(float x) { return x * x; }
-
-struct VoronoiEntryGPU {
-    float rain;
-    float temp;
-    uint material;
-    uint _pad;
+float sqr(float x) {
+    return x * x;
 }
-
-/// Build the Voronoi table for GPU upload: 8 strata × 113 entries.
-/// Order: GENERAL_HIGH, GENERAL_MED, GENERAL_LOW, GENERAL_DEEP,
-///        SURFACE_DEEP, SURFACE_LOW, SURFACE_MED, SURFACE_HIGH
-VoronoiEntryGPU[] buildVoronoiTableGPU() {
-    VoronoiEntryGPU[] result = new VoronoiEntryGPU[8 * 113];
-    static immutable tables = [
-        &GENERAL_HIGH, &GENERAL_MED, &GENERAL_LOW, &GENERAL_DEEP,
-        &SURFACE_DEEP, &SURFACE_LOW, &SURFACE_MED, &SURFACE_HIGH,
-    ];
-    foreach (t; 0 .. 8) {
-        foreach (i; 0 .. 113) {
-            VoronoiInfo e = (*tables[t])[i];
-            result[t * 113 + i] = VoronoiEntryGPU(
-                e.location[0], e.location[1], cast(uint) e.material, 0);
-        }
-    }
-    return result;
-}
-
-// ============================================================================
-// Voronoi lookup tables
-// ============================================================================
 
 immutable VoronoiInfo[113] GENERAL_HIGH = [
     VoronoiInfo([10.50f, -10.50f], Material.ClayLoam),

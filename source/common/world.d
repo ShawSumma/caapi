@@ -1,6 +1,5 @@
 module common.world;
 
-/// Block materials
 enum Material : ushort {
     Void = 0,
     Dirt = 1,
@@ -42,11 +41,4 @@ enum Material : ushort {
     MudGrass = 37,
     Grass = 38,
     CaveGrass = 39,
-}
-
-Material materialFromU16(ushort value) {
-    if (value > Material.max) {
-        return Material.Void;
-    }
-    return cast(Material) value;
 }

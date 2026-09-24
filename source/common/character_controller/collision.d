@@ -1,120 +1,67 @@
 module common.character_controller.collision;
 
-import std.math : sqrt, tanh, atanh, isNaN;
-
-import common.math : MPoint, MDirection, MIsometry, MVector;
-import common.collision_math : Ray;
-import common.graph : Graph, NodeId;
-import common.graph_collision : GraphCollisionHit, shapeCast;
-import common.proto : Position;
+import core.math : sqrt;
+import core.stdc.math : atanhf, tanhf;
 import common.character_controller.vector_bounds : dot3, magnitude3, scale3, zero3;
+import common.collision_math : Ray;
+import common.graph : Graph;
+import common.graph_collision : GraphCollisionHit, shapeCast;
+import common.math : MDirection, MIsometry, MPoint, MVector, isNan;
+import common.proto : Position;
+
+enum double MIN_DISPLACEMENT_SQUARED = 1e-16;
+enum double MIN_NORMAL_MAGNITUDE = 1e-16;
+enum float GRAZING_LIMIT = -1e-3f;
 
 struct CollisionContext {
     const(Graph)* graph;
+    float[3] up = [0, 1, 0];
     float radius;
     float halfHeight;
-    float[3] up = [0, 1, 0];
 }
 
 struct CollisionCheckingResult {
-    float[3] displacementVector;
     MIsometry!float displacementTransform;
-    // Stored by value: a self-pointer here dangles when the struct is
-    // returned without NRVO, which silently corrupted collision normals.
-    bool hasCollision;
-    Collision collision;
-
-    static CollisionCheckingResult stationary() {
-        CollisionCheckingResult r;
-        r.displacementVector = zero3();
-        r.displacementTransform = MIsometry!float.identity();
-        r.hasCollision = false;
-        return r;
-    }
-}
-
-struct Collision {
+    float[3] displacementVector;
     float[3] normal;
+    bool hasCollision;
 }
 
-CollisionCheckingResult checkCollision(
-    const ref CollisionContext collisionContext,
-    const ref Position position,
-    const float[3] relativeDisplacement,
-) {
-    float displacementSqr = relativeDisplacement[0] * relativeDisplacement[0]
-        + relativeDisplacement[1] * relativeDisplacement[1]
-        + relativeDisplacement[2] * relativeDisplacement[2];
-
-    if (displacementSqr < 1e-16) {
-        return CollisionCheckingResult.stationary();
-    }
-
-    float displacementNorm = sqrt(displacementSqr);
-    float[3] displacementNormalized = [
-        relativeDisplacement[0] / displacementNorm,
-        relativeDisplacement[1] / displacementNorm,
-        relativeDisplacement[2] / displacementNorm,
-    ];
-
-    Ray ray = Ray(
-        MPoint!float.origin(),
-        MDirection!float(MVector!float(displacementNormalized[0], displacementNormalized[1], displacementNormalized[2], 0)),
-    );
-    float tanhDist = tanh(displacementNorm);
-
-    bool outOfBounds;
-    GraphCollisionHit castHit = shapeCast(
-        collisionContext.radius,
-        collisionContext.halfHeight,
-        collisionContext.up,
-        *collisionContext.graph,
-        position.node,
-        position.local,
-        ray,
-        tanhDist,
-        outOfBounds,
-    );
-
-    bool hasHit = !isNaN(castHit.tanhDistance);
-    float[3] hitNormal = [0.0f, 1.0f, 0.0f];
-    if (hasHit) {
-        // Normal back in the caster frame at the hit position.
-        MIsometry!float hitTransform = MIsometry!float.translationAlong(
-            scale3(displacementNormalized, atanh(castHit.tanhDistance)));
-        MVector!float transformedNormal = hitTransform.inverse().mat * castHit.normal;
-        float[3] normalXyz = transformedNormal.xyz();
-        float normalMag = magnitude3(normalXyz);
-        if (normalMag > 1e-16) {
-            hitNormal = scale3(normalXyz, 1.0f / normalMag);
-        }
-
-        // Grazing guard: a contact whose normal is (near-)orthogonal to the
-        // motion cannot oppose it — the solver's touch zone plus float noise
-        // otherwise wedges flush contacts against tangent sweeps (e.g. the
-        // stair raise sliding along a wall the walker is pressed against).
-        if (dot3(displacementNormalized, hitNormal) > -1e-3f) {
-            hasHit = false;
-        }
-    }
-
-    float hitTanhDist = tanhDist;
-    if (hasHit) {
-        hitTanhDist = castHit.tanhDistance;
-    }
-
-    float distance = atanh(hitTanhDist);
-
-    float[3] displacementVector = scale3(displacementNormalized, distance);
-    MIsometry!float displacementTransform = MIsometry!float.translationAlong(displacementVector);
-
+CollisionCheckingResult checkCollision(const(CollisionContext)* context, Position position, float[3] relativeDisplacement) {
     CollisionCheckingResult result;
-    result.displacementVector = displacementVector;
-    result.displacementTransform = displacementTransform;
-    result.hasCollision = hasHit;
-    if (hasHit) {
-        result.collision = Collision(hitNormal);
+    result.displacementVector = zero3();
+    result.displacementTransform = MIsometry!float.identity();
+    result.hasCollision = false;
+    float displacementSquared = dot3(relativeDisplacement, relativeDisplacement);
+    if (!(displacementSquared < MIN_DISPLACEMENT_SQUARED)) {
+        float displacementNorm = sqrt(displacementSquared);
+        float[3] direction = [relativeDisplacement[0] / displacementNorm, relativeDisplacement[1] / displacementNorm, relativeDisplacement[2] / displacementNorm];
+        Ray ray = Ray(MPoint!float.origin(), MDirection!float(MVector!float(direction[0], direction[1], direction[2], 0)));
+        float tanhDistance = tanhf(displacementNorm);
+        GraphCollisionHit castHit = shapeCast(context.radius, context.halfHeight, context.up, context.graph, position.node, position.local, ray, tanhDistance);
+        bool hasHit = !isNan(castHit.tanhDistance);
+        float[3] hitNormal = [0.0f, 1.0f, 0.0f];
+        if (hasHit) {
+            MIsometry!float hitTransform = MIsometry!float.translationAlong(scale3(direction, atanhf(castHit.tanhDistance)));
+            float[3] normalXyz = (hitTransform.inverse().mat * castHit.normal).xyz();
+            float normalMagnitude = magnitude3(normalXyz);
+            if (normalMagnitude > MIN_NORMAL_MAGNITUDE) {
+                hitNormal = scale3(normalXyz, 1.0f / normalMagnitude);
+            }
+            if (dot3(direction, hitNormal) > GRAZING_LIMIT) {
+                hasHit = false;
+            }
+        }
+        float hitTanhDistance = tanhDistance;
+        if (hasHit) {
+            hitTanhDistance = castHit.tanhDistance;
+        }
+        result.displacementVector = scale3(direction, atanhf(hitTanhDistance));
+        result.displacementTransform = MIsometry!float.translationAlong(result.displacementVector);
+        result.hasCollision = hasHit;
+        if (hasHit) {
+            result.normal = hitNormal;
+        }
     }
-
     return result;
 }

@@ -1,4 +1,3 @@
--- Walk straight ahead over generated terrain.
 local walk = require("lib.walk")
 
 walk.spawn()

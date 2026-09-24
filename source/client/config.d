@@ -1,62 +1,74 @@
 module client.config;
 
-import std.conv : to;
-import std.file : exists, readText;
-import std.stdio : writefln;
-import std.string : indexOf, splitLines, strip;
+import core.stdc.stdio : FILE, fclose, fgets, fopen;
+import core.stdc.stdlib : strtof;
+import core.stdc.string : strlen;
+
+enum size_t CONFIG_LINE_CAPACITY = 256;
 
 struct ClientConfig {
-    string serverAddress = "localhost";
-    ushort serverPort = 1234;
-    string playerName = "Player";
-
     float mouseSensitivity = 0.0015f;
-    bool invertY = false;
-    float moveSpeed = 1.0f;
     float turnSpeed = 1.5f;
-    float reach = 10.0f;
-
-    /// Loads `key = value` lines from path; missing file or bad lines fall
-    /// back to defaults so a partial config is always usable.
-    static ClientConfig load(string path) {
-        ClientConfig cfg;
-        if (!exists(path)) {
-            return cfg;
-        }
-        foreach (line; readText(path).splitLines()) {
-            string trimmed = line.strip();
-            if (trimmed.length == 0 || trimmed[0] == '#') {
-                continue;
-            }
-            ptrdiff_t eq = trimmed.indexOf('=');
-            if (eq < 0) {
-                continue;
-            }
-            string key = trimmed[0 .. eq].strip();
-            string value = trimmed[eq + 1 .. $].strip();
-            try {
-                switch (key) {
-                    case "mouse_sensitivity": cfg.mouseSensitivity = value.to!float; break;
-                    case "invert_y": cfg.invertY = parseBool(value); break;
-                    case "move_speed": cfg.moveSpeed = value.to!float; break;
-                    case "turn_speed": cfg.turnSpeed = value.to!float; break;
-                    case "reach": cfg.reach = value.to!float; break;
-                    case "server_address": cfg.serverAddress = value; break;
-                    case "server_port": cfg.serverPort = value.to!ushort; break;
-                    case "player_name": cfg.playerName = value; break;
-                    default:
-                        writefln("config: unknown key '%s'", key);
-                        break;
-                }
-            }
-            catch (Exception) {
-                writefln("config: bad value for '%s': %s", key, value);
-            }
-        }
-        return cfg;
-    }
+    float reachMeters = 10.0f;
+    bool invertY;
 }
 
-bool parseBool(string value) {
-    return value == "1" || value == "true" || value == "yes" || value == "on";
+struct ConfigEntry {
+    const(char)[] key;
+    const(char)[] value;
+}
+
+ClientConfig loadClientConfig(const(char)* path) {
+    ClientConfig config;
+    FILE* file = fopen(path, "r");
+    if (file !is null) {
+        char[CONFIG_LINE_CAPACITY] line;
+        while (fgets(line.ptr, cast(int) line.length, file) !is null) {
+            applyConfigEntry(&config, parseConfigLine(line[0 .. strlen(line.ptr)]));
+        }
+        fclose(file);
+    }
+    return config;
+}
+
+bool isSpace(char c) {
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+const(char)[] trim(const(char)[] text) {
+    size_t start = 0;
+    size_t end = text.length;
+    while (start < end && isSpace(text[start])) {
+        start += 1;
+    }
+    while (end > start && isSpace(text[end - 1])) {
+        end -= 1;
+    }
+    return text[start .. end];
+}
+
+ConfigEntry parseConfigLine(const(char)[] line) {
+    const(char)[] trimmed = trim(line);
+    ConfigEntry entry;
+    size_t equals = 0;
+    while (equals < trimmed.length && trimmed[equals] != '=') {
+        equals += 1;
+    }
+    if (equals < trimmed.length && trimmed[0] != '#') {
+        entry.key = trim(trimmed[0 .. equals]);
+        entry.value = trim(trimmed[equals + 1 .. $]);
+    }
+    return entry;
+}
+
+void applyConfigEntry(ClientConfig* config, ConfigEntry entry) {
+    if (entry.key == "mouse_sensitivity") {
+        config.mouseSensitivity = strtof(entry.value.ptr, null);
+    } else if (entry.key == "turn_speed") {
+        config.turnSpeed = strtof(entry.value.ptr, null);
+    } else if (entry.key == "reach") {
+        config.reachMeters = strtof(entry.value.ptr, null);
+    } else if (entry.key == "invert_y") {
+        config.invertY = entry.value == "1" || entry.value == "true" || entry.value == "yes" || entry.value == "on";
+    }
 }

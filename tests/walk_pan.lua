@@ -1,4 +1,3 @@
--- Walk forward while continuously turning, tracing a wide arc.
 local walk = require("lib.walk")
 
 walk.spawn()

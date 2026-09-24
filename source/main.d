@@ -1,358 +1,335 @@
-import std.stdio;
-import std.format : format;
-import std.string : toStringz;
-import core.stdc.string : strlen;
-import core.stdc.stdlib : system;
-import std.conv : to;
-import bindings.sdl3;
-import client.config : ClientConfig;
-import client.game : Game, FrameInput, InputState, Key, MATERIAL_PALETTE, axis, modeName;
-import client.graphics;
-import client.script : ScriptRecorder;
+module main;
 
-enum : ulong {
-    WINDOW_VULKAN    = 0x0000000010000000,
-    WINDOW_RESIZABLE = 0x0000000000000020,
+import core.stdc.stdio : snprintf;
+import core.stdc.stdlib : free, malloc, strtof;
+import core.stdc.string : strcmp;
+import core.sys.posix.time : CLOCK_MONOTONIC, clock_gettime, timespec;
+import bindings.platform : Atom, Button1, Button3, ButtonPress, ClientMessage, ConfigureNotify, CurrentTime, Cursor, Display, False, FocusOut, GrabModeAsync, KeyPress, KeyRelease, KeySym, MotionNotify, None, Pixmap, True, Window, XBlackPixel, XCloseDisplay, XColor, XCreateBitmapFromData, XCreatePixmapCursor, XCreateSimpleWindow, XDefaultScreen, XDestroyWindow, XEvent, XFlush, XFreeCursor, XFreePixmap, XGrabPointer, XInternAtom, XK_1, XK_9, XK_Down, XK_Escape, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_n, XK_s, XK_space, XK_v, XK_w, XLookupKeysym, XMapWindow, XNextEvent, XOpenDisplay, XPending, XRootWindow, XSelectInput, XSetWMProtocols, XStoreName, XUngrabPointer, XWarpPointer, XkbSetDetectableAutoRepeat;
+import client.config : ClientConfig, loadClientConfig;
+import client.game : FrameInput, Game, KEY_COUNT, Key, MATERIAL_PALETTE, axisValue, createGame, gameBreakBlock, gamePlaceBlock, modeName, releaseGame, stepGame;
+import client.graphics.renderer : Renderer;
+import client.script : ScriptRecorder, closeScriptRecorder, openScriptRecorder, recordEvent, recordFrame;
+import common.sim_config : SimConfigRaw;
+
+enum uint WINDOW_WIDTH = 1280;
+enum uint WINDOW_HEIGHT = 720;
+enum float MAX_FRAME_SECONDS = 0.1f;
+enum double TITLE_INTERVAL_SECONDS = 1.0;
+enum double NANOSECONDS_PER_SECOND = 1e9;
+enum size_t TEXT_CAPACITY = 256;
+enum uint KEYCODE_COUNT = 256;
+enum uint CURSOR_BITMAP_SIZE = 8;
+enum int EXIT_OK = 0;
+enum int EXIT_FAILED = 1;
+enum long KEY_PRESS_MASK = 1L << 0;
+enum long KEY_RELEASE_MASK = 1L << 1;
+enum long BUTTON_PRESS_MASK = 1L << 2;
+enum long POINTER_MOTION_MASK = 1L << 6;
+enum long STRUCTURE_NOTIFY_MASK = 1L << 17;
+enum long FOCUS_CHANGE_MASK = 1L << 21;
+enum long INPUT_EVENT_MASK = KEY_PRESS_MASK | KEY_RELEASE_MASK | BUTTON_PRESS_MASK | POINTER_MOTION_MASK | STRUCTURE_NOTIFY_MASK | FOCUS_CHANGE_MASK;
+enum uint POINTER_GRAB_MASK = cast(uint)(BUTTON_PRESS_MASK | POINTER_MOTION_MASK);
+
+struct Arguments {
+    const(char)* configPath = "mined.cfg";
+    const(char)* recordPath;
+    float sensitivity = 0;
+    bool hasSensitivity;
+    bool invertY;
+    bool flatWorldgen;
 }
 
-enum ubyte CHUNK_DIMENSION = 12;
-// Longest frame the simulation will take in one step, in seconds.
-enum float MAX_FRAME_SECONDS = 0.1f;
+struct KeyBinding {
+    KeySym symbol;
+    Key key;
+}
 
-void main(string[] args) {
-    writeln("mined - hyperbolic voxel engine");
+immutable KeyBinding[10] KEY_BINDINGS = [
+    KeyBinding(XK_w, Key.fwd),
+    KeyBinding(XK_s, Key.back),
+    KeyBinding(XK_a, Key.left),
+    KeyBinding(XK_d, Key.right),
+    KeyBinding(XK_space, Key.up),
+    KeyBinding(XK_Shift_L, Key.down),
+    KeyBinding(XK_Left, Key.yawLeft),
+    KeyBinding(XK_Right, Key.yawRight),
+    KeyBinding(XK_Up, Key.pitchUp),
+    KeyBinding(XK_Down, Key.pitchDown),
+];
 
-    string configPath = "mined.cfg";
-    string recordPath;
-    bool flatWorldgen = false;
-    foreach (i, a; args) {
-        if (a == "--config" && i + 1 < args.length) {
-            configPath = args[i + 1];
-        }
-        if (a == "--record" && i + 1 < args.length) {
-            recordPath = args[i + 1];
-        }
-        if (a == "--flat") {
-            flatWorldgen = true;
-            writeln("flat worldgen enabled");
-        }
-    }
-
-    ClientConfig cfg = ClientConfig.load(configPath);
-    foreach (i, a; args) {
-        if (a == "--sensitivity" && i + 1 < args.length) {
-            cfg.mouseSensitivity = args[i + 1].to!float;
-        }
-        if (a == "--invert-y") {
-            cfg.invertY = true;
-        }
-    }
-
-    Session session;
-    if (recordPath.length > 0) {
-        session.recorder.open(recordPath);
-        writefln("recording to %s", recordPath);
-    }
-
-    if (!SDL_Init(SDL_INIT_VIDEO)) {
-        const(char)* err = SDL_GetError();
-        if (err !is null) {
-            writefln("SDL init failed: %s", err[0 .. strlen(err)]);
-        }
-        return;
-    }
-    scope(exit) {
-        SDL_Quit();
-    }
-
-    SDL_Window* window = SDL_CreateWindow("mined", 1280, 720, WINDOW_VULKAN | WINDOW_RESIZABLE);
-    if (window is null) {
-        writeln("Window creation failed");
-        return;
-    }
-    scope(exit) {
-        SDL_DestroyWindow(window);
-    }
-
-    uint props = SDL_GetWindowProperties(window);
-    ulong xWindowId = SDL_GetNumberProperty(props, "SDL.window.x11.window", 0);
-
+struct Session {
+    Game game;
     Renderer renderer;
-    if (!renderer.init(cast(void*) window, CHUNK_DIMENSION)) {
-        writeln("Renderer initialization failed");
-        return;
-    }
-    scope(exit) {
-        renderer.cleanup();
-    }
-    Game game = Game.create(CHUNK_DIMENSION, flatWorldgen, cfg.reach);
-
-    bool running = true;
-    bool mouseCaptured = false;
-    SDL_Event ev;
-    InputState input;
-    int shotIndex = 0;
+    ScriptRecorder recorder;
+    Display* display;
+    Window window;
+    Cursor invisibleCursor;
+    Atom deleteAtom;
+    ClientConfig config;
     float mouseDx = 0;
     float mouseDy = 0;
-    float lastFps = 0;
-    ulong lastTicks = SDL_GetTicks();
-    ulong framesSinceReport = 0;
-    ulong lastFpsReport = lastTicks;
+    float fps = 0;
+    int width = WINDOW_WIDTH;
+    int height = WINDOW_HEIGHT;
+    bool[KEYCODE_COUNT] keyDown;
+    bool[KEY_COUNT] held;
+    bool mouseCaptured;
+    bool running = true;
+    bool titleDirty = true;
+}
 
-    updateWindowTitle(window, mouseCaptured, game, lastFps);
+double nowSeconds() {
+    timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return now.tv_sec + now.tv_nsec / NANOSECONDS_PER_SECOND;
+}
 
-    float frameMaxMs = 0;
-    float vaccMax = 0;
-
-    while (running) {
-        ulong nowTicks = SDL_GetTicks();
-        float dt = (nowTicks - lastTicks) / 1000.0f;
-        lastTicks = nowTicks;
-        if (dt * 1000.0f > frameMaxMs) {
-            frameMaxMs = dt * 1000.0f;
+Arguments parseArguments(int argc, char** argv) {
+    Arguments arguments;
+    int index = 1;
+    while (index < argc) {
+        const(char)* argument = argv[index];
+        bool hasValue = index + 1 < argc;
+        if (strcmp(argument, "--config") == 0 && hasValue) {
+            arguments.configPath = argv[index + 1];
+            index += 1;
+        } else if (strcmp(argument, "--record") == 0 && hasValue) {
+            arguments.recordPath = argv[index + 1];
+            index += 1;
+        } else if (strcmp(argument, "--sensitivity") == 0 && hasValue) {
+            arguments.sensitivity = strtof(argv[index + 1], null);
+            arguments.hasSensitivity = true;
+            index += 1;
+        } else if (strcmp(argument, "--invert-y") == 0) {
+            arguments.invertY = true;
+        } else if (strcmp(argument, "--flat") == 0) {
+            arguments.flatWorldgen = true;
         }
+        index += 1;
+    }
+    return arguments;
+}
+
+bool openWindow(Session* session) {
+    session.display = XOpenDisplay(null);
+    bool ok = session.display !is null;
+    if (ok) {
+        int screen = XDefaultScreen(session.display);
+        session.window = XCreateSimpleWindow(session.display, XRootWindow(session.display, screen), 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT, 0, XBlackPixel(session.display, screen), XBlackPixel(session.display, screen));
+        XSelectInput(session.display, session.window, INPUT_EVENT_MASK);
+        session.deleteAtom = XInternAtom(session.display, "WM_DELETE_WINDOW", False);
+        XSetWMProtocols(session.display, session.window, &session.deleteAtom, 1);
+        XkbSetDetectableAutoRepeat(session.display, True, null);
+        char[CURSOR_BITMAP_SIZE] blank = 0;
+        Pixmap bitmap = XCreateBitmapFromData(session.display, session.window, blank.ptr, CURSOR_BITMAP_SIZE, CURSOR_BITMAP_SIZE);
+        XColor black;
+        session.invisibleCursor = XCreatePixmapCursor(session.display, bitmap, bitmap, &black, &black, 0, 0);
+        XFreePixmap(session.display, bitmap);
+        XMapWindow(session.display, session.window);
+        XFlush(session.display);
+    }
+    return ok;
+}
+
+void closeWindow(Session* session) {
+    XFreeCursor(session.display, session.invisibleCursor);
+    XDestroyWindow(session.display, session.window);
+    XCloseDisplay(session.display);
+}
+
+void warpToCenter(Session* session) {
+    XWarpPointer(session.display, None, session.window, 0, 0, 0, 0, session.width / 2, session.height / 2);
+}
+
+void setMouseCaptured(Session* session, bool captured) {
+    if (session.mouseCaptured != captured) {
+        if (captured) {
+            XGrabPointer(session.display, session.window, True, POINTER_GRAB_MASK, GrabModeAsync, GrabModeAsync, session.window, session.invisibleCursor, CurrentTime);
+            warpToCenter(session);
+        } else {
+            XUngrabPointer(session.display, CurrentTime);
+            session.held[] = false;
+        }
+        session.mouseCaptured = captured;
+        session.titleDirty = true;
+    }
+}
+
+void recordModeChange(Session* session) {
+    char[TEXT_CAPACITY] call;
+    snprintf(call.ptr, call.length, "mode(\"%s\")", modeName(&session.game));
+    recordEvent(&session.recorder, call.ptr);
+    session.titleDirty = true;
+}
+
+void setMovementKey(Session* session, KeySym symbol, bool held) {
+    foreach (binding; KEY_BINDINGS) {
+        if (binding.symbol == symbol) {
+            session.held[binding.key] = held;
+        }
+    }
+}
+
+void handleKeyPress(Session* session, KeySym symbol, bool repeat) {
+    if (symbol == XK_Escape) {
+        setMouseCaptured(session, false);
+    } else if (symbol == XK_v && !repeat) {
+        session.game.flyMode = !session.game.flyMode;
+        recordModeChange(session);
+    } else if (symbol == XK_n && !repeat) {
+        session.game.noClip = !session.game.noClip;
+        recordModeChange(session);
+    } else if (symbol >= XK_1 && symbol <= XK_9) {
+        uint index = cast(uint)(symbol - XK_1);
+        if (index < MATERIAL_PALETTE.length && index != session.game.materialIndex) {
+            session.game.materialIndex = index;
+            char[TEXT_CAPACITY] call;
+            snprintf(call.ptr, call.length, "material(%u)", index + 1);
+            recordEvent(&session.recorder, call.ptr);
+            session.titleDirty = true;
+        }
+    } else {
+        setMovementKey(session, symbol, true);
+    }
+}
+
+void handleMotion(Session* session, int x, int y) {
+    if (session.mouseCaptured) {
+        int centerX = session.width / 2;
+        int centerY = session.height / 2;
+        if (x != centerX || y != centerY) {
+            session.mouseDx += x - centerX;
+            session.mouseDy += y - centerY;
+            warpToCenter(session);
+        }
+    }
+}
+
+void handleButton(Session* session, uint button) {
+    if (!session.mouseCaptured) {
+        setMouseCaptured(session, true);
+    } else if (button == Button1) {
+        gameBreakBlock(&session.game);
+        recordEvent(&session.recorder, "break_block()");
+    } else if (button == Button3) {
+        gamePlaceBlock(&session.game);
+        recordEvent(&session.recorder, "place_block()");
+    }
+}
+
+void processEvent(Session* session, XEvent* event) {
+    if (event.type == KeyPress) {
+        uint keycode = event.xkey.keycode % KEYCODE_COUNT;
+        handleKeyPress(session, XLookupKeysym(&event.xkey, 0), session.keyDown[keycode]);
+        session.keyDown[keycode] = true;
+    } else if (event.type == KeyRelease) {
+        session.keyDown[event.xkey.keycode % KEYCODE_COUNT] = false;
+        setMovementKey(session, XLookupKeysym(&event.xkey, 0), false);
+    } else if (event.type == MotionNotify) {
+        handleMotion(session, event.xmotion.x, event.xmotion.y);
+    } else if (event.type == ButtonPress) {
+        handleButton(session, event.xbutton.button);
+    } else if (event.type == FocusOut) {
+        session.keyDown[] = false;
+        setMouseCaptured(session, false);
+        session.held[] = false;
+    } else if (event.type == ConfigureNotify) {
+        session.width = event.xconfigure.width;
+        session.height = event.xconfigure.height;
+    } else if (event.type == ClientMessage && cast(Atom) event.xclient.data.l[0] == session.deleteAtom) {
+        session.running = false;
+    }
+}
+
+void updateWindowTitle(Session* session) {
+    char[TEXT_CAPACITY] title;
+    if (session.mouseCaptured) {
+        snprintf(title.ptr, title.length, "mined - %s (V) - [%u] - Esc to release mouse - FPS %.0f", modeName(&session.game), session.game.materialIndex + 1, cast(double) session.fps);
+    } else {
+        snprintf(title.ptr, title.length, "mined - %s (V) - click to capture mouse - FPS %.0f", modeName(&session.game), cast(double) session.fps);
+    }
+    XStoreName(session.display, session.window, title.ptr);
+    session.titleDirty = false;
+}
+
+FrameInput buildFrameInput(Session* session, float dt) {
+    float invert = 1.0f;
+    if (session.config.invertY) {
+        invert = -1.0f;
+    }
+    float yawRate = (axisValue(session.held[Key.yawRight]) - axisValue(session.held[Key.yawLeft])) * session.config.turnSpeed;
+    float pitchRate = (axisValue(session.held[Key.pitchDown]) - axisValue(session.held[Key.pitchUp])) * session.config.turnSpeed;
+    FrameInput frame;
+    frame.held = session.held;
+    frame.yaw = yawRate * dt + session.mouseDx * session.config.mouseSensitivity;
+    frame.pitch = pitchRate * dt + session.mouseDy * session.config.mouseSensitivity * invert;
+    return frame;
+}
+
+void runLoop(Session* session) {
+    double lastTime = nowSeconds();
+    double lastTitleTime = lastTime;
+    uint framesSinceTitle = 0;
+    while (session.running) {
+        double now = nowSeconds();
+        float dt = cast(float)(now - lastTime);
+        lastTime = now;
         if (dt > MAX_FRAME_SECONDS) {
             dt = MAX_FRAME_SECONDS;
         }
-
-        mouseDx = 0;
-        mouseDy = 0;
-        bool titleDirty = false;
-
-        while (SDL_PollEvent(&ev)) {
-            if (ev.type == SDL_EVENT_QUIT) {
-                running = false;
+        session.mouseDx = 0;
+        session.mouseDy = 0;
+        while (XPending(session.display) > 0) {
+            XEvent event;
+            XNextEvent(session.display, &event);
+            processEvent(session, &event);
+        }
+        if (session.running) {
+            FrameInput frame = buildFrameInput(session, dt);
+            recordFrame(&session.recorder, frame, dt);
+            stepGame(&session.game, frame, dt);
+            session.renderer.render(&session.game.world, dt);
+            framesSinceTitle += 1;
+            if (now - lastTitleTime >= TITLE_INTERVAL_SECONDS) {
+                session.fps = cast(float)(framesSinceTitle / (now - lastTitleTime));
+                framesSinceTitle = 0;
+                lastTitleTime = now;
+                session.titleDirty = true;
             }
-            processInteractiveInput(
-                ev, window, input, game, session, mouseCaptured,
-                mouseDx, mouseDy, titleDirty, xWindowId, shotIndex);
-        }
-        if (!running) {
-            break;
-        }
-
-        float invY = cfg.invertY ? -1.0f : 1.0f;
-        float yawRate = (axis(input[Key.yawRight]) - axis(input[Key.yawLeft])) * cfg.turnSpeed;
-        float pitchRate = (axis(input[Key.pitchDown]) - axis(input[Key.pitchUp])) * cfg.turnSpeed;
-        FrameInput frame;
-        frame.keys = input;
-        frame.yaw = yawRate * dt + mouseDx * cfg.mouseSensitivity;
-        frame.pitch = pitchRate * dt + mouseDy * cfg.mouseSensitivity * invY;
-        if (session.recorder.isOpen()) {
-            session.recorder.frame(frame, dt);
-        }
-
-        game.step(frame, dt);
-        if (game.vacc > vaccMax) {
-            vaccMax = game.vacc;
-        }
-        renderer.render(game.world, dt);
-
-        framesSinceReport++;
-        if (nowTicks - lastFpsReport >= 1000) {
-            lastFps = framesSinceReport * 1000.0f / (nowTicks - lastFpsReport);
-            writefln("FPS=%.1f frame max=%.0fms | mode=%s ground=%s vel=[%.3f %.3f %.3f] traveled=%.3f vacc=%.2f",
-                lastFps, frameMaxMs, modeName(game.flyMode, game.noClip), game.onGround,
-                game.velocity[0], game.velocity[1], game.velocity[2], game.traveled, vaccMax);
-            vaccMax = 0;
-            stdout.flush();
-            framesSinceReport = 0;
-            frameMaxMs = 0;
-            lastFpsReport = nowTicks;
-            titleDirty = true;
-        }
-
-        if (titleDirty) {
-            updateWindowTitle(window, mouseCaptured, game, lastFps);
-        }
-    }
-
-    if (session.recorder.isOpen()) {
-        session.recorder.close();
-        writefln("recording saved to %s", recordPath);
-    }
-    writefln("session: traveled=%.3f", game.traveled);
-}
-
-void updateWindowTitle(SDL_Window* window, bool mouseCaptured, const ref Game game, float fps) {
-    string mode = modeName(game.flyMode, game.noClip);
-    string title;
-    if (mouseCaptured) {
-        title = format("mined — %s (V) — [%d] %s — Esc to release mouse — FPS %.0f",
-            mode, game.materialIndex + 1, game.material(), fps);
-    } else {
-        title = format("mined — %s (V) — click to capture mouse — FPS %.0f", mode, fps);
-    }
-    SDL_SetWindowTitle(window, title.toStringz);
-}
-
-// Per-run interaction state threaded through the input handlers.
-struct Session {
-    // True when SDL relative mouse mode is unavailable (e.g. X11 without
-    // XInput2) and we emulate it by warping the cursor back to the window
-    // center every frame.
-    bool warpFallback;
-    // --record: live play written as a replayable Lua script.
-    ScriptRecorder recorder;
-}
-
-void recordEvent(ref Session session, string call) {
-    if (session.recorder.isOpen()) {
-        session.recorder.event(call);
-    }
-}
-
-void setMouseCaptured(SDL_Window* window, ref Session session, ref bool mouseCaptured, ref InputState input, bool captured) {
-    if (mouseCaptured == captured) {
-        return;
-    }
-    if (captured) {
-        if (!SDL_SetWindowRelativeMouseMode(window, true)) {
-            const(char)* err = SDL_GetError();
-            if (err !is null && !session.warpFallback) {
-                writefln("relative mouse mode unavailable (%s), using warp fallback", err[0 .. strlen(err)]);
+            if (session.titleDirty) {
+                updateWindowTitle(session);
             }
-            session.warpFallback = true;
-            SDL_SetWindowMouseGrab(window, true);
-            SDL_HideCursor();
-            warpToCenter(window);
-        }
-    } else {
-        if (session.warpFallback) {
-            SDL_SetWindowMouseGrab(window, false);
-            SDL_ShowCursor();
-        } else {
-            SDL_SetWindowRelativeMouseMode(window, false);
-        }
-    }
-    mouseCaptured = captured;
-    if (!captured) {
-        input.clear();
-    }
-}
-
-void warpToCenter(SDL_Window* window) {
-    int w = 0;
-    int h = 0;
-    SDL_GetWindowSize(window, &w, &h);
-    SDL_WarpMouseInWindow(window, cast(float)(w / 2), cast(float)(h / 2));
-}
-
-void processInteractiveInput(
-    ref SDL_Event ev,
-    SDL_Window* window,
-    ref InputState input,
-    ref Game game,
-    ref Session session,
-    ref bool mouseCaptured,
-    ref float mouseDx,
-    ref float mouseDy,
-    ref bool titleDirty,
-    ulong xWindowId,
-    ref int shotIndex,
-) {
-    if (ev.type == SDL_EVENT_KEY_DOWN) {
-        if (ev.key.key == SDLK_ESCAPE) {
-            if (mouseCaptured) {
-                setMouseCaptured(window, session, mouseCaptured, input, false);
-                titleDirty = true;
-            }
-        } else if (ev.key.key == SDLK_F12) {
-            string path = format("mined_shot_%03d.png", shotIndex++);
-            // Run in the background so capture doesn't stall the frame loop.
-            string cmd = format("import -window 0x%x %s &", xWindowId, path);
-            writefln("F12 screenshot -> %s", path);
-            system(cmd.toStringz);
-        } else if (ev.key.scancode == SDL_SCANCODE_V && !ev.key.repeat) {
-            game.flyMode = !game.flyMode;
-            writefln("mode: %s", modeName(game.flyMode, game.noClip));
-            recordModeChange(session, game);
-            titleDirty = true;
-        } else if (ev.key.scancode == SDL_SCANCODE_N && !ev.key.repeat) {
-            game.noClip = !game.noClip;
-            writefln("mode: %s", modeName(game.flyMode, game.noClip));
-            recordModeChange(session, game);
-            titleDirty = true;
-        } else if (ev.key.scancode >= SDL_SCANCODE_1 && ev.key.scancode <= SDL_SCANCODE_9) {
-            int idx = cast(int)(ev.key.scancode - SDL_SCANCODE_1);
-            if (idx < MATERIAL_PALETTE.length && idx != game.materialIndex) {
-                game.materialIndex = idx;
-                writefln("material: [%d] %s", idx + 1, game.material());
-                recordEvent(session, format("material(%d)", idx + 1));
-                titleDirty = true;
-            }
-        } else {
-            setMovementKey(ev.key.scancode, input, true);
-        }
-    }
-
-    if (ev.type == SDL_EVENT_KEY_UP) {
-        setMovementKey(ev.key.scancode, input, false);
-    }
-
-    if (ev.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
-        // Key-up events stop arriving once focus is gone; drop all held keys
-        // and release the mouse so the player isn't stuck moving or captured.
-        input.clear();
-        setMouseCaptured(window, session, mouseCaptured, input, false);
-        titleDirty = true;
-    }
-
-    if (ev.type == SDL_EVENT_MOUSE_MOTION && mouseCaptured) {
-        if (session.warpFallback) {
-            // Deltas are measured against the window center and the cursor is
-            // warped straight back, so the warp's own motion event lands at
-            // the center and contributes zero — no events need skipping.
-            int w = 0;
-            int h = 0;
-            SDL_GetWindowSize(window, &w, &h);
-            float cx = cast(float)(w / 2);
-            float cy = cast(float)(h / 2);
-            mouseDx += ev.motion.x - cx;
-            mouseDy += ev.motion.y - cy;
-            if (ev.motion.x != cx || ev.motion.y != cy) {
-                SDL_WarpMouseInWindow(window, cx, cy);
-            }
-        } else {
-            mouseDx += ev.motion.xrel;
-            mouseDy += ev.motion.yrel;
-        }
-    }
-
-    if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
-        if (!mouseCaptured) {
-            setMouseCaptured(window, session, mouseCaptured, input, true);
-            titleDirty = true;
-        } else if (ev.button.button == SDL_BUTTON_LEFT) {
-            game.breakBlock();
-            recordEvent(session, "break_block()");
-        } else if (ev.button.button == SDL_BUTTON_RIGHT) {
-            game.placeBlock();
-            recordEvent(session, "place_block()");
         }
     }
 }
 
-/// The noclip and fly toggles don't commute, so the resulting mode is
-/// recorded rather than the keypress.
-void recordModeChange(ref Session session, const ref Game game) {
-    recordEvent(session, format("mode(\"%s\")", modeName(game.flyMode, game.noClip)));
-}
-
-/// Movement uses scancodes (physical key positions) so WASD stays WASD on
-/// non-QWERTY layouts.
-void setMovementKey(uint scancode, ref InputState input, bool held) {
-    switch (scancode) {
-        case SDL_SCANCODE_W: input.held[Key.fwd] = held; break;
-        case SDL_SCANCODE_S: input.held[Key.back] = held; break;
-        case SDL_SCANCODE_A: input.held[Key.left] = held; break;
-        case SDL_SCANCODE_D: input.held[Key.right] = held; break;
-        case SDL_SCANCODE_SPACE: input.held[Key.up] = held; break;
-        case SDL_SCANCODE_LSHIFT: input.held[Key.down] = held; break;
-        case SDL_SCANCODE_LEFT: input.held[Key.yawLeft] = held; break;
-        case SDL_SCANCODE_RIGHT: input.held[Key.yawRight] = held; break;
-        case SDL_SCANCODE_UP: input.held[Key.pitchUp] = held; break;
-        case SDL_SCANCODE_DOWN: input.held[Key.pitchDown] = held; break;
-        default: break;
+extern (C) int main(int argc, char** argv) {
+    Arguments arguments = parseArguments(argc, argv);
+    Session* session = cast(Session*) malloc(Session.sizeof);
+    *session = Session.init;
+    session.config = loadClientConfig(arguments.configPath);
+    if (arguments.hasSensitivity) {
+        session.config.mouseSensitivity = arguments.sensitivity;
     }
+    if (arguments.invertY) {
+        session.config.invertY = true;
+    }
+    if (arguments.recordPath !is null) {
+        session.recorder = openScriptRecorder(arguments.recordPath);
+    }
+    int status = EXIT_FAILED;
+    if (openWindow(session)) {
+        SimConfigRaw raw;
+        if (session.renderer.setup(session.display, session.window, raw.chunkSize)) {
+            session.game = createGame(arguments.flatWorldgen, session.config.reachMeters);
+            runLoop(session);
+            releaseGame(&session.game);
+            status = EXIT_OK;
+        }
+        session.renderer.cleanup();
+        closeWindow(session);
+    }
+    closeScriptRecorder(&session.recorder);
+    free(session);
+    return status;
 }

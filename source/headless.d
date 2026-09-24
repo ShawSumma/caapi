@@ -1,87 +1,167 @@
-import std.stdio : writeln, writefln;
-import std.algorithm : endsWith;
-import std.conv : to;
-import std.file : exists;
-import client.game : Game;
-import client.script : ScriptHost;
-import worldcheck : dumpWorld, benchNearby, benchGen, benchDrive;
+module headless;
 
-enum ubyte CHUNK_DIMENSION = 12;
-enum float REACH_METERS = 10.0f;
+import core.stdc.stdio : FILE, fclose, fopen, fprintf;
+import core.stdc.stdlib : strtof;
+import core.stdc.string : strcmp;
+import client.config : ClientConfig;
+import client.game : Game, createGame, releaseGame;
+import client.script : ScriptHost, closeScript, runScript;
+import common.array : Array;
+import common.sim_config : SimConfigRaw;
+import worldcheck : benchDrive, benchGen, benchNearby, dumpWorld;
 
-int main(string[] args) {
-    string[] scriptPaths;
-    bool flatWorldgen = false;
-    foreach (i, a; args) {
-        if (a == "--dump-world") {
-            float radius = (i + 1 < args.length) ? args[i + 1].to!float : 3.0f;
-            dumpWorld(radius, CHUNK_DIMENSION);
-            return 0;
-        }
-        if (a == "--bench-gen") {
-            float radius = (i + 1 < args.length) ? args[i + 1].to!float : 2.5f;
-            benchGen(radius, CHUNK_DIMENSION);
-            return 0;
-        }
-        if (a == "--bench-drive") {
-            float radius = (i + 1 < args.length) ? args[i + 1].to!float : 2.5f;
-            benchDrive(radius, CHUNK_DIMENSION);
-            return 0;
-        }
-        if (a == "--bench-nearby") {
-            float radius = (i + 1 < args.length) ? args[i + 1].to!float : 4.5f;
-            int iters = (i + 2 < args.length) ? args[i + 2].to!int : 50;
-            benchNearby(radius, iters, CHUNK_DIMENSION);
-            return 0;
-        }
-        if (a == "--flat") {
-            flatWorldgen = true;
-        }
-        if (i > 0 && a.endsWith(".lua")) {
-            scriptPaths ~= a;
-        }
-    }
-    if (scriptPaths.length == 0) {
-        writeln("usage: mined-headless <script.lua>... [--flat]");
-        writeln("       mined-headless --dump-world [r] | --bench-gen [r] | --bench-drive [r] | --bench-nearby [r] [iters]");
-        return 2;
-    }
+enum int EXIT_PASSED = 0;
+enum int EXIT_FAILED = 1;
+enum int EXIT_USAGE = 2;
+enum float DEFAULT_DUMP_RADIUS = 3.0f;
+enum float DEFAULT_GEN_RADIUS = 2.5f;
+enum float DEFAULT_NEARBY_RADIUS = 4.5f;
+enum uint DEFAULT_NEARBY_ITERATIONS = 50;
 
-    string[] failed;
-    foreach (path; scriptPaths) {
-        if (scriptPaths.length > 1) {
-            writefln("== %s", path);
-        }
-        if (!runScript(path, flatWorldgen)) {
-            failed ~= path;
-        }
-    }
-    if (scriptPaths.length > 1) {
-        writefln("%d passed, %d failed", scriptPaths.length - failed.length, failed.length);
-        foreach (path; failed) {
-            writefln("  FAILED %s", path);
-        }
-    }
-    return failed.length == 0 ? 0 : 1;
+enum Command : ubyte {
+    Scripts,
+    DumpWorld,
+    BenchGen,
+    BenchDrive,
+    BenchNearby,
 }
 
-/// Runs one script in a fresh world; true when it ran to completion with
-/// every check passing.
-bool runScript(string path, bool flatWorldgen) {
-    if (!exists(path)) {
-        writefln("script not found: %s", path);
-        return false;
+struct NumberArgument {
+    float value;
+    bool present;
+}
+
+struct HeadlessArguments {
+    Array!(const(char)*) scripts;
+    const(char)* outputPath;
+    NumberArgument radius;
+    NumberArgument iterations;
+    Command command;
+    bool flatWorldgen;
+    bool valid = true;
+}
+
+NumberArgument parseNumber(const(char)* text) {
+    const(char)* end;
+    NumberArgument result;
+    result.value = strtof(text, &end);
+    result.present = end != text && *end == 0;
+    return result;
+}
+
+HeadlessArguments parseArguments(int argc, char** argv) {
+    HeadlessArguments arguments;
+    int index = 1;
+    while (index < argc) {
+        const(char)* argument = argv[index];
+        index += 1;
+        if (strcmp(argument, "--out") == 0 && index < argc) {
+            arguments.outputPath = argv[index];
+            index += 1;
+        } else if (strcmp(argument, "--flat") == 0) {
+            arguments.flatWorldgen = true;
+        } else if (strcmp(argument, "--dump-world") == 0) {
+            arguments.command = Command.DumpWorld;
+        } else if (strcmp(argument, "--bench-gen") == 0) {
+            arguments.command = Command.BenchGen;
+        } else if (strcmp(argument, "--bench-drive") == 0) {
+            arguments.command = Command.BenchDrive;
+        } else if (strcmp(argument, "--bench-nearby") == 0) {
+            arguments.command = Command.BenchNearby;
+        } else if (parseNumber(argument).present && !arguments.radius.present) {
+            arguments.radius = parseNumber(argument);
+        } else if (parseNumber(argument).present) {
+            arguments.iterations = parseNumber(argument);
+        } else if (argument[0] == '-') {
+            arguments.valid = false;
+        } else {
+            arguments.scripts.append(argument);
+        }
     }
-    Game game = Game.create(CHUNK_DIMENSION, flatWorldgen, REACH_METERS);
-    game.settleWorldgen = true;
+    return arguments;
+}
+
+float radiusOr(HeadlessArguments arguments, float fallback) {
+    float result = fallback;
+    if (arguments.radius.present) {
+        result = arguments.radius.value;
+    }
+    return result;
+}
+
+bool runScriptFile(const(char)* path, bool flatWorldgen, FILE* report) {
+    ClientConfig config;
+    Game game = createGame(flatWorldgen, config.reachMeters);
+    game.settleWorldgenEachFrame = true;
     ScriptHost host;
     host.game = &game;
-    bool ok = host.run(path);
-    host.close();
-    game.world.worldgenDriver.stop();
-
-    writefln("session: frames=%d time=%.2f traveled=%.2f failures=%d%s",
-        host.frames, game.simTime, game.traveled / game.simCfg.metersToAbsolute,
-        host.failures, ok ? "" : " error");
+    host.report = report;
+    if (report !is null) {
+        fprintf(report, "== %s\n", path);
+    }
+    bool ok = runScript(&host, path);
+    closeScript(&host);
+    if (report !is null) {
+        const(char)* suffix = "";
+        if (!ok) {
+            suffix = " error";
+        }
+        fprintf(report, "session: frames=%u time=%.2f traveled=%.2f failures=%u%s\n", host.frames, cast(double) game.simTime, cast(double)(game.traveled / game.simConfig.metersToAbsolute), host.failures, suffix);
+    }
+    releaseGame(&game);
     return ok && host.failures == 0;
+}
+
+int runScripts(HeadlessArguments arguments, FILE* report) {
+    uint failed = 0;
+    foreach (path; arguments.scripts.slice()) {
+        if (!runScriptFile(path, arguments.flatWorldgen, report)) {
+            failed += 1;
+        }
+    }
+    if (report !is null) {
+        fprintf(report, "%u passed, %u failed\n", cast(uint) arguments.scripts.length - failed, failed);
+    }
+    int status = EXIT_PASSED;
+    if (failed > 0) {
+        status = EXIT_FAILED;
+    }
+    return status;
+}
+
+int runWorldCommand(HeadlessArguments arguments, FILE* output) {
+    SimConfigRaw raw;
+    if (arguments.command == Command.DumpWorld) {
+        dumpWorld(output, radiusOr(arguments, DEFAULT_DUMP_RADIUS), raw.chunkSize);
+    } else if (arguments.command == Command.BenchGen) {
+        benchGen(output, radiusOr(arguments, DEFAULT_GEN_RADIUS), raw.chunkSize);
+    } else if (arguments.command == Command.BenchDrive) {
+        benchDrive(output, radiusOr(arguments, DEFAULT_GEN_RADIUS), raw.chunkSize);
+    } else {
+        uint iterations = DEFAULT_NEARBY_ITERATIONS;
+        if (arguments.iterations.present) {
+            iterations = cast(uint) arguments.iterations.value;
+        }
+        benchNearby(output, radiusOr(arguments, DEFAULT_NEARBY_RADIUS), iterations, raw.chunkSize);
+    }
+    return EXIT_PASSED;
+}
+
+extern (C) int main(int argc, char** argv) {
+    HeadlessArguments arguments = parseArguments(argc, argv);
+    FILE* output = null;
+    if (arguments.outputPath !is null) {
+        output = fopen(arguments.outputPath, "w");
+    }
+    int status = EXIT_USAGE;
+    if (arguments.valid && arguments.command == Command.Scripts && arguments.scripts.length > 0) {
+        status = runScripts(arguments, output);
+    } else if (arguments.valid && arguments.command != Command.Scripts && output !is null) {
+        status = runWorldCommand(arguments, output);
+    }
+    if (output !is null) {
+        fclose(output);
+    }
+    arguments.scripts.release();
+    return status;
 }

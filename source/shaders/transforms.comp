@@ -11,7 +11,7 @@ layout(set = 0, binding = 1, std430) readonly buffer VertexTransforms {
 };
 
 layout(set = 0, binding = 2, std430) readonly buffer SlotTasks {
-    uvec4 slotTasks[]; // x = nodeIndex, y = vertexId, z = slotId
+    uvec4 slotTasks[];
 };
 
 layout(set = 0, binding = 3, std430) writeonly buffer OutputTransforms {

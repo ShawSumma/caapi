@@ -59,15 +59,6 @@ bool find_face(out Face info) {
     return (neighbor_mat == 0) != (self_mat == 0);
 }
 
-// Per-corner AO for a voxel face.
-//
-// Derived directly from the vertex shader geometry:
-//   voxels.vert maps tc.x to axis b=(axis+1)%3, tc.y to axis c=(axis+2)%3.
-//   get_occlusion indexes corners as (tc.x | tc.y<<1), giving 4 corners
-//   at the ±b, ±c combinations.
-//
-// For each corner we sample the 3 neighboring voxels sharing that corner
-// on the viewer (empty) side: two edge-adjacent and one diagonal.
 uvec4 surface_occlusion(ivec3 voxel, uint axis, bool inward) {
     ivec3 base = voxel;
     if (!inward) {
@@ -79,8 +70,6 @@ uvec4 surface_occlusion(ivec3 voxel, uint axis, bool inward) {
 
     uvec4 ao;
     for (uint i = 0u; i < 4u; i++) {
-        // corner index i = (db | dc<<1), db/dc in {0,1}
-        // direction: 0 → -1, 1 → +1
         int sb = int(i & 1u) * 2 - 1;
         int sc = int(i >> 1u) * 2 - 1;
 

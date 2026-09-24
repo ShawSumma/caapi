@@ -1,14 +1,17 @@
 module client.game;
 
-import std.math : acosh, tanh;
-import client.local_character_controller : LocalCharacterController;
-import client.local_world : LocalWorld;
-import common.character_controller : runCharacterStep, getRelativeUp;
+import core.stdc.math : acoshf, fabsf, tanhf;
+import client.local_character_controller : LocalCharacterController, createLocalCharacterController;
+import client.local_world : LocalWorld, breakBlock, createLocalWorld, placeBlock, releaseLocalWorld, updateLocalWorld;
+import client.worldgen_driver : settleWorldgen;
+import common.character_controller.controller : CharacterState, getRelativeUp, runCharacterStep;
 import common.character_controller.vector_bounds : dot3;
 import common.math : MPoint;
 import common.proto : CharacterInput, Position;
-import common.sim_config : SimConfig;
+import common.sim_config : SimConfig, SimConfigRaw, simConfigFromRaw;
 import common.world : Material;
+
+enum float MIN_ACCELERATION_DT = 1e-6f;
 
 immutable Material[9] MATERIAL_PALETTE = [
     Material.WoodPlanks,
@@ -35,224 +38,190 @@ enum Key : ubyte {
     pitchDown,
 }
 
-/// Script and recording names, indexed by Key.
-immutable string[Key.max + 1] KEY_NAMES = [
-    "fwd", "back", "left", "right", "up", "down",
-    "yaw_left", "yaw_right", "pitch_up", "pitch_down",
+enum uint KEY_COUNT = Key.max + 1;
+
+immutable string[KEY_COUNT] KEY_NAMES = [
+    "fwd",
+    "back",
+    "left",
+    "right",
+    "up",
+    "down",
+    "yaw_left",
+    "yaw_right",
+    "pitch_up",
+    "pitch_down",
 ];
 
-bool keyFromName(const(char)[] name, out Key key) {
+struct KeyLookup {
+    Key key;
+    bool found;
+}
+
+KeyLookup keyFromName(const(char)[] name) {
+    KeyLookup result;
     if (name == "jump") {
-        key = Key.up;
-        return true;
-    }
-    foreach (i, n; KEY_NAMES) {
-        if (n == name) {
-            key = cast(Key) i;
-            return true;
+        result = KeyLookup(Key.up, true);
+    } else {
+        foreach (i, keyName; KEY_NAMES) {
+            if (keyName == name) {
+                result = KeyLookup(cast(Key) i, true);
+            }
         }
     }
-    return false;
+    return result;
 }
 
-/// Held-key state, tracked per key so opposite keys don't cancel each
-/// other's release, and clearable in one go when the window loses focus.
-struct InputState {
-    bool[Key.max + 1] held;
-
-    bool opIndex(Key key) const {
-        return held[key];
-    }
-
-    void clear() {
-        held[] = false;
-    }
-}
-
-/// One simulated frame's input: held keys plus the final look deltas in
-/// radians (sensitivity and invert already applied).
 struct FrameInput {
-    InputState keys;
     float yaw = 0;
     float pitch = 0;
+    bool[KEY_COUNT] held;
 }
 
-/// The local player in the world: character control, camera, block edits,
-/// and the motion metrics headless runs check. Knows nothing of windows.
 struct Game {
-    SimConfig simCfg;
     LocalWorld world;
     LocalCharacterController character;
-    float[3] velocity = [0, 0, 0];
-    bool onGround = false;
-    bool flyMode = true;
-    bool noClip = false;
-    int materialIndex = 0;
+    CharacterState characterState;
+    Position odometerPrevious;
+    Position cameraPrevious;
+    SimConfig simConfig;
     float simTime = 0;
-    // Wait for chunk generation every frame so results don't depend on
-    // worker timing (headless runs).
-    bool settleWorldgen = false;
-
-    // Traversal odometer in absolute units.
     float traveled = 0;
-    Position odoPrev;
-    // Vertical camera acceleration magnitude over the last frame (the bounce
-    // metric), in absolute units per second squared; 0 when undefined.
     float vacc = 0;
-    Position camPrev;
-    float prevVertVel = 0;
-    bool haveVertVel = false;
-
-    static Game create(ubyte dimension, bool flatWorldgen, float reachMeters) {
-        Game g;
-        g.simCfg = SimConfig.fromRaw();
-        g.world = LocalWorld.create(dimension, flatWorldgen);
-        g.world.reach = tanh(reachMeters * g.simCfg.metersToAbsolute);
-        g.character = LocalCharacterController.create();
-        g.character.position = g.world.camPos;
-        g.character.up = getRelativeUp(&g.world.graph, &g.character.position);
-        g.character.eyeOffset = g.simCfg.character.eyeOffset;
-        g.character.alignToGravity();
-        g.odoPrev = g.character.position;
-        g.camPrev = g.world.camPos;
-        return g;
-    }
-
-    Material material() const {
-        return MATERIAL_PALETTE[materialIndex];
-    }
-
-    bool breakBlock() {
-        return world.breakBlock();
-    }
-
-    bool placeBlock() {
-        return world.placeBlock(material());
-    }
-
-    /// Advances the character by one frame, moves the camera with it, and
-    /// updates the world around the new camera position.
-    void step(const ref FrameInput input, float dt) {
-        // The quaternion axes are mirrored relative to the camera's rotation
-        // convention, hence the negated deltas.
-        character.lookLevel(-input.yaw, -input.pitch);
-
-        float mx = axis(input.keys[Key.right]) - axis(input.keys[Key.left]);
-        float my = axis(input.keys[Key.up]) - axis(input.keys[Key.down]);
-        float mz = axis(input.keys[Key.back]) - axis(input.keys[Key.fwd]);
-
-        Position beforeStep = character.position;
-        bool wasGround = onGround;
-
-        CharacterInput cin;
-        cin.noClip = noClip;
-        cin.fly = flyMode;
-        if (noClip) {
-            // Debug free-flight: fully view-relative.
-            cin.movement = character.viewOrientation().rotate([mx, my, mz]);
-        } else if (flyMode) {
-            // Creative flight: forward/strafe in the yaw plane, and
-            // Space/Shift along actual world up/down.
-            cin.movement = character.horizontalOrientation().rotate([mx, my, mz]);
-        } else {
-            cin.movement = character.horizontalOrientation().rotate([mx, 0, mz]);
-            cin.jump = input.keys[Key.up];
-        }
-        runCharacterStep(simCfg, world.graph, character.position,
-            velocity, onGround, cin, dt);
-
-        // Holonomy mitigation: "down" is re-derived from the world at the
-        // new position every step, the view is transported to follow it,
-        // and any residual roll is aligned away, so carrying the frame
-        // around a loop can't accumulate rotation.
-        float[3] newUp = getRelativeUp(&world.graph, &character.position);
-
-        // Smooth grounded vertical motion (stair steps, hop launches and
-        // landings) out of the eye.
-        float groundedRise = 0;
-        if ((wasGround || onGround) && beforeStep.node == character.position.node) {
-            MPoint!float moved = (beforeStep.local.inverse() * character.position.local)
-                * MPoint!float.origin();
-            groundedRise = dot3(moved.vec.xyz(), newUp);
-        }
-        character.smoothEyeVertical(groundedRise, dt);
-
-        character.updatePosition(character.position, newUp, true);
-        // The yaw frame stays up-aligned by construction; this only
-        // scrubs out accumulated float noise.
-        character.alignToGravity();
-        character.renormalizeOrientation();
-        world.camPos = character.orientedPosition();
-
-        trackVerticalAcceleration(newUp, dt);
-        trackOdometer();
-
-        world.update();
-        if (settleWorldgen) {
-            world.worldgenDriver.settle(world.graph, world.dimension);
-        }
-        simTime += dt;
-    }
-
-    void trackVerticalAcceleration(float[3] up, float dt) {
-        vacc = 0;
-        if (world.camPos.node == camPrev.node && dt > 1e-6f) {
-            MPoint!float camMoved = (camPrev.local.inverse() * world.camPos.local)
-                * MPoint!float.origin();
-            float vertVel = dot3(camMoved.vec.xyz(), up) / dt;
-            if (haveVertVel) {
-                vacc = (vertVel - prevVertVel) / dt;
-                if (vacc < 0) {
-                    vacc = -vacc;
-                }
-            }
-            prevVertVel = vertVel;
-            haveVertVel = true;
-        } else {
-            haveVertVel = false;
-        }
-        camPrev = world.camPos;
-    }
-
-    void trackOdometer() {
-        if (character.position.node == odoPrev.node) {
-            MPoint!float a = odoPrev.local * MPoint!float.origin();
-            MPoint!float b = character.position.local * MPoint!float.origin();
-            float m = -a.mip(b.vec);
-            if (m > 1.0f) {
-                traveled += acosh(m);
-            }
-        }
-        odoPrev = character.position;
-    }
+    float previousVerticalVelocity = 0;
+    uint materialIndex;
+    bool flyMode = true;
+    bool noClip;
+    bool settleWorldgenEachFrame;
+    bool haveVerticalVelocity;
 }
 
-float axis(bool held) {
-    return held ? 1.0f : 0.0f;
+Game createGame(bool flatWorldgen, float reachMeters) {
+    SimConfigRaw raw;
+    Game game;
+    game.simConfig = simConfigFromRaw(raw);
+    game.world = createLocalWorld(raw.chunkSize, flatWorldgen, tanhf(reachMeters * game.simConfig.metersToAbsolute));
+    game.character = createLocalCharacterController();
+    game.character.position = game.world.cameraPosition;
+    game.character.up = getRelativeUp(&game.world.graph, game.character.position);
+    game.character.eyeOffset = game.simConfig.character.eyeOffset;
+    game.character.alignToGravity();
+    game.characterState.position = game.character.position;
+    game.odometerPrevious = game.character.position;
+    game.cameraPrevious = game.world.cameraPosition;
+    return game;
 }
 
-/// Sets walk, fly, or noclip; false for an unknown name.
-bool setMode(ref Game game, const(char)[] name) {
-    switch (name) {
-        case "walk":
-            game.flyMode = false;
-            game.noClip = false;
-            return true;
-        case "fly":
-            game.flyMode = true;
-            game.noClip = false;
-            return true;
-        case "noclip":
-            game.noClip = true;
-            return true;
-        default:
-            return false;
-    }
+void releaseGame(Game* game) {
+    releaseLocalWorld(&game.world);
 }
 
-string modeName(bool flyMode, bool noClip) {
-    if (noClip) {
-        return "noclip";
+bool gameBreakBlock(Game* game) {
+    return breakBlock(&game.world);
+}
+
+bool gamePlaceBlock(Game* game) {
+    return placeBlock(&game.world, MATERIAL_PALETTE[game.materialIndex]);
+}
+
+float axisValue(bool held) {
+    float result = 0.0f;
+    if (held) {
+        result = 1.0f;
     }
-    return flyMode ? "fly" : "walk";
+    return result;
+}
+
+void stepGame(Game* game, FrameInput input, float dt) {
+    game.character.lookLevel(-input.yaw, -input.pitch);
+    float moveX = axisValue(input.held[Key.right]) - axisValue(input.held[Key.left]);
+    float moveY = axisValue(input.held[Key.up]) - axisValue(input.held[Key.down]);
+    float moveZ = axisValue(input.held[Key.back]) - axisValue(input.held[Key.fwd]);
+    Position beforeStep = game.characterState.position;
+    bool wasOnGround = game.characterState.onGround;
+
+    CharacterInput characterInput;
+    characterInput.noClip = game.noClip;
+    characterInput.fly = game.flyMode;
+    if (game.noClip) {
+        characterInput.movement = game.character.viewOrientation().rotate([moveX, moveY, moveZ]);
+    } else if (game.flyMode) {
+        characterInput.movement = game.character.orientation.rotate([moveX, moveY, moveZ]);
+    } else {
+        characterInput.movement = game.character.orientation.rotate([moveX, 0, moveZ]);
+        characterInput.jump = input.held[Key.up];
+    }
+    runCharacterStep(&game.simConfig, &game.world.graph, &game.characterState, characterInput, dt);
+
+    float[3] newUp = getRelativeUp(&game.world.graph, game.characterState.position);
+    float groundedRise = 0;
+    if ((wasOnGround || game.characterState.onGround) && beforeStep.node == game.characterState.position.node) {
+        MPoint!float moved = (beforeStep.local.inverse() * game.characterState.position.local) * MPoint!float.origin();
+        groundedRise = dot3(moved.vec.xyz(), newUp);
+    }
+    game.character.smoothEyeVertical(groundedRise, dt);
+    game.character.updatePosition(game.characterState.position, newUp);
+    game.character.alignToGravity();
+    game.world.cameraPosition = game.character.orientedPosition();
+
+    trackVerticalAcceleration(game, newUp, dt);
+    trackOdometer(game);
+    updateLocalWorld(&game.world);
+    if (game.settleWorldgenEachFrame) {
+        settleWorldgen(&game.world.worldgenDriver, &game.world.graph);
+    }
+    game.simTime += dt;
+}
+
+void trackVerticalAcceleration(Game* game, float[3] up, float dt) {
+    game.vacc = 0;
+    if (game.world.cameraPosition.node == game.cameraPrevious.node && dt > MIN_ACCELERATION_DT) {
+        MPoint!float cameraMoved = (game.cameraPrevious.local.inverse() * game.world.cameraPosition.local) * MPoint!float.origin();
+        float verticalVelocity = dot3(cameraMoved.vec.xyz(), up) / dt;
+        if (game.haveVerticalVelocity) {
+            game.vacc = fabsf((verticalVelocity - game.previousVerticalVelocity) / dt);
+        }
+        game.previousVerticalVelocity = verticalVelocity;
+        game.haveVerticalVelocity = true;
+    } else {
+        game.haveVerticalVelocity = false;
+    }
+    game.cameraPrevious = game.world.cameraPosition;
+}
+
+void trackOdometer(Game* game) {
+    if (game.characterState.position.node == game.odometerPrevious.node) {
+        MPoint!float start = game.odometerPrevious.local * MPoint!float.origin();
+        float cosh = -start.mip((game.characterState.position.local * MPoint!float.origin()).vec);
+        if (cosh > 1.0f) {
+            game.traveled += acoshf(cosh);
+        }
+    }
+    game.odometerPrevious = game.characterState.position;
+}
+
+bool setMode(Game* game, const(char)[] name) {
+    bool known = true;
+    if (name == "walk") {
+        game.flyMode = false;
+        game.noClip = false;
+    } else if (name == "fly") {
+        game.flyMode = true;
+        game.noClip = false;
+    } else if (name == "noclip") {
+        game.noClip = true;
+    } else {
+        known = false;
+    }
+    return known;
+}
+
+const(char)* modeName(const(Game)* game) {
+    const(char)* result = "walk";
+    if (game.noClip) {
+        result = "noclip";
+    } else if (game.flyMode) {
+        result = "fly";
+    }
+    return result;
 }

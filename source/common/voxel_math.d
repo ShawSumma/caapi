@@ -13,91 +13,59 @@ enum CoordSign : byte {
     Minus = -1,
 }
 
-CoordSign mul(CoordSign a, CoordSign b) {
-    return a == b ? CoordSign.Plus : CoordSign.Minus;
-}
-
 struct Coords {
     ubyte[3] data;
 
-    this(ubyte[3] d) {
-        data = d;
-    }
-
-    this(ubyte x, ubyte y, ubyte z) {
-        data = [x, y, z];
-    }
-
     size_t toIndex(ubyte chunkSize) const {
-        size_t csm = chunkSize + 2;
-        return (data[0] + 1)
-             + (data[1] + 1) * csm
-             + (data[2] + 1) * csm * csm;
+        size_t stride = chunkSize + 2;
+        return (data[0] + 1) + (data[1] + 1) * stride + (data[2] + 1) * stride * stride;
     }
+}
 
-    static ubyte boundaryCoord(ubyte chunkSize, CoordSign sign) {
-        return sign == CoordSign.Plus ? cast(ubyte)(chunkSize - 1) : 0;
+ubyte boundaryCoord(ubyte chunkSize, CoordSign sign) {
+    ubyte result = 0;
+    if (sign == CoordSign.Plus) {
+        result = cast(ubyte)(chunkSize - 1);
     }
-
-    ref ubyte opIndex(CoordAxis axis) return {
-        return data[axis];
-    }
-
-    ubyte opIndex(CoordAxis axis) const {
-        return data[axis];
-    }
+    return result;
 }
 
 struct ChunkDirection {
     CoordAxis axis;
     CoordSign sign;
-
-    static immutable ChunkDirection PLUS_X = ChunkDirection(CoordAxis.X, CoordSign.Plus);
-    static immutable ChunkDirection PLUS_Y = ChunkDirection(CoordAxis.Y, CoordSign.Plus);
-    static immutable ChunkDirection PLUS_Z = ChunkDirection(CoordAxis.Z, CoordSign.Plus);
-    static immutable ChunkDirection MINUS_X = ChunkDirection(CoordAxis.X, CoordSign.Minus);
-    static immutable ChunkDirection MINUS_Y = ChunkDirection(CoordAxis.Y, CoordSign.Minus);
-    static immutable ChunkDirection MINUS_Z = ChunkDirection(CoordAxis.Z, CoordSign.Minus);
-
-    static immutable ChunkDirection[6] ALL = [
-        PLUS_X, PLUS_Y, PLUS_Z, MINUS_X, MINUS_Y, MINUS_Z
-    ];
 }
+
+immutable ChunkDirection[6] CHUNK_DIRECTIONS = [
+    ChunkDirection(CoordAxis.X, CoordSign.Plus),
+    ChunkDirection(CoordAxis.Y, CoordSign.Plus),
+    ChunkDirection(CoordAxis.Z, CoordSign.Plus),
+    ChunkDirection(CoordAxis.X, CoordSign.Minus),
+    ChunkDirection(CoordAxis.Y, CoordSign.Minus),
+    ChunkDirection(CoordAxis.Z, CoordSign.Minus),
+];
 
 struct ChunkAxisPermutation {
     CoordAxis[3] axes = [CoordAxis.X, CoordAxis.Y, CoordAxis.Z];
 
-    static immutable ChunkAxisPermutation IDENTITY = ChunkAxisPermutation([CoordAxis.X, CoordAxis.Y, CoordAxis.Z]);
-
-    static ChunkAxisPermutation fromPermutation(Side[3] from, Side[3] to) {
-        CoordAxis[3] result;
-        foreach (i; 0 .. 3) {
-            bool found = false;
-            foreach (j; 0 .. 3) {
-                if (from[i] == to[j]) {
-                    result[i] = cast(CoordAxis)j;
-                    found = true;
-                    break;
-                }
-            }
-            assert(found, "from and to must have same set of sides");
-        }
-        return ChunkAxisPermutation(result);
-    }
-
-    CoordAxis opIndex(CoordAxis axis) const {
-        return axes[axis];
-    }
-
-    Coords opBinary(string op)(Coords rhs) const if (op == "*") {
+    Coords apply(Coords rhs) const {
         Coords result;
         foreach (i; 0 .. 3) {
             result.data[axes[i]] = rhs.data[i];
         }
         return result;
     }
+}
 
-    ChunkDirection opBinary(string op)(ChunkDirection rhs) const if (op == "*") {
-        return ChunkDirection(axes[rhs.axis], rhs.sign);
+enum ChunkAxisPermutation IDENTITY_PERMUTATION = ChunkAxisPermutation.init;
+
+ChunkAxisPermutation permutationFromSides(Side[3] from, Side[3] to) {
+    ChunkAxisPermutation result;
+    foreach (i; 0 .. 3) {
+        foreach (j; 0 .. 3) {
+            if (from[i] == to[j]) {
+                result.axes[i] = cast(CoordAxis) j;
+            }
+        }
     }
+    return result;
 }

@@ -1,154 +1,118 @@
 module client.local_world;
 
-import core.time : MonoTime;
-import std.math : cosh, isNaN;
-import client.worldgen_driver : WorldgenDriver, getChunkNeighbor;
+import core.stdc.math : coshf;
+import client.worldgen_driver : WorldgenDriver, createWorldgenDriver, driveWorldgen, getChunkNeighbor, releaseWorldgenDriver;
 import common.collision_math : Ray;
-import common.graph : Graph, NodeId;
+import common.graph : Graph, NO_NODE, NodeId, ROOT_NODE, createGraph;
 import common.graph_ray_casting : GraphCastHit, rayCast;
 import common.margins : fixMargins, neighborAxisPermutation;
-import common.math : MIsometry, MPoint, MVector;
+import common.math : MIsometry, MPoint, MVector, isNan;
 import common.node : Chunk, ChunkId, ChunkState;
 import common.proto : Position;
-import common.traversal : ensureAndCollectNearby, NearbyNode, NearbyScratch;
-import common.voxel_math : ChunkDirection, Coords, CoordSign;
+import common.traversal : DEFAULT_NODE_CREATION_BUDGET, NearbyNode, NearbyScratch, ensureAndCollectNearby;
+import common.voxel_math : CHUNK_DIRECTIONS, ChunkDirection, Coords, boundaryCoord;
 import common.world : Material;
 
-/// The client's view of the world with no GPU state: the graph, the nearby
-/// node set around the camera, async chunk generation, and block edits.
-/// The renderer reads it; headless runs drive it alone.
+enum float NEARBY_PADDING = 0.05f;
+enum float RENDER_RADIUS = 4.5f;
+enum float SPAWN_HEIGHT = 1.4f;
+
 struct LocalWorld {
     Graph graph;
     WorldgenDriver worldgenDriver;
-    ubyte dimension;
-    Position camPos;
-    float renderRadius = 4.5f;
-    // tanh of the absolute block reach distance.
-    float reach = 0;
-
-    NearbyNode[] cachedNodes;
     NearbyScratch nearbyScratch;
+    Position cameraPosition;
+    MPoint!float lastNearbyPoint;
+    NearbyNode[] cachedNodes;
     NodeId lastNearbyNode;
-    MPoint!float lastNearbyPos;
-    bool hasNearby = false;
-    uint nearbyVersion = 0;
+    float renderRadius;
+    float reach;
+    uint nearbyVersion;
+    bool hasNearby;
+}
 
-    // Stage timings of the last update, for the renderer's stage log.
-    double ensureMs = 0;
-    double driveMs = 0;
+LocalWorld createLocalWorld(ubyte dimension, bool flatWorldgen, float reach) {
+    LocalWorld world;
+    world.graph = createGraph(dimension);
+    world.worldgenDriver = createWorldgenDriver(flatWorldgen);
+    world.cameraPosition = Position(ROOT_NODE, MIsometry!float.translationAlong([0.0f, SPAWN_HEIGHT, 0.0f]));
+    world.renderRadius = RENDER_RADIUS;
+    world.reach = reach;
+    return world;
+}
 
-    // The nearby set is collected with this much extra radius so it stays
-    // valid until the camera has translated NEARBY_PADDING away from the
-    // collection point; rotation never invalidates it. Node count grows
-    // exponentially with radius in hyperbolic space, so this must stay small:
-    // 0.05 costs ~10% more nodes, while e.g. 0.25 would cost ~65% more.
-    enum float NEARBY_PADDING = 0.05f;
+void releaseLocalWorld(LocalWorld* world) {
+    releaseWorldgenDriver(&world.worldgenDriver);
+    world.nearbyScratch.release();
+    world.graph.release();
+}
 
-    static LocalWorld create(ubyte dimension, bool flatWorldgen) {
-        LocalWorld w;
-        w.dimension = dimension;
-        w.graph = Graph.create(dimension);
-        w.worldgenDriver = WorldgenDriver.create();
-        w.worldgenDriver.flatWorldgen = flatWorldgen;
-        w.camPos.node = NodeId.ROOT;
-        w.camPos.local = MIsometry!float.translationAlong([0.0f, 1.4f, 0.0f]);
-        return w;
+void updateLocalWorld(LocalWorld* world) {
+    MPoint!float cameraPoint = world.cameraPosition.local * MPoint!float.origin();
+    if (!world.hasNearby || world.cameraPosition.node != world.lastNearbyNode || world.nearbyScratch.creationCapped || -world.lastNearbyPoint.mip(cameraPoint.vec) > coshf(NEARBY_PADDING)) {
+        world.cachedNodes = ensureAndCollectNearby(&world.nearbyScratch, &world.graph, world.cameraPosition.node, world.cameraPosition.local, world.renderRadius + NEARBY_PADDING, DEFAULT_NODE_CREATION_BUDGET);
+        world.lastNearbyNode = world.cameraPosition.node;
+        world.lastNearbyPoint = cameraPoint;
+        world.hasNearby = true;
+        world.nearbyVersion += 1;
     }
+    driveWorldgen(&world.worldgenDriver, world.cachedNodes, world.cameraPosition.local, world.renderRadius, &world.graph, world.nearbyVersion);
+}
 
-    /// Refreshes the nearby set if the camera left its padding, then feeds
-    /// chunk generation and integrates finished chunks.
-    void update() {
-        MonoTime a0 = MonoTime.currTime;
-        MPoint!float camPoint = camPos.local * MPoint!float.origin();
-        bool camMoved = !hasNearby || camPos.node != lastNearbyNode
-            || nearbyScratch.creationCapped
-            || -lastNearbyPos.mip(camPoint.vec) > cosh(NEARBY_PADDING);
-        if (camMoved) {
-            cachedNodes = ensureAndCollectNearby(nearbyScratch, graph, camPos.node, camPos.local,
-                renderRadius + NEARBY_PADDING);
-            lastNearbyNode = camPos.node;
-            lastNearbyPos = camPoint;
-            hasNearby = true;
-            nearbyVersion++;
-        }
-        MonoTime a1 = MonoTime.currTime;
-        worldgenDriver.drive(cachedNodes, camPos.local, renderRadius, graph, dimension, nearbyVersion);
-        MonoTime a2 = MonoTime.currTime;
-        ensureMs = (a1 - a0).total!"usecs" / 1000.0;
-        driveMs = (a2 - a1).total!"usecs" / 1000.0;
+GraphCastHit castCenterRay(const(LocalWorld)* world) {
+    Ray ray = Ray(MPoint!float.origin(), MVector!float(0, 0, -1, 0).normalizedDirection());
+    return rayCast(&world.graph, world.cameraPosition.node, world.cameraPosition.local, ray, world.reach);
+}
+
+bool breakBlock(LocalWorld* world) {
+    GraphCastHit hit = castCenterRay(world);
+    bool result = false;
+    if (!isNan(hit.tanhDistance)) {
+        result = setVoxel(world, hit.chunk, hit.voxelCoords, Material.Void);
     }
+    return result;
+}
 
-    GraphCastHit castCenterRay() {
-        Ray ray = Ray.create(
-            MPoint!float.origin(),
-            MVector!float(0, 0, -1, 0).normalizedDirection());
-        bool oob;
-        return rayCast(graph, camPos.node, camPos.local, ray, reach, oob);
-    }
-
-    bool breakBlock() {
-        GraphCastHit hit = castCenterRay();
-        if (isNaN(hit.tanhDistance)) {
-            return false;
-        }
-        return setVoxel(hit.chunk, hit.voxelCoords, Material.Void);
-    }
-
-    bool placeBlock(Material material) {
-        GraphCastHit hit = castCenterRay();
-        if (isNaN(hit.tanhDistance)) {
-            return false;
-        }
-        ChunkId targetChunk = hit.chunk;
+bool placeBlock(LocalWorld* world, Material material) {
+    GraphCastHit hit = castCenterRay(world);
+    bool result = false;
+    if (!isNan(hit.tanhDistance)) {
+        ubyte dimension = world.graph.layout.dimension;
         Coords coords = hit.voxelCoords;
-        int stepped = coords[hit.faceAxis] + (hit.faceSign == CoordSign.Plus ? 1 : -1);
+        int stepped = coords.data[hit.faceAxis] + hit.faceSign;
         if (stepped >= 0 && stepped < dimension) {
-            coords[hit.faceAxis] = cast(ubyte) stepped;
+            coords.data[hit.faceAxis] = cast(ubyte) stepped;
+            result = setVoxel(world, hit.chunk, coords, material);
         } else {
-            // The cell in front of the hit face lies in the neighboring chunk.
-            // Chunk neighbors meet mirrored, so the crossing lands on the
-            // neighbor's boundary layer for the same direction, with its axes
-            // permuted the same way fixMargins matches them up.
-            ChunkDirection dir = ChunkDirection(hit.faceAxis, hit.faceSign);
-            ChunkId neighbor = getChunkNeighbor(graph, hit.chunk, dir.axis, dir.sign);
-            if (neighbor.node == NodeId.init || !graph.contains(neighbor.node)) {
-                return false;
+            ChunkDirection direction = ChunkDirection(hit.faceAxis, hit.faceSign);
+            ChunkId neighbor = getChunkNeighbor(&world.graph, hit.chunk, direction);
+            if (neighbor.node != NO_NODE) {
+                coords.data[hit.faceAxis] = boundaryCoord(dimension, direction.sign);
+                coords = neighborAxisPermutation(hit.chunk.vertex, direction).apply(coords);
+                result = setVoxel(world, neighbor, coords, material);
             }
-            coords[hit.faceAxis] = Coords.boundaryCoord(dimension, dir.sign);
-            coords = neighborAxisPermutation(hit.chunk.vertex, dir) * coords;
-            targetChunk = neighbor;
         }
-        return setVoxel(targetChunk, coords, material);
     }
+    return result;
+}
 
-    /// Write one voxel and keep the margin copies of adjacent chunks in sync
-    /// so their surfaces re-extract correctly when a boundary voxel changes.
-    bool setVoxel(ChunkId chunkId, Coords coords, Material material) {
-        if (!graph.contains(chunkId.node)) {
-            return false;
-        }
-        Chunk* c = &graph[chunkId.node].chunks.values[chunkId.vertex];
-        if (c.state != ChunkState.Populated) {
-            return false;
-        }
-        c.voxels.dataMut(dimension)[coords.toIndex(dimension)] = material;
-        c.generation++;
-
-        foreach (dir; ChunkDirection.ALL) {
-            if (coords[dir.axis] != Coords.boundaryCoord(dimension, dir.sign)) {
-                continue;
+bool setVoxel(LocalWorld* world, ChunkId chunkId, Coords coords, Material material) {
+    ubyte dimension = world.graph.layout.dimension;
+    Chunk* chunk = &world.graph.nodeOf(chunkId.node).chunks[chunkId.vertex];
+    bool result = chunk.state == ChunkState.Populated;
+    if (result) {
+        chunk.voxels.dataMut(dimension)[coords.toIndex(dimension)] = material;
+        chunk.generation += 1;
+        foreach (direction; CHUNK_DIRECTIONS) {
+            ChunkId neighbor = getChunkNeighbor(&world.graph, chunkId, direction);
+            if (coords.data[direction.axis] == boundaryCoord(dimension, direction.sign) && neighbor.node != NO_NODE) {
+                Chunk* neighborChunk = &world.graph.nodeOf(neighbor.node).chunks[neighbor.vertex];
+                if (neighborChunk.state == ChunkState.Populated) {
+                    fixMargins(dimension, chunkId.vertex, &chunk.voxels, direction, &neighborChunk.voxels);
+                    neighborChunk.generation += 1;
+                }
             }
-            ChunkId neighbor = getChunkNeighbor(graph, chunkId, dir.axis, dir.sign);
-            if (neighbor.node == NodeId.init || !graph.contains(neighbor.node)) {
-                continue;
-            }
-            Chunk* nc = &graph[neighbor.node].chunks.values[neighbor.vertex];
-            if (nc.state != ChunkState.Populated) {
-                continue;
-            }
-            fixMargins(dimension, chunkId.vertex, c.voxels, dir, nc.voxels);
-            nc.generation++;
         }
-        return true;
     }
+    return result;
 }

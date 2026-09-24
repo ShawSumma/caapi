@@ -1,327 +1,246 @@
 module client.graphics.base;
 
-import std.stdio;
-import bindings.vk;
+import bindings.platform : VK_ACCESS_COLOR_ATTACHMENT_READ_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_ACCESS_INPUT_ATTACHMENT_READ_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_STORE, VK_COMMAND_BUFFER_LEVEL_PRIMARY, VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR, VK_DEPENDENCY_BY_REGION_BIT, VK_FENCE_CREATE_SIGNALED_BIT, VK_FORMAT_D32_SFLOAT, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_TYPE_2D, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT, VK_IMAGE_VIEW_TYPE_2D, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, VK_PIPELINE_BIND_POINT_GRAPHICS, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_PRESENT_MODE_FIFO_KHR, VK_PRESENT_MODE_MAILBOX_KHR, VK_SAMPLE_COUNT_1_BIT, VK_SHARING_MODE_EXCLUSIVE, VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, VK_SUCCESS, VkAttachmentDescription, VkAttachmentReference, VkCommandBuffer, VkCommandBufferAllocateInfo, VkCommandPool, VkCommandPoolCreateInfo, VkDevice, VkDeviceMemory, VkExtent2D, VkExtent3D, VkFence, VkFenceCreateInfo, VkFormat, VkFramebuffer, VkFramebufferCreateInfo, VkImage, VkImageAspectFlags, VkImageCreateInfo, VkImageView, VkImageViewCreateInfo, VkMemoryAllocateInfo, VkMemoryRequirements, VkPhysicalDevice, VkPresentModeKHR, VkRenderPass, VkRenderPassCreateInfo, VkSemaphore, VkSemaphoreCreateInfo, VkSubpassDependency, VkSubpassDescription, VkSurfaceCapabilitiesKHR, VkSurfaceFormatKHR, VkSurfaceKHR, VkSwapchainCreateInfoKHR, VkSwapchainKHR, vkAllocateCommandBuffers, vkAllocateMemory, vkBindImageMemory, vkCreateCommandPool, vkCreateFence, vkCreateFramebuffer, vkCreateImage, vkCreateImageView, vkCreateRenderPass, vkCreateSemaphore, vkCreateSwapchainKHR, vkDestroyCommandPool, vkDestroyFence, vkDestroyFramebuffer, vkDestroyImage, vkDestroyImageView, vkDestroyRenderPass, vkDestroySemaphore, vkDestroySwapchainKHR, vkDeviceWaitIdle, vkFreeMemory, vkGetImageMemoryRequirements, vkGetPhysicalDeviceSurfaceCapabilitiesKHR, vkGetPhysicalDeviceSurfaceFormatsKHR, vkGetPhysicalDeviceSurfacePresentModesKHR, vkGetSwapchainImagesKHR;
+import client.graphics.pipeline : SUBPASS_EXTERNAL, VULKAN_TRUE, findMemoryType;
+
+enum uint MAX_SWAPCHAIN_IMAGES = 8;
+enum uint MAX_SURFACE_FORMATS = 64;
+enum uint MAX_PRESENT_MODES = 16;
+enum uint UNDEFINED_EXTENT = uint.max;
 
 struct SwapchainState {
-    VkPhysicalDevice physDevice;
+    VkImage[MAX_SWAPCHAIN_IMAGES] images;
+    VkImageView[MAX_SWAPCHAIN_IMAGES] imageViews;
+    VkFramebuffer[MAX_SWAPCHAIN_IMAGES] framebuffers;
+    VkPhysicalDevice physicalDevice;
     VkSurfaceKHR surface;
     VkSwapchainKHR swapchain;
-    VkFormat format;
-    VkExtent2D extent;
-    VkImage[] images;
-    VkImageView[] imageViews;
     VkImage depthImage;
     VkDeviceMemory depthMemory;
     VkImageView depthView;
     VkRenderPass renderPass;
-    VkFramebuffer[] framebuffers;
     VkCommandPool commandPool;
     VkCommandBuffer commandBuffer;
     VkSemaphore imageAvailableSemaphore;
     VkSemaphore renderFinishedSemaphore;
     VkFence inFlightFence;
+    VkExtent2D extent;
+    VkFormat format;
+    uint imageCount;
 
-    bool init(VkPhysicalDevice physDevice, VkDevice device, VkSurfaceKHR surface, uint queueFamily) {
-        this.physDevice = physDevice;
-        this.surface = surface;
-
-        if (!createSwapchainResources(device)) {
-            return false;
+    bool setup(VkPhysicalDevice physical, VkDevice device, VkSurfaceKHR targetSurface, uint queueFamily) {
+        physicalDevice = physical;
+        surface = targetSurface;
+        bool ok = createSwapchainResources(device);
+        if (ok) {
+            VkCommandPoolCreateInfo poolInfo;
+            poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+            poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+            poolInfo.queueFamilyIndex = queueFamily;
+            vkCreateCommandPool(device, &poolInfo, null, &commandPool);
+            VkCommandBufferAllocateInfo allocateInfo;
+            allocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+            allocateInfo.commandPool = commandPool;
+            allocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+            allocateInfo.commandBufferCount = 1;
+            vkAllocateCommandBuffers(device, &allocateInfo, &commandBuffer);
+            createSemaphores(device);
+            VkFenceCreateInfo fenceInfo;
+            fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+            fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+            vkCreateFence(device, &fenceInfo, null, &inFlightFence);
         }
-
-        VkCommandPoolCreateInfo cpci;
-        cpci.sType = VkStructureType.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-        cpci.flags = VkCommandPoolCreateFlagBits.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-        cpci.queueFamilyIndex = queueFamily;
-        vkCreateCommandPool(device, &cpci, null, &commandPool);
-
-        VkCommandBufferAllocateInfo cbai;
-        cbai.sType = VkStructureType.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        cbai.commandPool = commandPool;
-        cbai.level = VkCommandBufferLevel.VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        cbai.commandBufferCount = 1;
-        vkAllocateCommandBuffers(device, &cbai, &commandBuffer);
-
-        VkSemaphoreCreateInfo semCI;
-        semCI.sType = VkStructureType.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-        vkCreateSemaphore(device, &semCI, null, &imageAvailableSemaphore);
-        vkCreateSemaphore(device, &semCI, null, &renderFinishedSemaphore);
-
-        VkFenceCreateInfo fenceCI;
-        fenceCI.sType = VkStructureType.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-        fenceCI.flags = VkFenceCreateFlagBits.VK_FENCE_CREATE_SIGNALED_BIT;
-        vkCreateFence(device, &fenceCI, null, &inFlightFence);
-
-        writeln("Swapchain and render pass created");
-        return true;
+        return ok;
     }
 
-    /// Tear down and rebuild everything that depends on the surface size.
-    /// Returns false if the surface currently has zero area (e.g. minimized);
-    /// callers should skip rendering and retry later.
+    void createSemaphores(VkDevice device) {
+        VkSemaphoreCreateInfo semaphoreInfo;
+        semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        vkCreateSemaphore(device, &semaphoreInfo, null, &imageAvailableSemaphore);
+        vkCreateSemaphore(device, &semaphoreInfo, null, &renderFinishedSemaphore);
+    }
+
     bool recreate(VkDevice device) {
         vkDeviceWaitIdle(device);
         destroySwapchainResources(device);
-
-        // The acquire semaphore may be left signaled by an acquire whose image
-        // was never presented; recreate both semaphores to get a clean state.
         vkDestroySemaphore(device, imageAvailableSemaphore, null);
         vkDestroySemaphore(device, renderFinishedSemaphore, null);
-        VkSemaphoreCreateInfo semCI;
-        semCI.sType = VkStructureType.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-        vkCreateSemaphore(device, &semCI, null, &imageAvailableSemaphore);
-        vkCreateSemaphore(device, &semCI, null, &renderFinishedSemaphore);
-
+        createSemaphores(device);
         return createSwapchainResources(device);
     }
 
     bool createSwapchainResources(VkDevice device) {
-        VkSurfaceCapabilitiesKHR caps;
-        vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physDevice, surface, &caps);
-
+        VkSurfaceCapabilitiesKHR capabilities;
+        vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, &capabilities);
         VkExtent2D previous = extent;
-        extent = caps.currentExtent;
-        if (extent.width == uint.max) {
-            // Surface lets us pick; clamp the previous extent into the valid range.
-            extent.width = clamp(previous.width, caps.minImageExtent.width, caps.maxImageExtent.width);
-            extent.height = clamp(previous.height, caps.minImageExtent.height, caps.maxImageExtent.height);
+        extent = capabilities.currentExtent;
+        if (extent.width == UNDEFINED_EXTENT) {
+            extent.width = clampUint(previous.width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width);
+            extent.height = clampUint(previous.height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
         }
-        if (extent.width == 0 || extent.height == 0) {
-            return false;
+        bool ok = extent.width != 0 && extent.height != 0;
+        if (ok) {
+            ok = createSwapchain(device, capabilities);
         }
+        if (ok) {
+            createDepthResources(device);
+            if (renderPass is null) {
+                ok = createRenderPass(device);
+            }
+        }
+        if (ok) {
+            foreach (i; 0 .. imageCount) {
+                VkImageView[2] attachments = [
+                    imageViews[i],
+                    depthView,
+                ];
+                VkFramebufferCreateInfo framebufferInfo;
+                framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+                framebufferInfo.renderPass = renderPass;
+                framebufferInfo.attachmentCount = 2;
+                framebufferInfo.pAttachments = attachments.ptr;
+                framebufferInfo.width = extent.width;
+                framebufferInfo.height = extent.height;
+                framebufferInfo.layers = 1;
+                vkCreateFramebuffer(device, &framebufferInfo, null, &framebuffers[i]);
+            }
+        }
+        return ok;
+    }
 
-        uint formatCount;
-        vkGetPhysicalDeviceSurfaceFormatsKHR(physDevice, surface, &formatCount, null);
-        VkSurfaceFormatKHR[] formats = new VkSurfaceFormatKHR[](formatCount);
-        vkGetPhysicalDeviceSurfaceFormatsKHR(physDevice, surface, &formatCount, formats.ptr);
+    bool createSwapchain(VkDevice device, VkSurfaceCapabilitiesKHR capabilities) {
+        VkSurfaceFormatKHR[MAX_SURFACE_FORMATS] formats;
+        uint formatCount = MAX_SURFACE_FORMATS;
+        vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &formatCount, formats.ptr);
         format = formats[0].format;
-        VkColorSpaceKHR colorSpace = formats[0].colorSpace;
-
-        uint imageCount = caps.minImageCount + 1;
-        if (caps.maxImageCount > 0 && imageCount > caps.maxImageCount) {
-            imageCount = caps.maxImageCount;
+        uint wantedImages = capabilities.minImageCount + 1;
+        if (capabilities.maxImageCount > 0 && wantedImages > capabilities.maxImageCount) {
+            wantedImages = capabilities.maxImageCount;
         }
-
-        VkSwapchainCreateInfoKHR sci;
-        sci.sType = VkStructureType.VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-        sci.surface = surface;
-        sci.minImageCount = imageCount;
-        sci.imageFormat = format;
-        sci.imageColorSpace = colorSpace;
-        sci.imageExtent = extent;
-        sci.imageArrayLayers = 1;
-        sci.imageUsage = VkImageUsageFlagBits.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-        sci.imageSharingMode = VkSharingMode.VK_SHARING_MODE_EXCLUSIVE;
-        sci.preTransform = caps.currentTransform;
-        sci.compositeAlpha = VkCompositeAlphaFlagBitsKHR.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-        sci.presentMode = selectPresentMode(physDevice, surface);
-        sci.clipped = 1;
-
-        VkResult res = vkCreateSwapchainKHR(device, &sci, null, &swapchain);
-        if (res != VkResult.VK_SUCCESS) {
-            writefln("vkCreateSwapchainKHR failed: %s", res);
-            return false;
-        }
-
-        uint imgCount;
-        vkGetSwapchainImagesKHR(device, swapchain, &imgCount, null);
-        images = new VkImage[](imgCount);
-        vkGetSwapchainImagesKHR(device, swapchain, &imgCount, images.ptr);
-
-        imageViews = new VkImageView[](imgCount);
-        for (uint i = 0; i < imgCount; i++) {
-            VkImageViewCreateInfo ivci;
-            ivci.sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-            ivci.image = images[i];
-            ivci.viewType = VkImageViewType.VK_IMAGE_VIEW_TYPE_2D;
-            ivci.format = format;
-            ivci.components.r = VkComponentSwizzle.VK_COMPONENT_SWIZZLE_IDENTITY;
-            ivci.components.g = VkComponentSwizzle.VK_COMPONENT_SWIZZLE_IDENTITY;
-            ivci.components.b = VkComponentSwizzle.VK_COMPONENT_SWIZZLE_IDENTITY;
-            ivci.components.a = VkComponentSwizzle.VK_COMPONENT_SWIZZLE_IDENTITY;
-            ivci.subresourceRange.aspectMask = VkImageAspectFlagBits.VK_IMAGE_ASPECT_COLOR_BIT;
-            ivci.subresourceRange.baseMipLevel = 0;
-            ivci.subresourceRange.levelCount = 1;
-            ivci.subresourceRange.baseArrayLayer = 0;
-            ivci.subresourceRange.layerCount = 1;
-            vkCreateImageView(device, &ivci, null, &imageViews[i]);
-        }
-
-        VkImageCreateInfo dci;
-        dci.sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        dci.imageType = VkImageType.VK_IMAGE_TYPE_2D;
-        dci.format = VkFormat.VK_FORMAT_D32_SFLOAT;
-        dci.extent.width = extent.width;
-        dci.extent.height = extent.height;
-        dci.extent.depth = 1;
-        dci.mipLevels = 1;
-        dci.arrayLayers = 1;
-        dci.samples = 1;
-        dci.tiling = VkImageTiling.VK_IMAGE_TILING_OPTIMAL;
-        dci.usage = VkImageUsageFlagBits.VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
-                  | VkImageUsageFlagBits.VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
-        dci.sharingMode = VkSharingMode.VK_SHARING_MODE_EXCLUSIVE;
-        dci.initialLayout = VkImageLayout.VK_IMAGE_LAYOUT_UNDEFINED;
-        vkCreateImage(device, &dci, null, &depthImage);
-
-        VkMemoryRequirements dreq;
-        vkGetImageMemoryRequirements(device, depthImage, &dreq);
-        VkPhysicalDeviceMemoryProperties dmp;
-        vkGetPhysicalDeviceMemoryProperties(physDevice, &dmp);
-        uint dmti = uint.max;
-        for (uint i = 0; i < dmp.memoryTypeCount; i++) {
-            if ((dreq.memoryTypeBits & (1u << i)) &&
-                (dmp.memoryTypes[i].propertyFlags & VkMemoryPropertyFlagBits.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
-                dmti = i;
-                break;
+        VkSwapchainCreateInfoKHR info;
+        info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+        info.surface = surface;
+        info.minImageCount = wantedImages;
+        info.imageFormat = format;
+        info.imageColorSpace = formats[0].colorSpace;
+        info.imageExtent = extent;
+        info.imageArrayLayers = 1;
+        info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        info.preTransform = capabilities.currentTransform;
+        info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+        info.presentMode = selectPresentMode(physicalDevice, surface);
+        info.clipped = VULKAN_TRUE;
+        bool ok = vkCreateSwapchainKHR(device, &info, null, &swapchain) == VK_SUCCESS;
+        if (ok) {
+            imageCount = MAX_SWAPCHAIN_IMAGES;
+            vkGetSwapchainImagesKHR(device, swapchain, &imageCount, images.ptr);
+            foreach (i; 0 .. imageCount) {
+                imageViews[i] = createImageView(device, images[i], format, VK_IMAGE_ASPECT_COLOR_BIT);
             }
         }
-        VkMemoryAllocateInfo dmai;
-        dmai.sType = VkStructureType.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        dmai.allocationSize = dreq.size;
-        dmai.memoryTypeIndex = dmti;
-        vkAllocateMemory(device, &dmai, null, &depthMemory);
+        return ok;
+    }
+
+    void createDepthResources(VkDevice device) {
+        VkImageCreateInfo imageInfo;
+        imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imageInfo.imageType = VK_IMAGE_TYPE_2D;
+        imageInfo.format = VK_FORMAT_D32_SFLOAT;
+        imageInfo.extent = VkExtent3D(extent.width, extent.height, 1);
+        imageInfo.mipLevels = 1;
+        imageInfo.arrayLayers = 1;
+        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
+        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        vkCreateImage(device, &imageInfo, null, &depthImage);
+        VkMemoryRequirements requirements;
+        vkGetImageMemoryRequirements(device, depthImage, &requirements);
+        VkMemoryAllocateInfo allocateInfo;
+        allocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocateInfo.allocationSize = requirements.size;
+        allocateInfo.memoryTypeIndex = findMemoryType(physicalDevice, requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        vkAllocateMemory(device, &allocateInfo, null, &depthMemory);
         vkBindImageMemory(device, depthImage, depthMemory, 0);
-
-        VkImageViewCreateInfo dvci;
-        dvci.sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        dvci.image = depthImage;
-        dvci.viewType = VkImageViewType.VK_IMAGE_VIEW_TYPE_2D;
-        dvci.format = VkFormat.VK_FORMAT_D32_SFLOAT;
-        dvci.subresourceRange.aspectMask = VkImageAspectFlagBits.VK_IMAGE_ASPECT_DEPTH_BIT;
-        dvci.subresourceRange.levelCount = 1;
-        dvci.subresourceRange.layerCount = 1;
-        vkCreateImageView(device, &dvci, null, &depthView);
-
-        // The render pass only depends on the image formats, which are stable;
-        // pipelines reference it, so create it once and keep it across resizes.
-        if (!renderPass) {
-            if (!createRenderPass(device)) {
-                return false;
-            }
-        }
-
-        framebuffers = new VkFramebuffer[](imgCount);
-        for (uint i = 0; i < imgCount; i++) {
-            VkImageView[2] fbAttach = [imageViews[i], depthView];
-            VkFramebufferCreateInfo fbci;
-            fbci.sType = VkStructureType.VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-            fbci.renderPass = renderPass;
-            fbci.attachmentCount = 2;
-            fbci.pAttachments = fbAttach.ptr;
-            fbci.width = extent.width;
-            fbci.height = extent.height;
-            fbci.layers = 1;
-            vkCreateFramebuffer(device, &fbci, null, &framebuffers[i]);
-        }
-
-        return true;
+        depthView = createImageView(device, depthImage, VK_FORMAT_D32_SFLOAT, VK_IMAGE_ASPECT_DEPTH_BIT);
     }
 
     bool createRenderPass(VkDevice device) {
         VkAttachmentDescription[2] attachments;
         attachments[0].format = format;
-        attachments[0].samples = 1;
-        attachments[0].loadOp = VkAttachmentLoadOp.VK_ATTACHMENT_LOAD_OP_CLEAR;
-        attachments[0].storeOp = VkAttachmentStoreOp.VK_ATTACHMENT_STORE_OP_STORE;
-        attachments[0].initialLayout = VkImageLayout.VK_IMAGE_LAYOUT_UNDEFINED;
-        attachments[0].finalLayout = VkImageLayout.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-
-        attachments[1].format = VkFormat.VK_FORMAT_D32_SFLOAT;
-        attachments[1].samples = 1;
-        attachments[1].loadOp = VkAttachmentLoadOp.VK_ATTACHMENT_LOAD_OP_CLEAR;
-        attachments[1].storeOp = VkAttachmentStoreOp.VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        attachments[1].initialLayout = VkImageLayout.VK_IMAGE_LAYOUT_UNDEFINED;
-        attachments[1].finalLayout = VkImageLayout.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-        VkAttachmentReference colorRef;
-        colorRef.attachment = 0;
-        colorRef.layout = VkImageLayout.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        VkAttachmentReference depthRef;
-        depthRef.attachment = 1;
-        depthRef.layout = VkImageLayout.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-        VkAttachmentReference depthInputRef;
-        depthInputRef.attachment = 1;
-        depthInputRef.layout = VkImageLayout.VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-
+        attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
+        attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        attachments[0].finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        attachments[1].format = VK_FORMAT_D32_SFLOAT;
+        attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
+        attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        VkAttachmentReference colorReference = VkAttachmentReference(0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        VkAttachmentReference depthReference = VkAttachmentReference(1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+        VkAttachmentReference depthInputReference = VkAttachmentReference(1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
         VkSubpassDescription[2] subpasses;
-        subpasses[0].pipelineBindPoint = VkPipelineBindPoint.VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpasses[0].pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
         subpasses[0].colorAttachmentCount = 1;
-        subpasses[0].pColorAttachments = &colorRef;
-        subpasses[0].pDepthStencilAttachment = &depthRef;
-
-        subpasses[1].pipelineBindPoint = VkPipelineBindPoint.VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpasses[0].pColorAttachments = &colorReference;
+        subpasses[0].pDepthStencilAttachment = &depthReference;
+        subpasses[1].pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
         subpasses[1].colorAttachmentCount = 1;
-        subpasses[1].pColorAttachments = &colorRef;
+        subpasses[1].pColorAttachments = &colorReference;
         subpasses[1].inputAttachmentCount = 1;
-        subpasses[1].pInputAttachments = &depthInputRef;
-
-        VkSubpassDependency[2] deps;
-        deps[0].srcSubpass = VK_SUBPASS_EXTERNAL;
-        deps[0].dstSubpass = 0;
-        deps[0].srcStageMask = VkPipelineStageFlagBits.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
-                              | VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-        deps[0].dstStageMask = VkPipelineStageFlagBits.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
-                              | VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-        deps[0].srcAccessMask = 0;
-        deps[0].dstAccessMask = VkAccessFlagBits.VK_ACCESS_COLOR_ATTACHMENT_READ_BIT
-                              | VkAccessFlagBits.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
-                              | VkAccessFlagBits.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT
-                              | VkAccessFlagBits.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-
-        deps[1].srcSubpass = 0;
-        deps[1].dstSubpass = 1;
-        deps[1].srcStageMask = VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
-                              | VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-        deps[1].dstStageMask = VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-        deps[1].srcAccessMask = VkAccessFlagBits.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        deps[1].dstAccessMask = VkAccessFlagBits.VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
-        deps[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
-
-        VkRenderPassCreateInfo rpci;
-        rpci.sType = VkStructureType.VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-        rpci.attachmentCount = 2;
-        rpci.pAttachments = attachments.ptr;
-        rpci.subpassCount = 2;
-        rpci.pSubpasses = subpasses.ptr;
-        rpci.dependencyCount = 2;
-        rpci.pDependencies = deps.ptr;
-
-        VkResult res = vkCreateRenderPass(device, &rpci, null, &renderPass);
-        if (res != VkResult.VK_SUCCESS) {
-            writefln("vkCreateRenderPass failed: %s", res);
-            return false;
-        }
-        return true;
+        subpasses[1].pInputAttachments = &depthInputReference;
+        VkSubpassDependency[2] dependencies;
+        dependencies[0].srcSubpass = SUBPASS_EXTERNAL;
+        dependencies[0].dstSubpass = 0;
+        dependencies[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+        dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+        dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        dependencies[1].srcSubpass = 0;
+        dependencies[1].dstSubpass = 1;
+        dependencies[1].srcStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+        dependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        dependencies[1].srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        dependencies[1].dstAccessMask = VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
+        dependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+        VkRenderPassCreateInfo info;
+        info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        info.attachmentCount = 2;
+        info.pAttachments = attachments.ptr;
+        info.subpassCount = 2;
+        info.pSubpasses = subpasses.ptr;
+        info.dependencyCount = 2;
+        info.pDependencies = dependencies.ptr;
+        return vkCreateRenderPass(device, &info, null, &renderPass) == VK_SUCCESS;
     }
 
     void destroySwapchainResources(VkDevice device) {
-        foreach (fb; framebuffers) {
-            vkDestroyFramebuffer(device, fb, null);
+        foreach (i; 0 .. imageCount) {
+            vkDestroyFramebuffer(device, framebuffers[i], null);
+            vkDestroyImageView(device, imageViews[i], null);
+            framebuffers[i] = null;
+            imageViews[i] = null;
         }
-        framebuffers = null;
-        if (depthView) {
+        imageCount = 0;
+        if (depthView !is null) {
             vkDestroyImageView(device, depthView, null);
-            depthView = 0;
+            depthView = null;
         }
-        if (depthImage) {
+        if (depthImage !is null) {
             vkDestroyImage(device, depthImage, null);
-            depthImage = 0;
+            depthImage = null;
         }
-        if (depthMemory) {
+        if (depthMemory !is null) {
             vkFreeMemory(device, depthMemory, null);
-            depthMemory = 0;
+            depthMemory = null;
         }
-        foreach (iv; imageViews) {
-            vkDestroyImageView(device, iv, null);
-        }
-        imageViews = null;
-        images = null;
-        if (swapchain) {
+        if (swapchain !is null) {
             vkDestroySwapchainKHR(device, swapchain, null);
-            swapchain = 0;
+            swapchain = null;
         }
     }
 
@@ -335,21 +254,39 @@ struct SwapchainState {
     }
 }
 
-uint clamp(uint v, uint lo, uint hi) {
-    return v < lo ? lo : (v > hi ? hi : v);
+VkImageView createImageView(VkDevice device, VkImage image, VkFormat format, VkImageAspectFlags aspect) {
+    VkImageViewCreateInfo info;
+    info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    info.image = image;
+    info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    info.format = format;
+    info.subresourceRange.aspectMask = aspect;
+    info.subresourceRange.levelCount = 1;
+    info.subresourceRange.layerCount = 1;
+    VkImageView result = null;
+    vkCreateImageView(device, &info, null, &result);
+    return result;
 }
 
-VkPresentModeKHR selectPresentMode(VkPhysicalDevice phys, VkSurfaceKHR surface) {
-    uint count;
-    vkGetPhysicalDeviceSurfacePresentModesKHR(phys, surface, &count, null);
-    VkPresentModeKHR[] modes = new VkPresentModeKHR[](count);
-    vkGetPhysicalDeviceSurfacePresentModesKHR(phys, surface, &count, modes.ptr);
-    foreach (m; modes) {
-        if (m == VkPresentModeKHR.VK_PRESENT_MODE_MAILBOX_KHR) {
-            return m;
+uint clampUint(uint value, uint low, uint high) {
+    uint result = value;
+    if (value < low) {
+        result = low;
+    } else if (value > high) {
+        result = high;
+    }
+    return result;
+}
+
+VkPresentModeKHR selectPresentMode(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface) {
+    VkPresentModeKHR[MAX_PRESENT_MODES] modes;
+    uint count = MAX_PRESENT_MODES;
+    vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface, &count, modes.ptr);
+    VkPresentModeKHR result = VK_PRESENT_MODE_FIFO_KHR;
+    foreach (i; 0 .. count) {
+        if (modes[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
+            result = VK_PRESENT_MODE_MAILBOX_KHR;
         }
     }
-    // FIFO is always available and vsynced; prefer it over IMMEDIATE so we
-    // don't tear and spin the GPU on hardware without mailbox support.
-    return VkPresentModeKHR.VK_PRESENT_MODE_FIFO_KHR;
+    return result;
 }

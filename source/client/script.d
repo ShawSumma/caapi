@@ -1,394 +1,396 @@
 module client.script;
 
-import std.format : format;
-import std.math : sqrt;
-import std.path : dirName;
-import std.stdio : File, stdout, writefln, writeln;
-import std.string : fromStringz, toStringz;
-import bindings.lua;
-import client.game : Game, FrameInput, InputState, Key, KEY_NAMES, MATERIAL_PALETTE,
-    keyFromName, modeName, setMode;
+import core.math : sqrt;
+import core.stdc.stdio : FILE, fclose, fopen, fprintf, snprintf;
+import core.stdc.string : strcmp, strlen;
+import bindings.lua : luaL_checkany, luaL_checkinteger, luaL_checklstring, luaL_checknumber, luaL_checktype, luaL_error, luaL_loadbufferx, luaL_loadfilex, luaL_newstate, luaL_openselectedlibs, luaL_optlstring, luaL_optnumber, luaL_ref, luaL_traceback, luaL_unref, luaL_where, lua_CFunction, lua_Integer, lua_State, lua_close, lua_error, lua_gettop, lua_pcallk, lua_pushboolean, lua_pushcclosure, lua_pushinteger, lua_pushlightuserdata, lua_pushnil, lua_pushnumber, lua_pushstring, lua_pushvalue, lua_rawgeti, lua_rotate, lua_setglobal, lua_settop, lua_toboolean, lua_tolstring, lua_touserdata, lua_type;
+import client.game : FrameInput, Game, KEY_COUNT, KEY_NAMES, KeyLookup, MATERIAL_PALETTE, gameBreakBlock, gamePlaceBlock, keyFromName, modeName, setMode, stepGame;
 
-// Lua's API is mostly macros ImportC can't see; these are their values.
 enum int LUA_REGISTRY = -(int.max / 2 + 1000);
+enum int LUA_FIRST_UPVALUE = LUA_REGISTRY - 1;
 enum int LUA_NO_REF = -2;
+enum int LUA_TOP = -1;
+enum int LUA_BELOW_TOP = -2;
+enum int LUA_POP_ONE = -2;
+enum int LUA_POP_TWO = -3;
+enum int LUA_ROTATE_ONE = 1;
+enum int LUA_TRACEBACK_LEVEL = 1;
 enum int LUA_STATUS_OK = 0;
 enum int LUA_TYPE_FUNCTION = 6;
+enum int LUA_LIBRARY_BASE = 1;
+enum int LUA_LIBRARY_PACKAGE = 1 << 1;
+enum int LUA_LIBRARY_COROUTINE = 1 << 2;
+enum int LUA_LIBRARY_MATH = 1 << 5;
+enum int LUA_LIBRARY_STRING = 1 << 7;
+enum int LUA_LIBRARY_TABLE = 1 << 8;
+enum int LUA_LIBRARY_UTF8 = 1 << 9;
+enum int LUA_SAFE_LIBRARIES = LUA_LIBRARY_BASE | LUA_LIBRARY_PACKAGE | LUA_LIBRARY_COROUTINE | LUA_LIBRARY_MATH | LUA_LIBRARY_STRING | LUA_LIBRARY_TABLE | LUA_LIBRARY_UTF8;
+enum size_t SCRIPT_DIR_CAPACITY = 1024;
+enum size_t FRAME_TEXT_CAPACITY = 64;
+
+enum string PRELUDE = import("prelude.lua");
 
 alias LuaFunction = extern (C) int function(lua_State*);
 
-enum string PRELUDE = import("prelude.lua");
-enum uint STATUS_INTERVAL_FRAMES = 60;
-
-/// Runs a Lua script against a Game. The script owns time: nothing advances
-/// except through `frames`, so a run is a pure function of the script.
-/// Script-facing quantities are meters and seconds, like `*Raw` config.
 struct ScriptHost {
-    lua_State* L;
+    lua_State* lua;
     Game* game;
-    InputState keys;
+    FILE* report;
     uint frames;
     uint failures;
     int frameHook = LUA_NO_REF;
-    // The every_frame hook may observe but must not advance time.
+    bool[KEY_COUNT] held;
     bool stepping;
-    // Worst vertical acceleration since the last status line, absolute units.
-    float statusVacc = 0;
+}
 
-    float metersPerAbsolute() const {
-        return 1.0f / game.simCfg.metersToAbsolute;
+bool runScript(ScriptHost* host, const(char)* path) {
+    host.lua = luaL_newstate();
+    luaL_openselectedlibs(host.lua, LUA_SAFE_LIBRARIES, 0);
+    lua_pushnil(host.lua);
+    lua_setglobal(host.lua, "print");
+    lua_pushnil(host.lua);
+    lua_setglobal(host.lua, "warn");
+    registerApi(host);
+    char[SCRIPT_DIR_CAPACITY] directory;
+    size_t length = strlen(path);
+    size_t slash = length;
+    while (slash > 0 && path[slash - 1] != '/') {
+        slash -= 1;
     }
-
-    /// Runs the prelude and then the script at `path`. False on a Lua error
-    /// (already reported); failed checks are counted in `failures`.
-    bool run(string path) {
-        L = luaL_newstate();
-        luaL_openselectedlibs(L, ~0, 0);
-        registerApi();
-        lua_pushstring(L, dirName(path).toStringz);
-        lua_setglobal(L, "SCRIPT_DIR");
-        if (!callChunk(luaL_loadbufferx(L, PRELUDE.ptr, PRELUDE.length, "=prelude", null))) {
-            return false;
-        }
-        return callChunk(luaL_loadfilex(L, path.toStringz, null));
+    if (slash > 0) {
+        snprintf(directory.ptr, directory.length, "%.*s", cast(int)(slash - 1), path);
+    } else {
+        snprintf(directory.ptr, directory.length, ".");
     }
-
-    void close() {
-        if (L !is null) {
-            lua_close(L);
-            L = null;
-        }
+    lua_pushstring(host.lua, directory.ptr);
+    lua_setglobal(host.lua, "SCRIPT_DIR");
+    bool ok = callChunk(host, luaL_loadbufferx(host.lua, PRELUDE.ptr, PRELUDE.length, "=prelude", null));
+    if (ok) {
+        ok = callChunk(host, luaL_loadfilex(host.lua, path, null));
     }
+    return ok;
+}
 
-    bool callChunk(int loadStatus) {
-        if (loadStatus != LUA_STATUS_OK) {
-            writefln("script error: %s", fromStringz(lua_tolstring(L, -1, null)));
-            lua_settop(L, -2);
-            return false;
-        }
-        lua_pushcclosure(L, cast(lua_CFunction) &luaTraceback, 0);
-        lua_rotate(L, -2, 1);
-        int status = lua_pcallk(L, 0, 0, -2, 0, null);
-        if (status != LUA_STATUS_OK) {
-            writefln("script error: %s", fromStringz(lua_tolstring(L, -1, null)));
-            lua_settop(L, -3);
-            return false;
-        }
-        lua_settop(L, -2);
-        return true;
-    }
-
-    void registerApi() {
-        register("frames", &luaFrames);
-        register("hold", &luaHold);
-        register("release", &luaRelease);
-        register("release_all", &luaReleaseAll);
-        register("mode", &luaMode);
-        register("material", &luaMaterial);
-        register("break_block", &luaBreakBlock);
-        register("place_block", &luaPlaceBlock);
-        register("time", &luaTime);
-        register("traveled", &luaTraveled);
-        register("on_ground", &luaOnGround);
-        register("speed", &luaSpeed);
-        register("horizontal_speed", &luaHorizontalSpeed);
-        register("worldgen", &luaWorldgen);
-        register("vacc", &luaVacc);
-        register("every_frame", &luaEveryFrame);
-        register("check", &luaCheck);
-        register("status", &luaStatus);
-    }
-
-    void register(const(char)* name, LuaFunction fn) {
-        lua_pushlightuserdata(L, &this);
-        lua_pushcclosure(L, cast(lua_CFunction) fn, 1);
-        lua_setglobal(L, name);
-    }
-
-    /// Advances one frame and runs the every_frame hook. On a hook error the
-    /// message is left on the Lua stack and false is returned.
-    bool stepOnce(float dt, float yaw, float pitch) {
-        FrameInput input;
-        input.keys = keys;
-        input.yaw = yaw;
-        input.pitch = pitch;
-        game.step(input, dt);
-        frames++;
-        if (game.vacc > statusVacc) {
-            statusVacc = game.vacc;
-        }
-        if (frames % STATUS_INTERVAL_FRAMES == 0) {
-            printStatus();
-        }
-        if (frameHook == LUA_NO_REF) {
-            return true;
-        }
-        stepping = true;
-        lua_rawgeti(L, LUA_REGISTRY, frameHook);
-        int status = lua_pcallk(L, 0, 0, 0, 0, null);
-        stepping = false;
-        return status == LUA_STATUS_OK;
-    }
-
-    void printStatus() {
-        float m = metersPerAbsolute();
-        writefln("t=%.2f mode=%s ground=%s speed=%.2f traveled=%.2f vacc=%.1f",
-            game.simTime, modeName(game.flyMode, game.noClip), game.onGround,
-            speedOf(game.velocity) * m, game.traveled * m, statusVacc * m);
-        statusVacc = 0;
-        stdout.flush();
+void closeScript(ScriptHost* host) {
+    if (host.lua !is null) {
+        lua_close(host.lua);
+        host.lua = null;
     }
 }
 
-float speedOf(const float[3] v) {
+bool callChunk(ScriptHost* host, int loadStatus) {
+    bool ok = loadStatus == LUA_STATUS_OK;
+    if (ok) {
+        lua_pushcclosure(host.lua, cast(lua_CFunction) &luaTraceback, 0);
+        lua_rotate(host.lua, LUA_BELOW_TOP, LUA_ROTATE_ONE);
+        ok = lua_pcallk(host.lua, 0, 0, LUA_BELOW_TOP, 0, null) == LUA_STATUS_OK;
+        if (ok) {
+            lua_settop(host.lua, LUA_POP_ONE);
+        } else {
+            reportError(host);
+            lua_settop(host.lua, LUA_POP_TWO);
+        }
+    } else {
+        reportError(host);
+        lua_settop(host.lua, LUA_POP_ONE);
+    }
+    return ok;
+}
+
+void reportError(ScriptHost* host) {
+    if (host.report !is null) {
+        fprintf(host.report, "script error: %s\n", lua_tolstring(host.lua, LUA_TOP, null));
+    }
+}
+
+void registerApi(ScriptHost* host) {
+    registerFunction(host, "frames", &luaFrames);
+    registerFunction(host, "hold", &luaHold);
+    registerFunction(host, "release", &luaRelease);
+    registerFunction(host, "release_all", &luaReleaseAll);
+    registerFunction(host, "mode", &luaMode);
+    registerFunction(host, "material", &luaMaterial);
+    registerFunction(host, "break_block", &luaBreakBlock);
+    registerFunction(host, "place_block", &luaPlaceBlock);
+    registerFunction(host, "time", &luaTime);
+    registerFunction(host, "traveled", &luaTraveled);
+    registerFunction(host, "on_ground", &luaOnGround);
+    registerFunction(host, "speed", &luaSpeed);
+    registerFunction(host, "horizontal_speed", &luaHorizontalSpeed);
+    registerFunction(host, "worldgen", &luaWorldgen);
+    registerFunction(host, "vacc", &luaVacc);
+    registerFunction(host, "every_frame", &luaEveryFrame);
+    registerFunction(host, "check", &luaCheck);
+}
+
+void registerFunction(ScriptHost* host, const(char)* name, LuaFunction fn) {
+    lua_pushlightuserdata(host.lua, host);
+    lua_pushcclosure(host.lua, cast(lua_CFunction) fn, 1);
+    lua_setglobal(host.lua, name);
+}
+
+bool stepOnce(ScriptHost* host, float dt, float yaw, float pitch) {
+    FrameInput input;
+    input.held = host.held;
+    input.yaw = yaw;
+    input.pitch = pitch;
+    stepGame(host.game, input, dt);
+    host.frames += 1;
+    bool ok = true;
+    if (host.frameHook != LUA_NO_REF) {
+        host.stepping = true;
+        lua_rawgeti(host.lua, LUA_REGISTRY, host.frameHook);
+        ok = lua_pcallk(host.lua, 0, 0, 0, 0, null) == LUA_STATUS_OK;
+        host.stepping = false;
+    }
+    return ok;
+}
+
+float metersPerAbsolute(const(ScriptHost)* host) {
+    return 1.0f / host.game.simConfig.metersToAbsolute;
+}
+
+float magnitude(float[3] v) {
     return sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
 }
 
-ScriptHost* hostOf(lua_State* L) {
-    return cast(ScriptHost*) lua_touserdata(L, LUA_REGISTRY - 1);
+ScriptHost* hostOf(lua_State* lua) {
+    return cast(ScriptHost*) lua_touserdata(lua, LUA_FIRST_UPVALUE);
 }
 
-bool isNoneOrNil(lua_State* L, int idx) {
-    return lua_type(L, idx) <= 0;
+bool isNoneOrNil(lua_State* lua, int index) {
+    return lua_type(lua, index) <= 0;
 }
 
-extern (C) int luaTraceback(lua_State* L) {
-    luaL_traceback(L, L, lua_tolstring(L, 1, null), 1);
+extern (C) int luaTraceback(lua_State* lua) {
+    luaL_traceback(lua, lua, lua_tolstring(lua, 1, null), LUA_TRACEBACK_LEVEL);
     return 1;
 }
 
-/// frames(n, dt, yaw, pitch): n frames of dt seconds, turning by yaw and
-/// pitch radians per frame, with the currently held keys.
-extern (C) int luaFrames(lua_State* L) {
-    ScriptHost* host = hostOf(L);
-    lua_Integer n = luaL_checkinteger(L, 1);
-    float dt = cast(float) luaL_checknumber(L, 2);
-    float yaw = cast(float) luaL_optnumber(L, 3, 0);
-    float pitch = cast(float) luaL_optnumber(L, 4, 0);
-    if (n < 0 || !(dt > 0)) {
-        return luaL_error(L, "frames: need n >= 0 and dt > 0");
-    }
-    if (host.stepping) {
-        return luaL_error(L, "frames: every_frame hooks cannot advance time");
-    }
-    foreach (i; 0 .. n) {
-        if (!host.stepOnce(dt, yaw, pitch)) {
-            return lua_error(L);
+extern (C) int luaFrames(lua_State* lua) {
+    ScriptHost* host = hostOf(lua);
+    lua_Integer count = luaL_checkinteger(lua, 1);
+    float dt = cast(float) luaL_checknumber(lua, 2);
+    float yaw = cast(float) luaL_optnumber(lua, 3, 0);
+    float pitch = cast(float) luaL_optnumber(lua, 4, 0);
+    if (count < 0 || !(dt > 0)) {
+        luaL_error(lua, "frames: need n >= 0 and dt > 0");
+    } else if (host.stepping) {
+        luaL_error(lua, "frames: every_frame hooks cannot advance time");
+    } else {
+        bool ok = true;
+        lua_Integer frame = 0;
+        while (ok && frame < count) {
+            ok = stepOnce(host, dt, yaw, pitch);
+            frame += 1;
+        }
+        if (!ok) {
+            lua_error(lua);
         }
     }
     return 0;
 }
 
-extern (C) int luaHold(lua_State* L) {
-    return setKeys(L, true);
-}
-
-extern (C) int luaRelease(lua_State* L) {
-    return setKeys(L, false);
-}
-
-int setKeys(lua_State* L, bool held) {
-    ScriptHost* host = hostOf(L);
-    int top = lua_gettop(L);
-    foreach (i; 1 .. top + 1) {
-        const(char)* name = luaL_checklstring(L, i, null);
-        Key key;
-        if (!keyFromName(fromStringz(name), key)) {
-            return luaL_error(L, "unknown key '%s'", name);
-        }
-        host.keys.held[key] = held;
-    }
+extern (C) int luaHold(lua_State* lua) {
+    setKeys(lua, true);
     return 0;
 }
 
-extern (C) int luaReleaseAll(lua_State* L) {
-    hostOf(L).keys.clear();
+extern (C) int luaRelease(lua_State* lua) {
+    setKeys(lua, false);
     return 0;
 }
 
-/// mode() -> name; mode(name) sets "walk", "fly" or "noclip".
-extern (C) int luaMode(lua_State* L) {
-    ScriptHost* host = hostOf(L);
-    if (!isNoneOrNil(L, 1)) {
-        const(char)* name = luaL_checklstring(L, 1, null);
-        if (!setMode(*host.game, fromStringz(name))) {
-            return luaL_error(L, "unknown mode '%s'", name);
+void setKeys(lua_State* lua, bool held) {
+    ScriptHost* host = hostOf(lua);
+    foreach (index; 1 .. lua_gettop(lua) + 1) {
+        const(char)* name = luaL_checklstring(lua, index, null);
+        KeyLookup lookup = keyFromName(name[0 .. strlen(name)]);
+        if (lookup.found) {
+            host.held[lookup.key] = held;
+        } else {
+            luaL_error(lua, "unknown key '%s'", name);
         }
     }
-    lua_pushstring(L, modeName(host.game.flyMode, host.game.noClip).toStringz);
+}
+
+extern (C) int luaReleaseAll(lua_State* lua) {
+    hostOf(lua).held[] = false;
+    return 0;
+}
+
+extern (C) int luaMode(lua_State* lua) {
+    ScriptHost* host = hostOf(lua);
+    if (!isNoneOrNil(lua, 1)) {
+        const(char)* name = luaL_checklstring(lua, 1, null);
+        if (!setMode(host.game, name[0 .. strlen(name)])) {
+            luaL_error(lua, "unknown mode '%s'", name);
+        }
+    }
+    lua_pushstring(lua, modeName(host.game));
     return 1;
 }
 
-/// material() -> slot; material(slot) selects palette slot 1..9.
-extern (C) int luaMaterial(lua_State* L) {
-    ScriptHost* host = hostOf(L);
-    if (!isNoneOrNil(L, 1)) {
-        lua_Integer slot = luaL_checkinteger(L, 1);
+extern (C) int luaMaterial(lua_State* lua) {
+    ScriptHost* host = hostOf(lua);
+    if (!isNoneOrNil(lua, 1)) {
+        lua_Integer slot = luaL_checkinteger(lua, 1);
         if (slot < 1 || slot > MATERIAL_PALETTE.length) {
-            return luaL_error(L, "material slot must be 1..%d", cast(int) MATERIAL_PALETTE.length);
+            luaL_error(lua, "material slot must be 1..%d", cast(int) MATERIAL_PALETTE.length);
+        } else {
+            host.game.materialIndex = cast(uint)(slot - 1);
         }
-        host.game.materialIndex = cast(int) slot - 1;
     }
-    lua_pushinteger(L, host.game.materialIndex + 1);
+    lua_pushinteger(lua, host.game.materialIndex + 1);
     return 1;
 }
 
-extern (C) int luaBreakBlock(lua_State* L) {
-    lua_pushboolean(L, hostOf(L).game.breakBlock() ? 1 : 0);
+extern (C) int luaBreakBlock(lua_State* lua) {
+    lua_pushboolean(lua, gameBreakBlock(hostOf(lua).game));
     return 1;
 }
 
-extern (C) int luaPlaceBlock(lua_State* L) {
-    lua_pushboolean(L, hostOf(L).game.placeBlock() ? 1 : 0);
+extern (C) int luaPlaceBlock(lua_State* lua) {
+    lua_pushboolean(lua, gamePlaceBlock(hostOf(lua).game));
     return 1;
 }
 
-extern (C) int luaTime(lua_State* L) {
-    lua_pushnumber(L, hostOf(L).game.simTime);
+extern (C) int luaTime(lua_State* lua) {
+    lua_pushnumber(lua, hostOf(lua).game.simTime);
     return 1;
 }
 
-/// Odometer in meters.
-extern (C) int luaTraveled(lua_State* L) {
-    ScriptHost* host = hostOf(L);
-    lua_pushnumber(L, host.game.traveled * host.metersPerAbsolute());
+extern (C) int luaTraveled(lua_State* lua) {
+    ScriptHost* host = hostOf(lua);
+    lua_pushnumber(lua, host.game.traveled * metersPerAbsolute(host));
     return 1;
 }
 
-extern (C) int luaOnGround(lua_State* L) {
-    lua_pushboolean(L, hostOf(L).game.onGround ? 1 : 0);
+extern (C) int luaOnGround(lua_State* lua) {
+    lua_pushboolean(lua, hostOf(lua).game.characterState.onGround);
     return 1;
 }
 
-/// Character speed in meters per second.
-extern (C) int luaSpeed(lua_State* L) {
-    ScriptHost* host = hostOf(L);
-    lua_pushnumber(L, speedOf(host.game.velocity) * host.metersPerAbsolute());
+extern (C) int luaSpeed(lua_State* lua) {
+    ScriptHost* host = hostOf(lua);
+    lua_pushnumber(lua, magnitude(host.game.characterState.velocity) * metersPerAbsolute(host));
     return 1;
 }
 
-/// Speed perpendicular to the local up direction, meters per second.
-extern (C) int luaHorizontalSpeed(lua_State* L) {
-    ScriptHost* host = hostOf(L);
-    const(float[3]) v = host.game.velocity;
-    const(float[3]) up = host.game.character.up;
+extern (C) int luaHorizontalSpeed(lua_State* lua) {
+    ScriptHost* host = hostOf(lua);
+    float[3] v = host.game.characterState.velocity;
+    float[3] up = host.game.character.up;
     float along = v[0] * up[0] + v[1] * up[1] + v[2] * up[2];
-    float[3] h = [v[0] - up[0] * along, v[1] - up[1] * along, v[2] - up[2] * along];
-    lua_pushnumber(L, speedOf(h) * host.metersPerAbsolute());
+    lua_pushnumber(lua, magnitude([v[0] - up[0] * along, v[1] - up[1] * along, v[2] - up[2] * along]) * metersPerAbsolute(host));
     return 1;
 }
 
-/// worldgen("flat" | "terrain"): chooses world generation. Only before the
-/// first frame, since chunks generated earlier would keep the old kind.
-extern (C) int luaWorldgen(lua_State* L) {
-    ScriptHost* host = hostOf(L);
-    const(char)* name = luaL_checklstring(L, 1, null);
+extern (C) int luaWorldgen(lua_State* lua) {
+    ScriptHost* host = hostOf(lua);
+    const(char)* name = luaL_checklstring(lua, 1, null);
+    const(char)[] kind = name[0 .. strlen(name)];
     if (host.frames > 0) {
-        return luaL_error(L, "worldgen must be chosen before the first frame");
+        luaL_error(lua, "worldgen must be chosen before the first frame");
+    } else if (kind != "flat" && kind != "terrain") {
+        luaL_error(lua, "unknown worldgen '%s'", name);
+    } else {
+        host.game.world.worldgenDriver.flatWorldgen = kind == "flat";
     }
-    const(char)[] kind = fromStringz(name);
-    if (kind != "flat" && kind != "terrain") {
-        return luaL_error(L, "unknown worldgen '%s'", name);
-    }
-    host.game.world.worldgenDriver.flatWorldgen = kind == "flat";
     return 0;
 }
 
-/// Vertical camera acceleration over the last frame, meters per second^2.
-extern (C) int luaVacc(lua_State* L) {
-    ScriptHost* host = hostOf(L);
-    lua_pushnumber(L, host.game.vacc * host.metersPerAbsolute());
+extern (C) int luaVacc(lua_State* lua) {
+    ScriptHost* host = hostOf(lua);
+    lua_pushnumber(lua, host.game.vacc * metersPerAbsolute(host));
     return 1;
 }
 
-/// every_frame(fn) runs fn after each frame; every_frame(nil) clears it.
-extern (C) int luaEveryFrame(lua_State* L) {
-    ScriptHost* host = hostOf(L);
+extern (C) int luaEveryFrame(lua_State* lua) {
+    ScriptHost* host = hostOf(lua);
     if (host.frameHook != LUA_NO_REF) {
-        luaL_unref(L, LUA_REGISTRY, host.frameHook);
+        luaL_unref(lua, LUA_REGISTRY, host.frameHook);
         host.frameHook = LUA_NO_REF;
     }
-    if (isNoneOrNil(L, 1)) {
-        return 0;
+    if (!isNoneOrNil(lua, 1)) {
+        luaL_checktype(lua, 1, LUA_TYPE_FUNCTION);
+        lua_pushvalue(lua, 1);
+        host.frameHook = luaL_ref(lua, LUA_REGISTRY);
     }
-    luaL_checktype(L, 1, LUA_TYPE_FUNCTION);
-    lua_pushvalue(L, 1);
-    host.frameHook = luaL_ref(L, LUA_REGISTRY);
     return 0;
 }
 
-/// check(cond, message): reports and counts a failure without stopping.
-extern (C) int luaCheck(lua_State* L) {
-    ScriptHost* host = hostOf(L);
-    luaL_checkany(L, 1);
-    if (lua_toboolean(L, 1)) {
-        lua_pushboolean(L, 1);
-        return 1;
+extern (C) int luaCheck(lua_State* lua) {
+    ScriptHost* host = hostOf(lua);
+    luaL_checkany(lua, 1);
+    int passed = lua_toboolean(lua, 1);
+    if (!passed) {
+        const(char)* message = luaL_optlstring(lua, 2, "check failed", null);
+        luaL_where(lua, LUA_TRACEBACK_LEVEL);
+        if (host.report !is null) {
+            fprintf(host.report, "FAIL %s%s (t=%.2fs)\n", lua_tolstring(lua, LUA_TOP, null), message, cast(double) host.game.simTime);
+        }
+        host.failures += 1;
     }
-    const(char)* message = luaL_optlstring(L, 2, "check failed", null);
-    luaL_where(L, 1);
-    writefln("FAIL %s%s (t=%.2fs)", fromStringz(lua_tolstring(L, -1, null)),
-        fromStringz(message), host.game.simTime);
-    stdout.flush();
-    host.failures++;
-    lua_pushboolean(L, 0);
+    lua_pushboolean(lua, passed);
     return 1;
 }
 
-extern (C) int luaStatus(lua_State* L) {
-    hostOf(L).printStatus();
-    return 0;
+struct ScriptRecorder {
+    FILE* file;
+    uint pendingCount;
+    char[FRAME_TEXT_CAPACITY] pendingFrame = 0;
+    bool[KEY_COUNT] held;
 }
 
-/// Writes live play as a Lua script the headless runner can replay exactly:
-/// key changes and events as calls, runs of identical frames merged into
-/// one `frames` call.
-struct ScriptRecorder {
-    File file;
-    InputState keys;
-    string pendingFrame;
-    uint pendingCount;
+ScriptRecorder openScriptRecorder(const(char)* path) {
+    ScriptRecorder recorder;
+    recorder.file = fopen(path, "w");
+    return recorder;
+}
 
-    void open(string path) {
-        file = File(path, "w");
-        file.writeln("-- recorded by mined --record");
-    }
-
-    bool isOpen() const {
-        return file.isOpen;
-    }
-
-    void frame(const ref FrameInput input, float dt) {
-        foreach (i, name; KEY_NAMES) {
-            if (input.keys.held[i] != keys.held[i]) {
-                flush();
-                file.writefln("%s(\"%s\")", input.keys.held[i] ? "hold" : "release", name);
+void recordFrame(ScriptRecorder* recorder, FrameInput input, float dt) {
+    if (recorder.file !is null) {
+        foreach (i; 0 .. KEY_COUNT) {
+            if (input.held[i] != recorder.held[i]) {
+                flushRecorder(recorder);
+                const(char)* call = "release";
+                if (input.held[i]) {
+                    call = "hold";
+                }
+                fprintf(recorder.file, "%s(\"%.*s\")\n", call, cast(int) KEY_NAMES[i].length, KEY_NAMES[i].ptr);
             }
         }
-        keys = input.keys;
-        string f = format("%.6f, %.6f, %.6f", dt, input.yaw, input.pitch);
-        if (f != pendingFrame) {
-            flush();
-            pendingFrame = f;
+        recorder.held = input.held;
+        char[FRAME_TEXT_CAPACITY] frameText;
+        snprintf(frameText.ptr, frameText.length, "%.6f, %.6f, %.6f", cast(double) dt, cast(double) input.yaw, cast(double) input.pitch);
+        if (strcmp(frameText.ptr, recorder.pendingFrame.ptr) != 0) {
+            flushRecorder(recorder);
+            recorder.pendingFrame = frameText;
         }
-        pendingCount++;
+        recorder.pendingCount += 1;
     }
+}
 
-    void event(string call) {
-        flush();
-        file.writeln(call);
+void recordEvent(ScriptRecorder* recorder, const(char)* call) {
+    if (recorder.file !is null) {
+        flushRecorder(recorder);
+        fprintf(recorder.file, "%s\n", call);
     }
+}
 
-    void flush() {
-        if (pendingCount > 0) {
-            file.writefln("frames(%d, %s)", pendingCount, pendingFrame);
-        }
-        pendingCount = 0;
-        pendingFrame = null;
+void flushRecorder(ScriptRecorder* recorder) {
+    if (recorder.pendingCount > 0) {
+        fprintf(recorder.file, "frames(%u, %s)\n", recorder.pendingCount, recorder.pendingFrame.ptr);
     }
+    recorder.pendingCount = 0;
+    recorder.pendingFrame[0] = 0;
+}
 
-    void close() {
-        flush();
-        file.close();
+void closeScriptRecorder(ScriptRecorder* recorder) {
+    if (recorder.file !is null) {
+        flushRecorder(recorder);
+        fclose(recorder.file);
+        recorder.file = null;
     }
 }

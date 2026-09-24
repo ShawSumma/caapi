@@ -6,46 +6,62 @@ shared simulation code in `source/common`. Two entry points: `source/main.d`
 
 ## Build, test, run
 
-Always ldc2, always release: dmd debug builds are 5-10x slower and useless
-for judging performance.
+Always ldc2 through dub, always release: dmd debug builds are 5-10x slower
+and useless for judging performance. Never invoke ldc2, cc, cmake or make
+directly; dub is the only build command.
+
+Everything is `-betterC` with `-checkaction=halt`: no GC, no Phobos, no
+exceptions, no classes, no associative arrays. Memory is `malloc`/`free`
+(`common/array.d`, `common/hash_map.d`), threads are pthreads, math is
+`core.math` and `core.stdc.math`.
 
 - `dub build -b release --compiler=ldc2 -c headless` -> `./mined-headless`.
-  No SDL, no Vulkan, no window. This is the build for all verification.
+  No X11, no Vulkan, no window. This is the build for all verification.
 - `dub build -b release --compiler=ldc2` -> `./mined`, the windowed client.
   Never launch it for verification; there is no reason to render.
-- Unit tests: `dub test --compiler=ldc2` (the `unittest` configuration;
-  it leaves out Lua, whose headers ImportC rejects under `-unittest`).
-- Behavior tests: `./mined-headless tests/*.lua` - exit status 1 on any
-  failed check or script error.
-- Dependencies live in `deps/`. Lua's individual `.c` files are
-  `sourceFiles` compiled by ldc2 through ImportC - no cc, no make, no build
-  output outside dub's cache. `deps/lua` carries small ImportC patches:
+- Unit tests: `dub test --compiler=ldc2`. The `unittest` configuration uses
+  `source/unittests.d` as a betterC runner (`__traits(getUnitTests)` over
+  every imported module) and leaves out Lua, whose headers ImportC rejects
+  under `-unittest`.
+- Behavior tests: `dub run -b release --compiler=ldc2 -c headless -- --out
+  <report> tests/<name>.lua...` - exit status 1 on any failed check or
+  script error; the report file holds the details.
+- Nothing ever writes to stdout or stderr. Headless output goes only to the
+  `--out` file; `--dump-world` and `--bench-*` require it. Pass/fail is the
+  exit status.
+- Dependencies live in `deps/`. C comes in through ImportC only - no cc, no
+  make, no cmake, no build output outside dub's cache. Lua's individual
+  `.c` files are `sourceFiles`. `deps/lua` carries small ImportC patches:
   `dummynode_` uses a designated initializer, `lua_longjmp` and `BlockCnt`
   are defined in the headers that declared them, `lua_ident` is not
   declared in `lua.h`, and the VM uses switch dispatch
   (`LUA_USE_JUMPTABLE=0`, no computed goto). Lua's C API comes through
-  `source/bindings/lua.c`; its function-like macros are not visible, so
-  `client/script.d` defines the few constants it needs. The windowed build
-  still builds SDL3 with cmake as a pre-build step.
+  `source/bindings/lua.c`; function-like and expression macros are not
+  visible, so `client/script.d` defines the few constants it needs.
+- The windowed client uses Xlib and Vulkan (`VK_KHR_xlib_surface`) through
+  `source/bindings/platform.c` against `deps/vulkan-headers`. ImportC drops
+  C `const` on pointer members and hides expression macros (X event masks
+  are defined in `main.d`). The only pre-build step is `glslc`.
 - Never run git commands; version control is managed by hand.
 - Shell: one plain command per call. No `&&`, pipes, redirects, filtering
   commands, or other shell constructs; read files whole, never partially.
 
 Headless verification:
 
-- `./mined-headless <script.lua>...` - runs Lua scripts through the full
-  simulation, each in a fresh world. Deterministic: chunk generation is
-  settled every frame, so a run is a pure function of the script. The
-  60-frame status line and the `session:` line report meters.
+- `mined-headless --out <report> <script.lua>...` - runs Lua scripts
+  through the full simulation, each in a fresh world. Deterministic: chunk
+  generation is settled every frame, so a run is a pure function of the
+  script. Each script's `session:` line and every `FAIL` land in the report,
+  in meters.
 - `./mined --record <file.lua>` records live play as a replayable Lua
   script (key changes, events, and merged runs of identical frames).
 - `--flat` (or `worldgen("flat")` in a script) - debug worldgen: fills
   exactly below the base surface plane. The base plane is lattice-aligned,
   so this is a genuinely flat floor with gravity perpendicular to it. Use it
   to isolate physics from terrain.
-- `./mined-headless --dump-world <radius>` - deterministic world hash dump;
-  byte-diff two runs to prove worldgen unchanged.
-- `./mined-headless --bench-gen | --bench-nearby | --bench-drive` - timings.
+- `--dump-world [radius]` - deterministic world hash dump; byte-diff two
+  runs' reports to prove worldgen unchanged.
+- `--bench-gen | --bench-nearby | --bench-drive [radius]` - timings.
 
 ## Scripts (Lua 5.5)
 
@@ -66,8 +82,12 @@ The script owns time - nothing advances except through `frames`/`wait`.
 - Observation: `traveled()`, `on_ground()`, `speed()`, `horizontal_speed()`,
   `vacc()` (this frame's vertical camera acceleration - the bounce metric).
 - `every_frame(fn)` runs fn after each frame to observe (it cannot advance
-  time); `check(cond, msg)` reports and counts a failure; `status()`.
-- API in `client/script.d`, Lua-side conveniences in `source/lua/prelude.lua`.
+  time); `check(cond, msg)` writes a `FAIL` line to the report and counts a
+  failure.
+- Only the base, package, coroutine, math, string, table and utf8 libraries
+  are open, and `print`/`warn` are removed: scripts observe through
+  `check`, never by printing.
+- API in `client/script.d`, Lua-side conveniences in `import/prelude.lua`.
   Modules next to a script load with `require` (see `tests/lib/walk.lua`).
 
 ## Units
@@ -80,7 +100,7 @@ Three unit systems coexist. Confusing them costs days.
    ~2x in edge length within a chunk (see Chunks below).
 2. Meters: human-scale config. All `*Raw` config values (speeds, sizes,
    reach) are meters and seconds; `voxelSize` sets meters per voxel.
-   `SimConfig.fromRaw` converts to absolute via `metersToAbsolute` exactly
+   `simConfigFromRaw` converts to absolute via `metersToAbsolute` exactly
    once. Never convert anywhere else and never hand-estimate the factor -
    compute it or read it from `SimConfig`.
 3. tanh-parameterized distance: ray/sweep parameters are `tanh(distance)`.
@@ -106,8 +126,8 @@ coordinates (projective, `ChunkLayout.dualToGridFactor` maps between them).
   a side applies that side's reflection, which is its own inverse.
   Reflections reverse orientation, so node transforms alternate parity hop
   by hop and half the visible world is mirrored. Anything involving winding,
-  cross products or handedness must check parity (`vertexParity`,
-  the determinant flip in `voxels.vert`).
+  cross products or handedness must check parity (the determinant flip in
+  `voxels.vert`).
 - Positions are (node, local isometry) and never world coordinates.
   Hyperboloid coordinates grow like cosh(d), so float precision decays
   exponentially with distance from the frame origin. Every transform is
@@ -180,9 +200,10 @@ coordinates (projective, `ChunkLayout.dualToGridFactor` maps between them).
 
 ## Performance rules
 
-- Measure before changing; the stage log prints per-second avg/max for each
-  frame phase plus GC pauses. Frame smoothness lives in the max column.
-- No hash lookups in per-frame loops - use slots. No growing flat arrays for
+- Measure before changing, with the `--bench-*` commands; frame smoothness
+  lives in the worst frame, not the average.
+- No hash lookups in per-frame loops - use slots (the renderer maps chunks
+  to GPU slots by graph slot * 20 + vertex). No growing flat arrays for
   bulk data - the graph slab exists because one realloc memcpy of 60MB is a
   visible hitch. Budget any work that can arrive in bursts (worldgen scan
   cursor, request budget, node-creation budget per rebuild).
@@ -193,25 +214,37 @@ coordinates (projective, `ChunkLayout.dualToGridFactor` maps between them).
 
 ## Style
 
-- ASCII only, everywhere: code, comments, docs, and scripts.
+- ASCII only, everywhere: code, docs, and scripts.
+- No comments at all, anywhere.
 - 4-space indent, braces on the same line, every body braced.
+- Wrapping: a construct is either entirely on one line or one element per
+  line. Never wrap partially, never end a line with an operator, never put
+  several list items on one line of a one-per-line list.
+- Control flow: no ternaries, no `++`/`--`, no `for` (use `foreach` or
+  `while`), no `return;`, and never an early `return` in place of `else` -
+  alternatives are `if`/`else` chains and each function has one `return`.
+- No `ref` or `out` parameters: return a struct, or pass a pointer to the
+  struct being operated on.
+- Don't extract a condition into a variable that is used once.
 - Explicit types, plain structs and free functions, minimal templates. No
   classes - reference semantics come from a pointer to a struct (see
   `GenQueue`). No `private`; module boundaries are the visibility unit.
+  Setup methods are `setup`, never `init`.
+- Struct fields are ordered by alignment, largest first, so structs carry
+  no padding they don't need.
 - Imports at the top of the module, always - never scoped inside functions
-  or unittest blocks. std first, then project modules, each importing a
-  named symbol list.
+  or unittest blocks. core first, then project modules, sorted by module,
+  each importing a named symbol list sorted in ASCII order.
 - No module-level mutable state: no `__gshared`, no thread-local globals.
   State lives in structs owned by whoever uses it; state shared with worker
   threads lives in an object handed to them (see `GenQueue`).
-- No `static this`. Lookup tables are built by a plain function evaluated
-  with CTFE into `immutable` (see `dodeca.d`). CTFE has a known aliasing bug
-  with copy-then-mutate of static arrays - build fresh arrays element-wise.
-- Subpackage entry points are `package.d`, never `mod_.d` or similar.
-- Comments are rare. One short comment for a non-obvious invariant is fine;
-  paragraph-length narration, restating what code does, or leaving TEMP
-  diagnostics in place is not. Delete instrumentation after it answers its
-  question.
+- No `static this` and no `static immutable`. Lookup tables are built by a
+  plain function evaluated with CTFE into module-level `immutable` (see
+  `dodeca.d`). CTFE has a known aliasing bug with copy-then-mutate of static
+  arrays - build fresh arrays element-wise.
+- Never `package.d`; every module is named for what it holds.
+- No unused functions, variables, or imports. Delete instrumentation after
+  it answers its question.
 - Constants get names and, if dimensional, their unit must be obvious from
   the name, the type, or the `*Raw` config convention. Bare magic numbers
   with unclear units are unacceptable.

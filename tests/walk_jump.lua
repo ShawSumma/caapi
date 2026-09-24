@@ -1,4 +1,3 @@
--- Walk forward holding jump: repeated hops, each landing again.
 local walk = require("lib.walk")
 
 walk.spawn()

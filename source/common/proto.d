@@ -1,41 +1,20 @@
 module common.proto;
 
-import common.graph : NodeId;
+import common.graph : NodeId, ROOT_NODE;
 import common.math : MIsometry;
-import common.node : ChunkId;
-import common.voxel_math : Coords;
-import common.world : Material;
-
-alias EntityId = ulong;
-alias Step = int;
 
 struct Position {
     NodeId node;
     MIsometry!float local;
-
-    static Position origin() {
-        Position p;
-        p.node = NodeId.ROOT;
-        p.local = MIsometry!float.identity();
-        return p;
-    }
 }
 
-struct BlockUpdate {
-    ChunkId chunkId;
-    Coords coords;
-    Material newMaterial;
-    EntityId consumedEntity;
+Position originPosition() {
+    return Position(ROOT_NODE, MIsometry!float.identity());
 }
 
 struct CharacterInput {
     float[3] movement = [0, 0, 0];
     bool jump;
-    bool fly;    // no gravity, collides
-    bool noClip; // no gravity, no collision
-}
-
-struct CharacterState {
-    float[3] velocity = [0, 0, 0];
-    bool onGround;
+    bool fly;
+    bool noClip;
 }

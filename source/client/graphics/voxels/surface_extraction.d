@@ -1,34 +1,36 @@
 module client.graphics.voxels.surface_extraction;
 
-import std.stdio;
+import core.stdc.stdlib : free, malloc;
 import core.stdc.string : memcpy;
-import bindings.vk;
-import client.graphics.pipeline : GpuBuffer;
-import common.dodeca : Vertex, vertexChunkToNode;
+import bindings.platform : VK_ACCESS_INDIRECT_COMMAND_READ_BIT, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_PIPELINE_BIND_POINT_COMPUTE, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, VK_SHADER_STAGE_COMPUTE_BIT, VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, VkBuffer, VkBufferCopy, VkBufferMemoryBarrier, VkCommandBuffer, VkDescriptorBufferInfo, VkDescriptorPool, VkDescriptorPoolCreateInfo, VkDescriptorPoolSize, VkDescriptorSet, VkDescriptorSetAllocateInfo, VkDescriptorSetLayout, VkDescriptorSetLayoutBinding, VkDevice, VkDeviceSize, VkPhysicalDevice, VkPipeline, VkPipelineLayout, VkPushConstantRange, VkShaderModule, VkWriteDescriptorSet, vkAllocateDescriptorSets, vkCmdBindDescriptorSets, vkCmdBindPipeline, vkCmdCopyBuffer, vkCmdDispatch, vkCmdFillBuffer, vkCmdPipelineBarrier, vkCmdPushConstants, vkCreateDescriptorPool, vkDestroyDescriptorPool, vkDestroyDescriptorSetLayout, vkDestroyPipeline, vkDestroyPipelineLayout, vkDestroyShaderModule, vkMapMemory, vkUnmapMemory, vkUpdateDescriptorSets;
+import client.graphics.pipeline : GpuBuffer, WHOLE_SIZE, bufferBarrier, bufferWrite, createComputePipeline, createFilledBuffer, createHostVisibleBuffer, createPipelineLayout, createSetLayout, createShader, createZeroedBuffer, destroyBuffer, layoutBinding;
+import common.dodeca : VERTEX_COUNT, Vertex, vertexChunkToNode;
 import common.math : Matrix4;
-import common.worldgen.terraingen : VoronoiEntryGPU, buildVoronoiTableGPU;
 
+enum string EXTRACT_COMP_SPV = import("extract.comp.spv");
+enum string TRANSFORMS_COMP_SPV = import("transforms.comp.spv");
+enum uint EXTRACT_CONCURRENCY = 128;
+enum uint MAX_RENDER_SLOTS = 1 << 16;
 enum uint FACE_SIZE = 8;
 enum uint INDIRECT_SIZE = 16;
-
-uint roundUp(uint value, uint alignment) {
-    return (value + alignment - 1) / alignment * alignment;
-}
-
-uint packPaddedVoxelsInto(const(ushort)[] padded, uint dim, uint[] outBuf) {
-    uint paddedSize = (dim + 2) * (dim + 2) * (dim + 2);
-    if (padded.length < paddedSize) {
-        return 0;
-    }
-    uint pairCount = (paddedSize + 1) / 2;
-    for (uint i = 0; i + 1 < paddedSize; i += 2) {
-        outBuf[i / 2] = padded[i] | (cast(uint) padded[i + 1] << 16);
-    }
-    if (paddedSize % 2 == 1) {
-        outBuf[paddedSize / 2] = padded[paddedSize - 1];
-    }
-    return pairCount;
-}
+enum uint BUFFER_ALIGNMENT = 16;
+enum uint EXTRACT_STATE_BYTES = 4;
+enum uint EXTRACT_BINDINGS = 4;
+enum uint EXTRACT_WORKGROUP = 4;
+enum uint FACE_AXES = 3;
+enum uint VERTICES_PER_FACE = 6;
+enum uint TRANSFORM_WORKGROUP = 64;
+enum uint TRANSFORM_BINDINGS = 4;
+enum uint TRANSFORM_OUTPUT_BINDING = 3;
+enum uint MATRIX_FLOATS = 16;
+enum uint MATRIX_BYTES = 64;
+enum uint SLOT_TASK_BYTES = 16;
+enum uint COUNT_PUSH_BYTES = 4;
+enum uint INDIRECT_VERTEX_COUNT_OFFSET = 0;
+enum uint INDIRECT_INSTANCE_COUNT_OFFSET = 4;
+enum uint INDIRECT_FIRST_VERTEX_OFFSET = 8;
+enum uint INDIRECT_FIRST_INSTANCE_OFFSET = 12;
+enum uint INDIRECT_FIELD_BYTES = 4;
 
 struct ExtractTask {
     ulong indirectOffset;
@@ -37,729 +39,310 @@ struct ExtractTask {
     uint drawId;
 }
 
-struct WorldgenParamsGPU {
-align(1):
-    float[16] chunkToNode;
-    float[4] surfaceNormal;
-    float[4] roadPlaneNormal;
-    float[4] scalars;
-    uint[2] rngSeed;
-    float[2] _pad;
-    float[4] elev0;
-    float[4] elev1;
-    float[4] temp0;
-    float[4] temp1;
-    float[4] rain0;
-    float[4] rain1;
-    float[4] block0;
-    float[4] block1;
+uint roundUp(uint value, uint alignment) {
+    return (value + alignment - 1) / alignment * alignment;
 }
-static assert(WorldgenParamsGPU.sizeof == 256);
+
+uint paddedVoxelCount(uint dimension) {
+    return (dimension + 2) * (dimension + 2) * (dimension + 2);
+}
+
+uint packPaddedVoxels(const(ushort)[] padded, uint dimension, uint* output) {
+    uint paddedSize = paddedVoxelCount(dimension);
+    uint pairCount = 0;
+    if (padded.length >= paddedSize) {
+        pairCount = (paddedSize + 1) / 2;
+        foreach (pair; 0 .. paddedSize / 2) {
+            output[pair] = padded[pair * 2] | (cast(uint) padded[pair * 2 + 1] << 16);
+        }
+        if (paddedSize % 2 == 1) {
+            output[paddedSize / 2] = padded[paddedSize - 1];
+        }
+    }
+    return pairCount;
+}
 
 struct SurfaceExtraction {
-    VkShaderModule compShader;
+    VkDescriptorSet[EXTRACT_CONCURRENCY] dataSets;
+    GpuBuffer paramsBuffer;
+    GpuBuffer voxelsBuffer;
+    GpuBuffer stateBuffer;
+    GpuBuffer indirectBuffer;
+    GpuBuffer packedIndirectBuffer;
+    GpuBuffer facesBuffer;
+    GpuBuffer nodeTransformsBuffer;
+    GpuBuffer vertexTransformsBuffer;
+    GpuBuffer slotTasksBuffer;
+    VkBufferCopy* packCopies;
+    uint* packScratch;
+    void* nodeTransformsMapped;
+    void* slotTasksMapped;
+    VkShaderModule extractShader;
     VkDescriptorSetLayout paramsLayout;
     VkDescriptorSetLayout dataLayout;
     VkPipelineLayout pipelineLayout;
     VkPipeline pipeline;
-    VkDescriptorPool descPool;
+    VkDescriptorPool descriptorPool;
     VkDescriptorSet paramsSet;
-    VkDescriptorSet[] dataSets;
-
-    GpuBuffer paramsBuf;
-    GpuBuffer voxelsBuf;
-    GpuBuffer stateBuf;
-
-    GpuBuffer indirectBuf;
-    GpuBuffer packedIndirectBuf;
-    GpuBuffer facesBuf;
-
+    VkShaderModule transformShader;
+    VkDescriptorSetLayout transformLayout;
+    VkPipelineLayout transformPipelineLayout;
+    VkPipeline transformPipeline;
+    VkDescriptorPool transformPool;
+    VkDescriptorSet transformSet;
     uint dimension;
-    uint concurrency;
-    uint maxSlots;
-    uint voxelBufUnit;
-    uint stateBufUnit;
-    uint faceBufUnit;
-    uint maxFaces;
-    uint[] packBuf;
+    uint voxelUnit;
+    uint stateUnit;
+    uint faceUnit;
 
-    VkShaderModule tfCompShader;
-    VkDescriptorSetLayout tfLayout;
-    VkPipelineLayout tfPipelineLayout;
-    VkPipeline tfPipeline;
-    VkDescriptorPool tfDescPool;
-    VkDescriptorSet tfDescSet;
-    GpuBuffer nodeTransformsBuf;
-    GpuBuffer vertexTransformsBuf;
-    GpuBuffer slotTasksBuf;
-    void* nodeTransformsMapped;
-    void* slotTasksMapped;
-    bool tfReady;
-    uint maxNodes;
-
-    VkShaderModule wgenShader;
-    VkDescriptorSetLayout wgenParamsLayout;
-    VkPipelineLayout wgenPipelineLayout;
-    VkPipeline wgenPipeline;
-    VkDescriptorPool wgenDescPool;
-    VkDescriptorSet[] wgenParamsSets;
-    GpuBuffer wgenParamsBuf;
-    GpuBuffer voronoiTableBuf;
-    void* wgenParamsMapped;
-    bool wgenReady;
-
-    VkBufferCopy[] packIndirectCopies;
-
-    bool init(VkPhysicalDevice phys, VkDevice device, uint dim, uint conc, uint slots) {
-        dimension = dim;
-        concurrency = conc;
-        maxSlots = slots;
-        maxFaces = 3 * (dim * dim * dim + dim * dim);
-        voxelBufUnit = roundUp(cast(uint)((dim + 2) * (dim + 2) * (dim + 2)) * 2, 16);
-        stateBufUnit = roundUp(4, 16);
-        faceBufUnit = roundUp(maxFaces * FACE_SIZE, 16);
-
-        static immutable ubyte[] compSpv = cast(immutable(ubyte)[]) import("extract.comp.spv");
-        VkShaderModuleCreateInfo smci;
-        smci.sType = VkStructureType.VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-        smci.codeSize = compSpv.length;
-        smci.pCode = cast(const(uint)*) compSpv.ptr;
-        if (vkCreateShaderModule(device, &smci, null, &compShader) != VkResult.VK_SUCCESS) {
-            return false;
+    bool setup(VkPhysicalDevice physicalDevice, VkDevice device, uint chunkDimension) {
+        dimension = chunkDimension;
+        uint maxFaces = FACE_AXES * (dimension * dimension * dimension + dimension * dimension);
+        voxelUnit = roundUp(paddedVoxelCount(dimension) * cast(uint) ushort.sizeof, BUFFER_ALIGNMENT);
+        stateUnit = roundUp(EXTRACT_STATE_BYTES, BUFFER_ALIGNMENT);
+        faceUnit = roundUp(maxFaces * FACE_SIZE, BUFFER_ALIGNMENT);
+        packScratch = cast(uint*) malloc((paddedVoxelCount(dimension) + 1) / 2 * uint.sizeof);
+        packCopies = cast(VkBufferCopy*) malloc(MAX_RENDER_SLOTS * VkBufferCopy.sizeof);
+        createExtractBuffers(physicalDevice, device);
+        bool ok = createExtractPipeline(device);
+        if (ok) {
+            ok = createTransformCompute(physicalDevice, device);
         }
-
-        VkDescriptorSetLayoutBinding pb;
-        pb.binding = 0;
-        pb.descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        pb.descriptorCount = 1;
-        pb.stageFlags = VkShaderStageFlagBits.VK_SHADER_STAGE_COMPUTE_BIT;
-        VkDescriptorSetLayoutCreateInfo pci;
-        pci.sType = VkStructureType.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        pci.bindingCount = 1;
-        pci.pBindings = &pb;
-        vkCreateDescriptorSetLayout(device, &pci, null, &paramsLayout);
-
-        VkDescriptorSetLayoutBinding[4] db;
-        foreach (i; 0 .. 4) {
-            db[i].binding = cast(uint) i;
-            db[i].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            db[i].descriptorCount = 1;
-            db[i].stageFlags = VkShaderStageFlagBits.VK_SHADER_STAGE_COMPUTE_BIT;
-        }
-        VkDescriptorSetLayoutCreateInfo dci;
-        dci.sType = VkStructureType.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        dci.bindingCount = 4;
-        dci.pBindings = db.ptr;
-        vkCreateDescriptorSetLayout(device, &dci, null, &dataLayout);
-
-        VkDescriptorPoolSize[2] sizes;
-        sizes[0].type = VkDescriptorType.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        sizes[0].descriptorCount = 1;
-        sizes[1].type = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        sizes[1].descriptorCount = 4 * concurrency;
-        VkDescriptorPoolCreateInfo dpci;
-        dpci.sType = VkStructureType.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        dpci.maxSets = 1 + concurrency;
-        dpci.poolSizeCount = 2;
-        dpci.pPoolSizes = sizes.ptr;
-        vkCreateDescriptorPool(device, &dpci, null, &descPool);
-
-        VkDescriptorSetAllocateInfo pai;
-        pai.sType = VkStructureType.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        pai.descriptorPool = descPool;
-        pai.descriptorSetCount = 1;
-        pai.pSetLayouts = &paramsLayout;
-        vkAllocateDescriptorSets(device, &pai, &paramsSet);
-
-        VkDescriptorSetLayout[] dataLayouts = new VkDescriptorSetLayout[concurrency];
-        dataLayouts[] = dataLayout;
-        dataSets = new VkDescriptorSet[concurrency];
-        VkDescriptorSetAllocateInfo dai;
-        dai.sType = VkStructureType.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        dai.descriptorPool = descPool;
-        dai.descriptorSetCount = concurrency;
-        dai.pSetLayouts = dataLayouts.ptr;
-        vkAllocateDescriptorSets(device, &dai, dataSets.ptr);
-
-        int[4] dimData = [cast(int) dim, 0, 0, 0];
-        paramsBuf = GpuBuffer.create(phys, device, cast(void[]) dimData[],
-            VkBufferUsageFlagBits.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
-
-        uint voxelsSize = voxelBufUnit * concurrency;
-        ubyte[] voxInit = new ubyte[voxelsSize];
-        voxelsBuf = GpuBuffer.create(phys, device, voxInit,
-            VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-
-        uint stateSize = stateBufUnit * concurrency;
-        ubyte[] stateInit = new ubyte[stateSize];
-        stateBuf = GpuBuffer.create(phys, device, stateInit,
-            VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-            VkBufferUsageFlagBits.VK_BUFFER_USAGE_TRANSFER_DST_BIT);
-
-        ubyte[] indirInit = new ubyte[INDIRECT_SIZE * maxSlots];
-        indirectBuf = GpuBuffer.create(phys, device, indirInit,
-            VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-            VkBufferUsageFlagBits.VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-            VkBufferUsageFlagBits.VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-            VkBufferUsageFlagBits.VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
-
-        ubyte[] packedInit = new ubyte[INDIRECT_SIZE * maxSlots];
-        packedIndirectBuf = GpuBuffer.create(phys, device, packedInit,
-            VkBufferUsageFlagBits.VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-            VkBufferUsageFlagBits.VK_BUFFER_USAGE_TRANSFER_DST_BIT);
-
-        ulong facesSize = cast(ulong) faceBufUnit * maxSlots;
-        ubyte[] facesInitData = new ubyte[facesSize];
-        facesBuf = GpuBuffer.create(phys, device, facesInitData,
-            VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-
-        VkDescriptorBufferInfo pi;
-        pi.buffer = paramsBuf.buffer;
-        pi.range = VK_WHOLE_SIZE;
-        VkWriteDescriptorSet pw;
-        pw.sType = VkStructureType.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        pw.dstSet = paramsSet;
-        pw.dstBinding = 0;
-        pw.descriptorCount = 1;
-        pw.descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        pw.pBufferInfo = &pi;
-        vkUpdateDescriptorSets(device, 1, &pw, 0, null);
-
-        VkDescriptorSetLayout[2] layouts = [paramsLayout, dataLayout];
-        VkPipelineLayoutCreateInfo plci;
-        plci.sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        plci.setLayoutCount = 2;
-        plci.pSetLayouts = layouts.ptr;
-        if (vkCreatePipelineLayout(device, &plci, null, &pipelineLayout) != VkResult.VK_SUCCESS) {
-            return false;
-        }
-
-        VkComputePipelineCreateInfo cpci;
-        cpci.sType = VkStructureType.VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-        cpci.stage.sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        cpci.stage.stage = VkShaderStageFlagBits.VK_SHADER_STAGE_COMPUTE_BIT;
-        cpci.stage.mod = compShader;
-        cpci.stage.pName = "main";
-        cpci.layout = pipelineLayout;
-        if (vkCreateComputePipelines(device, 0, 1, &cpci, null, &pipeline) != VkResult.VK_SUCCESS) {
-            return false;
-        }
-        uint paddedSize = (dim + 2) * (dim + 2) * (dim + 2);
-        packBuf = new uint[(paddedSize + 1) / 2];
-
-        packIndirectCopies = new VkBufferCopy[maxSlots];
-
-        writefln("Extract: facesBuf=0x%x (%d bytes) indirBuf=0x%x voxBuf=0x%x",
-            facesBuf.buffer, facesSize, indirectBuf.buffer, voxelsBuf.buffer);
-
-        wgenReady = initWorldgen(phys, device);
-        if (wgenReady) {
-            writeln("GPU worldgen initialized");
-        }
-        tfReady = initTransformCompute(phys, device, slots);
-        if (tfReady) {
-            writeln("GPU transform compute initialized");
-        }
-        return true;
+        return ok;
     }
 
-    bool initTransformCompute(VkPhysicalDevice phys, VkDevice device, uint slots) {
-        maxNodes = slots;
+    void createExtractBuffers(VkPhysicalDevice physicalDevice, VkDevice device) {
+        int[4] dimensionData = [
+            cast(int) dimension,
+            0,
+            0,
+            0,
+        ];
+        paramsBuffer = createFilledBuffer(physicalDevice, device, dimensionData[], VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+        voxelsBuffer = createZeroedBuffer(physicalDevice, device, cast(VkDeviceSize) voxelUnit * EXTRACT_CONCURRENCY, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        stateBuffer = createZeroedBuffer(physicalDevice, device, cast(VkDeviceSize) stateUnit * EXTRACT_CONCURRENCY, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        indirectBuffer = createZeroedBuffer(physicalDevice, device, cast(VkDeviceSize) INDIRECT_SIZE * MAX_RENDER_SLOTS, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+        packedIndirectBuffer = createZeroedBuffer(physicalDevice, device, cast(VkDeviceSize) INDIRECT_SIZE * MAX_RENDER_SLOTS, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        facesBuffer = createHostVisibleBuffer(physicalDevice, device, cast(VkDeviceSize) faceUnit * MAX_RENDER_SLOTS, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    }
 
-        static immutable ubyte[] tfSpv = cast(immutable(ubyte)[]) import("transforms.comp.spv");
-        VkShaderModuleCreateInfo smci;
-        smci.sType = VkStructureType.VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-        smci.codeSize = tfSpv.length;
-        smci.pCode = cast(const(uint)*) tfSpv.ptr;
-        if (vkCreateShaderModule(device, &smci, null, &tfCompShader) != VkResult.VK_SUCCESS) {
-            return false;
+    bool createExtractPipeline(VkDevice device) {
+        extractShader = createShader(device, EXTRACT_COMP_SPV);
+        VkDescriptorSetLayoutBinding[1] paramsBindings = [
+            layoutBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT),
+        ];
+        paramsLayout = createSetLayout(device, paramsBindings[]);
+        VkDescriptorSetLayoutBinding[EXTRACT_BINDINGS] dataBindings;
+        foreach (i; 0 .. EXTRACT_BINDINGS) {
+            dataBindings[i] = layoutBinding(i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT);
         }
-
-        VkDescriptorSetLayoutBinding[4] binds;
-        foreach (i; 0 .. 4) {
-            binds[i].binding = cast(uint) i;
-            binds[i].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            binds[i].descriptorCount = 1;
-            binds[i].stageFlags = VkShaderStageFlagBits.VK_SHADER_STAGE_COMPUTE_BIT;
+        dataLayout = createSetLayout(device, dataBindings[]);
+        VkDescriptorPoolSize[2] sizes = [
+            VkDescriptorPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1),
+            VkDescriptorPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, EXTRACT_BINDINGS * EXTRACT_CONCURRENCY),
+        ];
+        VkDescriptorPoolCreateInfo poolInfo;
+        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.maxSets = 1 + EXTRACT_CONCURRENCY;
+        poolInfo.poolSizeCount = sizes.length;
+        poolInfo.pPoolSizes = sizes.ptr;
+        vkCreateDescriptorPool(device, &poolInfo, null, &descriptorPool);
+        VkDescriptorSetAllocateInfo paramsAllocate;
+        paramsAllocate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        paramsAllocate.descriptorPool = descriptorPool;
+        paramsAllocate.descriptorSetCount = 1;
+        paramsAllocate.pSetLayouts = &paramsLayout;
+        vkAllocateDescriptorSets(device, &paramsAllocate, &paramsSet);
+        VkDescriptorSetLayout[EXTRACT_CONCURRENCY] dataLayouts = dataLayout;
+        VkDescriptorSetAllocateInfo dataAllocate;
+        dataAllocate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        dataAllocate.descriptorPool = descriptorPool;
+        dataAllocate.descriptorSetCount = EXTRACT_CONCURRENCY;
+        dataAllocate.pSetLayouts = dataLayouts.ptr;
+        vkAllocateDescriptorSets(device, &dataAllocate, dataSets.ptr);
+        VkDescriptorBufferInfo paramsInfo = VkDescriptorBufferInfo(paramsBuffer.buffer, 0, WHOLE_SIZE);
+        VkWriteDescriptorSet paramsWrite = bufferWrite(paramsSet, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, &paramsInfo);
+        vkUpdateDescriptorSets(device, 1, &paramsWrite, 0, null);
+        VkDescriptorSetLayout[2] setLayouts = [
+            paramsLayout,
+            dataLayout,
+        ];
+        pipelineLayout = createPipelineLayout(device, setLayouts[], null);
+        if (extractShader !is null && pipelineLayout !is null) {
+            pipeline = createComputePipeline(device, extractShader, pipelineLayout);
         }
-        VkDescriptorSetLayoutCreateInfo dlci;
-        dlci.sType = VkStructureType.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        dlci.bindingCount = 4;
-        dlci.pBindings = binds.ptr;
-        vkCreateDescriptorSetLayout(device, &dlci, null, &tfLayout);
+        return pipeline !is null;
+    }
 
-        VkPushConstantRange pcr;
-        pcr.stageFlags = VkShaderStageFlagBits.VK_SHADER_STAGE_COMPUTE_BIT;
-        pcr.offset = 0;
-        pcr.size = 4;
-        VkPipelineLayoutCreateInfo plci;
-        plci.sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        plci.setLayoutCount = 1;
-        plci.pSetLayouts = &tfLayout;
-        plci.pushConstantRangeCount = 1;
-        plci.pPushConstantRanges = &pcr;
-        vkCreatePipelineLayout(device, &plci, null, &tfPipelineLayout);
-
-        VkComputePipelineCreateInfo cpci;
-        cpci.sType = VkStructureType.VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-        cpci.stage.sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        cpci.stage.stage = VkShaderStageFlagBits.VK_SHADER_STAGE_COMPUTE_BIT;
-        cpci.stage.mod = tfCompShader;
-        cpci.stage.pName = "main";
-        cpci.layout = tfPipelineLayout;
-        if (vkCreateComputePipelines(device, 0, 1, &cpci, null, &tfPipeline) != VkResult.VK_SUCCESS) {
-            return false;
+    bool createTransformCompute(VkPhysicalDevice physicalDevice, VkDevice device) {
+        transformShader = createShader(device, TRANSFORMS_COMP_SPV);
+        VkDescriptorSetLayoutBinding[TRANSFORM_BINDINGS] bindings;
+        foreach (i; 0 .. TRANSFORM_BINDINGS) {
+            bindings[i] = layoutBinding(i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT);
         }
-
-        VkDescriptorPoolSize poolSize;
-        poolSize.type = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        poolSize.descriptorCount = 4;
-        VkDescriptorPoolCreateInfo dpci;
-        dpci.sType = VkStructureType.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        dpci.maxSets = 1;
-        dpci.poolSizeCount = 1;
-        dpci.pPoolSizes = &poolSize;
-        vkCreateDescriptorPool(device, &dpci, null, &tfDescPool);
-
-        VkDescriptorSetAllocateInfo dsai;
-        dsai.sType = VkStructureType.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        dsai.descriptorPool = tfDescPool;
-        dsai.descriptorSetCount = 1;
-        dsai.pSetLayouts = &tfLayout;
-        vkAllocateDescriptorSets(device, &dsai, &tfDescSet);
-
-        nodeTransformsBuf = GpuBuffer.createHostVisible(phys, device,
-            maxNodes * 64, VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-        vkMapMemory(device, nodeTransformsBuf.memory, 0, maxNodes * 64, 0, &nodeTransformsMapped);
-
-        slotTasksBuf = GpuBuffer.createHostVisible(phys, device,
-            slots * 16, VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-        vkMapMemory(device, slotTasksBuf.memory, 0, slots * 16, 0, &slotTasksMapped);
-
-        float[20 * 16] vtxData;
-        foreach (vi; 0 .. 20) {
-            Matrix4!float m = vertexChunkToNode(cast(Vertex) vi);
-            foreach (col; 0 .. 4) {
+        transformLayout = createSetLayout(device, bindings[]);
+        VkDescriptorSetLayout[1] setLayouts = [
+            transformLayout,
+        ];
+        VkPushConstantRange[1] pushConstants = [
+            VkPushConstantRange(VK_SHADER_STAGE_COMPUTE_BIT, 0, COUNT_PUSH_BYTES),
+        ];
+        transformPipelineLayout = createPipelineLayout(device, setLayouts[], pushConstants[]);
+        if (transformShader !is null && transformPipelineLayout !is null) {
+            transformPipeline = createComputePipeline(device, transformShader, transformPipelineLayout);
+        }
+        VkDescriptorPoolSize poolSize = VkDescriptorPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, TRANSFORM_BINDINGS);
+        VkDescriptorPoolCreateInfo poolInfo;
+        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.maxSets = 1;
+        poolInfo.poolSizeCount = 1;
+        poolInfo.pPoolSizes = &poolSize;
+        vkCreateDescriptorPool(device, &poolInfo, null, &transformPool);
+        VkDescriptorSetAllocateInfo allocateInfo;
+        allocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocateInfo.descriptorPool = transformPool;
+        allocateInfo.descriptorSetCount = 1;
+        allocateInfo.pSetLayouts = &transformLayout;
+        vkAllocateDescriptorSets(device, &allocateInfo, &transformSet);
+        nodeTransformsBuffer = createHostVisibleBuffer(physicalDevice, device, cast(VkDeviceSize) MAX_RENDER_SLOTS * MATRIX_BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        vkMapMemory(device, nodeTransformsBuffer.memory, 0, nodeTransformsBuffer.size, 0, &nodeTransformsMapped);
+        slotTasksBuffer = createHostVisibleBuffer(physicalDevice, device, cast(VkDeviceSize) MAX_RENDER_SLOTS * SLOT_TASK_BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        vkMapMemory(device, slotTasksBuffer.memory, 0, slotTasksBuffer.size, 0, &slotTasksMapped);
+        float[VERTEX_COUNT * MATRIX_FLOATS] vertexTransforms;
+        foreach (vertexIndex; 0 .. VERTEX_COUNT) {
+            Matrix4!float chunkToNode = vertexChunkToNode(cast(Vertex) vertexIndex);
+            foreach (column; 0 .. 4) {
                 foreach (row; 0 .. 4) {
-                    vtxData[vi * 16 + col * 4 + row] = m.data[col][row];
+                    vertexTransforms[vertexIndex * MATRIX_FLOATS + column * 4 + row] = chunkToNode.data[column][row];
                 }
             }
         }
-        vertexTransformsBuf = GpuBuffer.create(phys, device, cast(void[]) vtxData[],
-            VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-
-        VkDescriptorBufferInfo[4] infos;
-        infos[0].buffer = nodeTransformsBuf.buffer;
-        infos[0].range = VK_WHOLE_SIZE;
-        infos[1].buffer = vertexTransformsBuf.buffer;
-        infos[1].range = VK_WHOLE_SIZE;
-        infos[2].buffer = slotTasksBuf.buffer;
-        infos[2].range = VK_WHOLE_SIZE;
-
+        vertexTransformsBuffer = createFilledBuffer(physicalDevice, device, vertexTransforms[], VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        VkDescriptorBufferInfo[3] infos = [
+            VkDescriptorBufferInfo(nodeTransformsBuffer.buffer, 0, WHOLE_SIZE),
+            VkDescriptorBufferInfo(vertexTransformsBuffer.buffer, 0, WHOLE_SIZE),
+            VkDescriptorBufferInfo(slotTasksBuffer.buffer, 0, WHOLE_SIZE),
+        ];
         VkWriteDescriptorSet[3] writes;
-        foreach (i; 0 .. 3) {
-            writes[i].sType = VkStructureType.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[i].dstSet = tfDescSet;
-            writes[i].dstBinding = cast(uint) i;
-            writes[i].descriptorCount = 1;
-            writes[i].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            writes[i].pBufferInfo = &infos[i];
+        foreach (i; 0 .. infos.length) {
+            writes[i] = bufferWrite(transformSet, cast(uint) i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &infos[i]);
         }
-        vkUpdateDescriptorSets(device, 3, writes.ptr, 0, null);
-
-        return true;
+        vkUpdateDescriptorSets(device, writes.length, writes.ptr, 0, null);
+        return transformPipeline !is null;
     }
 
-    void bindTransformOutput(VkDevice device, ulong transformsBuf) {
-        VkDescriptorBufferInfo info;
-        info.buffer = transformsBuf;
-        info.range = VK_WHOLE_SIZE;
-        VkWriteDescriptorSet w;
-        w.sType = VkStructureType.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        w.dstSet = tfDescSet;
-        w.dstBinding = 3;
-        w.descriptorCount = 1;
-        w.descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        w.pBufferInfo = &info;
-        vkUpdateDescriptorSets(device, 1, &w, 0, null);
+    void bindTransformOutput(VkDevice device, VkBuffer transformsBuffer) {
+        VkDescriptorBufferInfo info = VkDescriptorBufferInfo(transformsBuffer, 0, WHOLE_SIZE);
+        VkWriteDescriptorSet write = bufferWrite(transformSet, TRANSFORM_OUTPUT_BINDING, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &info);
+        vkUpdateDescriptorSets(device, 1, &write, 0, null);
     }
 
-    void recordTransformCompute(VkCommandBuffer cmd, uint activeCount, ulong transformsBuf) {
-        if (!tfReady || activeCount == 0) {
-            return;
-        }
-
-        vkCmdBindPipeline(cmd, cast(VkPipelineBindPoint) 1, tfPipeline);
-        vkCmdBindDescriptorSets(cmd, cast(VkPipelineBindPoint) 1, tfPipelineLayout,
-            0, 1, &tfDescSet, 0, null);
-        vkCmdPushConstants(cmd, tfPipelineLayout,
-            VkShaderStageFlagBits.VK_SHADER_STAGE_COMPUTE_BIT, 0, 4, &activeCount);
-        vkCmdDispatch(cmd, (activeCount + 63) / 64, 1, 1);
-
-        VkBufferMemoryBarrier bar;
-        bar.sType = VkStructureType.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-        bar.srcAccessMask = VkAccessFlagBits.VK_ACCESS_SHADER_WRITE_BIT;
-        bar.dstAccessMask = VkAccessFlagBits.VK_ACCESS_SHADER_READ_BIT;
-        bar.srcQueueFamilyIndex = ~0u;
-        bar.dstQueueFamilyIndex = ~0u;
-        bar.buffer = transformsBuf;
-        bar.size = VK_WHOLE_SIZE;
-        vkCmdPipelineBarrier(cmd,
-            VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-            0, 0, null, 1, &bar, 0, null);
-    }
-
-    bool initWorldgen(VkPhysicalDevice phys, VkDevice device) {
-        static immutable ubyte[] wgenSpv = cast(immutable(ubyte)[]) import("worldgen.comp.spv");
-        VkShaderModuleCreateInfo smci;
-        smci.sType = VkStructureType.VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-        smci.codeSize = wgenSpv.length;
-        smci.pCode = cast(const(uint)*) wgenSpv.ptr;
-        if (vkCreateShaderModule(device, &smci, null, &wgenShader) != VkResult.VK_SUCCESS) {
-            return false;
-        }
-
-        VkDescriptorSetLayoutBinding[3] wgb;
-        wgb[0].binding = 0;
-        wgb[0].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        wgb[0].descriptorCount = 1;
-        wgb[0].stageFlags = VkShaderStageFlagBits.VK_SHADER_STAGE_COMPUTE_BIT;
-        wgb[1].binding = 1;
-        wgb[1].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-        wgb[1].descriptorCount = 1;
-        wgb[1].stageFlags = VkShaderStageFlagBits.VK_SHADER_STAGE_COMPUTE_BIT;
-        wgb[2].binding = 2;
-        wgb[2].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        wgb[2].descriptorCount = 1;
-        wgb[2].stageFlags = VkShaderStageFlagBits.VK_SHADER_STAGE_COMPUTE_BIT;
-        VkDescriptorSetLayoutCreateInfo wgci;
-        wgci.sType = VkStructureType.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        wgci.bindingCount = 3;
-        wgci.pBindings = wgb.ptr;
-        vkCreateDescriptorSetLayout(device, &wgci, null, &wgenParamsLayout);
-
-        VkDescriptorSetLayout[2] wgLayouts = [wgenParamsLayout, dataLayout];
-        VkPipelineLayoutCreateInfo wgplci;
-        wgplci.sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        wgplci.setLayoutCount = 2;
-        wgplci.pSetLayouts = wgLayouts.ptr;
-        vkCreatePipelineLayout(device, &wgplci, null, &wgenPipelineLayout);
-
-        VkComputePipelineCreateInfo wgcpci;
-        wgcpci.sType = VkStructureType.VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-        wgcpci.stage.sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        wgcpci.stage.stage = VkShaderStageFlagBits.VK_SHADER_STAGE_COMPUTE_BIT;
-        wgcpci.stage.mod = wgenShader;
-        wgcpci.stage.pName = "main";
-        wgcpci.layout = wgenPipelineLayout;
-        if (vkCreateComputePipelines(device, 0, 1, &wgcpci, null, &wgenPipeline) != VkResult.VK_SUCCESS) {
-            return false;
-        }
-
-        VkDescriptorPoolSize[2] wgps;
-        wgps[0].type = VkDescriptorType.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-        wgps[0].descriptorCount = 1;
-        wgps[1].type = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        wgps[1].descriptorCount = 1;
-        VkDescriptorPoolSize wgps2;
-        wgps2.type = VkDescriptorType.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        wgps2.descriptorCount = 1;
-        VkDescriptorPoolSize[3] allps = [wgps[0], wgps[1], wgps2];
-        VkDescriptorPoolCreateInfo wgdpci;
-        wgdpci.sType = VkStructureType.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        wgdpci.maxSets = 1;
-        wgdpci.poolSizeCount = 3;
-        wgdpci.pPoolSizes = allps.ptr;
-        vkCreateDescriptorPool(device, &wgdpci, null, &wgenDescPool);
-
-        wgenParamsSets = new VkDescriptorSet[1];
-        VkDescriptorSetAllocateInfo wgdai;
-        wgdai.sType = VkStructureType.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        wgdai.descriptorPool = wgenDescPool;
-        wgdai.descriptorSetCount = 1;
-        wgdai.pSetLayouts = &wgenParamsLayout;
-        vkAllocateDescriptorSets(device, &wgdai, wgenParamsSets.ptr);
-
-        uint wgenParamsSize = roundUp(WorldgenParamsGPU.sizeof, 256) * concurrency;
-        wgenParamsBuf = GpuBuffer.createHostVisible(phys, device, wgenParamsSize,
-            VkBufferUsageFlagBits.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
-        vkMapMemory(device, wgenParamsBuf.memory, 0, wgenParamsSize, 0, &wgenParamsMapped);
-
-        VoronoiEntryGPU[] voronoiData = buildVoronoiTableGPU();
-        voronoiTableBuf = GpuBuffer.create(phys, device, cast(void[]) voronoiData,
-            VkBufferUsageFlagBits.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-
-        VkDescriptorBufferInfo[3] wgbi;
-        wgbi[0].buffer = paramsBuf.buffer;
-        wgbi[0].range = 16;
-        wgbi[1].buffer = wgenParamsBuf.buffer;
-        wgbi[1].range = WorldgenParamsGPU.sizeof;
-        wgbi[2].buffer = voronoiTableBuf.buffer;
-        wgbi[2].range = VK_WHOLE_SIZE;
-
-        VkWriteDescriptorSet[3] wgw;
-        foreach (i; 0 .. 3) {
-            wgw[i].sType = VkStructureType.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            wgw[i].dstSet = wgenParamsSets[0];
-            wgw[i].dstBinding = cast(uint) i;
-            wgw[i].descriptorCount = 1;
-            wgw[i].pBufferInfo = &wgbi[i];
-        }
-        wgw[0].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        wgw[1].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-        wgw[2].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        vkUpdateDescriptorSets(device, 3, wgw.ptr, 0, null);
-
-        return true;
-    }
-
-    uint uploadWorldgenParams(VkDevice device, uint scratchIndex, const ref WorldgenParamsGPU params) {
-        uint offset = roundUp(WorldgenParamsGPU.sizeof, 256) * scratchIndex;
-        memcpy(cast(ubyte*) wgenParamsMapped + offset, &params, WorldgenParamsGPU.sizeof);
-        return offset;
-    }
-
-    void recordWorldgen(VkDevice device, VkCommandBuffer cmd, ExtractTask[] tasks, uint[] wgenOffsets) {
-        if (tasks.length == 0 || !wgenReady) {
-            return;
-        }
-
-        foreach (ref task; tasks) {
-            vkCmdFillBuffer(cmd, voxelsBuf.buffer,
-                cast(ulong) task.index * voxelBufUnit, voxelBufUnit, 0);
-        }
-
-        VkBufferMemoryBarrier clearBar;
-        clearBar.sType = VkStructureType.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-        clearBar.srcAccessMask = 0x1000;
-        clearBar.dstAccessMask = VkAccessFlagBits.VK_ACCESS_SHADER_READ_BIT | VkAccessFlagBits.VK_ACCESS_SHADER_WRITE_BIT;
-        clearBar.srcQueueFamilyIndex = ~0u;
-        clearBar.dstQueueFamilyIndex = ~0u;
-        clearBar.buffer = voxelsBuf.buffer;
-        clearBar.size = VK_WHOLE_SIZE;
-        vkCmdPipelineBarrier(cmd, 0x1000, VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            0, 0, null, 1, &clearBar, 0, null);
-
-        foreach (i, ref task; tasks) {
-            VkDescriptorBufferInfo[4] infos;
-            infos[0].buffer = voxelsBuf.buffer;
-            infos[0].offset = cast(ulong) task.index * voxelBufUnit;
-            infos[0].range = voxelBufUnit;
-            infos[1].buffer = stateBuf.buffer;
-            infos[1].offset = cast(ulong) task.index * stateBufUnit;
-            infos[1].range = stateBufUnit;
-            infos[2].buffer = indirectBuf.buffer;
-            infos[2].offset = task.indirectOffset;
-            infos[2].range = INDIRECT_SIZE;
-            infos[3].buffer = facesBuf.buffer;
-            infos[3].offset = task.faceOffset;
-            infos[3].range = faceBufUnit;
-
-            VkWriteDescriptorSet[4] writes;
-            foreach (j; 0 .. 4) {
-                writes[j].sType = VkStructureType.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                writes[j].dstSet = dataSets[task.index];
-                writes[j].dstBinding = cast(uint) j;
-                writes[j].descriptorCount = 1;
-                writes[j].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                writes[j].pBufferInfo = &infos[j];
-            }
-            vkUpdateDescriptorSets(device, 4, writes.ptr, 0, null);
-        }
-
-        vkCmdBindPipeline(cmd, cast(VkPipelineBindPoint) 1, wgenPipeline);
-
-        uint gx = (dimension + 3) / 4;
-        uint gy = (dimension + 3) / 4;
-        uint gz = (dimension + 3) / 4;
-
-        foreach (i, ref task; tasks) {
-            uint dynOffset = wgenOffsets[i];
-            vkCmdBindDescriptorSets(cmd, cast(VkPipelineBindPoint) 1, wgenPipelineLayout,
-                0, 1, &wgenParamsSets[0], 1, &dynOffset);
-            vkCmdBindDescriptorSets(cmd, cast(VkPipelineBindPoint) 1, wgenPipelineLayout,
-                1, 1, &dataSets[task.index], 0, null);
-            vkCmdDispatch(cmd, gx, gy, gz);
-        }
-
-        VkBufferMemoryBarrier wgenBar;
-        wgenBar.sType = VkStructureType.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-        wgenBar.srcAccessMask = VkAccessFlagBits.VK_ACCESS_SHADER_WRITE_BIT;
-        wgenBar.dstAccessMask = VkAccessFlagBits.VK_ACCESS_SHADER_READ_BIT;
-        wgenBar.srcQueueFamilyIndex = ~0u;
-        wgenBar.dstQueueFamilyIndex = ~0u;
-        wgenBar.buffer = voxelsBuf.buffer;
-        wgenBar.size = VK_WHOLE_SIZE;
-        vkCmdPipelineBarrier(cmd, VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            0, 0, null, 1, &wgenBar, 0, null);
+    void recordTransformCompute(VkCommandBuffer commands, uint activeCount, VkBuffer transformsBuffer) {
+        vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, transformPipeline);
+        vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE, transformPipelineLayout, 0, 1, &transformSet, 0, null);
+        vkCmdPushConstants(commands, transformPipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, COUNT_PUSH_BYTES, &activeCount);
+        vkCmdDispatch(commands, (activeCount + TRANSFORM_WORKGROUP - 1) / TRANSFORM_WORKGROUP, 1, 1);
+        VkBufferMemoryBarrier barrier = bufferBarrier(transformsBuffer, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+        vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, 0, 0, null, 1, &barrier, 0, null);
     }
 
     void uploadVoxels(void* voxelsMapped, uint scratchIndex, const(ushort)[] paddedData) {
-        uint count = packPaddedVoxelsInto(paddedData, dimension, packBuf);
-        if (count == 0) {
-            return;
+        ulong size = cast(ulong) packPaddedVoxels(paddedData, dimension, packScratch) * uint.sizeof;
+        if (size > voxelUnit) {
+            size = voxelUnit;
         }
-        ulong offset = cast(ulong) scratchIndex * voxelBufUnit;
-        ulong size = count * 4;
-        if (size > voxelBufUnit) {
-            size = voxelBufUnit;
-        }
-        memcpy(cast(ubyte*) voxelsMapped + offset, packBuf.ptr, size);
+        memcpy(cast(ubyte*) voxelsMapped + cast(ulong) scratchIndex * voxelUnit, packScratch, size);
     }
 
     void* mapVoxels(VkDevice device) {
         void* mapped;
-        vkMapMemory(device, voxelsBuf.memory, 0, voxelBufUnit * concurrency, 0, &mapped);
+        vkMapMemory(device, voxelsBuffer.memory, 0, voxelsBuffer.size, 0, &mapped);
         return mapped;
     }
 
     void unmapVoxels(VkDevice device) {
-        vkUnmapMemory(device, voxelsBuf.memory);
+        vkUnmapMemory(device, voxelsBuffer.memory);
     }
 
-    void recordExtract(VkDevice device, VkCommandBuffer cmd, ExtractTask[] tasks) {
-        if (tasks.length == 0) {
-            return;
-        }
-
-        vkCmdFillBuffer(cmd, stateBuf.buffer, 0, stateBufUnit * concurrency, 0);
-
-        foreach (ref task; tasks) {
-            VkDescriptorBufferInfo[4] infos;
-            infos[0].buffer = voxelsBuf.buffer;
-            infos[0].offset = cast(ulong) task.index * voxelBufUnit;
-            infos[0].range = voxelBufUnit;
-            infos[1].buffer = stateBuf.buffer;
-            infos[1].offset = cast(ulong) task.index * stateBufUnit;
-            infos[1].range = stateBufUnit;
-            infos[2].buffer = indirectBuf.buffer;
-            infos[2].offset = task.indirectOffset;
-            infos[2].range = INDIRECT_SIZE;
-            infos[3].buffer = facesBuf.buffer;
-            infos[3].offset = task.faceOffset;
-            infos[3].range = faceBufUnit;
-
-            VkWriteDescriptorSet[4] writes;
-            foreach (i; 0 .. 4) {
-                writes[i].sType = VkStructureType.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                writes[i].dstSet = dataSets[task.index];
-                writes[i].dstBinding = cast(uint) i;
-                writes[i].descriptorCount = 1;
-                writes[i].descriptorType = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                writes[i].pBufferInfo = &infos[i];
+    void recordExtract(VkDevice device, VkCommandBuffer commands, const(ExtractTask)[] tasks) {
+        vkCmdFillBuffer(commands, stateBuffer.buffer, 0, stateBuffer.size, 0);
+        foreach (task; tasks) {
+            VkDescriptorBufferInfo[EXTRACT_BINDINGS] infos = [
+                VkDescriptorBufferInfo(voxelsBuffer.buffer, cast(ulong) task.index * voxelUnit, voxelUnit),
+                VkDescriptorBufferInfo(stateBuffer.buffer, cast(ulong) task.index * stateUnit, stateUnit),
+                VkDescriptorBufferInfo(indirectBuffer.buffer, task.indirectOffset, INDIRECT_SIZE),
+                VkDescriptorBufferInfo(facesBuffer.buffer, task.faceOffset, faceUnit),
+            ];
+            VkWriteDescriptorSet[EXTRACT_BINDINGS] writes;
+            foreach (i; 0 .. EXTRACT_BINDINGS) {
+                writes[i] = bufferWrite(dataSets[task.index], i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &infos[i]);
             }
-            vkUpdateDescriptorSets(device, 4, writes.ptr, 0, null);
-
-            uint firstVertex = cast(uint)(task.faceOffset / FACE_SIZE) * 6;
-            vkCmdFillBuffer(cmd, indirectBuf.buffer, task.indirectOffset, 4, 0);
-            vkCmdFillBuffer(cmd, indirectBuf.buffer, task.indirectOffset + 4, 4, 1);
-            vkCmdFillBuffer(cmd, indirectBuf.buffer, task.indirectOffset + 8, 4, firstVertex);
-            vkCmdFillBuffer(cmd, indirectBuf.buffer, task.indirectOffset + 12, 4, task.drawId);
+            vkUpdateDescriptorSets(device, EXTRACT_BINDINGS, writes.ptr, 0, null);
+            uint firstVertex = cast(uint)(task.faceOffset / FACE_SIZE) * VERTICES_PER_FACE;
+            vkCmdFillBuffer(commands, indirectBuffer.buffer, task.indirectOffset + INDIRECT_VERTEX_COUNT_OFFSET, INDIRECT_FIELD_BYTES, 0);
+            vkCmdFillBuffer(commands, indirectBuffer.buffer, task.indirectOffset + INDIRECT_INSTANCE_COUNT_OFFSET, INDIRECT_FIELD_BYTES, 1);
+            vkCmdFillBuffer(commands, indirectBuffer.buffer, task.indirectOffset + INDIRECT_FIRST_VERTEX_OFFSET, INDIRECT_FIELD_BYTES, firstVertex);
+            vkCmdFillBuffer(commands, indirectBuffer.buffer, task.indirectOffset + INDIRECT_FIRST_INSTANCE_OFFSET, INDIRECT_FIELD_BYTES, task.drawId);
         }
-
-        VkBufferMemoryBarrier[2] preBar;
-        preBar[0].sType = VkStructureType.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-        preBar[0].srcAccessMask = 0x1000;
-        preBar[0].dstAccessMask = VkAccessFlagBits.VK_ACCESS_SHADER_READ_BIT | VkAccessFlagBits.VK_ACCESS_SHADER_WRITE_BIT;
-        preBar[0].srcQueueFamilyIndex = ~0u;
-        preBar[0].dstQueueFamilyIndex = ~0u;
-        preBar[0].buffer = stateBuf.buffer;
-        preBar[0].size = VK_WHOLE_SIZE;
-        preBar[1] = preBar[0];
-        preBar[1].buffer = indirectBuf.buffer;
-        vkCmdPipelineBarrier(cmd, 0x1000, VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            0, 0, null, 2, preBar.ptr, 0, null);
-
-        vkCmdBindPipeline(cmd, cast(VkPipelineBindPoint) 1, pipeline);
-        vkCmdBindDescriptorSets(cmd, cast(VkPipelineBindPoint) 1, pipelineLayout, 0, 1, &paramsSet, 0, null);
-
-        uint gx = ((dimension + 1) * 3 + 3) / 4;
-        uint gy = ((dimension + 1) + 3) / 4;
-        uint gz = ((dimension + 1) + 3) / 4;
-
-        foreach (ref task; tasks) {
-            vkCmdBindDescriptorSets(cmd, cast(VkPipelineBindPoint) 1, pipelineLayout,
-                1, 1, &dataSets[task.index], 0, null);
-            vkCmdDispatch(cmd, gx, gy, gz);
+        VkBufferMemoryBarrier[2] before = [
+            bufferBarrier(stateBuffer.buffer, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT),
+            bufferBarrier(indirectBuffer.buffer, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT),
+        ];
+        vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, null, before.length, before.ptr, 0, null);
+        vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+        vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &paramsSet, 0, null);
+        uint groupsX = ((dimension + 1) * FACE_AXES + EXTRACT_WORKGROUP - 1) / EXTRACT_WORKGROUP;
+        uint groupsYZ = (dimension + 1 + EXTRACT_WORKGROUP - 1) / EXTRACT_WORKGROUP;
+        foreach (task; tasks) {
+            vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 1, 1, &dataSets[task.index], 0, null);
+            vkCmdDispatch(commands, groupsX, groupsYZ, groupsYZ);
         }
-
-        VkBufferMemoryBarrier[2] postBar;
-        postBar[0].sType = VkStructureType.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-        postBar[0].srcAccessMask = VkAccessFlagBits.VK_ACCESS_SHADER_WRITE_BIT;
-        postBar[0].dstAccessMask = VkAccessFlagBits.VK_ACCESS_SHADER_READ_BIT;
-        postBar[0].srcQueueFamilyIndex = ~0u;
-        postBar[0].dstQueueFamilyIndex = ~0u;
-        postBar[0].buffer = facesBuf.buffer;
-        postBar[0].size = VK_WHOLE_SIZE;
-        postBar[1] = postBar[0];
-        postBar[1].buffer = indirectBuf.buffer;
-        postBar[1].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        vkCmdPipelineBarrier(cmd, VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
-            VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_TRANSFER_BIT,
-            0, 0, null, 2, postBar.ptr, 0, null);
+        VkBufferMemoryBarrier[2] after = [
+            bufferBarrier(facesBuffer.buffer, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT),
+            bufferBarrier(indirectBuffer.buffer, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT),
+        ];
+        vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, null, after.length, after.ptr, 0, null);
     }
 
-    void recordPackIndirect(VkCommandBuffer cmd, const(uint)[] activeSlots) {
-        if (activeSlots.length == 0) {
-            return;
+    void recordPackIndirect(VkCommandBuffer commands, const(uint)[] activeSlots) {
+        foreach (i, slot; activeSlots) {
+            packCopies[i] = VkBufferCopy(cast(VkDeviceSize) slot * INDIRECT_SIZE, cast(VkDeviceSize) i * INDIRECT_SIZE, INDIRECT_SIZE);
         }
-        uint count = cast(uint) activeSlots.length;
-        foreach (i; 0 .. count) {
-            packIndirectCopies[i].srcOffset = cast(VkDeviceSize) activeSlots[i] * INDIRECT_SIZE;
-            packIndirectCopies[i].dstOffset = cast(VkDeviceSize) i * INDIRECT_SIZE;
-            packIndirectCopies[i].size = INDIRECT_SIZE;
-        }
-        vkCmdCopyBuffer(cmd, indirectBuf.buffer, packedIndirectBuf.buffer, count, packIndirectCopies.ptr);
-
-        VkBufferMemoryBarrier bar;
-        bar.sType = VkStructureType.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-        bar.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        bar.dstAccessMask = VkAccessFlagBits.VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
-        bar.srcQueueFamilyIndex = ~0u;
-        bar.dstQueueFamilyIndex = ~0u;
-        bar.buffer = packedIndirectBuf.buffer;
-        bar.size = VK_WHOLE_SIZE;
-        vkCmdPipelineBarrier(cmd,
-            VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VkPipelineStageFlagBitsExt.VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
-            0, 0, null, 1, &bar, 0, null);
+        vkCmdCopyBuffer(commands, indirectBuffer.buffer, packedIndirectBuffer.buffer, cast(uint) activeSlots.length, packCopies);
+        VkBufferMemoryBarrier barrier = bufferBarrier(packedIndirectBuffer.buffer, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_INDIRECT_COMMAND_READ_BIT);
+        vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, 0, 0, null, 1, &barrier, 0, null);
     }
 
-    ulong faceOffset(uint slot) {
-        return cast(ulong) slot * faceBufUnit;
+    ulong faceOffset(uint slot) const {
+        return cast(ulong) slot * faceUnit;
     }
 
-    ulong indirectOffset(uint slot) {
+    ulong indirectOffset(uint slot) const {
         return cast(ulong) slot * INDIRECT_SIZE;
     }
 
     void cleanup(VkDevice device) {
-        if (pipeline) {
-            vkDestroyPipeline(device, pipeline, null);
-        }
-        if (pipelineLayout) {
-            vkDestroyPipelineLayout(device, pipelineLayout, null);
-        }
-        if (descPool) {
-            vkDestroyDescriptorPool(device, descPool, null);
-        }
-        if (paramsLayout) {
-            vkDestroyDescriptorSetLayout(device, paramsLayout, null);
-        }
-        if (dataLayout) {
-            vkDestroyDescriptorSetLayout(device, dataLayout, null);
-        }
-        if (compShader) {
-            vkDestroyShaderModule(device, compShader, null);
-        }
-        paramsBuf.cleanup(device);
-        voxelsBuf.cleanup(device);
-        stateBuf.cleanup(device);
-        indirectBuf.cleanup(device);
-        packedIndirectBuf.cleanup(device);
-        facesBuf.cleanup(device);
+        vkDestroyPipeline(device, pipeline, null);
+        vkDestroyPipelineLayout(device, pipelineLayout, null);
+        vkDestroyDescriptorPool(device, descriptorPool, null);
+        vkDestroyDescriptorSetLayout(device, paramsLayout, null);
+        vkDestroyDescriptorSetLayout(device, dataLayout, null);
+        vkDestroyShaderModule(device, extractShader, null);
+        vkDestroyPipeline(device, transformPipeline, null);
+        vkDestroyPipelineLayout(device, transformPipelineLayout, null);
+        vkDestroyDescriptorPool(device, transformPool, null);
+        vkDestroyDescriptorSetLayout(device, transformLayout, null);
+        vkDestroyShaderModule(device, transformShader, null);
+        destroyBuffer(device, &paramsBuffer);
+        destroyBuffer(device, &voxelsBuffer);
+        destroyBuffer(device, &stateBuffer);
+        destroyBuffer(device, &indirectBuffer);
+        destroyBuffer(device, &packedIndirectBuffer);
+        destroyBuffer(device, &facesBuffer);
+        destroyBuffer(device, &nodeTransformsBuffer);
+        destroyBuffer(device, &vertexTransformsBuffer);
+        destroyBuffer(device, &slotTasksBuffer);
+        free(packScratch);
+        free(packCopies);
     }
 }

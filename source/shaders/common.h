@@ -9,7 +9,7 @@ layout(set = 0, binding = 0) uniform Common {
     mat4 inverse_projection;
     float fog_density;
     float time;
-    vec4 light_dir; // xyz = light direction in node-local frame, w unused
+    vec4 light_dir;
 };
 
 #endif

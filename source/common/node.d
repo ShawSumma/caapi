@@ -1,113 +1,106 @@
 module common.node;
 
-import std.math : floor;
-import common.chunks : Chunks;
-import common.dodeca : Vertex, vertexDualToChunkFactor;
+import core.stdc.math : floorf;
+import core.stdc.stdlib : free, malloc;
+import common.dodeca : VERTEX_COUNT, Vertex, vertexDualToChunkFactor;
 import common.graph : NodeId;
 import common.world : Material;
+import common.worldgen.generation : NodeState;
 
 struct ChunkId {
     NodeId node;
     Vertex vertex;
-
-    bool opEquals(const ChunkId other) const {
-        return node == other.node && vertex == other.vertex;
-    }
-
-    size_t toHash() const nothrow @safe {
-        return cast(size_t)(node.value[0] + node.value[1] * 0x9E3779B97F4A7C15 + cast(ulong) vertex * 0x517CC1B727220A95);
-    }
 }
 
 struct ChunkLayout {
-    ubyte dimension;
     float dualToGridFactor;
+    ubyte dimension;
 
-    this(ubyte dim) {
-        dimension = dim;
-        dualToGridFactor = vertexDualToChunkFactor() * dim;
+    this(ubyte chunkDimension) {
+        dimension = chunkDimension;
+        dualToGridFactor = vertexDualToChunkFactor() * chunkDimension;
     }
 
     int dualToVoxel(float dualCoord) const {
-        float floorGridCoord = _floor(dualCoord * dualToGridFactor);
-        if (!(floorGridCoord >= 0.0f && floorGridCoord < cast(float) dimension)) {
-            return -1;
+        float floorGridCoord = floorf(dualCoord * dualToGridFactor);
+        int result = -1;
+        if (floorGridCoord >= 0.0f && floorGridCoord < cast(float) dimension) {
+            result = cast(int) floorGridCoord;
         }
-        return cast(int) floorGridCoord;
+        return result;
     }
 
     float gridToDual(ubyte gridCoord) const {
         return cast(float) gridCoord / dualToGridFactor;
     }
+}
 
-    static float _floor(float x) {
-        return floor(x);
-    }
+enum VoxelKind : ubyte {
+    Solid,
+    Dense,
 }
 
 struct VoxelData {
-    enum Kind {
-        Solid,
-        Dense,
-    }
-
-    Kind kind;
-    Material solidMaterial;
     Material[] denseData;
+    VoxelKind kind;
+    Material solidMaterial;
 
-    static VoxelData solid(Material mat) {
-        VoxelData v;
-        v.kind = Kind.Solid;
-        v.solidMaterial = mat;
-        return v;
-    }
-
-    static VoxelData dense(Material[] data) {
-        VoxelData v;
-        v.kind = Kind.Dense;
-        v.denseData = data;
-        return v;
+    static VoxelData solid(Material material) {
+        VoxelData result;
+        result.kind = VoxelKind.Solid;
+        result.solidMaterial = material;
+        return result;
     }
 
     Material get(size_t index) const {
-        final switch (kind) {
-            case Kind.Solid:
-                return solidMaterial;
-            case Kind.Dense:
-                return denseData[index];
+        Material result = solidMaterial;
+        if (kind == VoxelKind.Dense) {
+            result = denseData[index];
         }
+        return result;
     }
 
     Material[] dataMut(ubyte dimension) {
-        if (kind == Kind.Solid) {
-            size_t sz = (cast(size_t) dimension + 2) ^^ 3;
-            denseData = new Material[sz];
-            denseData[] = solidMaterial;
-            kind = Kind.Dense;
+        if (kind == VoxelKind.Solid) {
+            size_t side = cast(size_t) dimension + 2;
+            size_t count = side * side * side;
+            Material* memory = cast(Material*) malloc(count * Material.sizeof);
+            denseData = memory[0 .. count];
+            foreach (i; 0 .. count) {
+                denseData[i] = solidMaterial;
+            }
+            kind = VoxelKind.Dense;
         }
         return denseData;
     }
 
     bool isSolid() const {
-        return kind == Kind.Solid;
+        return kind == VoxelKind.Solid;
+    }
+
+    void release() {
+        if (kind == VoxelKind.Dense) {
+            free(denseData.ptr);
+        }
+        denseData = null;
+        kind = VoxelKind.Solid;
     }
 }
 
-enum ChunkState {
+enum ChunkState : ubyte {
     Fresh,
     Generating,
     Populated,
 }
 
 struct Chunk {
-    ChunkState state = ChunkState.Fresh;
     VoxelData voxels;
-    uint surface;
-    uint oldSurface;
     uint generation;
+    ChunkState state;
 }
 
 struct Node {
-    Chunks!Chunk chunks;
-    void* state;
+    Chunk[VERTEX_COUNT] chunks;
+    NodeState state;
+    bool hasState;
 }

@@ -1,7 +1,10 @@
 module client.graphics.frustum;
 
-import std.math : tan, atan, sin, cos, sinh;
-import common.math : MVector, MDirection, MPoint;
+import core.stdc.math : atanf, cosf, sinf, sinhf, tanf;
+import common.math : MDirection, MPoint, MVector;
+
+enum uint FRUSTUM_PLANE_COUNT = 5;
+enum float KLEIN_FAR_PLANE = 1.0f;
 
 struct Frustum {
     float left;
@@ -9,56 +12,48 @@ struct Frustum {
     float down;
     float up;
 
-    static Frustum fromVfov(float vfov, float aspectRatio) {
-        float hfov = atan(aspectRatio * tan(vfov));
-        Frustum f;
-        f.left = -hfov;
-        f.right = hfov;
-        f.down = -vfov;
-        f.up = vfov;
-        return f;
-    }
-
-    MDirection!float[5] planes() const {
-        return [
-            MDirection!float(MVector!float(cos(left), 0, sin(left), 0)),
-            MDirection!float(MVector!float(-cos(right), 0, -sin(right), 0)),
-            MDirection!float(MVector!float(0, cos(down), sin(down), 0)),
-            MDirection!float(MVector!float(0, -cos(up), -sin(up), 0)),
+    MDirection!float[FRUSTUM_PLANE_COUNT] planes() const {
+        MDirection!float[FRUSTUM_PLANE_COUNT] result = [
+            MDirection!float(MVector!float(cosf(left), 0, sinf(left), 0)),
+            MDirection!float(MVector!float(-cosf(right), 0, -sinf(right), 0)),
+            MDirection!float(MVector!float(0, cosf(down), sinf(down), 0)),
+            MDirection!float(MVector!float(0, -cosf(up), -sinf(up), 0)),
             MDirection!float(MVector!float(0, 0, -1, 0)),
         ];
+        return result;
     }
 
-    bool sphereOutside(const ref MDirection!float[5] fp, const ref MPoint!float center, float radius) const {
-        float threshold = sinh(radius);
-        foreach (ref p; fp) {
-            if (p.mip(center) < -threshold) {
-                return true;
-            }
+    float[16] projection(float near) const {
+        float tanLeft = tanf(left);
+        float tanRight = tanf(right);
+        float tanDown = tanf(down);
+        float tanUp = tanf(up);
+        float inverseWidth = 1.0f / (tanRight - tanLeft);
+        float inverseHeight = 1.0f / (tanDown - tanUp);
+        float[16] result = 0;
+        result[0] = 2.0f * inverseWidth;
+        result[5] = 2.0f * inverseHeight;
+        result[8] = (tanRight + tanLeft) * inverseWidth;
+        result[9] = (tanDown + tanUp) * inverseHeight;
+        result[10] = -near / (near - KLEIN_FAR_PLANE);
+        result[11] = -1.0f;
+        result[14] = -(near * KLEIN_FAR_PLANE) / (near - KLEIN_FAR_PLANE);
+        return result;
+    }
+}
+
+Frustum frustumFromVerticalFov(float verticalFov, float aspectRatio) {
+    float horizontalFov = atanf(aspectRatio * tanf(verticalFov));
+    return Frustum(-horizontalFov, horizontalFov, -verticalFov, verticalFov);
+}
+
+bool sphereOutside(const(MDirection!float)[] planes, MPoint!float center, float radius) {
+    float threshold = sinhf(radius);
+    bool outside = false;
+    foreach (plane; planes) {
+        if (plane.mip(center.vec) < -threshold) {
+            outside = true;
         }
-        return false;
     }
-
-    float[16] projection(float znear) const {
-        float zfar = 1.0f;
-        float l = tan(left);
-        float r = tan(right);
-        float d = tan(down);
-        float u = tan(up);
-        float idx = 1.0f / (r - l);
-        float idy = 1.0f / (d - u);
-        float sx = r + l;
-        float sy = d + u;
-        float za = -znear / (znear - zfar);
-        float zb = -(znear * zfar) / (znear - zfar);
-        float[16] m = 0;
-        m[0]  = 2.0f * idx;
-        m[5]  = 2.0f * idy;
-        m[8]  = sx * idx;
-        m[9]  = sy * idy;
-        m[10] = za;
-        m[11] = -1.0f;
-        m[14] = zb;
-        return m;
-    }
+    return outside;
 }

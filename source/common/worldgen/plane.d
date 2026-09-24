@@ -1,20 +1,15 @@
 module common.worldgen.plane;
 
-import std.math : asinh, log, exp, fabs, copysign;
+import core.stdc.math : asinhf, copysignf, expf, fabsf, logf;
 import common.dodeca : Side, Vertex, sideNormal, sideReflection, vertexChunkToNode;
-import common.math : Matrix4, MVector, MPoint, MDirection, MIsometry;
+import common.math : MIsometry, MPoint, MVector;
+
+enum float EXPONENT_RESCALE_THRESHOLD = 1.0e8f;
+enum float EXPONENT_STEP = 16.0f;
 
 struct Plane {
     MVector!float scaledNormal;
     float exponent = 0.0f;
-
-    static Plane fromDirection(MDirection!float normal) {
-        return Plane(normal.vec, 0.0f);
-    }
-
-    static Plane fromSide(Side side) {
-        return Plane.fromDirection(sideNormal(side));
-    }
 
     Plane opUnary(string op)() const if (op == "-") {
         return Plane(-scaledNormal, exponent);
@@ -24,35 +19,37 @@ struct Plane {
         return transformBy(sideReflection(side));
     }
 
-    Plane transformBy(const ref MIsometry!float iso) const {
-        MVector!float newNormal = iso * scaledNormal;
-        return Plane(newNormal, exponent).updateExponent();
+    Plane transformBy(MIsometry!float iso) const {
+        return withUpdatedExponent(Plane(iso * scaledNormal, exponent));
     }
 
-    float distanceTo(const ref MPoint!float point) const {
-        float mipVal = scaledNormal.mip(point.vec);
+    float distanceTo(MPoint!float point) const {
+        float product = scaledNormal.mip(point.vec);
+        float result;
         if (exponent == 0.0f) {
-            return asinh(mipVal);
+            result = asinhf(product);
         } else {
-            float mip2 = mipVal * 2.0f;
-            return (log(fabs(mip2)) + exponent) * copysign(1.0f, mip2);
-        }
-    }
-
-    float distanceToChunk(Vertex chunk, float[3] coord) const {
-        Matrix4!float chunkToNode = vertexChunkToNode(chunk);
-        MVector!float v = MVector!float(coord[0], coord[1], coord[2], 1.0f);
-        MVector!float transformed = chunkToNode * v;
-        MPoint!float pos = transformed.normalizedPoint();
-        return distanceTo(pos);
-    }
-
-    Plane updateExponent() {
-        Plane result = this;
-        while (fabs(result.scaledNormal.w) > 1.0e8f) {
-            result.scaledNormal = result.scaledNormal * exp(-16.0f);
-            result.exponent += 16.0f;
+            float doubled = product * 2.0f;
+            result = (logf(fabsf(doubled)) + exponent) * copysignf(1.0f, doubled);
         }
         return result;
     }
+
+    float distanceToChunk(Vertex chunk, float[3] coord) const {
+        MVector!float transformed = vertexChunkToNode(chunk) * MVector!float(coord[0], coord[1], coord[2], 1.0f);
+        return distanceTo(transformed.normalizedPoint());
+    }
+}
+
+Plane planeFromSide(Side side) {
+    return Plane(sideNormal(side).vec, 0.0f);
+}
+
+Plane withUpdatedExponent(Plane plane) {
+    Plane result = plane;
+    while (fabsf(result.scaledNormal.data[3]) > EXPONENT_RESCALE_THRESHOLD) {
+        result.scaledNormal = result.scaledNormal * expf(-EXPONENT_STEP);
+        result.exponent += EXPONENT_STEP;
+    }
+    return result;
 }

@@ -1,4 +1,3 @@
--- Walk forward for a long stretch, tapping jump every 0.64 s.
 local walk = require("lib.walk")
 
 walk.spawn()

@@ -1,510 +1,340 @@
 module common.math;
 
-import std.math : sqrt, cosh, sinh, acosh, isNaN, isInfinity;
-import std.traits : isFloatingPoint;
+import core.math : sqrt;
+import core.stdc.math : acosh, cosh, sinh;
 
-struct MVector(N) if (isFloatingPoint!N) {
+enum float PI = 3.14159265358979323846f;
+
+bool isNan(float value) {
+    return value != value;
+}
+
+bool isInfinite(float value) {
+    return value == float.infinity || value == -float.infinity;
+}
+
+struct MVector(N) {
     N[4] data = [0, 0, 0, 0];
 
-    @property ref inout(N) x() inout {
-        return data[0];
-    }
-
-    @property ref inout(N) y() inout {
-        return data[1];
-    }
-
-    @property ref inout(N) z() inout {
-        return data[2];
-    }
-
-    @property ref inout(N) w() inout {
-        return data[3];
-    }
-
     this(N x, N y, N z, N w) {
-        data = [x, y, z, w];
-    }
-
-    static MVector zero() {
-        return MVector(0, 0, 0, 0);
+        data[0] = x;
+        data[1] = y;
+        data[2] = z;
+        data[3] = w;
     }
 
     static MVector origin() {
-        return w_basis();
-    }
-
-    static MVector x_basis() {
-        return MVector(1, 0, 0, 0);
-    }
-
-    static MVector y_basis() {
-        return MVector(0, 1, 0, 0);
-    }
-
-    static MVector z_basis() {
-        return MVector(0, 0, 1, 0);
-    }
-
-    static MVector w_basis() {
         return MVector(0, 0, 0, 1);
     }
 
-    N mip(const MVector other) const {
+    N mip(MVector other) const {
         return data[0] * other.data[0] + data[1] * other.data[1] + data[2] * other.data[2] - data[3] * other.data[3];
     }
 
     MPoint!N normalizedPoint() const {
-        N scale_sq = -this.mip(this);
-        if (scale_sq <= 0) {
-            return MPoint!N.origin();
+        N scaleSquared = -mip(this);
+        MPoint!N result = MPoint!N.origin();
+        if (scaleSquared > 0) {
+            result = MPoint!N(this / sqrt(scaleSquared));
         }
-        N scale = sqrt(scale_sq);
-        return MPoint!N(this / scale);
+        return result;
     }
 
     MDirection!N normalizedDirection() const {
-        N scale_sq = this.mip(this);
-        if (scale_sq <= 0) {
-            return MDirection!N.x();
+        N scaleSquared = mip(this);
+        MDirection!N result = MDirection!N.x();
+        if (scaleSquared > 0) {
+            result = MDirection!N(this / sqrt(scaleSquared));
         }
-        N scale = sqrt(scale_sq);
-        return MDirection!N(this / scale);
+        return result;
     }
 
     N[3] xyz() const {
-        return data[0 .. 3];
+        N[3] result = data[0 .. 3];
+        return result;
     }
 
-    Matrix4!N minkowskiOuterProduct(const MVector other) const {
+    Matrix4!N minkowskiOuterProduct(MVector other) const {
         Matrix4!N result;
         foreach (col; 0 .. 4) {
-            N factor = col == 3 ? -other.data[col] : other.data[col];
+            N factor = other.data[col];
+            if (col == 3) {
+                factor = -other.data[col];
+            }
             foreach (row; 0 .. 4) {
-                result[col][row] = data[row] * factor;
+                result.data[col][row] = data[row] * factor;
             }
         }
         return result;
     }
 
-    MVector opBinary(string op)(const MVector rhs) const if (op == "+") {
-        MVector r;
+    MVector opBinary(string op)(MVector rhs) const if (op == "+" || op == "-") {
+        MVector result;
         foreach (i; 0 .. 4) {
-            r.data[i] = data[i] + rhs.data[i];
+            result.data[i] = mixin("data[i] " ~ op ~ " rhs.data[i]");
         }
-        return r;
+        return result;
     }
 
-    MVector opBinary(string op)(const MVector rhs) const if (op == "-") {
-        MVector r;
+    MVector opBinary(string op)(N rhs) const if (op == "*" || op == "/") {
+        MVector result;
         foreach (i; 0 .. 4) {
-            r.data[i] = data[i] - rhs.data[i];
+            result.data[i] = mixin("data[i] " ~ op ~ " rhs");
         }
-        return r;
-    }
-
-    MVector opBinary(string op)(N rhs) const if (op == "*") {
-        MVector r;
-        foreach (i; 0 .. 4) {
-            r.data[i] = data[i] * rhs;
-        }
-        return r;
-    }
-
-    MVector opBinary(string op)(N rhs) const if (op == "/") {
-        MVector r;
-        foreach (i; 0 .. 4) {
-            r.data[i] = data[i] / rhs;
-        }
-        return r;
+        return result;
     }
 
     MVector opUnary(string op)() const if (op == "-") {
-        MVector r;
+        MVector result;
         foreach (i; 0 .. 4) {
-            r.data[i] = -data[i];
+            result.data[i] = -data[i];
         }
-        return r;
+        return result;
     }
 
-    ref N opIndex(size_t i) return {
-        return data[i];
-    }
-
-    N opIndex(size_t i) const {
-        return data[i];
-    }
-
-    MVector!N2 toType(N2)() const if (isFloatingPoint!N2) {
-        MVector!N2 r;
-        static foreach (i; 0 .. 4) {
-            r.data[i] = cast(N2)(data[i]);
+    MVector!M toType(M)() const {
+        MVector!M result;
+        foreach (i; 0 .. 4) {
+            result.data[i] = cast(M) data[i];
         }
-        return r;
+        return result;
     }
 }
 
-struct MPoint(N) if (isFloatingPoint!N) {
+struct MPoint(N) {
     MVector!N vec;
 
-    this(MVector!N v) {
-        vec = v;
-    }
-
-    this(N x, N y, N z, N w) {
-        vec = MVector!N(x, y, z, w);
+    this(MVector!N value) {
+        vec = value;
     }
 
     static MPoint origin() {
-        return MPoint(MVector!N.w_basis());
+        return MPoint(MVector!N.origin());
     }
 
-    alias w = MPoint.origin;
-
-    static MPoint newUnchecked(N x, N y, N z, N w) {
-        return MPoint(MVector!N(x, y, z, w));
+    N mip(MVector!N other) const {
+        return vec.mip(other);
     }
 
-    N mip(T)(const ref T other) const {
-        static if (is(T == MVector!N)) {
-            return vec.mip(other);
-        }
-        else {
-            return vec.mip(other.vec);
-        }
-    }
-
-    MPoint midpoint(const MPoint other) const {
+    MPoint midpoint(MPoint other) const {
         return (vec + other.vec).normalizedPoint();
     }
 
-    N distance(const MPoint other) const {
-        return acosh(-vec.mip(other.vec));
+    N distance(MPoint other) const {
+        return cast(N) acosh(-vec.mip(other.vec));
     }
 
-    ref const(MVector!N) asVector() const return {
-        return vec;
-    }
-
-    MPoint!N2 toType(N2)() const if (isFloatingPoint!N2) {
-        return MPoint!N2(vec.toType!N2());
-    }
-
-    ref N opIndex(size_t i) return {
-        return vec.data[i];
-    }
-
-    N opIndex(size_t i) const {
-        return vec.data[i];
+    MPoint!M toType(M)() const {
+        return MPoint!M(vec.toType!M());
     }
 }
 
-struct MDirection(N) if (isFloatingPoint!N) {
+struct MDirection(N) {
     MVector!N vec;
 
-    this(MVector!N v) {
-        vec = v;
-    }
-
-    this(N x, N y, N z, N w) {
-        vec = MVector!N(x, y, z, w);
+    this(MVector!N value) {
+        vec = value;
     }
 
     static MDirection x() {
-        return MDirection(MVector!N.x_basis());
+        return MDirection(MVector!N(1, 0, 0, 0));
     }
 
-    static MDirection y() {
-        return MDirection(MVector!N.y_basis());
-    }
-
-    static MDirection z() {
-        return MDirection(MVector!N.z_basis());
-    }
-
-    static MDirection newUnchecked(N x, N y, N z, N w) {
-        return MDirection(MVector!N(x, y, z, w));
-    }
-
-    N mip(T)(const ref T other) const {
-        static if (is(T == MVector!N)) {
-            return vec.mip(other);
-        }
-        else {
-            return vec.mip(other.vec);
-        }
-    }
-
-    ref const(MVector!N) asVector() const return {
-        return vec;
+    N mip(MVector!N other) const {
+        return vec.mip(other);
     }
 
     MDirection opUnary(string op)() const if (op == "-") {
         return MDirection(-vec);
     }
 
-    MDirection!N2 toType(N2)() const if (isFloatingPoint!N2) {
-        return MDirection!N2(vec.toType!N2());
-    }
-
-    ref N opIndex(size_t i) return {
-        return vec.data[i];
-    }
-
-    N opIndex(size_t i) const {
-        return vec.data[i];
+    MDirection!M toType(M)() const {
+        return MDirection!M(vec.toType!M());
     }
 }
 
-struct Matrix4(N) if (isFloatingPoint!N) {
+struct Matrix4(N) {
     N[4][4] data = 0;
 
     static Matrix4 identity() {
-        Matrix4 m;
+        Matrix4 result;
         foreach (i; 0 .. 4) {
-            m.data[i][i] = 1;
+            result.data[i][i] = 1;
         }
-        return m;
+        return result;
     }
 
-    static Matrix4 zero() {
-        return Matrix4.init;
+    static Matrix4 newScaling(N scale) {
+        Matrix4 result;
+        result.data[0][0] = scale;
+        result.data[1][1] = scale;
+        result.data[2][2] = scale;
+        result.data[3][3] = 1;
+        return result;
     }
 
-    static Matrix4 newScaling(N s) {
-        Matrix4 m;
-        m.data[0][0] = s;
-        m.data[1][1] = s;
-        m.data[2][2] = s;
-        m.data[3][3] = 1;
-        return m;
-    }
-
-    MVector!N opBinary(string op)(const MVector!N v) const if (op == "*") {
-        MVector!N r;
+    MVector!N opBinary(string op)(MVector!N v) const if (op == "*") {
+        MVector!N result;
         foreach (row; 0 .. 4) {
             N sum = 0;
             foreach (col; 0 .. 4) {
                 sum += data[col][row] * v.data[col];
             }
-            r.data[row] = sum;
+            result.data[row] = sum;
         }
-        return r;
+        return result;
     }
 
-    Matrix4 opBinary(string op)(const Matrix4 rhs) const if (op == "*") {
-        Matrix4 r;
+    Matrix4 opBinary(string op)(Matrix4 rhs) const if (op == "*") {
+        Matrix4 result;
         foreach (col; 0 .. 4) {
             foreach (row; 0 .. 4) {
                 N sum = 0;
                 foreach (k; 0 .. 4) {
                     sum += data[k][row] * rhs.data[col][k];
                 }
-                r.data[col][row] = sum;
+                result.data[col][row] = sum;
             }
         }
-        return r;
+        return result;
     }
 
     Matrix4 opBinary(string op)(N rhs) const if (op == "*") {
-        Matrix4 r;
+        Matrix4 result;
         foreach (col; 0 .. 4) {
             foreach (row; 0 .. 4) {
-                r.data[col][row] = data[col][row] * rhs;
+                result.data[col][row] = data[col][row] * rhs;
             }
         }
-        return r;
+        return result;
     }
 
-    Matrix4 opBinary(string op)(const Matrix4 rhs) const if (op == "+") {
-        Matrix4 r;
+    Matrix4 opBinary(string op)(Matrix4 rhs) const if (op == "+" || op == "-") {
+        Matrix4 result;
         foreach (col; 0 .. 4) {
             foreach (row; 0 .. 4) {
-                r.data[col][row] = data[col][row] + rhs.data[col][row];
+                result.data[col][row] = mixin("data[col][row] " ~ op ~ " rhs.data[col][row]");
             }
         }
-        return r;
-    }
-
-    Matrix4 opBinary(string op)(const Matrix4 rhs) const if (op == "-") {
-        Matrix4 r;
-        foreach (col; 0 .. 4) {
-            foreach (row; 0 .. 4) {
-                r.data[col][row] = data[col][row] - rhs.data[col][row];
-            }
-        }
-        return r;
-    }
-
-    ref inout(N[4]) opIndex(size_t col) inout return {
-        return data[col];
-    }
-
-    N determinant3x3() const {
-        return data[0][0] * (data[1][1] * data[2][2] - data[2][1] * data[1][2])
-             - data[1][0] * (data[0][1] * data[2][2] - data[2][1] * data[0][2])
-             + data[2][0] * (data[0][1] * data[1][2] - data[1][1] * data[0][2]);
-    }
-
-    N determinant() const {
-        N det = 0;
-        foreach (col; 0 .. 4) {
-            N minor = 0;
-            N[3][3] m;
-            foreach (c2; 0 .. 4) {
-                if (c2 == col) {
-                    continue;
-                }
-                size_t mc = c2 < col ? c2 : c2 - 1;
-                foreach (r2; 1 .. 4) {
-                    m[mc][r2 - 1] = data[c2][r2];
-                }
-            }
-            minor = m[0][0] * (m[1][1] * m[2][2] - m[2][1] * m[1][2])
-                  - m[1][0] * (m[0][1] * m[2][2] - m[2][1] * m[0][2])
-                  + m[2][0] * (m[0][1] * m[1][2] - m[1][1] * m[0][2]);
-            N sign = (col % 2 == 0) ? 1 : -1;
-            det += sign * data[col][0] * minor;
-        }
-        return det;
+        return result;
     }
 }
 
-struct MIsometry(N) if (isFloatingPoint!N) {
+struct MIsometry(N) {
     Matrix4!N mat;
 
-    this(Matrix4!N m) {
-        mat = m;
+    this(Matrix4!N value) {
+        mat = value;
     }
 
     static MIsometry identity() {
         return MIsometry(Matrix4!N.identity());
     }
 
-    static MIsometry reflection(const MDirection!N normal) {
+    static MIsometry reflection(MDirection!N normal) {
         Matrix4!N outer = normal.vec.minkowskiOuterProduct(normal.vec);
-        return MIsometry(Matrix4!N.identity() - outer * 2);
+        return MIsometry(Matrix4!N.identity() - outer * cast(N) 2);
     }
 
-    static MIsometry translation(const MPoint!N a, const ref MPoint!N b) {
+    static MIsometry translation(MPoint!N a, MPoint!N b) {
         MVector!N aPlusB = a.vec + b.vec;
-        Matrix4!N outer_ba = b.vec.minkowskiOuterProduct(a.vec) * cast(N)(2.0);
-        Matrix4!N outer_ab = aPlusB.minkowskiOuterProduct(aPlusB);
-        N denom = cast(N)(1.0) - a.vec.mip(b.vec);
-        return MIsometry(Matrix4!N.identity() - outer_ba + outer_ab * (cast(N)(1.0) / denom));
+        Matrix4!N outerBA = b.vec.minkowskiOuterProduct(a.vec) * cast(N) 2;
+        Matrix4!N outerAB = aPlusB.minkowskiOuterProduct(aPlusB);
+        N denominator = cast(N) 1 - a.vec.mip(b.vec);
+        return MIsometry(Matrix4!N.identity() - outerBA + outerAB * (cast(N) 1 / denominator));
     }
 
     static MIsometry translationAlong(N[3] v) {
         N norm = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-        if (norm == 0) {
-            return MIsometry.identity();
+        MIsometry result = identity();
+        if (norm != 0) {
+            N sinhcValue = cast(N) sinh(norm) / norm;
+            N coshValue = cast(N) cosh(norm);
+            MVector!N target = MVector!N(v[0] * sinhcValue, v[1] * sinhcValue, v[2] * sinhcValue, coshValue);
+            result = translation(MPoint!N.origin(), MPoint!N(target));
         }
-        N sinhc_val = sinh(norm) / norm;
-        N cosh_val = cosh(norm);
-        MPoint!N target = MPoint!N(
-            v[0] * sinhc_val,
-            v[1] * sinhc_val,
-            v[2] * sinhc_val,
-            cosh_val
-        );
-        return MIsometry.translation(MPoint!N.origin(), target);
+        return result;
     }
 
-    static MIsometry fromColumnsUnchecked(const MDirection!N[3] dirs, MPoint!N point) {
-        Matrix4!N m;
+    static MIsometry fromColumnsUnchecked(MDirection!N[3] dirs, MPoint!N point) {
+        Matrix4!N result;
         foreach (col; 0 .. 3) {
             foreach (row; 0 .. 4) {
-                m.data[col][row] = dirs[col].vec.data[row];
+                result.data[col][row] = dirs[col].vec.data[row];
             }
         }
         foreach (row; 0 .. 4) {
-            m.data[3][row] = point.vec.data[row];
+            result.data[3][row] = point.vec.data[row];
         }
-        return MIsometry(m);
+        return MIsometry(result);
     }
 
     MIsometry inverse() const {
-        Matrix4!N r;
+        Matrix4!N result;
         foreach (i; 0 .. 3) {
             foreach (j; 0 .. 3) {
-                r.data[j][i] = mat.data[i][j];
+                result.data[j][i] = mat.data[i][j];
             }
         }
         foreach (i; 0 .. 3) {
-            r.data[i][3] = -mat.data[3][i];
-            r.data[3][i] = -mat.data[i][3];
+            result.data[i][3] = -mat.data[3][i];
+            result.data[3][i] = -mat.data[i][3];
         }
-        r.data[3][3] = mat.data[3][3];
-        return MIsometry(r);
+        result.data[3][3] = mat.data[3][3];
+        return MIsometry(result);
     }
 
-    bool parity() const {
-        return mat.determinant() < 0;
-    }
-
-    MVector!N opBinary(string op)(const MVector!N v) const if (op == "*") {
+    MVector!N opBinary(string op)(MVector!N v) const if (op == "*") {
         return mat * v;
     }
 
-    MPoint!N opBinary(string op)(const MPoint!N p) const if (op == "*") {
+    MPoint!N opBinary(string op)(MPoint!N p) const if (op == "*") {
         return MPoint!N(mat * p.vec);
     }
 
-    MDirection!N opBinary(string op)(const MDirection!N d) const if (op == "*") {
+    MDirection!N opBinary(string op)(MDirection!N d) const if (op == "*") {
         return MDirection!N(mat * d.vec);
     }
 
-    MIsometry opBinary(string op)(const MIsometry rhs) const if (op == "*") {
+    MIsometry opBinary(string op)(MIsometry rhs) const if (op == "*") {
         return MIsometry(mat * rhs.mat);
     }
 
-    ref inout(N) opIndex(size_t col, size_t row) inout return {
-        return mat.data[col][row];
-    }
-
-    N[4] row(size_t i) const {
-        N[4] r;
+    N[4] row(size_t index) const {
+        N[4] result;
         foreach (col; 0 .. 4) {
-            r[col] = mat.data[col][i];
+            result[col] = mat.data[col][index];
         }
-        return r;
+        return result;
     }
 
-    MIsometry!N2 toType(N2)() const if (isFloatingPoint!N2) {
-        Matrix4!N2 r;
+    MIsometry!M toType(M)() const {
+        Matrix4!M result;
         foreach (col; 0 .. 4) {
             foreach (row; 0 .. 4) {
-                r.data[col][row] = cast(N2)(mat.data[col][row]);
+                result.data[col][row] = cast(M) mat.data[col][row];
             }
         }
-        return MIsometry!N2(r);
+        return MIsometry!M(result);
     }
 
     MIsometry renormalized() const {
-        MPoint!N translationTarget = MVector!N(
-            mat.data[3][0], mat.data[3][1], mat.data[3][2], mat.data[3][3]
-        ).normalizedPoint();
-        MIsometry normalizedTranslation = MIsometry.translation(MPoint!N.origin(), translationTarget);
-
-        MIsometry orientComp = normalizedTranslation.inverse() * this;
-
-        N[3][3] cols;
+        MVector!N translationColumn = MVector!N(mat.data[3][0], mat.data[3][1], mat.data[3][2], mat.data[3][3]);
+        MIsometry normalizedTranslation = translation(MPoint!N.origin(), translationColumn.normalizedPoint());
+        MIsometry orientation = normalizedTranslation.inverse() * this;
+        N[3][3] orthonormal;
         foreach (col; 0 .. 3) {
-            foreach (row; 0 .. 3) {
-                cols[col][row] = orientComp.mat.data[col][row];
+            N[3] v;
+            foreach (k; 0 .. 3) {
+                v[k] = orientation.mat.data[col][k];
             }
-        }
-
-        N[3][3] q;
-        foreach (col; 0 .. 3) {
-            N[3] v = cols[col];
-            foreach (prev; 0 .. col) {
+            foreach (previous; 0 .. col) {
                 N dot = 0;
                 foreach (k; 0 .. 3) {
-                    dot += v[k] * q[prev][k];
+                    dot += v[k] * orthonormal[previous][k];
                 }
                 foreach (k; 0 .. 3) {
-                    v[k] -= dot * q[prev][k];
+                    v[k] -= dot * orthonormal[previous][k];
                 }
             }
             N norm = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
@@ -513,54 +343,49 @@ struct MIsometry(N) if (isFloatingPoint!N) {
                     v[k] /= norm;
                 }
             }
-            q[col] = v;
-        }
-
-        Matrix4!N orientMat;
-        foreach (col; 0 .. 3) {
-            foreach (row; 0 .. 3) {
-                orientMat.data[col][row] = q[col][row];
+            foreach (k; 0 .. 3) {
+                orthonormal[col][k] = v[k];
             }
         }
-        orientMat.data[3][3] = 1;
-
-        return normalizedTranslation * MIsometry(orientMat);
+        Matrix4!N orientationMatrix;
+        foreach (col; 0 .. 3) {
+            foreach (row; 0 .. 3) {
+                orientationMatrix.data[col][row] = orthonormal[col][row];
+            }
+        }
+        orientationMatrix.data[3][3] = 1;
+        return normalizedTranslation * MIsometry(orientationMatrix);
     }
-}
-
-N sqr(N)(N x) {
-    return x * x;
 }
 
 float[3] sanitizeMotionInput(float[3] v) {
+    bool finite = true;
     foreach (float x; v) {
-        if (isNaN(x) || isInfinity(x)) {
-            return [0.0f, 0.0f, 0.0f];
+        if (isNan(x) || isInfinite(x)) {
+            finite = false;
         }
     }
-    float norm = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-    float scale = 1.0f / (norm > 1.0f ? norm : 1.0f);
-    return [v[0] * scale, v[1] * scale, v[2] * scale];
+    float[3] result = [0.0f, 0.0f, 0.0f];
+    if (finite) {
+        float norm = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+        float divisor = 1.0f;
+        if (norm > 1.0f) {
+            divisor = norm;
+        }
+        float scale = 1.0f / divisor;
+        result = [v[0] * scale, v[1] * scale, v[2] * scale];
+    }
+    return result;
 }
 
-N sinhc(N)(N x) if (isFloatingPoint!N) {
-    if (x == 0) {
-        return 1;
-    }
-    return sinh(x) / x;
-}
-
-void projectToPlane(N)(ref N[3] subject, const ref N[3] normal, const ref N[3] projDir, N distance)
-    if (isFloatingPoint!N)
-{
-    N dotSN = 0;
-    N dotPN = 0;
-    foreach (i; 0 .. 3) {
-        dotSN += subject[i] * normal[i];
-        dotPN += projDir[i] * normal[i];
-    }
-    N t = (distance - dotSN) / dotPN;
-    foreach (i; 0 .. 3) {
-        subject[i] += projDir[i] * t;
-    }
+float[3] projectToPlane(float[3] subject, float[3] normal, float[3] projectionDirection, float distance) {
+    float subjectAlongNormal = subject[0] * normal[0] + subject[1] * normal[1] + subject[2] * normal[2];
+    float directionAlongNormal = projectionDirection[0] * normal[0] + projectionDirection[1] * normal[1] + projectionDirection[2] * normal[2];
+    float t = (distance - subjectAlongNormal) / directionAlongNormal;
+    float[3] result = [
+        subject[0] + projectionDirection[0] * t,
+        subject[1] + projectionDirection[1] * t,
+        subject[2] + projectionDirection[2] * t,
+    ];
+    return result;
 }

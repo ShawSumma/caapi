@@ -1,4 +1,3 @@
--- Turn 180 degrees, then walk straight ahead over generated terrain.
 local walk = require("lib.walk")
 
 walk.spawn()

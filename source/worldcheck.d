@@ -1,238 +1,219 @@
 module worldcheck;
 
-// Deterministic, headless world-generation dump. Emits one line per generated
-// chunk: "<nodeId> <vertex> <hash>", sorted, so a plain diff of two runs points
-// at the exact chunk(s) that changed. The per-chunk hash covers the chunk's
-// voxel + margin bytes; the GPU mesh is a pure function of those, so an
-// unchanged line means an unchanged mesh for that chunk. No aggregate digest.
-
-import std.stdio;
-import std.algorithm : sort;
-import std.math : cosh;
-import core.thread : Thread;
-import core.time : MonoTime, msecs;
-import std.digest.murmurhash : MurmurHash3;
-import common.graph : Graph, NodeId;
-import common.node : Chunk, ChunkId, ChunkState, VoxelData;
-import common.dodeca : Vertex, CHUNK_BOUNDING_SPHERE_RADIUS, vertexChunkBoundingSphereCenter;
+import core.stdc.math : coshf;
+import core.stdc.stdio : FILE, fprintf;
+import core.stdc.stdlib : free, malloc, qsort;
+import core.stdc.string : memcpy;
+import core.sys.posix.time : CLOCK_MONOTONIC, clock_gettime, nanosleep, timespec;
+import client.worldgen_driver : WorldgenDriver, createWorldgenDriver, driveWorldgen, populateChunk, releaseWorldgenDriver;
+import common.array : Array;
+import common.dodeca : CHUNK_BOUNDING_SPHERE_RADIUS, VERTEX_COUNT, Vertex, vertexChunkBoundingSphereCenter;
+import common.graph : Graph, ROOT_NODE, createGraph;
 import common.math : MIsometry, MPoint;
-import common.traversal : ensureAndCollectNearby, NearbyNode, NearbyScratch;
-import common.worldgen : ChunkParams, generateVoxels;
-import client.worldgen_driver : WorldgenDriver, populateChunk;
+import common.murmur : murmurHash3;
+import common.node : Chunk, ChunkId, ChunkState, VoxelData, VoxelKind;
+import common.traversal : NearbyNode, NearbyScratch, ensureAndCollectNearby;
+import common.world : Material;
+import common.worldgen.generation : ChunkParams, createChunkParams, generateVoxels;
 
-ubyte[16] chunkHash(ubyte vertex, const ref VoxelData v) {
-    MurmurHash3!128 h;
-    ubyte[2] head = [vertex, cast(ubyte) v.kind];
-    h.put(head[]);
-    if (v.kind == VoxelData.Kind.Solid) {
-        ushort m = cast(ushort) v.solidMaterial;
-        h.put((cast(ubyte*) &m)[0 .. 2]);
-    } else {
-        h.put(cast(const(ubyte)[]) v.denseData);
-    }
-    return h.finish();
-}
-
-void hex32(ref char[32] buf, const(ubyte)[] d) {
-    static immutable digits = "0123456789abcdef";
-    foreach (i; 0 .. 16) {
-        buf[i * 2] = digits[d[i] >> 4];
-        buf[i * 2 + 1] = digits[d[i] & 0xF];
-    }
-}
+enum size_t UNLIMITED_NODE_CREATION = size_t.max;
+enum uint DRIVE_IDLE_FRAMES = 3;
+enum uint DRIVE_MAX_FRAMES = 100_000;
+enum uint DRIVE_NEARBY_VERSION = 1;
+enum uint DRIVE_IDLE_ITERATIONS = 200;
+enum long DRIVE_POLL_NANOSECONDS = 1_000_000;
+enum double NANOSECONDS_PER_MILLISECOND = 1e6;
+enum double MILLISECONDS_PER_SECOND = 1e3;
+enum size_t HASH_HEADER_BYTES = 2;
 
 struct ChunkLine {
-    ulong n0;
-    ulong n1;
+    ulong[2] node;
+    ulong[2] hash;
     ubyte vertex;
-    ubyte[16] hash;
-
-    int opCmp(const ChunkLine other) const {
-        if (n0 != other.n0) {
-            return (n0 > other.n0) - (n0 < other.n0);
-        }
-        if (n1 != other.n1) {
-            return (n1 > other.n1) - (n1 < other.n1);
-        }
-        return cast(int) vertex - cast(int) other.vertex;
-    }
 }
 
-void dumpWorld(float radius, ubyte dimension) {
-    Graph graph = Graph.create(dimension);
-    MIsometry!float identity = MIsometry!float.identity();
-    NearbyNode[] nearby = ensureAndCollectNearby(graph, NodeId.ROOT, identity, radius);
-
-    // Generate exactly the chunks the client worldgen driver would (same threshold).
-    float threshold = cosh(radius + CHUNK_BOUNDING_SPHERE_RADIUS);
-    MPoint!float startP = identity * MPoint!float.origin();
-    foreach (ref nn; nearby) {
-        foreach (vIdx; 0 .. 20) {
-            Vertex vertex = cast(Vertex) vIdx;
-            Chunk* c = &graph[nn.id].chunks.values[vertex];
-            if (c.state != ChunkState.Fresh) {
-                continue;
-            }
-            MPoint!float chunkCenter = nn.transform * vertexChunkBoundingSphereCenter(vertex);
-            if (-startP.mip(chunkCenter.vec) > threshold) {
-                continue;
-            }
-            ChunkId chunkId = ChunkId(nn.id, vertex);
-            ChunkParams params = ChunkParams.create(graph, chunkId);
-            VoxelData voxels = generateVoxels(params);
-            populateChunk(graph, chunkId, voxels, dimension);
-        }
-    }
-
-    ChunkLine[] lines;
-    foreach (slot; 0 .. graph.slotCount()) {
-        foreach (vIdx; 0 .. 20) {
-            const(Chunk)* c = &graph.container(slot).value.chunks.values[cast(Vertex) vIdx];
-            if (c.state != ChunkState.Populated) {
-                continue;
-            }
-            NodeId id = graph.idAt(slot);
-            lines ~= ChunkLine(
-                id.value[0], id.value[1], cast(ubyte) vIdx,
-                chunkHash(cast(ubyte) vIdx, c.voxels));
-        }
-    }
-    sort(lines);
-
-    writefln("# dim=%d radius=%.3f nodes=%d nearby=%d populated=%d", dimension, radius, graph.len, nearby.length, lines.length);
-    foreach (ref ln; lines) {
-        char[32] hh;
-        hex32(hh, ln.hash[]);
-        writefln("%016x%016x %02d %s", ln.n0, ln.n1, ln.vertex, hh);
-    }
-    stdout.flush();
+struct ChunkPass {
+    double paramsMs;
+    double voxelsMs;
+    double populateMs;
+    uint generated;
+    uint solid;
 }
 
-// Headless timing of chunk generation. Generates every chunk within `radius`
-// of the origin and reports where the time goes: params (enviro factors from
-// the graph), voxels (generateVoxels proper), and populate (margin fixups).
-void benchGen(float radius, ubyte dimension) {
-    Graph graph = Graph.create(dimension);
-    MIsometry!float identity = MIsometry!float.identity();
-    NearbyNode[] nearby = ensureAndCollectNearby(graph, NodeId.ROOT, identity, radius);
+double nowMilliseconds() {
+    timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return now.tv_sec * MILLISECONDS_PER_SECOND + now.tv_nsec / NANOSECONDS_PER_MILLISECOND;
+}
 
-    float threshold = cosh(radius + CHUNK_BOUNDING_SPHERE_RADIUS);
-    MPoint!float startP = identity * MPoint!float.origin();
+ulong[2] chunkHash(ubyte vertex, const(VoxelData)* voxels) {
+    size_t payload = Material.sizeof;
+    if (voxels.kind == VoxelKind.Dense) {
+        payload = voxels.denseData.length * Material.sizeof;
+    }
+    ubyte* buffer = cast(ubyte*) malloc(HASH_HEADER_BYTES + payload);
+    buffer[0] = vertex;
+    buffer[1] = cast(ubyte) voxels.kind;
+    if (voxels.kind == VoxelKind.Dense) {
+        memcpy(buffer + HASH_HEADER_BYTES, voxels.denseData.ptr, payload);
+    } else {
+        memcpy(buffer + HASH_HEADER_BYTES, &voxels.solidMaterial, payload);
+    }
+    ulong[2] result = murmurHash3(buffer[0 .. HASH_HEADER_BYTES + payload]);
+    free(buffer);
+    return result;
+}
 
-    double paramsMs = 0;
-    double voxelsMs = 0;
-    double populateMs = 0;
-    uint generated = 0;
-    uint solid = 0;
+int compareWords(ulong a, ulong b) {
+    int result = 0;
+    if (a < b) {
+        result = -1;
+    } else if (a > b) {
+        result = 1;
+    }
+    return result;
+}
 
-    foreach (ref nn; nearby) {
-        foreach (vIdx; 0 .. 20) {
-            Vertex vertex = cast(Vertex) vIdx;
-            Chunk* c = &graph[nn.id].chunks.values[vertex];
-            if (c.state != ChunkState.Fresh) {
-                continue;
-            }
-            MPoint!float chunkCenter = nn.transform * vertexChunkBoundingSphereCenter(vertex);
-            if (-startP.mip(chunkCenter.vec) > threshold) {
-                continue;
-            }
-            ChunkId chunkId = ChunkId(nn.id, vertex);
+extern (C) int compareChunkLines(const(void)* left, const(void)* right) {
+    const(ChunkLine)* a = cast(const(ChunkLine)*) left;
+    const(ChunkLine)* b = cast(const(ChunkLine)*) right;
+    int result = compareWords(a.node[0], b.node[0]);
+    if (result == 0) {
+        result = compareWords(a.node[1], b.node[1]);
+    }
+    if (result == 0) {
+        result = cast(int) a.vertex - cast(int) b.vertex;
+    }
+    return result;
+}
 
-            MonoTime t0 = MonoTime.currTime;
-            ChunkParams params = ChunkParams.create(graph, chunkId);
-            MonoTime t1 = MonoTime.currTime;
-            VoxelData voxels = generateVoxels(params);
-            MonoTime t2 = MonoTime.currTime;
-            populateChunk(graph, chunkId, voxels, dimension);
-            MonoTime t3 = MonoTime.currTime;
-
-            paramsMs += (t1 - t0).total!"usecs" / 1000.0;
-            voxelsMs += (t2 - t1).total!"usecs" / 1000.0;
-            populateMs += (t3 - t2).total!"usecs" / 1000.0;
-            generated++;
-            if (voxels.kind == VoxelData.Kind.Solid) {
-                solid++;
+ChunkPass generateNearby(Graph* graph, const(NearbyNode)[] nearby, float radius) {
+    ChunkPass pass;
+    float threshold = coshf(radius + CHUNK_BOUNDING_SPHERE_RADIUS);
+    MPoint!float start = MPoint!float.origin();
+    foreach (nearbyNode; nearby) {
+        foreach (vertexIndex; 0 .. VERTEX_COUNT) {
+            Vertex vertex = cast(Vertex) vertexIndex;
+            MPoint!float chunkCenter = nearbyNode.transform * vertexChunkBoundingSphereCenter(vertex);
+            if (graph.nodeAt(nearbyNode.slot).chunks[vertex].state == ChunkState.Fresh && !(-start.mip(chunkCenter.vec) > threshold)) {
+                ChunkId chunkId = ChunkId(nearbyNode.id, vertex);
+                double t0 = nowMilliseconds();
+                ChunkParams params = createChunkParams(graph, chunkId, false);
+                double t1 = nowMilliseconds();
+                VoxelData voxels = generateVoxels(&params);
+                double t2 = nowMilliseconds();
+                bool solid = voxels.isSolid();
+                populateChunk(graph, chunkId, voxels);
+                double t3 = nowMilliseconds();
+                pass.paramsMs += t1 - t0;
+                pass.voxelsMs += t2 - t1;
+                pass.populateMs += t3 - t2;
+                pass.generated += 1;
+                if (solid) {
+                    pass.solid += 1;
+                }
             }
         }
     }
-
-    writefln("bench-gen dim=%d radius=%.2f chunks=%d (solid=%d dense=%d)",
-        dimension, radius, generated, solid, generated - solid);
-    writefln("  params   total=%.1fms avg=%.3fms", paramsMs, paramsMs / generated);
-    writefln("  voxels   total=%.1fms avg=%.3fms (dense avg=%.3fms)",
-        voxelsMs, voxelsMs / generated,
-        generated > solid ? voxelsMs / (generated - solid) : 0);
-    writefln("  populate total=%.1fms avg=%.3fms", populateMs, populateMs / generated);
+    return pass;
 }
 
-// Headless smoke test + timing of the async worldgen driver: runs the real
-// drive() loop (worker threads and all) until every chunk in range is
-// populated, then reports chunk count and wall time. The populated count must
-// match dumpWorld/benchGen for the same radius.
-void benchDrive(float radius, ubyte dimension) {
-    Graph graph = Graph.create(dimension);
-    MIsometry!float identity = MIsometry!float.identity();
+void dumpWorld(FILE* output, float radius, ubyte dimension) {
+    Graph graph = createGraph(dimension);
     NearbyScratch scratch;
-    NearbyNode[] nearby = ensureAndCollectNearby(scratch, graph, NodeId.ROOT, identity, radius);
-    WorldgenDriver driver = WorldgenDriver.create();
+    NearbyNode[] nearby = ensureAndCollectNearby(&scratch, &graph, ROOT_NODE, MIsometry!float.identity(), radius, UNLIMITED_NODE_CREATION);
+    generateNearby(&graph, nearby, radius);
+    Array!ChunkLine lines;
+    foreach (slot; 0 .. graph.nodeCount) {
+        foreach (vertexIndex; 0 .. VERTEX_COUNT) {
+            const(Chunk)* chunk = &graph.nodeAt(slot).chunks[vertexIndex];
+            if (chunk.state == ChunkState.Populated) {
+                lines.append(ChunkLine(graph.idAt(slot).value, chunkHash(cast(ubyte) vertexIndex, &chunk.voxels), cast(ubyte) vertexIndex));
+            }
+        }
+    }
+    qsort(lines.ptr, lines.length, ChunkLine.sizeof, &compareChunkLines);
+    fprintf(output, "dim=%u radius=%.3f nodes=%u nearby=%zu populated=%zu\n", cast(uint) dimension, cast(double) radius, graph.nodeCount, nearby.length, lines.length);
+    foreach (line; lines.slice()) {
+        ubyte[16] bytes;
+        memcpy(bytes.ptr, line.hash.ptr, bytes.length);
+        fprintf(output, "%016llx%016llx %02u ", line.node[0], line.node[1], cast(uint) line.vertex);
+        foreach (value; bytes) {
+            fprintf(output, "%02x", cast(uint) value);
+        }
+        fprintf(output, "\n");
+    }
+    lines.release();
+    scratch.release();
+    graph.release();
+}
 
-    MonoTime start = MonoTime.currTime;
+void benchGen(FILE* output, float radius, ubyte dimension) {
+    Graph graph = createGraph(dimension);
+    NearbyScratch scratch;
+    NearbyNode[] nearby = ensureAndCollectNearby(&scratch, &graph, ROOT_NODE, MIsometry!float.identity(), radius, UNLIMITED_NODE_CREATION);
+    ChunkPass pass = generateNearby(&graph, nearby, radius);
+    uint dense = pass.generated - pass.solid;
+    double denseAverage = 0;
+    if (dense > 0) {
+        denseAverage = pass.voxelsMs / dense;
+    }
+    fprintf(output, "bench-gen dim=%u radius=%.2f chunks=%u solid=%u dense=%u\n", cast(uint) dimension, cast(double) radius, pass.generated, pass.solid, dense);
+    fprintf(output, "params total=%.1fms avg=%.3fms\n", pass.paramsMs, pass.paramsMs / pass.generated);
+    fprintf(output, "voxels total=%.1fms avg=%.3fms dense_avg=%.3fms\n", pass.voxelsMs, pass.voxelsMs / pass.generated, denseAverage);
+    fprintf(output, "populate total=%.1fms avg=%.3fms\n", pass.populateMs, pass.populateMs / pass.generated);
+    scratch.release();
+    graph.release();
+}
+
+void benchDrive(FILE* output, float radius, ubyte dimension) {
+    Graph graph = createGraph(dimension);
+    NearbyScratch scratch;
+    NearbyNode[] nearby = ensureAndCollectNearby(&scratch, &graph, ROOT_NODE, MIsometry!float.identity(), radius, UNLIMITED_NODE_CREATION);
+    WorldgenDriver driver = createWorldgenDriver(false);
+    timespec poll = timespec(0, DRIVE_POLL_NANOSECONDS);
+    double start = nowMilliseconds();
     uint idleFrames = 0;
     uint frames = 0;
-    while (idleFrames < 3 && frames < 100_000) {
-        driver.drive(nearby, identity, radius, graph, dimension, 1);
-        frames++;
+    while (idleFrames < DRIVE_IDLE_FRAMES && frames < DRIVE_MAX_FRAMES) {
+        driveWorldgen(&driver, nearby, MIsometry!float.identity(), radius, &graph, DRIVE_NEARBY_VERSION);
+        frames += 1;
         if (driver.inFlight == 0) {
-            idleFrames++;
+            idleFrames += 1;
         } else {
             idleFrames = 0;
-            Thread.sleep(1.msecs);
+            nanosleep(&poll, null);
         }
     }
-    double totalMs = (MonoTime.currTime - start).total!"usecs" / 1000.0;
-
+    double totalMs = nowMilliseconds() - start;
     uint populated = 0;
-    foreach (slot; 0 .. graph.slotCount()) {
-        foreach (vIdx; 0 .. 20) {
-            if (graph.container(slot).value.chunks.values[cast(Vertex) vIdx].state == ChunkState.Populated) {
-                populated++;
+    foreach (slot; 0 .. graph.nodeCount) {
+        foreach (vertexIndex; 0 .. VERTEX_COUNT) {
+            if (graph.nodeAt(slot).chunks[vertexIndex].state == ChunkState.Populated) {
+                populated += 1;
             }
         }
     }
-    writefln("bench-drive dim=%d radius=%.2f populated=%d frames=%d total=%.1fms",
-        dimension, radius, populated, frames, totalMs);
-
-    // Steady state: everything generated, nothing to do — this is the pure
-    // per-frame scan cost the render loop pays forever after.
-    MonoTime idleStart = MonoTime.currTime;
-    enum idleIters = 200;
-    foreach (_; 0 .. idleIters) {
-        driver.drive(nearby, identity, radius, graph, dimension, 1);
+    fprintf(output, "bench-drive dim=%u radius=%.2f populated=%u frames=%u total=%.1fms\n", cast(uint) dimension, cast(double) radius, populated, frames, totalMs);
+    double idleStart = nowMilliseconds();
+    foreach (i; 0 .. DRIVE_IDLE_ITERATIONS) {
+        driveWorldgen(&driver, nearby, MIsometry!float.identity(), radius, &graph, DRIVE_NEARBY_VERSION);
     }
-    double idleMs = (MonoTime.currTime - idleStart).total!"usecs" / 1000.0 / idleIters;
-    writefln("bench-drive idle scan=%.3fms/frame (%d nodes)", idleMs, cast(uint) nearby.length);
+    fprintf(output, "bench-drive idle scan=%.3fms/frame nodes=%zu\n", (nowMilliseconds() - idleStart) / DRIVE_IDLE_ITERATIONS, nearby.length);
+    releaseWorldgenDriver(&driver);
+    scratch.release();
+    graph.release();
 }
 
-// Headless timing of the per-frame nearby traversal. Builds the graph once,
-// then times the alloc-per-call (4-arg) vs reuse-scratch (5-arg) paths over
-// `iters` iterations from a fixed node. Deterministic; no window/script.
-void benchNearby(float radius, int iters, ubyte dimension) {
-    Graph graph = Graph.create(dimension);
-    MIsometry!float identity = MIsometry!float.identity();
-    size_t nodeCount = ensureAndCollectNearby(graph, NodeId.ROOT, identity, radius).length;
-
-    MonoTime allocStart = MonoTime.currTime;
-    foreach (iter; 0 .. iters) {
-        ensureAndCollectNearby(graph, NodeId.ROOT, identity, radius);
-    }
-    double allocMs = (MonoTime.currTime - allocStart).total!"usecs" / 1000.0 / iters;
-
+void benchNearby(FILE* output, float radius, uint iterations, ubyte dimension) {
+    Graph graph = createGraph(dimension);
     NearbyScratch scratch;
-    MonoTime reuseStart = MonoTime.currTime;
-    foreach (iter; 0 .. iters) {
-        ensureAndCollectNearby(scratch, graph, NodeId.ROOT, identity, radius);
+    size_t nodeCount = ensureAndCollectNearby(&scratch, &graph, ROOT_NODE, MIsometry!float.identity(), radius, UNLIMITED_NODE_CREATION).length;
+    double start = nowMilliseconds();
+    foreach (i; 0 .. iterations) {
+        ensureAndCollectNearby(&scratch, &graph, ROOT_NODE, MIsometry!float.identity(), radius, UNLIMITED_NODE_CREATION);
     }
-    double reuseMs = (MonoTime.currTime - reuseStart).total!"usecs" / 1000.0 / iters;
-
-    writefln("bench-nearby dim=%d radius=%.1f nodes=%d iters=%d alloc=%.3fms reuse=%.3fms speedup=%.2fx", dimension, radius, nodeCount, iters, allocMs, reuseMs, allocMs / reuseMs);
+    fprintf(output, "bench-nearby dim=%u radius=%.1f nodes=%zu iterations=%u collect=%.3fms\n", cast(uint) dimension, cast(double) radius, nodeCount, iterations, (nowMilliseconds() - start) / iterations);
+    scratch.release();
+    graph.release();
 }
