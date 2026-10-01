@@ -10,10 +10,8 @@ walk.MAX_FALL_SPEED = 15
 
 function walk.spawn(world)
   local player = world.player
-  world:wait(1.92)
-  player:mode("walk")
-  world:wait(3.84)
-  world:check(player:on_ground(), "landed after switching to walk")
+  world:check(player:mode() == "walk", "spawned walking")
+  world:check(player:on_ground(), "spawned standing on the ground")
 end
 
 function walk.forward(world, seconds, min_fraction)

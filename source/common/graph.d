@@ -1,13 +1,12 @@
 module common.graph;
 
-import core.stdc.stdlib : calloc, free;
 import core.stdc.string : memcpy;
-import common.array : Array;
 import common.dodeca : SIDE_COUNT, Side, VERTEX_COUNT, sideAdjacentTo, sideIsFacing, sideReflection;
 import common.hash_map : HashMap;
 import common.math : MIsometry, MPoint;
 import common.murmur : murmurHash3;
 import common.node : ChunkLayout, Node;
+import common.slab : Slab;
 import common.worldgen.generation : NodeState, createNodeState;
 
 enum ulong NODE_HASH_MULTIPLIER = 0x9E3779B97F4A7C15;
@@ -27,9 +26,6 @@ struct NodeId {
 enum NodeId ROOT_NODE = NodeId([1, 1]);
 enum NodeId NO_NODE = NodeId.init;
 enum uint NO_SLOT = uint.max;
-enum uint SLAB_SHIFT = 12;
-enum uint SLAB_SIZE = 1u << SLAB_SHIFT;
-enum uint SLAB_MASK = SLAB_SIZE - 1;
 enum uint MAX_PARENTS = 3;
 
 struct NodeContainer {
@@ -66,20 +62,18 @@ Graph createGraph(ubyte dimension) {
 }
 
 struct Graph {
-    Array!(NodeContainer*) slabs;
+    Slab!NodeContainer nodes;
     HashMap!(NodeId, uint) slots;
     ChunkLayout layout;
     uint nodeCount;
 
     inout(NodeContainer)* container(uint slot) inout {
-        return slabs.ptr[slot >> SLAB_SHIFT] + (slot & SLAB_MASK);
+        return nodes.at(slot);
     }
 
     uint addNode(NodeId id, uint depth) {
         uint slot = nodeCount;
-        if ((slot >> SLAB_SHIFT) == slabs.length) {
-            slabs.append(cast(NodeContainer*) calloc(SLAB_SIZE, NodeContainer.sizeof));
-        }
+        nodes.ensure(slot + 1);
         NodeContainer* added = container(slot);
         added.id = id;
         added.depth = depth;
@@ -257,16 +251,33 @@ struct Graph {
         return reference;
     }
 
+    NodeId ensureNormalizedTransform(NodeId start, MIsometry!float* transform) {
+        uint slot = slotOf(start);
+        MPoint!float location = (*transform) * MPoint!float.origin();
+        bool moved = true;
+        while (moved) {
+            moved = false;
+            foreach (sideIndex; 0 .. SIDE_COUNT) {
+                Side side = cast(Side) sideIndex;
+                if (!moved && sideIsFacing(side, location)) {
+                    slot = ensureNeighborSlot(slot, side);
+                    MIsometry!float reflection = sideReflection(side);
+                    location = reflection * location;
+                    *transform = reflection * (*transform);
+                    moved = true;
+                }
+            }
+        }
+        return idAt(slot);
+    }
+
     void release() {
         foreach (slot; 0 .. nodeCount) {
             foreach (vertex; 0 .. VERTEX_COUNT) {
                 container(slot).value.chunks[vertex].voxels.release();
             }
         }
-        foreach (i; 0 .. slabs.length) {
-            free(slabs.ptr[i]);
-        }
-        slabs.release();
+        nodes.release();
         slots.release();
         nodeCount = 0;
     }

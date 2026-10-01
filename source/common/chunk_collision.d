@@ -2,6 +2,7 @@ module common.chunk_collision;
 
 import core.math : sqrt;
 import core.stdc.math : ceilf, coshf, floorf, sinhf, tanhf;
+import core.stdc.stdlib : alloca;
 import common.collision_math : ContactTerms, MAX_TANH_DISTANCE, Ray, contactTime, separationDistance, transformRay;
 import common.math : MDirection, MIsometry, MPoint, MVector, isNan;
 import common.node : ChunkLayout, VoxelData;
@@ -9,7 +10,6 @@ import common.voxel_math : Coords;
 import common.world : Material;
 
 enum float GRID_PADDING_CELLS = 2.0f;
-enum uint MAX_FACES = 256;
 enum uint MAX_FEATURE_SURFACES = 3;
 
 immutable byte[2] FACE_SIGNS = [-1, 1];
@@ -108,43 +108,36 @@ GridRange sweepGridRange(ChunkLayout layout, Ray ray, float tanhDistance, float 
     return range;
 }
 
-uint collectSurfaceFaces(const(VoxelData)* voxelData, ChunkLayout layout, GridRange range, SurfaceFace* faces) {
-    uint faceCount = 0;
-    foreach (cx; range.lo[0] .. range.hi[0] + 1) {
-        foreach (cy; range.lo[1] .. range.hi[1] + 1) {
-            foreach (cz; range.lo[2] .. range.hi[2] + 1) {
-                ubyte[3] cell = [cast(ubyte) cx, cast(ubyte) cy, cast(ubyte) cz];
-                if (voxelIsSolid(voxelData, layout, cell)) {
-                    foreach (axis; 0 .. 3) {
-                        foreach (sign; FACE_SIGNS) {
-                            int[3] neighbor = [cx, cy, cz];
-                            neighbor[axis] += sign;
-                            if (!voxelSolidWithMargins(voxelData, layout, neighbor) && faceCount < MAX_FACES) {
-                                faces[faceCount] = SurfaceFace(cell, cast(ubyte) axis, sign);
-                                faceCount += 1;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    return faceCount;
-}
-
 ChunkCollisionHit chunkShapeCast(SweptShape shape, const(VoxelData)* voxelData, ChunkLayout layout, Ray ray, float tanhDistance) {
     ChunkCollisionHit hit;
     hit.stopDistance = float.nan;
     GridRange range = sweepGridRange(layout, ray, tanhDistance, shape.radius + shape.halfHeight);
     if (!range.empty) {
-        SurfaceFace[MAX_FACES] faces = void;
-        uint faceCount = collectSurfaceFaces(voxelData, layout, range, faces.ptr);
         uint sectionCount = capsuleSectionCount(shape);
+        Section* sections = cast(Section*) alloca(sectionCount * Section.sizeof);
         foreach (sectionIndex; 0 .. sectionCount) {
-            Section section = capsuleSection(shape, ray, sectionIndex, sectionCount);
-            foreach (i; 0 .. faceCount) {
-                faceContact(&section, layout, faces[i], &hit, tanhDistance);
-                faceBoundaryContacts(&section, voxelData, layout, faces[i], &hit, tanhDistance);
+            sections[sectionIndex] = capsuleSection(shape, ray, sectionIndex, sectionCount);
+        }
+        foreach (cx; range.lo[0] .. range.hi[0] + 1) {
+            foreach (cy; range.lo[1] .. range.hi[1] + 1) {
+                foreach (cz; range.lo[2] .. range.hi[2] + 1) {
+                    ubyte[3] cell = [cast(ubyte) cx, cast(ubyte) cy, cast(ubyte) cz];
+                    if (voxelIsSolid(voxelData, layout, cell)) {
+                        foreach (axis; 0 .. 3) {
+                            foreach (sign; FACE_SIGNS) {
+                                int[3] neighbor = [cx, cy, cz];
+                                neighbor[axis] += sign;
+                                if (!voxelSolidWithMargins(voxelData, layout, neighbor)) {
+                                    SurfaceFace face = SurfaceFace(cell, cast(ubyte) axis, sign);
+                                    foreach (section; sections[0 .. sectionCount]) {
+                                        faceContact(&section, layout, face, &hit, tanhDistance);
+                                        faceBoundaryContacts(&section, voxelData, layout, face, &hit, tanhDistance);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }

@@ -8,7 +8,7 @@ import client.game : Game, createGame, releaseGame;
 import client.script : ScriptHost, closeScript, runScript;
 import common.array : Array;
 import common.sim_config : SimConfigRaw;
-import worldcheck : benchDrive, benchGen, benchNearby, dumpWorld;
+import worldcheck : benchDrive, benchGen, benchMesh, benchNearby, dumpWorld;
 
 enum int EXIT_PASSED = 0;
 enum int EXIT_FAILED = 1;
@@ -24,6 +24,7 @@ enum Command : ubyte {
     BenchGen,
     BenchDrive,
     BenchNearby,
+    BenchMesh,
 }
 
 struct NumberArgument {
@@ -68,6 +69,8 @@ HeadlessArguments parseArguments(int argc, char** argv) {
             arguments.command = Command.BenchDrive;
         } else if (strcmp(argument, "--bench-nearby") == 0) {
             arguments.command = Command.BenchNearby;
+        } else if (strcmp(argument, "--bench-mesh") == 0) {
+            arguments.command = Command.BenchMesh;
         } else if (parseNumber(argument).present && !arguments.radius.present) {
             arguments.radius = parseNumber(argument);
         } else if (parseNumber(argument).present) {
@@ -137,6 +140,8 @@ int runWorldCommand(HeadlessArguments arguments, FILE* output) {
         benchGen(output, radiusOr(arguments, DEFAULT_GEN_RADIUS), raw.chunkSize);
     } else if (arguments.command == Command.BenchDrive) {
         benchDrive(output, radiusOr(arguments, DEFAULT_GEN_RADIUS), raw.chunkSize);
+    } else if (arguments.command == Command.BenchMesh) {
+        benchMesh(output, radiusOr(arguments, DEFAULT_GEN_RADIUS), raw.chunkSize);
     } else {
         uint iterations = DEFAULT_NEARBY_ITERATIONS;
         if (arguments.iterations.present) {

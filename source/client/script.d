@@ -3,7 +3,7 @@ module client.script;
 import core.stdc.stdio : FILE, fclose, fopen, fprintf, snprintf;
 import core.stdc.string : strcmp, strlen;
 import bindings.lua : luaL_checkany, luaL_checkinteger, luaL_checklstring, luaL_checknumber, luaL_checktype, luaL_error, luaL_loadbufferx, luaL_loadfilex, luaL_newstate, luaL_openselectedlibs, luaL_optlstring, luaL_optnumber, luaL_ref, luaL_traceback, luaL_unref, luaL_where, lua_CFunction, lua_Integer, lua_State, lua_close, lua_createtable, lua_error, lua_gettop, lua_pcallk, lua_pushboolean, lua_pushcclosure, lua_pushinteger, lua_pushlightuserdata, lua_pushnil, lua_pushnumber, lua_pushstring, lua_pushvalue, lua_rawgeti, lua_rotate, lua_setfield, lua_setglobal, lua_settop, lua_toboolean, lua_tolstring, lua_touserdata, lua_type;
-import client.game : FrameInput, Game, KEY_COUNT, KEY_NAMES, KeyLookup, MATERIAL_PALETTE, characterAltitude, gameBreakBlock, gameLook, gamePlaceBlock, keyFromName, modeName, setMode, stepGame;
+import client.game : FrameInput, Game, KEY_COUNT, KEY_NAMES, KeyLookup, MATERIAL_PALETTE, characterAltitude, gameBreakBlock, gameLook, gamePlaceBlock, keyFromName, modeName, setMode, setWorldgen, stepGame;
 import common.vector3 : dot3, magnitude3, rejectAlong;
 
 enum int LUA_REGISTRY = -(int.max / 2 + 1000);
@@ -243,7 +243,7 @@ extern (C) int luaWorldgen(lua_State* lua) {
     } else if (kind != "flat" && kind != "terrain") {
         luaL_error(lua, "unknown worldgen '%s'", name);
     } else {
-        host.game.world.worldgenDriver.flatWorldgen = kind == "flat";
+        setWorldgen(host.game, kind == "flat");
     }
     return 0;
 }

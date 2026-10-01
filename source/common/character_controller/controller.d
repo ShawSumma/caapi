@@ -1,12 +1,12 @@
 module common.character_controller.controller;
 
 import core.math : sqrt;
-import core.stdc.math : expf;
+import core.stdc.math : asinhf, ceilf, expf;
 import common.character_controller.collision : CollisionCheckingResult, CollisionContext, checkCollision;
 import common.graph : Graph, ROOT_NODE, createGraph;
 import common.graph_collision : Capsule, regionPopulated;
-import common.math : MIsometry, MPoint, isNan, projectToPlane, sanitizeMotionInput;
-import common.proto : CharacterInput, Position, originPosition;
+import common.math : MIsometry, MPoint, limitToUnitLength, projectToPlane;
+import common.proto : CharacterInput, MovementMode, Position, originPosition;
 import common.sim_config : CharacterConfig, SimConfig;
 import common.vector3 : add3, capMagnitude3, cross3, dot3, magnitude3, moveToward3, neg3, rejectAlong, scale3, zero3;
 import common.worldgen.generation : NodeState;
@@ -14,7 +14,6 @@ import common.worldgen.generation : NodeState;
 enum uint MAX_CONTACT_PLANES = 5;
 enum uint MAX_SLIDE_PLANES = MAX_CONTACT_PLANES + 1;
 enum float MIN_CREASE_SINE = 1e-3f;
-enum float MIN_UP_LENGTH = 1e-9f;
 enum float UP_PROBE_DISTANCE = 0.1f;
 enum float UP_PROBE_MIN_GAIN = 0.05f;
 enum float TEST_TOLERANCE = 1e-5f;
@@ -84,36 +83,71 @@ struct Step {
     bool valid;
 }
 
-void runCharacterStep(const(SimConfig)* simConfig, const(Graph)* graph, CharacterState* state, CharacterInput input, float dtSeconds) {
+float runCharacterStep(const(SimConfig)* simConfig, const(Graph)* graph, CharacterState* state, CharacterInput input, float dtSeconds) {
     const(CharacterConfig)* cfg = &simConfig.character;
-    float[3] up = getRelativeUp(graph, state.position);
-    float slope = cfg.maxGroundSlope;
-    Capsule capsule = Capsule(up, cfg.characterRadius, cfg.characterHalfHeight, cfg.contactSkin);
-    Mover mover = Mover(CollisionContext(graph, capsule), cfg, up, 1.0f / sqrt(slope * slope + 1.0f));
-    float reach = cfg.characterHalfHeight + cfg.characterRadius + cfg.stepHeight;
-    if (!input.noClip && !regionPopulated(graph, state.position.node, state.position.local, reach)) {
-        state.velocity = zero3();
-    } else {
-        if (input.noClip) {
-            noClipStep(&mover, state, input, dtSeconds);
-        } else if (input.fly) {
-            flyStep(&mover, state, input, dtSeconds);
+    uint substeps = cast(uint) ceilf(speedBound(cfg, state, input, dtSeconds) * dtSeconds / cfg.characterRadius);
+    if (substeps < 1) {
+        substeps = 1;
+    }
+    float dt = dtSeconds / substeps;
+    float reach = cfg.characterHalfHeight + 2.0f * cfg.characterRadius + cfg.stepHeight + cfg.contactSkin;
+    float traveled = 0;
+    foreach (substep; 0 .. substeps) {
+        MIsometry!float before = state.position.local;
+        if (input.mode == MovementMode.noclip) {
+            noClipStep(cfg, state, input, dt);
+        } else if (regionPopulated(graph, state.position.node, state.position.local, reach)) {
+            Mover mover = createMover(cfg, graph, getRelativeUp(graph, state.position));
+            if (input.mode == MovementMode.fly) {
+                flyStep(&mover, state, input, dt);
+            } else {
+                walkStep(&mover, state, input, dt);
+            }
         } else {
-            walkStep(&mover, state, input, dtSeconds);
+            state.velocity = zero3();
         }
         state.position.local = state.position.local.renormalized();
+        traveled += stepLength(before.inverse() * state.position.local);
         state.position.node = graph.normalizeTransform(state.position.node, &state.position.local);
     }
+    return traveled;
 }
 
-void noClipStep(const(Mover)* mover, CharacterState* state, CharacterInput input, float dt) {
-    state.velocity = scale3(sanitizeMotionInput(input.movement), mover.cfg.noClipMovementSpeed);
+float speedBound(const(CharacterConfig)* cfg, const(CharacterState)* state, CharacterInput input, float dt) {
+    float result = cfg.noClipMovementSpeed;
+    if (input.mode == MovementMode.fly) {
+        result = cfg.flyMovementSpeed;
+    } else if (input.mode == MovementMode.walk) {
+        float steering = cfg.groundAcceleration;
+        if (cfg.airAcceleration + cfg.gravityAcceleration > steering) {
+            steering = cfg.airAcceleration + cfg.gravityAcceleration;
+        }
+        result = magnitude3(state.velocity) + steering * dt;
+        if (input.jump) {
+            result += cfg.jumpSpeed;
+        }
+    }
+    return result;
+}
+
+float stepLength(MIsometry!float step) {
+    return asinhf(magnitude3((step * MPoint!float.origin()).vec.xyz()));
+}
+
+Mover createMover(const(CharacterConfig)* cfg, const(Graph)* graph, float[3] up) {
+    float slope = cfg.maxGroundSlope;
+    Capsule capsule = Capsule(up, cfg.characterRadius, cfg.characterHalfHeight, cfg.contactSkin);
+    return Mover(CollisionContext(graph, capsule), cfg, up, 1.0f / sqrt(slope * slope + 1.0f));
+}
+
+void noClipStep(const(CharacterConfig)* cfg, CharacterState* state, CharacterInput input, float dt) {
+    state.velocity = scale3(limitToUnitLength(input.movement), cfg.noClipMovementSpeed);
     state.onGround = false;
     state.position.local = state.position.local * MIsometry!float.translationAlong(scale3(state.velocity, dt));
 }
 
 void flyStep(const(Mover)* mover, CharacterState* state, CharacterInput input, float dt) {
-    float[3] velocity = scale3(sanitizeMotionInput(input.movement), mover.cfg.flyMovementSpeed);
+    float[3] velocity = scale3(limitToUnitLength(input.movement), mover.cfg.flyMovementSpeed);
     PlaneSet none;
     Slide moved = slide(mover, state.position, scale3(velocity, dt), velocity, Sliding.free, none);
     state.position = moved.position;
@@ -123,7 +157,7 @@ void flyStep(const(Mover)* mover, CharacterState* state, CharacterInput input, f
 
 void walkStep(const(Mover)* mover, CharacterState* state, CharacterInput input, float dt) {
     const(CharacterConfig)* cfg = mover.cfg;
-    float[3] wish = rejectAlong(sanitizeMotionInput(input.movement), mover.up);
+    float[3] wish = rejectAlong(limitToUnitLength(input.movement), mover.up);
     float[3] targetVelocity = scale3(wish, cfg.maxGroundSpeed);
     float[3] horizontalVelocity = rejectAlong(state.velocity, mover.up);
     float verticalSpeed = dot3(state.velocity, mover.up);
@@ -348,16 +382,8 @@ float horizontalProgress(const(Mover)* mover, Position start, Position end, floa
 }
 
 float[3] getRelativeUp(const(Graph)* graph, Position position) {
-    float[3] result = [0.0f, 1.0f, 0.0f];
-    const(NodeState)* state = graph.nodeState(position.node);
-    if (state !is null) {
-        float[3] up = (position.local.inverse() * state.surface.scaledNormal).xyz();
-        float length = magnitude3(up);
-        if (!(length < MIN_UP_LENGTH || isNan(length))) {
-            result = scale3(up, 1.0f / length);
-        }
-    }
-    return result;
+    float[3] gradient = (position.local.inverse() * graph.nodeState(position.node).surface.scaledNormal).xyz();
+    return scale3(gradient, 1.0f / magnitude3(gradient));
 }
 
 unittest {

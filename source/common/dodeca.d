@@ -1,6 +1,7 @@
 module common.dodeca;
 
-import core.math : sqrt;
+import core.math : fabs, sqrt;
+import core.stdc.math : acoshf;
 import common.math : MDirection, MIsometry, MPoint, MVector, Matrix4;
 import common.voxel_math : ChunkAxisPermutation, permutationFromSides;
 
@@ -49,6 +50,7 @@ enum double BOUNDING_SPHERE_RADIUS_F64 = 1.2264568712514068;
 enum float BOUNDING_SPHERE_RADIUS = cast(float) BOUNDING_SPHERE_RADIUS_F64;
 enum float CHUNK_BOUNDING_SPHERE_RADIUS = cast(float)(BOUNDING_SPHERE_RADIUS_F64 * 0.5);
 enum double ADJACENCY_PRODUCT_LIMIT = 0.5;
+enum float TABLE_TOLERANCE = 1e-5f;
 
 struct DodecaTables {
     MIsometry!float[VERTEX_COUNT] dualToNode;
@@ -57,6 +59,7 @@ struct DodecaTables {
     MDirection!float[SIDE_COUNT] sideNormals;
     MPoint!float[VERTEX_COUNT] chunkBoundingSphereCenters;
     float dualToChunkFactor;
+    float chunkGridCenterCornerCosh;
     ChunkAxisPermutation[3][VERTEX_COUNT] chunkAxisPermutations;
     Side[3][VERTEX_COUNT] vertexCanonicalSides;
     Vertex[3][VERTEX_COUNT] adjacentVertices;
@@ -134,21 +137,27 @@ DodecaTables buildTables() {
     }
     assert(vertexCount == VERTEX_COUNT);
 
-    double mipOriginNormal = MVector!double.origin().mip(sideNormals[0].vec);
-    t.dualToChunkFactor = cast(float) sqrt(2.0 + sqrt(5.0));
     foreach (vi; 0 .. VERTEX_COUNT) {
-        MDirection!double na = sideNormals[t.vertexCanonicalSides[vi][0]];
-        MDirection!double nb = sideNormals[t.vertexCanonicalSides[vi][1]];
-        MDirection!double nc = sideNormals[t.vertexCanonicalSides[vi][2]];
-        MVector!double sum = na.vec + nb.vec + nc.vec;
-        MPoint!double vertexPosition = (MVector!double.origin() - sum * mipOriginNormal).normalizedPoint();
-        MDirection!double[3] columns = [-na, -nb, -nc];
-        MIsometry!double dualToNode = MIsometry!double.fromColumnsUnchecked(columns, vertexPosition);
+        MIsometry!double dualToNode = vertexDualFrame(sideNormals, t.vertexCanonicalSides[vi]);
         t.dualToNode[vi] = dualToNode.toType!float();
         t.nodeToDual[vi] = dualToNode.inverse().toType!float();
         MPoint!double corner = dualToNode * MPoint!double.origin();
         t.chunkBoundingSphereCenters[vi] = corner.midpoint(MPoint!double.origin()).toType!float();
     }
+    MIsometry!double referenceFrame = vertexDualFrame(sideNormals, t.vertexCanonicalSides[0]);
+    MVector!double nodeCenterInDual = referenceFrame.inverse() * MVector!double.origin();
+    double dualToChunk = nodeCenterInDual.data[3] / nodeCenterInDual.data[0];
+    t.dualToChunkFactor = cast(float) dualToChunk;
+    MPoint!double gridCenter = (referenceFrame * MVector!double(0.5 / dualToChunk, 0.5 / dualToChunk, 0.5 / dualToChunk, 1.0)).normalizedPoint();
+    double farthestCosh = 1.0;
+    foreach (corner; 0 .. 8) {
+        MVector!double chunkCorner = MVector!double((corner & 1) / dualToChunk, ((corner >> 1) & 1) / dualToChunk, ((corner >> 2) & 1) / dualToChunk, 1.0);
+        double cornerCosh = -gridCenter.mip((referenceFrame * chunkCorner).normalizedPoint().vec);
+        if (cornerCosh > farthestCosh) {
+            farthestCosh = cornerCosh;
+        }
+    }
+    t.chunkGridCenterCornerCosh = cast(float) farthestCosh;
 
     foreach (vi; 0 .. VERTEX_COUNT) {
         foreach (axisIndex; 0 .. 3) {
@@ -178,6 +187,16 @@ DodecaTables buildTables() {
         }
     }
     return t;
+}
+
+MIsometry!double vertexDualFrame(MDirection!double[SIDE_COUNT] sideNormals, Side[3] sides) {
+    MDirection!double na = sideNormals[sides[0]];
+    MDirection!double nb = sideNormals[sides[1]];
+    MDirection!double nc = sideNormals[sides[2]];
+    double mipOriginNormal = MVector!double.origin().mip(na.vec);
+    MPoint!double vertexPosition = (MVector!double.origin() - (na.vec + nb.vec + nc.vec) * mipOriginNormal).normalizedPoint();
+    MDirection!double[3] columns = [-na, -nb, -nc];
+    return MIsometry!double.fromColumnsUnchecked(columns, vertexPosition);
 }
 
 MDirection!float sideNormal(Side side) {
@@ -218,10 +237,33 @@ float vertexDualToChunkFactor() {
     return DODECA_TABLES.dualToChunkFactor;
 }
 
+float chunkGridCenterRadius() {
+    return acoshf(DODECA_TABLES.chunkGridCenterCornerCosh);
+}
+
 MPoint!float vertexChunkBoundingSphereCenter(Vertex v) {
     return DODECA_TABLES.chunkBoundingSphereCenters[v];
 }
 
 Matrix4!float vertexChunkToNode(Vertex v) {
     return DODECA_TABLES.dualToNode[v].mat * Matrix4!float.newScaling(1.0f / DODECA_TABLES.dualToChunkFactor);
+}
+
+unittest {
+    foreach (v; 0 .. VERTEX_COUNT) {
+        MPoint!float vertexPoint = DODECA_TABLES.dualToNode[v] * MPoint!float.origin();
+        assert(fabs(MPoint!float.origin().distance(vertexPoint) - BOUNDING_SPHERE_RADIUS) < TABLE_TOLERANCE);
+        MVector!float nodeCenter = DODECA_TABLES.nodeToDual[v] * MVector!float.origin();
+        foreach (axis; 0 .. 3) {
+            assert(fabs(nodeCenter.data[axis] / nodeCenter.data[3] * DODECA_TABLES.dualToChunkFactor - 1) < TABLE_TOLERANCE);
+        }
+        MPoint!float center = vertexChunkBoundingSphereCenter(cast(Vertex) v);
+        MPoint!float gridCenter = (vertexChunkToNode(cast(Vertex) v) * MVector!float(0.5f, 0.5f, 0.5f, 1)).normalizedPoint();
+        foreach (corner; 0 .. 8) {
+            MVector!float chunkCorner = MVector!float(corner & 1, (corner >> 1) & 1, (corner >> 2) & 1, 1);
+            MPoint!float cornerPoint = (vertexChunkToNode(cast(Vertex) v) * chunkCorner).normalizedPoint();
+            assert(center.distance(cornerPoint) < CHUNK_BOUNDING_SPHERE_RADIUS + TABLE_TOLERANCE);
+            assert(gridCenter.distance(cornerPoint) < chunkGridCenterRadius() + TABLE_TOLERANCE);
+        }
+    }
 }

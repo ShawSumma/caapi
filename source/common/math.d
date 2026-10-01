@@ -32,21 +32,11 @@ struct MVector(N) {
     }
 
     MPoint!N normalizedPoint() const {
-        N scaleSquared = -mip(this);
-        MPoint!N result = MPoint!N.origin();
-        if (scaleSquared > 0) {
-            result = MPoint!N(this / sqrt(scaleSquared));
-        }
-        return result;
+        return MPoint!N(this / sqrt(-mip(this)));
     }
 
     MDirection!N normalizedDirection() const {
-        N scaleSquared = mip(this);
-        MDirection!N result = MDirection!N.x();
-        if (scaleSquared > 0) {
-            result = MDirection!N(this / sqrt(scaleSquared));
-        }
-        return result;
+        return MDirection!N(this / sqrt(mip(this)));
     }
 
     N[3] xyz() const {
@@ -338,13 +328,8 @@ struct MIsometry(N) {
                 }
             }
             N norm = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-            if (norm > 0) {
-                foreach (k; 0 .. 3) {
-                    v[k] /= norm;
-                }
-            }
             foreach (k; 0 .. 3) {
-                orthonormal[col][k] = v[k];
+                orthonormal[col][k] = v[k] / norm;
             }
         }
         Matrix4!N orientationMatrix;
@@ -358,22 +343,11 @@ struct MIsometry(N) {
     }
 }
 
-float[3] sanitizeMotionInput(float[3] v) {
-    bool finite = true;
-    foreach (float x; v) {
-        if (isNan(x) || isInfinite(x)) {
-            finite = false;
-        }
-    }
-    float[3] result = [0.0f, 0.0f, 0.0f];
-    if (finite) {
-        float norm = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-        float divisor = 1.0f;
-        if (norm > 1.0f) {
-            divisor = norm;
-        }
-        float scale = 1.0f / divisor;
-        result = [v[0] * scale, v[1] * scale, v[2] * scale];
+float[3] limitToUnitLength(float[3] v) {
+    float norm = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    float[3] result = v;
+    if (norm > 1.0f) {
+        result = [v[0] / norm, v[1] / norm, v[2] / norm];
     }
     return result;
 }

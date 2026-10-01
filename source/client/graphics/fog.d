@@ -1,7 +1,7 @@
 module client.graphics.fog;
 
 import bindings.platform : VK_PIPELINE_BIND_POINT_GRAPHICS, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VkCommandBuffer, VkDescriptorSet, VkDescriptorSetLayout, VkDevice, VkPipeline, VkPipelineLayout, VkRenderPass, VkShaderModule, vkCmdBindDescriptorSets, vkCmdBindPipeline, vkCmdDraw, vkDestroyPipeline, vkDestroyPipelineLayout, vkDestroyShaderModule;
-import client.graphics.pipeline : PipelineSettings, createGraphicsPipeline, createPipelineLayout, createShader;
+import client.graphics.pipeline : Blend, PipelineSettings, createGraphicsPipeline, createPipelineLayout, createShader;
 
 enum string FULLSCREEN_VERT_SPV = import("fullscreen.vert.spv");
 enum string FOG_FRAG_SPV = import("fog.frag.spv");
@@ -26,7 +26,7 @@ struct FogPipeline {
         settings.fragmentShader = fragmentShader;
         settings.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
         settings.subpass = FOG_SUBPASS;
-        settings.fogBlend = true;
+        settings.blend = Blend.transmittance;
         if (vertexShader !is null && fragmentShader !is null && pipelineLayout !is null) {
             pipeline = createGraphicsPipeline(device, settings);
         }

@@ -4,6 +4,7 @@ import core.stdc.math : floorf;
 import core.stdc.stdlib : free, malloc;
 import common.dodeca : VERTEX_COUNT, Vertex, vertexDualToChunkFactor;
 import common.graph : NodeId;
+import common.voxel_math : Coords;
 import common.world : Material;
 import common.worldgen.generation : NodeState;
 
@@ -87,6 +88,28 @@ struct VoxelData {
     }
 }
 
+void compressUniform(VoxelData* voxels, ubyte dimension) {
+    if (voxels.kind == VoxelKind.Dense) {
+        ubyte[3] origin = [0, 0, 0];
+        Material first = voxels.get(Coords(origin).toIndex(dimension));
+        bool uniform = true;
+        foreach (x; 0 .. dimension) {
+            foreach (y; 0 .. dimension) {
+                foreach (z; 0 .. dimension) {
+                    ubyte[3] coords = [cast(ubyte) x, cast(ubyte) y, cast(ubyte) z];
+                    if (voxels.get(Coords(coords).toIndex(dimension)) != first) {
+                        uniform = false;
+                    }
+                }
+            }
+        }
+        if (uniform) {
+            voxels.release();
+            *voxels = VoxelData.solid(first);
+        }
+    }
+}
+
 enum ChunkState : ubyte {
     Fresh,
     Generating,
@@ -97,6 +120,7 @@ struct Chunk {
     VoxelData voxels;
     uint generation;
     ChunkState state;
+    bool materialsDeferred;
 }
 
 struct Node {

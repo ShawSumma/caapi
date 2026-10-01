@@ -16,8 +16,11 @@ const int edges[24] = int[](
     0, 4, 1, 5, 3, 7, 2, 6
 );
 
+const vec3 VOXEL_CENTER = vec3(0.5);
+const float OUTLINE_SCALE = 1.01;
+
 void main() {
     vec3 c = corners[edges[gl_VertexIndex]];
-    vec3 p = voxel.xyz + 0.5 + (c - 0.5) * 1.01;
+    vec3 p = voxel.xyz + VOXEL_CENTER + (c - VOXEL_CENTER) * OUTLINE_SCALE;
     gl_Position = mvp * vec4(p / voxel.w, 1.0);
 }

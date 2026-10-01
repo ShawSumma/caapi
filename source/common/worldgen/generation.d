@@ -2,14 +2,14 @@ module common.worldgen.generation;
 
 import core.bitop : rol;
 import core.stdc.math : cosf, floorf, logf, powf, sqrtf;
-import common.dodeca : Side, Vertex, sideAdjacentTo, vertexCanonicalSides;
+import common.dodeca : Side, Vertex, chunkGridCenterRadius, sideAdjacentTo, vertexCanonicalSides;
 import common.graph : Graph, NO_NODE, NodeId, ParentList, nodeSpice;
 import common.margins : initializeMargins;
 import common.math : PI;
-import common.node : ChunkId, VoxelData;
+import common.node : ChunkId, VoxelData, compressUniform;
 import common.world : Material;
 import common.worldgen.plane : Plane, planeFromSide;
-import common.worldgen.terraingen : sqr, terraingenVoronoi;
+import common.worldgen.terraingen : TERRAIN_SURFACE_THICKNESS, materialTable, nearestLatticePoint, sqr, terraingenVoronoi;
 
 enum NodeStateKind : ubyte {
     Sky,
@@ -25,8 +25,8 @@ enum NodeStateRoad : ubyte {
     DeepWest,
 }
 
+enum Material DEFERRED_STAND_IN_MATERIAL = Material.Dirt;
 enum float TERRAIN_SMOOTHNESS = 10.0f;
-enum float ELEVATION_MARGIN = 0.7f;
 enum float ELEVATION_VARIATION = 4.0f;
 enum float NOISE_STDDEV = 0.03f;
 enum float TERRACE_STRENGTH = 0.4f;
@@ -76,6 +76,16 @@ struct NodeState {
     NodeStateRoad road;
 }
 
+struct ValueRange {
+    float low;
+    float high;
+}
+
+struct UniformChunk {
+    Material material;
+    bool proven;
+}
+
 struct ChunkIncidentEnviroFactors {
     float[8] maxElevations;
     float[8] temperatures;
@@ -92,6 +102,12 @@ struct ChunkParams {
     bool isRoad;
     bool isRoadSupport;
     bool flat;
+    bool resolveMaterials;
+}
+
+struct GeneratedVoxels {
+    VoxelData voxels;
+    bool materialsDeferred;
 }
 
 NodeStateKind childKind(NodeStateKind self, Side side) {
@@ -192,31 +208,56 @@ ChunkParams createChunkParams(Graph* graph, ChunkId chunkId, bool flat) {
     return params;
 }
 
-VoxelData generateVoxels(const(ChunkParams)* params) {
-    VoxelData voxels = VoxelData.solid(Material.Void);
+GeneratedVoxels generateVoxels(const(ChunkParams)* params) {
+    GeneratedVoxels result = GeneratedVoxels(VoxelData.solid(Material.Void), false);
     if (params.flat) {
-        voxels = generateFlatVoxels(params);
+        result.voxels = generateFlatVoxels(params);
     } else {
         ulong rngState = hash(params.nodeSpice, params.chunk);
-        generateTerrain(params, &voxels, &rngState);
+        result.materialsDeferred = generateTerrain(params, &result.voxels, &rngState);
         if (params.isRoad) {
-            generateRoad(params, &voxels);
+            generateRoad(params, &result.voxels);
         } else if (params.isRoadSupport) {
-            generateRoadSupport(params, &voxels);
+            generateRoadSupport(params, &result.voxels);
         }
-        generateTrees(params, &voxels, &rngState);
-        initializeMargins(params.dimension, &voxels);
+        generateTrees(params, &result.voxels, &rngState);
+        compressUniform(&result.voxels, params.dimension);
+        initializeMargins(params.dimension, &result.voxels);
     }
-    return voxels;
+    return result;
+}
+
+ValueRange chunkAltitudes(const(ChunkParams)* params) {
+    float center = params.surface.distanceToChunk(params.chunk, [0.5f, 0.5f, 0.5f]);
+    return ValueRange(center - chunkGridCenterRadius(), center + chunkGridCenterRadius());
+}
+
+float terrainCeiling(const(ChunkParams)* params) {
+    float result = 0;
+    if (!params.flat) {
+        result = (valueRange(params.env.maxElevations).high + terrainElevationSlack()) / TERRAIN_SMOOTHNESS;
+    }
+    return result;
+}
+
+bool chunkProvenClear(const(ChunkParams)* params) {
+    float lowest = chunkAltitudes(params).low;
+    bool result = lowest > terrainCeiling(params);
+    if (!params.flat && params.isRoad) {
+        result = result && lowest > ROAD_THICKNESS;
+    } else if (!params.flat && params.isRoadSupport) {
+        result = false;
+    }
+    return result;
 }
 
 VoxelData generateFlatVoxels(const(ChunkParams)* params) {
     ubyte dimension = params.dimension;
-    float centerElevation = params.surface.distanceToChunk(params.chunk, [0.5f, 0.5f, 0.5f]);
+    ValueRange altitudes = chunkAltitudes(params);
     VoxelData voxels = VoxelData.solid(Material.Void);
-    if (centerElevation + ELEVATION_MARGIN < 0) {
+    if (altitudes.high < 0) {
         voxels = VoxelData.solid(Material.Dirt);
-    } else if (!(centerElevation - ELEVATION_MARGIN > 0)) {
+    } else if (!chunkProvenClear(params)) {
         foreach (x; 0 .. dimension) {
             foreach (y; 0 .. dimension) {
                 foreach (z; 0 .. dimension) {
@@ -226,29 +267,26 @@ VoxelData generateFlatVoxels(const(ChunkParams)* params) {
                 }
             }
         }
+        compressUniform(&voxels, dimension);
         initializeMargins(dimension, &voxels);
     }
     return voxels;
 }
 
-void generateTerrain(const(ChunkParams)* params, VoxelData* voxels, ulong* rng) {
+bool generateTerrain(const(ChunkParams)* params, VoxelData* voxels, ulong* rng) {
     ubyte dimension = params.dimension;
-    float minElevation = params.env.maxElevations[0];
-    float maxElevation = params.env.maxElevations[0];
-    foreach (elevation; params.env.maxElevations[1 .. 8]) {
-        if (elevation < minElevation) {
-            minElevation = elevation;
-        }
-        if (elevation > maxElevation) {
-            maxElevation = elevation;
-        }
-    }
-
-    float centerElevation = params.surface.distanceToChunk(params.chunk, [0.5f, 0.5f, 0.5f]);
-    if (centerElevation - ELEVATION_MARGIN > maxElevation / TERRAIN_SMOOTHNESS) {
+    ValueRange elevations = valueRange(params.env.maxElevations);
+    ValueRange altitudes = chunkAltitudes(params);
+    float highestVoxel = altitudes.high;
+    UniformChunk uniform = provenUniformMaterial(params, elevations, terrainElevationSlack(), highestVoxel);
+    bool deferred = false;
+    if (altitudes.low > terrainCeiling(params)) {
         *voxels = VoxelData.solid(Material.Void);
-    } else if (centerElevation + ELEVATION_MARGIN < minElevation / TERRAIN_SMOOTHNESS && !params.isRoad) {
-        *voxels = VoxelData.solid(Material.Dirt);
+    } else if (uniform.proven) {
+        *voxels = VoxelData.solid(uniform.material);
+    } else if (!params.resolveMaterials && !params.isRoad && (elevations.low - terraceElevationBound()) / TERRAIN_SMOOTHNESS > highestVoxel) {
+        *voxels = VoxelData.solid(DEFERRED_STAND_IN_MATERIAL);
+        deferred = true;
     } else {
         foreach (x; 0 .. dimension) {
             foreach (y; 0 .. dimension) {
@@ -258,6 +296,50 @@ void generateTerrain(const(ChunkParams)* params, VoxelData* voxels, ulong* rng) 
             }
         }
     }
+    return deferred;
+}
+
+UniformChunk provenUniformMaterial(const(ChunkParams)* params, ValueRange elevations, float elevationSlack, float highestVoxel) {
+    UniformChunk result;
+    float lowestTerrain = elevations.low - elevationSlack;
+    float highestTerrain = elevations.high + elevationSlack;
+    if (lowestTerrain / TERRAIN_SMOOTHNESS - highestVoxel > TERRAIN_SURFACE_THICKNESS) {
+        float depth = lowestTerrain / TERRAIN_SMOOTHNESS - highestVoxel;
+        const(Material)[] table = materialTable(lowestTerrain, depth);
+        ValueRange rains = valueRange(params.env.rainfalls);
+        ValueRange temperatures = valueRange(params.env.temperatures);
+        float climateSlack = noiseBound();
+        uint cell = nearestLatticePoint(rains.low - climateSlack, temperatures.low - climateSlack);
+        if (materialTable(highestTerrain, depth).ptr == table.ptr && nearestLatticePoint(rains.low - climateSlack, temperatures.high + climateSlack) == cell && nearestLatticePoint(rains.high + climateSlack, temperatures.low - climateSlack) == cell && nearestLatticePoint(rains.high + climateSlack, temperatures.high + climateSlack) == cell) {
+            result = UniformChunk(table[cell], true);
+        }
+    }
+    return result;
+}
+
+float terrainElevationSlack() {
+    return terraceElevationBound() + TERRAIN_SMOOTHNESS * noiseBound();
+}
+
+float terraceElevationBound() {
+    return (SMALL_TERRACE_WEIGHT * SMALL_TERRACE_SCALE + BIG_TERRACE_WEIGHT * BIG_TERRACE_SCALE) * TERRACE_STRENGTH;
+}
+
+float noiseBound() {
+    return NOISE_STDDEV * sqrtf(2.0f * logf(RANDOM_24_BIT_RANGE_PLUS_2));
+}
+
+ValueRange valueRange(float[8] values) {
+    ValueRange result = ValueRange(values[0], values[0]);
+    foreach (value; values[1 .. 8]) {
+        if (value < result.low) {
+            result.low = value;
+        }
+        if (value > result.high) {
+            result.high = value;
+        }
+    }
+    return result;
 }
 
 void generateTerrainVoxel(const(ChunkParams)* params, VoxelData* voxels, ulong* rng, float[3] center, size_t index) {
@@ -316,16 +398,14 @@ void generateRoad(const(ChunkParams)* params, VoxelData* voxels) {
 }
 
 void generateRoadSupport(const(ChunkParams)* params, VoxelData* voxels) {
-    if (!(voxels.isSolid() && voxels.get(0) != Material.Void)) {
-        Plane plane = -planeFromSide(Side.B);
-        ubyte dimension = params.dimension;
-        foreach (x; 0 .. dimension) {
-            foreach (y; 0 .. dimension) {
-                foreach (z; 0 .. dimension) {
-                    float horizontalDistance = plane.distanceToChunk(params.chunk, voxelCenter(dimension, x, y, z));
-                    if (!(horizontalDistance > ROAD_HALF_WIDTH) && trussingAt(dimension, x, y, z)) {
-                        voxels.dataMut(dimension)[voxelIndex(dimension, x, y, z)] = Material.WoodPlanks;
-                    }
+    Plane plane = -planeFromSide(Side.B);
+    ubyte dimension = params.dimension;
+    foreach (x; 0 .. dimension) {
+        foreach (y; 0 .. dimension) {
+            foreach (z; 0 .. dimension) {
+                size_t index = voxelIndex(dimension, x, y, z);
+                if (voxels.get(index) == Material.Void && trussingAt(dimension, x, y, z) && !(plane.distanceToChunk(params.chunk, voxelCenter(dimension, x, y, z)) > ROAD_HALF_WIDTH)) {
+                    voxels.dataMut(dimension)[index] = Material.WoodPlanks;
                 }
             }
         }

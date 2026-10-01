@@ -1,19 +1,28 @@
 module client.game;
 
-import core.stdc.math : acoshf, fabsf, tanhf;
+import core.stdc.math : fabsf, tanhf;
 import client.local_character_controller : LocalCharacterController, createLocalCharacterController;
 import client.local_world : LocalWorld, Placement, breakBlock, createLocalWorld, placementTarget, releaseLocalWorld, setVoxel, updateLocalWorld;
-import client.worldgen_driver : settleWorldgen;
-import common.character_controller.controller : CharacterState, getRelativeUp, runCharacterStep;
+import client.worldgen_driver : generateNow, settleWorldgen;
+import common.array : Array;
+import common.character_controller.controller : CharacterState, Mover, Slide, createMover, getRelativeUp, runCharacterStep, settle;
+import common.graph : Graph;
 import common.graph_collision : Capsule, capsuleOverlapsVoxel;
 import common.math : MPoint;
-import common.proto : CharacterInput, Position;
-import common.sim_config : SimConfig, SimConfigRaw, simConfigFromRaw;
-import common.vector3 : dot3;
+import common.node : ChunkId;
+import common.proto : CharacterInput, MovementMode, Position;
+import common.sim_config : CharacterConfig, SimConfig, SimConfigRaw, simConfigFromRaw;
 import common.world : Material;
 import common.worldgen.generation : NodeState;
+import common.worldgen.spawn : clearSpawnPosition, collectChunksNear;
 
-enum float MIN_ACCELERATION_DT = 1e-6f;
+enum uint MODE_COUNT = MovementMode.max + 1;
+
+immutable string[MODE_COUNT] MODE_NAMES = [
+    "walk",
+    "fly",
+    "noclip",
+];
 
 immutable Material[9] MATERIAL_PALETTE = [
     Material.WoodPlanks,
@@ -84,18 +93,16 @@ struct Game {
     LocalWorld world;
     LocalCharacterController character;
     CharacterState characterState;
-    Position odometerPrevious;
-    Position cameraPrevious;
     SimConfig simConfig;
     float simTime = 0;
     float traveled = 0;
     float vacc = 0;
-    float previousVerticalVelocity = 0;
+    float cameraAltitude = 0;
+    float cameraVerticalVelocity = 0;
     uint materialIndex;
-    bool flyMode = true;
-    bool noClip;
+    MovementMode mode = MovementMode.walk;
     bool settleWorldgenEachFrame;
-    bool haveVerticalVelocity;
+    bool haveCameraVerticalVelocity;
 }
 
 Game createGame(bool flatWorldgen, float reachMeters) {
@@ -104,14 +111,49 @@ Game createGame(bool flatWorldgen, float reachMeters) {
     game.simConfig = simConfigFromRaw(raw);
     game.world = createLocalWorld(raw.chunkSize, flatWorldgen, tanhf(reachMeters * game.simConfig.metersToAbsolute));
     game.character = createLocalCharacterController();
-    game.character.position = game.world.cameraPosition;
-    game.character.up = getRelativeUp(&game.world.graph, game.character.position);
     game.character.eyeOffset = game.simConfig.character.eyeOffset;
-    game.character.alignToGravity();
-    game.characterState.position = game.character.position;
-    game.odometerPrevious = game.character.position;
-    game.cameraPrevious = game.world.cameraPosition;
+    placeAtSpawn(&game);
     return game;
+}
+
+void placeAtSpawn(Game* game) {
+    const(CharacterConfig)* cfg = &game.simConfig.character;
+    Graph* graph = &game.world.graph;
+    bool flat = game.world.worldgenDriver.flatWorldgen;
+    float bodyReach = cfg.characterHalfHeight + cfg.characterRadius + cfg.contactSkin;
+    Position position = clearSpawnPosition(graph, flat, bodyReach);
+    Array!ChunkId chunks;
+    Slide drop;
+    while (!drop.landed) {
+        chunks.clear();
+        collectChunksNear(graph, position, 2.0f * bodyReach, &chunks);
+        foreach (chunk; chunks.slice()) {
+            generateNow(graph, chunk, flat);
+        }
+        Mover mover = createMover(cfg, graph, getRelativeUp(graph, position));
+        drop = settle(&mover, position, bodyReach);
+        position.local = drop.position.local.renormalized();
+        position.node = graph.normalizeTransform(drop.position.node, &position.local);
+        graph.ensureNodeState(position.node);
+    }
+    chunks.release();
+    game.characterState = CharacterState.init;
+    game.characterState.position = position;
+    game.characterState.onGround = true;
+    game.characterState.groundNormal = drop.groundNormal;
+    game.character.updatePosition(position, getRelativeUp(graph, position));
+    game.character.alignToGravity();
+    game.world.cameraPosition = game.character.orientedPosition();
+    game.cameraAltitude = characterAltitude(game) + game.character.eyeOffset;
+    game.haveCameraVerticalVelocity = false;
+}
+
+void setWorldgen(Game* game, bool flat) {
+    ubyte dimension = game.world.graph.layout.dimension;
+    float reach = game.world.reach;
+    releaseLocalWorld(&game.world);
+    game.world = createLocalWorld(dimension, flat, reach);
+    placeAtSpawn(game);
 }
 
 void releaseGame(Game* game) {
@@ -147,11 +189,7 @@ void gameLook(Game* game, float yaw, float pitch) {
 
 float characterAltitude(const(Game)* game) {
     const(NodeState)* state = game.world.graph.nodeState(game.characterState.position.node);
-    float result = float.nan;
-    if (state !is null) {
-        result = state.surface.distanceTo(game.characterState.position.local * MPoint!float.origin());
-    }
-    return result;
+    return state.surface.distanceTo(game.characterState.position.local * MPoint!float.origin());
 }
 
 void stepGame(Game* game, FrameInput input, float dt) {
@@ -159,35 +197,33 @@ void stepGame(Game* game, FrameInput input, float dt) {
     float moveX = axisValue(input.held[Key.right]) - axisValue(input.held[Key.left]);
     float moveY = axisValue(input.held[Key.up]) - axisValue(input.held[Key.down]);
     float moveZ = axisValue(input.held[Key.back]) - axisValue(input.held[Key.fwd]);
-    Position beforeStep = game.characterState.position;
+    float altitudeBefore = characterAltitude(game);
     bool wasOnGround = game.characterState.onGround;
 
     CharacterInput characterInput;
-    characterInput.noClip = game.noClip;
-    characterInput.fly = game.flyMode;
-    if (game.noClip) {
+    characterInput.mode = game.mode;
+    if (game.mode == MovementMode.noclip) {
         characterInput.movement = game.character.viewOrientation().rotate([moveX, moveY, moveZ]);
-    } else if (game.flyMode) {
+    } else if (game.mode == MovementMode.fly) {
         characterInput.movement = game.character.orientation.rotate([moveX, moveY, moveZ]);
     } else {
         characterInput.movement = game.character.orientation.rotate([moveX, 0, moveZ]);
         characterInput.jump = input.held[Key.up];
     }
-    runCharacterStep(&game.simConfig, &game.world.graph, &game.characterState, characterInput, dt);
+    game.traveled += runCharacterStep(&game.simConfig, &game.world.graph, &game.characterState, characterInput, dt);
+    game.world.graph.ensureNodeState(game.characterState.position.node);
 
-    float[3] newUp = getRelativeUp(&game.world.graph, game.characterState.position);
+    float altitude = characterAltitude(game);
     float groundedRise = 0;
-    if ((wasOnGround || game.characterState.onGround) && beforeStep.node == game.characterState.position.node) {
-        MPoint!float moved = (beforeStep.local.inverse() * game.characterState.position.local) * MPoint!float.origin();
-        groundedRise = dot3(moved.vec.xyz(), newUp);
+    if (wasOnGround && game.characterState.onGround) {
+        groundedRise = altitude - altitudeBefore;
     }
-    game.character.smoothEyeVertical(groundedRise, dt);
-    game.character.updatePosition(game.characterState.position, newUp);
+    game.character.smoothEyeVertical(groundedRise, game.simConfig.character.stepHeight, dt);
+    game.character.updatePosition(game.characterState.position, getRelativeUp(&game.world.graph, game.characterState.position));
     game.character.alignToGravity();
     game.world.cameraPosition = game.character.orientedPosition();
 
-    trackVerticalAcceleration(game, newUp, dt);
-    trackOdometer(game);
+    trackCameraAcceleration(game, altitude + game.character.eyeOffset - game.character.eyeLag, dt);
     updateLocalWorld(&game.world);
     if (game.settleWorldgenEachFrame) {
         settleWorldgen(&game.world.worldgenDriver, &game.world.graph);
@@ -195,55 +231,36 @@ void stepGame(Game* game, FrameInput input, float dt) {
     game.simTime += dt;
 }
 
-void trackVerticalAcceleration(Game* game, float[3] up, float dt) {
+void trackCameraAcceleration(Game* game, float cameraAltitude, float dt) {
+    float verticalVelocity = (cameraAltitude - game.cameraAltitude) / dt;
     game.vacc = 0;
-    if (game.world.cameraPosition.node == game.cameraPrevious.node && dt > MIN_ACCELERATION_DT) {
-        MPoint!float cameraMoved = (game.cameraPrevious.local.inverse() * game.world.cameraPosition.local) * MPoint!float.origin();
-        float verticalVelocity = dot3(cameraMoved.vec.xyz(), up) / dt;
-        if (game.haveVerticalVelocity) {
-            game.vacc = fabsf((verticalVelocity - game.previousVerticalVelocity) / dt);
-        }
-        game.previousVerticalVelocity = verticalVelocity;
-        game.haveVerticalVelocity = true;
-    } else {
-        game.haveVerticalVelocity = false;
+    if (game.haveCameraVerticalVelocity) {
+        game.vacc = fabsf((verticalVelocity - game.cameraVerticalVelocity) / dt);
     }
-    game.cameraPrevious = game.world.cameraPosition;
-}
-
-void trackOdometer(Game* game) {
-    if (game.characterState.position.node == game.odometerPrevious.node) {
-        MPoint!float start = game.odometerPrevious.local * MPoint!float.origin();
-        float cosh = -start.mip((game.characterState.position.local * MPoint!float.origin()).vec);
-        if (cosh > 1.0f) {
-            game.traveled += acoshf(cosh);
-        }
-    }
-    game.odometerPrevious = game.characterState.position;
+    game.cameraAltitude = cameraAltitude;
+    game.cameraVerticalVelocity = verticalVelocity;
+    game.haveCameraVerticalVelocity = true;
 }
 
 bool setMode(Game* game, const(char)[] name) {
-    bool known = true;
-    if (name == "walk") {
-        game.flyMode = false;
-        game.noClip = false;
-    } else if (name == "fly") {
-        game.flyMode = true;
-        game.noClip = false;
-    } else if (name == "noclip") {
-        game.noClip = true;
-    } else {
-        known = false;
+    bool known = false;
+    foreach (i, candidate; MODE_NAMES) {
+        if (candidate == name) {
+            game.mode = cast(MovementMode) i;
+            known = true;
+        }
     }
     return known;
 }
 
-const(char)* modeName(const(Game)* game) {
-    const(char)* result = "walk";
-    if (game.noClip) {
-        result = "noclip";
-    } else if (game.flyMode) {
-        result = "fly";
+void toggleMode(Game* game, MovementMode toggled) {
+    if (game.mode == toggled) {
+        game.mode = MovementMode.fly;
+    } else {
+        game.mode = toggled;
     }
-    return result;
+}
+
+const(char)* modeName(const(Game)* game) {
+    return MODE_NAMES[game.mode].ptr;
 }

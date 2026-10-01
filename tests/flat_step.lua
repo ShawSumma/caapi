@@ -23,9 +23,12 @@ end
 player:look(0, -AIM_DOWN_DEGREES)
 
 local standing = player:altitude()
-local motion = { apex = standing, vertical = 0, airborne = 0 }
+local motion = { apex = standing, vertical = 0, airborne = 0, previous = standing, steepest = 0 }
 world:every_frame(function()
-  motion.apex = math.max(motion.apex, player:altitude())
+  local altitude = player:altitude()
+  motion.apex = math.max(motion.apex, altitude)
+  motion.steepest = math.max(motion.steepest, altitude - motion.previous)
+  motion.previous = altitude
   motion.vertical = math.max(motion.vertical, math.abs(player:vertical_speed()))
   if not player:on_ground() then
     motion.airborne = motion.airborne + 1
@@ -36,7 +39,8 @@ local walked = walk.forward(world, WALK_SECONDS, MIN_WALKED_FRACTION)
 world:wait(0.5)
 
 local rise = motion.apex - standing
-world:check(rise >= MIN_STEP_RISE and rise <= STEP_HEIGHT, string.format("stepped up %.3f m (expected a block between %.1f and %.1f m)", rise, MIN_STEP_RISE, STEP_HEIGHT))
+world:check(rise >= MIN_STEP_RISE, string.format("rose %.3f m over the step (expected at least %.1f m)", rise, MIN_STEP_RISE))
+world:check(motion.steepest <= STEP_HEIGHT, string.format("rose %.3f m in one frame (step height %.1f m)", motion.steepest, STEP_HEIGHT))
 world:check(motion.vertical <= VERTICAL_SPEED_TOLERANCE, string.format("vertical speed reached %.2f m/s while stepping", motion.vertical))
 world:check(motion.airborne == 0, string.format("left the ground for %d frames while stepping", motion.airborne))
 walk.check_standing(world, string.format("after walking %.1f m over the step", walked))

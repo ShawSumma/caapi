@@ -8,7 +8,6 @@ import common.math : MIsometry, Matrix4, PI;
 import common.proto : Position, originPosition;
 
 enum float EYE_LAG_DECAY_PER_SECOND = 12.0f;
-enum float EYE_LAG_LIMIT_ABSOLUTE = 0.12f;
 enum float PITCH_LIMIT_RADIANS = PI / 2.0f - 1e-3f;
 enum float OPPOSITE_DOT_LIMIT = -0.999999f;
 enum float PERPENDICULAR_AXIS_LIMIT = 0.9f;
@@ -74,12 +73,12 @@ struct LocalCharacterController {
     float eyeOffset = 0;
     float eyeLag = 0;
 
-    void smoothEyeVertical(float groundedRise, float dt) {
+    void smoothEyeVertical(float groundedRise, float limit, float dt) {
         eyeLag = (eyeLag + groundedRise) * expf(-EYE_LAG_DECAY_PER_SECOND * dt);
-        if (eyeLag > EYE_LAG_LIMIT_ABSOLUTE) {
-            eyeLag = EYE_LAG_LIMIT_ABSOLUTE;
-        } else if (eyeLag < -EYE_LAG_LIMIT_ABSOLUTE) {
-            eyeLag = -EYE_LAG_LIMIT_ABSOLUTE;
+        if (eyeLag > limit) {
+            eyeLag = limit;
+        } else if (eyeLag < -limit) {
+            eyeLag = -limit;
         }
     }
 

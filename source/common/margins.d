@@ -2,7 +2,7 @@ module common.margins;
 
 import common.dodeca : Vertex, vertexChunkAxisPermutations;
 import common.node : VoxelData;
-import common.voxel_math : CHUNK_DIRECTIONS, ChunkAxisPermutation, ChunkDirection, CoordSign, IDENTITY_PERMUTATION;
+import common.voxel_math : CHUNK_DIRECTIONS, ChunkAxisPermutation, ChunkDirection, CoordSign, Coords, IDENTITY_PERMUTATION;
 import common.world : Material;
 
 struct CoordsWithMargins {
@@ -12,6 +12,14 @@ struct CoordsWithMargins {
         size_t stride = chunkSize + 2;
         return data[0] + data[1] * stride + data[2] * stride * stride;
     }
+}
+
+CoordsWithMargins withMargins(Coords coords) {
+    CoordsWithMargins result;
+    foreach (axis; 0 .. 3) {
+        result.data[axis] = cast(ubyte)(coords.data[axis] + 1);
+    }
+    return result;
 }
 
 ubyte marginCoord(ubyte chunkSize, CoordSign sign) {
@@ -82,6 +90,23 @@ void fixMargins(ubyte dimension, Vertex vertex, VoxelData* voxels, ChunkDirectio
             }
         }
     }
+}
+
+bool marginFacesHaveVoid(ubyte dimension, const(VoxelData)* voxels) {
+    bool found = false;
+    if (!voxels.isSolid()) {
+        foreach (direction; CHUNK_DIRECTIONS) {
+            ubyte margin = marginCoord(dimension, direction.sign);
+            foreach (j; 1 .. dimension + 1) {
+                foreach (i; 1 .. dimension + 1) {
+                    if (voxels.get(tuvToXyz(margin, cast(ubyte) i, cast(ubyte) j, direction.axis).toIndex(dimension)) == Material.Void) {
+                        found = true;
+                    }
+                }
+            }
+        }
+    }
+    return found;
 }
 
 void initializeMargins(ubyte dimension, VoxelData* voxels) {

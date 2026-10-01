@@ -18,7 +18,11 @@ exceptions, no classes, no associative arrays. Memory is `malloc`/`free`
 - `dub build -b release --compiler=ldc2 -c headless` -> `./mined-headless`.
   No X11, no Vulkan, no window. This is the build for all verification.
 - `dub build -b release --compiler=ldc2` -> `./mined`, the windowed client.
-  Never launch it for verification; there is no reason to render.
+  Never launch it windowed for verification. Rendering is verified
+  offscreen: `./mined --screenshot <png> --out <report> <script.lua>`
+  runs the script, lets worldgen cover the nearby set and meshing catch
+  up, renders one frame with no window or input grab, and writes a PNG
+  (read it to look at it). Scenes live in `tests/visual/`.
 - Unit tests: `dub test --compiler=ldc2`. The `unittest` configuration uses
   `source/unittests.d` as a betterC runner (`__traits(getUnitTests)` over
   every imported module) and leaves out Lua, whose headers ImportC rejects
@@ -66,8 +70,12 @@ Headless verification:
   so this is a genuinely flat floor with gravity perpendicular to it. Use it
   to isolate physics from terrain.
 - `--dump-world [radius]` - deterministic world hash dump; byte-diff two
-  runs' reports to prove worldgen unchanged.
-- `--bench-gen | --bench-nearby | --bench-drive [radius]` - timings.
+  runs' reports to prove worldgen unchanged. Deferred materials are
+  resolved first; each chunk line carries a materials hash and an
+  occupancy hash, and the last line digests each column, so a shape-only
+  change and a material-only change are told apart.
+- `--bench-gen | --bench-nearby | --bench-drive | --bench-mesh [radius]` -
+  timings.
 
 ## Scripts (Lua 5.5)
 
@@ -90,7 +98,8 @@ is an error - always call with `:`.
   Positive yaw turns right and positive pitch looks down (mouse sense).
 - `world`: `frames(n[, dt])` (dt defaults to the timestep), `wait(s)`,
   `timestep([s])` (default 0.016), `time()`, `worldgen("flat"|"terrain")`
-  (before the first frame), `every_frame(fn|nil)` (runs fn after each frame
+  (before the first frame; it creates a fresh world and respawns),
+  `every_frame(fn|nil)` (runs fn after each frame
   to observe; it cannot advance time), `check(cond, msg)` (writes a `FAIL`
   line to the report and counts a failure).
 - `player` input: `hold(key...)`, `release(key...)`, `release_all()`,
@@ -181,7 +190,18 @@ coordinates (projective, `ChunkLayout.dualToGridFactor` maps between them).
   homogeneous hyperboloid coordinates keeps geodesics straight, so the
   normal rasterizer works, and all of H^3 fits inside zfar = 1 (the Klein
   ball). Depth is therefore not distance. Recover it with atanh of Klein
-  length, as `fog.frag` does.
+  length, as `fog.frag` does; fog closes at the render radius. Depth is
+  reversed (near 1) and the projection flips y, so visible faces wind
+  clockwise; the swapchain is sRGB and constant colors are converted
+  from sRGB.
+- Chunk meshes are built on the CPU (`client/meshing.d`) under a per
+  frame time budget, nearest first, and kept while the chunk is in the
+  nearby set. Faces live in one growing device buffer managed by a range
+  allocator; the CPU writes indirect draws and per-chunk transforms.
+  Ambient occlusion reads cells beyond the face margins by hopping
+  through slot-based chunk neighbors (`common/chunk_neighbors.d`), so a
+  change to a chunk bumps the generation of every chunk sharing a face,
+  edge or corner with it.
 - `Side.init == Side.A`. It isn't a free sentinel, so check for "no side"
   some other way. The invalid `Vertex` is 255.
 
@@ -259,6 +279,32 @@ conditioning guard.
   then settle down `stepHeight` to follow stairs, or become airborne.
 - Block placement is refused where the voxel would overlap the character
   (`capsuleOverlapsVoxel`), so geometry never appears inside a body.
+- Frames of any length: the step is split into substeps that each move at
+  most one character radius (from a bound on the speed the frame can
+  reach), and the populated-region check covers one substep. There is no
+  frame time clamp.
+- Spawn: climb the perpendicular from the root to the surface plane until
+  every chunk the body could touch is proven void by the worldgen's own
+  bound (`chunkProvenClear`), generate the chunks below synchronously,
+  and settle onto the ground. The player starts standing, in walk mode.
+- Vertical quantities that must survive node crossings (eye smoothing,
+  the bounce metric) are altitudes, the distance to the one global
+  surface plane, never node-local coordinates. `runCharacterStep` returns
+  the path length it moved.
+
+## Worldgen
+
+- A chunk is void when its lowest point is above the terrain ceiling:
+  corner elevations plus the terrace bound plus the noise bound (Box-
+  Muller over 24-bit uniforms is bounded). Plane distance is 1-Lipschitz
+  and a chunk's farthest point is a corner, which is what
+  `chunkGridCenterRadius` measures.
+- A chunk proven solid is stored uniform when one material is proven
+  (below the surface layer, one elevation band, climate range in one
+  Voronoi cell), else stored solid with `materialsDeferred`; the exact
+  materials are generated, by the same function, when it is edited or a
+  void cell appears in its margins. Never assume solid storage means one
+  material.
 
 ## Performance rules
 

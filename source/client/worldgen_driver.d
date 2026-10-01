@@ -2,17 +2,18 @@ module client.worldgen_driver;
 
 import core.stdc.math : coshf;
 import core.stdc.stdlib : calloc, free;
-import core.sys.posix.pthread : pthread_cond_broadcast, pthread_cond_destroy, pthread_cond_init, pthread_cond_t, pthread_cond_wait, pthread_create, pthread_join, pthread_mutex_destroy, pthread_mutex_init, pthread_mutex_lock, pthread_mutex_t, pthread_mutex_unlock, pthread_t;
+import core.sys.posix.pthread : pthread_cond_broadcast, pthread_cond_destroy, pthread_cond_init, pthread_cond_signal, pthread_cond_t, pthread_cond_wait, pthread_create, pthread_join, pthread_mutex_destroy, pthread_mutex_init, pthread_mutex_lock, pthread_mutex_t, pthread_mutex_unlock, pthread_t;
 import core.sys.posix.unistd : _SC_NPROCESSORS_ONLN, sysconf;
 import common.array : Array;
+import common.chunk_neighbors : ChunkSlot, touchChunksAround;
 import common.dodeca : CHUNK_BOUNDING_SPHERE_RADIUS, VERTEX_COUNT, Vertex, vertexAdjacentVertices, vertexCanonicalSides, vertexChunkBoundingSphereCenter;
 import common.graph : Graph, NO_NODE, NO_SLOT;
-import common.margins : fixMargins;
+import common.margins : fixMargins, marginFacesHaveVoid;
 import common.math : MIsometry, MPoint;
-import common.node : Chunk, ChunkId, ChunkState, VoxelData;
+import common.node : Chunk, ChunkId, ChunkState;
 import common.traversal : NearbyNode;
 import common.voxel_math : CHUNK_DIRECTIONS, ChunkDirection, CoordSign;
-import common.worldgen.generation : ChunkParams, createChunkParams, generateVoxels;
+import common.worldgen.generation : ChunkParams, GeneratedVoxels, createChunkParams, generateVoxels;
 
 enum uint MAX_WORKERS = 8;
 enum uint RESERVED_CORES = 2;
@@ -27,13 +28,14 @@ struct GenRequest {
 }
 
 struct GenResult {
-    VoxelData voxels;
+    GeneratedVoxels generated;
     ChunkId chunk;
 }
 
 struct GenQueue {
     pthread_mutex_t mutex;
-    pthread_cond_t condition;
+    pthread_cond_t workAvailable;
+    pthread_cond_t resultsReady;
     Array!GenRequest pending;
     Array!GenResult done;
     size_t pendingHead;
@@ -59,7 +61,7 @@ extern (C) void* workerMain(void* argument) {
     while (running) {
         pthread_mutex_lock(&queue.mutex);
         while (queue.pendingHead >= queue.pending.length && !queue.stopping) {
-            pthread_cond_wait(&queue.condition, &queue.mutex);
+            pthread_cond_wait(&queue.workAvailable, &queue.mutex);
         }
         bool hasRequest = queue.pendingHead < queue.pending.length;
         GenRequest request;
@@ -73,10 +75,10 @@ extern (C) void* workerMain(void* argument) {
         }
         pthread_mutex_unlock(&queue.mutex);
         if (hasRequest) {
-            VoxelData voxels = generateVoxels(&request.params);
+            GeneratedVoxels generated = generateVoxels(&request.params);
             pthread_mutex_lock(&queue.mutex);
-            queue.done.append(GenResult(voxels, request.chunk));
-            pthread_cond_broadcast(&queue.condition);
+            queue.done.append(GenResult(generated, request.chunk));
+            pthread_cond_signal(&queue.resultsReady);
             pthread_mutex_unlock(&queue.mutex);
         } else {
             running = false;
@@ -90,7 +92,8 @@ WorldgenDriver createWorldgenDriver(bool flatWorldgen) {
     driver.flatWorldgen = flatWorldgen;
     driver.queue = cast(GenQueue*) calloc(1, GenQueue.sizeof);
     pthread_mutex_init(&driver.queue.mutex, null);
-    pthread_cond_init(&driver.queue.condition, null);
+    pthread_cond_init(&driver.queue.workAvailable, null);
+    pthread_cond_init(&driver.queue.resultsReady, null);
     long cores = sysconf(_SC_NPROCESSORS_ONLN);
     uint threadCount = 1;
     if (cores > RESERVED_CORES) {
@@ -163,7 +166,7 @@ void driveWorldgen(WorldgenDriver* driver, const(NearbyNode)[] nearby, MIsometry
         foreach (request; driver.requests.slice()) {
             driver.queue.pending.append(request);
         }
-        pthread_cond_broadcast(&driver.queue.condition);
+        pthread_cond_broadcast(&driver.queue.workAvailable);
         pthread_mutex_unlock(&driver.queue.mutex);
     }
 }
@@ -178,7 +181,7 @@ void integrateWorldgen(WorldgenDriver* driver, Graph* graph, bool wait) {
     driver.results.clear();
     pthread_mutex_lock(&driver.queue.mutex);
     while (wait && driver.queue.done.length == 0) {
-        pthread_cond_wait(&driver.queue.condition, &driver.queue.mutex);
+        pthread_cond_wait(&driver.queue.resultsReady, &driver.queue.mutex);
     }
     foreach (result; driver.queue.done.slice()) {
         driver.results.append(result);
@@ -187,25 +190,26 @@ void integrateWorldgen(WorldgenDriver* driver, Graph* graph, bool wait) {
     pthread_mutex_unlock(&driver.queue.mutex);
     foreach (result; driver.results.slice()) {
         driver.inFlight -= 1;
-        populateChunk(graph, result.chunk, result.voxels);
+        populateChunk(graph, result.chunk, result.generated);
     }
 }
 
 void releaseWorldgenDriver(WorldgenDriver* driver) {
     pthread_mutex_lock(&driver.queue.mutex);
     driver.queue.stopping = true;
-    pthread_cond_broadcast(&driver.queue.condition);
+    pthread_cond_broadcast(&driver.queue.workAvailable);
     pthread_mutex_unlock(&driver.queue.mutex);
     foreach (i; 0 .. driver.workerCount) {
         pthread_join(driver.workers[i], null);
     }
     driver.workerCount = 0;
     foreach (result; driver.queue.done.slice()) {
-        result.voxels.release();
+        result.generated.voxels.release();
     }
     driver.queue.pending.release();
     driver.queue.done.release();
-    pthread_cond_destroy(&driver.queue.condition);
+    pthread_cond_destroy(&driver.queue.workAvailable);
+    pthread_cond_destroy(&driver.queue.resultsReady);
     pthread_mutex_destroy(&driver.queue.mutex);
     free(driver.queue);
     driver.queue = null;
@@ -214,9 +218,31 @@ void releaseWorldgenDriver(WorldgenDriver* driver) {
     driver.doneVersion.release();
 }
 
-void populateChunk(Graph* graph, ChunkId chunk, VoxelData voxels) {
+void generateNow(Graph* graph, ChunkId chunk, bool flat) {
+    if (graph.nodeOf(chunk.node).chunks[chunk.vertex].state == ChunkState.Fresh) {
+        ChunkParams params = createChunkParams(graph, chunk, flat);
+        populateChunk(graph, chunk, generateVoxels(&params));
+    }
+}
+
+void populateChunk(Graph* graph, ChunkId chunk, GeneratedVoxels generated) {
     Chunk* target = &graph.nodeOf(chunk.node).chunks[chunk.vertex];
-    target.voxels = voxels;
+    target.voxels = generated.voxels;
+    target.materialsDeferred = generated.materialsDeferred;
+    connectMargins(graph, chunk);
+    target.state = ChunkState.Populated;
+    touchChunksAround(graph, ChunkSlot(graph.slotOf(chunk.node), chunk.vertex));
+    resolveIfExposed(graph, chunk);
+    foreach (direction; CHUNK_DIRECTIONS) {
+        ChunkId neighborChunk = getChunkNeighbor(graph, chunk, direction);
+        if (neighborChunk.node != NO_NODE && graph.nodeOf(neighborChunk.node).chunks[neighborChunk.vertex].state == ChunkState.Populated) {
+            resolveIfExposed(graph, neighborChunk);
+        }
+    }
+}
+
+void connectMargins(Graph* graph, ChunkId chunk) {
+    Chunk* target = &graph.nodeOf(chunk.node).chunks[chunk.vertex];
     foreach (direction; CHUNK_DIRECTIONS) {
         ChunkId neighborChunk = getChunkNeighbor(graph, chunk, direction);
         if (neighborChunk.node != NO_NODE) {
@@ -227,8 +253,25 @@ void populateChunk(Graph* graph, ChunkId chunk, VoxelData voxels) {
             }
         }
     }
-    target.state = ChunkState.Populated;
     target.generation += 1;
+}
+
+void resolveIfExposed(Graph* graph, ChunkId chunk) {
+    Chunk* target = &graph.nodeOf(chunk.node).chunks[chunk.vertex];
+    if (target.materialsDeferred && marginFacesHaveVoid(graph.layout.dimension, &target.voxels)) {
+        resolveMaterials(graph, chunk);
+    }
+}
+
+void resolveMaterials(Graph* graph, ChunkId chunk) {
+    ChunkParams params = createChunkParams(graph, chunk, false);
+    params.resolveMaterials = true;
+    GeneratedVoxels generated = generateVoxels(&params);
+    Chunk* target = &graph.nodeOf(chunk.node).chunks[chunk.vertex];
+    target.voxels.release();
+    target.voxels = generated.voxels;
+    target.materialsDeferred = false;
+    connectMargins(graph, chunk);
 }
 
 ChunkId getChunkNeighbor(const(Graph)* graph, ChunkId chunk, ChunkDirection direction) {

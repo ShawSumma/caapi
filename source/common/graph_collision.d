@@ -74,9 +74,13 @@ bool regionPopulated(const(Graph)* graph, NodeId positionNode, MIsometry!float p
                     if (!((neighborInverse * point).data[3] > nodeThreshold)) {
                         if (neighbor == NO_SLOT) {
                             populated = false;
-                        } else if (!containsSlot(visits[0 .. count], neighbor) && count < REGION_MAX_NODES) {
-                            visits[count] = NodeVisit(neighbor, neighborInverse);
-                            count += 1;
+                        } else if (!containsSlot(visits[0 .. count], neighbor)) {
+                            if (count == REGION_MAX_NODES) {
+                                populated = false;
+                            } else {
+                                visits[count] = NodeVisit(neighbor, neighborInverse);
+                                count += 1;
+                            }
                         }
                     }
                 }
@@ -171,9 +175,11 @@ bool capsuleOverlapsVoxel(Capsule capsule, const(Graph)* graph, NodeId positionN
             foreach (sideIndex; 0 .. SIDE_COUNT) {
                 Side side = cast(Side) sideIndex;
                 uint neighbor = graph.neighborSlot(visit.slot, side);
-                if (neighbor != NO_SLOT && !containsSlot(visits[0 .. count], neighbor) && count < REGION_MAX_NODES) {
-                    MIsometry!float neighborInverse = sideReflection(side) * visit.inverse;
-                    if (!((neighborInverse * point).data[3] > nodeThreshold)) {
+                MIsometry!float neighborInverse = sideReflection(side) * visit.inverse;
+                if (neighbor != NO_SLOT && !containsSlot(visits[0 .. count], neighbor) && !((neighborInverse * point).data[3] > nodeThreshold)) {
+                    if (count == REGION_MAX_NODES) {
+                        overlaps = true;
+                    } else {
                         visits[count] = NodeVisit(neighbor, neighborInverse);
                         count += 1;
                     }

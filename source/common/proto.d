@@ -12,9 +12,14 @@ Position originPosition() {
     return Position(ROOT_NODE, MIsometry!float.identity());
 }
 
+enum MovementMode : ubyte {
+    walk,
+    fly,
+    noclip,
+}
+
 struct CharacterInput {
     float[3] movement = [0, 0, 0];
+    MovementMode mode;
     bool jump;
-    bool fly;
-    bool noClip;
 }

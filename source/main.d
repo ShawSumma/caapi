@@ -1,19 +1,24 @@
 module main;
 
-import core.stdc.stdio : snprintf;
+import core.stdc.stdio : FILE, fclose, fopen, fprintf, snprintf;
 import core.stdc.stdlib : free, malloc, strtof;
 import core.stdc.string : strcmp;
 import core.sys.posix.time : CLOCK_MONOTONIC, clock_gettime, timespec;
-import bindings.platform : Atom, Button1, Button3, ButtonPress, ClientMessage, CurrentTime, Cursor, Display, False, FocusOut, GenericEvent, GrabModeAsync, GrabSuccess, KeyPress, KeyRelease, KeySym, Pixmap, Success, True, UnmapNotify, Window, XBlackPixel, XCloseDisplay, XColor, XCreateBitmapFromData, XCreatePixmapCursor, XCreateSimpleWindow, XDefaultScreen, XDestroyWindow, XDisplayHeight, XDisplayWidth, XEvent, XFlush, XFreeCursor, XFreeEventData, XFreePixmap, XGenericEventCookie, XGetEventData, XGrabPointer, XIAllMasterDevices, XIDeviceInfo, XIEventMask, XIFreeDeviceInfo, XIModeAbsolute, XIQueryDevice, XIQueryVersion, XIRawEvent, XISelectEvents, XIValuatorClass, XIValuatorClassInfo, XI_DeviceChanged, XI_RawMotion, XInternAtom, XK_1, XK_9, XK_Down, XK_Escape, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_n, XK_s, XK_space, XK_v, XK_w, XLookupKeysym, XMapWindow, XNextEvent, XOpenDisplay, XPending, XQueryExtension, XRootWindow, XSelectInput, XSetWMProtocols, XStoreName, XUngrabPointer, XkbSetDetectableAutoRepeat;
+import bindings.platform : Atom, Button1, Button3, ButtonPress, ClientMessage, CurrentTime, Cursor, Display, False, FocusOut, GenericEvent, GrabModeAsync, GrabSuccess, KeyPress, KeyRelease, KeySym, Pixmap, Success, True, UnmapNotify, VkExtent2D, Window, XBlackPixel, XCloseDisplay, XColor, XCreateBitmapFromData, XCreatePixmapCursor, XCreateSimpleWindow, XDefaultScreen, XDestroyWindow, XDisplayHeight, XDisplayWidth, XEvent, XFlush, XFreeCursor, XFreeEventData, XFreePixmap, XGenericEventCookie, XGetEventData, XGrabPointer, XIAllMasterDevices, XIDeviceInfo, XIEventMask, XIFreeDeviceInfo, XIModeAbsolute, XIQueryDevice, XIQueryVersion, XIRawEvent, XISelectEvents, XIValuatorClass, XIValuatorClassInfo, XI_DeviceChanged, XI_RawMotion, XInternAtom, XK_1, XK_9, XK_Down, XK_Escape, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_n, XK_s, XK_space, XK_v, XK_w, XLookupKeysym, XMapWindow, XNextEvent, XOpenDisplay, XPending, XQueryExtension, XRootWindow, XSelectInput, XSetWMProtocols, XStoreName, XUngrabPointer, XkbSetDetectableAutoRepeat;
 import client.config : ClientConfig, loadClientConfig;
-import client.game : FrameInput, Game, KEY_COUNT, Key, MATERIAL_PALETTE, axisValue, createGame, gameBreakBlock, gamePlaceBlock, modeName, releaseGame, stepGame;
+import client.game : FrameInput, Game, KEY_COUNT, Key, MATERIAL_PALETTE, axisValue, createGame, gameBreakBlock, gamePlaceBlock, modeName, releaseGame, stepGame, toggleMode;
 import client.graphics.renderer : Renderer;
-import client.script : ScriptRecorder, closeScriptRecorder, openScriptRecorder, recordEvent, recordFrame;
+import client.local_world : updateLocalWorld, worldgenSettled;
+import client.png : writePng;
+import client.script : ScriptHost, ScriptRecorder, closeScript, closeScriptRecorder, openScriptRecorder, recordEvent, recordFrame, runScript;
+import client.worldgen_driver : settleWorldgen;
+import common.proto : MovementMode;
 import common.sim_config : SimConfigRaw;
 
 enum uint WINDOW_WIDTH = 1280;
 enum uint WINDOW_HEIGHT = 720;
-enum float MAX_FRAME_SECONDS = 0.1f;
+enum uint SCREENSHOT_WIDTH = 640;
+enum uint SCREENSHOT_HEIGHT = 360;
 enum double TITLE_INTERVAL_SECONDS = 1.0;
 enum double NANOSECONDS_PER_SECOND = 1e9;
 enum size_t TEXT_CAPACITY = 256;
@@ -38,6 +43,9 @@ enum int NO_DEVICE = -1;
 struct Arguments {
     const(char)* configPath = "mined.cfg";
     const(char)* recordPath;
+    const(char)* screenshotPath;
+    const(char)* reportPath;
+    const(char)* scriptPath;
     float sensitivity = 0;
     bool hasSensitivity;
     bool invertY;
@@ -93,6 +101,7 @@ struct Session {
     bool[KEY_COUNT] held;
     bool mouseCaptured;
     bool running = true;
+    bool renderFailed;
     bool titleDirty = true;
 }
 
@@ -122,6 +131,14 @@ Arguments parseArguments(int argc, char** argv) {
             arguments.invertY = true;
         } else if (strcmp(argument, "--flat") == 0) {
             arguments.flatWorldgen = true;
+        } else if (strcmp(argument, "--screenshot") == 0 && hasValue) {
+            arguments.screenshotPath = argv[index + 1];
+            index += 1;
+        } else if (strcmp(argument, "--out") == 0 && hasValue) {
+            arguments.reportPath = argv[index + 1];
+            index += 1;
+        } else if (argument[0] != '-') {
+            arguments.scriptPath = argument;
         }
         index += 1;
     }
@@ -289,10 +306,10 @@ void handleKeyPress(Session* session, KeySym symbol, bool repeat) {
     if (symbol == XK_Escape) {
         releaseMouse(session);
     } else if (symbol == XK_v && !repeat) {
-        session.game.flyMode = !session.game.flyMode;
+        toggleMode(&session.game, MovementMode.walk);
         recordModeChange(session);
     } else if (symbol == XK_n && !repeat) {
-        session.game.noClip = !session.game.noClip;
+        toggleMode(&session.game, MovementMode.noclip);
         recordModeChange(session);
     } else if (symbol >= XK_1 && symbol <= XK_9) {
         uint index = cast(uint)(symbol - XK_1);
@@ -376,9 +393,6 @@ void runLoop(Session* session) {
         double now = nowSeconds();
         float dt = cast(float)(now - lastTime);
         lastTime = now;
-        if (dt > MAX_FRAME_SECONDS) {
-            dt = MAX_FRAME_SECONDS;
-        }
         session.mouseDx = 0;
         session.mouseDy = 0;
         while (XPending(session.display) > 0) {
@@ -390,7 +404,10 @@ void runLoop(Session* session) {
             FrameInput frame = buildFrameInput(session, dt);
             recordFrame(&session.recorder, frame, dt);
             stepGame(&session.game, frame, dt);
-            session.renderer.render(&session.game.world, dt);
+            if (!session.renderer.render(&session.game.world)) {
+                session.running = false;
+                session.renderFailed = true;
+            }
             framesSinceTitle += 1;
             if (now - lastTitleTime >= TITLE_INTERVAL_SECONDS) {
                 session.fps = cast(float)(framesSinceTitle / (now - lastTitleTime));
@@ -405,8 +422,67 @@ void runLoop(Session* session) {
     }
 }
 
+bool renderScreenshot(Arguments arguments) {
+    FILE* report = null;
+    if (arguments.reportPath !is null) {
+        report = fopen(arguments.reportPath, "w");
+    }
+    SimConfigRaw raw;
+    ClientConfig config;
+    Renderer* renderer = cast(Renderer*) malloc(Renderer.sizeof);
+    *renderer = Renderer.init;
+    bool ok = renderer.setupOffscreen(VkExtent2D(SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT), raw.chunkSize);
+    Game game = createGame(arguments.flatWorldgen, config.reachMeters);
+    game.settleWorldgenEachFrame = true;
+    if (ok && arguments.scriptPath !is null) {
+        ScriptHost host;
+        host.game = &game;
+        host.report = report;
+        ok = runScript(&host, arguments.scriptPath) && host.failures == 0;
+        closeScript(&host);
+    }
+    bool rendering = ok;
+    uint frames = 0;
+    while (!worldgenSettled(&game.world)) {
+        updateLocalWorld(&game.world);
+        settleWorldgen(&game.world.worldgenDriver, &game.world.graph);
+    }
+    while (rendering) {
+        ok = renderer.render(&game.world);
+        frames += 1;
+        rendering = ok && renderer.meshBacklog() > 0;
+    }
+    if (ok) {
+        ok = writePng(arguments.screenshotPath, SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT, renderer.capture());
+    }
+    if (report !is null) {
+        const(char)* outcome = "failed";
+        if (ok) {
+            outcome = "written";
+        }
+        fprintf(report, "screenshot: %s after %u frames (%u chunks meshed, %u faces)\n", outcome, frames, cast(uint) renderer.meshes.meshedChunks.length, renderer.meshes.allocator.used());
+        fclose(report);
+    }
+    renderer.cleanup();
+    free(renderer);
+    releaseGame(&game);
+    return ok;
+}
+
 extern (C) int main(int argc, char** argv) {
     Arguments arguments = parseArguments(argc, argv);
+    int status = EXIT_FAILED;
+    if (arguments.screenshotPath !is null) {
+        if (renderScreenshot(arguments)) {
+            status = EXIT_OK;
+        }
+    } else {
+        status = runWindowed(arguments);
+    }
+    return status;
+}
+
+int runWindowed(Arguments arguments) {
     Session* session = cast(Session*) malloc(Session.sizeof);
     *session = Session.init;
     session.config = loadClientConfig(arguments.configPath);
@@ -426,7 +502,9 @@ extern (C) int main(int argc, char** argv) {
             session.game = createGame(arguments.flatWorldgen, session.config.reachMeters);
             runLoop(session);
             releaseGame(&session.game);
-            status = EXIT_OK;
+            if (!session.renderFailed) {
+                status = EXIT_OK;
+            }
         }
         session.renderer.cleanup();
         closeWindow(session);

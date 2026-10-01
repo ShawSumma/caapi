@@ -1,21 +1,21 @@
 module client.local_world;
 
 import core.stdc.math : coshf;
-import client.worldgen_driver : WorldgenDriver, createWorldgenDriver, driveWorldgen, getChunkNeighbor, releaseWorldgenDriver;
+import client.worldgen_driver : WorldgenDriver, createWorldgenDriver, driveWorldgen, getChunkNeighbor, releaseWorldgenDriver, resolveIfExposed, resolveMaterials;
+import common.chunk_neighbors : ChunkSlot, touchChunksReading;
 import common.collision_math : Ray;
-import common.graph : Graph, NO_NODE, NodeId, ROOT_NODE, createGraph;
+import common.graph : Graph, NO_NODE, NodeId, createGraph;
 import common.graph_ray_casting : GraphCastHit, rayCast;
-import common.margins : fixMargins, neighborAxisPermutation;
-import common.math : MIsometry, MPoint, MVector, isNan;
+import common.margins : fixMargins, neighborAxisPermutation, withMargins;
+import common.math : MPoint, MVector, isNan;
 import common.node : Chunk, ChunkId, ChunkState;
-import common.proto : Position;
+import common.proto : Position, originPosition;
 import common.traversal : DEFAULT_NODE_CREATION_BUDGET, NearbyNode, NearbyScratch, ensureAndCollectNearby;
 import common.voxel_math : CHUNK_DIRECTIONS, ChunkDirection, Coords, boundaryCoord;
 import common.world : Material;
 
 enum float NEARBY_PADDING = 0.05f;
 enum float RENDER_RADIUS = 4.5f;
-enum float SPAWN_HEIGHT = 1.4f;
 
 struct LocalWorld {
     Graph graph;
@@ -35,7 +35,7 @@ LocalWorld createLocalWorld(ubyte dimension, bool flatWorldgen, float reach) {
     LocalWorld world;
     world.graph = createGraph(dimension);
     world.worldgenDriver = createWorldgenDriver(flatWorldgen);
-    world.cameraPosition = Position(ROOT_NODE, MIsometry!float.translationAlong([0.0f, SPAWN_HEIGHT, 0.0f]));
+    world.cameraPosition = originPosition();
     world.renderRadius = RENDER_RADIUS;
     world.reach = reach;
     return world;
@@ -57,6 +57,10 @@ void updateLocalWorld(LocalWorld* world) {
         world.nearbyVersion += 1;
     }
     driveWorldgen(&world.worldgenDriver, world.cachedNodes, world.cameraPosition.local, world.renderRadius, &world.graph, world.nearbyVersion);
+}
+
+bool worldgenSettled(const(LocalWorld)* world) {
+    return world.worldgenDriver.inFlight == 0 && world.worldgenDriver.scanCursor >= world.cachedNodes.length;
 }
 
 GraphCastHit castCenterRay(const(LocalWorld)* world) {
@@ -106,6 +110,9 @@ bool setVoxel(LocalWorld* world, ChunkId chunkId, Coords coords, Material materi
     Chunk* chunk = &world.graph.nodeOf(chunkId.node).chunks[chunkId.vertex];
     bool result = chunk.state == ChunkState.Populated;
     if (result) {
+        if (chunk.materialsDeferred) {
+            resolveMaterials(&world.graph, chunkId);
+        }
         chunk.voxels.dataMut(dimension)[coords.toIndex(dimension)] = material;
         chunk.generation += 1;
         foreach (direction; CHUNK_DIRECTIONS) {
@@ -115,9 +122,11 @@ bool setVoxel(LocalWorld* world, ChunkId chunkId, Coords coords, Material materi
                 if (neighborChunk.state == ChunkState.Populated) {
                     fixMargins(dimension, chunkId.vertex, &chunk.voxels, direction, &neighborChunk.voxels);
                     neighborChunk.generation += 1;
+                    resolveIfExposed(&world.graph, neighbor);
                 }
             }
         }
+        touchChunksReading(&world.graph, ChunkSlot(world.graph.slotOf(chunkId.node), chunkId.vertex), withMargins(coords));
     }
     return result;
 }
