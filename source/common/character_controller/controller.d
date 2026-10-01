@@ -4,7 +4,7 @@ import core.math : sqrt;
 import core.stdc.math : expf;
 import common.character_controller.collision : CollisionCheckingResult, CollisionContext, checkCollision;
 import common.graph : Graph, ROOT_NODE, createGraph;
-import common.graph_collision : regionPopulated;
+import common.graph_collision : Capsule, regionPopulated;
 import common.math : MIsometry, MPoint, isNan, projectToPlane, sanitizeMotionInput;
 import common.proto : CharacterInput, Position, originPosition;
 import common.sim_config : CharacterConfig, SimConfig;
@@ -12,14 +12,8 @@ import common.vector3 : add3, capMagnitude3, cross3, dot3, magnitude3, moveTowar
 import common.worldgen.generation : NodeState;
 
 enum uint MAX_CONTACT_PLANES = 5;
-enum float MIN_MOVE_ABSOLUTE = 1e-8f;
-enum float CLIP_TOLERANCE_FRACTION = 1e-4f;
-enum float CLIP_SEPARATION_FRACTION = 2e-3f;
-enum float MIN_CREASE_LENGTH = 1e-6f;
-enum float MIN_HORIZONTAL_NORMAL = 1e-3f;
-enum float MIN_STEP_GAIN_FRACTION = 0.01f;
-enum float MIN_STEP_RISE_FRACTION = 0.1f;
-enum float STEP_DEPTH_MARGIN = 1.5f;
+enum uint MAX_SLIDE_PLANES = MAX_CONTACT_PLANES + 1;
+enum float MIN_CREASE_SINE = 1e-3f;
 enum float MIN_UP_LENGTH = 1e-9f;
 enum float UP_PROBE_DISTANCE = 0.1f;
 enum float UP_PROBE_MIN_GAIN = 0.05f;
@@ -28,6 +22,7 @@ enum float TEST_TOLERANCE = 1e-5f;
 struct CharacterState {
     Position position;
     float[3] velocity = [0, 0, 0];
+    float[3] groundNormal = [0, 1, 0];
     bool onGround;
 }
 
@@ -41,18 +36,45 @@ struct Mover {
     const(CharacterConfig)* cfg;
     float[3] up;
     float walkableUpDot;
-    float minStepDepth;
-    float minStepRise;
 }
 
 struct ContactPlane {
     float[3] normal;
     float[3] direction;
+    float separation;
+}
+
+struct PlaneSet {
+    ContactPlane[MAX_SLIDE_PLANES] planes;
+    uint count;
+
+    const(ContactPlane)[] slice() const {
+        return planes[0 .. count];
+    }
+
+    void add(ContactPlane plane) {
+        bool merged = false;
+        foreach (i; 0 .. count) {
+            if (!merged && dot3(planes[i].normal, plane.normal) > 0 && magnitude3(cross3(planes[i].normal, plane.normal)) < MIN_CREASE_SINE) {
+                if (planes[i].separation > plane.separation) {
+                    plane.separation = planes[i].separation;
+                }
+                planes[i] = plane;
+                merged = true;
+            }
+        }
+        if (!merged && count < MAX_SLIDE_PLANES) {
+            planes[count] = plane;
+            count += 1;
+        }
+    }
 }
 
 struct Slide {
     Position position;
     float[3] velocity = [0, 0, 0];
+    float[3] groundNormal = [0, 0, 0];
+    float[3] wallNormal = [0, 0, 0];
     bool hitWall;
     bool landed;
 }
@@ -66,9 +88,8 @@ void runCharacterStep(const(SimConfig)* simConfig, const(Graph)* graph, Characte
     const(CharacterConfig)* cfg = &simConfig.character;
     float[3] up = getRelativeUp(graph, state.position);
     float slope = cfg.maxGroundSlope;
-    float slopeHypotenuse = sqrt(slope * slope + 1.0f);
-    float ledgeOverhang = cfg.characterRadius * (1.0f - slope / slopeHypotenuse);
-    Mover mover = Mover(CollisionContext(graph, up, cfg.characterRadius, cfg.characterHalfHeight), cfg, up, 1.0f / slopeHypotenuse, ledgeOverhang * STEP_DEPTH_MARGIN, cfg.stepHeight * MIN_STEP_RISE_FRACTION);
+    Capsule capsule = Capsule(up, cfg.characterRadius, cfg.characterHalfHeight, cfg.contactSkin);
+    Mover mover = Mover(CollisionContext(graph, capsule), cfg, up, 1.0f / sqrt(slope * slope + 1.0f));
     float reach = cfg.characterHalfHeight + cfg.characterRadius + cfg.stepHeight;
     if (!input.noClip && !regionPopulated(graph, state.position.node, state.position.local, reach)) {
         state.velocity = zero3();
@@ -93,7 +114,8 @@ void noClipStep(const(Mover)* mover, CharacterState* state, CharacterInput input
 
 void flyStep(const(Mover)* mover, CharacterState* state, CharacterInput input, float dt) {
     float[3] velocity = scale3(sanitizeMotionInput(input.movement), mover.cfg.flyMovementSpeed);
-    Slide moved = slide(mover, state.position, scale3(velocity, dt), velocity, Sliding.free);
+    PlaneSet none;
+    Slide moved = slide(mover, state.position, scale3(velocity, dt), velocity, Sliding.free, none);
     state.position = moved.position;
     state.velocity = moved.velocity;
     state.onGround = false;
@@ -121,20 +143,22 @@ void walkStep(const(Mover)* mover, CharacterState* state, CharacterInput input, 
 void groundMove(const(Mover)* mover, CharacterState* state, float[3] velocity, float dt) {
     float[3] displacement = scale3(velocity, dt);
     Position start = state.position;
-    Slide chosen = slide(mover, start, displacement, velocity, Sliding.walking);
+    PlaneSet ground;
+    ground.add(ContactPlane(state.groundNormal, mover.up, 0));
+    Slide chosen = slide(mover, start, displacement, velocity, Sliding.walking, ground);
     if (chosen.hitWall) {
-        Step stepped = stepUp(mover, start, displacement, velocity);
-        float required = horizontalProgress(mover, start, chosen.position, displacement) + MIN_STEP_GAIN_FRACTION * magnitude3(displacement);
-        if (stepped.valid && horizontalProgress(mover, start, stepped.slide.position, displacement) > required) {
+        Step stepped = stepUp(mover, start, add3(displacement, skinTowardWall(mover, chosen.wallNormal)), velocity, ground);
+        if (stepped.valid && horizontalProgress(mover, start, stepped.slide.position, displacement) > horizontalProgress(mover, start, chosen.position, displacement)) {
             chosen = stepped.slide;
         }
     }
-    Slide ground = settle(mover, chosen.position, mover.cfg.stepHeight);
+    Slide settled = settle(mover, chosen.position, mover.cfg.stepHeight);
     state.position = chosen.position;
     state.velocity = rejectAlong(chosen.velocity, mover.up);
-    state.onGround = ground.landed;
-    if (ground.landed) {
-        state.position = ground.position;
+    state.onGround = settled.landed;
+    if (settled.landed) {
+        state.position = settled.position;
+        state.groundNormal = settled.groundNormal;
     }
 }
 
@@ -144,116 +168,138 @@ void airMove(const(Mover)* mover, CharacterState* state, float[3] horizontalVelo
     float[3] fallen = add3(horizontalVelocity, scale3(mover.up, verticalSpeed - cfg.gravityAcceleration * dt));
     float[3] endVelocity = capMagnitude3(scale3(fallen, expf(-cfg.airResistance * dt)), cfg.speedCap);
     float[3] displacement = scale3(add3(startVelocity, endVelocity), 0.5f * dt);
-    Slide moved = slide(mover, state.position, displacement, endVelocity, Sliding.free);
+    PlaneSet none;
+    Slide moved = slide(mover, state.position, displacement, endVelocity, Sliding.free, none);
     state.position = moved.position;
     state.velocity = moved.velocity;
     state.onGround = moved.landed;
     if (moved.landed) {
         state.velocity = rejectAlong(moved.velocity, mover.up);
+        state.groundNormal = moved.groundNormal;
     }
 }
 
-Step stepUp(const(Mover)* mover, Position start, float[3] displacement, float[3] velocity) {
+Step stepUp(const(Mover)* mover, Position start, float[3] displacement, float[3] velocity, PlaneSet ground) {
     Step result;
-    float[3] horizontal = rejectAlong(displacement, mover.up);
-    float horizontalLength = magnitude3(horizontal);
-    Slide raised = slide(mover, start, scale3(mover.up, mover.cfg.stepHeight), zero3(), Sliding.free);
+    PlaneSet none;
+    Slide raised = slide(mover, start, scale3(mover.up, mover.cfg.stepHeight), zero3(), Sliding.free, none);
     float rise = verticalGain(mover, start, raised.position);
-    if (horizontalLength > MIN_MOVE_ABSOLUTE && rise > MIN_MOVE_ABSOLUTE) {
-        float[3] tread = horizontal;
-        if (horizontalLength < mover.minStepDepth) {
-            tread = scale3(horizontal, mover.minStepDepth / horizontalLength);
-        }
-        Slide across = slide(mover, raised.position, tread, velocity, Sliding.walking);
-        Slide drop = settle(mover, across.position, rise + mover.cfg.groundDistanceTolerance);
-        if (drop.landed && verticalGain(mover, start, drop.position) > mover.minStepRise) {
+    if (rise > 0) {
+        Slide across = slide(mover, raised.position, displacement, velocity, Sliding.walking, ground);
+        Slide drop = settle(mover, across.position, rise);
+        if (drop.landed) {
             result.slide = across;
             result.slide.position = drop.position;
+            result.slide.groundNormal = drop.groundNormal;
             result.valid = true;
         }
     }
     return result;
 }
 
+float[3] skinTowardWall(const(Mover)* mover, float[3] wallNormal) {
+    float[3] inward = rejectAlong(neg3(wallNormal), mover.up);
+    float length = magnitude3(inward);
+    float[3] result = zero3();
+    if (length > 0) {
+        result = scale3(inward, mover.cfg.contactSkin / length);
+    }
+    return result;
+}
+
 Slide settle(const(Mover)* mover, Position start, float distance) {
-    return slide(mover, start, scale3(neg3(mover.up), distance), zero3(), Sliding.free);
+    PlaneSet none;
+    return slide(mover, start, scale3(neg3(mover.up), distance), zero3(), Sliding.free, none);
 }
 
-float verticalGain(const(Mover)* mover, Position start, Position end) {
-    MPoint!float moved = (start.local.inverse() * end.local) * MPoint!float.origin();
-    return dot3(moved.vec.xyz(), mover.up);
-}
-
-Slide slide(const(Mover)* mover, Position start, float[3] displacement, float[3] velocity, Sliding sliding) {
+Slide slide(const(Mover)* mover, Position start, float[3] displacement, float[3] velocity, Sliding sliding, PlaneSet planes) {
     Slide result;
     result.position = start;
     result.velocity = velocity;
-    ContactPlane[MAX_CONTACT_PLANES] planes;
-    uint planeCount = 0;
-    float[3] remaining = displacement;
+    float[3] remaining = clipToPlanes(planes.slice(), displacement, true);
+    uint contacts = 0;
     bool moving = true;
-    while (moving && planeCount < MAX_CONTACT_PLANES) {
-        float length = magnitude3(remaining);
-        if (!(length > MIN_MOVE_ABSOLUTE)) {
+    while (moving && contacts < MAX_CONTACT_PLANES) {
+        CollisionCheckingResult collision = checkCollision(&mover.collision, result.position, remaining);
+        result.position.local = result.position.local * collision.displacementTransform;
+        if (!collision.hasCollision) {
             moving = false;
         } else {
-            CollisionCheckingResult collision = checkCollision(&mover.collision, result.position, remaining);
-            result.position.local = result.position.local * collision.displacementTransform;
-            if (!collision.hasCollision) {
-                moving = false;
-            } else {
-                remaining = scale3(remaining, 1.0f - magnitude3(collision.displacementVector) / length);
-                bool walkable = isWalkable(mover, collision.normal);
-                bool descending = dot3(remaining, mover.up) < 0;
-                if (walkable && descending) {
-                    result.landed = true;
-                }
-                if (!walkable) {
-                    result.hitWall = true;
-                }
-                planes[planeCount] = ContactPlane(collision.normal, projectionDirection(mover, collision.normal, walkable && (descending || sliding == Sliding.walking), sliding));
-                planeCount += 1;
-                remaining = clipToPlanes(planes[0 .. planeCount], remaining, CLIP_SEPARATION_FRACTION);
-                result.velocity = clipToPlanes(planes[0 .. planeCount], result.velocity, 0.0f);
+            float length = magnitude3(remaining);
+            remaining = scale3(remaining, 1.0f - magnitude3(collision.displacementVector) / length);
+            bool walkable = isWalkable(mover, collision.normal);
+            bool descending = dot3(remaining, mover.up) < 0;
+            if (descending && supports(mover, &collision)) {
+                result.landed = true;
+                result.groundNormal = supportNormal(mover, &collision);
+                remaining = rejectAlong(remaining, mover.up);
             }
+            if (!walkable && !result.hitWall) {
+                result.hitWall = true;
+                result.wallNormal = collision.normal;
+            }
+            float[3] direction = collision.normal;
+            if (walkable && (descending || sliding == Sliding.walking)) {
+                direction = mover.up;
+            }
+            planes.add(ContactPlane(collision.normal, direction, mover.cfg.contactSkin - collision.gap));
+            contacts += 1;
+            remaining = clipToPlanes(planes.slice(), remaining, true);
+            result.velocity = clipToPlanes(planes.slice(), result.velocity, false);
         }
     }
     return result;
 }
 
-float[3] projectionDirection(const(Mover)* mover, float[3] normal, bool supporting, Sliding sliding) {
-    float[3] result = normal;
-    if (supporting) {
-        result = mover.up;
-    } else if (sliding == Sliding.walking) {
-        float[3] horizontal = rejectAlong(normal, mover.up);
-        float horizontalLength = magnitude3(horizontal);
-        if (horizontalLength > MIN_HORIZONTAL_NORMAL) {
-            result = scale3(horizontal, 1.0f / horizontalLength);
+bool isWalkable(const(Mover)* mover, float[3] normal) {
+    return dot3(normal, mover.up) > mover.walkableUpDot;
+}
+
+bool supports(const(Mover)* mover, const(CollisionCheckingResult)* collision) {
+    bool walkableSurface = false;
+    foreach (surface; collision.surfaces[0 .. collision.surfaceCount]) {
+        if (isWalkable(mover, surface)) {
+            walkableSurface = true;
+        }
+    }
+    return collision.lowestSection && dot3(collision.normal, mover.up) > 0 && walkableSurface;
+}
+
+float[3] supportNormal(const(Mover)* mover, const(CollisionCheckingResult)* collision) {
+    float[3] result = collision.surfaces[0];
+    foreach (surface; collision.surfaces[0 .. collision.surfaceCount]) {
+        if (dot3(surface, mover.up) > dot3(result, mover.up)) {
+            result = surface;
         }
     }
     return result;
 }
 
-bool satisfiesPlanes(const(ContactPlane)[] planes, float[3] v, float tolerance) {
+float target(ContactPlane plane, bool restoreSkin) {
+    float result = 0;
+    if (restoreSkin) {
+        result = plane.separation;
+    }
+    return result;
+}
+
+bool satisfiesPlanes(const(ContactPlane)[] planes, float[3] v, bool restoreSkin, size_t skipA, size_t skipB) {
     bool result = true;
-    foreach (plane; planes) {
-        if (dot3(v, plane.normal) < tolerance) {
+    foreach (k, plane; planes) {
+        if (k != skipA && k != skipB && dot3(v, plane.normal) < target(plane, restoreSkin)) {
             result = false;
         }
     }
     return result;
 }
 
-float[3] clipToPlanes(const(ContactPlane)[] planes, float[3] v, float separationFraction) {
-    float length = magnitude3(v);
-    float tolerance = -CLIP_TOLERANCE_FRACTION * length;
+float[3] clipToPlanes(const(ContactPlane)[] planes, float[3] v, bool restoreSkin) {
     float[3] result = v;
-    bool found = satisfiesPlanes(planes, v, tolerance);
-    foreach (plane; planes) {
-        if (!found && dot3(v, plane.normal) < tolerance) {
-            float[3] candidate = projectToPlane(v, plane.normal, plane.direction, separationFraction * length);
-            if (satisfiesPlanes(planes, candidate, tolerance)) {
+    bool found = satisfiesPlanes(planes, v, restoreSkin, planes.length, planes.length);
+    foreach (i, plane; planes) {
+        if (!found && dot3(v, plane.normal) < target(plane, restoreSkin)) {
+            float[3] candidate = projectToPlane(v, plane.normal, plane.direction, target(plane, restoreSkin));
+            if (satisfiesPlanes(planes, candidate, restoreSkin, i, i)) {
                 result = candidate;
                 found = true;
             }
@@ -262,11 +308,17 @@ float[3] clipToPlanes(const(ContactPlane)[] planes, float[3] v, float separation
     foreach (i; 0 .. planes.length) {
         foreach (j; i + 1 .. planes.length) {
             float[3] crease = cross3(planes[i].normal, planes[j].normal);
-            float creaseLength = magnitude3(crease);
-            if (!found && creaseLength > MIN_CREASE_LENGTH) {
-                float[3] line = scale3(crease, 1.0f / creaseLength);
-                float[3] candidate = scale3(line, dot3(v, line));
-                if (satisfiesPlanes(planes, candidate, tolerance)) {
+            float creaseSine = magnitude3(crease);
+            if (!found && creaseSine >= MIN_CREASE_SINE) {
+                float[3] line = scale3(crease, 1.0f / creaseSine);
+                float cosine = dot3(planes[i].normal, planes[j].normal);
+                float determinant = creaseSine * creaseSine;
+                float targetI = target(planes[i], restoreSkin);
+                float targetJ = target(planes[j], restoreSkin);
+                float alongI = (targetI - cosine * targetJ) / determinant;
+                float alongJ = (targetJ - cosine * targetI) / determinant;
+                float[3] candidate = add3(scale3(line, dot3(v, line)), add3(scale3(planes[i].normal, alongI), scale3(planes[j].normal, alongJ)));
+                if (satisfiesPlanes(planes, candidate, restoreSkin, i, j)) {
                     result = candidate;
                     found = true;
                 }
@@ -279,8 +331,9 @@ float[3] clipToPlanes(const(ContactPlane)[] planes, float[3] v, float separation
     return result;
 }
 
-bool isWalkable(const(Mover)* mover, float[3] normal) {
-    return dot3(normal, mover.up) > mover.walkableUpDot;
+float verticalGain(const(Mover)* mover, Position start, Position end) {
+    MPoint!float moved = (start.local.inverse() * end.local) * MPoint!float.origin();
+    return dot3(moved.vec.xyz(), mover.up);
 }
 
 float horizontalProgress(const(Mover)* mover, Position start, Position end, float[3] displacement) {
@@ -288,7 +341,7 @@ float horizontalProgress(const(Mover)* mover, Position start, Position end, floa
     float[3] horizontal = rejectAlong(displacement, mover.up);
     float horizontalLength = magnitude3(horizontal);
     float result = 0;
-    if (horizontalLength > MIN_MOVE_ABSOLUTE) {
+    if (horizontalLength > 0) {
         result = dot3(rejectAlong(moved.vec.xyz(), mover.up), horizontal) / horizontalLength;
     }
     return result;
@@ -324,15 +377,14 @@ unittest {
     float[3] up = [0, 1, 0];
     float[3] floorNormal = [0, 1, 0];
     float[3] wallNormal = [-1, 0, 0];
-    float[3] horizontalWall = [-1, 0, 0];
     ContactPlane[2] planes = [
-        ContactPlane(floorNormal, up),
-        ContactPlane(wallNormal, horizontalWall),
+        ContactPlane(floorNormal, up, 0),
+        ContactPlane(wallNormal, wallNormal, 0),
     ];
     float[3] intoCorner = [1, -0.5f, 1];
-    float[3] clipped = clipToPlanes(planes, intoCorner, 0.0f);
+    float[3] clipped = clipToPlanes(planes, intoCorner, true);
     assert(clipped[0] > -TEST_TOLERANCE && clipped[0] < TEST_TOLERANCE);
-    assert(clipped[1] > -TEST_TOLERANCE);
+    assert(clipped[1] > -TEST_TOLERANCE && clipped[1] < TEST_TOLERANCE);
     assert(clipped[2] > 1 - TEST_TOLERANCE);
     assert(magnitude3(clipped) <= magnitude3(intoCorner));
 }
@@ -340,15 +392,24 @@ unittest {
 unittest {
     float[3] slopeNormal = [-0.5f, 0.8660254f, 0];
     float[3] up = [0, 1, 0];
-    ContactPlane[1] walkable = [ContactPlane(slopeNormal, up)];
+    ContactPlane[1] walkable = [ContactPlane(slopeNormal, up, 0)];
     float[3] uphill = [1, 0, 0];
-    float[3] climbed = clipToPlanes(walkable, uphill, 0.0f);
+    float[3] climbed = clipToPlanes(walkable, uphill, true);
     assert(climbed[0] == 1);
     assert(climbed[1] > 0);
-    assert(dot3(climbed, slopeNormal) > -TEST_TOLERANCE);
-    ContactPlane[1] free = [ContactPlane(slopeNormal, slopeNormal)];
-    assert(magnitude3(clipToPlanes(free, uphill, 0.0f)) <= 1);
-    assert(dot3(clipToPlanes(free, uphill, CLIP_SEPARATION_FRACTION), slopeNormal) > 0);
+    ContactPlane[1] wall = [ContactPlane(slopeNormal, slopeNormal, 0)];
+    assert(magnitude3(clipToPlanes(wall, uphill, true)) <= 1);
+}
+
+unittest {
+    float[3] wallNormal = [-1, 0, 0];
+    float skinDeficit = 0.25f;
+    ContactPlane[1] touching = [ContactPlane(wallNormal, wallNormal, skinDeficit)];
+    float[3] along = [0, 0, 1];
+    float[3] restored = clipToPlanes(touching, along, true);
+    assert(dot3(restored, wallNormal) >= skinDeficit);
+    float[3] velocity = clipToPlanes(touching, along, false);
+    assert(velocity[0] == along[0] && velocity[1] == along[1] && velocity[2] == along[2]);
 }
 
 unittest {
@@ -356,11 +417,20 @@ unittest {
     float[3] b = [0, 0, -1];
     float[3] c = [0, -1, 0];
     ContactPlane[3] boxed = [
-        ContactPlane(a, a),
-        ContactPlane(b, b),
-        ContactPlane(c, c),
+        ContactPlane(a, a, 0),
+        ContactPlane(b, b, 0),
+        ContactPlane(c, c, 0),
     ];
     float[3] intoAll = [1, 1, 1];
-    float[3] clipped = clipToPlanes(boxed, intoAll, CLIP_SEPARATION_FRACTION);
-    assert(magnitude3(clipped) == 0);
+    assert(magnitude3(clipToPlanes(boxed, intoAll, true)) == 0);
+}
+
+unittest {
+    float[3] first = [-1, 0, 0];
+    float[3] nearlySame = [-1, 1e-5f, 0];
+    PlaneSet set;
+    set.add(ContactPlane(first, first, 0.5f));
+    set.add(ContactPlane(nearlySame, nearlySame, 0.1f));
+    assert(set.count == 1);
+    assert(set.planes[0].separation == 0.5f);
 }

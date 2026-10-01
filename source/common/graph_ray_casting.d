@@ -5,7 +5,7 @@ import common.chunk_ray_casting : ChunkRayCastHit, chunkRayCast;
 import common.collision_math : MAX_TANH_DISTANCE, Ray, transformRay;
 import common.dodeca : BOUNDING_SPHERE_RADIUS, CHUNK_BOUNDING_SPHERE_RADIUS, SIDE_COUNT, Side, VERTEX_COUNT, Vertex, sideReflection, vertexChunkBoundingSphereCenter, vertexNodeToDual;
 import common.graph : Graph, NO_SLOT, NodeId;
-import common.graph_collision : containsSlot;
+import common.graph_collision : NodeVisit, containsSlot;
 import common.math : MIsometry, isNan;
 import common.node : Chunk, ChunkId, ChunkState, Node;
 import common.voxel_math : CoordAxis, CoordSign, Coords;
@@ -33,19 +33,16 @@ GraphCastHit rayCast(const(Graph)* graph, NodeId positionNode, MIsometry!float p
         float reach = atanhf(capped);
         float nodeThreshold = coshf(reach + BOUNDING_SPHERE_RADIUS + CHUNK_BOUNDING_SPHERE_RADIUS);
         float chunkThreshold = coshf(reach + CHUNK_BOUNDING_SPHERE_RADIUS);
-        uint[RAY_CAST_MAX_NODES] slots = void;
-        MIsometry!float[RAY_CAST_MAX_NODES] inverses = void;
+        NodeVisit[RAY_CAST_MAX_NODES] visits = void;
         uint count = 1;
         uint front = 0;
-        slots[0] = startSlot;
-        inverses[0] = MIsometry!float.identity();
+        visits[0] = NodeVisit(startSlot, MIsometry!float.identity());
         float best = tanhDistance;
         while (front < count) {
-            uint slot = slots[front];
-            MIsometry!float inverse = inverses[front];
+            NodeVisit visit = visits[front];
             front += 1;
-            Ray localRay = transformRay(inverse, nodeRay);
-            const(Node)* node = graph.nodeAt(slot);
+            Ray localRay = transformRay(visit.inverse, nodeRay);
+            const(Node)* node = graph.nodeAt(visit.slot);
             foreach (vertexIndex; 0 .. VERTEX_COUNT) {
                 Vertex vertex = cast(Vertex) vertexIndex;
                 const(Chunk)* chunk = &node.chunks[vertex];
@@ -55,7 +52,7 @@ GraphCastHit rayCast(const(Graph)* graph, NodeId positionNode, MIsometry!float p
                     if (!isNan(chunkHit.tanhDistance)) {
                         best = chunkHit.tanhDistance;
                         hit.tanhDistance = chunkHit.tanhDistance;
-                        hit.chunk = ChunkId(graph.idAt(slot), vertex);
+                        hit.chunk = ChunkId(graph.idAt(visit.slot), vertex);
                         hit.voxelCoords = chunkHit.voxelCoords;
                         hit.faceAxis = chunkHit.faceAxis;
                         hit.faceSign = chunkHit.faceSign;
@@ -64,12 +61,11 @@ GraphCastHit rayCast(const(Graph)* graph, NodeId positionNode, MIsometry!float p
             }
             foreach (sideIndex; 0 .. SIDE_COUNT) {
                 Side side = cast(Side) sideIndex;
-                uint neighbor = graph.neighborSlot(slot, side);
-                if (neighbor != NO_SLOT && !containsSlot(slots[0 .. count], neighbor) && count < RAY_CAST_MAX_NODES) {
-                    MIsometry!float neighborInverse = sideReflection(side) * inverse;
+                uint neighbor = graph.neighborSlot(visit.slot, side);
+                if (neighbor != NO_SLOT && !containsSlot(visits[0 .. count], neighbor) && count < RAY_CAST_MAX_NODES) {
+                    MIsometry!float neighborInverse = sideReflection(side) * visit.inverse;
                     if (!((neighborInverse * nodeRay.position.vec).data[3] > nodeThreshold)) {
-                        slots[count] = neighbor;
-                        inverses[count] = neighborInverse;
+                        visits[count] = NodeVisit(neighbor, neighborInverse);
                         count += 1;
                     }
                 }

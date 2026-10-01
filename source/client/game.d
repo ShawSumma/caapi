@@ -2,9 +2,10 @@ module client.game;
 
 import core.stdc.math : acoshf, fabsf, tanhf;
 import client.local_character_controller : LocalCharacterController, createLocalCharacterController;
-import client.local_world : LocalWorld, breakBlock, createLocalWorld, placeBlock, releaseLocalWorld, updateLocalWorld;
+import client.local_world : LocalWorld, Placement, breakBlock, createLocalWorld, placementTarget, releaseLocalWorld, setVoxel, updateLocalWorld;
 import client.worldgen_driver : settleWorldgen;
 import common.character_controller.controller : CharacterState, getRelativeUp, runCharacterStep;
+import common.graph_collision : Capsule, capsuleOverlapsVoxel;
 import common.math : MPoint;
 import common.proto : CharacterInput, Position;
 import common.sim_config : SimConfig, SimConfigRaw, simConfigFromRaw;
@@ -122,7 +123,13 @@ bool gameBreakBlock(Game* game) {
 }
 
 bool gamePlaceBlock(Game* game) {
-    return placeBlock(&game.world, MATERIAL_PALETTE[game.materialIndex]);
+    Placement placement = placementTarget(&game.world);
+    Capsule capsule = Capsule(game.character.up, game.simConfig.character.characterRadius, game.simConfig.character.characterHalfHeight, game.simConfig.character.contactSkin);
+    bool result = false;
+    if (placement.found && !capsuleOverlapsVoxel(capsule, &game.world.graph, game.characterState.position.node, game.characterState.position.local, placement.chunk, placement.coords)) {
+        result = setVoxel(&game.world, placement.chunk, placement.coords, MATERIAL_PALETTE[game.materialIndex]);
+    }
+    return result;
 }
 
 float axisValue(bool held) {

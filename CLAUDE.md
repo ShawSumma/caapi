@@ -42,6 +42,11 @@ exceptions, no classes, no associative arrays. Memory is `malloc`/`free`
   `source/bindings/platform.c` against `deps/vulkan-headers`. ImportC drops
   C `const` on pointer members and hides expression macros (X event masks
   are defined in `main.d`). The only pre-build step is `glslc`.
+- Mouse look is XInput2 raw motion (unaccelerated device counts, no pointer
+  warping); the pointer grab only hides the cursor and keeps clicks in the
+  window. libXi's few declarations live in `platform.c` (constants come from
+  the system `XI2.h`), and it links by soname (`:libXi.so.6`), so no
+  libxi-dev is needed. `mouse_sensitivity` is radians per count.
 - Never run git commands; version control is managed by hand.
 - Shell: one plain command per call. No `&&`, pipes, redirects, filtering
   commands, or other shell constructs; read files whole, never partially.
@@ -96,8 +101,8 @@ is an error - always call with `:`.
 - `player` actions: `mode([walk|fly|noclip])`, `material([1..9])`,
   `break_block()`, `place_block()`.
 - `player` observation: `traveled()` (path length), `on_ground()`,
-  `altitude()` (body center above the base surface plane; 0.9 standing on
-  flat worldgen), `speed()`, `horizontal_speed()`, `vertical_speed()`
+  `altitude()` (body center above the base surface plane; half height plus
+  the contact skin, 0.91, standing on flat worldgen), `speed()`, `horizontal_speed()`, `vertical_speed()`
   (signed, up positive), `camera_vertical_acceleration()` (the bounce
   metric).
 - `./mined --record` writes the same API: `player:hold`, `player:look`,
@@ -224,25 +229,36 @@ one primitive: `slide` sweeps the capsule, clips the remaining displacement
 and the velocity against every contact plane so far (single plane, then the
 crease of two, else stop), and repeats. Everything else is built from it.
 
+The only tolerance is `contactSkin` (meters): bodies rest one skin from
+every surface. Nothing else in collision or response has an epsilon; the
+remaining constants are an iteration bound and a parallel-plane
+conditioning guard.
+
+- Contacts (`collision_math`, `chunk_collision`): a feature is hit when
+  the true radius would touch it within the move, and only while the
+  motion approaches it, so tangent motion never produces contacts. Motion
+  stops one skin short, and the hit reports its gap; clipping restores the
+  skin, which also depenetrates.
+- Collider: spheres along the axis, spaced so the chain stays within one
+  skin of the true capsule. Faces own their contact point half-open (exact
+  partition within a chunk); edges and corners are tested where convex or
+  on the chunk boundary, which closes the float crack between chunks'
+  frames.
+- Support: a contact supports when it is on the lowest sphere's lower half
+  and a walkable (`maxGroundSlope`) face meets the feature - a footprint
+  rule, so a ledge rim under the foot holds you. A supporting contact while
+  descending absorbs the downward motion.
 - Velocity: on the ground it approaches the input target at
   `groundAcceleration` with no gravity; in the air gravity and drag apply
-  and input only steers toward the target. Clipping never adds speed, so
-  horizontal speed never exceeds the walk speed unless something else
-  supplied it.
-- Contact planes: walkable (`maxGroundSlope`) ones support - they clip
-  along up, keeping horizontal motion - while walking or descending; walls
-  deflect along their normal (horizontal normal while walking). Clipped
-  displacement keeps a small separation so normal error cannot drift into a
-  surface.
+  and input only steers toward the target. Clipping never adds speed.
+- Walking slides keep the ground plane as a constraint; walkable contacts
+  clip along up while walking or descending, others along their normal.
 - Ground move: slide; if a wall blocked it, try a step (slide up
-  `stepHeight`, slide across at least the ledge depth the rounded bottom
-  needs, settle) and keep it only if it rose and progressed further; then
-  settle down `stepHeight` to follow stairs, or become airborne.
-- Collision (`chunk_collision.d`): the capsule is spheres every 0.4 radius
-  along its axis; faces need the contact inside the face, edges and corners
-  are tested only where convex, and `collision_math` generates contacts
-  only for motion approaching the surface, so a grazing contact never hides
-  the obstacle behind it.
+  `stepHeight`, slide across the frame's motion plus the one skin the wall
+  held us off, settle onto support) and keep it if it progressed further;
+  then settle down `stepHeight` to follow stairs, or become airborne.
+- Block placement is refused where the voxel would overlap the character
+  (`capsuleOverlapsVoxel`), so geometry never appears inside a body.
 
 ## Performance rules
 

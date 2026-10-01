@@ -73,23 +73,28 @@ bool breakBlock(LocalWorld* world) {
     return result;
 }
 
-bool placeBlock(LocalWorld* world, Material material) {
+struct Placement {
+    ChunkId chunk;
+    Coords coords;
+    bool found;
+}
+
+Placement placementTarget(LocalWorld* world) {
     GraphCastHit hit = castCenterRay(world);
-    bool result = false;
+    Placement result;
     if (!isNan(hit.tanhDistance)) {
         ubyte dimension = world.graph.layout.dimension;
         Coords coords = hit.voxelCoords;
         int stepped = coords.data[hit.faceAxis] + hit.faceSign;
         if (stepped >= 0 && stepped < dimension) {
             coords.data[hit.faceAxis] = cast(ubyte) stepped;
-            result = setVoxel(world, hit.chunk, coords, material);
+            result = Placement(hit.chunk, coords, true);
         } else {
             ChunkDirection direction = ChunkDirection(hit.faceAxis, hit.faceSign);
             ChunkId neighbor = getChunkNeighbor(&world.graph, hit.chunk, direction);
             if (neighbor.node != NO_NODE) {
                 coords.data[hit.faceAxis] = boundaryCoord(dimension, direction.sign);
-                coords = neighborAxisPermutation(hit.chunk.vertex, direction).apply(coords);
-                result = setVoxel(world, neighbor, coords, material);
+                result = Placement(neighbor, neighborAxisPermutation(hit.chunk.vertex, direction).apply(coords), true);
             }
         }
     }

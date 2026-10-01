@@ -4,7 +4,7 @@ import core.stdc.stdio : snprintf;
 import core.stdc.stdlib : free, malloc, strtof;
 import core.stdc.string : strcmp;
 import core.sys.posix.time : CLOCK_MONOTONIC, clock_gettime, timespec;
-import bindings.platform : Atom, Button1, Button3, ButtonPress, ClientMessage, ConfigureNotify, CurrentTime, Cursor, Display, False, FocusOut, GrabModeAsync, GrabSuccess, KeyPress, KeyRelease, KeySym, MotionNotify, None, Pixmap, True, UnmapNotify, Window, XBlackPixel, XCloseDisplay, XColor, XCreateBitmapFromData, XCreatePixmapCursor, XCreateSimpleWindow, XDefaultScreen, XDestroyWindow, XEvent, XFlush, XFreeCursor, XFreePixmap, XGrabPointer, XInternAtom, XK_1, XK_9, XK_Down, XK_Escape, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_n, XK_s, XK_space, XK_v, XK_w, XLookupKeysym, XMapWindow, XNextEvent, XNextRequest, XOpenDisplay, XPending, XRootWindow, XSelectInput, XSetWMProtocols, XStoreName, XUngrabPointer, XWarpPointer, XkbSetDetectableAutoRepeat;
+import bindings.platform : Atom, Button1, Button3, ButtonPress, ClientMessage, CurrentTime, Cursor, Display, False, FocusOut, GenericEvent, GrabModeAsync, GrabSuccess, KeyPress, KeyRelease, KeySym, Pixmap, Success, True, UnmapNotify, Window, XBlackPixel, XCloseDisplay, XColor, XCreateBitmapFromData, XCreatePixmapCursor, XCreateSimpleWindow, XDefaultScreen, XDestroyWindow, XDisplayHeight, XDisplayWidth, XEvent, XFlush, XFreeCursor, XFreeEventData, XFreePixmap, XGenericEventCookie, XGetEventData, XGrabPointer, XIAllMasterDevices, XIDeviceInfo, XIEventMask, XIFreeDeviceInfo, XIModeAbsolute, XIQueryDevice, XIQueryVersion, XIRawEvent, XISelectEvents, XIValuatorClass, XIValuatorClassInfo, XI_DeviceChanged, XI_RawMotion, XInternAtom, XK_1, XK_9, XK_Down, XK_Escape, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_n, XK_s, XK_space, XK_v, XK_w, XLookupKeysym, XMapWindow, XNextEvent, XOpenDisplay, XPending, XQueryExtension, XRootWindow, XSelectInput, XSetWMProtocols, XStoreName, XUngrabPointer, XkbSetDetectableAutoRepeat;
 import client.config : ClientConfig, loadClientConfig;
 import client.game : FrameInput, Game, KEY_COUNT, Key, MATERIAL_PALETTE, axisValue, createGame, gameBreakBlock, gamePlaceBlock, modeName, releaseGame, stepGame;
 import client.graphics.renderer : Renderer;
@@ -24,11 +24,16 @@ enum int EXIT_FAILED = 1;
 enum long KEY_PRESS_MASK = 1L << 0;
 enum long KEY_RELEASE_MASK = 1L << 1;
 enum long BUTTON_PRESS_MASK = 1L << 2;
-enum long POINTER_MOTION_MASK = 1L << 6;
 enum long STRUCTURE_NOTIFY_MASK = 1L << 17;
 enum long FOCUS_CHANGE_MASK = 1L << 21;
-enum long INPUT_EVENT_MASK = KEY_PRESS_MASK | KEY_RELEASE_MASK | BUTTON_PRESS_MASK | POINTER_MOTION_MASK | STRUCTURE_NOTIFY_MASK | FOCUS_CHANGE_MASK;
-enum uint POINTER_GRAB_MASK = cast(uint)(BUTTON_PRESS_MASK | POINTER_MOTION_MASK);
+enum long INPUT_EVENT_MASK = KEY_PRESS_MASK | KEY_RELEASE_MASK | BUTTON_PRESS_MASK | STRUCTURE_NOTIFY_MASK | FOCUS_CHANGE_MASK;
+enum uint POINTER_GRAB_MASK = cast(uint) BUTTON_PRESS_MASK;
+enum int XI_REQUIRED_MAJOR = 2;
+enum int XI_REQUIRED_MINOR = 1;
+enum size_t XI_MASK_BYTES = (XI_RawMotion >> 3) + 1;
+enum uint POINTER_AXES = 2;
+enum uint BITS_PER_BYTE = 8;
+enum int NO_DEVICE = -1;
 
 struct Arguments {
     const(char)* configPath = "mined.cfg";
@@ -57,6 +62,19 @@ immutable KeyBinding[10] KEY_BINDINGS = [
     KeyBinding(XK_Down, Key.pitchDown),
 ];
 
+struct PointerAxis {
+    double countsPerValue = 1;
+    double last = 0;
+    bool absolute;
+    bool haveLast;
+}
+
+struct RawPointer {
+    PointerAxis[POINTER_AXES] axes;
+    int opcode;
+    int deviceId = NO_DEVICE;
+}
+
 struct Session {
     Game game;
     Renderer renderer;
@@ -65,21 +83,15 @@ struct Session {
     Window window;
     Cursor invisibleCursor;
     Atom deleteAtom;
-    ulong warpSerial;
+    RawPointer pointer;
+    double mouseDx = 0;
+    double mouseDy = 0;
     ClientConfig config;
-    float mouseDx = 0;
-    float mouseDy = 0;
     float fps = 0;
-    int width = WINDOW_WIDTH;
-    int height = WINDOW_HEIGHT;
-    int pointerX;
-    int pointerY;
-    int warpX;
-    int warpY;
+    int screen;
     bool[KEYCODE_COUNT] keyDown;
     bool[KEY_COUNT] held;
     bool mouseCaptured;
-    bool warpPending;
     bool running = true;
     bool titleDirty = true;
 }
@@ -120,8 +132,8 @@ bool openWindow(Session* session) {
     session.display = XOpenDisplay(null);
     bool ok = session.display !is null;
     if (ok) {
-        int screen = XDefaultScreen(session.display);
-        session.window = XCreateSimpleWindow(session.display, XRootWindow(session.display, screen), 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT, 0, XBlackPixel(session.display, screen), XBlackPixel(session.display, screen));
+        session.screen = XDefaultScreen(session.display);
+        session.window = XCreateSimpleWindow(session.display, XRootWindow(session.display, session.screen), 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT, 0, XBlackPixel(session.display, session.screen), XBlackPixel(session.display, session.screen));
         XSelectInput(session.display, session.window, INPUT_EVENT_MASK);
         session.deleteAtom = XInternAtom(session.display, "WM_DELETE_WINDOW", False);
         XSetWMProtocols(session.display, session.window, &session.deleteAtom, 1);
@@ -131,10 +143,42 @@ bool openWindow(Session* session) {
         XColor black;
         session.invisibleCursor = XCreatePixmapCursor(session.display, bitmap, bitmap, &black, &black, 0, 0);
         XFreePixmap(session.display, bitmap);
-        XMapWindow(session.display, session.window);
-        XFlush(session.display);
+        ok = selectRawPointer(session);
+        if (ok) {
+            XMapWindow(session.display, session.window);
+            XFlush(session.display);
+        } else {
+            closeWindow(session);
+        }
     }
     return ok;
+}
+
+bool selectRawPointer(Session* session) {
+    int firstEvent;
+    int firstError;
+    bool ok = XQueryExtension(session.display, "XInputExtension", &session.pointer.opcode, &firstEvent, &firstError) != 0;
+    if (ok) {
+        int major = XI_REQUIRED_MAJOR;
+        int minor = XI_REQUIRED_MINOR;
+        ok = XIQueryVersion(session.display, &major, &minor) == Success && (major > XI_REQUIRED_MAJOR || (major == XI_REQUIRED_MAJOR && minor >= XI_REQUIRED_MINOR));
+    }
+    if (ok) {
+        ubyte[XI_MASK_BYTES] mask = 0;
+        setEventBit(mask[], XI_RawMotion);
+        setEventBit(mask[], XI_DeviceChanged);
+        XIEventMask eventMask = XIEventMask(XIAllMasterDevices, cast(int) mask.length, mask.ptr);
+        XISelectEvents(session.display, XRootWindow(session.display, session.screen), &eventMask, 1);
+    }
+    return ok;
+}
+
+void setEventBit(ubyte[] mask, int event) {
+    mask[event / BITS_PER_BYTE] |= cast(ubyte)(1 << (event % BITS_PER_BYTE));
+}
+
+bool eventBitSet(const(ubyte)* mask, int event) {
+    return (mask[event / BITS_PER_BYTE] & (1 << (event % BITS_PER_BYTE))) != 0;
 }
 
 void closeWindow(Session* session) {
@@ -143,21 +187,10 @@ void closeWindow(Session* session) {
     XCloseDisplay(session.display);
 }
 
-void warpToCenter(Session* session) {
-    session.warpX = session.width / 2;
-    session.warpY = session.height / 2;
-    session.warpSerial = cast(ulong) XNextRequest(session.display);
-    session.warpPending = true;
-    XWarpPointer(session.display, None, session.window, 0, 0, 0, 0, session.warpX, session.warpY);
-}
-
-void captureMouse(Session* session, int x, int y) {
+void captureMouse(Session* session) {
     int grab = XGrabPointer(session.display, session.window, True, POINTER_GRAB_MASK, GrabModeAsync, GrabModeAsync, session.window, session.invisibleCursor, CurrentTime);
     if (grab == GrabSuccess) {
         session.mouseCaptured = true;
-        session.pointerX = x;
-        session.pointerY = y;
-        warpToCenter(session);
         session.titleDirty = true;
     }
 }
@@ -166,14 +199,74 @@ void releaseMouse(Session* session) {
     if (session.mouseCaptured) {
         XUngrabPointer(session.display, CurrentTime);
         session.mouseCaptured = false;
-        session.warpPending = false;
         session.titleDirty = true;
     }
 }
 
-void recenterPointer(Session* session) {
-    if (session.mouseCaptured && !session.warpPending && (session.pointerX != session.width / 2 || session.pointerY != session.height / 2)) {
-        warpToCenter(session);
+void loadPointerAxes(Session* session, int deviceId) {
+    RawPointer* pointer = &session.pointer;
+    pointer.axes = PointerAxis.init;
+    pointer.deviceId = deviceId;
+    double[POINTER_AXES] screenExtent = [XDisplayWidth(session.display, session.screen), XDisplayHeight(session.display, session.screen)];
+    int count = 0;
+    XIDeviceInfo* devices = XIQueryDevice(session.display, deviceId, &count);
+    if (devices !is null) {
+        foreach (device; devices[0 .. count]) {
+            foreach (info; device.classes[0 .. device.num_classes]) {
+                if (info.type == XIValuatorClass) {
+                    XIValuatorClassInfo* valuator = cast(XIValuatorClassInfo*) info;
+                    if (valuator.number >= 0 && valuator.number < POINTER_AXES && valuator.mode == XIModeAbsolute && valuator.max > valuator.min) {
+                        pointer.axes[valuator.number].absolute = true;
+                        pointer.axes[valuator.number].countsPerValue = screenExtent[valuator.number] / (valuator.max - valuator.min);
+                    }
+                }
+            }
+        }
+        XIFreeDeviceInfo(devices);
+    }
+}
+
+double axisDelta(PointerAxis* axis, double value) {
+    double delta = value * axis.countsPerValue;
+    if (axis.absolute) {
+        delta = 0;
+        if (axis.haveLast) {
+            delta = (value - axis.last) * axis.countsPerValue;
+        }
+        axis.last = value;
+        axis.haveLast = true;
+    }
+    return delta;
+}
+
+void handleRawMotion(Session* session, const(XIRawEvent)* raw) {
+    if (raw.deviceid != session.pointer.deviceId) {
+        loadPointerAxes(session, raw.deviceid);
+    }
+    double[POINTER_AXES] delta = [0, 0];
+    int valueIndex = 0;
+    foreach (valuator; 0 .. raw.valuators.mask_len * BITS_PER_BYTE) {
+        if (eventBitSet(raw.valuators.mask, valuator)) {
+            if (valuator < POINTER_AXES) {
+                delta[valuator] = axisDelta(&session.pointer.axes[valuator], raw.raw_values[valueIndex]);
+            }
+            valueIndex += 1;
+        }
+    }
+    if (session.mouseCaptured) {
+        session.mouseDx += delta[0];
+        session.mouseDy += delta[1];
+    }
+}
+
+void handleGenericEvent(Session* session, XGenericEventCookie* cookie) {
+    if (cookie.extension == session.pointer.opcode && XGetEventData(session.display, cookie)) {
+        if (cookie.evtype == XI_RawMotion) {
+            handleRawMotion(session, cast(const(XIRawEvent)*) cookie.data);
+        } else if (cookie.evtype == XI_DeviceChanged) {
+            session.pointer.deviceId = NO_DEVICE;
+        }
+        XFreeEventData(session.display, cookie);
     }
 }
 
@@ -215,23 +308,9 @@ void handleKeyPress(Session* session, KeySym symbol, bool repeat) {
     }
 }
 
-void handleMotion(Session* session, int x, int y, ulong serial) {
-    if (session.mouseCaptured) {
-        if (session.warpPending && serial >= session.warpSerial) {
-            session.pointerX = session.warpX;
-            session.pointerY = session.warpY;
-            session.warpPending = false;
-        }
-        session.mouseDx += x - session.pointerX;
-        session.mouseDy += y - session.pointerY;
-        session.pointerX = x;
-        session.pointerY = y;
-    }
-}
-
-void handleButton(Session* session, uint button, int x, int y) {
+void handleButton(Session* session, uint button) {
     if (!session.mouseCaptured) {
-        captureMouse(session, x, y);
+        captureMouse(session);
     } else if (button == Button1) {
         gameBreakBlock(&session.game);
         recordEvent(&session.recorder, "player:break_block()");
@@ -249,19 +328,16 @@ void processEvent(Session* session, XEvent* event) {
     } else if (event.type == KeyRelease) {
         session.keyDown[event.xkey.keycode % KEYCODE_COUNT] = false;
         setMovementKey(session, XLookupKeysym(&event.xkey, 0), false);
-    } else if (event.type == MotionNotify) {
-        handleMotion(session, event.xmotion.x, event.xmotion.y, cast(ulong) event.xmotion.serial);
+    } else if (event.type == GenericEvent) {
+        handleGenericEvent(session, &event.xcookie);
     } else if (event.type == ButtonPress) {
-        handleButton(session, event.xbutton.button, event.xbutton.x, event.xbutton.y);
+        handleButton(session, event.xbutton.button);
     } else if (event.type == FocusOut) {
         releaseMouse(session);
         session.keyDown[] = false;
         session.held[] = false;
     } else if (event.type == UnmapNotify) {
         releaseMouse(session);
-    } else if (event.type == ConfigureNotify) {
-        session.width = event.xconfigure.width;
-        session.height = event.xconfigure.height;
     } else if (event.type == ClientMessage && cast(Atom) event.xclient.data.l[0] == session.deleteAtom) {
         session.running = false;
     }
@@ -287,8 +363,8 @@ FrameInput buildFrameInput(Session* session, float dt) {
     float pitchRate = (axisValue(session.held[Key.pitchDown]) - axisValue(session.held[Key.pitchUp])) * session.config.turnSpeed;
     FrameInput frame;
     frame.held = session.held;
-    frame.yaw = yawRate * dt + session.mouseDx * session.config.mouseRadiansPerPixel;
-    frame.pitch = pitchRate * dt + session.mouseDy * session.config.mouseRadiansPerPixel * invert;
+    frame.yaw = yawRate * dt + cast(float)(session.mouseDx * session.config.mouseRadiansPerCount);
+    frame.pitch = pitchRate * dt + cast(float)(session.mouseDy * session.config.mouseRadiansPerCount) * invert;
     return frame;
 }
 
@@ -310,7 +386,6 @@ void runLoop(Session* session) {
             XNextEvent(session.display, &event);
             processEvent(session, &event);
         }
-        recenterPointer(session);
         if (session.running) {
             FrameInput frame = buildFrameInput(session, dt);
             recordFrame(&session.recorder, frame, dt);
@@ -336,7 +411,7 @@ extern (C) int main(int argc, char** argv) {
     *session = Session.init;
     session.config = loadClientConfig(arguments.configPath);
     if (arguments.hasSensitivity) {
-        session.config.mouseRadiansPerPixel = arguments.sensitivity;
+        session.config.mouseRadiansPerCount = arguments.sensitivity;
     }
     if (arguments.invertY) {
         session.config.invertY = true;

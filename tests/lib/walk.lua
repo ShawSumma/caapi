@@ -2,8 +2,10 @@ local walk = {}
 
 walk.SPEED = 4
 walk.SPEED_TOLERANCE = 0.05
-walk.STANDING_ALTITUDE = 0.9
-walk.ALTITUDE_TOLERANCE = 0.02
+walk.HALF_HEIGHT = 0.9
+walk.CONTACT_SKIN = 0.01
+walk.STANDING_ALTITUDE = walk.HALF_HEIGHT + walk.CONTACT_SKIN
+walk.ALTITUDE_TOLERANCE = 0.002
 walk.MAX_FALL_SPEED = 15
 
 function walk.spawn(world)
