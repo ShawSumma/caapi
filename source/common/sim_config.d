@@ -27,7 +27,6 @@ struct CharacterConfig {
     float jumpSpeed;
     float groundDistanceTolerance;
     float stepHeight;
-    float autoClimbSpeed;
     float characterRadius;
     float characterHalfHeight;
     float eyeOffset;
@@ -46,7 +45,6 @@ struct CharacterConfigRaw {
     float jumpSpeed = 9.0f;
     float groundDistanceTolerance = 0.2f;
     float stepHeight = 1.1f;
-    float autoClimbSpeed = 9.0f;
     float characterRadius = 0.4f;
     float characterHeight = 1.8f;
     float eyeHeight = 1.5f;
@@ -74,7 +72,6 @@ CharacterConfig characterConfigFromRaw(CharacterConfigRaw raw, float metersToAbs
     config.jumpSpeed = raw.jumpSpeed * metersToAbsolute;
     config.groundDistanceTolerance = raw.groundDistanceTolerance * metersToAbsolute;
     config.stepHeight = raw.stepHeight * metersToAbsolute;
-    config.autoClimbSpeed = raw.autoClimbSpeed * metersToAbsolute;
     config.characterRadius = raw.characterRadius * metersToAbsolute;
     config.characterHalfHeight = raw.characterHeight / 2.0f * metersToAbsolute;
     config.eyeOffset = (raw.eyeHeight - raw.characterHeight / 2.0f) * metersToAbsolute;

@@ -5,6 +5,7 @@ import common.math : MDirection, MIsometry, MPoint, MVector, isInfinite, isNan;
 
 enum float QUADRATIC_EPSILON = 1e-4f;
 enum float MAX_TANH_DISTANCE = 0.999f;
+enum float MIN_APPROACH_RATE = 1e-3f;
 
 struct Ray {
     MPoint!float position;
@@ -17,10 +18,10 @@ struct Ray {
     float solveSpherePlaneIntersection(MDirection!float planeNormal, float sinhRadius) const {
         float positionA = position.mip(planeNormal.vec);
         float directionA = direction.mip(planeNormal.vec);
-        float constantTerm = positionA * positionA - sinhRadius * sinhRadius;
+        float separationSquared = positionA * positionA;
         float halfLinearTerm = positionA * directionA;
         float quadraticTerm = directionA * directionA + sinhRadius * sinhRadius;
-        return solveQuadratic(constantTerm, halfLinearTerm, quadraticTerm);
+        return solveContact(separationSquared, sinhRadius, halfLinearTerm, quadraticTerm);
     }
 
     float solveSphereLineIntersection(MDirection!float lineNormal1, MDirection!float lineNormal0, float sinhRadius) const {
@@ -28,10 +29,10 @@ struct Ray {
         float directionA = direction.mip(lineNormal0.vec);
         float positionB = position.mip(lineNormal1.vec);
         float directionB = direction.mip(lineNormal1.vec);
-        float constantTerm = positionA * positionA + positionB * positionB - sinhRadius * sinhRadius;
+        float separationSquared = positionA * positionA + positionB * positionB;
         float halfLinearTerm = positionA * directionA + positionB * directionB;
         float quadraticTerm = directionA * directionA + directionB * directionB + sinhRadius * sinhRadius;
-        return solveQuadratic(constantTerm, halfLinearTerm, quadraticTerm);
+        return solveContact(separationSquared, sinhRadius, halfLinearTerm, quadraticTerm);
     }
 
     float solveSpherePointIntersection(MDirection!float n0, MDirection!float n1, MDirection!float n2, float sinhRadius) const {
@@ -41,10 +42,10 @@ struct Ray {
         float directionB = direction.mip(n1.vec);
         float positionC = position.mip(n2.vec);
         float directionC = direction.mip(n2.vec);
-        float constantTerm = positionA * positionA + positionB * positionB + positionC * positionC - sinhRadius * sinhRadius;
+        float separationSquared = positionA * positionA + positionB * positionB + positionC * positionC;
         float halfLinearTerm = positionA * directionA + positionB * directionB + positionC * directionC;
         float quadraticTerm = directionA * directionA + directionB * directionB + directionC * directionC + sinhRadius * sinhRadius;
-        return solveQuadratic(constantTerm, halfLinearTerm, quadraticTerm);
+        return solveContact(separationSquared, sinhRadius, halfLinearTerm, quadraticTerm);
     }
 
     float solvePointPlaneIntersection(MDirection!float planeNormal) const {
@@ -59,6 +60,14 @@ struct Ray {
 
 Ray transformRay(MIsometry!float iso, Ray ray) {
     return Ray(iso * ray.position, iso * ray.direction);
+}
+
+float solveContact(float separationSquared, float sinhRadius, float halfLinearTerm, float quadraticTerm) {
+    float result = float.nan;
+    if (halfLinearTerm < -MIN_APPROACH_RATE * sqrt(separationSquared)) {
+        result = solveQuadratic(separationSquared - sinhRadius * sinhRadius, halfLinearTerm, quadraticTerm);
+    }
+    return result;
 }
 
 float solveQuadratic(float constantTerm, float halfLinearTerm, float quadraticTerm) {

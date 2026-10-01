@@ -3,25 +3,27 @@ module common.character_controller.controller;
 import core.math : sqrt;
 import core.stdc.math : expf;
 import common.character_controller.collision : CollisionCheckingResult, CollisionContext, checkCollision;
-import common.character_controller.vector_bounds : BoundedVectors, VectorBound, add3, createBoundedVectors, dot3, magnitude3, neg3, scale3, sub3, zero3;
 import common.graph : Graph, ROOT_NODE, createGraph;
 import common.graph_collision : regionPopulated;
 import common.math : MIsometry, MPoint, isNan, projectToPlane, sanitizeMotionInput;
 import common.proto : CharacterInput, Position, originPosition;
 import common.sim_config : CharacterConfig, SimConfig;
+import common.vector3 : add3, capMagnitude3, cross3, dot3, magnitude3, moveToward3, neg3, rejectAlong, scale3, zero3;
 import common.worldgen.generation : NodeState;
 
-enum uint MAX_COLLISION_ITERATIONS = 6;
-enum double MIN_INPUT_MAGNITUDE = 1e-16;
-enum double MIN_DISPLACEMENT_MAGNITUDE = 1e-16;
-enum float MIN_HORIZONTAL_MAGNITUDE = 1e-9f;
-enum float MIN_BLOCKED_MAGNITUDE = 1e-6f;
-enum float BLOCKED_PROGRESS_FRACTION = 0.5f;
-enum float HOP_GAIN_FRACTION = 0.5f;
-enum float HOP_PROGRESS_FRACTION = 0.5f;
+enum uint MAX_CONTACT_PLANES = 5;
+enum float MIN_MOVE_ABSOLUTE = 1e-8f;
+enum float CLIP_TOLERANCE_FRACTION = 1e-4f;
+enum float CLIP_SEPARATION_FRACTION = 2e-3f;
+enum float MIN_CREASE_LENGTH = 1e-6f;
+enum float MIN_HORIZONTAL_NORMAL = 1e-3f;
+enum float MIN_STEP_GAIN_FRACTION = 0.01f;
+enum float MIN_STEP_RISE_FRACTION = 0.1f;
+enum float STEP_DEPTH_MARGIN = 1.5f;
 enum float MIN_UP_LENGTH = 1e-9f;
 enum float UP_PROBE_DISTANCE = 0.1f;
 enum float UP_PROBE_MIN_GAIN = 0.05f;
+enum float TEST_TOLERANCE = 1e-5f;
 
 struct CharacterState {
     Position position;
@@ -29,292 +31,265 @@ struct CharacterState {
     bool onGround;
 }
 
-struct CharacterControllerContext {
-    CollisionContext collisionContext;
+enum Sliding : ubyte {
+    free,
+    walking,
+}
+
+struct Mover {
+    CollisionContext collision;
     const(CharacterConfig)* cfg;
     float[3] up;
-    float[3] movementInput;
-    float dtSeconds;
-    bool jumpInput;
+    float walkableUpDot;
+    float minStepDepth;
+    float minStepRise;
 }
 
-struct Motion {
+struct ContactPlane {
+    float[3] normal;
+    float[3] direction;
+}
+
+struct Slide {
     Position position;
-    float[3] velocity;
-    float[3] groundNormal;
-    bool hasGroundNormal;
+    float[3] velocity = [0, 0, 0];
+    bool hitWall;
+    bool landed;
 }
 
-struct GroundContact {
-    float[3] normal = [0, 0, 0];
-    bool found;
-}
-
-struct SettleResult {
-    Position position;
-    float[3] normal = [0, 0, 0];
-    bool found;
+struct Step {
+    Slide slide;
+    bool valid;
 }
 
 void runCharacterStep(const(SimConfig)* simConfig, const(Graph)* graph, CharacterState* state, CharacterInput input, float dtSeconds) {
-    float[3] up = getRelativeUp(graph, state.position);
     const(CharacterConfig)* cfg = &simConfig.character;
-    CharacterControllerContext context = CharacterControllerContext(CollisionContext(graph, up, cfg.characterRadius, cfg.characterHalfHeight), cfg, up, sanitizeMotionInput(input.movement), dtSeconds, input.jump);
-    if (!input.noClip && !regionPopulated(graph, state.position.node, state.position.local, cfg.characterHalfHeight + cfg.characterRadius + cfg.groundDistanceTolerance)) {
+    float[3] up = getRelativeUp(graph, state.position);
+    float slope = cfg.maxGroundSlope;
+    float slopeHypotenuse = sqrt(slope * slope + 1.0f);
+    float ledgeOverhang = cfg.characterRadius * (1.0f - slope / slopeHypotenuse);
+    Mover mover = Mover(CollisionContext(graph, up, cfg.characterRadius, cfg.characterHalfHeight), cfg, up, 1.0f / slopeHypotenuse, ledgeOverhang * STEP_DEPTH_MARGIN, cfg.stepHeight * MIN_STEP_RISE_FRACTION);
+    float reach = cfg.characterHalfHeight + cfg.characterRadius + cfg.stepHeight;
+    if (!input.noClip && !regionPopulated(graph, state.position.node, state.position.local, reach)) {
         state.velocity = zero3();
     } else {
         if (input.noClip) {
-            runNoClipCharacterStep(&context, state);
+            noClipStep(&mover, state, input, dtSeconds);
         } else if (input.fly) {
-            runFlyCharacterStep(&context, state);
+            flyStep(&mover, state, input, dtSeconds);
         } else {
-            runStandardCharacterStep(&context, state);
+            walkStep(&mover, state, input, dtSeconds);
         }
         state.position.local = state.position.local.renormalized();
         state.position.node = graph.normalizeTransform(state.position.node, &state.position.local);
     }
 }
 
-void runStandardCharacterStep(const(CharacterControllerContext)* context, CharacterState* state) {
-    bool startedOnGround = state.onGround;
-    bool hasGroundNormal = false;
-    float[3] groundNormal = zero3();
-    if (state.onGround) {
-        GroundContact contact = getGroundNormal(context, state.position);
-        hasGroundNormal = contact.found;
-        groundNormal = contact.normal;
-    }
+void noClipStep(const(Mover)* mover, CharacterState* state, CharacterInput input, float dt) {
+    state.velocity = scale3(sanitizeMotionInput(input.movement), mover.cfg.noClipMovementSpeed);
+    state.onGround = false;
+    state.position.local = state.position.local * MIsometry!float.translationAlong(scale3(state.velocity, dt));
+}
 
-    if (context.jumpInput && hasGroundNormal) {
-        float[3] horizontalVelocity = sub3(state.velocity, scale3(context.up, dot3(context.up, state.velocity)));
-        state.velocity = add3(horizontalVelocity, scale3(context.up, context.cfg.jumpSpeed));
-        hasGroundNormal = false;
-    }
+void flyStep(const(Mover)* mover, CharacterState* state, CharacterInput input, float dt) {
+    float[3] velocity = scale3(sanitizeMotionInput(input.movement), mover.cfg.flyMovementSpeed);
+    Slide moved = slide(mover, state.position, scale3(velocity, dt), velocity, Sliding.free);
+    state.position = moved.position;
+    state.velocity = moved.velocity;
+    state.onGround = false;
+}
 
-    float[3] oldVelocity = state.velocity;
-    if (hasGroundNormal) {
-        state.velocity = applyGroundControls(context, groundNormal, state.velocity);
+void walkStep(const(Mover)* mover, CharacterState* state, CharacterInput input, float dt) {
+    const(CharacterConfig)* cfg = mover.cfg;
+    float[3] wish = rejectAlong(sanitizeMotionInput(input.movement), mover.up);
+    float[3] targetVelocity = scale3(wish, cfg.maxGroundSpeed);
+    float[3] horizontalVelocity = rejectAlong(state.velocity, mover.up);
+    float verticalSpeed = dot3(state.velocity, mover.up);
+    if (state.onGround && !input.jump) {
+        groundMove(mover, state, moveToward3(horizontalVelocity, targetVelocity, cfg.groundAcceleration * dt), dt);
     } else {
-        state.velocity = applyAirControls(context, state.velocity);
-        state.velocity = scale3(state.velocity, expf(-context.cfg.airResistance * context.dtSeconds));
+        if (state.onGround) {
+            verticalSpeed = cfg.jumpSpeed;
+        }
+        if (dot3(wish, wish) > 0) {
+            horizontalVelocity = moveToward3(horizontalVelocity, targetVelocity, cfg.airAcceleration * dt);
+        }
+        airMove(mover, state, horizontalVelocity, verticalSpeed, dt);
     }
-    state.velocity = sub3(state.velocity, scale3(context.up, context.cfg.gravityAcceleration * context.dtSeconds));
-    state.velocity = capMagnitude(state.velocity, context.cfg.speedCap);
-    float[3] expectedDisplacement = scale3(scale3(add3(state.velocity, oldVelocity), 0.5f), context.dtSeconds);
+}
 
-    Position startPosition = state.position;
-    Motion motion = Motion(state.position, state.velocity, groundNormal, hasGroundNormal);
-    applyVelocity(context, expectedDisplacement, &motion);
-    state.position = motion.position;
-    state.velocity = motion.velocity;
-    groundNormal = motion.groundNormal;
-    hasGroundNormal = motion.hasGroundNormal;
-
-    float[3] expectedHorizontal = sub3(expectedDisplacement, scale3(context.up, dot3(expectedDisplacement, context.up)));
-    float expectedMagnitude = magnitude3(expectedHorizontal);
-    float[3] expectedDirection = zero3();
-    if (expectedMagnitude > MIN_HORIZONTAL_MAGNITUDE) {
-        expectedDirection = scale3(expectedHorizontal, 1.0f / expectedMagnitude);
+void groundMove(const(Mover)* mover, CharacterState* state, float[3] velocity, float dt) {
+    float[3] displacement = scale3(velocity, dt);
+    Position start = state.position;
+    Slide chosen = slide(mover, start, displacement, velocity, Sliding.walking);
+    if (chosen.hitWall) {
+        Step stepped = stepUp(mover, start, displacement, velocity);
+        float required = horizontalProgress(mover, start, chosen.position, displacement) + MIN_STEP_GAIN_FRACTION * magnitude3(displacement);
+        if (stepped.valid && horizontalProgress(mover, start, stepped.slide.position, displacement) > required) {
+            chosen = stepped.slide;
+        }
     }
-    float progress = horizontalProgress(context, expectedDirection, startPosition, state.position);
-
-    bool climbing = false;
-    if (startedOnGround && !context.jumpInput && expectedMagnitude > MIN_BLOCKED_MAGNITUDE && progress < expectedMagnitude * BLOCKED_PROGRESS_FRACTION && canHopOver(context, state.position, expectedDirection, expectedMagnitude)) {
-        float[3] runVelocity = scale3(context.movementInput, context.cfg.maxGroundSpeed);
-        state.velocity = add3(runVelocity, scale3(context.up, context.cfg.autoClimbSpeed));
-        hasGroundNormal = false;
-        climbing = true;
+    Slide ground = settle(mover, chosen.position, mover.cfg.stepHeight);
+    state.position = chosen.position;
+    state.velocity = rejectAlong(chosen.velocity, mover.up);
+    state.onGround = ground.landed;
+    if (ground.landed) {
+        state.position = ground.position;
     }
+}
 
-    if (startedOnGround && !context.jumpInput && !climbing && !hasGroundNormal) {
-        SettleResult settled = settleToGround(context, state.position, context.cfg.stepHeight + context.cfg.groundDistanceTolerance);
-        if (settled.found) {
-            float budget = context.cfg.autoClimbSpeed * context.dtSeconds;
-            if (-verticalGain(context, state.position, settled.position) <= budget) {
-                state.position = settled.position;
+void airMove(const(Mover)* mover, CharacterState* state, float[3] horizontalVelocity, float verticalSpeed, float dt) {
+    const(CharacterConfig)* cfg = mover.cfg;
+    float[3] startVelocity = add3(horizontalVelocity, scale3(mover.up, verticalSpeed));
+    float[3] fallen = add3(horizontalVelocity, scale3(mover.up, verticalSpeed - cfg.gravityAcceleration * dt));
+    float[3] endVelocity = capMagnitude3(scale3(fallen, expf(-cfg.airResistance * dt)), cfg.speedCap);
+    float[3] displacement = scale3(add3(startVelocity, endVelocity), 0.5f * dt);
+    Slide moved = slide(mover, state.position, displacement, endVelocity, Sliding.free);
+    state.position = moved.position;
+    state.velocity = moved.velocity;
+    state.onGround = moved.landed;
+    if (moved.landed) {
+        state.velocity = rejectAlong(moved.velocity, mover.up);
+    }
+}
+
+Step stepUp(const(Mover)* mover, Position start, float[3] displacement, float[3] velocity) {
+    Step result;
+    float[3] horizontal = rejectAlong(displacement, mover.up);
+    float horizontalLength = magnitude3(horizontal);
+    Slide raised = slide(mover, start, scale3(mover.up, mover.cfg.stepHeight), zero3(), Sliding.free);
+    float rise = verticalGain(mover, start, raised.position);
+    if (horizontalLength > MIN_MOVE_ABSOLUTE && rise > MIN_MOVE_ABSOLUTE) {
+        float[3] tread = horizontal;
+        if (horizontalLength < mover.minStepDepth) {
+            tread = scale3(horizontal, mover.minStepDepth / horizontalLength);
+        }
+        Slide across = slide(mover, raised.position, tread, velocity, Sliding.walking);
+        Slide drop = settle(mover, across.position, rise + mover.cfg.groundDistanceTolerance);
+        if (drop.landed && verticalGain(mover, start, drop.position) > mover.minStepRise) {
+            result.slide = across;
+            result.slide.position = drop.position;
+            result.valid = true;
+        }
+    }
+    return result;
+}
+
+Slide settle(const(Mover)* mover, Position start, float distance) {
+    return slide(mover, start, scale3(neg3(mover.up), distance), zero3(), Sliding.free);
+}
+
+float verticalGain(const(Mover)* mover, Position start, Position end) {
+    MPoint!float moved = (start.local.inverse() * end.local) * MPoint!float.origin();
+    return dot3(moved.vec.xyz(), mover.up);
+}
+
+Slide slide(const(Mover)* mover, Position start, float[3] displacement, float[3] velocity, Sliding sliding) {
+    Slide result;
+    result.position = start;
+    result.velocity = velocity;
+    ContactPlane[MAX_CONTACT_PLANES] planes;
+    uint planeCount = 0;
+    float[3] remaining = displacement;
+    bool moving = true;
+    while (moving && planeCount < MAX_CONTACT_PLANES) {
+        float length = magnitude3(remaining);
+        if (!(length > MIN_MOVE_ABSOLUTE)) {
+            moving = false;
+        } else {
+            CollisionCheckingResult collision = checkCollision(&mover.collision, result.position, remaining);
+            result.position.local = result.position.local * collision.displacementTransform;
+            if (!collision.hasCollision) {
+                moving = false;
             } else {
-                state.position.local = state.position.local * MIsometry!float.translationAlong(scale3(neg3(context.up), budget));
+                remaining = scale3(remaining, 1.0f - magnitude3(collision.displacementVector) / length);
+                bool walkable = isWalkable(mover, collision.normal);
+                bool descending = dot3(remaining, mover.up) < 0;
+                if (walkable && descending) {
+                    result.landed = true;
+                }
+                if (!walkable) {
+                    result.hitWall = true;
+                }
+                planes[planeCount] = ContactPlane(collision.normal, projectionDirection(mover, collision.normal, walkable && (descending || sliding == Sliding.walking), sliding));
+                planeCount += 1;
+                remaining = clipToPlanes(planes[0 .. planeCount], remaining, CLIP_SEPARATION_FRACTION);
+                result.velocity = clipToPlanes(planes[0 .. planeCount], result.velocity, 0.0f);
             }
-            hasGroundNormal = true;
-            groundNormal = settled.normal;
         }
-    }
-
-    if (hasGroundNormal && !climbing) {
-        state.velocity = projectToPlane(state.velocity, groundNormal, context.up, 0.0f);
-    }
-    state.onGround = hasGroundNormal;
-}
-
-bool canHopOver(const(CharacterControllerContext)* context, Position position, float[3] expectedDirection, float expectedMagnitude) {
-    Motion probe = Motion(position, zero3(), zero3(), false);
-    applyVelocity(context, scale3(context.up, context.cfg.stepHeight), &probe);
-    bool result = false;
-    if (!(verticalGain(context, position, probe.position) < context.cfg.stepHeight * HOP_GAIN_FRACTION)) {
-        Position raised = probe.position;
-        probe.hasGroundNormal = false;
-        applyVelocity(context, scale3(expectedDirection, context.cfg.characterRadius + expectedMagnitude), &probe);
-        result = horizontalProgress(context, expectedDirection, raised, probe.position) > context.cfg.characterRadius * HOP_PROGRESS_FRACTION;
     }
     return result;
 }
 
-float verticalGain(const(CharacterControllerContext)* context, Position start, Position end) {
-    MPoint!float moved = (start.local.inverse() * end.local) * MPoint!float.origin();
-    return dot3(moved.vec.xyz(), context.up);
-}
-
-SettleResult settleToGround(const(CharacterControllerContext)* context, Position position, float distance) {
-    Motion probe = Motion(position, zero3(), zero3(), false);
-    applyVelocity(context, scale3(neg3(context.up), distance), &probe);
-    GroundContact contact = GroundContact(probe.groundNormal, probe.hasGroundNormal);
-    if (!contact.found) {
-        contact = getGroundNormal(context, probe.position);
-    }
-    SettleResult result;
-    result.position = position;
-    if (contact.found) {
-        result.position = probe.position;
-        result.normal = contact.normal;
-        result.found = true;
+float[3] projectionDirection(const(Mover)* mover, float[3] normal, bool supporting, Sliding sliding) {
+    float[3] result = normal;
+    if (supporting) {
+        result = mover.up;
+    } else if (sliding == Sliding.walking) {
+        float[3] horizontal = rejectAlong(normal, mover.up);
+        float horizontalLength = magnitude3(horizontal);
+        if (horizontalLength > MIN_HORIZONTAL_NORMAL) {
+            result = scale3(horizontal, 1.0f / horizontalLength);
+        }
     }
     return result;
 }
 
-float horizontalProgress(const(CharacterControllerContext)* context, float[3] intendedDirection, Position start, Position end) {
-    MPoint!float moved = (start.local.inverse() * end.local) * MPoint!float.origin();
-    float[3] delta = moved.vec.xyz();
-    float[3] horizontal = sub3(delta, scale3(context.up, dot3(delta, context.up)));
-    return dot3(horizontal, intendedDirection);
-}
-
-void runFlyCharacterStep(const(CharacterControllerContext)* context, CharacterState* state) {
-    state.velocity = scale3(context.movementInput, context.cfg.flyMovementSpeed);
-    state.onGround = false;
-    Motion motion = Motion(state.position, state.velocity, zero3(), false);
-    applyVelocity(context, scale3(state.velocity, context.dtSeconds), &motion);
-    state.position = motion.position;
-    state.velocity = motion.velocity;
-}
-
-void runNoClipCharacterStep(const(CharacterControllerContext)* context, CharacterState* state) {
-    state.velocity = scale3(context.movementInput, context.cfg.noClipMovementSpeed);
-    state.onGround = false;
-    state.position.local = state.position.local * MIsometry!float.translationAlong(scale3(state.velocity, context.dtSeconds));
-}
-
-GroundContact getGroundNormal(const(CharacterControllerContext)* context, Position position) {
-    BoundedVectors allowed = createBoundedVectors(scale3(neg3(context.up), context.cfg.groundDistanceTolerance), false, zero3());
-    GroundContact contact;
-    bool searching = true;
-    uint iteration = 0;
-    while (searching && iteration < MAX_COLLISION_ITERATIONS) {
-        CollisionCheckingResult collision = checkCollision(&context.collisionContext, position, allowed.displacement);
-        if (!collision.hasCollision) {
-            searching = false;
-        } else if (isGround(context, collision.normal)) {
-            contact.normal = collision.normal;
-            contact.found = true;
-            searching = false;
-        } else {
-            allowed.addBound(VectorBound(collision.normal, collision.normal, true));
+bool satisfiesPlanes(const(ContactPlane)[] planes, float[3] v, float tolerance) {
+    bool result = true;
+    foreach (plane; planes) {
+        if (dot3(v, plane.normal) < tolerance) {
+            result = false;
         }
-        iteration += 1;
-    }
-    return contact;
-}
-
-bool isGround(const(CharacterControllerContext)* context, float[3] normal) {
-    float slope = context.cfg.maxGroundSlope;
-    return dot3(normal, context.up) > 1.0f / sqrt(slope * slope + 1.0f);
-}
-
-float[3] applyGroundControls(const(CharacterControllerContext)* context, float[3] groundNormal, float[3] velocity) {
-    float movementNorm = magnitude3(context.movementInput);
-    float[3] targetGroundVelocity = zero3();
-    if (movementNorm >= MIN_INPUT_MAGNITUDE) {
-        float[3] unitMovement = projectToPlane(scale3(context.movementInput, 1.0f / movementNorm), groundNormal, context.up, 0.0f);
-        float unitMagnitude = magnitude3(unitMovement);
-        if (unitMagnitude >= MIN_INPUT_MAGNITUDE) {
-            unitMovement = scale3(unitMovement, 1.0f / unitMagnitude);
-        }
-        targetGroundVelocity = scale3(unitMovement, movementNorm * context.cfg.maxGroundSpeed);
-    }
-    float[3] currentToTarget = sub3(targetGroundVelocity, projectToPlane(velocity, groundNormal, context.up, 0.0f));
-    float maxDeltaVelocity = context.cfg.groundAcceleration * context.dtSeconds;
-    float distanceSquared = dot3(currentToTarget, currentToTarget);
-    float[3] result = add3(velocity, currentToTarget);
-    if (distanceSquared > maxDeltaVelocity * maxDeltaVelocity) {
-        result = add3(velocity, scale3(currentToTarget, maxDeltaVelocity / sqrt(distanceSquared)));
     }
     return result;
 }
 
-float[3] applyAirControls(const(CharacterControllerContext)* context, float[3] velocity) {
-    return add3(velocity, scale3(context.movementInput, context.cfg.airAcceleration * context.dtSeconds));
-}
-
-void applyVelocity(const(CharacterControllerContext)* context, float[3] expectedDisplacement, Motion* motion) {
-    BoundedVectors bounded = createBoundedVectors(expectedDisplacement, true, motion.velocity);
-    BoundedVectors withoutCollisions = bounded;
-    bool groundCollisionHandled = false;
-    bool resolving = true;
-    uint iteration = 0;
-    while (resolving && iteration < MAX_COLLISION_ITERATIONS) {
-        CollisionCheckingResult collision = checkCollision(&context.collisionContext, motion.position, bounded.displacement);
-        motion.position.local = motion.position.local * collision.displacementTransform;
-        if (collision.hasCollision) {
-            float displacementMagnitude = magnitude3(bounded.displacement);
-            float reductionFactor = 1.0f;
-            if (displacementMagnitude > MIN_DISPLACEMENT_MAGNITUDE) {
-                reductionFactor = 1.0f - magnitude3(collision.displacementVector) / displacementMagnitude;
-            }
-            bounded.scaleDisplacement(reductionFactor);
-            withoutCollisions.scaleDisplacement(reductionFactor);
-            handleCollision(context, collision.normal, &withoutCollisions, &bounded, motion, &groundCollisionHandled);
-        } else {
-            resolving = false;
-        }
-        iteration += 1;
-    }
-    if (bounded.hasVelocity) {
-        motion.velocity = bounded.velocity;
-    }
-}
-
-void handleCollision(const(CharacterControllerContext)* context, float[3] normal, const(BoundedVectors)* withoutCollisions, BoundedVectors* bounded, Motion* motion, bool* groundCollisionHandled) {
-    if (isGround(context, normal)) {
-        if (!*groundCollisionHandled) {
-            BoundedVectors previous = *bounded;
-            *bounded = *withoutCollisions;
-            bounded.addTempBound(VectorBound(normal, context.up, false));
-            bounded.addBound(VectorBound(normal, context.up, true));
-            foreach (i; 0 .. previous.boundCount) {
-                bounded.addBound(previous.bounds[i]);
-            }
-            bounded.clearTempBounds();
-            *groundCollisionHandled = true;
-        } else {
-            bounded.addTempBound(VectorBound(normal, context.up, false));
-            bounded.addBound(VectorBound(normal, context.up, true));
-            bounded.clearTempBounds();
-        }
-        motion.hasGroundNormal = true;
-        motion.groundNormal = normal;
-    } else {
-        if (motion.hasGroundNormal) {
-            bounded.addTempBound(VectorBound(motion.groundNormal, context.up, false));
-        }
-        bounded.addBound(VectorBound(normal, normal, true));
-        bounded.clearTempBounds();
-    }
-}
-
-float[3] capMagnitude(float[3] v, float maxMagnitude) {
-    float magnitudeSquared = dot3(v, v);
+float[3] clipToPlanes(const(ContactPlane)[] planes, float[3] v, float separationFraction) {
+    float length = magnitude3(v);
+    float tolerance = -CLIP_TOLERANCE_FRACTION * length;
     float[3] result = v;
-    if (magnitudeSquared > maxMagnitude * maxMagnitude) {
-        result = scale3(v, maxMagnitude / sqrt(magnitudeSquared));
+    bool found = satisfiesPlanes(planes, v, tolerance);
+    foreach (plane; planes) {
+        if (!found && dot3(v, plane.normal) < tolerance) {
+            float[3] candidate = projectToPlane(v, plane.normal, plane.direction, separationFraction * length);
+            if (satisfiesPlanes(planes, candidate, tolerance)) {
+                result = candidate;
+                found = true;
+            }
+        }
+    }
+    foreach (i; 0 .. planes.length) {
+        foreach (j; i + 1 .. planes.length) {
+            float[3] crease = cross3(planes[i].normal, planes[j].normal);
+            float creaseLength = magnitude3(crease);
+            if (!found && creaseLength > MIN_CREASE_LENGTH) {
+                float[3] line = scale3(crease, 1.0f / creaseLength);
+                float[3] candidate = scale3(line, dot3(v, line));
+                if (satisfiesPlanes(planes, candidate, tolerance)) {
+                    result = candidate;
+                    found = true;
+                }
+            }
+        }
+    }
+    if (!found) {
+        result = zero3();
+    }
+    return result;
+}
+
+bool isWalkable(const(Mover)* mover, float[3] normal) {
+    return dot3(normal, mover.up) > mover.walkableUpDot;
+}
+
+float horizontalProgress(const(Mover)* mover, Position start, Position end, float[3] displacement) {
+    MPoint!float moved = (start.local.inverse() * end.local) * MPoint!float.origin();
+    float[3] horizontal = rejectAlong(displacement, mover.up);
+    float horizontalLength = magnitude3(horizontal);
+    float result = 0;
+    if (horizontalLength > MIN_MOVE_ABSOLUTE) {
+        result = dot3(rejectAlong(moved.vec.xyz(), mover.up), horizontal) / horizontalLength;
     }
     return result;
 }
@@ -324,9 +299,9 @@ float[3] getRelativeUp(const(Graph)* graph, Position position) {
     const(NodeState)* state = graph.nodeState(position.node);
     if (state !is null) {
         float[3] up = (position.local.inverse() * state.surface.scaledNormal).xyz();
-        float length = sqrt(up[0] * up[0] + up[1] * up[1] + up[2] * up[2]);
+        float length = magnitude3(up);
         if (!(length < MIN_UP_LENGTH || isNan(length))) {
-            result = [up[0] / length, up[1] / length, up[2] / length];
+            result = scale3(up, 1.0f / length);
         }
     }
     return result;
@@ -343,4 +318,49 @@ unittest {
     float endDistance = state.surface.distanceTo(position.local * MPoint!float.origin());
     assert(endDistance > startDistance + UP_PROBE_MIN_GAIN);
     graph.release();
+}
+
+unittest {
+    float[3] up = [0, 1, 0];
+    float[3] floorNormal = [0, 1, 0];
+    float[3] wallNormal = [-1, 0, 0];
+    float[3] horizontalWall = [-1, 0, 0];
+    ContactPlane[2] planes = [
+        ContactPlane(floorNormal, up),
+        ContactPlane(wallNormal, horizontalWall),
+    ];
+    float[3] intoCorner = [1, -0.5f, 1];
+    float[3] clipped = clipToPlanes(planes, intoCorner, 0.0f);
+    assert(clipped[0] > -TEST_TOLERANCE && clipped[0] < TEST_TOLERANCE);
+    assert(clipped[1] > -TEST_TOLERANCE);
+    assert(clipped[2] > 1 - TEST_TOLERANCE);
+    assert(magnitude3(clipped) <= magnitude3(intoCorner));
+}
+
+unittest {
+    float[3] slopeNormal = [-0.5f, 0.8660254f, 0];
+    float[3] up = [0, 1, 0];
+    ContactPlane[1] walkable = [ContactPlane(slopeNormal, up)];
+    float[3] uphill = [1, 0, 0];
+    float[3] climbed = clipToPlanes(walkable, uphill, 0.0f);
+    assert(climbed[0] == 1);
+    assert(climbed[1] > 0);
+    assert(dot3(climbed, slopeNormal) > -TEST_TOLERANCE);
+    ContactPlane[1] free = [ContactPlane(slopeNormal, slopeNormal)];
+    assert(magnitude3(clipToPlanes(free, uphill, 0.0f)) <= 1);
+    assert(dot3(clipToPlanes(free, uphill, CLIP_SEPARATION_FRACTION), slopeNormal) > 0);
+}
+
+unittest {
+    float[3] a = [-1, 0, 0];
+    float[3] b = [0, 0, -1];
+    float[3] c = [0, -1, 0];
+    ContactPlane[3] boxed = [
+        ContactPlane(a, a),
+        ContactPlane(b, b),
+        ContactPlane(c, c),
+    ];
+    float[3] intoAll = [1, 1, 1];
+    float[3] clipped = clipToPlanes(boxed, intoAll, CLIP_SEPARATION_FRACTION);
+    assert(magnitude3(clipped) == 0);
 }

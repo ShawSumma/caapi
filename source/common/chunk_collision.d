@@ -1,6 +1,5 @@
 module common.chunk_collision;
 
-import core.math : sqrt;
 import core.stdc.math : ceilf, coshf, floorf, sinhf, tanhf;
 import common.collision_math : MAX_TANH_DISTANCE, Ray, transformRay;
 import common.math : MDirection, MIsometry, MPoint, MVector, isNan;
@@ -11,12 +10,11 @@ import common.world : Material;
 enum float FACE_TIE_EPS = 1e-5f;
 enum float GRID_PADDING_CELLS = 2.0f;
 enum uint MAX_FACES = 256;
-enum int SEGMENT_SAMPLES = 7;
-enum float MIN_AXIS_LENGTH = 1e-6f;
+enum float SECTION_SPACING_RADII = 0.4f;
+enum float FACE_BORDER_TOLERANCE_CELLS = 1e-4f;
 enum float MIN_CAP_OFFSET = 1e-9f;
 
 immutable byte[2] FACE_SIGNS = [-1, 1];
-immutable float[3] SECTION_SIGNS = [0.0f, 1.0f, -1.0f];
 
 struct ChunkCollisionHit {
     MVector!float normal;
@@ -40,6 +38,13 @@ struct SurfaceFace {
     ubyte[3] cell;
     ubyte axis;
     byte sign;
+}
+
+struct Section {
+    Ray ray;
+    MIsometry!float fromSection;
+    float sinhRadius;
+    bool offset;
 }
 
 GridRange sweepGridRange(ChunkLayout layout, Ray ray, float tanhDistance, float padDistance) {
@@ -114,32 +119,50 @@ ChunkCollisionHit chunkShapeCast(SweptShape shape, const(VoxelData)* voxelData, 
     if (!range.empty) {
         SurfaceFace[MAX_FACES] faces = void;
         uint faceCount = collectSurfaceFaces(voxelData, layout, range, faces.ptr);
-        foreach (i; 0 .. faceCount) {
-            faceContact(shape, layout, ray, faces[i], &hit, tanhDistance);
+        float capOffset = 0;
+        if (shape.halfHeight > shape.radius) {
+            capOffset = shape.halfHeight - shape.radius;
         }
-        float capOffset = shape.halfHeight - shape.radius;
-        if (capOffset < 0) {
-            capOffset = 0;
-        }
-        uint sectionCount = 1;
-        if (capOffset > MIN_CAP_OFFSET) {
-            sectionCount = 3;
-        }
-        foreach (section; 0 .. sectionCount) {
-            Ray sectionRay = ray;
-            MIsometry!float fromSection = MIsometry!float.identity();
-            bool offsetSection = SECTION_SIGNS[section] != 0;
-            if (offsetSection) {
-                MIsometry!float toSection = axisTranslation(ray, shape.axis, SECTION_SIGNS[section] * capOffset);
-                sectionRay = transformRay(toSection, ray);
-                fromSection = toSection.inverse();
-            }
+        uint sectionCount = capsuleSectionCount(capOffset, shape.radius);
+        foreach (sectionIndex; 0 .. sectionCount) {
+            Section section = capsuleSection(shape, ray, sectionOffset(sectionIndex, sectionCount, capOffset));
             foreach (i; 0 .. faceCount) {
-                faceBoundaryContacts(shape, layout, sectionRay, fromSection, offsetSection, faces[i], &hit, tanhDistance);
+                faceContact(&section, layout, faces[i], &hit, tanhDistance);
+                faceBoundaryContacts(&section, voxelData, layout, faces[i], &hit, tanhDistance);
             }
         }
     }
     return hit;
+}
+
+uint capsuleSectionCount(float capOffset, float radius) {
+    uint result = 1;
+    if (capOffset > MIN_CAP_OFFSET) {
+        result = cast(uint) ceilf(2.0f * capOffset / (radius * SECTION_SPACING_RADII)) + 1;
+    }
+    return result;
+}
+
+float sectionOffset(uint sectionIndex, uint sectionCount, float capOffset) {
+    float result = 0;
+    if (sectionCount > 1) {
+        result = capOffset * (2.0f * cast(float) sectionIndex / cast(float)(sectionCount - 1) - 1.0f);
+    }
+    return result;
+}
+
+Section capsuleSection(SweptShape shape, Ray ray, float offset) {
+    Section section;
+    section.ray = ray;
+    section.fromSection = MIsometry!float.identity();
+    section.sinhRadius = sinhf(shape.radius);
+    section.offset = offset != 0;
+    if (section.offset) {
+        MIsometry!float toSection = axisTranslation(ray, shape.axis, offset);
+        section.ray = transformRay(toSection, ray);
+        section.fromSection = toSection.inverse();
+    }
+    return section;
 }
 
 MIsometry!float axisTranslation(Ray ray, MVector!float axis, float offset) {
@@ -162,58 +185,19 @@ int facePlaneIndex(SurfaceFace face) {
     return result;
 }
 
-void faceContact(SweptShape shape, ChunkLayout layout, Ray ray, SurfaceFace face, ChunkCollisionHit* hit, float tanhDistance) {
-    size_t tAxis = face.axis;
-    size_t uAxis = (tAxis + 1) % 3;
-    size_t vAxis = (tAxis + 2) % 3;
-    MDirection!float plane = gridPlane(layout, tAxis, facePlaneIndex(face));
-    MDirection!float outward = plane;
-    if (!(face.sign > 0)) {
-        outward = -plane;
+bool withinCell(float grid, ubyte cell) {
+    return grid >= cast(float) cell - FACE_BORDER_TOLERANCE_CELLS && grid <= cast(float) cell + 1.0f + FACE_BORDER_TOLERANCE_CELLS;
+}
+
+float faceLimit(const(ChunkCollisionHit)* hit, float tanhDistance) {
+    float limit = tanhDistance;
+    if (!isNan(hit.tanhDistance)) {
+        limit = hit.tanhDistance;
     }
-    if (!(ray.direction.mip(outward.vec) >= 0)) {
-        float axial = shape.axis.mip(plane.vec);
-        if (axial < 0) {
-            axial = -axial;
-        }
-        if (axial > 1) {
-            axial = 1;
-        }
-        float lateral = sqrt(1.0f - axial * axial);
-        float sinhEffective = sinhf(shape.radius) * lateral + sinhf(shape.halfHeight) * axial;
-        float newDistance = ray.solveSpherePlaneIntersection(outward, sinhEffective);
-        float limit = tanhDistance;
-        if (!isNan(hit.tanhDistance)) {
-            limit = hit.tanhDistance;
-        }
-        if (!hit.isFace && !isNan(hit.tanhDistance)) {
-            limit = hit.tanhDistance + FACE_TIE_EPS;
-        }
-        if (!isNan(newDistance) && !(newDistance >= limit)) {
-            MVector!float rayEndpoint = ray.rayPoint(newDistance);
-            MVector!float contact = rayEndpoint - outward.vec * rayEndpoint.mip(outward.vec);
-            float gridU = contact.data[uAxis] / contact.data[3] * layout.dualToGridFactor;
-            float gridV = contact.data[vAxis] / contact.data[3] * layout.dualToGridFactor;
-            float axisU = shape.axis.data[uAxis];
-            float axisV = shape.axis.data[vAxis];
-            float axisLength = sqrt(axisU * axisU + axisV * axisV);
-            float halfLength = sinhf(shape.halfHeight) * axisLength * layout.dualToGridFactor;
-            float radius = sinhf(shape.radius) * layout.dualToGridFactor;
-            float directionU = 0;
-            float directionV = 0;
-            if (axisLength > MIN_AXIS_LENGTH) {
-                directionU = axisU / axisLength;
-                directionV = axisV / axisLength;
-            } else {
-                halfLength = 0;
-            }
-            if (!(segmentRectDistance(gridU, gridV, directionU, directionV, halfLength, cast(float) face.cell[uAxis], cast(float) face.cell[vAxis]) > radius)) {
-                hit.tanhDistance = newDistance;
-                hit.normal = outward.vec;
-                hit.isFace = true;
-            }
-        }
+    if (!hit.isFace && !isNan(hit.tanhDistance)) {
+        limit = hit.tanhDistance + FACE_TIE_EPS;
     }
+    return limit;
 }
 
 float boundaryLimit(const(ChunkCollisionHit)* hit, float tanhDistance) {
@@ -227,95 +211,97 @@ float boundaryLimit(const(ChunkCollisionHit)* hit, float tanhDistance) {
     return limit;
 }
 
-void takeBoundaryHit(ChunkCollisionHit* hit, float distance, MVector!float normal, MIsometry!float fromSection, bool offsetSection) {
-    MVector!float sectionNormal = normal;
-    if (offsetSection) {
-        sectionNormal = fromSection.mat * normal;
+void takeHit(ChunkCollisionHit* hit, const(Section)* section, float distance, MVector!float normal, bool isFace) {
+    MVector!float bodyNormal = normal;
+    if (section.offset) {
+        bodyNormal = section.fromSection.mat * normal;
     }
     hit.tanhDistance = distance;
-    hit.normal = sectionNormal;
-    hit.isFace = false;
+    hit.normal = bodyNormal;
+    hit.isFace = isFace;
 }
 
-void faceBoundaryContacts(SweptShape shape, ChunkLayout layout, Ray sectionRay, MIsometry!float fromSection, bool offsetSection, SurfaceFace face, ChunkCollisionHit* hit, float tanhDistance) {
+void faceContact(const(Section)* section, ChunkLayout layout, SurfaceFace face, ChunkCollisionHit* hit, float tanhDistance) {
     size_t tAxis = face.axis;
     size_t uAxis = (tAxis + 1) % 3;
     size_t vAxis = (tAxis + 2) % 3;
-    int t = facePlaneIndex(face);
-    float sinhRadius = sinhf(shape.radius);
-    MDirection!float tPlane = gridPlane(layout, tAxis, t);
-
-    foreach (edgeAxisPick; 0 .. 2) {
-        size_t edgeAxis = uAxis;
-        size_t freeAxis = vAxis;
-        if (edgeAxisPick == 1) {
-            edgeAxis = vAxis;
-            freeAxis = uAxis;
-        }
-        foreach (side; 0 .. 2) {
-            MDirection!float edgePlaneRaw = gridPlane(layout, edgeAxis, face.cell[edgeAxis] + side);
-            MDirection!float edgePlane = (edgePlaneRaw.vec - tPlane.vec * tPlane.mip(edgePlaneRaw.vec)).normalizedDirection();
-            float newDistance = sectionRay.solveSphereLineIntersection(tPlane, edgePlane, sinhRadius);
-            if (!isNan(newDistance) && !(newDistance >= boundaryLimit(hit, tanhDistance))) {
-                MVector!float rayEndpoint = sectionRay.rayPoint(newDistance);
-                MVector!float contact = rayEndpoint - tPlane.vec * rayEndpoint.mip(tPlane.vec) - edgePlane.vec * rayEndpoint.mip(edgePlane.vec);
-                if (layout.dualToVoxel(contact.data[freeAxis] / contact.data[3]) == face.cell[freeAxis]) {
-                    takeBoundaryHit(hit, newDistance, rayEndpoint - contact, fromSection, offsetSection);
-                }
+    MDirection!float plane = gridPlane(layout, tAxis, facePlaneIndex(face));
+    MDirection!float outward = plane;
+    if (!(face.sign > 0)) {
+        outward = -plane;
+    }
+    if (!(section.ray.direction.mip(outward.vec) >= 0)) {
+        float newDistance = section.ray.solveSpherePlaneIntersection(outward, section.sinhRadius);
+        if (!isNan(newDistance) && !(newDistance >= faceLimit(hit, tanhDistance))) {
+            MVector!float rayEndpoint = section.ray.rayPoint(newDistance);
+            MVector!float contact = rayEndpoint - outward.vec * rayEndpoint.mip(outward.vec);
+            float gridU = contact.data[uAxis] / contact.data[3] * layout.dualToGridFactor;
+            float gridV = contact.data[vAxis] / contact.data[3] * layout.dualToGridFactor;
+            if (withinCell(gridU, face.cell[uAxis]) && withinCell(gridV, face.cell[vAxis])) {
+                takeHit(hit, section, newDistance, outward.vec, true);
             }
         }
     }
+}
 
+bool inPlaneNeighborSolid(const(VoxelData)* voxelData, ChunkLayout layout, SurfaceFace face, size_t axis, int side) {
+    int[3] neighbor = [face.cell[0], face.cell[1], face.cell[2]];
+    neighbor[axis] += 2 * side - 1;
+    return voxelSolidWithMargins(voxelData, layout, neighbor);
+}
+
+void faceBoundaryContacts(const(Section)* section, const(VoxelData)* voxelData, ChunkLayout layout, SurfaceFace face, ChunkCollisionHit* hit, float tanhDistance) {
+    size_t uAxis = (face.axis + 1) % 3;
+    size_t vAxis = (face.axis + 2) % 3;
+    foreach (side; 0 .. 2) {
+        if (!inPlaneNeighborSolid(voxelData, layout, face, uAxis, side)) {
+            edgeContact(section, layout, face, uAxis, vAxis, side, hit, tanhDistance);
+        }
+        if (!inPlaneNeighborSolid(voxelData, layout, face, vAxis, side)) {
+            edgeContact(section, layout, face, vAxis, uAxis, side, hit, tanhDistance);
+        }
+    }
     foreach (du; 0 .. 2) {
         foreach (dv; 0 .. 2) {
-            int[3] grid;
-            grid[tAxis] = t;
-            grid[uAxis] = face.cell[uAxis] + du;
-            grid[vAxis] = face.cell[vAxis] + dv;
-            MDirection!float n0 = gridPlane(layout, 0, grid[0]);
-            MVector!float n1Raw = gridPlane(layout, 1, grid[1]).vec;
-            MDirection!float n1 = (n1Raw - n0.vec * n0.mip(n1Raw)).normalizedDirection();
-            MVector!float n2Raw = gridPlane(layout, 2, grid[2]).vec;
-            MDirection!float n2 = (n2Raw - n0.vec * n0.mip(n2Raw) - n1.vec * n1.mip(n2Raw)).normalizedDirection();
-            float newDistance = sectionRay.solveSpherePointIntersection(n0, n1, n2, sinhRadius);
-            if (!isNan(newDistance) && !(newDistance >= boundaryLimit(hit, tanhDistance))) {
-                MVector!float cornerDual = MVector!float(layout.gridToDual(cast(ubyte) grid[0]), layout.gridToDual(cast(ubyte) grid[1]), layout.gridToDual(cast(ubyte) grid[2]), 1.0f);
-                MVector!float rayEndpoint = sectionRay.rayPoint(newDistance);
-                takeBoundaryHit(hit, newDistance, rayEndpoint - cornerDual.normalizedPoint().vec, fromSection, offsetSection);
+            if (!inPlaneNeighborSolid(voxelData, layout, face, uAxis, du) && !inPlaneNeighborSolid(voxelData, layout, face, vAxis, dv)) {
+                cornerContact(section, layout, face, du, dv, hit, tanhDistance);
             }
         }
     }
 }
 
-float distanceOutside(float position, float low) {
-    float result = 0;
-    if (position < low) {
-        result = low - position;
-    } else if (position > low + 1) {
-        result = position - low - 1;
+void edgeContact(const(Section)* section, ChunkLayout layout, SurfaceFace face, size_t edgeAxis, size_t freeAxis, int side, ChunkCollisionHit* hit, float tanhDistance) {
+    MDirection!float tPlane = gridPlane(layout, face.axis, facePlaneIndex(face));
+    MDirection!float edgePlaneRaw = gridPlane(layout, edgeAxis, face.cell[edgeAxis] + side);
+    MDirection!float edgePlane = (edgePlaneRaw.vec - tPlane.vec * tPlane.mip(edgePlaneRaw.vec)).normalizedDirection();
+    float newDistance = section.ray.solveSphereLineIntersection(tPlane, edgePlane, section.sinhRadius);
+    if (!isNan(newDistance) && !(newDistance >= boundaryLimit(hit, tanhDistance))) {
+        MVector!float rayEndpoint = section.ray.rayPoint(newDistance);
+        MVector!float contact = rayEndpoint - tPlane.vec * rayEndpoint.mip(tPlane.vec) - edgePlane.vec * rayEndpoint.mip(edgePlane.vec);
+        if (layout.dualToVoxel(contact.data[freeAxis] / contact.data[3]) == face.cell[freeAxis]) {
+            takeHit(hit, section, newDistance, rayEndpoint - contact, false);
+        }
     }
-    return result;
 }
 
-float segmentRectDistance(float centerU, float centerV, float directionU, float directionV, float halfLength, float rectU, float rectV) {
-    float best = float.max;
-    int sampleCount = SEGMENT_SAMPLES;
-    if (halfLength == 0) {
-        sampleCount = 1;
+void cornerContact(const(Section)* section, ChunkLayout layout, SurfaceFace face, int du, int dv, ChunkCollisionHit* hit, float tanhDistance) {
+    size_t uAxis = (face.axis + 1) % 3;
+    size_t vAxis = (face.axis + 2) % 3;
+    int[3] grid;
+    grid[face.axis] = facePlaneIndex(face);
+    grid[uAxis] = face.cell[uAxis] + du;
+    grid[vAxis] = face.cell[vAxis] + dv;
+    MDirection!float n0 = gridPlane(layout, 0, grid[0]);
+    MVector!float n1Raw = gridPlane(layout, 1, grid[1]).vec;
+    MDirection!float n1 = (n1Raw - n0.vec * n0.mip(n1Raw)).normalizedDirection();
+    MVector!float n2Raw = gridPlane(layout, 2, grid[2]).vec;
+    MDirection!float n2 = (n2Raw - n0.vec * n0.mip(n2Raw) - n1.vec * n1.mip(n2Raw)).normalizedDirection();
+    float newDistance = section.ray.solveSpherePointIntersection(n0, n1, n2, section.sinhRadius);
+    if (!isNan(newDistance) && !(newDistance >= boundaryLimit(hit, tanhDistance))) {
+        MVector!float cornerDual = MVector!float(layout.gridToDual(cast(ubyte) grid[0]), layout.gridToDual(cast(ubyte) grid[1]), layout.gridToDual(cast(ubyte) grid[2]), 1.0f);
+        MVector!float rayEndpoint = section.ray.rayPoint(newDistance);
+        takeHit(hit, section, newDistance, rayEndpoint - cornerDual.normalizedPoint().vec, false);
     }
-    foreach (i; 0 .. sampleCount) {
-        float s = 0;
-        if (halfLength != 0) {
-            s = -halfLength + 2.0f * halfLength * cast(float) i / (SEGMENT_SAMPLES - 1);
-        }
-        float dx = distanceOutside(centerU + directionU * s, rectU);
-        float dy = distanceOutside(centerV + directionV * s, rectV);
-        float d = sqrt(dx * dx + dy * dy);
-        if (d < best) {
-            best = d;
-        }
-    }
-    return best;
 }
 
 bool voxelSolidWithMargins(const(VoxelData)* voxelData, ChunkLayout layout, int[3] coords) {
@@ -340,4 +326,15 @@ bool voxelIsSolid(const(VoxelData)* voxelData, ChunkLayout layout, ubyte[3] coor
         result = voxelData.get(Coords(coords).toIndex(layout.dimension)) != Material.Void;
     }
     return result;
+}
+
+unittest {
+    assert(capsuleSectionCount(0, 1) == 1);
+    float radius = 0.4f;
+    float capOffset = 0.5f;
+    uint count = capsuleSectionCount(capOffset, radius);
+    assert(sectionOffset(0, count, capOffset) == -capOffset);
+    assert(sectionOffset(count - 1, count, capOffset) == capOffset);
+    float spacing = sectionOffset(1, count, capOffset) - sectionOffset(0, count, capOffset);
+    assert(spacing <= radius * SECTION_SPACING_RADII);
 }

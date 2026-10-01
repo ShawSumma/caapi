@@ -54,7 +54,8 @@ Headless verification:
   script. Each script's `session:` line and every `FAIL` land in the report,
   in meters.
 - `./mined --record <file.lua>` records live play as a replayable Lua
-  script (key changes, events, and merged runs of identical frames).
+  script (key changes, look deltas, events, and merged runs of identical
+  frames).
 - `--flat` (or `worldgen("flat")` in a script) - debug worldgen: fills
   exactly below the base surface plane. The base plane is lattice-aligned,
   so this is a genuinely flat floor with gravity perpendicular to it. Use it
@@ -67,28 +68,46 @@ Headless verification:
 
 Lua is the canonical language for driving and checking behavior. Tests are
 authored, not recorded: they say what they do and `check` what must hold.
-The script owns time - nothing advances except through `frames`/`wait`.
+The script owns time - nothing advances except through the world.
 
-- Quantities are meters, seconds, and degrees (like `*Raw` config), except
-  `frames`, whose look deltas are raw radians per frame (the recorder's
-  form).
-- Time: `frames(n, dt, yaw, pitch)`, `wait(s)`, `timestep([s])` (default
-  0.016), `turn(yaw, pitch, s)`, `turn_rate(yaw/s, pitch/s)`, `time()`.
-- Input: `hold(key...)`, `release(key...)`, `press(s, key...)`,
-  `release_all()`. Keys: fwd back left right up (alias jump) down yaw_left
-  yaw_right pitch_up pitch_down.
-- World: `mode([walk|fly|noclip])`, `material([1..9])`, `break_block()`,
-  `place_block()`, `worldgen("flat"|"terrain")` (before the first frame).
-- Observation: `traveled()`, `on_ground()`, `speed()`, `horizontal_speed()`,
-  `vacc()` (this frame's vertical camera acceleration - the bounce metric).
-- `every_frame(fn)` runs fn after each frame to observe (it cannot advance
-  time); `check(cond, msg)` writes a `FAIL` line to the report and counts a
-  failure.
+The API adds no globals. A script is a chunk called with the world as its
+only argument, and everything hangs off that object:
+
+    local world = ...
+    local player = world.player
+
+All state (timestep, held keys, turn rate, frame hook) lives on the world
+and its player. Modules take the world as a parameter (`walk.spawn(world)`,
+see `tests/lib/walk.lua`). Methods check their receiver, so `world.wait(1)`
+is an error - always call with `:`.
+
+- Quantities are meters, seconds, and degrees (like `*Raw` config).
+  Positive yaw turns right and positive pitch looks down (mouse sense).
+- `world`: `frames(n[, dt])` (dt defaults to the timestep), `wait(s)`,
+  `timestep([s])` (default 0.016), `time()`, `worldgen("flat"|"terrain")`
+  (before the first frame), `every_frame(fn|nil)` (runs fn after each frame
+  to observe; it cannot advance time), `check(cond, msg)` (writes a `FAIL`
+  line to the report and counts a failure).
+- `player` input: `hold(key...)`, `release(key...)`, `release_all()`,
+  `press(s, key...)`, `look(yaw, pitch)` (immediate), `turn_rate([yaw/s,
+  pitch/s])` (held look rate; returns the current one), `turn(yaw, pitch,
+  s)`. Keys: fwd back left right up (alias jump) down yaw_left yaw_right
+  pitch_up pitch_down.
+- `player` actions: `mode([walk|fly|noclip])`, `material([1..9])`,
+  `break_block()`, `place_block()`.
+- `player` observation: `traveled()` (path length), `on_ground()`,
+  `altitude()` (body center above the base surface plane; 0.9 standing on
+  flat worldgen), `speed()`, `horizontal_speed()`, `vertical_speed()`
+  (signed, up positive), `camera_vertical_acceleration()` (the bounce
+  metric).
+- `./mined --record` writes the same API: `player:hold`, `player:look`,
+  `world:frames(n, dt)`, `player:mode`, and so on.
 - Only the base, package, coroutine, math, string, table and utf8 libraries
   are open, and `print`/`warn` are removed: scripts observe through
-  `check`, never by printing.
-- API in `client/script.d`, Lua-side conveniences in `import/prelude.lua`.
-  Modules next to a script load with `require` (see `tests/lib/walk.lua`).
+  `check`, never by printing. `tests/script_api.lua` enforces the global
+  set.
+- API in `client/script.d`, Lua-side conveniences in `import/prelude.lua`
+  (called with the world and the script directory).
 
 ## Units
 
@@ -197,6 +216,33 @@ coordinates (projective, `ChunkLayout.dualToGridFactor` maps between them).
 - The graph is append-only: node slots and node pointers are stable
   (slabbed storage). Node ids derive from the parent path, so worldgen is
   deterministic; `--dump-world` is the proof.
+
+## Character controller
+
+`common/character_controller/controller.d` is a kinematic controller with
+one primitive: `slide` sweeps the capsule, clips the remaining displacement
+and the velocity against every contact plane so far (single plane, then the
+crease of two, else stop), and repeats. Everything else is built from it.
+
+- Velocity: on the ground it approaches the input target at
+  `groundAcceleration` with no gravity; in the air gravity and drag apply
+  and input only steers toward the target. Clipping never adds speed, so
+  horizontal speed never exceeds the walk speed unless something else
+  supplied it.
+- Contact planes: walkable (`maxGroundSlope`) ones support - they clip
+  along up, keeping horizontal motion - while walking or descending; walls
+  deflect along their normal (horizontal normal while walking). Clipped
+  displacement keeps a small separation so normal error cannot drift into a
+  surface.
+- Ground move: slide; if a wall blocked it, try a step (slide up
+  `stepHeight`, slide across at least the ledge depth the rounded bottom
+  needs, settle) and keep it only if it rose and progressed further; then
+  settle down `stepHeight` to follow stairs, or become airborne.
+- Collision (`chunk_collision.d`): the capsule is spheres every 0.4 radius
+  along its axis; faces need the contact inside the face, edges and corners
+  are tested only where convex, and `collision_math` generates contacts
+  only for motion approaching the surface, so a grazing contact never hides
+  the obstacle behind it.
 
 ## Performance rules
 

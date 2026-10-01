@@ -1,38 +1,21 @@
-package.path = SCRIPT_DIR .. "/?.lua;" .. package.path
+local world, script_dir = ...
+local player = world.player
 
-local step_seconds = 0.016
-local yaw_rate = 0
-local pitch_rate = 0
+package.path = script_dir .. "/?.lua;" .. package.path
 
-function timestep(seconds)
-  if seconds then
-    step_seconds = seconds
-  end
-  return step_seconds
+function world:wait(seconds)
+  self:frames(math.floor(seconds / self:timestep() + 0.5))
 end
 
-function turn_rate(yaw_deg, pitch_deg)
-  yaw_rate = math.rad(yaw_deg or 0)
-  pitch_rate = math.rad(pitch_deg or 0)
+function player:press(seconds, ...)
+  self:hold(...)
+  world:wait(seconds)
+  self:release(...)
 end
 
-function wait(seconds)
-  local n = math.floor(seconds / step_seconds + 0.5)
-  frames(n, step_seconds, yaw_rate * step_seconds, pitch_rate * step_seconds)
-end
-
-function turn(yaw_deg, pitch_deg, seconds)
-  local saved_yaw = yaw_rate
-  local saved_pitch = pitch_rate
-  yaw_rate = math.rad(yaw_deg) / seconds
-  pitch_rate = math.rad(pitch_deg) / seconds
-  wait(seconds)
-  yaw_rate = saved_yaw
-  pitch_rate = saved_pitch
-end
-
-function press(seconds, ...)
-  hold(...)
-  wait(seconds)
-  release(...)
+function player:turn(yaw_degrees, pitch_degrees, seconds)
+  local saved_yaw, saved_pitch = self:turn_rate()
+  self:turn_rate(yaw_degrees / seconds, pitch_degrees / seconds)
+  world:wait(seconds)
+  self:turn_rate(saved_yaw, saved_pitch)
 end

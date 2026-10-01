@@ -5,11 +5,12 @@ import client.local_character_controller : LocalCharacterController, createLocal
 import client.local_world : LocalWorld, breakBlock, createLocalWorld, placeBlock, releaseLocalWorld, updateLocalWorld;
 import client.worldgen_driver : settleWorldgen;
 import common.character_controller.controller : CharacterState, getRelativeUp, runCharacterStep;
-import common.character_controller.vector_bounds : dot3;
 import common.math : MPoint;
 import common.proto : CharacterInput, Position;
 import common.sim_config : SimConfig, SimConfigRaw, simConfigFromRaw;
+import common.vector3 : dot3;
 import common.world : Material;
+import common.worldgen.generation : NodeState;
 
 enum float MIN_ACCELERATION_DT = 1e-6f;
 
@@ -132,8 +133,22 @@ float axisValue(bool held) {
     return result;
 }
 
+void gameLook(Game* game, float yaw, float pitch) {
+    game.character.lookLevel(-yaw, -pitch);
+    game.world.cameraPosition = game.character.orientedPosition();
+}
+
+float characterAltitude(const(Game)* game) {
+    const(NodeState)* state = game.world.graph.nodeState(game.characterState.position.node);
+    float result = float.nan;
+    if (state !is null) {
+        result = state.surface.distanceTo(game.characterState.position.local * MPoint!float.origin());
+    }
+    return result;
+}
+
 void stepGame(Game* game, FrameInput input, float dt) {
-    game.character.lookLevel(-input.yaw, -input.pitch);
+    gameLook(game, input.yaw, input.pitch);
     float moveX = axisValue(input.held[Key.right]) - axisValue(input.held[Key.left]);
     float moveY = axisValue(input.held[Key.up]) - axisValue(input.held[Key.down]);
     float moveZ = axisValue(input.held[Key.back]) - axisValue(input.held[Key.fwd]);

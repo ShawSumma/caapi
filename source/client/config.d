@@ -7,7 +7,7 @@ import core.stdc.string : strlen;
 enum size_t CONFIG_LINE_CAPACITY = 256;
 
 struct ClientConfig {
-    float mouseSensitivity = 0.0015f;
+    float mouseRadiansPerPixel = 0.001f;
     float turnSpeed = 1.5f;
     float reachMeters = 10.0f;
     bool invertY;
@@ -63,7 +63,7 @@ ConfigEntry parseConfigLine(const(char)[] line) {
 
 void applyConfigEntry(ClientConfig* config, ConfigEntry entry) {
     if (entry.key == "mouse_sensitivity") {
-        config.mouseSensitivity = strtof(entry.value.ptr, null);
+        config.mouseRadiansPerPixel = strtof(entry.value.ptr, null);
     } else if (entry.key == "turn_speed") {
         config.turnSpeed = strtof(entry.value.ptr, null);
     } else if (entry.key == "reach") {

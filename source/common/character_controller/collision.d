@@ -2,16 +2,15 @@ module common.character_controller.collision;
 
 import core.math : sqrt;
 import core.stdc.math : atanhf, tanhf;
-import common.character_controller.vector_bounds : dot3, magnitude3, scale3, zero3;
 import common.collision_math : Ray;
 import common.graph : Graph;
 import common.graph_collision : GraphCollisionHit, shapeCast;
 import common.math : MDirection, MIsometry, MPoint, MVector, isNan;
 import common.proto : Position;
+import common.vector3 : dot3, magnitude3, scale3, zero3;
 
 enum double MIN_DISPLACEMENT_SQUARED = 1e-16;
 enum double MIN_NORMAL_MAGNITUDE = 1e-16;
-enum float GRAZING_LIMIT = -1e-3f;
 
 struct CollisionContext {
     const(Graph)* graph;
@@ -47,9 +46,6 @@ CollisionCheckingResult checkCollision(const(CollisionContext)* context, Positio
             float normalMagnitude = magnitude3(normalXyz);
             if (normalMagnitude > MIN_NORMAL_MAGNITUDE) {
                 hitNormal = scale3(normalXyz, 1.0f / normalMagnitude);
-            }
-            if (dot3(direction, hitNormal) > GRAZING_LIMIT) {
-                hasHit = false;
             }
         }
         float hitTanhDistance = tanhDistance;

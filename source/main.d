@@ -4,7 +4,7 @@ import core.stdc.stdio : snprintf;
 import core.stdc.stdlib : free, malloc, strtof;
 import core.stdc.string : strcmp;
 import core.sys.posix.time : CLOCK_MONOTONIC, clock_gettime, timespec;
-import bindings.platform : Atom, Button1, Button3, ButtonPress, ClientMessage, ConfigureNotify, CurrentTime, Cursor, Display, False, FocusOut, GrabModeAsync, KeyPress, KeyRelease, KeySym, MotionNotify, None, Pixmap, True, Window, XBlackPixel, XCloseDisplay, XColor, XCreateBitmapFromData, XCreatePixmapCursor, XCreateSimpleWindow, XDefaultScreen, XDestroyWindow, XEvent, XFlush, XFreeCursor, XFreePixmap, XGrabPointer, XInternAtom, XK_1, XK_9, XK_Down, XK_Escape, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_n, XK_s, XK_space, XK_v, XK_w, XLookupKeysym, XMapWindow, XNextEvent, XOpenDisplay, XPending, XRootWindow, XSelectInput, XSetWMProtocols, XStoreName, XUngrabPointer, XWarpPointer, XkbSetDetectableAutoRepeat;
+import bindings.platform : Atom, Button1, Button3, ButtonPress, ClientMessage, ConfigureNotify, CurrentTime, Cursor, Display, False, FocusOut, GrabModeAsync, GrabSuccess, KeyPress, KeyRelease, KeySym, MotionNotify, None, Pixmap, True, UnmapNotify, Window, XBlackPixel, XCloseDisplay, XColor, XCreateBitmapFromData, XCreatePixmapCursor, XCreateSimpleWindow, XDefaultScreen, XDestroyWindow, XEvent, XFlush, XFreeCursor, XFreePixmap, XGrabPointer, XInternAtom, XK_1, XK_9, XK_Down, XK_Escape, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_n, XK_s, XK_space, XK_v, XK_w, XLookupKeysym, XMapWindow, XNextEvent, XNextRequest, XOpenDisplay, XPending, XRootWindow, XSelectInput, XSetWMProtocols, XStoreName, XUngrabPointer, XWarpPointer, XkbSetDetectableAutoRepeat;
 import client.config : ClientConfig, loadClientConfig;
 import client.game : FrameInput, Game, KEY_COUNT, Key, MATERIAL_PALETTE, axisValue, createGame, gameBreakBlock, gamePlaceBlock, modeName, releaseGame, stepGame;
 import client.graphics.renderer : Renderer;
@@ -65,15 +65,21 @@ struct Session {
     Window window;
     Cursor invisibleCursor;
     Atom deleteAtom;
+    ulong warpSerial;
     ClientConfig config;
     float mouseDx = 0;
     float mouseDy = 0;
     float fps = 0;
     int width = WINDOW_WIDTH;
     int height = WINDOW_HEIGHT;
+    int pointerX;
+    int pointerY;
+    int warpX;
+    int warpY;
     bool[KEYCODE_COUNT] keyDown;
     bool[KEY_COUNT] held;
     bool mouseCaptured;
+    bool warpPending;
     bool running = true;
     bool titleDirty = true;
 }
@@ -138,26 +144,42 @@ void closeWindow(Session* session) {
 }
 
 void warpToCenter(Session* session) {
-    XWarpPointer(session.display, None, session.window, 0, 0, 0, 0, session.width / 2, session.height / 2);
+    session.warpX = session.width / 2;
+    session.warpY = session.height / 2;
+    session.warpSerial = cast(ulong) XNextRequest(session.display);
+    session.warpPending = true;
+    XWarpPointer(session.display, None, session.window, 0, 0, 0, 0, session.warpX, session.warpY);
 }
 
-void setMouseCaptured(Session* session, bool captured) {
-    if (session.mouseCaptured != captured) {
-        if (captured) {
-            XGrabPointer(session.display, session.window, True, POINTER_GRAB_MASK, GrabModeAsync, GrabModeAsync, session.window, session.invisibleCursor, CurrentTime);
-            warpToCenter(session);
-        } else {
-            XUngrabPointer(session.display, CurrentTime);
-            session.held[] = false;
-        }
-        session.mouseCaptured = captured;
+void captureMouse(Session* session, int x, int y) {
+    int grab = XGrabPointer(session.display, session.window, True, POINTER_GRAB_MASK, GrabModeAsync, GrabModeAsync, session.window, session.invisibleCursor, CurrentTime);
+    if (grab == GrabSuccess) {
+        session.mouseCaptured = true;
+        session.pointerX = x;
+        session.pointerY = y;
+        warpToCenter(session);
         session.titleDirty = true;
+    }
+}
+
+void releaseMouse(Session* session) {
+    if (session.mouseCaptured) {
+        XUngrabPointer(session.display, CurrentTime);
+        session.mouseCaptured = false;
+        session.warpPending = false;
+        session.titleDirty = true;
+    }
+}
+
+void recenterPointer(Session* session) {
+    if (session.mouseCaptured && !session.warpPending && (session.pointerX != session.width / 2 || session.pointerY != session.height / 2)) {
+        warpToCenter(session);
     }
 }
 
 void recordModeChange(Session* session) {
     char[TEXT_CAPACITY] call;
-    snprintf(call.ptr, call.length, "mode(\"%s\")", modeName(&session.game));
+    snprintf(call.ptr, call.length, "player:mode(\"%s\")", modeName(&session.game));
     recordEvent(&session.recorder, call.ptr);
     session.titleDirty = true;
 }
@@ -172,7 +194,7 @@ void setMovementKey(Session* session, KeySym symbol, bool held) {
 
 void handleKeyPress(Session* session, KeySym symbol, bool repeat) {
     if (symbol == XK_Escape) {
-        setMouseCaptured(session, false);
+        releaseMouse(session);
     } else if (symbol == XK_v && !repeat) {
         session.game.flyMode = !session.game.flyMode;
         recordModeChange(session);
@@ -184,7 +206,7 @@ void handleKeyPress(Session* session, KeySym symbol, bool repeat) {
         if (index < MATERIAL_PALETTE.length && index != session.game.materialIndex) {
             session.game.materialIndex = index;
             char[TEXT_CAPACITY] call;
-            snprintf(call.ptr, call.length, "material(%u)", index + 1);
+            snprintf(call.ptr, call.length, "player:material(%u)", index + 1);
             recordEvent(&session.recorder, call.ptr);
             session.titleDirty = true;
         }
@@ -193,27 +215,29 @@ void handleKeyPress(Session* session, KeySym symbol, bool repeat) {
     }
 }
 
-void handleMotion(Session* session, int x, int y) {
+void handleMotion(Session* session, int x, int y, ulong serial) {
     if (session.mouseCaptured) {
-        int centerX = session.width / 2;
-        int centerY = session.height / 2;
-        if (x != centerX || y != centerY) {
-            session.mouseDx += x - centerX;
-            session.mouseDy += y - centerY;
-            warpToCenter(session);
+        if (session.warpPending && serial >= session.warpSerial) {
+            session.pointerX = session.warpX;
+            session.pointerY = session.warpY;
+            session.warpPending = false;
         }
+        session.mouseDx += x - session.pointerX;
+        session.mouseDy += y - session.pointerY;
+        session.pointerX = x;
+        session.pointerY = y;
     }
 }
 
-void handleButton(Session* session, uint button) {
+void handleButton(Session* session, uint button, int x, int y) {
     if (!session.mouseCaptured) {
-        setMouseCaptured(session, true);
+        captureMouse(session, x, y);
     } else if (button == Button1) {
         gameBreakBlock(&session.game);
-        recordEvent(&session.recorder, "break_block()");
+        recordEvent(&session.recorder, "player:break_block()");
     } else if (button == Button3) {
         gamePlaceBlock(&session.game);
-        recordEvent(&session.recorder, "place_block()");
+        recordEvent(&session.recorder, "player:place_block()");
     }
 }
 
@@ -226,13 +250,15 @@ void processEvent(Session* session, XEvent* event) {
         session.keyDown[event.xkey.keycode % KEYCODE_COUNT] = false;
         setMovementKey(session, XLookupKeysym(&event.xkey, 0), false);
     } else if (event.type == MotionNotify) {
-        handleMotion(session, event.xmotion.x, event.xmotion.y);
+        handleMotion(session, event.xmotion.x, event.xmotion.y, cast(ulong) event.xmotion.serial);
     } else if (event.type == ButtonPress) {
-        handleButton(session, event.xbutton.button);
+        handleButton(session, event.xbutton.button, event.xbutton.x, event.xbutton.y);
     } else if (event.type == FocusOut) {
+        releaseMouse(session);
         session.keyDown[] = false;
-        setMouseCaptured(session, false);
         session.held[] = false;
+    } else if (event.type == UnmapNotify) {
+        releaseMouse(session);
     } else if (event.type == ConfigureNotify) {
         session.width = event.xconfigure.width;
         session.height = event.xconfigure.height;
@@ -261,8 +287,8 @@ FrameInput buildFrameInput(Session* session, float dt) {
     float pitchRate = (axisValue(session.held[Key.pitchDown]) - axisValue(session.held[Key.pitchUp])) * session.config.turnSpeed;
     FrameInput frame;
     frame.held = session.held;
-    frame.yaw = yawRate * dt + session.mouseDx * session.config.mouseSensitivity;
-    frame.pitch = pitchRate * dt + session.mouseDy * session.config.mouseSensitivity * invert;
+    frame.yaw = yawRate * dt + session.mouseDx * session.config.mouseRadiansPerPixel;
+    frame.pitch = pitchRate * dt + session.mouseDy * session.config.mouseRadiansPerPixel * invert;
     return frame;
 }
 
@@ -284,6 +310,7 @@ void runLoop(Session* session) {
             XNextEvent(session.display, &event);
             processEvent(session, &event);
         }
+        recenterPointer(session);
         if (session.running) {
             FrameInput frame = buildFrameInput(session, dt);
             recordFrame(&session.recorder, frame, dt);
@@ -309,7 +336,7 @@ extern (C) int main(int argc, char** argv) {
     *session = Session.init;
     session.config = loadClientConfig(arguments.configPath);
     if (arguments.hasSensitivity) {
-        session.config.mouseSensitivity = arguments.sensitivity;
+        session.config.mouseRadiansPerPixel = arguments.sensitivity;
     }
     if (arguments.invertY) {
         session.config.invertY = true;
