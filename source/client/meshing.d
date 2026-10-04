@@ -1,9 +1,10 @@
 module client.meshing;
 
 import core.stdc.stdlib : free, malloc;
-import common.chunk_neighbors : AXIS_COUNT, ChunkSlot, outsideInterior, resolveCell;
+import common.chunk_neighbors : AXIS_COUNT, cellOccupied, outsideInterior;
 import common.graph : Graph;
 import common.margins : CoordsWithMargins;
+import common.node : ChunkSlot;
 import common.world : Material;
 
 enum uint CORNERS_PER_FACE = 4;
@@ -38,11 +39,11 @@ struct ChunkCells {
                 outside += 1;
             }
         }
-        Material material = padded[coords.toIndex(dimension)];
+        bool result = padded[coords.toIndex(dimension)] != Material.Void;
         if (outside > 1) {
-            material = resolveCell(graph, chunk, coords);
+            result = cellOccupied(graph, chunk, coords);
         }
-        return material != Material.Void;
+        return result;
     }
 }
 

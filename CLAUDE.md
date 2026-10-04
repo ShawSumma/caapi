@@ -310,15 +310,33 @@ conditioning guard.
 
 - Measure before changing, with the `--bench-*` commands; frame smoothness
   lives in the worst frame, not the average.
-- No hash lookups in per-frame loops - use slots (the renderer maps chunks
-  to GPU slots by graph slot * 20 + vertex). No growing flat arrays for
-  bulk data - the graph slab exists because one realloc memcpy of 60MB is a
-  visible hitch. Budget any work that can arrive in bursts (worldgen scan
-  cursor, request budget, node-creation budget per rebuild).
-- Chunk generation is async on worker threads; the render thread only builds
-  params and integrates results. Unloaded world is impassable to the
-  character (`regionPopulated`) - bodies must never occupy space that later
-  materializes.
+- No hash lookups in per-frame loops - use slots (`ChunkSlot`: graph slot
+  plus vertex; the renderer indexes chunks by slot * 20 + vertex). No
+  growing flat arrays for bulk data - the graph slab exists because one
+  realloc memcpy of 60MB is a visible hitch. No stop-the-world growth
+  either: the hash map rehashes incrementally.
+- Budget any work that can arrive in bursts, by time, per frame: the
+  nearby-set BFS (double buffered, published when complete), worldgen
+  integration and requests (one budget; integration goes first), and
+  meshing. Every loop under a budget checks it per item, including loops
+  that mostly skip. With `settleWorldgenEachFrame` everything runs
+  unbudgeted, so headless runs stay a pure function of the script.
+- `./mined --bench-load --out <report>` measures the client cold load at
+  60 Hz pacing (frames until the nearby set, worldgen and meshing finish,
+  frame/step/render average and worst) and then 5 s of noclip flight.
+  Judge changes by its worst frames.
+- Chunk generation is async on worker threads (cores minus two); the main
+  thread only builds params and integrates results. Unloaded world is
+  impassable to the character (`regionPopulated`) - bodies must never
+  occupy space that later materializes.
+- A solid chunk stays solid (no dense storage) unless a neighbor's
+  boundary differs from it in voidness: only voidness matters for a
+  solid chunk's faces, collision and AO. Mesh-relevant changes go through
+  `Graph.markChanged` (dense chunks only); the renderer meshes from that
+  queue. AO treats an unloaded cell as occupied unless worldgen proved its
+  chunk empty (`predictOccupancy` at request time), so a newly loaded
+  chunk only notifies its edge and corner neighbors when it contradicts
+  that prediction.
 
 ## Style
 

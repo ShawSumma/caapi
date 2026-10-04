@@ -7,7 +7,7 @@ import common.dodeca : BOUNDING_SPHERE_RADIUS, CHUNK_BOUNDING_SPHERE_RADIUS, SID
 import common.graph : Graph, ROOT_NODE, createGraph;
 import common.graph_collision : NodeVisit, containsSlot;
 import common.math : MIsometry, MPoint, MVector;
-import common.node : ChunkId;
+import common.node : ChunkSlot;
 import common.proto : Position, originPosition;
 import common.vector3 : scale3;
 import common.worldgen.generation : ChunkParams, chunkProvenClear, createChunkParams;
@@ -15,7 +15,7 @@ import common.worldgen.generation : ChunkParams, chunkProvenClear, createChunkPa
 enum float TEST_BODY_REACH = 0.1f;
 enum float TEST_ALTITUDE_TOLERANCE = 1e-4f;
 
-void collectChunksNear(Graph* graph, Position position, float distance, Array!ChunkId* chunks) {
+void collectChunksNear(Graph* graph, Position position, float distance, Array!ChunkSlot* chunks) {
     float nodeThreshold = coshf(distance + BOUNDING_SPHERE_RADIUS + CHUNK_BOUNDING_SPHERE_RADIUS);
     float chunkThreshold = coshf(distance + CHUNK_BOUNDING_SPHERE_RADIUS);
     MVector!float point = (position.local * MPoint!float.origin()).vec;
@@ -29,7 +29,7 @@ void collectChunksNear(Graph* graph, Position position, float distance, Array!Ch
         foreach (vertexIndex; 0 .. VERTEX_COUNT) {
             Vertex vertex = cast(Vertex) vertexIndex;
             if (!(-localPoint.mip(vertexChunkBoundingSphereCenter(vertex).vec) > chunkThreshold)) {
-                chunks.append(ChunkId(graph.idAt(visit.slot), vertex));
+                chunks.append(ChunkSlot(visit.slot, vertex));
             }
         }
         foreach (sideIndex; 0 .. SIDE_COUNT) {
@@ -47,11 +47,11 @@ void collectChunksNear(Graph* graph, Position position, float distance, Array!Ch
 }
 
 bool regionProvenClear(Graph* graph, bool flat, Position position, float distance) {
-    Array!ChunkId chunks;
+    Array!ChunkSlot chunks;
     collectChunksNear(graph, position, distance, &chunks);
     bool clear = true;
     foreach (chunk; chunks.slice()) {
-        ChunkParams params = createChunkParams(graph, chunk, flat);
+        ChunkParams params = createChunkParams(graph, chunk.slot, chunk.vertex, flat);
         if (!chunkProvenClear(&params)) {
             clear = false;
         }

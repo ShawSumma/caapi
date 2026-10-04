@@ -1,6 +1,6 @@
 module common.slab;
 
-import core.stdc.stdlib : free, malloc;
+import core.stdc.stdlib : calloc, free, malloc;
 import common.array : Array;
 
 enum uint SLAB_SHIFT = 12;
@@ -16,9 +16,13 @@ struct Slab(T) {
 
     void ensure(size_t count) {
         while (blocks.length * SLAB_SIZE < count) {
-            T* block = cast(T*) malloc(SLAB_SIZE * T.sizeof);
-            foreach (i; 0 .. SLAB_SIZE) {
-                block[i] = T.init;
+            static if (__traits(isZeroInit, T)) {
+                T* block = cast(T*) calloc(SLAB_SIZE, T.sizeof);
+            } else {
+                T* block = cast(T*) malloc(SLAB_SIZE * T.sizeof);
+                foreach (i; 0 .. SLAB_SIZE) {
+                    block[i] = T.init;
+                }
             }
             blocks.append(block);
         }

@@ -6,7 +6,7 @@ import common.dodeca : Side, Vertex, chunkGridCenterRadius, sideAdjacentTo, vert
 import common.graph : Graph, NO_NODE, NodeId, ParentList, nodeSpice;
 import common.margins : initializeMargins;
 import common.math : PI;
-import common.node : ChunkId, VoxelData, compressUniform;
+import common.node : Occupancy, VoxelData, compressUniform;
 import common.world : Material;
 import common.worldgen.plane : Plane, planeFromSide;
 import common.worldgen.terraingen : TERRAIN_SURFACE_THICKNESS, materialTable, nearestLatticePoint, sqr, terraingenVoronoi;
@@ -192,19 +192,18 @@ EnviroFactors continueFrom(EnviroFactors a, EnviroFactors b, EnviroFactors ab) {
     return result;
 }
 
-ChunkParams createChunkParams(Graph* graph, ChunkId chunkId, bool flat) {
-    graph.ensureNodeState(chunkId.node);
-    const(NodeState)* state = graph.nodeState(chunkId.node);
+ChunkParams createChunkParams(Graph* graph, uint slot, Vertex vertex, bool flat) {
+    const(NodeState)* state = graph.ensureNodeStateAt(slot);
     bool onRoadLine = state.road == NodeStateRoad.East || state.road == NodeStateRoad.West;
     ChunkParams params;
     params.dimension = graph.layout.dimension;
-    params.chunk = chunkId.vertex;
-    params.env = chunkIncidentEnviroFactors(graph, chunkId);
+    params.chunk = vertex;
+    params.env = chunkIncidentEnviroFactors(graph, slot, vertex);
     params.surface = state.surface;
     params.isRoad = state.kind == NodeStateKind.Sky && onRoadLine;
     params.isRoadSupport = (state.kind == NodeStateKind.Land || state.kind == NodeStateKind.DeepLand) && onRoadLine;
     params.flat = flat;
-    params.nodeSpice = nodeSpice(chunkId.node);
+    params.nodeSpice = nodeSpice(graph.idAt(slot));
     return params;
 }
 
@@ -241,12 +240,28 @@ float terrainCeiling(const(ChunkParams)* params) {
 }
 
 bool chunkProvenClear(const(ChunkParams)* params) {
-    float lowest = chunkAltitudes(params).low;
+    return provenClearAt(params, chunkAltitudes(params).low);
+}
+
+bool provenClearAt(const(ChunkParams)* params, float lowest) {
     bool result = lowest > terrainCeiling(params);
     if (!params.flat && params.isRoad) {
         result = result && lowest > ROAD_THICKNESS;
     } else if (!params.flat && params.isRoadSupport) {
         result = false;
+    }
+    return result;
+}
+
+Occupancy predictOccupancy(const(ChunkParams)* params) {
+    ValueRange altitudes = chunkAltitudes(params);
+    Occupancy result = Occupancy.unknown;
+    if (provenClearAt(params, altitudes.low)) {
+        result = Occupancy.empty;
+    } else if (params.flat && altitudes.high < 0) {
+        result = Occupancy.full;
+    } else if (!params.flat && !params.isRoad && (valueRange(params.env.maxElevations).low - terraceElevationBound()) / TERRAIN_SMOOTHNESS > altitudes.high) {
+        result = Occupancy.full;
     }
     return result;
 }
@@ -533,22 +548,21 @@ float trilerp(float[8] values, float[3] t) {
     return lerp(front, back, t[2]);
 }
 
-ChunkIncidentEnviroFactors chunkIncidentEnviroFactors(Graph* graph, ChunkId chunk) {
-    Side[3] sides = vertexCanonicalSides(chunk.vertex);
+ChunkIncidentEnviroFactors chunkIncidentEnviroFactors(Graph* graph, uint slot, Vertex vertex) {
+    Side[3] sides = vertexCanonicalSides(vertex);
     ChunkIncidentEnviroFactors result;
     foreach (corner; 0 .. 8) {
-        NodeId node = chunk.node;
+        uint node = slot;
         if ((corner & 4) != 0) {
-            node = graph.ensureNeighbor(node, sides[0]);
+            node = graph.ensureNeighborSlot(node, sides[0]);
         }
         if ((corner & 2) != 0) {
-            node = graph.ensureNeighbor(node, sides[1]);
+            node = graph.ensureNeighborSlot(node, sides[1]);
         }
         if ((corner & 1) != 0) {
-            node = graph.ensureNeighbor(node, sides[2]);
+            node = graph.ensureNeighborSlot(node, sides[2]);
         }
-        graph.ensureNodeState(node);
-        EnviroFactors enviro = graph.nodeState(node).enviro;
+        EnviroFactors enviro = graph.ensureNodeStateAt(node).enviro;
         result.maxElevations[corner] = enviro.maxElevation;
         result.temperatures[corner] = enviro.temperature;
         result.rainfalls[corner] = enviro.rainfall;

@@ -5,11 +5,12 @@ import bindings.platform : VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_READ_BI
 import client.graphics.pipeline : GpuBuffer, createDeviceLocalBuffer, createMappedBuffer, destroyBuffer;
 import client.meshing : Face, Mesher;
 import common.array : Array;
-import common.chunk_neighbors : ChunkSlot;
+import common.dodeca : VERTEX_COUNT;
 import common.graph : Graph;
-import common.node : Chunk;
+import common.node : ChunkSlot;
 import common.range_allocator : Allocation, RangeAllocator;
 import common.slab : Slab;
+import common.traversal : NearbyNode;
 
 enum uint INITIAL_FACE_CAPACITY = 1u << 20;
 enum uint INITIAL_DRAW_CAPACITY = 1u << 12;
@@ -20,14 +21,22 @@ enum uint INSTANCE_BYTES = INSTANCE_FLOATS * float.sizeof;
 enum uint VERTICES_PER_FACE = 6;
 enum float REVERSED_WINDING = 1.0f;
 enum float NATURAL_WINDING = 0.0f;
+enum uint NOT_LISTED = uint.max;
 
 struct RenderChunk {
     uint faceOffset;
     uint faceCount;
-    uint generation;
-    uint seenFrame;
-    uint listIndex;
-    bool meshed;
+    bool listed;
+}
+
+struct NearbyEntry {
+    uint stamp;
+    uint index;
+}
+
+struct Drawable {
+    uint chunkIndex;
+    uint nearbyIndex;
 }
 
 struct BufferCopy {
@@ -42,7 +51,9 @@ struct ChunkMeshes {
     GpuBuffer indirect;
     GpuBuffer instances;
     Slab!RenderChunk chunks;
-    Array!uint meshedChunks;
+    Slab!uint facedVertices;
+    Slab!NearbyEntry nearby;
+    Array!Drawable drawables;
     Array!VkBufferCopy uploads;
     Array!BufferCopy growthCopies;
     Array!GpuBuffer retired;
@@ -50,12 +61,12 @@ struct ChunkMeshes {
     Mesher mesher;
     VkPhysicalDevice physicalDevice;
     VkDevice device;
-    uint frame;
+    uint nearbyVersion = NOT_LISTED;
     uint drawCount;
     uint drawCapacity;
     uint stagedFaces;
     uint stagingCapacity;
-    uint backlog;
+    uint meshedChunks;
     bool facesReplaced;
 
     bool setup(VkPhysicalDevice physical, VkDevice logical, ubyte dimension) {
@@ -72,41 +83,68 @@ struct ChunkMeshes {
         return faces.ready && staging.ready && indirect.ready && instances.ready;
     }
 
-    void beginFrame(size_t chunkCount) {
+    void forgetWorld() {
+        chunks.release();
+        facedVertices.release();
+        nearby.release();
+        drawables.clear();
+        allocator.release();
+        allocator.grow(cast(uint)(faces.size / Face.sizeof));
+        nearbyVersion = NOT_LISTED;
+        meshedChunks = 0;
+    }
+
+    void beginFrame(uint nodeCount) {
         foreach (i; 0 .. retired.length) {
             destroyBuffer(device, &retired.ptr[i]);
         }
         retired.clear();
         uploads.clear();
         growthCopies.clear();
-        chunks.ensure(chunkCount);
-        frame += 1;
+        chunks.ensure(cast(size_t) nodeCount * VERTEX_COUNT);
+        facedVertices.ensure(nodeCount);
+        nearby.ensure(nodeCount);
         drawCount = 0;
         stagedFaces = 0;
-        backlog = 0;
         facesReplaced = false;
     }
 
-    bool needsMesh(const(Chunk)* chunk, uint chunkIndex) {
-        const(RenderChunk)* entry = chunks.at(chunkIndex);
-        return !entry.meshed || entry.generation != chunk.generation;
+    void listNearby(const(NearbyNode)[] nodes, uint stamp) {
+        foreach (drawable; drawables.slice()) {
+            chunks.at(drawable.chunkIndex).listed = false;
+        }
+        drawables.clear();
+        nearbyVersion = stamp;
+        foreach (i, node; nodes) {
+            *nearby.at(node.slot) = NearbyEntry(stamp, cast(uint) i);
+            uint mask = *facedVertices.at(node.slot);
+            foreach (vertex; 0 .. VERTEX_COUNT) {
+                if ((mask & (1u << vertex)) != 0) {
+                    list(node.slot * VERTEX_COUNT + vertex, cast(uint) i);
+                }
+            }
+        }
     }
 
-    bool mesh(const(Graph)* graph, ChunkSlot slot, uint chunkIndex) {
+    void list(uint chunkIndex, uint nearbyIndex) {
+        chunks.at(chunkIndex).listed = true;
+        drawables.append(Drawable(chunkIndex, nearbyIndex));
+    }
+
+    bool mesh(const(Graph)* graph, ChunkSlot slot) {
+        uint chunkIndex = slot.slot * VERTEX_COUNT + slot.vertex;
         RenderChunk* entry = chunks.at(chunkIndex);
         const(Face)[] meshed = mesher.mesh(graph, slot);
         if (entry.faceCount > 0) {
             allocator.release(entry.faceOffset, entry.faceCount);
         }
-        if (!entry.meshed) {
-            entry.meshed = true;
-            entry.listIndex = cast(uint) meshedChunks.length;
-            meshedChunks.append(chunkIndex);
-        }
-        entry.generation = graph.nodeAt(slot.slot).chunks[slot.vertex].generation;
         entry.faceCount = cast(uint) meshed.length;
+        meshedChunks += 1;
+        uint* mask = facedVertices.at(slot.slot);
+        *mask &= ~(1u << slot.vertex);
         bool ok = true;
         if (meshed.length > 0) {
+            *mask |= 1u << slot.vertex;
             Allocation allocation = allocator.allocate(entry.faceCount);
             if (!allocation.found) {
                 ok = growFaces(entry.faceCount);
@@ -114,12 +152,12 @@ struct ChunkMeshes {
             }
             ok = ok && stage(meshed, allocation.offset);
             entry.faceOffset = allocation.offset;
+            const(NearbyEntry)* place = nearby.at(slot.slot);
+            if (!entry.listed && place.stamp == nearbyVersion) {
+                list(chunkIndex, place.index);
+            }
         }
         return ok;
-    }
-
-    void markSeen(uint chunkIndex) {
-        chunks.at(chunkIndex).seenFrame = frame;
     }
 
     bool stage(const(Face)[] meshed, uint deviceOffset) {
@@ -166,8 +204,7 @@ struct ChunkMeshes {
         return larger.ready;
     }
 
-    bool addDraw(uint chunkIndex, float[TRANSFORM_FLOATS] transform, bool reversedWinding) {
-        const(RenderChunk)* entry = chunks.at(chunkIndex);
+    bool addDraw(const(RenderChunk)* entry, float[TRANSFORM_FLOATS] transform, bool reversedWinding) {
         bool ok = true;
         if (drawCount == drawCapacity) {
             ok = growDraws();
@@ -207,26 +244,6 @@ struct ChunkMeshes {
         return ok;
     }
 
-    void releaseUnseen() {
-        size_t i = 0;
-        while (i < meshedChunks.length) {
-            RenderChunk* entry = chunks.at(meshedChunks.ptr[i]);
-            if (entry.seenFrame != frame) {
-                if (entry.faceCount > 0) {
-                    allocator.release(entry.faceOffset, entry.faceCount);
-                }
-                *entry = RenderChunk.init;
-                meshedChunks.ptr[i] = meshedChunks.ptr[meshedChunks.length - 1];
-                meshedChunks.length -= 1;
-                if (i < meshedChunks.length) {
-                    chunks.at(meshedChunks.ptr[i]).listIndex = cast(uint) i;
-                }
-            } else {
-                i += 1;
-            }
-        }
-    }
-
     void recordUploads(VkCommandBuffer commands) {
         foreach (copy; growthCopies.slice()) {
             VkBufferCopy region = VkBufferCopy(0, 0, copy.size);
@@ -252,9 +269,11 @@ struct ChunkMeshes {
         retired.release();
         uploads.release();
         growthCopies.release();
-        meshedChunks.release();
+        drawables.release();
         allocator.release();
         chunks.release();
+        facedVertices.release();
+        nearby.release();
         mesher.release();
     }
 }

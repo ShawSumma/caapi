@@ -251,6 +251,52 @@ Verification tools: `dub test`, the Lua scripts in `tests/`, and
     formula: clockwise. The voxel pipeline culls back faces with
     `frontFace = CLOCKWISE`, and the captures show every face.
 
+## Load and frame time pass
+
+Measured with `./mined --bench-load` (offscreen, frames paced at 60 Hz,
+full render radius 4.5: about 201k chunks), then 5 s of noclip flight at
+12 m/s.
+
+| step | frames to loaded | frame worst | notes |
+| --- | --- | --- | --- |
+| start | 6306 | 8.7 ms | 170096 dense chunks, ~930 MB voxels |
+| margins stop densifying | 6293 | 6.3 ms | 5309 dense chunks, faces identical |
+| request pacing by worker capacity, integration budgeted | 334 | 13 ms | |
+| populate by slot, skip empty margin loops | 159 | 15.5 ms | populate 6.3 -> 1.2 us |
+| request params by slot, one worldgen budget | 210 | 10.7 ms | |
+| AO prediction from worldgen proofs | 104 | 16.5 ms | integration 2.0 -> 0.8 us/chunk |
+| change-driven meshing, draw list per nearby set | 124 | 10.3 ms | render 3.7 -> 1.3 ms |
+| incremental nearby BFS, 60 Hz pacing | 104 | 11.5 ms | |
+| meshing budget 1 -> 2 ms, worldgen 6 ms, scan checks its budget | 69 | 12.2 ms | |
+| incremental hash map growth | 68 | 12.2 ms | flight worst 18 -> 11 ms |
+
+Final: the full radius is loaded and meshed in 68 frames (1.14 s at 60
+Hz); nearest chunks first. Flight: average 6.3 ms, worst 11 ms, loading
+keeps pace (hyperbolic motion replaces ~70% of the ball per second at that
+speed).
+
+What was wrong, in order of impact:
+- `fixMargins` densified both chunks unless both were solid with equal
+  voidness, so a dense chunk densified every neighbor it touched and it
+  spread through the world: 97% of loaded chunks dense, ~5.5 KB each,
+  nearly all faceless. Only a voidness difference needs real margins.
+- The driver requested 32 chunks a frame with 128 in flight, starving
+  8 of 30 usable workers: loading took 105 s at 60 Hz.
+- The renderer walked all ~670k chunk entries of the loaded ball every
+  frame (to find work and keep meshes resident).
+- The occlusion cascade ran for every loaded chunk (~6 us each) because
+  unloaded cells were assumed; the worldgen proofs already know.
+- `fixMargins` walked 196 cells per face even when it wrote nothing.
+- The node hash map rehashed 260k entries in one insert (~10 ms).
+- The nearby-set rebuild was one 5-7 ms BFS, every 0.05 units of motion.
+- The worldgen scan only checked its budget when creating a request,
+  so rescanning frontier nodes after each nearby set ran unbounded.
+- The first meshing budget counted the scan, so far chunks never meshed.
+
+Remaining main-thread cost per chunk is about 1.5 us (params and node
+creation 0.7, population 0.8); load time is now that cost over the 6 ms
+worldgen budget.
+
 ## Other findings
 
 - `--bench-gen` printed NaN for every timing: `ChunkPass` doubles default
@@ -299,11 +345,8 @@ Verification tools: `dub test`, the Lua scripts in `tests/`, and
   seen from height h covers only a cone of half angle atan(1/sinh h)
   below you, so from 32 m most of a downward view is sky; that is
   geometry, not a culling bug.
-- Worldgen pacing: the driver requests at most 32 chunks a frame. The
-  full render radius is 201020 chunks, which the workers generate in
-  2.8 s (`--bench-drive 4.5`), but at 32 a frame it takes about 6300
-  frames, over 100 s at 60 fps. The request budget should follow worker
-  capacity, not a constant. TODO.
+- Worldgen pacing: the driver requested at most 32 chunks a frame (6300
+  frames for the full radius). Fixed in the load pass above.
 - The first meshing budget counted from the start of the chunk scan, so
   once the near chunks were meshed the scan itself used the budget and
   distant chunks never meshed. The offscreen capture never finishing is

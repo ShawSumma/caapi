@@ -3,7 +3,7 @@ module main;
 import core.stdc.stdio : FILE, fclose, fopen, fprintf, snprintf;
 import core.stdc.stdlib : free, malloc, strtof;
 import core.stdc.string : strcmp;
-import core.sys.posix.time : CLOCK_MONOTONIC, clock_gettime, timespec;
+import core.sys.posix.time : CLOCK_MONOTONIC, clock_gettime, nanosleep, timespec;
 import bindings.platform : Atom, Button1, Button3, ButtonPress, ClientMessage, CurrentTime, Cursor, Display, False, FocusOut, GenericEvent, GrabModeAsync, GrabSuccess, KeyPress, KeyRelease, KeySym, Pixmap, Success, True, UnmapNotify, VkExtent2D, Window, XBlackPixel, XCloseDisplay, XColor, XCreateBitmapFromData, XCreatePixmapCursor, XCreateSimpleWindow, XDefaultScreen, XDestroyWindow, XDisplayHeight, XDisplayWidth, XEvent, XFlush, XFreeCursor, XFreeEventData, XFreePixmap, XGenericEventCookie, XGetEventData, XGrabPointer, XIAllMasterDevices, XIDeviceInfo, XIEventMask, XIFreeDeviceInfo, XIModeAbsolute, XIQueryDevice, XIQueryVersion, XIRawEvent, XISelectEvents, XIValuatorClass, XIValuatorClassInfo, XI_DeviceChanged, XI_RawMotion, XInternAtom, XK_1, XK_9, XK_Down, XK_Escape, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_n, XK_s, XK_space, XK_v, XK_w, XLookupKeysym, XMapWindow, XNextEvent, XOpenDisplay, XPending, XQueryExtension, XRootWindow, XSelectInput, XSetWMProtocols, XStoreName, XUngrabPointer, XkbSetDetectableAutoRepeat;
 import client.config : ClientConfig, loadClientConfig;
 import client.game : FrameInput, Game, KEY_COUNT, Key, MATERIAL_PALETTE, axisValue, createGame, gameBreakBlock, gamePlaceBlock, modeName, releaseGame, stepGame, toggleMode;
@@ -13,12 +13,17 @@ import client.png : writePng;
 import client.script : ScriptHost, ScriptRecorder, closeScript, closeScriptRecorder, openScriptRecorder, recordEvent, recordFrame, runScript;
 import client.worldgen_driver : settleWorldgen;
 import common.proto : MovementMode;
+import common.dodeca : VERTEX_COUNT;
+import common.proto : MovementMode;
 import common.sim_config : SimConfigRaw;
 
 enum uint WINDOW_WIDTH = 1280;
 enum uint WINDOW_HEIGHT = 720;
 enum uint SCREENSHOT_WIDTH = 640;
 enum uint SCREENSHOT_HEIGHT = 360;
+enum double BENCH_FRAME_SECONDS = 1.0 / 60.0;
+enum uint BENCH_MOVE_FRAMES = 300;
+enum double MILLISECONDS_PER_SECOND = 1e3;
 enum double TITLE_INTERVAL_SECONDS = 1.0;
 enum double NANOSECONDS_PER_SECOND = 1e9;
 enum size_t TEXT_CAPACITY = 256;
@@ -50,6 +55,7 @@ struct Arguments {
     bool hasSensitivity;
     bool invertY;
     bool flatWorldgen;
+    bool benchLoad;
 }
 
 struct KeyBinding {
@@ -134,6 +140,8 @@ Arguments parseArguments(int argc, char** argv) {
         } else if (strcmp(argument, "--screenshot") == 0 && hasValue) {
             arguments.screenshotPath = argv[index + 1];
             index += 1;
+        } else if (strcmp(argument, "--bench-load") == 0) {
+            arguments.benchLoad = true;
         } else if (strcmp(argument, "--out") == 0 && hasValue) {
             arguments.reportPath = argv[index + 1];
             index += 1;
@@ -444,7 +452,7 @@ bool renderScreenshot(Arguments arguments) {
     bool rendering = ok;
     uint frames = 0;
     while (!worldgenSettled(&game.world)) {
-        updateLocalWorld(&game.world);
+        updateLocalWorld(&game.world, true);
         settleWorldgen(&game.world.worldgenDriver, &game.world.graph);
     }
     while (rendering) {
@@ -460,7 +468,110 @@ bool renderScreenshot(Arguments arguments) {
         if (ok) {
             outcome = "written";
         }
-        fprintf(report, "screenshot: %s after %u frames (%u chunks meshed, %u faces)\n", outcome, frames, cast(uint) renderer.meshes.meshedChunks.length, renderer.meshes.allocator.used());
+        fprintf(report, "screenshot: %s after %u frames (%u chunks meshed, %u faces)\n", outcome, frames, renderer.meshes.meshedChunks, renderer.meshes.allocator.used());
+        fclose(report);
+    }
+    renderer.cleanup();
+    free(renderer);
+    releaseGame(&game);
+    return ok;
+}
+
+struct PhaseTimes {
+    double totalMs = 0;
+    double worstMs = 0;
+
+    void add(double ms) {
+        totalMs += ms;
+        if (ms > worstMs) {
+            worstMs = ms;
+        }
+    }
+}
+
+bool benchLoad(Arguments arguments) {
+    FILE* report = fopen(arguments.reportPath, "w");
+    SimConfigRaw raw;
+    ClientConfig config;
+    Renderer* renderer = cast(Renderer*) malloc(Renderer.sizeof);
+    *renderer = Renderer.init;
+    bool ok = report !is null && renderer.setupOffscreen(VkExtent2D(SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT), raw.chunkSize);
+    Game game = createGame(arguments.flatWorldgen, config.reachMeters);
+    PhaseTimes step;
+    PhaseTimes render;
+    PhaseTimes frame;
+    uint frames = 0;
+    uint nearbyFrame = 0;
+    uint generatedFrame = 0;
+    double start = nowSeconds();
+    bool loading = ok;
+    while (loading) {
+        double frameStart = nowSeconds();
+        FrameInput input;
+        stepGame(&game, input, cast(float) BENCH_FRAME_SECONDS);
+        double stepped = nowSeconds();
+        ok = renderer.render(&game.world);
+        double rendered = nowSeconds();
+        step.add((stepped - frameStart) * MILLISECONDS_PER_SECOND);
+        render.add((rendered - stepped) * MILLISECONDS_PER_SECOND);
+        frame.add((rendered - frameStart) * MILLISECONDS_PER_SECOND);
+        frames += 1;
+        if (nearbyFrame == 0 && game.world.hasNearby) {
+            nearbyFrame = frames;
+        }
+        if (generatedFrame == 0 && worldgenSettled(&game.world)) {
+            generatedFrame = frames;
+        }
+        double remaining = BENCH_FRAME_SECONDS - (nowSeconds() - frameStart);
+        if (remaining > 0) {
+            timespec pause = timespec(0, cast(long)(remaining * NANOSECONDS_PER_SECOND));
+            nanosleep(&pause, null);
+        }
+        loading = ok && (renderer.meshBacklog() > 0 || !worldgenSettled(&game.world));
+    }
+    double elapsed = nowSeconds() - start;
+    if (report !is null) {
+        uint dense = 0;
+        foreach (slot; 0 .. game.world.graph.nodeCount) {
+            foreach (vertexIndex; 0 .. VERTEX_COUNT) {
+                if (!game.world.graph.nodeAt(slot).chunks[vertexIndex].voxels.isSolid()) {
+                    dense += 1;
+                }
+            }
+        }
+        fprintf(report, "bench-load ok=%d frames=%u wall=%.2fs nodes=%u dense_chunks=%u meshed=%u faces=%u\n", cast(int) ok, frames, elapsed, game.world.graph.nodeCount, dense, renderer.meshes.meshedChunks, renderer.meshes.allocator.used());
+        fprintf(report, "nearby set complete at frame %u, worldgen settled at frame %u, meshing done at frame %u\n", nearbyFrame, generatedFrame, frames);
+        fprintf(report, "frame avg=%.2fms worst=%.2fms\n", frame.totalMs / frames, frame.worstMs);
+        fprintf(report, "step avg=%.2fms worst=%.2fms\n", step.totalMs / frames, step.worstMs);
+        fprintf(report, "render avg=%.2fms worst=%.2fms\n", render.totalMs / frames, render.worstMs);
+    }
+    PhaseTimes moving;
+    PhaseTimes movingStep;
+    PhaseTimes movingRender;
+    uint backloggedFrames = 0;
+    game.mode = MovementMode.noclip;
+    FrameInput forward;
+    forward.held[Key.fwd] = true;
+    foreach (i; 0 .. BENCH_MOVE_FRAMES) {
+        double frameStart = nowSeconds();
+        stepGame(&game, forward, cast(float) BENCH_FRAME_SECONDS);
+        double stepped = nowSeconds();
+        ok = ok && renderer.render(&game.world);
+        moving.add((nowSeconds() - frameStart) * MILLISECONDS_PER_SECOND);
+        movingStep.add((stepped - frameStart) * MILLISECONDS_PER_SECOND);
+        movingRender.add((nowSeconds() - stepped) * MILLISECONDS_PER_SECOND);
+        if (renderer.meshBacklog() > 0 || !worldgenSettled(&game.world)) {
+            backloggedFrames += 1;
+        }
+        double remaining = BENCH_FRAME_SECONDS - (nowSeconds() - frameStart);
+        if (remaining > 0) {
+            timespec pause = timespec(0, cast(long)(remaining * NANOSECONDS_PER_SECOND));
+            nanosleep(&pause, null);
+        }
+    }
+    if (report !is null) {
+        fprintf(report, "moving noclip: frame avg=%.2fms worst=%.2fms, %u of %u frames with loading pending\n", moving.totalMs / BENCH_MOVE_FRAMES, moving.worstMs, backloggedFrames, BENCH_MOVE_FRAMES);
+        fprintf(report, "moving step avg=%.2fms worst=%.2fms, render avg=%.2fms worst=%.2fms\n", movingStep.totalMs / BENCH_MOVE_FRAMES, movingStep.worstMs, movingRender.totalMs / BENCH_MOVE_FRAMES, movingRender.worstMs);
         fclose(report);
     }
     renderer.cleanup();
@@ -472,7 +583,11 @@ bool renderScreenshot(Arguments arguments) {
 extern (C) int main(int argc, char** argv) {
     Arguments arguments = parseArguments(argc, argv);
     int status = EXIT_FAILED;
-    if (arguments.screenshotPath !is null) {
+    if (arguments.benchLoad) {
+        if (benchLoad(arguments)) {
+            status = EXIT_OK;
+        }
+    } else if (arguments.screenshotPath !is null) {
         if (renderScreenshot(arguments)) {
             status = EXIT_OK;
         }

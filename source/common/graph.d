@@ -1,11 +1,12 @@
 module common.graph;
 
 import core.stdc.string : memcpy;
+import common.array : Array;
 import common.dodeca : SIDE_COUNT, Side, VERTEX_COUNT, sideAdjacentTo, sideIsFacing, sideReflection;
 import common.hash_map : HashMap;
 import common.math : MIsometry, MPoint;
 import common.murmur : murmurHash3;
-import common.node : ChunkLayout, Node;
+import common.node : Chunk, ChunkLayout, ChunkSlot, Node;
 import common.slab : Slab;
 import common.worldgen.generation : NodeState, createNodeState;
 
@@ -64,8 +65,33 @@ Graph createGraph(ubyte dimension) {
 struct Graph {
     Slab!NodeContainer nodes;
     HashMap!(NodeId, uint) slots;
+    Array!ChunkSlot changedChunks;
+    size_t changedHead;
     ChunkLayout layout;
     uint nodeCount;
+
+    void markChanged(ChunkSlot chunk) {
+        Chunk* target = &container(chunk.slot).value.chunks[chunk.vertex];
+        if (!target.queued && !target.voxels.isSolid()) {
+            target.queued = true;
+            changedChunks.append(chunk);
+        }
+    }
+
+    bool hasChanges() const {
+        return changedHead < changedChunks.length;
+    }
+
+    ChunkSlot takeChanged() {
+        ChunkSlot result = changedChunks.ptr[changedHead];
+        changedHead += 1;
+        container(result.slot).value.chunks[result.vertex].queued = false;
+        if (changedHead == changedChunks.length) {
+            changedChunks.clear();
+            changedHead = 0;
+        }
+        return result;
+    }
 
     inout(NodeContainer)* container(uint slot) inout {
         return nodes.at(slot);
@@ -219,6 +245,13 @@ struct Graph {
         }
     }
 
+    const(NodeState)* ensureNodeStateAt(uint slot) {
+        if (!container(slot).value.hasState) {
+            ensureNodeState(idAt(slot));
+        }
+        return &container(slot).value.state;
+    }
+
     const(NodeState)* nodeState(NodeId nodeId) const {
         uint slot = slotOf(nodeId);
         const(NodeState)* result = null;
@@ -279,6 +312,7 @@ struct Graph {
         }
         nodes.release();
         slots.release();
+        changedChunks.release();
         nodeCount = 0;
     }
 }

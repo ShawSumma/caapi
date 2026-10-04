@@ -10,29 +10,31 @@ import client.graphics.fog : FogPipeline;
 import client.graphics.frustum : FRUSTUM_PLANE_COUNT, Frustum, frustumFromVerticalFov, sphereOutside;
 import client.graphics.highlight : HighlightPipeline;
 import client.graphics.pipeline : GpuBuffer, VULKAN_TRUE, createMappedBuffer, destroyBuffer;
-import client.graphics.voxels.chunk_meshes : ChunkMeshes, TRANSFORM_FLOATS;
+import client.graphics.voxels.chunk_meshes : ChunkMeshes, RenderChunk, TRANSFORM_FLOATS;
 import client.graphics.voxels.surface : SurfacePipeline;
-import client.local_world : LocalWorld, castCenterRay;
-import common.chunk_neighbors : ChunkSlot;
-import common.dodeca : BOUNDING_SPHERE_RADIUS, CHUNK_BOUNDING_SPHERE_RADIUS, VERTEX_COUNT, Vertex, vertexChunkBoundingSphereCenter, vertexChunkToNode;
-import common.graph : NO_SLOT;
+import client.local_world : LocalWorld, cameraInNearbyFrame, castCenterRay;
+import common.dodeca : CHUNK_BOUNDING_SPHERE_RADIUS, VERTEX_COUNT, Vertex, vertexChunkBoundingSphereCenter, vertexChunkToNode;
+import common.chunk_neighbors : chunkNeighborSlot;
+import common.graph : Graph, NO_SLOT;
 import common.graph_ray_casting : GraphCastHit;
-import common.math : MDirection, MIsometry, MPoint, MVector, Matrix4, PI, isNan;
-import common.node : Chunk, ChunkState, Node;
+import common.math : MDirection, MIsometry, Matrix4, PI, isNan;
+import common.node : Chunk, ChunkSlot, ChunkState;
+import common.traversal : NearbyNode;
+import common.voxel_math : CHUNK_DIRECTIONS;
 
 enum float VERTICAL_HALF_FOV_RADIANS = 45.0f * (PI / 180.0f);
 enum float NEAR_PLANE = 1.0e-4f;
 enum float FOG_VISIBILITY_THRESHOLD = 1e-3f;
 enum float FOG_EXPONENT = 5.0f;
-enum float NODE_CULL_RADIUS = BOUNDING_SPHERE_RADIUS + CHUNK_BOUNDING_SPHERE_RADIUS;
 enum float CLEAR_DEPTH = 0.0f;
 enum uint DIMENSION_PUSH_BYTES = 4;
 enum ulong NO_TIMEOUT = ulong.max;
-enum double MESH_BUDGET_MILLISECONDS = 1.0;
+enum double MESH_BUDGET_MILLISECONDS = 2.0;
 enum double NANOSECONDS_PER_MILLISECOND = 1e6;
 enum double MILLISECONDS_PER_SECOND = 1e3;
 enum uint PIXEL_BYTES = 4;
 enum uint COFACTOR_COUNT = 12;
+enum uint NO_EPOCH = uint.max;
 
 enum float SRGB_LINEAR_LIMIT = 0.04045f;
 enum float SRGB_LINEAR_SLOPE = 12.92f;
@@ -66,6 +68,8 @@ struct Renderer {
     float[VERTEX_COUNT] vertexOrientations;
     float[4] skyLinear;
     uint dimension;
+    uint worldEpoch = NO_EPOCH;
+    uint backlog;
 
     bool setup(Display* display, Window window, ubyte chunkDimension) {
         prepare(chunkDimension);
@@ -135,7 +139,7 @@ struct Renderer {
     }
 
     uint meshBacklog() const {
-        return meshes.backlog;
+        return backlog;
     }
 
     bool renderFrame(LocalWorld* world) {
@@ -143,7 +147,7 @@ struct Renderer {
         if (ok) {
             VkExtent2D extent = swapchain.extent;
             Frustum frustum = frustumFromVerticalFov(VERTICAL_HALF_FOV_RADIANS, cast(float) extent.width / cast(float) extent.height);
-            MIsometry!float cameraInverse = world.cameraPosition.local.inverse();
+            MIsometry!float cameraInverse = cameraInNearbyFrame(world).inverse();
             float[16] projection = frustum.projection(NEAR_PLANE);
             float[16] viewProjection = matrixMultiply(projection, flatten(cameraInverse.mat));
             ok = collectChunks(world, cameraInverse, frustum.planes(), determinant(viewProjection));
@@ -171,40 +175,44 @@ struct Renderer {
     }
 
     bool collectChunks(LocalWorld* world, MIsometry!float cameraInverse, MDirection!float[FRUSTUM_PLANE_COUNT] planes, float viewOrientation) {
-        meshes.beginFrame(world.graph.nodeCount * VERTEX_COUNT);
-        double meshingMs = 0;
-        bool ok = true;
-        foreach (nearbyNode; world.cachedNodes) {
-            if (nearbyNode.slot != NO_SLOT) {
-                MPoint!float nodeCenter = MPoint!float(MVector!float(nearbyNode.transform.mat.data[3][0], nearbyNode.transform.mat.data[3][1], nearbyNode.transform.mat.data[3][2], nearbyNode.transform.mat.data[3][3]));
-                bool nodeVisible = !sphereOutside(planes[], cameraInverse * nodeCenter, NODE_CULL_RADIUS);
+        if (world.epoch != worldEpoch) {
+            meshes.forgetWorld();
+            worldEpoch = world.epoch;
+        }
+        meshes.beginFrame(world.graph.nodeCount);
+        if (world.nearbyVersion != meshes.nearbyVersion) {
+            meshes.listNearby(world.cachedNodes, world.nearbyVersion);
+        }
+        bool ok = meshChanged(&world.graph);
+        foreach (drawable; meshes.drawables.slice()) {
+            const(RenderChunk)* entry = meshes.chunks.at(drawable.chunkIndex);
+            const(NearbyNode)* nearbyNode = &world.cachedNodes[drawable.nearbyIndex];
+            Vertex vertex = cast(Vertex)(drawable.chunkIndex % VERTEX_COUNT);
+            if (ok && entry.faceCount > 0 && !sphereOutside(planes[], cameraInverse * (nearbyNode.transform * vertexChunkBoundingSphereCenter(vertex)), CHUNK_BOUNDING_SPHERE_RADIUS)) {
                 float[16] nodeMatrix = flatten(nearbyNode.transform.mat);
-                float nodeOrientation = viewOrientation * determinant(nodeMatrix);
-                const(Node)* node = world.graph.nodeAt(nearbyNode.slot);
-                foreach (vertexIndex; 0 .. VERTEX_COUNT) {
-                    Vertex vertex = cast(Vertex) vertexIndex;
-                    const(Chunk)* chunk = &node.chunks[vertex];
-                    uint chunkIndex = nearbyNode.slot * VERTEX_COUNT + vertexIndex;
-                    if (chunk.state == ChunkState.Populated && !chunk.voxels.isSolid()) {
-                        meshes.markSeen(chunkIndex);
-                        if (meshes.needsMesh(chunk, chunkIndex) && meshingMs < MESH_BUDGET_MILLISECONDS) {
-                            double start = nowMilliseconds();
-                            ok = ok && meshes.mesh(&world.graph, ChunkSlot(nearbyNode.slot, vertex), chunkIndex);
-                            meshingMs += nowMilliseconds() - start;
-                        } else if (meshes.needsMesh(chunk, chunkIndex)) {
-                            meshes.backlog += 1;
-                        }
-                        if (nodeVisible && meshes.chunks.at(chunkIndex).faceCount > 0 && !sphereOutside(planes[], cameraInverse * (nearbyNode.transform * vertexChunkBoundingSphereCenter(vertex)), CHUNK_BOUNDING_SPHERE_RADIUS)) {
-                            ok = ok && meshes.addDraw(chunkIndex, matrixMultiply(nodeMatrix, vertexMatrices[vertexIndex]), nodeOrientation * vertexOrientations[vertexIndex] < 0);
-                        }
-                    }
-                }
+                bool reversed = viewOrientation * determinant(nodeMatrix) * vertexOrientations[vertex] < 0;
+                ok = meshes.addDraw(entry, matrixMultiply(nodeMatrix, vertexMatrices[vertex]), reversed);
             }
         }
-        meshes.releaseUnseen();
         if (meshes.facesReplaced) {
             voxels.bindFaces(core.device, meshes.faces.buffer);
         }
+        return ok;
+    }
+
+    bool meshChanged(Graph* graph) {
+        double meshingMs = 0;
+        bool ok = true;
+        while (ok && graph.hasChanges() && meshingMs < MESH_BUDGET_MILLISECONDS) {
+            double start = nowMilliseconds();
+            ChunkSlot slot = graph.takeChanged();
+            const(Chunk)* chunk = &graph.nodeAt(slot.slot).chunks[slot.vertex];
+            if (chunk.state == ChunkState.Populated && !chunk.voxels.isSolid() && !faceNeighborGenerating(graph, slot)) {
+                ok = meshes.mesh(graph, slot);
+            }
+            meshingMs += nowMilliseconds() - start;
+        }
+        backlog = cast(uint)(graph.changedChunks.length - graph.changedHead);
         return ok;
     }
 
@@ -354,6 +362,17 @@ struct Renderer {
         }
         core.cleanup();
     }
+}
+
+bool faceNeighborGenerating(const(Graph)* graph, ChunkSlot chunk) {
+    bool result = false;
+    foreach (direction; CHUNK_DIRECTIONS) {
+        ChunkSlot neighbor = chunkNeighborSlot(graph, chunk, direction);
+        if (neighbor.slot != NO_SLOT && graph.nodeAt(neighbor.slot).chunks[neighbor.vertex].state == ChunkState.Generating) {
+            result = true;
+        }
+    }
+    return result;
 }
 
 double nowMilliseconds() {

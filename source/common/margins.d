@@ -14,6 +14,8 @@ struct CoordsWithMargins {
     }
 }
 
+enum ubyte TEST_DIMENSION = 4;
+
 CoordsWithMargins withMargins(Coords coords) {
     CoordsWithMargins result;
     foreach (axis; 0 .. 3) {
@@ -72,24 +74,92 @@ CoordsWithMargins tuvToXyz(ubyte t, ubyte u, ubyte v, size_t tAxis) {
     return result;
 }
 
-void fixMargins(ubyte dimension, Vertex vertex, VoxelData* voxels, ChunkDirection direction, VoxelData* neighborVoxels) {
-    if (!(voxels.isSolid() && neighborVoxels.isSolid() && (voxels.get(0) == Material.Void) == (neighborVoxels.get(0) == Material.Void))) {
-        ChunkAxisPermutation neighborPermutation = neighborAxisPermutation(vertex, direction);
-        ubyte margin = marginCoord(dimension, direction.sign);
-        ubyte boundary = boundaryCoordWithMargins(dimension, direction.sign);
-        Material[] voxelData = voxels.dataMut(dimension);
-        Material[] neighborVoxelData = neighborVoxels.dataMut(dimension);
-        foreach (j; 0 .. dimension + 2) {
-            foreach (i; 0 .. dimension + 2) {
-                CoordsWithMargins boundaryCoords = tuvToXyz(boundary, clampToInterior(i, dimension), clampToInterior(j, dimension), direction.axis);
-                CoordsWithMargins marginCoords = tuvToXyz(margin, cast(ubyte) i, cast(ubyte) j, direction.axis);
-                size_t neighborBoundary = permuteCoordsWithMargins(neighborPermutation, boundaryCoords).toIndex(dimension);
-                size_t neighborMargin = permuteCoordsWithMargins(neighborPermutation, marginCoords).toIndex(dimension);
-                voxelData[marginCoords.toIndex(dimension)] = neighborVoxelData[neighborBoundary];
-                neighborVoxelData[neighborMargin] = voxelData[boundaryCoords.toIndex(dimension)];
+struct MarginFace {
+    ChunkAxisPermutation permutation;
+    ubyte dimension;
+    ubyte axis;
+    ubyte margin;
+    ubyte boundary;
+
+    CoordsWithMargins boundaryCell(size_t i, size_t j) const {
+        return tuvToXyz(boundary, clampToInterior(i, dimension), clampToInterior(j, dimension), axis);
+    }
+
+    CoordsWithMargins marginCell(size_t i, size_t j) const {
+        return tuvToXyz(margin, cast(ubyte) i, cast(ubyte) j, axis);
+    }
+
+    size_t neighborIndex(CoordsWithMargins coords) const {
+        return permuteCoordsWithMargins(permutation, coords).toIndex(dimension);
+    }
+}
+
+bool boundaryDiffersInVoidness(const(MarginFace)* face, const(VoxelData)* source, bool sourceIsNeighbor, bool voidness) {
+    bool differs = false;
+    if (source.isSolid()) {
+        differs = (source.solidMaterial == Material.Void) != voidness;
+    } else {
+        foreach (j; 1 .. face.dimension + 1) {
+            foreach (i; 1 .. face.dimension + 1) {
+                size_t index = face.boundaryCell(i, j).toIndex(face.dimension);
+                if (sourceIsNeighbor) {
+                    index = face.neighborIndex(face.boundaryCell(i, j));
+                }
+                if ((source.get(index) == Material.Void) != voidness) {
+                    differs = true;
+                }
             }
         }
     }
+    return differs;
+}
+
+bool needsMargin(const(MarginFace)* face, const(VoxelData)* target, const(VoxelData)* source, bool sourceIsNeighbor) {
+    return !target.isSolid() || boundaryDiffersInVoidness(face, source, sourceIsNeighbor, target.solidMaterial == Material.Void);
+}
+
+void fixMargins(ubyte dimension, Vertex vertex, VoxelData* voxels, ChunkDirection direction, VoxelData* neighborVoxels) {
+    MarginFace face = MarginFace(neighborAxisPermutation(vertex, direction), dimension, direction.axis, marginCoord(dimension, direction.sign), boundaryCoordWithMargins(dimension, direction.sign));
+    bool writeOurs = needsMargin(&face, voxels, neighborVoxels, true);
+    bool writeTheirs = needsMargin(&face, neighborVoxels, voxels, false);
+    if (writeOurs) {
+        voxels.dataMut(dimension);
+    }
+    if (writeTheirs) {
+        neighborVoxels.dataMut(dimension);
+    }
+    if (writeOurs || writeTheirs) {
+        foreach (j; 0 .. dimension + 2) {
+            foreach (i; 0 .. dimension + 2) {
+                CoordsWithMargins boundaryCoords = face.boundaryCell(i, j);
+                CoordsWithMargins marginCoords = face.marginCell(i, j);
+                if (writeOurs) {
+                    voxels.denseData[marginCoords.toIndex(dimension)] = neighborVoxels.get(face.neighborIndex(boundaryCoords));
+                }
+                if (writeTheirs) {
+                    neighborVoxels.denseData[face.neighborIndex(marginCoords)] = voxels.get(boundaryCoords.toIndex(dimension));
+                }
+            }
+        }
+    }
+}
+
+unittest {
+    VoxelData stone = VoxelData.solid(Material.Granite);
+    VoxelData dirt = VoxelData.solid(Material.Dirt);
+    fixMargins(TEST_DIMENSION, Vertex.A, &stone, CHUNK_DIRECTIONS[0], &dirt);
+    assert(stone.isSolid() && dirt.isSolid());
+    VoxelData buried = VoxelData.solid(Material.Dirt);
+    buried.dataMut(TEST_DIMENSION);
+    initializeMargins(TEST_DIMENSION, &buried);
+    fixMargins(TEST_DIMENSION, Vertex.A, &stone, CHUNK_DIRECTIONS[3], &buried);
+    assert(stone.isSolid());
+    VoxelData air = VoxelData.solid(Material.Void);
+    fixMargins(TEST_DIMENSION, Vertex.A, &stone, CHUNK_DIRECTIONS[4], &air);
+    assert(!stone.isSolid() && !air.isSolid());
+    stone.release();
+    air.release();
+    buried.release();
 }
 
 bool marginFacesHaveVoid(ubyte dimension, const(VoxelData)* voxels) {

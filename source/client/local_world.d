@@ -1,33 +1,36 @@
 module client.local_world;
 
 import core.stdc.math : coshf;
-import client.worldgen_driver : WorldgenDriver, createWorldgenDriver, driveWorldgen, getChunkNeighbor, releaseWorldgenDriver, resolveIfExposed, resolveMaterials;
-import common.chunk_neighbors : ChunkSlot, touchChunksReading;
+import client.worldgen_driver : WorldgenDriver, chunkAt, createWorldgenDriver, driveWorldgen, getChunkNeighbor, populatedNeighbor, releaseWorldgenDriver, resolveIfExposed, resolveMaterials;
+import common.chunk_neighbors : chunkNeighborSlot, touchChunksReading;
 import common.collision_math : Ray;
 import common.graph : Graph, NO_NODE, NodeId, createGraph;
 import common.graph_ray_casting : GraphCastHit, rayCast;
 import common.margins : fixMargins, neighborAxisPermutation, withMargins;
-import common.math : MPoint, MVector, isNan;
-import common.node : Chunk, ChunkId, ChunkState;
+import common.math : MIsometry, MPoint, MVector, isNan;
+import common.node : Chunk, ChunkId, ChunkSlot, ChunkState;
 import common.proto : Position, originPosition;
-import common.traversal : DEFAULT_NODE_CREATION_BUDGET, NearbyNode, NearbyScratch, ensureAndCollectNearby;
+import common.traversal : NOT_COLLECTED, NO_DEADLINE, NearbyNode, NearbyScratch, beginNearby, continueNearby, nowMilliseconds;
 import common.voxel_math : CHUNK_DIRECTIONS, ChunkDirection, Coords, boundaryCoord;
 import common.world : Material;
 
 enum float NEARBY_PADDING = 0.05f;
 enum float RENDER_RADIUS = 4.5f;
+enum double NEARBY_BUDGET_MILLISECONDS = 2.0;
 
 struct LocalWorld {
     Graph graph;
     WorldgenDriver worldgenDriver;
-    NearbyScratch nearbyScratch;
+    NearbyScratch[2] nearby;
     Position cameraPosition;
-    MPoint!float lastNearbyPoint;
+    MPoint!float publishedPoint;
+    MPoint!float pendingPoint;
     NearbyNode[] cachedNodes;
-    NodeId lastNearbyNode;
     float renderRadius;
     float reach;
+    uint published;
     uint nearbyVersion;
+    uint epoch;
     bool hasNearby;
 }
 
@@ -43,24 +46,61 @@ LocalWorld createLocalWorld(ubyte dimension, bool flatWorldgen, float reach) {
 
 void releaseLocalWorld(LocalWorld* world) {
     releaseWorldgenDriver(&world.worldgenDriver);
-    world.nearbyScratch.release();
+    world.nearby[0].release();
+    world.nearby[1].release();
     world.graph.release();
 }
 
-void updateLocalWorld(LocalWorld* world) {
-    MPoint!float cameraPoint = world.cameraPosition.local * MPoint!float.origin();
-    if (!world.hasNearby || world.cameraPosition.node != world.lastNearbyNode || world.nearbyScratch.creationCapped || -world.lastNearbyPoint.mip(cameraPoint.vec) > coshf(NEARBY_PADDING)) {
-        world.cachedNodes = ensureAndCollectNearby(&world.nearbyScratch, &world.graph, world.cameraPosition.node, world.cameraPosition.local, world.renderRadius + NEARBY_PADDING, DEFAULT_NODE_CREATION_BUDGET);
-        world.lastNearbyNode = world.cameraPosition.node;
-        world.lastNearbyPoint = cameraPoint;
-        world.hasNearby = true;
-        world.nearbyVersion += 1;
+uint cameraNearbyIndex(const(LocalWorld)* world) {
+    return world.nearby[world.published].indexOf(world.graph.slotOf(world.cameraPosition.node));
+}
+
+MIsometry!float cameraInNearbyFrame(const(LocalWorld)* world) {
+    return world.nearby[world.published].nodes.ptr[cameraNearbyIndex(world)].transform * world.cameraPosition.local;
+}
+
+void updateLocalWorld(LocalWorld* world, bool unbudgeted) {
+    float distance = world.renderRadius + NEARBY_PADDING;
+    double deadline = nowMilliseconds() + NEARBY_BUDGET_MILLISECONDS;
+    if (unbudgeted) {
+        deadline = NO_DEADLINE;
     }
-    driveWorldgen(&world.worldgenDriver, world.cachedNodes, world.cameraPosition.local, world.renderRadius, &world.graph, world.nearbyVersion);
+    NearbyScratch* current = &world.nearby[world.published];
+    NearbyScratch* next = &world.nearby[1 - world.published];
+    if (!world.hasNearby && (!current.building || cameraNearbyIndex(world) == NOT_COLLECTED)) {
+        beginNearby(current, &world.graph, world.cameraPosition.node, world.cameraPosition.local, distance);
+        world.publishedPoint = world.cameraPosition.local * MPoint!float.origin();
+    }
+    if (!world.hasNearby) {
+        world.hasNearby = continueNearby(current, &world.graph, deadline);
+        world.cachedNodes = current.nodes.slice();
+        world.nearbyVersion += 1;
+    } else if (cameraNearbyIndex(world) == NOT_COLLECTED) {
+        beginNearby(next, &world.graph, world.cameraPosition.node, world.cameraPosition.local, distance);
+        continueNearby(next, &world.graph, NO_DEADLINE);
+        publishNearby(world, world.cameraPosition.local * MPoint!float.origin());
+    } else {
+        MPoint!float camera = cameraInNearbyFrame(world) * MPoint!float.origin();
+        if (!next.building && -world.publishedPoint.mip(camera.vec) > coshf(NEARBY_PADDING / 2)) {
+            beginNearby(next, &world.graph, world.cameraPosition.node, world.cameraPosition.local, distance);
+            world.pendingPoint = world.cameraPosition.local * MPoint!float.origin();
+        }
+        if (next.building && continueNearby(next, &world.graph, deadline)) {
+            publishNearby(world, world.pendingPoint);
+        }
+    }
+    driveWorldgen(&world.worldgenDriver, world.cachedNodes, cameraInNearbyFrame(world), world.renderRadius, &world.graph, world.nearbyVersion, unbudgeted);
+}
+
+void publishNearby(LocalWorld* world, MPoint!float point) {
+    world.published = 1 - world.published;
+    world.cachedNodes = world.nearby[world.published].nodes.slice();
+    world.publishedPoint = point;
+    world.nearbyVersion += 1;
 }
 
 bool worldgenSettled(const(LocalWorld)* world) {
-    return world.worldgenDriver.inFlight == 0 && world.worldgenDriver.scanCursor >= world.cachedNodes.length;
+    return world.hasNearby && world.worldgenDriver.inFlight == 0 && world.worldgenDriver.scanCursor >= world.cachedNodes.length;
 }
 
 GraphCastHit castCenterRay(const(LocalWorld)* world) {
@@ -107,26 +147,24 @@ Placement placementTarget(LocalWorld* world) {
 
 bool setVoxel(LocalWorld* world, ChunkId chunkId, Coords coords, Material material) {
     ubyte dimension = world.graph.layout.dimension;
-    Chunk* chunk = &world.graph.nodeOf(chunkId.node).chunks[chunkId.vertex];
+    ChunkSlot slot = ChunkSlot(world.graph.slotOf(chunkId.node), chunkId.vertex);
+    Chunk* chunk = chunkAt(&world.graph, slot);
     bool result = chunk.state == ChunkState.Populated;
     if (result) {
         if (chunk.materialsDeferred) {
-            resolveMaterials(&world.graph, chunkId);
+            resolveMaterials(&world.graph, slot);
         }
         chunk.voxels.dataMut(dimension)[coords.toIndex(dimension)] = material;
-        chunk.generation += 1;
+        world.graph.markChanged(slot);
         foreach (direction; CHUNK_DIRECTIONS) {
-            ChunkId neighbor = getChunkNeighbor(&world.graph, chunkId, direction);
-            if (coords.data[direction.axis] == boundaryCoord(dimension, direction.sign) && neighbor.node != NO_NODE) {
-                Chunk* neighborChunk = &world.graph.nodeOf(neighbor.node).chunks[neighbor.vertex];
-                if (neighborChunk.state == ChunkState.Populated) {
-                    fixMargins(dimension, chunkId.vertex, &chunk.voxels, direction, &neighborChunk.voxels);
-                    neighborChunk.generation += 1;
-                    resolveIfExposed(&world.graph, neighbor);
-                }
+            Chunk* neighbor = populatedNeighbor(&world.graph, slot, direction);
+            if (coords.data[direction.axis] == boundaryCoord(dimension, direction.sign) && neighbor !is null) {
+                fixMargins(dimension, chunkId.vertex, &chunk.voxels, direction, &neighbor.voxels);
+                world.graph.markChanged(chunkNeighborSlot(&world.graph, slot, direction));
+                resolveIfExposed(&world.graph, chunkNeighborSlot(&world.graph, slot, direction));
             }
         }
-        touchChunksReading(&world.graph, ChunkSlot(world.graph.slotOf(chunkId.node), chunkId.vertex), withMargins(coords));
+        touchChunksReading(&world.graph, slot, withMargins(coords));
     }
     return result;
 }

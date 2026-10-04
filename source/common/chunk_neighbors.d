@@ -3,18 +3,13 @@ module common.chunk_neighbors;
 import common.dodeca : SIDE_COUNT, Side, VERTEX_COUNT, Vertex, vertexAdjacentVertices, vertexCanonicalSides;
 import common.graph : Graph, NO_SLOT, ROOT_NODE, createGraph;
 import common.margins : CoordsWithMargins, boundaryCoordWithMargins, marginCoord, neighborAxisPermutation, permuteCoordsWithMargins;
-import common.node : Chunk, ChunkState;
+import common.node : Chunk, ChunkSlot, ChunkState, Occupancy;
 import common.voxel_math : ChunkDirection, CoordAxis, CoordSign;
 import common.world : Material;
 
 enum uint AXIS_COUNT = 3;
 enum ubyte TEST_DIMENSION = 4;
 enum ubyte TEST_EDGE_COORD = 2;
-
-struct ChunkSlot {
-    uint slot;
-    Vertex vertex;
-}
 
 struct CellHop {
     CoordsWithMargins coords;
@@ -52,21 +47,35 @@ CellHop hopCell(const(Graph)* graph, ChunkSlot chunk, CoordsWithMargins coords, 
     return result;
 }
 
-Material resolveCell(const(Graph)* graph, ChunkSlot chunk, CoordsWithMargins coords) {
+bool cellOccupied(const(Graph)* graph, ChunkSlot chunk, CoordsWithMargins coords) {
     ubyte dimension = graph.layout.dimension;
-    Material result = Material.Void;
+    bool result = false;
     bool interior = true;
     foreach (axis; 0 .. AXIS_COUNT) {
         if (outsideInterior(dimension, coords.data[axis])) {
             interior = false;
             CellHop hop = hopCell(graph, chunk, coords, axis);
-            if (hop.populated && result == Material.Void) {
-                result = resolveCell(graph, hop.chunk, hop.coords);
+            if (hop.populated) {
+                result = result || cellOccupied(graph, hop.chunk, hop.coords);
+            } else {
+                result = result || hop.chunk.slot == NO_SLOT || assumedOccupied(graph.nodeAt(hop.chunk.slot).chunks[hop.chunk.vertex].predicted);
             }
         }
     }
     if (interior) {
-        result = graph.nodeAt(chunk.slot).chunks[chunk.vertex].voxels.get(coords.toIndex(dimension));
+        result = graph.nodeAt(chunk.slot).chunks[chunk.vertex].voxels.get(coords.toIndex(dimension)) != Material.Void;
+    }
+    return result;
+}
+
+bool assumedOccupied(Occupancy predicted) {
+    return predicted != Occupancy.empty;
+}
+
+bool contradictsPrediction(const(Chunk)* chunk) {
+    bool result = !chunk.voxels.isSolid();
+    if (chunk.voxels.isSolid()) {
+        result = (chunk.voxels.solidMaterial != Material.Void) != assumedOccupied(chunk.predicted);
     }
     return result;
 }
@@ -84,7 +93,7 @@ void touchHolders(Graph* graph, ChunkSlot chunk, CoordsWithMargins coords) {
         }
     }
     if (interior) {
-        graph.nodeAt(chunk.slot).chunks[chunk.vertex].generation += 1;
+        graph.markChanged(chunk);
     }
 }
 

@@ -13,6 +13,11 @@ struct ChunkId {
     Vertex vertex;
 }
 
+struct ChunkSlot {
+    uint slot;
+    Vertex vertex;
+}
+
 struct ChunkLayout {
     float dualToGridFactor;
     ubyte dimension;
@@ -116,11 +121,18 @@ enum ChunkState : ubyte {
     Populated,
 }
 
+enum Occupancy : ubyte {
+    unknown,
+    full,
+    empty,
+}
+
 struct Chunk {
     VoxelData voxels;
-    uint generation;
     ChunkState state;
+    Occupancy predicted;
     bool materialsDeferred;
+    bool queued;
 }
 
 struct Node {

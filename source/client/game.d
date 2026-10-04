@@ -9,7 +9,7 @@ import common.character_controller.controller : CharacterState, Mover, Slide, cr
 import common.graph : Graph;
 import common.graph_collision : Capsule, capsuleOverlapsVoxel;
 import common.math : MPoint;
-import common.node : ChunkId;
+import common.node : ChunkSlot;
 import common.proto : CharacterInput, MovementMode, Position;
 import common.sim_config : CharacterConfig, SimConfig, SimConfigRaw, simConfigFromRaw;
 import common.world : Material;
@@ -122,7 +122,7 @@ void placeAtSpawn(Game* game) {
     bool flat = game.world.worldgenDriver.flatWorldgen;
     float bodyReach = cfg.characterHalfHeight + cfg.characterRadius + cfg.contactSkin;
     Position position = clearSpawnPosition(graph, flat, bodyReach);
-    Array!ChunkId chunks;
+    Array!ChunkSlot chunks;
     Slide drop;
     while (!drop.landed) {
         chunks.clear();
@@ -151,8 +151,10 @@ void placeAtSpawn(Game* game) {
 void setWorldgen(Game* game, bool flat) {
     ubyte dimension = game.world.graph.layout.dimension;
     float reach = game.world.reach;
+    uint epoch = game.world.epoch;
     releaseLocalWorld(&game.world);
     game.world = createLocalWorld(dimension, flat, reach);
+    game.world.epoch = epoch + 1;
     placeAtSpawn(game);
 }
 
@@ -224,7 +226,7 @@ void stepGame(Game* game, FrameInput input, float dt) {
     game.world.cameraPosition = game.character.orientedPosition();
 
     trackCameraAcceleration(game, altitude + game.character.eyeOffset - game.character.eyeLag, dt);
-    updateLocalWorld(&game.world);
+    updateLocalWorld(&game.world, game.settleWorldgenEachFrame);
     if (game.settleWorldgenEachFrame) {
         settleWorldgen(&game.world.worldgenDriver, &game.world.graph);
     }
