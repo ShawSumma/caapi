@@ -7,7 +7,7 @@ import common.dodeca : BOUNDING_SPHERE_RADIUS, CHUNK_BOUNDING_SPHERE_RADIUS, VER
 import common.graph : Graph;
 import common.math : isNan;
 import common.node : Chunk, ChunkId, ChunkSlot, ChunkState;
-import common.proto : Position;
+import common.position : Position;
 import common.ray : MAX_TANH_DISTANCE, Ray;
 import common.raycast.chunk : ChunkRayCastHit, chunkRayCast;
 

@@ -7,7 +7,7 @@ import common.dodeca : BOUNDING_SPHERE_RADIUS, CHUNK_BOUNDING_SPHERE_RADIUS, SID
 import common.graph : Graph, NO_SLOT;
 import common.math : MIsometry, MPoint, MVector, isNan;
 import common.node : Chunk, ChunkId, ChunkSlot, ChunkState;
-import common.proto : Position;
+import common.position : Position;
 import common.ray : MAX_TANH_DISTANCE, Ray;
 
 enum uint REGION_MAX_NODES = 64;

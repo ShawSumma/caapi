@@ -13,6 +13,32 @@ bool isInfinite(float value) {
     return value == float.infinity || value == -float.infinity;
 }
 
+float lowerOf(float a, float b) {
+    if (a < b) {
+        return a;
+    } else {
+        return b;
+    }
+}
+
+float higherOf(float a, float b) {
+    if (a > b) {
+        return a;
+    } else {
+        return b;
+    }
+}
+
+float clamped(float value, float low, float high) {
+    if (value < low) {
+        return low;
+    } else if (value > high) {
+        return high;
+    } else {
+        return value;
+    }
+}
+
 struct MVector(N) {
     N[4] data = [0, 0, 0, 0];
 
@@ -315,26 +341,4 @@ struct MIsometry(N) {
         orientationMatrix.data[3][3] = 1;
         return normalizedTranslation * MIsometry(orientationMatrix);
     }
-}
-
-float[3] limitToUnitLength(float[3] v) {
-    float norm = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-    if (norm > 1.0f) {
-        float[3] limited = [v[0] / norm, v[1] / norm, v[2] / norm];
-        return limited;
-    } else {
-        return v;
-    }
-}
-
-float[3] projectToPlane(float[3] subject, float[3] normal, float[3] projectionDirection, float distance) {
-    float subjectAlongNormal = subject[0] * normal[0] + subject[1] * normal[1] + subject[2] * normal[2];
-    float directionAlongNormal = projectionDirection[0] * normal[0] + projectionDirection[1] * normal[1] + projectionDirection[2] * normal[2];
-    float t = (distance - subjectAlongNormal) / directionAlongNormal;
-    float[3] result = [
-        subject[0] + projectionDirection[0] * t,
-        subject[1] + projectionDirection[1] * t,
-        subject[2] + projectionDirection[2] * t,
-    ];
-    return result;
 }

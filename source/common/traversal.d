@@ -1,17 +1,15 @@
 module common.traversal;
 
 import core.stdc.math : coshf;
-import core.sys.posix.time : CLOCK_MONOTONIC, clock_gettime, timespec;
 import common.array : Array;
+import common.clock : nowMilliseconds;
 import common.dodeca : BOUNDING_SPHERE_RADIUS, SIDE_COUNT, Side, reflection;
 import common.graph : Graph, NO_SLOT, NodeId;
 import common.math : MIsometry, MPoint, MVector;
-import common.proto : Position;
+import common.position : Position;
 
 enum uint NODES_PER_CLOCK_CHECK = 64;
 enum double NO_DEADLINE = double.infinity;
-enum double NANOSECONDS_PER_MILLISECOND = 1e6;
-enum double MILLISECONDS_PER_SECOND = 1e3;
 enum uint NOT_COLLECTED = uint.max;
 
 struct NearbyNode {
@@ -103,10 +101,4 @@ struct NearbyScratch {
         advance(graph, NO_DEADLINE);
         return nodes.slice();
     }
-}
-
-double nowMilliseconds() {
-    timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    return now.tv_sec * MILLISECONDS_PER_SECOND + now.tv_nsec / NANOSECONDS_PER_MILLISECOND;
 }

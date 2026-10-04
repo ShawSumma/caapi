@@ -6,7 +6,7 @@ import common.collision.chunk : MAX_FEATURE_SURFACES;
 import common.collision.graph : Capsule, GraphCollisionHit, shapeCast;
 import common.graph : Graph;
 import common.math : MDirection, MIsometry, MPoint, MVector;
-import common.proto : Position;
+import common.position : Position;
 import common.ray : Ray;
 import common.vector3 : ZERO_VECTOR, dot, magnitude, scaled;
 

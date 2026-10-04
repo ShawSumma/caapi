@@ -5,6 +5,7 @@ import core.stdc.stdio : FILE, fprintf;
 import core.stdc.stdlib : free, malloc;
 import client.meshing : Mesher;
 import client.streaming : Streamer, populateChunk, resolveMaterials;
+import common.clock : nowMilliseconds;
 import common.coords : Coords;
 import common.dodeca : CHUNK_BOUNDING_SPHERE_RADIUS, VERTEX_COUNT, Vertex, chunkBoundingSphereCenter;
 import common.graph : Graph, NodeId;
@@ -12,8 +13,8 @@ import common.material : Material;
 import common.math : MIsometry, MPoint;
 import common.murmur : murmurHash3;
 import common.node : Chunk, ChunkSlot, ChunkState, VoxelData;
-import common.proto : Position;
-import common.traversal : NearbyNode, NearbyScratch, nowMilliseconds;
+import common.position : Position;
+import common.traversal : NearbyNode, NearbyScratch;
 import common.worldgen.generation : ChunkParams, GeneratedVoxels;
 
 enum uint DRIVE_NEARBY_VERSION = 1;

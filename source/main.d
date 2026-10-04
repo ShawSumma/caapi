@@ -3,15 +3,16 @@ module main;
 import core.stdc.stdio : FILE, fclose, fopen, fprintf, snprintf;
 import core.stdc.stdlib : free, malloc, strtof;
 import core.stdc.string : strcmp;
-import core.sys.posix.time : CLOCK_MONOTONIC, clock_gettime, nanosleep, timespec;
+import core.sys.posix.time : nanosleep, timespec;
 import bindings.platform : Atom, Button1, Button3, ButtonPress, ClientMessage, CurrentTime, Cursor, Display, False, FocusOut, GenericEvent, GrabModeAsync, GrabSuccess, KeyPress, KeyRelease, KeySym, Pixmap, Success, True, UnmapNotify, VkExtent2D, Window, XBlackPixel, XCloseDisplay, XColor, XCreateBitmapFromData, XCreatePixmapCursor, XCreateSimpleWindow, XDefaultScreen, XDestroyWindow, XDisplayHeight, XDisplayWidth, XEvent, XFlush, XFreeCursor, XFreeEventData, XFreePixmap, XGenericEventCookie, XGetEventData, XGrabPointer, XIAllMasterDevices, XIDeviceInfo, XIEventMask, XIFreeDeviceInfo, XIModeAbsolute, XIQueryDevice, XIQueryVersion, XIRawEvent, XISelectEvents, XIValuatorClass, XIValuatorClassInfo, XI_DeviceChanged, XI_RawMotion, XInternAtom, XK_1, XK_9, XK_Escape, XK_Down, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_n, XK_s, XK_space, XK_v, XK_w, XLookupKeysym, XMapWindow, XNextEvent, XOpenDisplay, XPending, XQueryExtension, XRootWindow, XSelectInput, XSetWMProtocols, XStoreName, XUngrabPointer, XkbSetDetectableAutoRepeat;
 import client.config : ClientConfig;
 import client.game : FrameInput, Game, KEY_COUNT, Key, MATERIAL_PALETTE, axisValue;
 import client.graphics.renderer : FrameTimes, Renderer;
 import client.png : writePng;
 import client.script : ScriptHost, ScriptRecorder;
+import common.character.controller : MovementMode;
+import common.clock : MILLISECONDS_PER_SECOND, NANOSECONDS_PER_SECOND, nowSeconds;
 import common.dodeca : VERTEX_COUNT;
-import common.proto : MovementMode;
 import common.settings : SimMeters;
 
 enum uint WINDOW_WIDTH = 1280;
@@ -20,9 +21,7 @@ enum uint SCREENSHOT_WIDTH = 640;
 enum uint SCREENSHOT_HEIGHT = 360;
 enum double BENCH_FRAME_SECONDS = 1.0 / 60.0;
 enum uint BENCH_MOVE_FRAMES = 300;
-enum double MILLISECONDS_PER_SECOND = 1e3;
 enum double TITLE_INTERVAL_SECONDS = 1.0;
-enum double NANOSECONDS_PER_SECOND = 1e9;
 enum size_t TEXT_CAPACITY = 256;
 enum uint KEYCODE_COUNT = 256;
 enum uint CURSOR_BITMAP_SIZE = 8;
@@ -252,7 +251,7 @@ struct Session {
         XCloseDisplay(display);
     }
 
-    void capture() {
+    void capturePointer() {
         immutable int grab = XGrabPointer(display, window, True, POINTER_GRAB_MASK, GrabModeAsync, GrabModeAsync, window, invisibleCursor, CurrentTime);
         if (grab == GrabSuccess) {
             isCaptured = true;
@@ -260,7 +259,7 @@ struct Session {
         }
     }
 
-    void release() {
+    void releasePointer() {
         if (isCaptured) {
             XUngrabPointer(display, CurrentTime);
             isCaptured = false;
@@ -348,7 +347,7 @@ struct Session {
 
     void handleKeyPress(KeySym symbol, bool isRepeat) {
         if (symbol == XK_Escape) {
-            release();
+            releasePointer();
         } else if (isCaptured) {
             handleGameKey(symbol, isRepeat);
         }
@@ -380,7 +379,7 @@ struct Session {
 
     void handleButton(uint button) {
         if (!isCaptured) {
-            capture();
+            capturePointer();
         } else if (button == Button1) {
             game.breakBlock();
             recordEvent("world:break_block()");
@@ -403,10 +402,10 @@ struct Session {
         } else if (event.type == ButtonPress) {
             handleButton(event.xbutton.button);
         } else if (event.type == FocusOut) {
-            release();
+            releasePointer();
             isKeyDown[] = false;
         } else if (event.type == UnmapNotify) {
-            release();
+            releasePointer();
         } else if (event.type == ClientMessage && cast(Atom) event.xclient.data.l[0] == deleteAtom) {
             isRunning = false;
         }
@@ -486,12 +485,6 @@ void setEventBit(ubyte[] mask, int event) {
 
 bool isEventBitSet(const(ubyte)* mask, int event) {
     return (mask[event / BITS_PER_BYTE] & (1 << (event % BITS_PER_BYTE))) != 0;
-}
-
-double nowSeconds() {
-    timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    return now.tv_sec + now.tv_nsec / NANOSECONDS_PER_SECOND;
 }
 
 void pauseUntilFrameEnd(double frameStart) {

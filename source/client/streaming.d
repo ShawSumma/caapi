@@ -5,13 +5,14 @@ import core.stdc.stdlib : calloc, free;
 import core.sys.posix.pthread : pthread_cond_broadcast, pthread_cond_destroy, pthread_cond_init, pthread_cond_signal, pthread_cond_t, pthread_cond_wait, pthread_create, pthread_join, pthread_mutex_destroy, pthread_mutex_init, pthread_mutex_lock, pthread_mutex_t, pthread_mutex_unlock, pthread_t;
 import core.sys.posix.unistd : _SC_NPROCESSORS_ONLN, sysconf;
 import common.array : Array;
+import common.clock : nowMilliseconds;
 import common.coords : CHUNK_DIRECTIONS, ChunkDirection, CoordSign;
 import common.dodeca : CHUNK_BOUNDING_SPHERE_RADIUS, VERTEX_COUNT, Vertex, adjacentVertices, canonicalSides, chunkBoundingSphereCenter;
 import common.graph : Graph, NO_SLOT;
 import common.math : MIsometry, MPoint;
 import common.neighbors : chunkNeighborSlot, isPredictionContradicted, touchChunksAround;
 import common.node : Chunk, ChunkId, ChunkSlot, ChunkState, Occupancy;
-import common.traversal : NO_DEADLINE, NearbyNode, nowMilliseconds;
+import common.traversal : NO_DEADLINE, NearbyNode;
 import common.worldgen.generation : ChunkParams, GeneratedVoxels;
 
 enum uint RESERVED_CORES = 2;

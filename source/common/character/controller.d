@@ -5,19 +5,32 @@ import core.stdc.math : asinhf, ceilf, expf;
 import common.character.sweep : Sweep;
 import common.collision.graph : Capsule, isRegionPopulated;
 import common.graph : Graph, ROOT_NODE;
-import common.math : MIsometry, MPoint, limitToUnitLength, projectToPlane;
-import common.proto : CharacterInput, MovementMode, Position;
+import common.math : MIsometry, MPoint, higherOf;
+import common.position : Position;
 import common.settings : CharacterConfig, SimConfig;
-import common.vector3 : ZERO_VECTOR, cappedTo, cross, dot, magnitude, movedToward, negated, plus, rejectAlong, scaled;
+import common.vector3 : ZERO_VECTOR, cappedTo, cross, dot, magnitude, movedToward, negated, plus, projectedOntoPlane, rejectAlong, scaled;
 import common.worldgen.generation : NodeState;
 
 enum uint MAX_CONTACT_PLANES = 5;
 enum uint MAX_SLIDE_PLANES = MAX_CONTACT_PLANES + 1;
 enum float MIN_CREASE_SINE = 1e-3f;
+enum float MAX_INPUT_LENGTH = 1.0f;
 enum float UP_PROBE_DISTANCE = 0.1f;
 enum float UP_PROBE_MIN_GAIN = 0.05f;
 enum float TEST_TOLERANCE = 1e-5f;
 enum ubyte TEST_DIMENSION = 12;
+
+enum MovementMode : ubyte {
+    walk,
+    fly,
+    noclip,
+}
+
+struct CharacterInput {
+    float[3] movement = [0, 0, 0];
+    MovementMode mode;
+    bool isJumpHeld;
+}
 
 struct CharacterState {
     Position position;
@@ -77,13 +90,13 @@ struct CharacterState {
     }
 
     void noClipStep(ref const CharacterConfig cfg, CharacterInput input, float dt) {
-        velocity = limitToUnitLength(input.movement).scaled(cfg.noClipMovementSpeed);
+        velocity = input.movement.cappedTo(MAX_INPUT_LENGTH).scaled(cfg.noClipMovementSpeed);
         isOnGround = false;
         position.local = position.local * MIsometry!float.fromDisplacement(velocity.scaled(dt));
     }
 
     void flyStep(ref const Mover mover, CharacterInput input, float dt) {
-        float[3] flyVelocity = limitToUnitLength(input.movement).scaled(mover.cfg.flyMovementSpeed);
+        float[3] flyVelocity = input.movement.cappedTo(MAX_INPUT_LENGTH).scaled(mover.cfg.flyMovementSpeed);
         Slide moved = mover.slide(position, flyVelocity.scaled(dt), flyVelocity, Sliding.free, PlaneSet.init);
         position = moved.position;
         velocity = moved.velocity;
@@ -91,7 +104,7 @@ struct CharacterState {
     }
 
     void walkStep(ref const Mover mover, CharacterInput input, float dt) {
-        float[3] wish = limitToUnitLength(input.movement).rejectAlong(mover.up);
+        float[3] wish = input.movement.cappedTo(MAX_INPUT_LENGTH).rejectAlong(mover.up);
         float[3] targetVelocity = wish.scaled(mover.cfg.maxGroundSpeed);
         float[3] horizontalVelocity = velocity.rejectAlong(mover.up);
         float verticalSpeed = velocity.dot(mover.up);
@@ -356,14 +369,6 @@ uint atLeastOne(uint count) {
     }
 }
 
-float higherOf(float kept, float candidate) {
-    if (kept > candidate) {
-        return kept;
-    } else {
-        return candidate;
-    }
-}
-
 float[3] steered(float[3] velocity, float[3] target, float[3] wish, float maxStep) {
     if (wish.dot(wish) > 0) {
         return velocity.movedToward(target, maxStep);
@@ -393,7 +398,7 @@ bool isSatisfyingPlanes(const(ContactPlane)[] planes, float[3] v, bool isRestori
 }
 
 float[3] planeCandidate(ContactPlane plane, float[3] v, bool isRestoringSkin) {
-    return projectToPlane(v, plane.normal, plane.direction, target(plane, isRestoringSkin));
+    return v.projectedOntoPlane(plane.normal, plane.direction, target(plane, isRestoringSkin));
 }
 
 bool isPlaneClip(const(ContactPlane)[] planes, float[3] v, bool isRestoringSkin, size_t i) {

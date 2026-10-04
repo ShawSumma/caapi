@@ -8,47 +8,52 @@ shared simulation code in `source/common`. Two entry points: `source/main.d`
 
 - `source/main.d` - windowed client: X11 window, XInput2 raw mouse, input
   capture, frame loop; also `--screenshot` and `--bench-load` (offscreen).
-- `source/headless.d` - script runner and `--dump-world`/`--bench-*`
-  dispatch; `source/worldcheck.d` holds the dumps and benches.
+- `source/headless.d` - script runner and `--dump-world`/`--world-digest`/
+  `--bench-*` dispatch; `source/worldcheck.d` holds the dumps and benches.
 - `source/unittests.d` - betterC unittest runner over imported modules.
 - `source/bindings/` - ImportC shims: `lua.c`, `platform.c` (Xlib, XI2,
   Vulkan).
 - `source/client/` - per-client state:
-  - `game.d` - Game: world, character, spawn, frame step, modes, input
+  - `game.d` - Game: world, character, camera, spawn, step, modes, input
     mapping.
-  - `local_world.d` - LocalWorld: graph, worldgen driver, double-buffered
-    nearby node set, camera, edits (`setVoxel`, ray picks).
-  - `worldgen_driver.d` - worker pool (generation requests and fork-join
-    `runParallel` jobs), request scan, budgeted integration, chunk
-    population and margin connection.
+  - `world.d` - LocalWorld: graph, streamer, double-buffered nearby node
+    set, camera position, edits (`setVoxel`, ray picks).
+  - `streaming.d` - Streamer: worker pool (generation requests and
+    fork-join `runParallel` jobs), request scan, budgeted integration,
+    chunk population and margin connection.
   - `meshing.d` - chunk surface extraction with ambient occlusion.
-  - `local_character_controller.d` - camera orientation and eye smoothing.
-  - `script.d` - Lua API and the recorder; `config.d` - client config;
-    `png.d` - PNG writer for screenshots.
+  - `camera.d` - Camera: orientation quaternion, pitch, eye smoothing.
+  - `script.d` - Lua API (ScriptHost) and the recorder; `config.d` - client
+    config; `png.d` - PNG writer for screenshots.
   - `graphics/` - Vulkan: `core.d` (instance, device), `base.d`
     (swapchain or offscreen target, render pass), `pipeline.d` (buffers,
     pipelines), `matrices.d` (flat 4x4 helpers), `renderer.d` (frame),
-    `voxels/chunk_meshes.d` (face pool, drawable and node buffers,
-    parallel mesh batch), `voxels/cull.d` (compute cull pipeline),
-    `voxels/surface.d` (voxel pipeline, textures, common UBO), `fog.d`,
-    `highlight.d`, `crosshair.d`, `frustum.d`.
+    `voxels/meshes.d` (face pool, drawable and node buffers, parallel mesh
+    batch), `voxels/cull.d` (compute cull pipeline), `voxels/surface.d`
+    (voxel pipeline, textures, common UBO), `fog.d`, `highlight.d`,
+    `crosshair.d`, `frustum.d`.
 - `source/common/` - simulation shared by client and headless:
-  - geometry: `math.d`, `vector3.d`, `dodeca.d` (honeycomb tables),
-    `voxel_math.d`, `collision_math.d`.
+  - geometry: `math.d` (hyperboloid types, scalar helpers), `vector3.d`
+    (float[3] operations), `dodeca.d` (honeycomb tables), `coords.d`
+    (chunk grid coordinates, axis permutations), `ray.d` (rays and contact
+    terms).
   - world: `graph.d` (node graph, node and chunk slabs, change queue),
-    `node.d` (chunk and voxel storage), `margins.d`, `chunk_neighbors.d` (cross-chunk
-    cell resolution), `traversal.d` (nearby BFS), `world.d` (materials).
+    `node.d` (chunk and voxel storage), `margins.d`, `neighbors.d`
+    (cross-chunk cell resolution), `traversal.d` (nearby BFS),
+    `position.d`, `material.d`, `settings.d` (SimMeters to SimConfig).
   - worldgen: `worldgen/generation.d` (node state, chunk params, proofs,
     voxels), `terraingen.d`, `plane.d`, `spawn.d`.
-  - collision: `chunk_collision.d`, `graph_collision.d`,
-    `character_controller/` (controller, collision), ray casting in
-    `chunk_ray_casting.d`, `graph_ray_casting.d`.
-  - containers: `array.d`, `hash_map.d`, `slab.d`, `range_allocator.d`.
+  - collision: `collision/chunk.d`, `collision/graph.d` (shape casts,
+    region checks), `character/controller.d`, `character/sweep.d`; ray
+    picks in `raycast/chunk.d`, `raycast/graph.d`.
+  - containers and utilities: `array.d`, `hashmap.d`, `slab.d`,
+    `allocator.d` (range allocator), `murmur.d`, `clock.d`.
 - `source/shaders/` - GLSL, compiled to `spv/` by the pre-build step;
   `common.h` (common UBO), `draw.h` (structs shared by `cull.comp` and
-  `voxels.vert`).
-- `tests/` - behavior scripts, `tests/lib/` shared Lua, `tests/visual/`
-  screenshot scenes; `import/prelude.lua` - Lua conveniences.
+  `voxels.vert`), `face.h` (packed face layout, matches `client/meshing.d`).
+- `tests/` - behavior scripts: `tests/flat/`, `tests/terrain/`,
+  `tests/api.lua`; `tests/lib/` shared Lua; `tests/visual/` screenshot
+  scenes.
 
 ## Build, test, run
 
@@ -58,7 +63,7 @@ directly; dub is the only build command.
 
 Everything is `-betterC` with `-checkaction=halt`: no GC, no Phobos, no
 exceptions, no classes, no associative arrays. Memory is `malloc`/`free`
-(`common/array.d`, `common/hash_map.d`), threads are pthreads, math is
+(`common/array.d`, `common/hashmap.d`), threads are pthreads, math is
 `core.math` and `core.stdc.math`.
 
 - `dub build -b release --compiler=ldc2 -c headless` -> `./mined-headless`.
@@ -74,11 +79,12 @@ exceptions, no classes, no associative arrays. Memory is `malloc`/`free`
   every imported module) and leaves out Lua, whose headers ImportC rejects
   under `-unittest`.
 - Behavior tests: `dub run -b release --compiler=ldc2 -c headless -- --out
-  <report> tests/<name>.lua...` - exit status 1 on any failed check or
-  script error; the report file holds the details.
+  <report> tests/<dir>/<name>.lua...` - exit status 1 on any script error
+  or failed assert; the report file holds the details.
 - Nothing ever writes to stdout or stderr. Headless output goes only to the
-  `--out` file; `--dump-world` and `--bench-*` require it. Pass/fail is the
-  exit status.
+  `--out` file; `--dump-world`, `--world-digest` and `--bench-*` require
+  it. Pass/fail is the exit status. `--out /dev/stdout` reads a report
+  without creating a file.
 - Dependencies live in `deps/`. C comes in through ImportC only - no cc, no
   make, no cmake, no build output outside dub's cache. Lua's individual
   `.c` files are `sourceFiles`. `deps/lua` carries small ImportC patches:
@@ -105,69 +111,71 @@ Headless verification:
 
 - `mined-headless --out <report> <script.lua>...` - runs Lua scripts
   through the full simulation, each in a fresh world. Deterministic: chunk
-  generation is settled every frame, so a run is a pure function of the
-  script. Each script's `session:` line and every `FAIL` land in the report,
-  in meters.
+  generation is settled every step, so a run is a pure function of the
+  script. Each script's `session:` line (steps, time, distance in meters)
+  and any script error land in the report.
 - `./mined --record <file.lua>` records live play as a replayable Lua
   script (key changes, look deltas, events, and merged runs of identical
-  frames).
-- `--flat` (or `worldgen("flat")` in a script) - debug worldgen: fills
-  exactly below the base surface plane. The base plane is lattice-aligned,
-  so this is a genuinely flat floor with gravity perpendicular to it. Use it
-  to isolate physics from terrain.
+  steps as `world:wait(seconds, dt)`).
+- `--flat` (or `world:worldgen("flat")` in a script) - debug worldgen:
+  fills exactly below the base surface plane. The base plane is
+  lattice-aligned, so this is a genuinely flat floor with gravity
+  perpendicular to it. Use it to isolate physics from terrain.
 - `--dump-world [radius]` - deterministic world hash dump; byte-diff two
   runs' reports to prove worldgen unchanged. Deferred materials are
   resolved first; each chunk line carries a materials hash and an
-  occupancy hash, and the last line digests each column, so a shape-only
-  change and a material-only change are told apart.
+  occupancy hash, so a shape-only change and a material-only change are
+  told apart. `--world-digest [radius]` prints only the final
+  order-independent digest line, which is enough to compare two builds.
 - `--bench-gen | --bench-nearby | --bench-drive | --bench-mesh [radius]` -
   timings.
 
 ## Scripts (Lua 5.5)
 
 Lua is the canonical language for driving and checking behavior. Tests are
-authored, not recorded: they say what they do and `check` what must hold.
+authored, not recorded: they say what they do and `assert` what must hold.
 The script owns time - nothing advances except through the world.
 
-The API adds no globals. A script is a chunk called with the world as its
-only argument, and everything hangs off that object:
+A script returns a function of the world; the API adds no globals and
+everything hangs off that one object:
 
-    local world = ...
-    local player = world.player
+    return function(world)
+      world:worldgen("flat")
+      world:press(1, "fwd")
+      assert(world:is_on_ground(), "still standing")
+    end
 
-All state (timestep, held keys, turn rate, frame hook) lives on the world
-and its player. Modules take the world as a parameter (`walk.spawn(world)`,
-see `tests/lib/walk.lua`). Methods check their receiver, so `world.wait(1)`
-is an error - always call with `:`.
+All state (timestep, held keys, turn rate, step hook) lives on the world.
+Modules take the world as a parameter (`walk.spawn(world)`, see
+`tests/lib/walk.lua`). `require` searches the script's directory and each
+of its ancestors, so `tests/flat/jump.lua` finds `lib.walk`. Methods check
+their receiver, so `world.wait(1)` is an error - always call with `:`.
 
-- Quantities are meters, seconds, and degrees (like `*Raw` config).
+- Quantities are meters, seconds, and degrees (like `*Meters` config).
   Positive yaw turns right and positive pitch looks down (mouse sense).
-- `world`: `frames(n[, dt])` (dt defaults to the timestep), `wait(s)`,
-  `timestep([s])` (default 0.016), `time()`, `worldgen("flat"|"terrain")`
-  (before the first frame; it creates a fresh world and respawns),
-  `every_frame(fn|nil)` (runs fn after each frame
-  to observe; it cannot advance time), `check(cond, msg)` (writes a `FAIL`
-  line to the report and counts a failure).
-- `player` input: `hold(key...)`, `release(key...)`, `release_all()`,
+- Time: `wait(s[, dt])` (steps of dt, default the timestep), `step([dt])`
+  (one step), `timestep([s])` (default 0.016), `time()`,
+  `worldgen("flat"|"terrain")` (before the first step; it creates a fresh
+  world and respawns), `on_step(fn|nil)` (runs fn after each step to
+  observe; it cannot advance time).
+- Input: `hold(key...)`, `release(key...)`, `release_all()`,
   `press(s, key...)`, `look(yaw, pitch)` (immediate), `turn_rate([yaw/s,
   pitch/s])` (held look rate; returns the current one), `turn(yaw, pitch,
   s)`. Keys: fwd back left right up (alias jump) down yaw_left yaw_right
   pitch_up pitch_down.
-- `player` actions: `mode([walk|fly|noclip])`, `material([1..9])`,
-  `break_block()`, `place_block()`.
-- `player` observation: `traveled()` (path length), `on_ground()`,
-  `altitude()` (body center above the base surface plane; half height plus
-  the contact skin, 0.91, standing on flat worldgen), `speed()`, `horizontal_speed()`, `vertical_speed()`
-  (signed, up positive), `camera_vertical_acceleration()` (the bounce
-  metric).
-- `./mined --record` writes the same API: `player:hold`, `player:look`,
-  `world:frames(n, dt)`, `player:mode`, and so on.
+- Actions: `mode([walk|fly|noclip])`, `material([1..9])`, `break_block()`,
+  `place_block()` (both return whether they changed a voxel).
+- Observation: `traveled()` (path length), `is_on_ground()`, `altitude()`
+  (body center above the base surface plane; half height plus the contact
+  skin standing on flat worldgen), `speed()`, `horizontal_speed()`,
+  `vertical_speed()` (signed, up positive),
+  `camera_vertical_acceleration()` (the bounce metric).
+- `./mined --record` writes the same API.
 - Only the base, package, coroutine, math, string, table and utf8 libraries
   are open, and `print`/`warn` are removed: scripts observe through
-  `check`, never by printing. `tests/script_api.lua` enforces the global
-  set.
-- API in `client/script.d`, Lua-side conveniences in `import/prelude.lua`
-  (called with the world and the script directory).
+  `assert`, never by printing. A failed assert is a script error.
+- The API lives in `client/script.d`. Lua names are snake_case; constants
+  are ALL_CAPS.
 
 ## Units
 
@@ -177,11 +185,12 @@ Three unit systems coexist. Confusing them costs days.
    collision, traversal, and every stored position/distance. A dodecahedral
    node cell is on the order of 1; a voxel averages ~0.05 but varies
    ~2x in edge length within a chunk (see Chunks below).
-2. Meters: human-scale config. All `*Raw` config values (speeds, sizes,
-   reach) are meters and seconds; `voxelSize` sets meters per voxel.
-   `simConfigFromRaw` converts to absolute via `metersToAbsolute` exactly
-   once. Never convert anywhere else and never hand-estimate the factor -
-   compute it or read it from `SimConfig`.
+2. Meters: human-scale config. All `*Meters` config values (`SimMeters`,
+   `CharacterMeters`: speeds, sizes, reach) are meters and seconds;
+   `voxelSize` sets meters per voxel. `SimConfig.fromMeters` converts to
+   absolute via `metersToAbsolute` exactly once. Never convert anywhere
+   else and never hand-estimate the factor - compute it or read it from
+   `SimConfig`.
 3. tanh-parameterized distance: ray/sweep parameters are `tanh(distance)`.
    Values >= 1 mean unbounded. Convert with `atanh`/`tanh` at boundaries only.
 
@@ -206,7 +215,7 @@ coordinates (projective, `ChunkLayout.dualToGridFactor` maps between them).
   Reflections reverse orientation, so node transforms alternate parity hop
   by hop and half the visible world is mirrored. Anything involving winding,
   cross products or handedness must check parity (the determinant flip in
-  `voxels.vert`).
+  `cull.comp` and `voxels.vert`).
 - Positions are (node, local isometry) and never world coordinates.
   Hyperboloid coordinates grow like cosh(d), so float precision decays
   exponentially with distance from the frame origin. Every transform is
@@ -230,7 +239,7 @@ coordinates (projective, `ChunkLayout.dualToGridFactor` maps between them).
   and its neighbor is the same vertex in the adjacent node, mirrored with
   no axis permutation. A high face (coord `dimension`) is interior to the
   node, and its neighbor is the adjacent vertex's chunk in the same node
-  with permuted axes. Always go through `getChunkNeighbor` /
+  with permuted axes. Always go through `chunkNeighborSlot` /
   `neighborAxisPermutation`; never hand-derive either.
 - Rendering uses the Klein model. Applying a Euclidean projection to
   homogeneous hyperboloid coordinates keeps geodesics straight, so the
@@ -250,10 +259,10 @@ coordinates (projective, `ChunkLayout.dualToGridFactor` maps between them).
   frustum-culls its bounding sphere and writes the indirect draws, so
   per-frame CPU cost does not scale with the number of drawables.
   Ambient occlusion reads cells beyond the face margins by hopping
-  through slot-based chunk neighbors (`common/chunk_neighbors.d`), so a
+  through slot-based chunk neighbors (`common/neighbors.d`), so a
   change to a chunk re-queues every chunk sharing a face, edge or corner
   with it.
-- `Side.init == Side.A`. It isn't a free sentinel, so check for "no side"
+- `Side.init == Side.a`. It isn't a free sentinel, so check for "no side"
   some other way. The invalid `Vertex` is 255.
 
 ## Hyperbolic space - what actually bites
@@ -268,7 +277,7 @@ coordinates (projective, `ChunkLayout.dualToGridFactor` maps between them).
 - Holonomy: parallel transport around any loop rotates the frame. Never
   integrate orientation state and expect it to stay aligned; re-anchor to a
   world reference every frame. "Up" comes from the world
-  (`getRelativeUp` -> `NodeState.surface`), the camera keeps a yaw-only
+  (`relativeUp` -> `NodeState.surface`), the camera keeps a yaw-only
   up-aligned quaternion plus a scalar pitch, which cannot accumulate roll.
 - Down is not flat. Gravity follows equidistant surfaces of the surface
   plane; voxel faces are geodesic planes; the two agree nowhere except on
@@ -299,18 +308,19 @@ coordinates (projective, `ChunkLayout.dualToGridFactor` maps between them).
 
 ## Character controller
 
-`common/character_controller/controller.d` is a kinematic controller with
-one primitive: `slide` sweeps the capsule, clips the remaining displacement
-and the velocity against every contact plane so far (single plane, then the
-crease of two, else stop), and repeats. Everything else is built from it.
+`common/character/controller.d` is a kinematic controller with one
+primitive: `Mover.slide` sweeps the capsule (`Sweep.fromCapsule`,
+`common/character/sweep.d`), clips the remaining displacement and the
+velocity against every contact plane so far (single plane, then the crease
+of two, else stop), and repeats. Everything else is built from it.
 
 The only tolerance is `contactSkin` (meters): bodies rest one skin from
 every surface. Nothing else in collision or response has an epsilon; the
 remaining constants are an iteration bound and a parallel-plane
 conditioning guard.
 
-- Contacts (`collision_math`, `chunk_collision`): a feature is hit when
-  the true radius would touch it within the move, and only while the
+- Contacts (`common/ray.d`, `common/collision/chunk.d`): a feature is hit
+  when the true radius would touch it within the move, and only while the
   motion approaches it, so tangent motion never produces contacts. Motion
   stops one skin short, and the hit reports its gap; clipping restores the
   skin, which also depenetrates.
@@ -329,23 +339,24 @@ conditioning guard.
 - Walking slides keep the ground plane as a constraint; walkable contacts
   clip along up while walking or descending, others along their normal.
 - Ground move: slide; if a wall blocked it, try a step (slide up
-  `stepHeight`, slide across the frame's motion plus the one skin the wall
+  `stepHeight`, slide across the step's motion plus the one skin the wall
   held us off, settle onto support) and keep it if it progressed further;
   then settle down `stepHeight` to follow stairs, or become airborne.
 - Block placement is refused where the voxel would overlap the character
-  (`capsuleOverlapsVoxel`), so geometry never appears inside a body.
-- Frames of any length: the step is split into substeps that each move at
-  most one character radius (from a bound on the speed the frame can
+  (`isCapsuleOverlappingVoxel`), so geometry never appears inside a body.
+- Steps of any length: a step is split into substeps that each move at
+  most one character radius (from a bound on the speed the step can
   reach), and the populated-region check covers one substep. There is no
-  frame time clamp.
+  timestep clamp.
 - Spawn: climb the perpendicular from the root to the surface plane until
   every chunk the body could touch is proven void by the worldgen's own
-  bound (`chunkProvenClear`), generate the chunks below synchronously,
-  and settle onto the ground. The player starts standing, in walk mode.
+  bound (`ChunkParams.isProvenClear`), generate the chunks below
+  synchronously, and settle onto the ground. The player starts standing,
+  in walk mode.
 - Vertical quantities that must survive node crossings (eye smoothing,
   the bounce metric) are altitudes, the distance to the one global
-  surface plane, never node-local coordinates. `runCharacterStep` returns
-  the path length it moved.
+  surface plane, never node-local coordinates. `CharacterState.runStep`
+  returns the path length it moved.
 
 ## Worldgen
 
@@ -356,7 +367,7 @@ conditioning guard.
   `chunkGridCenterRadius` measures.
 - A chunk proven solid is stored uniform when one material is proven
   (below the surface layer, one elevation band, climate range in one
-  Voronoi cell), else stored solid with `materialsDeferred`; the exact
+  Voronoi cell), else stored solid with `hasDeferredMaterials`; the exact
   materials are generated, by the same function, when it is edited or a
   void cell appears in its margins. Never assume solid storage means one
   material.
@@ -374,7 +385,7 @@ conditioning guard.
   nearby-set BFS (double buffered, published when complete), worldgen
   integration and requests (one budget; integration goes first), and
   meshing. Every loop under a budget checks it per item, including loops
-  that mostly skip. With `settleWorldgenEachFrame` everything runs
+  that mostly skip. With `isSettlingWorldgenEachFrame` everything runs
   unbudgeted, so headless runs stay a pure function of the script.
 - `./mined --bench-load --out <report>` measures the client cold load at
   60 Hz pacing (frames until the nearby set, worldgen and meshing finish,
@@ -384,9 +395,9 @@ conditioning guard.
   thread builds params and integrates results. A chunk whose occupancy
   worldgen proves (`predictOccupancy`) has trivial voxels and is generated
   and populated inline; only unknown chunks go to the workers. Workers
-  take an open `runParallel` job before generation requests. Unloaded world is
-  impassable to the character (`regionPopulated`) - bodies must never
-  occupy space that later materializes.
+  take an open `runParallel` job before generation requests. Unloaded
+  world is impassable to the character (`isRegionPopulated`) - bodies must
+  never occupy space that later materializes.
 - A solid chunk stays solid (no dense storage) unless a neighbor's
   boundary differs from it in voidness: only voidness matters for a
   solid chunk's faces, collision and AO. Mesh-relevant changes go through
@@ -404,16 +415,33 @@ conditioning guard.
 - Wrapping: a construct is either entirely on one line or one element per
   line. Never wrap partially, never end a line with an operator, never put
   several list items on one line of a one-per-line list.
+- Naming: types are PascalCase, constants (`enum` and module-level
+  `immutable` values) are ALL_CAPS, everything else is camelCase, enum
+  members included. Booleans and tests read as questions: `isFound`,
+  `hasChanges()`, `isCellOccupied(...)`. File and directory names have no
+  underscores; every module is named for what it holds, never `package.d`.
 - Control flow: no ternaries, no `++`/`--`, no `for` (use `foreach` or
-  `while`), no `return;`, and never an early `return` in place of `else` -
-  alternatives are `if`/`else` chains and each function has one `return`.
-- No `ref` or `out` parameters: return a struct, or pass a pointer to the
-  struct being operated on.
-- Don't extract a condition into a variable that is used once.
-- Explicit types, plain structs and free functions, minimal templates. No
-  classes - reference semantics come from a pointer to a struct (see
-  `GenQueue`). No `private`; module boundaries are the visibility unit.
-  Setup methods are `setup`, never `init`.
+  `while`), no `return;`. Code must stay correct if every `return` were
+  replaced by a `break` out of the outermost loop: a guard returns and its
+  `else` returns too, and a search is a `while` loop advancing an index
+  followed by `if`/`else` on whether it was found - never a `return`
+  inside a loop followed by a fallback `return`.
+- Conditions never mutate. A call that mutates and reports success has its
+  result assigned to an `immutable` local, then tested with `if`/`else`.
+  Success values may be returned; failure is never ignored. Don't extract
+  a condition into a variable that is used once, and don't mark values
+  `immutable` when nothing depends on it.
+- Parameters: structs are passed by `ref` (`ref const` when read only),
+  never by pointer; pointers are for stored references and C APIs. No
+  `out` parameters except where a C API demands them: return a struct.
+- Plain structs, minimal templates, no classes. An operation on a struct
+  is its method, or a free function taking it by `ref` and called with
+  UFCS (`graph.hopCell(...)`). No `private`; module boundaries are the
+  visibility unit. Setup methods are `setup`, never `init`.
+- Constructors are static methods named `make` or `fromX`
+  (`ChunkLayout.fromDimension`, `Sweep.fromCapsule`), never free
+  functions and never `this(...)`. Build values with struct literals
+  rather than default-constructing and assigning fields.
 - Struct fields are ordered by alignment, largest first, so structs carry
   no padding they don't need.
 - Imports at the top of the module, always - never scoped inside functions
@@ -424,13 +452,12 @@ conditioning guard.
   threads lives in an object handed to them (see `GenQueue`).
 - No `static this` and no `static immutable`. Lookup tables are built by a
   plain function evaluated with CTFE into module-level `immutable` (see
-  `dodeca.d`). CTFE has a known aliasing bug with copy-then-mutate of static
-  arrays - build fresh arrays element-wise.
-- Never `package.d`; every module is named for what it holds.
+  `DodecaTables.make`). CTFE has a known aliasing bug with
+  copy-then-mutate of static arrays - build fresh arrays element-wise.
 - No unused functions, variables, or imports. Delete instrumentation after
   it answers its question.
 - Constants get names and, if dimensional, their unit must be obvious from
-  the name, the type, or the `*Raw` config convention. Bare magic numbers
-  with unclear units are unacceptable.
+  the name, the type, or the `*Meters` config convention. Bare magic
+  numbers with unclear units are unacceptable.
 - unittest blocks live next to the code they test. Behavior changes get a
   Lua script in `tests/` (or a bench) that checks them headlessly.

@@ -5,7 +5,7 @@ import core.stdc.math : ceilf, coshf, floorf, sinhf, tanhf;
 import core.stdc.stdlib : alloca;
 import common.coords : Coords;
 import common.material : Material;
-import common.math : MDirection, MIsometry, MPoint, MVector, isNan;
+import common.math : MDirection, MIsometry, MPoint, MVector, higherOf, isNan, lowerOf;
 import common.node : ChunkLayout, VoxelData;
 import common.ray : ContactTerms, MAX_TANH_DISTANCE, Ray;
 
@@ -238,22 +238,6 @@ byte sideSign(int side) {
         return 1;
     } else {
         return -1;
-    }
-}
-
-float lowerOf(float a, float b) {
-    if (a < b) {
-        return a;
-    } else {
-        return b;
-    }
-}
-
-float higherOf(float a, float b) {
-    if (a > b) {
-        return a;
-    } else {
-        return b;
     }
 }
 

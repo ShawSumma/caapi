@@ -5,7 +5,7 @@ import core.stdc.math : cosf, floorf, logf, powf, sqrtf;
 import common.dodeca : Side, Vertex, canonicalSides, chunkGridCenterRadius, isAdjacentTo;
 import common.graph : Graph, NO_SLOT, ParentList;
 import common.material : Material;
-import common.math : PI;
+import common.math : PI, clamped;
 import common.node : Occupancy, VoxelData;
 import common.worldgen.plane : Plane;
 import common.worldgen.terraingen : TERRAIN_SURFACE_THICKNESS, materialTable, nearestLatticePoint, sqr, terraingenVoronoi;
@@ -316,7 +316,7 @@ struct ChunkParams {
                 foreach (y; 0 .. dimension) {
                     foreach (z; 0 .. dimension) {
                         if (surface.distanceToChunk(chunk, voxelCenter(dimension, x, y, z)) < 0) {
-                            voxels.dataMut(dimension)[voxelIndex(dimension, x, y, z)] = Material.dirt;
+                            voxels.toDense(dimension)[voxelIndex(dimension, x, y, z)] = Material.dirt;
                         }
                     }
                 }
@@ -419,7 +419,7 @@ struct TerrainGenerator {
         float elevation = elevationPreNoise + TERRAIN_SMOOTHNESS * (rng.normal() * NOISE_STDDEV);
         float distance = surfaceDistance(distancePreNoise, elevation / TERRAIN_SMOOTHNESS - voxelElevation);
         if (distance >= 0.0f) {
-            voxels.dataMut(params.dimension)[index] = terraingenVoronoi(elevation, rain, temperature, distance);
+            voxels.toDense(params.dimension)[index] = terraingenVoronoi(elevation, rain, temperature, distance);
         }
     }
 
@@ -433,7 +433,7 @@ struct TerrainGenerator {
                     float horizontalDistance = plane.distanceToChunk(params.chunk, center);
                     float elevation = params.surface.distanceToChunk(params.chunk, center);
                     if (!(horizontalDistance > ROAD_HALF_WIDTH || elevation > ROAD_CLEARANCE)) {
-                        voxels.dataMut(dimension)[voxelIndex(dimension, x, y, z)] = roadMaterial(elevation, horizontalDistance);
+                        voxels.toDense(dimension)[voxelIndex(dimension, x, y, z)] = roadMaterial(elevation, horizontalDistance);
                     }
                 }
             }
@@ -448,7 +448,7 @@ struct TerrainGenerator {
                 foreach (z; 0 .. dimension) {
                     size_t index = voxelIndex(dimension, x, y, z);
                     if (voxels.get(index) == Material.none && isTrussAt(dimension, x, y, z) && !(plane.distanceToChunk(params.chunk, voxelCenter(dimension, x, y, z)) > ROAD_HALF_WIDTH)) {
-                        voxels.dataMut(dimension)[index] = Material.woodPlanks;
+                        voxels.toDense(dimension)[index] = Material.woodPlanks;
                     }
                 }
             }
@@ -485,12 +485,12 @@ struct TerrainGenerator {
                 }
             }
             if (voidNeighbors == 5 && groundDirection != NO_GROUND_DIRECTION) {
-                voxels.dataMut(dimension)[location] = Material.wood;
+                voxels.toDense(dimension)[location] = Material.wood;
                 int leafX = x - TREE_NEIGHBOR_OFFSETS[groundDirection][0];
                 int leafY = y - TREE_NEIGHBOR_OFFSETS[groundDirection][1];
                 int leafZ = z - TREE_NEIGHBOR_OFFSETS[groundDirection][2];
                 if (leafX >= 0 && leafX < dimension && leafY >= 0 && leafY < dimension && leafZ >= 0 && leafZ < dimension) {
-                    voxels.dataMut(dimension)[voxelIndex(dimension, leafX, leafY, leafZ)] = Material.leaves;
+                    voxels.toDense(dimension)[voxelIndex(dimension, leafX, leafY, leafZ)] = Material.leaves;
                 }
             }
         }
@@ -514,16 +514,6 @@ Material roadMaterial(float elevation, float horizontalDistance) {
         return Material.greyBrick;
     } else {
         return Material.none;
-    }
-}
-
-float clamped(float value, float low, float high) {
-    if (value < low) {
-        return low;
-    } else if (value > high) {
-        return high;
-    } else {
-        return value;
     }
 }
 

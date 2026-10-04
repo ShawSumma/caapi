@@ -8,7 +8,7 @@ import common.dodeca : BOUNDING_SPHERE_RADIUS, CHUNK_BOUNDING_SPHERE_RADIUS, SID
 import common.graph : Graph, ROOT_NODE;
 import common.math : MIsometry, MPoint, MVector;
 import common.node : ChunkSlot;
-import common.proto : Position;
+import common.position : Position;
 import common.vector3 : scaled;
 import common.worldgen.generation : ChunkParams;
 

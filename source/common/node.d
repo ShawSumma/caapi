@@ -81,7 +81,7 @@ struct VoxelData {
         }
     }
 
-    Material[] dataMut(ubyte dimension) {
+    Material[] toDense(ubyte dimension) {
         if (kind == VoxelKind.solid) {
             size_t side = cast(size_t) dimension + 2;
             size_t count = side * side * side;
@@ -126,10 +126,10 @@ struct VoxelData {
         bool isOursStale = face.isMarginStale(this, neighbor, true);
         bool isTheirsStale = face.isMarginStale(neighbor, this, false);
         if (isOursStale) {
-            dataMut(dimension);
+            toDense(dimension);
         }
         if (isTheirsStale) {
-            neighbor.dataMut(dimension);
+            neighbor.toDense(dimension);
         }
         if (isOursStale || isTheirsStale) {
             foreach (j; 0 .. dimension + 2) {
@@ -162,7 +162,7 @@ struct VoxelData {
 
     void initializeMargins(ubyte dimension) {
         if (!isSolid()) {
-            Material[] data = dataMut(dimension);
+            Material[] data = toDense(dimension);
             foreach (direction; CHUNK_DIRECTIONS) {
                 ubyte margin = marginCoord(dimension, direction.sign);
                 ubyte boundary = boundaryCoordWithMargins(dimension, direction.sign);
@@ -192,7 +192,7 @@ unittest {
     stone.fixMargins(dirt, TEST_DIMENSION, Vertex.a, CHUNK_DIRECTIONS[0]);
     assert(stone.isSolid() && dirt.isSolid());
     VoxelData buried = VoxelData.fromMaterial(Material.dirt);
-    buried.dataMut(TEST_DIMENSION);
+    buried.toDense(TEST_DIMENSION);
     buried.initializeMargins(TEST_DIMENSION);
     stone.fixMargins(buried, TEST_DIMENSION, Vertex.a, CHUNK_DIRECTIONS[3]);
     assert(stone.isSolid());

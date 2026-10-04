@@ -58,6 +58,10 @@ float[3] movedToward(float[3] current, float[3] target, float maxStep) {
     return current.plus(target.minus(current).cappedTo(maxStep));
 }
 
+float[3] projectedOntoPlane(float[3] subject, float[3] normal, float[3] direction, float distance) {
+    return subject.plus(direction.scaled((distance - subject.dot(normal)) / direction.dot(normal)));
+}
+
 unittest {
     float[3] v = [3, 4, 0];
     assert(v.cappedTo(1).magnitude < 1.0001f);

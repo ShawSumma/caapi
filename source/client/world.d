@@ -2,6 +2,7 @@ module client.world;
 
 import core.stdc.math : coshf;
 import client.streaming : Streamer, chunkNeighborId, hasPopulatedNeighbor, resolveIfExposed, resolveMaterials;
+import common.clock : nowMilliseconds;
 import common.coords : CHUNK_DIRECTIONS, ChunkDirection, Coords, boundaryCoord;
 import common.graph : Graph, NO_NODE;
 import common.margins : CoordsWithMargins, neighborAxisPermutation;
@@ -9,10 +10,10 @@ import common.material : Material;
 import common.math : MIsometry, MPoint, MVector;
 import common.neighbors : chunkNeighborSlot, touchChunksReading;
 import common.node : Chunk, ChunkId, ChunkSlot, ChunkState;
-import common.proto : Position;
+import common.position : Position;
 import common.ray : Ray;
 import common.raycast.graph : GraphCastHit, rayCast;
-import common.traversal : NOT_COLLECTED, NO_DEADLINE, NearbyNode, NearbyScratch, nowMilliseconds;
+import common.traversal : NOT_COLLECTED, NO_DEADLINE, NearbyNode, NearbyScratch;
 
 enum float NEARBY_PADDING = 0.05f;
 enum float RENDER_RADIUS = 4.5f;
@@ -172,7 +173,7 @@ struct LocalWorld {
             if (chunk.hasDeferredMaterials) {
                 graph.resolveMaterials(slot);
             }
-            chunk.voxels.dataMut(dimension)[coords.toIndex(dimension)] = material;
+            chunk.voxels.toDense(dimension)[coords.toIndex(dimension)] = material;
             graph.markChanged(slot);
             foreach (direction; CHUNK_DIRECTIONS) {
                 if (coords.data[direction.axis] == boundaryCoord(dimension, direction.sign) && graph.hasPopulatedNeighbor(slot, direction)) {

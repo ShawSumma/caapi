@@ -4,8 +4,8 @@ import core.math : cos, sin, sqrt;
 import core.stdc.math : expf, fabsf;
 import common.character.controller : relativeUp;
 import common.graph : Graph, ROOT_NODE;
-import common.math : MIsometry, Matrix4, PI;
-import common.proto : Position;
+import common.math : MIsometry, Matrix4, PI, clamped;
+import common.position : Position;
 
 enum float EYE_LAG_DECAY_PER_SECOND = 12.0f;
 enum float PITCH_LIMIT_RADIANS = PI / 2.0f - 1e-3f;
@@ -115,16 +115,6 @@ float[3] unitOrZero(float[3] axis) {
     }
 }
 
-float clamped(float value, float limit) {
-    if (value > limit) {
-        return limit;
-    } else if (value < -limit) {
-        return -limit;
-    } else {
-        return value;
-    }
-}
-
 struct Camera {
     Position position;
     Quaternion orientation;
@@ -138,7 +128,7 @@ struct Camera {
     }
 
     void smoothEyeVertical(float groundedRise, float limit, float dt) {
-        eyeLag = clamped((eyeLag + groundedRise) * expf(-EYE_LAG_DECAY_PER_SECOND * dt), limit);
+        eyeLag = clamped((eyeLag + groundedRise) * expf(-EYE_LAG_DECAY_PER_SECOND * dt), -limit, limit);
     }
 
     Quaternion viewOrientation() const {
@@ -166,7 +156,7 @@ struct Camera {
 
     void lookLevel(float deltaYaw, float deltaPitch) {
         orientation = orientation * Quaternion.fromAxisAngle(orientation.inverseRotate(up), deltaYaw);
-        pitchAngle = clamped(pitchAngle + deltaPitch, PITCH_LIMIT_RADIANS);
+        pitchAngle = clamped(pitchAngle + deltaPitch, -PITCH_LIMIT_RADIANS, PITCH_LIMIT_RADIANS);
     }
 
     void alignToGravity() {

@@ -6,7 +6,7 @@ import common.hashmap : HashMap;
 import common.math : MIsometry, MPoint;
 import common.murmur : murmurHash3;
 import common.node : Chunk, ChunkLayout, ChunkSlot;
-import common.proto : Position;
+import common.position : Position;
 import common.slab : Slab;
 import common.worldgen.generation : NodeState;
 

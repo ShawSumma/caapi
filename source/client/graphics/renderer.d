@@ -15,10 +15,11 @@ import client.graphics.voxels.meshes : ChunkMeshes, meshJob;
 import client.graphics.voxels.surface : CommonUniforms, FACES_BINDING, SurfacePipeline, TRANSFORMS_BINDING;
 import client.streaming : ParallelJob;
 import client.world : LocalWorld;
+import common.clock : NANOSECONDS_PER_MILLISECOND, nowMilliseconds;
 import common.dodeca : CHUNK_BOUNDING_SPHERE_RADIUS, chunkToNode;
 import common.math : MDirection, PI;
 import common.raycast.graph : GraphCastHit;
-import common.traversal : NOT_COLLECTED, nowMilliseconds;
+import common.traversal : NOT_COLLECTED;
 
 enum float VERTICAL_HALF_FOV_RADIANS = 45.0f * (PI / 180.0f);
 enum float NEAR_PLANE = 1.0e-4f;
@@ -35,7 +36,6 @@ enum uint TIMESTAMP_COUNT = 3;
 enum uint FRAME_START_STAMP = 0;
 enum uint CULL_END_STAMP = 1;
 enum uint FRAME_END_STAMP = 2;
-enum double NANOSECONDS_PER_MILLISECOND = 1e6;
 
 enum float SRGB_LINEAR_LIMIT = 0.04045f;
 enum float SRGB_LINEAR_SLOPE = 12.92f;
