@@ -2,13 +2,73 @@ module common.worldgen.generation;
 
 import core.bitop : rol;
 import core.stdc.math : cosf, floorf, logf, powf, sqrtf;
-import common.dodeca : Side, Vertex, canonicalSides, chunkGridCenterRadius, isAdjacentTo;
-import common.graph : Graph, NO_SLOT, ParentList;
+import core.stdc.stdlib : abs;
+import common.dodeca : Side, Vertex, canonicalSides, chunkGridCenterRadius, chunkToNode, isAdjacentTo;
+import common.graph : Graph, NO_SLOT, NodeId, ParentList;
 import common.material : Material;
-import common.math : PI, clamped;
+import common.math : MVector, Matrix4, PI, clamped;
 import common.node : Occupancy, VoxelData;
 import common.worldgen.plane : Plane;
 import common.worldgen.terraingen : TERRAIN_SURFACE_THICKNESS, materialTable, nearestLatticePoint, sqr, terraingenVoronoi;
+import common.worldgen.tower : NodeStructure, TowerShape;
+
+enum WorldgenKind : ubyte {
+    terrain,
+    flat,
+    structure,
+}
+
+immutable string[WorldgenKind.max + 1] WORLDGEN_NAMES = [
+    "terrain",
+    "flat",
+    "structure",
+];
+
+struct WorldgenSettings {
+    NodeId showcaseBase;
+    uint seed;
+    WorldgenKind kind;
+
+    bool isFlat() const {
+        return kind != WorldgenKind.terrain;
+    }
+}
+
+struct WorldgenLookup {
+    WorldgenKind kind;
+    bool isFound;
+
+    static WorldgenLookup fromName(const(char)[] name) {
+        uint index = 0;
+        while (index < WORLDGEN_NAMES.length && WORLDGEN_NAMES[index] != name) {
+            index += 1;
+        }
+        if (index < WORLDGEN_NAMES.length) {
+            return WorldgenLookup(cast(WorldgenKind) index, true);
+        } else {
+            return WorldgenLookup(WorldgenKind.init, false);
+        }
+    }
+}
+
+enum TreeKind : ubyte {
+    oak,
+    birch,
+    spruce,
+}
+
+struct TreeSpecies {
+    Material wood;
+    Material leaves;
+    ubyte minTrunk;
+    ubyte trunkChoices;
+}
+
+immutable TreeSpecies[TreeKind.max + 1] TREE_SPECIES = [
+    TreeSpecies(Material.oakWood, Material.oakLeaves, 4, 2),
+    TreeSpecies(Material.birchWood, Material.birchLeaves, 5, 2),
+    TreeSpecies(Material.spruceWood, Material.spruceLeaves, 5, 3),
+];
 
 enum NodeStateKind : ubyte {
     sky,
@@ -39,9 +99,16 @@ enum float ROAD_HALF_WIDTH = 0.3f;
 enum float ROAD_CENTER_HALF_WIDTH = 0.15f;
 enum float ROAD_CLEARANCE = 0.9f;
 enum float ROAD_THICKNESS = 0.075f;
-enum float RAINFALL_PER_TREE_DENSITY = 100.0f;
-enum float MAX_TREE_DENSITY = 0.5f;
+enum float BASE_TREE_DENSITY = 0.05f;
+enum float RAINFALL_PER_TREE_DENSITY = 40.0f;
+enum float MAX_TREE_DENSITY = 0.3f;
 enum ubyte MIN_TREE_DIMENSION = 4;
+enum int CANOPY_RADIUS = 2;
+enum int CANOPY_CORNER_SPAN = 3;
+enum int CANOPY_ABOVE_TRUNK = 1;
+enum int SPRUCE_LOWEST_LEAVES = 2;
+enum float SPRUCE_TEMPERATURE = -2.0f;
+enum ulong BIRCH_ODDS = 3;
 enum uint TRUSS_CRITERIA = 2;
 enum int NO_GROUND_DIRECTION = -1;
 enum ulong SPLITMIX_INCREMENT = 0x9e3779b97f4a7c15;
@@ -238,6 +305,7 @@ struct ChunkParams {
     ulong nodeSpice;
     ChunkIncidentEnviroFactors env;
     Plane surface;
+    NodeStructure structure;
     ubyte dimension;
     Vertex chunk;
     bool isRoad;
@@ -245,18 +313,19 @@ struct ChunkParams {
     bool isFlat;
     bool isResolvingMaterials;
 
-    static ChunkParams make(ref Graph graph, uint slot, Vertex vertex, bool isFlat) {
+    static ChunkParams make(ref Graph graph, uint slot, Vertex vertex) {
         NodeState state = *graph.ensureNodeStateAt(slot);
         bool isOnRoadLine = state.road == NodeStateRoad.east || state.road == NodeStateRoad.west;
         return ChunkParams(
             graph.idAt(slot).spice(),
             ChunkIncidentEnviroFactors.make(graph, slot, vertex),
             state.surface,
+            graph.ensureStructureAt(slot),
             graph.layout.dimension,
             vertex,
             state.kind == NodeStateKind.sky && isOnRoadLine,
             (state.kind == NodeStateKind.land || state.kind == NodeStateKind.deepLand) && isOnRoadLine,
-            isFlat,
+            graph.worldgen.isFlat(),
             false,
         );
     }
@@ -279,7 +348,9 @@ struct ChunkParams {
     }
 
     bool isProvenClearAt(float lowest) const {
-        if (!isFlat && isRoad) {
+        if (structure.isPresent()) {
+            return false;
+        } else if (!isFlat && isRoad) {
             return lowest > terrainCeiling() && lowest > ROAD_THICKNESS;
         } else if (!isFlat && isRoadSupport) {
             return false;
@@ -294,7 +365,9 @@ struct ChunkParams {
 
     Occupancy predictOccupancy() const {
         ValueRange range = altitudes();
-        if (isProvenClearAt(range.low)) {
+        if (structure.isPresent()) {
+            return Occupancy.unknown;
+        } else if (isProvenClearAt(range.low)) {
             return Occupancy.empty;
         } else if (isFlat && range.high < 0) {
             return Occupancy.full;
@@ -302,28 +375,6 @@ struct ChunkParams {
             return Occupancy.full;
         } else {
             return Occupancy.unknown;
-        }
-    }
-
-    VoxelData flatVoxels() const {
-        if (altitudes().high < 0) {
-            return VoxelData.fromMaterial(Material.dirt);
-        } else if (isProvenClear()) {
-            return VoxelData.fromMaterial(Material.none);
-        } else {
-            VoxelData voxels = VoxelData.fromMaterial(Material.none);
-            foreach (x; 0 .. dimension) {
-                foreach (y; 0 .. dimension) {
-                    foreach (z; 0 .. dimension) {
-                        if (surface.distanceToChunk(chunk, voxelCenter(dimension, x, y, z)) < 0) {
-                            voxels.toDense(dimension)[voxelIndex(dimension, x, y, z)] = Material.dirt;
-                        }
-                    }
-                }
-            }
-            voxels.compressUniform(dimension);
-            voxels.initializeMargins(dimension);
-            return voxels;
         }
     }
 
@@ -349,10 +400,10 @@ struct ChunkParams {
     }
 
     GeneratedVoxels generateVoxels() const {
+        TerrainGenerator generator = TerrainGenerator(VoxelData.fromMaterial(Material.none), this, SplitMix(hash(nodeSpice, chunk)), false);
         if (isFlat) {
-            return GeneratedVoxels(flatVoxels(), false);
+            generator.generateFlat();
         } else {
-            TerrainGenerator generator = TerrainGenerator(VoxelData.fromMaterial(Material.none), this, SplitMix(hash(nodeSpice, chunk)), false);
             generator.generateTerrain();
             if (isRoad && !(generator.voxels.isSolidVoid() && altitudes().low > ROAD_THICKNESS)) {
                 generator.generateRoad();
@@ -360,10 +411,11 @@ struct ChunkParams {
                 generator.generateRoadSupport();
             }
             generator.generateTrees();
-            generator.voxels.compressUniform(dimension);
-            generator.voxels.initializeMargins(dimension);
-            return GeneratedVoxels(generator.voxels, generator.hasDeferredMaterials);
         }
+        generator.generateStructure();
+        generator.voxels.compressUniform(dimension);
+        generator.voxels.initializeMargins(dimension);
+        return GeneratedVoxels(generator.voxels, generator.hasDeferredMaterials);
     }
 }
 
@@ -386,7 +438,7 @@ struct TerrainGenerator {
             voxels = VoxelData.fromMaterial(Material.none);
         } else if (uniform.isProven) {
             voxels = VoxelData.fromMaterial(uniform.material);
-        } else if (!params.isResolvingMaterials && !params.isRoad && params.isProvenBelowTerrain(altitudes.high)) {
+        } else if (!params.isResolvingMaterials && !params.isRoad && !params.structure.isPresent() && params.isProvenBelowTerrain(altitudes.high)) {
             voxels = VoxelData.fromMaterial(DEFERRED_STAND_IN_MATERIAL);
             hasDeferredMaterials = true;
         } else {
@@ -394,6 +446,45 @@ struct TerrainGenerator {
                 foreach (y; 0 .. dimension) {
                     foreach (z; 0 .. dimension) {
                         generateTerrainVoxel(voxelCenter(dimension, x, y, z), voxelIndex(dimension, x, y, z));
+                    }
+                }
+            }
+        }
+    }
+
+    void generateFlat() {
+        ubyte dimension = params.dimension;
+        ValueRange altitudes = params.altitudes();
+        if (altitudes.high < 0) {
+            voxels = VoxelData.fromMaterial(Material.dirt);
+        } else if (altitudes.low <= 0) {
+            foreach (x; 0 .. dimension) {
+                foreach (y; 0 .. dimension) {
+                    foreach (z; 0 .. dimension) {
+                        if (params.surface.distanceToChunk(params.chunk, voxelCenter(dimension, x, y, z)) < 0) {
+                            voxels.toDense(dimension)[voxelIndex(dimension, x, y, z)] = Material.dirt;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    void generateStructure() {
+        if (params.structure.isPresent()) {
+            ubyte dimension = params.dimension;
+            TowerShape shape = TowerShape.fromStructure(params.structure);
+            Matrix4!float toNode = params.chunk.chunkToNode;
+            foreach (x; 0 .. dimension) {
+                foreach (y; 0 .. dimension) {
+                    foreach (z; 0 .. dimension) {
+                        float[3] center = voxelCenter(dimension, x, y, z);
+                        size_t index = voxelIndex(dimension, x, y, z);
+                        Material existing = voxels.get(index);
+                        Material material = shape.materialAt((toNode * MVector!float([center[0], center[1], center[2], 1.0f])).normalizedPoint(), existing);
+                        if (material != existing) {
+                            voxels.toDense(dimension)[index] = material;
+                        }
                     }
                 }
             }
@@ -458,26 +549,27 @@ struct TerrainGenerator {
     void generateTrees() {
         ubyte dimension = params.dimension;
         if (!voxels.isSolid() && dimension > MIN_TREE_DIMENSION) {
-            float density = clamped(params.env.rainfalls[0] / RAINFALL_PER_TREE_DENSITY, 0.0f, MAX_TREE_DENSITY);
+            float density = clamped(BASE_TREE_DENSITY + params.env.rainfalls[0] / RAINFALL_PER_TREE_DENSITY, 0.0f, MAX_TREE_DENSITY);
+            float temperature = meanOf(params.env.temperatures);
             uint interior = dimension - 2;
             uint candidateCount = cast(uint)(cast(float)(interior * interior * interior) * density);
             foreach (_; 0 .. candidateCount) {
                 int x = cast(int)(1 + (rng.next() % interior));
                 int y = cast(int)(1 + (rng.next() % interior));
                 int z = cast(int)(1 + (rng.next() % interior));
-                placeTree(x, y, z);
+                ulong roll = rng.next();
+                placeTree([x, y, z], treeKind(temperature, roll));
             }
         }
     }
 
-    void placeTree(int x, int y, int z) {
+    void placeTree(int[3] base, TreeKind kind) {
         ubyte dimension = params.dimension;
-        size_t location = voxelIndex(dimension, x, y, z);
-        if (voxels.get(location) == Material.none) {
+        if (voxels.get(voxelIndex(dimension, base[0], base[1], base[2])) == Material.none) {
             int voidNeighbors = 0;
             int groundDirection = NO_GROUND_DIRECTION;
             foreach (direction; 0 .. 6) {
-                Material neighbor = voxels.get(voxelIndex(dimension, x + TREE_NEIGHBOR_OFFSETS[direction][0], y + TREE_NEIGHBOR_OFFSETS[direction][1], z + TREE_NEIGHBOR_OFFSETS[direction][2]));
+                Material neighbor = voxels.get(voxelIndex(dimension, base[0] + TREE_NEIGHBOR_OFFSETS[direction][0], base[1] + TREE_NEIGHBOR_OFFSETS[direction][1], base[2] + TREE_NEIGHBOR_OFFSETS[direction][2]));
                 if (neighbor == Material.none) {
                     voidNeighbors += 1;
                 } else if (isGroundMaterial(neighbor)) {
@@ -485,16 +577,127 @@ struct TerrainGenerator {
                 }
             }
             if (voidNeighbors == 5 && groundDirection != NO_GROUND_DIRECTION) {
-                voxels.toDense(dimension)[location] = Material.wood;
-                int leafX = x - TREE_NEIGHBOR_OFFSETS[groundDirection][0];
-                int leafY = y - TREE_NEIGHBOR_OFFSETS[groundDirection][1];
-                int leafZ = z - TREE_NEIGHBOR_OFFSETS[groundDirection][2];
-                if (leafX >= 0 && leafX < dimension && leafY >= 0 && leafY < dimension && leafZ >= 0 && leafZ < dimension) {
-                    voxels.toDense(dimension)[voxelIndex(dimension, leafX, leafY, leafZ)] = Material.leaves;
+                TreeSpecies species = TREE_SPECIES[kind];
+                ulong roll = rng.next();
+                TreeFrame frame = TreeFrame.fromGround(base, groundDirection, cast(int)(species.minTrunk + roll % species.trunkChoices));
+                if (frame.fitsWithin(dimension)) {
+                    growTree(frame, kind);
                 }
             }
         }
     }
+
+    void growTree(TreeFrame frame, TreeKind kind) {
+        TreeSpecies species = TREE_SPECIES[kind];
+        foreach (level; 0 .. frame.trunk) {
+            setIfEmpty(frame.cell(level, 0, 0), species.wood);
+        }
+        foreach (level; 0 .. frame.top + 1) {
+            foreach (i; -CANOPY_RADIUS .. CANOPY_RADIUS + 1) {
+                foreach (j; -CANOPY_RADIUS .. CANOPY_RADIUS + 1) {
+                    if (isLeaf(kind, frame.trunk, level, i, j)) {
+                        setIfEmpty(frame.cell(level, i, j), species.leaves);
+                    }
+                }
+            }
+        }
+    }
+
+    void setIfEmpty(int[3] cell, Material material) {
+        size_t index = voxelIndex(params.dimension, cell[0], cell[1], cell[2]);
+        if (voxels.get(index) == Material.none) {
+            voxels.toDense(params.dimension)[index] = material;
+        }
+    }
+}
+
+struct TreeFrame {
+    int[3] base;
+    int[3] up;
+    size_t across;
+    size_t along;
+    int trunk;
+    int top;
+
+    static TreeFrame fromGround(int[3] base, int groundDirection, int trunk) {
+        int[3] up = [-TREE_NEIGHBOR_OFFSETS[groundDirection][0], -TREE_NEIGHBOR_OFFSETS[groundDirection][1], -TREE_NEIGHBOR_OFFSETS[groundDirection][2]];
+        size_t axis = groundDirection / 2;
+        return TreeFrame(base, up, (axis + 1) % 3, (axis + 2) % 3, trunk, trunk + CANOPY_ABOVE_TRUNK);
+    }
+
+    int[3] cell(int level, int i, int j) const {
+        int[3] result = [base[0] + up[0] * level, base[1] + up[1] * level, base[2] + up[2] * level];
+        result[across] += i;
+        result[along] += j;
+        return result;
+    }
+
+    bool fitsWithin(ubyte dimension) const {
+        return isInChunk(cell(0, -CANOPY_RADIUS, -CANOPY_RADIUS), dimension) && isInChunk(cell(top, CANOPY_RADIUS, CANOPY_RADIUS), dimension);
+    }
+}
+
+bool isInChunk(int[3] cell, ubyte dimension) {
+    return cell[0] >= 0 && cell[0] < dimension && cell[1] >= 0 && cell[1] < dimension && cell[2] >= 0 && cell[2] < dimension;
+}
+
+TreeKind treeKind(float temperature, ulong roll) {
+    if (temperature < SPRUCE_TEMPERATURE) {
+        return TreeKind.spruce;
+    } else if (roll % BIRCH_ODDS == 0) {
+        return TreeKind.birch;
+    } else {
+        return TreeKind.oak;
+    }
+}
+
+bool isLeaf(TreeKind kind, int trunk, int level, int i, int j) {
+    int spread = chebyshevLength(i, j);
+    int span = abs(i) + abs(j);
+    bool isWide = spread <= CANOPY_RADIUS && span <= CANOPY_CORNER_SPAN;
+    if (kind == TreeKind.spruce) {
+        return spruceLeaf(trunk, level, span, isWide);
+    } else if (level == trunk - 2 || level == trunk - 1) {
+        return isWide;
+    } else if (level == trunk) {
+        return spread <= 1;
+    } else if (level == trunk + 1) {
+        return span <= 1;
+    } else {
+        return false;
+    }
+}
+
+bool spruceLeaf(int trunk, int level, int span, bool isWide) {
+    if (level == trunk + 1) {
+        return false;
+    } else if (level == trunk) {
+        return span == 0;
+    } else if (level == trunk - 1) {
+        return span <= 1;
+    } else if (level >= SPRUCE_LOWEST_LEAVES && (trunk - level) % 2 == 0) {
+        return isWide;
+    } else if (level >= SPRUCE_LOWEST_LEAVES) {
+        return span <= 1;
+    } else {
+        return false;
+    }
+}
+
+int chebyshevLength(int i, int j) {
+    if (abs(i) > abs(j)) {
+        return abs(i);
+    } else {
+        return abs(j);
+    }
+}
+
+float meanOf(float[8] values) {
+    float sum = 0;
+    foreach (value; values) {
+        sum += value;
+    }
+    return sum / values.length;
 }
 
 float surfaceDistance(float distancePreNoise, float distanceWithNoise) {

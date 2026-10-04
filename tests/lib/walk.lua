@@ -23,17 +23,18 @@ function walk.forward(world, seconds, min_fraction)
   world:press(seconds, "fwd")
   local walked = world:traveled() - start
   local free = walk.SPEED * seconds
-  assert(walked >= min_fraction * free, string.format("walked %.1f m of an unobstructed %.1f m", walked, free))
+  assert(walked >= min_fraction * free, string.format("walked %.1f m of an unobstructed %.1f m, facing %s", walked, free, tostring(world:target_material())))
   return walked
 end
 
 function walk.track_horizontal_speed(world)
-  local peak = { speed = 0, at = 0, fall = 0 }
+  local peak = { speed = 0, at = 0, fall = 0, facing = nil }
   world:on_step(function()
     local speed = world:horizontal_speed()
     if speed > peak.speed then
       peak.speed = speed
       peak.at = world:time()
+      peak.facing = world:target_material()
     end
     peak.fall = math.max(peak.fall, -world:vertical_speed())
   end)
@@ -42,7 +43,7 @@ end
 
 function walk.check_speed_limit(peak)
   local limit = walk.SPEED + walk.SPEED_TOLERANCE
-  assert(peak.speed <= limit, string.format("horizontal speed reached %.2f m/s at t=%.2f (limit %.2f)", peak.speed, peak.at, limit))
+  assert(peak.speed <= limit, string.format("horizontal speed reached %.2f m/s at t=%.2f facing %s (limit %.2f)", peak.speed, peak.at, tostring(peak.facing), limit))
   assert(peak.fall <= walk.MAX_FALL_SPEED, string.format("fell at %.1f m/s (limit %.1f), through the ground or off a cliff", peak.fall, walk.MAX_FALL_SPEED))
 end
 

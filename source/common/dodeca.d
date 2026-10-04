@@ -1,7 +1,7 @@
 module common.dodeca;
 
 import core.math : fabs, sqrt;
-import core.stdc.math : acoshf;
+import core.stdc.math : acoshf, atanhf, coshf, sinhf;
 import common.coords : ChunkAxisPermutation;
 import common.math : MDirection, MIsometry, MPoint, MVector, Matrix4;
 
@@ -60,11 +60,15 @@ struct DodecaTables {
     MIsometry!float[SIDE_COUNT] reflections;
     MDirection!float[SIDE_COUNT] sideNormals;
     MPoint!float[VERTEX_COUNT] chunkBoundingSphereCenters;
+    float[3][SIDE_COUNT] faceDirections;
+    float[3][SIDE_COUNT] faceReferences;
     float dualToChunkFactor;
     float chunkGridCenterCornerCosh;
+    float faceDistanceTanh;
     ChunkAxisPermutation[3][VERTEX_COUNT] chunkAxisPermutations;
     Side[3][VERTEX_COUNT] vertexCanonicalSides;
     Vertex[3][VERTEX_COUNT] adjacentVertices;
+    Side[SIDE_COUNT] oppositeSides;
     bool[SIDE_COUNT][SIDE_COUNT] isAdjacent;
 
     static DodecaTables make() {
@@ -127,12 +131,47 @@ struct DodecaTables {
         }
         assert(vertexCount == VERTEX_COUNT);
 
+        MPoint!double[VERTEX_COUNT] corners;
         foreach (vi; 0 .. VERTEX_COUNT) {
             MIsometry!double dualToNode = vertexDualFrame(sideNormals, t.vertexCanonicalSides[vi]);
             t.dualToNode[vi] = dualToNode.toType!float();
             t.nodeToDual[vi] = dualToNode.inverse().toType!float();
-            MPoint!double corner = dualToNode * MPoint!double.origin();
-            t.chunkBoundingSphereCenters[vi] = corner.midpoint(MPoint!double.origin()).toType!float();
+            corners[vi] = dualToNode * MPoint!double.origin();
+            t.chunkBoundingSphereCenters[vi] = corners[vi].midpoint(MPoint!double.origin()).toType!float();
+        }
+
+        foreach (i; 0 .. SIDE_COUNT) {
+            size_t opposite = i;
+            double lowestProduct = 0.0;
+            foreach (j; 0 .. SIDE_COUNT) {
+                double product = sideNormals[i].mip(sideNormals[j].vec);
+                if (product < lowestProduct) {
+                    lowestProduct = product;
+                    opposite = j;
+                }
+            }
+            t.oppositeSides[i] = cast(Side) opposite;
+            MVector!double normal = sideNormals[i].vec;
+            double spatialLength = sqrt(normal.data[0] * normal.data[0] + normal.data[1] * normal.data[1] + normal.data[2] * normal.data[2]);
+            double[3] direction;
+            foreach (axis; 0 .. 3) {
+                direction[axis] = normal.data[axis] / spatialLength;
+                t.faceDirections[i][axis] = cast(float) direction[axis];
+            }
+            t.faceDistanceTanh = cast(float)(normal.data[3] / spatialLength);
+            size_t vertex = 0;
+            while (t.vertexCanonicalSides[vertex][0] != i && t.vertexCanonicalSides[vertex][1] != i && t.vertexCanonicalSides[vertex][2] != i) {
+                vertex += 1;
+            }
+            double along = corners[vertex].vec.data[0] * direction[0] + corners[vertex].vec.data[1] * direction[1] + corners[vertex].vec.data[2] * direction[2];
+            double[3] reference;
+            foreach (axis; 0 .. 3) {
+                reference[axis] = corners[vertex].vec.data[axis] - along * direction[axis];
+            }
+            double referenceLength = sqrt(reference[0] * reference[0] + reference[1] * reference[1] + reference[2] * reference[2]);
+            foreach (axis; 0 .. 3) {
+                t.faceReferences[i][axis] = cast(float)(reference[axis] / referenceLength);
+            }
         }
         MIsometry!double referenceFrame = vertexDualFrame(sideNormals, t.vertexCanonicalSides[0]);
         MVector!double nodeCenterInDual = referenceFrame.inverse() * MVector!double.origin();
@@ -254,11 +293,37 @@ MPoint!float chunkBoundingSphereCenter(Vertex v) {
     return DODECA_TABLES.chunkBoundingSphereCenters[v];
 }
 
+Side opposite(Side side) {
+    return DODECA_TABLES.oppositeSides[side];
+}
+
+float[3] faceDirection(Side side) {
+    return DODECA_TABLES.faceDirections[side];
+}
+
+float[3] faceReference(Side side) {
+    return DODECA_TABLES.faceReferences[side];
+}
+
+float faceDistance() {
+    return atanhf(DODECA_TABLES.faceDistanceTanh);
+}
+
 Matrix4!float chunkToNode(Vertex v) {
     return DODECA_TABLES.dualToNode[v].mat * Matrix4!float.fromScale(1.0f / DODECA_TABLES.dualToChunkFactor);
 }
 
 unittest {
+    foreach (index; 0 .. SIDE_COUNT) {
+        Side side = cast(Side) index;
+        assert(side.opposite != side && !side.isAdjacentTo(side.opposite) && side.opposite.opposite == side);
+        float[3] direction = side.faceDirection;
+        float[3] reference = side.faceReference;
+        float distance = faceDistance();
+        MPoint!float faceCenter = MPoint!float(MVector!float([direction[0] * sinhf(distance), direction[1] * sinhf(distance), direction[2] * sinhf(distance), coshf(distance)]));
+        assert(fabs(faceCenter.mip(side.normal.vec)) < TABLE_TOLERANCE);
+        assert(fabs(direction[0] * reference[0] + direction[1] * reference[1] + direction[2] * reference[2]) < TABLE_TOLERANCE);
+    }
     foreach (v; 0 .. VERTEX_COUNT) {
         Vertex vertex = cast(Vertex) v;
         MPoint!float vertexPoint = DODECA_TABLES.dualToNode[v] * MPoint!float.origin();

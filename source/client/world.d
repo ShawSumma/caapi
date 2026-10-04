@@ -14,6 +14,7 @@ import common.position : Position;
 import common.ray : Ray;
 import common.raycast.graph : GraphCastHit, rayCast;
 import common.traversal : NOT_COLLECTED, NO_DEADLINE, NearbyNode, NearbyScratch;
+import common.worldgen.generation : WorldgenSettings;
 
 enum float NEARBY_PADDING = 0.05f;
 enum float RENDER_RADIUS = 4.5f;
@@ -22,6 +23,11 @@ enum double NEARBY_BUDGET_MILLISECONDS = 2.0;
 struct Placement {
     ChunkId chunk;
     Coords coords;
+    bool isFound;
+}
+
+struct TargetMaterial {
+    Material material;
     bool isFound;
 }
 
@@ -40,10 +46,10 @@ struct LocalWorld {
     uint epoch;
     bool hasNearby;
 
-    static LocalWorld make(ubyte dimension, bool isFlat, float reach) {
+    static LocalWorld make(ubyte dimension, WorldgenSettings worldgen, float reach) {
         LocalWorld world;
-        world.graph = Graph.make(dimension);
-        world.streamer = Streamer.make(isFlat);
+        world.graph = Graph.make(dimension, worldgen);
+        world.streamer = Streamer.make();
         world.cameraPosition = Position.origin();
         world.renderRadius = RENDER_RADIUS;
         world.reach = reach;
@@ -126,6 +132,16 @@ struct LocalWorld {
     GraphCastHit castCenterRay() const {
         Ray ray = Ray(MPoint!float.origin(), MVector!float([0, 0, -1, 0]).normalizedDirection());
         return graph.rayCast(cameraPosition, ray, reach);
+    }
+
+    TargetMaterial targetMaterial() const {
+        GraphCastHit hit = castCenterRay();
+        if (!hit.isHit()) {
+            return TargetMaterial.init;
+        } else {
+            const(Chunk)* chunk = graph.chunkAt(ChunkSlot(graph.slotOf(hit.chunk.node), hit.chunk.vertex));
+            return TargetMaterial(chunk.voxels.get(hit.voxelCoords.toIndex(graph.layout.dimension)), true);
+        }
     }
 
     bool breakBlock() {

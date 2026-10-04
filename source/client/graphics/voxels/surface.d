@@ -55,6 +55,13 @@ immutable ubyte[COLOR_CHANNELS][TEXTURE_LAYERS] MATERIAL_SRGB = [
     [90, 110, 50],
     [90, 140, 50],
     [70, 100, 80],
+    [215, 210, 195],
+    [125, 175, 70],
+    [80, 58, 38],
+    [45, 85, 55],
+    [165, 205, 225],
+    [160, 160, 155],
+    [115, 120, 130],
 ];
 enum uint DIMENSION_PUSH_BYTES = 4;
 enum uint FACES_BINDING = 0;

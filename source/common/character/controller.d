@@ -9,7 +9,7 @@ import common.math : MIsometry, MPoint, higherOf;
 import common.position : Position;
 import common.settings : CharacterConfig, SimConfig;
 import common.vector3 : ZERO_VECTOR, cappedTo, cross, dot, magnitude, movedToward, negated, plus, projectedOntoPlane, rejectAlong, scaled;
-import common.worldgen.generation : NodeState;
+import common.worldgen.generation : NodeState, WorldgenSettings;
 
 enum uint MAX_CONTACT_PLANES = 5;
 enum uint MAX_SLIDE_PLANES = MAX_CONTACT_PLANES + 1;
@@ -465,7 +465,7 @@ float[3] relativeUp(ref const Graph graph, Position position) {
 }
 
 unittest {
-    Graph graph = Graph.make(TEST_DIMENSION);
+    Graph graph = Graph.make(TEST_DIMENSION, WorldgenSettings.init);
     graph.ensureNodeState(ROOT_NODE);
     Position start = Position.origin();
     float[3] up = graph.relativeUp(start);

@@ -6,8 +6,9 @@ import core.stdc.stdlib : free, malloc;
 import client.meshing : Mesher;
 import client.streaming : Streamer, populateChunk, resolveMaterials;
 import common.clock : nowMilliseconds;
+import common.array : Array;
 import common.coords : Coords;
-import common.dodeca : CHUNK_BOUNDING_SPHERE_RADIUS, VERTEX_COUNT, Vertex, chunkBoundingSphereCenter;
+import common.dodeca : CHUNK_BOUNDING_SPHERE_RADIUS, SIDE_COUNT, Side, VERTEX_COUNT, Vertex, chunkBoundingSphereCenter;
 import common.graph : Graph, NodeId;
 import common.material : Material;
 import common.math : MIsometry, MPoint;
@@ -15,7 +16,8 @@ import common.murmur : murmurHash3;
 import common.node : Chunk, ChunkSlot, ChunkState, VoxelData;
 import common.position : Position;
 import common.traversal : NearbyNode, NearbyScratch;
-import common.worldgen.generation : ChunkParams, GeneratedVoxels;
+import common.worldgen.generation : ChunkParams, GeneratedVoxels, WorldgenKind, WorldgenSettings;
+import common.worldgen.tower : NodeStructure, altitude, faceBit;
 
 enum uint DRIVE_NEARBY_VERSION = 1;
 enum uint DRIVE_IDLE_ITERATIONS = 200;
@@ -112,7 +114,7 @@ struct ChunkPass {
 
     void generateChunk(ref Graph graph, ChunkSlot slot) {
         double t0 = nowMilliseconds();
-        ChunkParams params = ChunkParams.make(graph, slot.slot, slot.vertex, false);
+        ChunkParams params = ChunkParams.make(graph, slot.slot, slot.vertex);
         graph.chunkAt(slot).predicted = params.predictOccupancy();
         double t1 = nowMilliseconds();
         GeneratedVoxels result = params.generateVoxels();
@@ -175,7 +177,7 @@ void printChunkLine(FILE* output, NodeId node, Vertex vertex, ContentHashes hash
 }
 
 void dumpWorld(FILE* output, float radius, ubyte dimension) {
-    Graph graph = Graph.make(dimension);
+    Graph graph = Graph.make(dimension, WorldgenSettings.init);
     graph.generateWorld(radius);
     foreach (index; 0 .. cast(size_t) graph.nodeCount * VERTEX_COUNT) {
         ChunkSlot slot = ChunkSlot.fromIndex(index);
@@ -189,9 +191,52 @@ void dumpWorld(FILE* output, float radius, ubyte dimension) {
 }
 
 void printWorldDigest(FILE* output, float radius, ubyte dimension) {
-    Graph graph = Graph.make(dimension);
+    Graph graph = Graph.make(dimension, WorldgenSettings.init);
     graph.generateWorld(radius);
     WorldDigest.fromGraph(graph).print(output);
+    graph.release();
+}
+
+size_t filledVoxels(ref Graph graph, uint slot) {
+    size_t filled = 0;
+    foreach (vertexIndex; 0 .. VERTEX_COUNT) {
+        GeneratedVoxels generated = ChunkParams.make(graph, slot, cast(Vertex) vertexIndex).generateVoxels();
+        foreach (x; 0 .. graph.layout.dimension) {
+            foreach (y; 0 .. graph.layout.dimension) {
+                foreach (z; 0 .. graph.layout.dimension) {
+                    ubyte[3] coords = [cast(ubyte) x, cast(ubyte) y, cast(ubyte) z];
+                    if (generated.voxels.get(Coords(coords).toIndex(graph.layout.dimension)) != Material.none) {
+                        filled += 1;
+                    }
+                }
+            }
+        }
+        generated.voxels.release();
+    }
+    return filled;
+}
+
+void dumpStructure(FILE* output, ubyte dimension, uint seed) {
+    Graph graph = Graph.make(dimension, WorldgenSettings(NodeId.init, seed, WorldgenKind.structure));
+    Array!uint nodes;
+    Array!uint depths;
+    nodes.append(graph.slotOf(graph.worldgen.showcaseBase));
+    depths.append(0);
+    size_t front = 0;
+    while (front < nodes.length) {
+        uint slot = nodes.ptr[front];
+        NodeStructure structure = graph.ensureStructureAt(slot);
+        fprintf(output, "depth=%u symbol=%u down=%u remaining=%u forks=%u altitude=%.3f incoming=%03x outgoing=%03x filled=%zu\n", depths.ptr[front], cast(uint) structure.part.symbol, cast(uint) structure.part.down, cast(uint) structure.part.remaining, cast(uint) structure.part.forks, cast(double) graph.nodeAt(slot).state.altitude(), cast(uint) structure.incoming, cast(uint) structure.outgoing, graph.filledVoxels(slot));
+        foreach (index; 0 .. SIDE_COUNT) {
+            if ((structure.outgoing & faceBit(cast(Side) index)) != 0) {
+                nodes.append(graph.ensureNeighborSlot(slot, cast(Side) index));
+                depths.append(depths.ptr[front] + 1);
+            }
+        }
+        front += 1;
+    }
+    nodes.release();
+    depths.release();
     graph.release();
 }
 
@@ -204,7 +249,7 @@ double averageOf(double total, size_t count) {
 }
 
 void benchGen(FILE* output, float radius, ubyte dimension) {
-    Graph graph = Graph.make(dimension);
+    Graph graph = Graph.make(dimension, WorldgenSettings.init);
     NearbyScratch scratch;
     NearbyNode[] nearby = scratch.collectAll(graph, Position.origin(), radius);
     ChunkPass pass;
@@ -219,7 +264,7 @@ void benchGen(FILE* output, float radius, ubyte dimension) {
 }
 
 void benchMesh(FILE* output, float radius, ubyte dimension) {
-    Graph graph = Graph.make(dimension);
+    Graph graph = Graph.make(dimension, WorldgenSettings.init);
     graph.generateWorld(radius);
     Mesher mesher;
     mesher.setup(dimension);
@@ -251,10 +296,10 @@ void benchMesh(FILE* output, float radius, ubyte dimension) {
 }
 
 void benchDrive(FILE* output, float radius, ubyte dimension) {
-    Graph graph = Graph.make(dimension);
+    Graph graph = Graph.make(dimension, WorldgenSettings.init);
     NearbyScratch scratch;
     NearbyNode[] nearby = scratch.collectAll(graph, Position.origin(), radius);
-    Streamer streamer = Streamer.make(false);
+    Streamer streamer = Streamer.make();
     uint nodesBefore = graph.nodeCount;
     double start = nowMilliseconds();
     double driveMs = 0;
@@ -287,7 +332,7 @@ void benchDrive(FILE* output, float radius, ubyte dimension) {
 }
 
 void benchNearby(FILE* output, float radius, uint iterations, ubyte dimension) {
-    Graph graph = Graph.make(dimension);
+    Graph graph = Graph.make(dimension, WorldgenSettings.init);
     NearbyScratch scratch;
     size_t nodeCount = scratch.collectAll(graph, Position.origin(), radius).length;
     double start = nowMilliseconds();

@@ -1,22 +1,28 @@
 module client.game;
 
-import core.stdc.math : fabsf, tanhf;
+import core.stdc.math : atan2f, ceilf, fabsf, tanhf;
 import client.camera : Camera;
 import client.streaming : generateNow;
 import client.world : LocalWorld, Placement;
 import common.array : Array;
 import common.character.controller : CharacterInput, CharacterState, MovementMode, Mover, Slide, relativeUp;
 import common.collision.graph : Capsule, isCapsuleOverlappingVoxel;
+import common.dodeca : Side, faceDirection, faceDistance;
+import common.graph : NodeId;
 import common.material : Material;
-import common.math : MPoint;
+import common.math : MIsometry, MPoint;
 import common.node : ChunkSlot;
 import common.position : Position;
 import common.settings : SimConfig, SimMeters;
-import common.vector3 : ZERO_VECTOR;
-import common.worldgen.generation : NodeState;
+import common.traversal : NearbyNode, NearbyScratch;
+import common.vector3 : ZERO_VECTOR, cross, dot, negated, rejectAlong, scaled;
+import common.worldgen.generation : NodeState, WorldgenKind, WorldgenSettings;
 import common.worldgen.spawn : clearSpawnPosition, collectChunksNear;
 
 enum uint MODE_COUNT = MovementMode.max + 1;
+enum float SHOWCASE_SEARCH_RADIUS = 4.0f;
+
+immutable float[3] CAMERA_FORWARD = [0, 0, -1];
 
 immutable string[MODE_COUNT] MODE_NAMES = [
     "walk",
@@ -26,8 +32,8 @@ immutable string[MODE_COUNT] MODE_NAMES = [
 
 immutable Material[9] MATERIAL_PALETTE = [
     Material.woodPlanks,
-    Material.wood,
-    Material.leaves,
+    Material.oakWood,
+    Material.oakLeaves,
     Material.greyBrick,
     Material.whiteBrick,
     Material.sandstone,
@@ -114,26 +120,25 @@ struct Game {
     bool isSettlingWorldgenEachFrame;
     bool hasCameraVerticalVelocity;
 
-    static Game make(bool isFlat, float reachMeters) {
+    static Game make(WorldgenSettings worldgen, float reachMeters) {
         SimMeters meters;
         SimConfig simConfig = SimConfig.fromMeters(meters);
         Game game;
         game.simConfig = simConfig;
-        game.world = LocalWorld.make(meters.chunkSize, isFlat, tanhf(reachMeters * simConfig.metersToAbsolute));
+        game.world = LocalWorld.make(meters.chunkSize, worldgen, tanhf(reachMeters * simConfig.metersToAbsolute));
         game.camera = Camera.make(simConfig.character.eyeOffset);
         game.placeAtSpawn();
         return game;
     }
 
     void placeAtSpawn() {
-        bool isFlat = world.streamer.isFlat;
         float bodyReach = simConfig.character.characterHalfHeight + simConfig.character.characterRadius + simConfig.character.contactSkin;
-        Position position = world.graph.clearSpawnPosition(isFlat, bodyReach);
+        Position position = world.graph.clearSpawnPosition(bodyReach);
         Slide drop;
         while (!drop.hasLanded) {
             Array!ChunkSlot chunks = world.graph.collectChunksNear(position, 2.0f * bodyReach);
             foreach (chunk; chunks.slice()) {
-                world.graph.generateNow(chunk, isFlat);
+                world.graph.generateNow(chunk);
             }
             chunks.release();
             Mover mover = Mover.make(simConfig.character, world.graph, world.graph.relativeUp(position));
@@ -144,17 +149,53 @@ struct Game {
         characterState = CharacterState(position, ZERO_VECTOR, drop.groundNormal, true);
         camera.updatePosition(position, world.graph.relativeUp(position));
         camera.alignToGravity();
+        if (world.graph.worldgen.kind == WorldgenKind.structure) {
+            camera.lookLevel(yawToward(world.graph.worldgen.showcaseBase), 0);
+        }
         world.cameraPosition = camera.orientedPosition();
         cameraAltitude = characterAltitude() + camera.eyeOffset;
         hasCameraVerticalVelocity = false;
     }
 
-    void setWorldgen(bool isFlat) {
+    float yawToward(NodeId node) {
+        NearbyScratch scratch;
+        NearbyNode[] nearby = scratch.collectAll(world.graph, characterState.position, SHOWCASE_SEARCH_RADIUS);
+        size_t index = 0;
+        while (index < nearby.length && nearby[index].id != node) {
+            index += 1;
+        }
+        assert(index < nearby.length);
+        float[3] target = (characterState.position.local.inverse() * nearby[index].transform * MPoint!float.origin()).vec.xyz();
+        scratch.release();
+        float[3] forward = camera.orientation.rotate(CAMERA_FORWARD).rejectAlong(camera.up);
+        float[3] level = target.rejectAlong(camera.up);
+        return atan2f(camera.up.dot(forward.cross(level)), forward.dot(level));
+    }
+
+    void enterStructure(float metersUp) {
+        float[3] up = Side.a.faceDirection.negated;
+        float rise = metersUp * simConfig.metersToAbsolute - faceDistance();
+        uint stepCount = cast(uint) ceilf(fabsf(rise) / faceDistance());
+        Position target = Position(world.graph.worldgen.showcaseBase, MIsometry!float.identity());
+        foreach (_; 0 .. stepCount) {
+            target = world.graph.ensureNormalized(Position(target.node, (target.local * MIsometry!float.fromDisplacement(up.scaled(rise / stepCount))).renormalized()));
+        }
+        world.graph.ensureNodeState(target.node);
+        characterState = CharacterState(target, ZERO_VECTOR, characterState.groundNormal, false);
+        camera = Camera.make(simConfig.character.eyeOffset);
+        camera.updatePosition(target, world.graph.relativeUp(target));
+        camera.alignToGravity();
+        world.cameraPosition = camera.orientedPosition();
+        cameraAltitude = characterAltitude() + camera.eyeOffset;
+        hasCameraVerticalVelocity = false;
+    }
+
+    void setWorldgen(WorldgenSettings worldgen) {
         ubyte dimension = world.graph.layout.dimension;
         float reach = world.reach;
         uint epoch = world.epoch;
         world.release();
-        world = LocalWorld.make(dimension, isFlat, reach);
+        world = LocalWorld.make(dimension, worldgen, reach);
         world.epoch = epoch + 1;
         placeAtSpawn();
     }

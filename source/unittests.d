@@ -36,6 +36,7 @@ import worldgenGeneration = common.worldgen.generation;
 import worldgenPlane = common.worldgen.plane;
 import worldgenSpawn = common.worldgen.spawn;
 import worldgenTerraingen = common.worldgen.terraingen;
+import worldgenTower = common.worldgen.tower;
 
 alias TESTED_MODULES = __traits(allMembers, unittests);
 

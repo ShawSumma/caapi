@@ -6,6 +6,7 @@ import common.character.controller : relativeUp;
 import common.graph : Graph, ROOT_NODE;
 import common.math : MIsometry, Matrix4, PI, clamped;
 import common.position : Position;
+import common.worldgen.generation : WorldgenSettings;
 
 enum float EYE_LAG_DECAY_PER_SECOND = 12.0f;
 enum float PITCH_LIMIT_RADIANS = PI / 2.0f - 1e-3f;
@@ -165,7 +166,7 @@ struct Camera {
 }
 
 unittest {
-    Graph graph = Graph.make(TEST_DIMENSION);
+    Graph graph = Graph.make(TEST_DIMENSION, WorldgenSettings.init);
     graph.ensureNodeState(ROOT_NODE);
     Camera camera = Camera.make(0);
     camera.up = graph.relativeUp(camera.position);

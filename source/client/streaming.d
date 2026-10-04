@@ -140,11 +140,9 @@ struct Streamer {
     uint inFlight;
     uint scanCursor;
     uint scanVersion;
-    bool isFlat;
 
-    static Streamer make(bool isFlat) {
+    static Streamer make() {
         Streamer streamer;
-        streamer.isFlat = isFlat;
         streamer.queue = cast(GenQueue*) calloc(1, GenQueue.sizeof);
         pthread_mutex_init(&streamer.queue.mutex, null);
         pthread_cond_init(&streamer.queue.workAvailable, null);
@@ -258,7 +256,7 @@ struct Streamer {
     }
 
     void request(ref Graph graph, ChunkSlot slot) {
-        ChunkParams params = ChunkParams.make(graph, slot.slot, slot.vertex, isFlat);
+        ChunkParams params = ChunkParams.make(graph, slot.slot, slot.vertex);
         Chunk* chunk = graph.chunkAt(slot);
         chunk.predicted = params.predictOccupancy();
         if (chunk.predicted == Occupancy.unknown) {
@@ -352,9 +350,9 @@ double budgetDeadline(bool isUnbudgeted) {
     }
 }
 
-void generateNow(ref Graph graph, ChunkSlot chunk, bool isFlat) {
+void generateNow(ref Graph graph, ChunkSlot chunk) {
     if (graph.chunkAt(chunk).state == ChunkState.fresh) {
-        ChunkParams params = ChunkParams.make(graph, chunk.slot, chunk.vertex, isFlat);
+        ChunkParams params = ChunkParams.make(graph, chunk.slot, chunk.vertex);
         graph.chunkAt(chunk).predicted = params.predictOccupancy();
         graph.populateChunk(chunk, params.generateVoxels());
     }
@@ -403,7 +401,7 @@ void resolveIfExposed(ref Graph graph, ChunkSlot chunk) {
 }
 
 void resolveMaterials(ref Graph graph, ChunkSlot chunk) {
-    ChunkParams params = ChunkParams.make(graph, chunk.slot, chunk.vertex, false);
+    ChunkParams params = ChunkParams.make(graph, chunk.slot, chunk.vertex);
     params.isResolvingMaterials = true;
     GeneratedVoxels generated = params.generateVoxels();
     Chunk* target = graph.chunkAt(chunk);

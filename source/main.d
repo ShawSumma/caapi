@@ -1,8 +1,8 @@
 module main;
 
 import core.stdc.stdio : FILE, fclose, fopen, fprintf, snprintf;
-import core.stdc.stdlib : free, malloc, strtof;
-import core.stdc.string : strcmp;
+import core.stdc.stdlib : free, malloc, strtof, strtoul;
+import core.stdc.string : strcmp, strlen;
 import core.sys.posix.time : nanosleep, timespec;
 import bindings.platform : Atom, Button1, Button3, ButtonPress, ClientMessage, CurrentTime, Cursor, Display, False, FocusOut, GenericEvent, GrabModeAsync, GrabSuccess, KeyPress, KeyRelease, KeySym, Pixmap, Success, True, UnmapNotify, VkExtent2D, Window, XBlackPixel, XCloseDisplay, XColor, XCreateBitmapFromData, XCreatePixmapCursor, XCreateSimpleWindow, XDefaultScreen, XDestroyWindow, XDisplayHeight, XDisplayWidth, XEvent, XFlush, XFreeCursor, XFreeEventData, XFreePixmap, XGenericEventCookie, XGetEventData, XGrabPointer, XIAllMasterDevices, XIDeviceInfo, XIEventMask, XIFreeDeviceInfo, XIModeAbsolute, XIQueryDevice, XIQueryVersion, XIRawEvent, XISelectEvents, XIValuatorClass, XIValuatorClassInfo, XI_DeviceChanged, XI_RawMotion, XInternAtom, XK_1, XK_9, XK_Escape, XK_Down, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_n, XK_s, XK_space, XK_v, XK_w, XLookupKeysym, XMapWindow, XNextEvent, XOpenDisplay, XPending, XQueryExtension, XRootWindow, XSelectInput, XSetWMProtocols, XStoreName, XUngrabPointer, XkbSetDetectableAutoRepeat;
 import client.config : ClientConfig;
@@ -14,7 +14,9 @@ import common.character.controller : MovementMode;
 import common.clock : MILLISECONDS_PER_SECOND, NANOSECONDS_PER_SECOND, nowSeconds;
 import common.dodeca : VERTEX_COUNT;
 import common.settings : SimMeters;
+import common.worldgen.generation : WorldgenLookup, WorldgenSettings;
 
+enum int DECIMAL = 10;
 enum uint WINDOW_WIDTH = 1280;
 enum uint WINDOW_HEIGHT = 720;
 enum uint SCREENSHOT_WIDTH = 640;
@@ -47,11 +49,12 @@ struct Arguments {
     const(char)* screenshotPath;
     const(char)* reportPath;
     const(char)* scriptPath;
+    WorldgenSettings worldgen;
     float sensitivity = 0;
     bool hasSensitivity;
     bool isYInverted;
-    bool isFlat;
     bool isBenchLoad;
+    bool isValid = true;
 
     static Arguments fromArgv(int argc, char** argv) {
         Arguments arguments;
@@ -71,8 +74,14 @@ struct Arguments {
                 index += 1;
             } else if (strcmp(argument, "--invert-y") == 0) {
                 arguments.isYInverted = true;
-            } else if (strcmp(argument, "--flat") == 0) {
-                arguments.isFlat = true;
+            } else if (strcmp(argument, "--worldgen") == 0 && hasValue) {
+                WorldgenLookup lookup = WorldgenLookup.fromName(argv[index + 1][0 .. strlen(argv[index + 1])]);
+                arguments.worldgen.kind = lookup.kind;
+                arguments.isValid = arguments.isValid && lookup.isFound;
+                index += 1;
+            } else if (strcmp(argument, "--seed") == 0 && hasValue) {
+                arguments.worldgen.seed = cast(uint) strtoul(argv[index + 1], null, DECIMAL);
+                index += 1;
             } else if (strcmp(argument, "--screenshot") == 0 && hasValue) {
                 arguments.screenshotPath = argv[index + 1];
                 index += 1;
@@ -164,28 +173,28 @@ struct Session {
 
     int run(Arguments arguments) {
         if (arguments.recordPath is null) {
-            return runWindow(arguments.isFlat);
+            return runWindow(arguments.worldgen);
         } else {
             immutable bool isOpened = recorder.open(arguments.recordPath);
             if (!isOpened) {
                 return EXIT_FAILED;
             } else {
                 isRecording = true;
-                int status = runWindow(arguments.isFlat);
+                int status = runWindow(arguments.worldgen);
                 recorder.close();
                 return status;
             }
         }
     }
 
-    int runWindow(bool isFlat) {
+    int runWindow(WorldgenSettings worldgen) {
         immutable bool isWindowOpen = openWindow();
         if (!isWindowOpen) {
             return EXIT_FAILED;
         } else {
             SimMeters meters;
             renderer.setup(display, window, meters.chunkSize);
-            game = Game.make(isFlat, config.reachMeters);
+            game = Game.make(worldgen, config.reachMeters);
             runLoop();
             game.release();
             renderer.cleanup();
@@ -513,7 +522,7 @@ bool renderScreenshot(Arguments arguments) {
         Renderer* renderer = cast(Renderer*) malloc(Renderer.sizeof);
         *renderer = Renderer.init;
         renderer.setupOffscreen(VkExtent2D(SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT), meters.chunkSize);
-        Game game = Game.make(arguments.isFlat, config.reachMeters);
+        Game game = Game.make(arguments.worldgen, config.reachMeters);
         game.isSettlingWorldgenEachFrame = true;
         bool isWritten = captureScreenshot(arguments, report, *renderer, game);
         renderer.cleanup();
@@ -588,7 +597,7 @@ bool benchLoad(Arguments arguments) {
         Renderer* renderer = cast(Renderer*) malloc(Renderer.sizeof);
         *renderer = Renderer.init;
         renderer.setupOffscreen(VkExtent2D(SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT), meters.chunkSize);
-        Game game = Game.make(arguments.isFlat, config.reachMeters);
+        Game game = Game.make(arguments.worldgen, config.reachMeters);
         measureLoad(report, *renderer, game);
         measureFlight(report, *renderer, game);
         renderer.cleanup();
@@ -696,7 +705,9 @@ int runWindowed(Arguments arguments) {
 
 extern (C) int main(int argc, char** argv) {
     Arguments arguments = Arguments.fromArgv(argc, argv);
-    if (arguments.isBenchLoad && arguments.reportPath !is null) {
+    if (!arguments.isValid) {
+        return EXIT_FAILED;
+    } else if (arguments.isBenchLoad && arguments.reportPath !is null) {
         return exitStatus(benchLoad(arguments));
     } else if (arguments.screenshotPath !is null && arguments.isOffscreenRunnable()) {
         return exitStatus(renderScreenshot(arguments));

@@ -3,10 +3,14 @@ module client.script;
 import core.stdc.math : floor;
 import core.stdc.stdio : FILE, fclose, fopen, fprintf;
 import core.stdc.string : strlen;
-import bindings.lua : luaL_checkinteger, luaL_checklstring, luaL_checknumber, luaL_checktype, luaL_error, luaL_loadfilex, luaL_newstate, luaL_openselectedlibs, luaL_optnumber, luaL_ref, luaL_traceback, luaL_unref, lua_CFunction, lua_Integer, lua_State, lua_callk, lua_close, lua_createtable, lua_getglobal, lua_gettop, lua_pcallk, lua_pushboolean, lua_pushcclosure, lua_pushinteger, lua_pushlightuserdata, lua_pushlstring, lua_pushnil, lua_pushnumber, lua_pushstring, lua_pushvalue, lua_rawgeti, lua_setfield, lua_setglobal, lua_settop, lua_tolstring, lua_touserdata, lua_type;
+import bindings.lua : luaL_checkinteger, luaL_checklstring, luaL_checknumber, luaL_checktype, luaL_error, luaL_loadfilex, luaL_newstate, luaL_openselectedlibs, luaL_optinteger, luaL_optnumber, luaL_ref, luaL_traceback, luaL_unref, lua_CFunction, lua_Integer, lua_State, lua_callk, lua_close, lua_createtable, lua_getglobal, lua_gettop, lua_pcallk, lua_pushboolean, lua_pushcclosure, lua_pushinteger, lua_pushlightuserdata, lua_pushlstring, lua_pushnil, lua_pushnumber, lua_pushstring, lua_pushvalue, lua_rawgeti, lua_setfield, lua_setglobal, lua_settop, lua_tolstring, lua_touserdata, lua_type;
 import client.game : FrameInput, Game, KEY_COUNT, KEY_NAMES, KeyLookup, MATERIAL_PALETTE;
+import client.world : TargetMaterial;
 import common.array : Array;
+import common.graph : NodeId;
+import common.material : MATERIAL_NAMES;
 import common.vector3 : dot, magnitude, rejectAlong;
+import common.worldgen.generation : WorldgenKind, WorldgenLookup, WorldgenSettings;
 
 enum int LUA_REGISTRY = -(int.max / 2 + 1000);
 enum int LUA_FIRST_UPVALUE = LUA_REGISTRY - 1;
@@ -139,6 +143,8 @@ struct ScriptHost {
         registerMethod("material", &luaMaterial);
         registerMethod("break_block", &luaBreakBlock);
         registerMethod("place_block", &luaPlaceBlock);
+        registerMethod("target_material", &luaTargetMaterial);
+        registerMethod("enter_structure", &luaEnterStructure);
         registerMethod("traveled", &luaTraveled);
         registerMethod("is_on_ground", &luaIsOnGround);
         registerMethod("altitude", &luaAltitude);
@@ -261,15 +267,37 @@ extern (C) int luaTime(lua_State* lua) {
 extern (C) int luaWorldgen(lua_State* lua) {
     ScriptHost* host = methodHost(lua);
     const(char)* name = luaL_checklstring(lua, SELF + 1, null);
-    const(char)[] kind = name[0 .. strlen(name)];
+    WorldgenLookup lookup = WorldgenLookup.fromName(name[0 .. strlen(name)]);
+    uint seed = cast(uint) luaL_optinteger(lua, SELF + 2, 0);
     if (host.steps > 0) {
         luaL_error(lua, "worldgen must be chosen before the first step");
-    } else if (kind != "flat" && kind != "terrain") {
+    } else if (!lookup.isFound) {
         luaL_error(lua, "unknown worldgen '%s'", name);
     } else {
-        host.game.setWorldgen(kind == "flat");
+        host.game.setWorldgen(WorldgenSettings(NodeId.init, seed, lookup.kind));
     }
     return 0;
+}
+
+extern (C) int luaEnterStructure(lua_State* lua) {
+    ScriptHost* host = methodHost(lua);
+    float meters = cast(float) luaL_checknumber(lua, SELF + 1);
+    if (host.game.world.graph.worldgen.kind != WorldgenKind.structure) {
+        luaL_error(lua, "enter_structure needs the structure worldgen");
+    } else {
+        host.game.enterStructure(meters);
+    }
+    return 0;
+}
+
+extern (C) int luaTargetMaterial(lua_State* lua) {
+    TargetMaterial target = methodHost(lua).game.world.targetMaterial();
+    if (target.isFound) {
+        lua_pushstring(lua, MATERIAL_NAMES[target.material].ptr);
+    } else {
+        lua_pushnil(lua);
+    }
+    return 1;
 }
 
 extern (C) int luaOnStep(lua_State* lua) {

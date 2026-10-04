@@ -41,8 +41,10 @@ shared simulation code in `source/common`. Two entry points: `source/main.d`
     `node.d` (chunk and voxel storage), `margins.d`, `neighbors.d`
     (cross-chunk cell resolution), `traversal.d` (nearby BFS),
     `position.d`, `material.d`, `settings.d` (SimMeters to SimConfig).
-  - worldgen: `worldgen/generation.d` (node state, chunk params, proofs,
-    voxels), `terraingen.d`, `plane.d`, `spawn.d`.
+  - worldgen: `worldgen/generation.d` (worldgen settings, node state,
+    chunk params, proofs, voxels, trees), `tower.d` (tower L-system,
+    per-node structure, tube geometry), `terraingen.d`, `plane.d`,
+    `spawn.d`.
   - collision: `collision/chunk.d`, `collision/graph.d` (shape casts,
     region checks), `character/controller.d`, `character/sweep.d`; ray
     picks in `raycast/chunk.d`, `raycast/graph.d`.
@@ -52,8 +54,9 @@ shared simulation code in `source/common`. Two entry points: `source/main.d`
   `common.h` (common UBO), `draw.h` (structs shared by `cull.comp` and
   `voxels.vert`), `face.h` (packed face layout, matches `client/meshing.d`).
 - `tests/` - behavior scripts: `tests/flat/`, `tests/terrain/`,
-  `tests/api.lua`; `tests/lib/` shared Lua; `tests/visual/` screenshot
-  scenes.
+  `tests/structure/`, `tests/api.lua`; `tests/lib/` shared Lua;
+  `tests/visual/` screenshot scenes.
+- `screenshots/` - gitignored; where offscreen renders go.
 
 ## Build, test, run
 
@@ -73,7 +76,8 @@ exceptions, no classes, no associative arrays. Memory is `malloc`/`free`
   offscreen: `./mined --screenshot <png> --out <report> <script.lua>`
   runs the script, lets worldgen cover the nearby set and meshing catch
   up, renders one frame with no window or input grab, and writes a PNG
-  (read it to look at it). Scenes live in `tests/visual/`.
+  (read it to look at it). Scenes live in `tests/visual/`; PNGs go in
+  `screenshots/`, never anywhere else.
 - Unit tests: `dub test --compiler=ldc2`. The `unittest` configuration uses
   `source/unittests.d` as a betterC runner (`__traits(getUnitTests)` over
   every imported module) and leaves out Lua, whose headers ImportC rejects
@@ -117,10 +121,16 @@ Headless verification:
 - `./mined --record <file.lua>` records live play as a replayable Lua
   script (key changes, look deltas, events, and merged runs of identical
   steps as `world:wait(seconds, dt)`).
-- `--flat` (or `world:worldgen("flat")` in a script) - debug worldgen:
-  fills exactly below the base surface plane. The base plane is
+- `--worldgen terrain|flat|structure` and `--seed <n>` (or
+  `world:worldgen(kind, seed)` in a script; both clients take them).
+  `flat` fills exactly below the base surface plane. The base plane is
   lattice-aligned, so this is a genuinely flat floor with gravity
   perpendicular to it. Use it to isolate physics from terrain.
+  `structure` is the same flat ground with exactly one tower, varied by
+  the seed, one node from spawn; the player spawns facing it.
+- `--dump-structure [--seed <n>]` - the structure world's tower as its
+  node tree: symbol, counters, altitude, face masks and how many voxels
+  each node fills. Use it to see a structure's shape without rendering.
 - `--dump-world [radius]` - deterministic world hash dump; byte-diff two
   runs' reports to prove worldgen unchanged. Deferred materials are
   resolved first; each chunk line carries a materials hash and an
@@ -155,17 +165,22 @@ their receiver, so `world.wait(1)` is an error - always call with `:`.
   Positive yaw turns right and positive pitch looks down (mouse sense).
 - Time: `wait(s[, dt])` (steps of dt, default the timestep), `step([dt])`
   (one step), `timestep([s])` (default 0.016), `time()`,
-  `worldgen("flat"|"terrain")` (before the first step; it creates a fresh
-  world and respawns), `on_step(fn|nil)` (runs fn after each step to
-  observe; it cannot advance time).
+  `worldgen("terrain"|"flat"|"structure"[, seed])` (before the first
+  step; it creates a fresh world and respawns), `on_step(fn|nil)` (runs
+  fn after each step to observe; it cannot advance time).
 - Input: `hold(key...)`, `release(key...)`, `release_all()`,
   `press(s, key...)`, `look(yaw, pitch)` (immediate), `turn_rate([yaw/s,
   pitch/s])` (held look rate; returns the current one), `turn(yaw, pitch,
   s)`. Keys: fwd back left right up (alias jump) down yaw_left yaw_right
   pitch_up pitch_down.
 - Actions: `mode([walk|fly|noclip])`, `material([1..9])`, `break_block()`,
-  `place_block()` (both return whether they changed a voxel).
-- Observation: `traveled()` (path length), `is_on_ground()`, `altitude()`
+  `place_block()` (both return whether they changed a voxel),
+  `enter_structure(m)` (structure world only: puts the player on the
+  tower's axis m meters above the ground - the only reliable way to get
+  near a tower's upper floors, see below).
+- Observation: `target_material()` (snake_case name of the voxel in reach
+  under the crosshair, or nil), `traveled()` (path length),
+  `is_on_ground()`, `altitude()`
   (body center above the base surface plane; half height plus the contact
   skin standing on flat worldgen), `speed()`, `horizontal_speed()`,
   `vertical_speed()` (signed, up positive),
@@ -371,6 +386,31 @@ conditioning guard.
   materials are generated, by the same function, when it is edited or a
   void cell appears in its margins. Never assume solid storage means one
   material.
+- Trees are oak, birch and spruce (`TREE_SPECIES`), chosen by climate. A
+  tree grows along the grid axis pointing away from its single ground
+  neighbor and is placed only if its whole box fits inside its chunk:
+  chunks are generated independently, so nothing may cross a chunk.
+- Towers are an L-system on the honeycomb (`worldgen/tower.d`). A tower
+  node has a down face; its up faces are the opposite face (straight)
+  and the five faces ringing it, which in H^3 lead to six genuinely
+  different "ups". The base grows a straight trunk, the last trunk node
+  forks into the straight face plus some ring faces, branches can fork
+  again, and a branch that stops grows a spire. Each node's part comes
+  from the lower neighbor that claims it (`NodeStructure.fromNode`,
+  memoized per node like `NodeState`), so it is order-independent. A
+  node only grows into neighbors that are higher and below
+  `MAX_TOWER_ALTITUDE`, which also bounds the downward claim search.
+- Tower geometry is hollow tubes along the geodesics from a node's center
+  to its face centers. Those geodesics cross the face perpendicularly, so
+  a tube continues seamlessly into the neighbor; floor spacing divides
+  the face distance and window angles are measured from a face-plane
+  vector, so floors and windows line up across the seam too. A node with
+  a structure is never proven clear, full or deferred.
+- A node level is ~1.6 absolute (~30 m) tall. Vertical geodesics diverge
+  like cosh(altitude), so from the ground a tower's upper levels squeeze
+  under the angle of parallelism, and anyone rising beside a tower drifts
+  away from it. Seeing a fork means being near the axis at its altitude
+  (`enter_structure`, or noclip along the tower).
 
 ## Performance rules
 
@@ -392,7 +432,8 @@ conditioning guard.
   frame/step/render average and worst) and then 5 s of noclip flight.
   Judge changes by its worst frames.
 - Chunk generation is async on worker threads (cores minus two); the main
-  thread builds params and integrates results. A chunk whose occupancy
+  thread builds params (including the memoized node structure) and
+  integrates results. A chunk whose occupancy
   worldgen proves (`predictOccupancy`) has trivial voxels and is generated
   and populated inline; only unknown chunks go to the workers. Workers
   take an open `runParallel` job before generation requests. Unloaded

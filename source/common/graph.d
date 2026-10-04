@@ -8,7 +8,8 @@ import common.murmur : murmurHash3;
 import common.node : Chunk, ChunkLayout, ChunkSlot;
 import common.position : Position;
 import common.slab : Slab;
-import common.worldgen.generation : NodeState;
+import common.worldgen.generation : NodeState, WorldgenKind, WorldgenSettings;
+import common.worldgen.tower : NodeStructure, showcaseBaseSlot;
 
 enum ulong NODE_HASH_MULTIPLIER = 0x9E3779B97F4A7C15;
 enum size_t NODE_ID_BYTES = 16;
@@ -39,7 +40,9 @@ struct Node {
     NodeState state;
     uint[SIDE_COUNT] neighbors;
     uint depth;
+    NodeStructure structure;
     bool hasState;
+    bool hasStructure;
 }
 
 struct ParentEntry {
@@ -85,13 +88,18 @@ struct Graph {
     HashMap!(NodeId, uint) slots;
     Array!ChunkSlot changedChunks;
     size_t changedHead;
+    WorldgenSettings worldgen;
     ChunkLayout layout;
     uint nodeCount;
 
-    static Graph make(ubyte dimension) {
+    static Graph make(ubyte dimension, WorldgenSettings worldgen) {
         Graph graph;
         graph.layout = ChunkLayout.fromDimension(dimension);
+        graph.worldgen = worldgen;
         graph.addNode(ROOT_NODE, 0);
+        if (worldgen.kind == WorldgenKind.structure) {
+            graph.worldgen.showcaseBase = graph.idAt(graph.showcaseBaseSlot());
+        }
         return graph;
     }
 
@@ -247,6 +255,15 @@ struct Graph {
             nodeAt(slot).hasState = true;
         }
         return &nodeAt(slot).state;
+    }
+
+    NodeStructure ensureStructureAt(uint slot) {
+        if (!nodeAt(slot).hasStructure) {
+            NodeStructure structure = NodeStructure.fromNode(this, slot);
+            nodeAt(slot).structure = structure;
+            nodeAt(slot).hasStructure = true;
+        }
+        return nodeAt(slot).structure;
     }
 
     void ensureNodeState(NodeId nodeId) {
