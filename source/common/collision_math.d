@@ -10,6 +10,25 @@ struct ContactTerms {
     float separationSquared;
     float approach;
     float directionSquared;
+
+    float contactTime(float sinhRadius) const {
+        float constantTerm = separationSquared - sinhRadius * sinhRadius;
+        float quadraticTerm = directionSquared + sinhRadius * sinhRadius;
+        float discriminant = approach * approach - quadraticTerm * constantTerm;
+        if (approach >= 0.0f) {
+            return float.nan;
+        } else if (constantTerm <= 0.0f) {
+            return 0.0f;
+        } else if (discriminant > 0.0f) {
+            return constantTerm / (-approach + sqrt(discriminant));
+        } else {
+            return float.nan;
+        }
+    }
+
+    float separationDistance() const {
+        return asinhf(sqrt(separationSquared));
+    }
 }
 
 struct Ray {
@@ -18,6 +37,10 @@ struct Ray {
 
     MVector!float rayPoint(float tanhDistance) const {
         return position.vec + direction.vec * tanhDistance;
+    }
+
+    Ray transformedBy(MIsometry!float iso) const {
+        return Ray(iso * position, iso * direction);
     }
 
     ContactTerms planeTerms(MDirection!float planeNormal) const {
@@ -46,37 +69,12 @@ struct Ray {
 
     float solvePointPlaneIntersection(MDirection!float planeNormal) const {
         float candidate = -position.mip(planeNormal.vec) / direction.mip(planeNormal.vec);
-        float result = float.nan;
         if (!isNan(candidate) && !isInfinite(candidate) && candidate > 0.0f) {
-            result = candidate;
-        }
-        return result;
-    }
-}
-
-Ray transformRay(MIsometry!float iso, Ray ray) {
-    return Ray(iso * ray.position, iso * ray.direction);
-}
-
-float contactTime(ContactTerms terms, float sinhRadius) {
-    float result = float.nan;
-    if (terms.approach < 0.0f) {
-        float constantTerm = terms.separationSquared - sinhRadius * sinhRadius;
-        if (constantTerm <= 0.0f) {
-            result = 0.0f;
+            return candidate;
         } else {
-            float quadraticTerm = terms.directionSquared + sinhRadius * sinhRadius;
-            float discriminant = terms.approach * terms.approach - quadraticTerm * constantTerm;
-            if (discriminant > 0.0f) {
-                result = constantTerm / (-terms.approach + sqrt(discriminant));
-            }
+            return float.nan;
         }
     }
-    return result;
-}
-
-float separationDistance(ContactTerms terms) {
-    return asinhf(sqrt(terms.separationSquared));
 }
 
 unittest {
@@ -84,11 +82,11 @@ unittest {
     MDirection!float wall = MVector!float(-1, 0, 0, -0.5f).normalizedDirection();
     ContactTerms terms = ray.planeTerms(wall);
     assert(ray.position.mip(wall.vec) > 0);
-    float far = contactTime(terms, 0.1f);
-    float near = contactTime(terms, 0.2f);
+    float far = terms.contactTime(0.1f);
+    float near = terms.contactTime(0.2f);
     assert(!isNan(far) && near < far);
     Ray away = Ray(MPoint!float.origin(), MDirection!float(MVector!float(-1, 0, 0, 0)));
-    assert(isNan(contactTime(away.planeTerms(wall), 0.1f)));
+    assert(isNan(away.planeTerms(wall).contactTime(0.1f)));
     Ray along = Ray(MPoint!float.origin(), MDirection!float(MVector!float(0, 1, 0, 0)));
-    assert(isNan(contactTime(along.planeTerms(wall), 0.1f)));
+    assert(isNan(along.planeTerms(wall).contactTime(0.1f)));
 }

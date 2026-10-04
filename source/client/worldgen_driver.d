@@ -3,26 +3,23 @@ module client.worldgen_driver;
 import core.stdc.math : coshf;
 import core.stdc.stdlib : calloc, free;
 import core.sys.posix.pthread : pthread_cond_broadcast, pthread_cond_destroy, pthread_cond_init, pthread_cond_signal, pthread_cond_t, pthread_cond_wait, pthread_create, pthread_join, pthread_mutex_destroy, pthread_mutex_init, pthread_mutex_lock, pthread_mutex_t, pthread_mutex_unlock, pthread_t;
-import core.sys.posix.time : CLOCK_MONOTONIC, clock_gettime, timespec;
 import core.sys.posix.unistd : _SC_NPROCESSORS_ONLN, sysconf;
 import common.array : Array;
-import common.chunk_neighbors : chunkNeighborSlot, contradictsPrediction, touchChunksAround;
-import common.dodeca : CHUNK_BOUNDING_SPHERE_RADIUS, VERTEX_COUNT, Vertex, vertexAdjacentVertices, vertexCanonicalSides, vertexChunkBoundingSphereCenter;
-import common.graph : Graph, NO_NODE, NO_SLOT;
-import common.margins : fixMargins, marginFacesHaveVoid;
+import common.chunk_neighbors : chunkNeighborSlot, isPredictionContradicted, touchChunksAround;
+import common.dodeca : CHUNK_BOUNDING_SPHERE_RADIUS, VERTEX_COUNT, Vertex, adjacentVertices, canonicalSides, chunkBoundingSphereCenter;
+import common.graph : Graph, NO_SLOT;
 import common.math : MIsometry, MPoint;
-import common.node : Chunk, ChunkId, ChunkSlot, ChunkState;
-import common.traversal : NO_DEADLINE, NearbyNode;
+import common.node : Chunk, ChunkId, ChunkSlot, ChunkState, Occupancy;
+import common.traversal : NO_DEADLINE, NearbyNode, nowMilliseconds;
 import common.voxel_math : CHUNK_DIRECTIONS, ChunkDirection, CoordSign;
-import common.worldgen.generation : ChunkParams, GeneratedVoxels, createChunkParams, generateVoxels, predictOccupancy;
+import common.worldgen.generation : ChunkParams, GeneratedVoxels, generateVoxels;
 
 enum uint RESERVED_CORES = 2;
+enum uint MAIN_WORKER = 0;
 enum uint DONE_FOREVER = uint.max;
 enum uint MAX_SCAN_NODES_PER_FRAME = 4096;
 enum uint IN_FLIGHT_PER_WORKER = 256;
 enum double WORLDGEN_BUDGET_MILLISECONDS = 6.0;
-enum double NANOSECONDS_PER_MILLISECOND = 1e6;
-enum double MILLISECONDS_PER_SECOND = 1e3;
 
 struct GenRequest {
     ChunkParams params;
@@ -34,18 +31,105 @@ struct GenResult {
     ChunkSlot chunk;
 }
 
+struct ParallelJob {
+    void function(void* context, size_t index, uint worker) run;
+    void* context;
+    double deadline;
+    size_t count;
+    size_t claimed;
+    size_t finished;
+}
+
 struct GenQueue {
     pthread_mutex_t mutex;
     pthread_cond_t workAvailable;
     pthread_cond_t resultsReady;
+    pthread_cond_t jobFinished;
     Array!GenRequest pending;
     Array!GenResult done;
+    ParallelJob* job;
     size_t pendingHead;
-    bool stopping;
+    bool isStopping;
+
+    bool isJobOpen() const {
+        return job !is null && job.claimed < job.count;
+    }
+
+    bool hasWork() const {
+        return isJobOpen() || pendingHead < pending.length;
+    }
+
+    void waitForWork() {
+        while (!hasWork() && !isStopping) {
+            pthread_cond_wait(&workAvailable, &mutex);
+        }
+    }
+
+    void serve(uint worker) {
+        waitForWork();
+        while (hasWork()) {
+            if (isJobOpen()) {
+                runClaimed(worker);
+            } else {
+                generateNext();
+            }
+            waitForWork();
+        }
+    }
+
+    void runClaimed(uint worker) {
+        ParallelJob* claimedJob = job;
+        size_t index = claimedJob.claimed;
+        claimedJob.claimed += 1;
+        pthread_mutex_unlock(&mutex);
+        claimedJob.run(claimedJob.context, index, worker);
+        immutable bool isLate = nowMilliseconds() >= claimedJob.deadline;
+        pthread_mutex_lock(&mutex);
+        if (isLate && claimedJob.count > claimedJob.claimed) {
+            claimedJob.count = claimedJob.claimed;
+        }
+        claimedJob.finished += 1;
+        if (claimedJob.finished == claimedJob.count) {
+            pthread_cond_signal(&jobFinished);
+        }
+    }
+
+    void generateNext() {
+        GenRequest request = pending.ptr[pendingHead];
+        pendingHead += 1;
+        if (pendingHead >= pending.length) {
+            pending.clear();
+            pendingHead = 0;
+        }
+        pthread_mutex_unlock(&mutex);
+        GeneratedVoxels generated = generateVoxels(&request.params);
+        pthread_mutex_lock(&mutex);
+        done.append(GenResult(generated, request.chunk));
+        pthread_cond_signal(&resultsReady);
+    }
+}
+
+struct WorkerStart {
+    GenQueue* queue;
+    uint index;
+}
+
+extern (C) void* workerMain(void* argument) {
+    WorkerStart* start = cast(WorkerStart*) argument;
+    pthread_mutex_lock(&start.queue.mutex);
+    start.queue.serve(start.index);
+    pthread_mutex_unlock(&start.queue.mutex);
+    return null;
+}
+
+struct ScanOutcome {
+    uint freshOutOfRange;
+    bool isInterrupted;
 }
 
 struct WorldgenDriver {
     Array!pthread_t workers;
+    Array!WorkerStart starts;
     Array!GenRequest requests;
     Array!GenResult results;
     Array!uint doneVersion;
@@ -55,269 +139,278 @@ struct WorldgenDriver {
     uint inFlight;
     uint scanCursor;
     uint scanVersion;
-    bool flatWorldgen;
-}
+    bool isFlat;
 
-extern (C) void* workerMain(void* argument) {
-    GenQueue* queue = cast(GenQueue*) argument;
-    bool running = true;
-    while (running) {
+    static WorldgenDriver make(bool isFlat) {
+        WorldgenDriver driver;
+        driver.isFlat = isFlat;
+        driver.queue = cast(GenQueue*) calloc(1, GenQueue.sizeof);
+        pthread_mutex_init(&driver.queue.mutex, null);
+        pthread_cond_init(&driver.queue.workAvailable, null);
+        pthread_cond_init(&driver.queue.resultsReady, null);
+        pthread_cond_init(&driver.queue.jobFinished, null);
+        uint threadCount = workerThreadCount(sysconf(_SC_NPROCESSORS_ONLN));
+        driver.workers.resize(threadCount);
+        driver.starts.resize(threadCount);
+        foreach (i; 0 .. threadCount) {
+            driver.starts.ptr[i] = WorkerStart(driver.queue, i + 1);
+            pthread_create(&driver.workers.ptr[i], null, &workerMain, &driver.starts.ptr[i]);
+        }
+        driver.workerCount = threadCount;
+        return driver;
+    }
+
+    void runParallel(ParallelJob* job) {
         pthread_mutex_lock(&queue.mutex);
-        while (queue.pendingHead >= queue.pending.length && !queue.stopping) {
-            pthread_cond_wait(&queue.workAvailable, &queue.mutex);
+        queue.job = job;
+        pthread_cond_broadcast(&queue.workAvailable);
+        while (queue.isJobOpen()) {
+            queue.runClaimed(MAIN_WORKER);
         }
-        bool hasRequest = queue.pendingHead < queue.pending.length;
-        GenRequest request;
-        if (hasRequest) {
-            request = queue.pending.ptr[queue.pendingHead];
-            queue.pendingHead += 1;
-            if (queue.pendingHead >= queue.pending.length) {
-                queue.pending.clear();
-                queue.pendingHead = 0;
-            }
+        while (job.finished < job.count) {
+            pthread_cond_wait(&queue.jobFinished, &queue.mutex);
         }
+        queue.job = null;
         pthread_mutex_unlock(&queue.mutex);
-        if (hasRequest) {
-            GeneratedVoxels generated = generateVoxels(&request.params);
-            pthread_mutex_lock(&queue.mutex);
-            queue.done.append(GenResult(generated, request.chunk));
-            pthread_cond_signal(&queue.resultsReady);
-            pthread_mutex_unlock(&queue.mutex);
+    }
+
+    void drive(const(NearbyNode)[] nearby, MIsometry!float cameraLocal, float distance, Graph* graph, uint nearbyVersion, bool isUnbudgeted) {
+        immutable double deadline = budgetDeadline(isUnbudgeted);
+        integrate(graph, false, deadline);
+        requests.clear();
+        if (doneVersion.length < graph.nodeCount) {
+            doneVersion.resize(graph.nodeCount);
+        }
+        if (scanVersion != nearbyVersion) {
+            scanVersion = nearbyVersion;
+            scanCursor = 0;
+        }
+        scanCursor = cast(uint) scan(nearby, cameraLocal * MPoint!float.origin(), coshf(distance + CHUNK_BOUNDING_SPHERE_RADIUS), graph, requestBudget(isUnbudgeted), deadline);
+        submitRequests();
+    }
+
+    uint requestBudget(bool isUnbudgeted) const {
+        if (isUnbudgeted) {
+            return uint.max;
+        } else if (inFlight < workerCount * IN_FLIGHT_PER_WORKER) {
+            return workerCount * IN_FLIGHT_PER_WORKER - inFlight;
         } else {
-            running = false;
+            return 0;
         }
     }
-    return null;
-}
 
-WorldgenDriver createWorldgenDriver(bool flatWorldgen) {
-    WorldgenDriver driver;
-    driver.flatWorldgen = flatWorldgen;
-    driver.queue = cast(GenQueue*) calloc(1, GenQueue.sizeof);
-    pthread_mutex_init(&driver.queue.mutex, null);
-    pthread_cond_init(&driver.queue.workAvailable, null);
-    pthread_cond_init(&driver.queue.resultsReady, null);
-    long cores = sysconf(_SC_NPROCESSORS_ONLN);
-    uint threadCount = 1;
-    if (cores > RESERVED_CORES) {
-        threadCount = cast(uint)(cores - RESERVED_CORES);
+    bool isScanPending(uint slot) const {
+        return doneVersion.ptr[slot] != DONE_FOREVER && doneVersion.ptr[slot] != scanVersion;
     }
-    driver.workers.resize(threadCount);
-    foreach (i; 0 .. threadCount) {
-        pthread_create(&driver.workers.ptr[i], null, &workerMain, driver.queue);
-    }
-    driver.workerCount = threadCount;
-    return driver;
-}
 
-void driveWorldgen(WorldgenDriver* driver, const(NearbyNode)[] nearby, MIsometry!float cameraLocal, float distance, Graph* graph, uint nearbyVersion, bool unbudgeted) {
-    double start = nowMilliseconds();
-    double deadline = start + WORLDGEN_BUDGET_MILLISECONDS;
-    if (unbudgeted) {
-        deadline = NO_DEADLINE;
-    }
-    integrateWorldgen(driver, graph, false, deadline);
-    float threshold = coshf(distance + CHUNK_BOUNDING_SPHERE_RADIUS);
-    MPoint!float startPoint = cameraLocal * MPoint!float.origin();
-    driver.requests.clear();
-    if (driver.doneVersion.length < graph.nodeCount) {
-        driver.doneVersion.resize(graph.nodeCount);
-    }
-    if (driver.scanVersion != nearbyVersion) {
-        driver.scanVersion = nearbyVersion;
-        driver.scanCursor = 0;
-    }
-    uint requestBudget = 0;
-    if (unbudgeted) {
-        requestBudget = uint.max;
-    } else if (driver.inFlight < driver.workerCount * IN_FLIGHT_PER_WORKER) {
-        requestBudget = driver.workerCount * IN_FLIGHT_PER_WORKER - driver.inFlight;
-    }
-    uint scanned = 0;
-    size_t index = driver.scanCursor;
-    bool budgetLeft = true;
-    while (budgetLeft && index < nearby.length && scanned < MAX_SCAN_NODES_PER_FRAME) {
-        budgetLeft = nowMilliseconds() < deadline;
-        NearbyNode nearbyNode = nearby[index];
-        if (budgetLeft && nearbyNode.slot != NO_SLOT && driver.doneVersion.ptr[nearbyNode.slot] != DONE_FOREVER && driver.doneVersion.ptr[nearbyNode.slot] != nearbyVersion) {
-            scanned += 1;
-            uint freshOutOfRange = 0;
-            foreach (vertexIndex; 0 .. VERTEX_COUNT) {
-                Vertex vertex = cast(Vertex) vertexIndex;
-                Chunk* chunk = &graph.nodeAt(nearbyNode.slot).chunks[vertex];
-                if (budgetLeft && chunk.state == ChunkState.Fresh) {
-                    MPoint!float chunkCenter = nearbyNode.transform * vertexChunkBoundingSphereCenter(vertex);
-                    if (-startPoint.mip(chunkCenter.vec) > threshold) {
-                        freshOutOfRange += 1;
-                    } else if (driver.requests.length >= requestBudget || nowMilliseconds() >= deadline) {
-                        budgetLeft = false;
-                    } else {
-                        ChunkParams params = createChunkParams(graph, nearbyNode.slot, vertex, driver.flatWorldgen);
-                        driver.requests.append(GenRequest(params, ChunkSlot(nearbyNode.slot, vertex)));
-                        chunk.state = ChunkState.Generating;
-                        chunk.predicted = predictOccupancy(&params);
-                    }
+    size_t scan(const(NearbyNode)[] nearby, MPoint!float startPoint, float threshold, Graph* graph, uint budget, double deadline) {
+        uint scanned = 0;
+        size_t index = scanCursor;
+        while (index < nearby.length && scanned < MAX_SCAN_NODES_PER_FRAME) {
+            NearbyNode nearbyNode = nearby[index];
+            if (nowMilliseconds() >= deadline) {
+                return index;
+            } else if (isScanPending(nearbyNode.slot)) {
+                scanned += 1;
+                immutable ScanOutcome outcome = scanNode(nearbyNode, startPoint, threshold, graph, budget, deadline);
+                if (outcome.isInterrupted) {
+                    return index;
+                } else {
+                    doneVersion.ptr[nearbyNode.slot] = doneMark(outcome.freshOutOfRange);
                 }
             }
-            if (budgetLeft && freshOutOfRange == 0) {
-                driver.doneVersion.ptr[nearbyNode.slot] = DONE_FOREVER;
-            } else if (budgetLeft) {
-                driver.doneVersion.ptr[nearbyNode.slot] = nearbyVersion;
-            }
-        }
-        if (budgetLeft) {
             index += 1;
         }
+        return index;
     }
-    driver.scanCursor = cast(uint) index;
-    if (driver.requests.length > 0) {
-        driver.inFlight += cast(uint) driver.requests.length;
-        pthread_mutex_lock(&driver.queue.mutex);
-        foreach (request; driver.requests.slice()) {
-            driver.queue.pending.append(request);
+
+    uint doneMark(uint freshOutOfRange) const {
+        if (freshOutOfRange == 0) {
+            return DONE_FOREVER;
+        } else {
+            return scanVersion;
         }
-        pthread_cond_broadcast(&driver.queue.workAvailable);
-        pthread_mutex_unlock(&driver.queue.mutex);
+    }
+
+    ScanOutcome scanNode(NearbyNode nearbyNode, MPoint!float startPoint, float threshold, Graph* graph, uint budget, double deadline) {
+        uint freshOutOfRange = 0;
+        foreach (vertexIndex; 0 .. VERTEX_COUNT) {
+            Vertex vertex = cast(Vertex) vertexIndex;
+            ChunkSlot slot = ChunkSlot(nearbyNode.slot, vertex);
+            if (graph.chunkAt(slot).state == ChunkState.Fresh) {
+                MPoint!float chunkCenter = nearbyNode.transform * vertex.chunkBoundingSphereCenter;
+                if (-startPoint.mip(chunkCenter.vec) > threshold) {
+                    freshOutOfRange += 1;
+                } else if (requests.length >= budget || nowMilliseconds() >= deadline) {
+                    return ScanOutcome(freshOutOfRange, true);
+                } else {
+                    request(graph, slot);
+                }
+            }
+        }
+        return ScanOutcome(freshOutOfRange, false);
+    }
+
+    void request(Graph* graph, ChunkSlot slot) {
+        ChunkParams params = ChunkParams.make(graph, slot.slot, slot.vertex, isFlat);
+        Chunk* chunk = graph.chunkAt(slot);
+        chunk.predicted = params.predictOccupancy();
+        if (chunk.predicted == Occupancy.unknown) {
+            requests.append(GenRequest(params, slot));
+            chunk.state = ChunkState.Generating;
+        } else {
+            graph.populateChunk(slot, generateVoxels(&params));
+        }
+    }
+
+    void submitRequests() {
+        if (requests.length > 0) {
+            inFlight += cast(uint) requests.length;
+            pthread_mutex_lock(&queue.mutex);
+            queue.pending.appendAll(requests.slice());
+            pthread_cond_broadcast(&queue.workAvailable);
+            pthread_mutex_unlock(&queue.mutex);
+        }
+    }
+
+    void settle(Graph* graph) {
+        while (inFlight > 0) {
+            integrate(graph, true, 0);
+        }
+    }
+
+    void integrate(Graph* graph, bool isWaiting, double deadline) {
+        pthread_mutex_lock(&queue.mutex);
+        while (isWaiting && queue.done.length == 0 && resultsHead == results.length) {
+            pthread_cond_wait(&queue.resultsReady, &queue.mutex);
+        }
+        results.appendAll(queue.done.slice());
+        queue.done.clear();
+        pthread_mutex_unlock(&queue.mutex);
+        while (resultsHead < results.length && (isWaiting || nowMilliseconds() < deadline)) {
+            GenResult result = results.ptr[resultsHead];
+            resultsHead += 1;
+            inFlight -= 1;
+            graph.populateChunk(result.chunk, result.generated);
+        }
+        if (resultsHead == results.length) {
+            results.clear();
+            resultsHead = 0;
+        }
+    }
+
+    void release() {
+        pthread_mutex_lock(&queue.mutex);
+        queue.isStopping = true;
+        pthread_cond_broadcast(&queue.workAvailable);
+        pthread_mutex_unlock(&queue.mutex);
+        foreach (i; 0 .. workerCount) {
+            pthread_join(workers.ptr[i], null);
+        }
+        workerCount = 0;
+        workers.release();
+        starts.release();
+        foreach (result; queue.done.slice()) {
+            result.generated.voxels.release();
+        }
+        foreach (result; results.slice()[resultsHead .. $]) {
+            result.generated.voxels.release();
+        }
+        queue.pending.release();
+        queue.done.release();
+        pthread_cond_destroy(&queue.workAvailable);
+        pthread_cond_destroy(&queue.resultsReady);
+        pthread_cond_destroy(&queue.jobFinished);
+        pthread_mutex_destroy(&queue.mutex);
+        free(queue);
+        queue = null;
+        requests.release();
+        results.release();
+        doneVersion.release();
     }
 }
 
-void settleWorldgen(WorldgenDriver* driver, Graph* graph) {
-    while (driver.inFlight > 0) {
-        integrateWorldgen(driver, graph, true, 0);
+uint workerThreadCount(long cores) {
+    if (cores > RESERVED_CORES) {
+        return cast(uint)(cores - RESERVED_CORES);
+    } else {
+        return 1;
     }
 }
 
-void integrateWorldgen(WorldgenDriver* driver, Graph* graph, bool wait, double deadline) {
-    pthread_mutex_lock(&driver.queue.mutex);
-    while (wait && driver.queue.done.length == 0 && driver.resultsHead == driver.results.length) {
-        pthread_cond_wait(&driver.queue.resultsReady, &driver.queue.mutex);
-    }
-    foreach (result; driver.queue.done.slice()) {
-        driver.results.append(result);
-    }
-    driver.queue.done.clear();
-    pthread_mutex_unlock(&driver.queue.mutex);
-    while (driver.resultsHead < driver.results.length && (wait || nowMilliseconds() < deadline)) {
-        GenResult result = driver.results.ptr[driver.resultsHead];
-        driver.resultsHead += 1;
-        driver.inFlight -= 1;
-        populateChunk(graph, result.chunk, result.generated);
-    }
-    if (driver.resultsHead == driver.results.length) {
-        driver.results.clear();
-        driver.resultsHead = 0;
+double budgetDeadline(bool isUnbudgeted) {
+    if (isUnbudgeted) {
+        return NO_DEADLINE;
+    } else {
+        return nowMilliseconds() + WORLDGEN_BUDGET_MILLISECONDS;
     }
 }
 
-double nowMilliseconds() {
-    timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    return now.tv_sec * MILLISECONDS_PER_SECOND + now.tv_nsec / NANOSECONDS_PER_MILLISECOND;
-}
-
-void releaseWorldgenDriver(WorldgenDriver* driver) {
-    pthread_mutex_lock(&driver.queue.mutex);
-    driver.queue.stopping = true;
-    pthread_cond_broadcast(&driver.queue.workAvailable);
-    pthread_mutex_unlock(&driver.queue.mutex);
-    foreach (i; 0 .. driver.workerCount) {
-        pthread_join(driver.workers.ptr[i], null);
-    }
-    driver.workerCount = 0;
-    driver.workers.release();
-    foreach (result; driver.queue.done.slice()) {
-        result.generated.voxels.release();
-    }
-    foreach (result; driver.results.slice()[driver.resultsHead .. $]) {
-        result.generated.voxels.release();
-    }
-    driver.queue.pending.release();
-    driver.queue.done.release();
-    pthread_cond_destroy(&driver.queue.workAvailable);
-    pthread_cond_destroy(&driver.queue.resultsReady);
-    pthread_mutex_destroy(&driver.queue.mutex);
-    free(driver.queue);
-    driver.queue = null;
-    driver.requests.release();
-    driver.results.release();
-    driver.doneVersion.release();
-}
-
-void generateNow(Graph* graph, ChunkSlot chunk, bool flat) {
-    if (chunkAt(graph, chunk).state == ChunkState.Fresh) {
-        ChunkParams params = createChunkParams(graph, chunk.slot, chunk.vertex, flat);
-        chunkAt(graph, chunk).predicted = predictOccupancy(&params);
-        populateChunk(graph, chunk, generateVoxels(&params));
+void generateNow(Graph* graph, ChunkSlot chunk, bool isFlat) {
+    if (graph.chunkAt(chunk).state == ChunkState.Fresh) {
+        ChunkParams params = ChunkParams.make(graph, chunk.slot, chunk.vertex, isFlat);
+        graph.chunkAt(chunk).predicted = params.predictOccupancy();
+        graph.populateChunk(chunk, generateVoxels(&params));
     }
 }
 
-Chunk* chunkAt(Graph* graph, ChunkSlot chunk) {
-    return &graph.nodeAt(chunk.slot).chunks[chunk.vertex];
-}
-
-Chunk* populatedNeighbor(Graph* graph, ChunkSlot chunk, ChunkDirection direction) {
-    ChunkSlot neighbor = chunkNeighborSlot(graph, chunk, direction);
-    Chunk* result = null;
-    if (neighbor.slot != NO_SLOT && chunkAt(graph, neighbor).state == ChunkState.Populated) {
-        result = chunkAt(graph, neighbor);
-    }
-    return result;
+bool hasPopulatedNeighbor(const(Graph)* graph, ChunkSlot chunk, ChunkDirection direction) {
+    ChunkSlot neighbor = graph.chunkNeighborSlot(chunk, direction);
+    return neighbor.slot != NO_SLOT && graph.chunkAt(neighbor).state == ChunkState.Populated;
 }
 
 void populateChunk(Graph* graph, ChunkSlot chunk, GeneratedVoxels generated) {
-    Chunk* target = chunkAt(graph, chunk);
+    Chunk* target = graph.chunkAt(chunk);
     target.voxels = generated.voxels;
-    target.materialsDeferred = generated.materialsDeferred;
-    bool contradicts = contradictsPrediction(target);
-    connectMargins(graph, chunk);
+    target.hasDeferredMaterials = generated.hasDeferredMaterials;
+    immutable bool isContradicted = isPredictionContradicted(target);
+    graph.connectMargins(chunk);
     target.state = ChunkState.Populated;
-    if (contradicts) {
+    if (isContradicted) {
         touchChunksAround(graph, chunk);
     }
-    resolveIfExposed(graph, chunk);
+    graph.resolveIfExposed(chunk);
     foreach (direction; CHUNK_DIRECTIONS) {
-        if (populatedNeighbor(graph, chunk, direction) !is null) {
-            resolveIfExposed(graph, chunkNeighborSlot(graph, chunk, direction));
+        if (graph.hasPopulatedNeighbor(chunk, direction)) {
+            graph.resolveIfExposed(graph.chunkNeighborSlot(chunk, direction));
         }
     }
 }
 
 void connectMargins(Graph* graph, ChunkSlot chunk) {
-    Chunk* target = chunkAt(graph, chunk);
+    Chunk* target = graph.chunkAt(chunk);
     foreach (direction; CHUNK_DIRECTIONS) {
-        Chunk* neighbor = populatedNeighbor(graph, chunk, direction);
-        if (neighbor !is null) {
-            fixMargins(graph.layout.dimension, chunk.vertex, &target.voxels, direction, &neighbor.voxels);
-            graph.markChanged(chunkNeighborSlot(graph, chunk, direction));
+        if (graph.hasPopulatedNeighbor(chunk, direction)) {
+            ChunkSlot neighbor = graph.chunkNeighborSlot(chunk, direction);
+            target.voxels.fixMargins(&graph.chunkAt(neighbor).voxels, graph.layout.dimension, chunk.vertex, direction);
+            graph.markChanged(neighbor);
         }
     }
     graph.markChanged(chunk);
 }
 
 void resolveIfExposed(Graph* graph, ChunkSlot chunk) {
-    Chunk* target = chunkAt(graph, chunk);
-    if (target.materialsDeferred && marginFacesHaveVoid(graph.layout.dimension, &target.voxels)) {
-        resolveMaterials(graph, chunk);
+    Chunk* target = graph.chunkAt(chunk);
+    if (target.hasDeferredMaterials && target.voxels.hasVoidInMargins(graph.layout.dimension)) {
+        graph.resolveMaterials(chunk);
     }
 }
 
 void resolveMaterials(Graph* graph, ChunkSlot chunk) {
-    ChunkParams params = createChunkParams(graph, chunk.slot, chunk.vertex, false);
-    params.resolveMaterials = true;
+    ChunkParams params = ChunkParams.make(graph, chunk.slot, chunk.vertex, false);
+    params.isResolvingMaterials = true;
     GeneratedVoxels generated = generateVoxels(&params);
-    Chunk* target = chunkAt(graph, chunk);
+    Chunk* target = graph.chunkAt(chunk);
     target.voxels.release();
     target.voxels = generated.voxels;
-    target.materialsDeferred = false;
-    connectMargins(graph, chunk);
+    target.hasDeferredMaterials = false;
+    graph.connectMargins(chunk);
 }
 
-ChunkId getChunkNeighbor(const(Graph)* graph, ChunkId chunk, ChunkDirection direction) {
-    ChunkId result;
+ChunkId chunkNeighborId(const(Graph)* graph, ChunkId chunk, ChunkDirection direction) {
     if (direction.sign == CoordSign.Plus) {
-        result = ChunkId(chunk.node, vertexAdjacentVertices(chunk.vertex)[direction.axis]);
+        return ChunkId(chunk.node, chunk.vertex.adjacentVertices[direction.axis]);
     } else {
-        result = ChunkId(graph.neighbor(chunk.node, vertexCanonicalSides(chunk.vertex)[direction.axis]), chunk.vertex);
+        return ChunkId(graph.neighbor(chunk.node, chunk.vertex.canonicalSides[direction.axis]), chunk.vertex);
     }
-    return result;
 }

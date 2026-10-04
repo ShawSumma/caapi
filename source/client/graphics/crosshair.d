@@ -12,7 +12,7 @@ struct CrosshairPipeline {
     VkPipelineLayout pipelineLayout;
     VkPipeline pipeline;
 
-    bool setup(VkDevice device, VkRenderPass renderPass) {
+    void setup(VkDevice device, VkRenderPass renderPass) {
         VkShaderModule vertexShader = createShader(device, CROSSHAIR_VERT_SPV);
         VkShaderModule fragmentShader = createShader(device, CROSSHAIR_FRAG_SPV);
         VkPushConstantRange[1] pushConstants = [
@@ -27,12 +27,9 @@ struct CrosshairPipeline {
         settings.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
         settings.subpass = CROSSHAIR_SUBPASS;
         settings.blend = Blend.alpha;
-        if (vertexShader !is null && fragmentShader !is null && pipelineLayout !is null) {
-            pipeline = createGraphicsPipeline(device, settings);
-        }
+        pipeline = createGraphicsPipeline(device, settings);
         vkDestroyShaderModule(device, vertexShader, null);
         vkDestroyShaderModule(device, fragmentShader, null);
-        return pipeline !is null;
     }
 
     void draw(VkCommandBuffer commands, float widthOverHeight) {
@@ -42,11 +39,7 @@ struct CrosshairPipeline {
     }
 
     void cleanup(VkDevice device) {
-        if (pipeline !is null) {
-            vkDestroyPipeline(device, pipeline, null);
-        }
-        if (pipelineLayout !is null) {
-            vkDestroyPipelineLayout(device, pipelineLayout, null);
-        }
+        vkDestroyPipeline(device, pipeline, null);
+        vkDestroyPipelineLayout(device, pipelineLayout, null);
     }
 }

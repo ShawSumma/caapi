@@ -3,7 +3,7 @@ module common.chunk_collision;
 import core.math : sqrt;
 import core.stdc.math : ceilf, coshf, floorf, sinhf, tanhf;
 import core.stdc.stdlib : alloca;
-import common.collision_math : ContactTerms, MAX_TANH_DISTANCE, Ray, contactTime, separationDistance, transformRay;
+import common.collision_math : ContactTerms, MAX_TANH_DISTANCE, Ray;
 import common.math : MDirection, MIsometry, MPoint, MVector, isNan;
 import common.node : ChunkLayout, VoxelData;
 import common.voxel_math : Coords;
@@ -17,10 +17,18 @@ immutable byte[2] FACE_SIGNS = [-1, 1];
 struct ChunkCollisionHit {
     MVector!float normal;
     MVector!float[MAX_FEATURE_SURFACES] surfaces;
-    float stopDistance;
+    float stopDistance = float.nan;
     float gap;
     uint surfaceCount;
-    bool lowestSection;
+    bool isLowestSection;
+
+    bool isHit() const {
+        return !isNan(stopDistance);
+    }
+
+    bool isImprovedBy(float stop) const {
+        return isNan(stopDistance) || stop < stopDistance;
+    }
 }
 
 struct SweptShape {
@@ -28,18 +36,68 @@ struct SweptShape {
     float radius;
     float halfHeight;
     float skin;
+
+    float capOffset() const {
+        if (halfHeight > radius) {
+            return halfHeight - radius;
+        } else {
+            return 0;
+        }
+    }
+
+    float sectionSpacing() const {
+        return 2.0f * sqrt(skin * (2.0f * radius - skin));
+    }
+
+    uint sectionCount() const {
+        float length = 2.0f * capOffset();
+        if (length > 0) {
+            return cast(uint) ceilf(length / sectionSpacing()) + 1;
+        } else {
+            return 1;
+        }
+    }
+
+    float sectionOffset(uint sectionIndex, uint count) const {
+        if (count > 1) {
+            return capOffset() * (2.0f * cast(float) sectionIndex / cast(float)(count - 1) - 1.0f);
+        } else {
+            return 0;
+        }
+    }
 }
 
 struct GridRange {
     int[3] lo;
     int[3] hi;
-    bool empty;
+    bool isEmpty;
 }
 
 struct SurfaceFace {
     ubyte[3] cell;
     ubyte axis;
     byte sign;
+
+    int planeIndex() const {
+        if (sign > 0) {
+            return cell[axis] + 1;
+        } else {
+            return cell[axis];
+        }
+    }
+
+    MDirection!float outward(ChunkLayout layout) const {
+        MDirection!float plane = gridPlane(layout, axis, planeIndex());
+        if (sign > 0) {
+            return plane;
+        } else {
+            return -plane;
+        }
+    }
+
+    SurfaceFace adjacent(size_t adjacentAxis, int side) const {
+        return SurfaceFace(cell, cast(ubyte) adjacentAxis, sideSign(side));
+    }
 }
 
 struct Section {
@@ -49,13 +107,62 @@ struct Section {
     float skin;
     float sinhRadius;
     float sinhStopRadius;
-    bool offset;
-    bool lowest;
+    bool isOffset;
+    bool isLowest;
+
+    static Section make(SweptShape shape, Ray ray, uint sectionIndex, uint sectionCount) {
+        float offset = shape.sectionOffset(sectionIndex, sectionCount);
+        if (offset == 0) {
+            return Section(ray, MIsometry!float.identity(), shape.radius, shape.skin, sinhf(shape.radius), sinhf(shape.radius + shape.skin), false, sectionIndex == 0);
+        } else {
+            MIsometry!float toSection = axisTranslation(ray.position, shape.axis, offset);
+            return Section(ray.transformedBy(toSection), toSection.inverse(), shape.radius, shape.skin, sinhf(shape.radius), sinhf(shape.radius + shape.skin), true, sectionIndex == 0);
+        }
+    }
+
+    float stopDistance(ContactTerms terms, float touch) const {
+        float stop = terms.contactTime(sinhStopRadius);
+        if (isNan(stop)) {
+            return touch;
+        } else {
+            return stop;
+        }
+    }
+
+    float gapAt(ContactTerms terms, float stop) const {
+        if (stop == 0) {
+            return terms.separationDistance() - radius;
+        } else {
+            return skin;
+        }
+    }
+
+    ChunkCollisionHit hit(float stop, float gap, MVector!float normal, Feature feature) const {
+        ChunkCollisionHit result;
+        result.stopDistance = stop;
+        result.gap = gap;
+        result.surfaceCount = feature.surfaceCount;
+        result.isLowestSection = isLowest;
+        if (isOffset) {
+            result.normal = fromSection.mat * normal;
+            foreach (i; 0 .. feature.surfaceCount) {
+                result.surfaces[i] = fromSection.mat * feature.surfaces[i];
+            }
+        } else {
+            result.normal = normal;
+            result.surfaces = feature.surfaces;
+        }
+        return result;
+    }
 }
 
 struct EdgeLine {
     MDirection!float facePlane;
     MDirection!float edgePlane;
+
+    MVector!float foot(MVector!float point) const {
+        return point - facePlane.vec * point.mip(facePlane.vec) - edgePlane.vec * point.mip(edgePlane.vec);
+    }
 }
 
 struct CornerFrame {
@@ -68,70 +175,90 @@ struct Feature {
     uint surfaceCount;
 }
 
+byte sideSign(int side) {
+    if (side == 1) {
+        return 1;
+    } else {
+        return -1;
+    }
+}
+
+float lowerOf(float a, float b) {
+    if (a < b) {
+        return a;
+    } else {
+        return b;
+    }
+}
+
+float higherOf(float a, float b) {
+    if (a > b) {
+        return a;
+    } else {
+        return b;
+    }
+}
+
+int gridLow(float low) {
+    if (low < 0) {
+        return 0;
+    } else {
+        return cast(int) floorf(low);
+    }
+}
+
+int gridHigh(float high, ubyte dimension) {
+    if (high > cast(float)(dimension - 1)) {
+        return dimension - 1;
+    } else {
+        return cast(int) ceilf(high);
+    }
+}
+
 GridRange sweepGridRange(ChunkLayout layout, Ray ray, float tanhDistance, float padDistance) {
     GridRange range;
-    float capped = MAX_TANH_DISTANCE;
-    if (tanhDistance < MAX_TANH_DISTANCE) {
-        capped = tanhDistance;
-    }
     MVector!float p0 = ray.position.vec;
-    MVector!float p1 = ray.rayPoint(capped);
+    MVector!float p1 = ray.rayPoint(lowerOf(tanhDistance, MAX_TANH_DISTANCE));
     float pad = tanhf(padDistance) * layout.dualToGridFactor + GRID_PADDING_CELLS;
     foreach (i; 0 .. 3) {
-        if (!range.empty) {
-            float g0 = p0.data[i] / p0.data[3] * layout.dualToGridFactor;
-            float g1 = p1.data[i] / p1.data[3] * layout.dualToGridFactor;
-            float low = g1;
-            float high = g1;
-            if (g0 < g1) {
-                low = g0;
-            }
-            if (g0 > g1) {
-                high = g0;
-            }
-            low -= pad;
-            high += pad;
-            if (low > cast(float) layout.dimension || high < 0) {
-                range.empty = true;
-            } else {
-                range.lo[i] = 0;
-                if (!(low < 0)) {
-                    range.lo[i] = cast(int) floorf(low);
-                }
-                range.hi[i] = layout.dimension - 1;
-                if (!(high > cast(float)(layout.dimension - 1))) {
-                    range.hi[i] = cast(int) ceilf(high);
-                }
-            }
+        float g0 = p0.data[i] / p0.data[3] * layout.dualToGridFactor;
+        float g1 = p1.data[i] / p1.data[3] * layout.dualToGridFactor;
+        float low = lowerOf(g0, g1) - pad;
+        float high = higherOf(g0, g1) + pad;
+        if (low > cast(float) layout.dimension || high < 0) {
+            range.isEmpty = true;
+            return range;
+        } else {
+            range.lo[i] = gridLow(low);
+            range.hi[i] = gridHigh(high, layout.dimension);
         }
     }
     return range;
 }
 
 ChunkCollisionHit chunkShapeCast(SweptShape shape, const(VoxelData)* voxelData, ChunkLayout layout, Ray ray, float tanhDistance) {
-    ChunkCollisionHit hit;
-    hit.stopDistance = float.nan;
     GridRange range = sweepGridRange(layout, ray, tanhDistance, shape.radius + shape.halfHeight);
-    if (!range.empty) {
-        uint sectionCount = capsuleSectionCount(shape);
+    ChunkCollisionHit hit;
+    if (!range.isEmpty) {
+        uint sectionCount = shape.sectionCount();
         Section* sections = cast(Section*) alloca(sectionCount * Section.sizeof);
         foreach (sectionIndex; 0 .. sectionCount) {
-            sections[sectionIndex] = capsuleSection(shape, ray, sectionIndex, sectionCount);
+            sections[sectionIndex] = Section.make(shape, ray, sectionIndex, sectionCount);
         }
         foreach (cx; range.lo[0] .. range.hi[0] + 1) {
             foreach (cy; range.lo[1] .. range.hi[1] + 1) {
                 foreach (cz; range.lo[2] .. range.hi[2] + 1) {
                     ubyte[3] cell = [cast(ubyte) cx, cast(ubyte) cy, cast(ubyte) cz];
-                    if (voxelIsSolid(voxelData, layout, cell)) {
+                    if (voxelData.isVoxelSolid(layout, cell)) {
                         foreach (axis; 0 .. 3) {
                             foreach (sign; FACE_SIGNS) {
                                 int[3] neighbor = [cx, cy, cz];
                                 neighbor[axis] += sign;
-                                if (!voxelSolidWithMargins(voxelData, layout, neighbor)) {
+                                if (!voxelData.isVoxelSolidWithMargins(layout, neighbor)) {
                                     SurfaceFace face = SurfaceFace(cell, cast(ubyte) axis, sign);
                                     foreach (section; sections[0 .. sectionCount]) {
-                                        faceContact(&section, layout, face, &hit, tanhDistance);
-                                        faceBoundaryContacts(&section, voxelData, layout, face, &hit, tanhDistance);
+                                        hit = faceContact(&section, layout, face, hit, tanhDistance);
+                                        hit = faceBoundaryContacts(&section, voxelData, layout, face, hit, tanhDistance);
                                     }
                                 }
                             }
@@ -142,54 +269,6 @@ ChunkCollisionHit chunkShapeCast(SweptShape shape, const(VoxelData)* voxelData, 
         }
     }
     return hit;
-}
-
-float capOffset(SweptShape shape) {
-    float result = 0;
-    if (shape.halfHeight > shape.radius) {
-        result = shape.halfHeight - shape.radius;
-    }
-    return result;
-}
-
-float sectionSpacing(SweptShape shape) {
-    return 2.0f * sqrt(shape.skin * (2.0f * shape.radius - shape.skin));
-}
-
-uint capsuleSectionCount(SweptShape shape) {
-    float length = 2.0f * capOffset(shape);
-    uint result = 1;
-    if (length > 0) {
-        result = cast(uint) ceilf(length / sectionSpacing(shape)) + 1;
-    }
-    return result;
-}
-
-float sectionOffset(SweptShape shape, uint sectionIndex, uint sectionCount) {
-    float result = 0;
-    if (sectionCount > 1) {
-        result = capOffset(shape) * (2.0f * cast(float) sectionIndex / cast(float)(sectionCount - 1) - 1.0f);
-    }
-    return result;
-}
-
-Section capsuleSection(SweptShape shape, Ray ray, uint sectionIndex, uint sectionCount) {
-    Section section;
-    float offset = sectionOffset(shape, sectionIndex, sectionCount);
-    section.ray = ray;
-    section.fromSection = MIsometry!float.identity();
-    section.radius = shape.radius;
-    section.skin = shape.skin;
-    section.sinhRadius = sinhf(shape.radius);
-    section.sinhStopRadius = sinhf(shape.radius + shape.skin);
-    section.offset = offset != 0;
-    section.lowest = sectionIndex == 0;
-    if (section.offset) {
-        MIsometry!float toSection = axisTranslation(ray.position, shape.axis, offset);
-        section.ray = transformRay(toSection, ray);
-        section.fromSection = toSection.inverse();
-    }
-    return section;
 }
 
 MPoint!float axisPoint(MPoint!float center, MVector!float axis, float offset) {
@@ -207,46 +286,18 @@ MDirection!float gridPlane(ChunkLayout layout, size_t axis, int t) {
     return MVector!float(normal[0], normal[1], normal[2], normal[3]).normalizedDirection();
 }
 
-int facePlaneIndex(SurfaceFace face) {
-    int result = face.cell[face.axis];
-    if (face.sign > 0) {
-        result += 1;
-    }
-    return result;
-}
-
-MDirection!float faceOutward(ChunkLayout layout, SurfaceFace face) {
-    MDirection!float result = gridPlane(layout, face.axis, facePlaneIndex(face));
-    if (!(face.sign > 0)) {
-        result = -result;
-    }
-    return result;
-}
-
-SurfaceFace adjacentFace(SurfaceFace face, size_t axis, int side) {
-    byte sign = -1;
-    if (side == 1) {
-        sign = 1;
-    }
-    return SurfaceFace(face.cell, cast(ubyte) axis, sign);
-}
-
 EdgeLine edgeLine(ChunkLayout layout, SurfaceFace face, size_t edgeAxis, int side) {
-    MDirection!float facePlane = gridPlane(layout, face.axis, facePlaneIndex(face));
+    MDirection!float facePlane = gridPlane(layout, face.axis, face.planeIndex());
     MDirection!float edgePlaneRaw = gridPlane(layout, edgeAxis, face.cell[edgeAxis] + side);
     MDirection!float edgePlane = (edgePlaneRaw.vec - facePlane.vec * facePlane.mip(edgePlaneRaw.vec)).normalizedDirection();
     return EdgeLine(facePlane, edgePlane);
-}
-
-MVector!float edgeFoot(EdgeLine line, MVector!float point) {
-    return point - line.facePlane.vec * point.mip(line.facePlane.vec) - line.edgePlane.vec * point.mip(line.edgePlane.vec);
 }
 
 CornerFrame cornerFrame(ChunkLayout layout, SurfaceFace face, int du, int dv) {
     size_t uAxis = (face.axis + 1) % 3;
     size_t vAxis = (face.axis + 2) % 3;
     int[3] grid;
-    grid[face.axis] = facePlaneIndex(face);
+    grid[face.axis] = face.planeIndex();
     grid[uAxis] = face.cell[uAxis] + du;
     grid[vAxis] = face.cell[vAxis] + dv;
     MDirection!float n0 = gridPlane(layout, 0, grid[0]);
@@ -258,219 +309,200 @@ CornerFrame cornerFrame(ChunkLayout layout, SurfaceFace face, int du, int dv) {
     return CornerFrame([n0, n1, n2], point);
 }
 
-bool cellOwns(ChunkLayout layout, MVector!float point, size_t axis, ubyte cell) {
+bool isOwnedByCell(ChunkLayout layout, MVector!float point, size_t axis, ubyte cell) {
     return layout.dualToVoxel(point.data[axis] / point.data[3]) == cell;
 }
 
-bool boundarySideTested(const(VoxelData)* voxelData, ChunkLayout layout, SurfaceFace face, size_t axis, int side) {
+bool isBoundarySideTested(const(VoxelData)* voxelData, ChunkLayout layout, SurfaceFace face, size_t axis, int side) {
     int[3] neighbor = [face.cell[0], face.cell[1], face.cell[2]];
     neighbor[axis] += 2 * side - 1;
-    return neighbor[axis] < 0 || neighbor[axis] >= layout.dimension || !voxelSolidWithMargins(voxelData, layout, neighbor);
+    return neighbor[axis] < 0 || neighbor[axis] >= layout.dimension || !voxelData.isVoxelSolidWithMargins(layout, neighbor);
 }
 
 Feature faceFeature(ChunkLayout layout, SurfaceFace face) {
     Feature feature;
-    feature.surfaces[0] = faceOutward(layout, face).vec;
+    feature.surfaces[0] = face.outward(layout).vec;
     feature.surfaceCount = 1;
     return feature;
 }
 
 Feature edgeFeature(ChunkLayout layout, SurfaceFace face, size_t edgeAxis, int side) {
     Feature feature = faceFeature(layout, face);
-    feature.surfaces[1] = faceOutward(layout, adjacentFace(face, edgeAxis, side)).vec;
+    feature.surfaces[1] = face.adjacent(edgeAxis, side).outward(layout).vec;
     feature.surfaceCount = 2;
     return feature;
 }
 
 Feature cornerFeature(ChunkLayout layout, SurfaceFace face, int du, int dv) {
     Feature feature = faceFeature(layout, face);
-    feature.surfaces[1] = faceOutward(layout, adjacentFace(face, (face.axis + 1) % 3, du)).vec;
-    feature.surfaces[2] = faceOutward(layout, adjacentFace(face, (face.axis + 2) % 3, dv)).vec;
+    feature.surfaces[1] = face.adjacent((face.axis + 1) % 3, du).outward(layout).vec;
+    feature.surfaces[2] = face.adjacent((face.axis + 2) % 3, dv).outward(layout).vec;
     feature.surfaceCount = 3;
     return feature;
 }
 
-float stopDistance(const(Section)* section, ContactTerms terms, float touch) {
-    float result = contactTime(terms, section.sinhStopRadius);
-    if (isNan(result)) {
-        result = touch;
-    }
-    return result;
+bool isTouchWithin(float touch, float tanhDistance) {
+    return !isNan(touch) && !(touch > tanhDistance);
 }
 
-float gapAt(const(Section)* section, ContactTerms terms, float stop) {
-    float result = section.skin;
-    if (stop == 0) {
-        result = separationDistance(terms) - section.radius;
-    }
-    return result;
-}
-
-bool improves(const(ChunkCollisionHit)* hit, float stop) {
-    return isNan(hit.stopDistance) || stop < hit.stopDistance;
-}
-
-void takeHit(ChunkCollisionHit* hit, const(Section)* section, float stop, float gap, MVector!float normal, Feature feature) {
-    hit.stopDistance = stop;
-    hit.gap = gap;
-    hit.normal = normal;
-    hit.surfaces = feature.surfaces;
-    hit.surfaceCount = feature.surfaceCount;
-    hit.lowestSection = section.lowest;
-    if (section.offset) {
-        hit.normal = section.fromSection.mat * normal;
-        foreach (i; 0 .. feature.surfaceCount) {
-            hit.surfaces[i] = section.fromSection.mat * feature.surfaces[i];
+ChunkCollisionHit faceContact(const(Section)* section, ChunkLayout layout, SurfaceFace face, ChunkCollisionHit best, float tanhDistance) {
+    size_t uAxis = (face.axis + 1) % 3;
+    size_t vAxis = (face.axis + 2) % 3;
+    MDirection!float outward = face.outward(layout);
+    ContactTerms terms = section.ray.planeTerms(outward);
+    float touch = terms.contactTime(section.sinhRadius);
+    if (section.ray.direction.mip(outward.vec) >= 0 || !isTouchWithin(touch, tanhDistance)) {
+        return best;
+    } else {
+        MVector!float center = section.ray.rayPoint(touch);
+        MVector!float foot = center - outward.vec * center.mip(outward.vec);
+        float stop = section.stopDistance(terms, touch);
+        if (isOwnedByCell(layout, foot, uAxis, face.cell[uAxis]) && isOwnedByCell(layout, foot, vAxis, face.cell[vAxis]) && best.isImprovedBy(stop)) {
+            return section.hit(stop, section.gapAt(terms, stop), outward.vec, faceFeature(layout, face));
+        } else {
+            return best;
         }
     }
 }
 
-void faceContact(const(Section)* section, ChunkLayout layout, SurfaceFace face, ChunkCollisionHit* hit, float tanhDistance) {
+ChunkCollisionHit faceBoundaryContacts(const(Section)* section, const(VoxelData)* voxelData, ChunkLayout layout, SurfaceFace face, ChunkCollisionHit best, float tanhDistance) {
     size_t uAxis = (face.axis + 1) % 3;
     size_t vAxis = (face.axis + 2) % 3;
-    MDirection!float outward = faceOutward(layout, face);
-    if (section.ray.direction.mip(outward.vec) < 0) {
-        ContactTerms terms = section.ray.planeTerms(outward);
-        float touch = contactTime(terms, section.sinhRadius);
-        if (!isNan(touch) && !(touch > tanhDistance)) {
-            MVector!float center = section.ray.rayPoint(touch);
-            MVector!float foot = center - outward.vec * center.mip(outward.vec);
-            float stop = stopDistance(section, terms, touch);
-            if (cellOwns(layout, foot, uAxis, face.cell[uAxis]) && cellOwns(layout, foot, vAxis, face.cell[vAxis]) && improves(hit, stop)) {
-                takeHit(hit, section, stop, gapAt(section, terms, stop), outward.vec, faceFeature(layout, face));
-            }
-        }
-    }
-}
-
-void faceBoundaryContacts(const(Section)* section, const(VoxelData)* voxelData, ChunkLayout layout, SurfaceFace face, ChunkCollisionHit* hit, float tanhDistance) {
-    size_t uAxis = (face.axis + 1) % 3;
-    size_t vAxis = (face.axis + 2) % 3;
+    ChunkCollisionHit hit = best;
     foreach (side; 0 .. 2) {
-        if (boundarySideTested(voxelData, layout, face, uAxis, side)) {
-            edgeContact(section, layout, face, uAxis, vAxis, side, hit, tanhDistance);
+        if (isBoundarySideTested(voxelData, layout, face, uAxis, side)) {
+            hit = edgeContact(section, layout, face, uAxis, vAxis, side, hit, tanhDistance);
         }
-        if (boundarySideTested(voxelData, layout, face, vAxis, side)) {
-            edgeContact(section, layout, face, vAxis, uAxis, side, hit, tanhDistance);
+        if (isBoundarySideTested(voxelData, layout, face, vAxis, side)) {
+            hit = edgeContact(section, layout, face, vAxis, uAxis, side, hit, tanhDistance);
         }
     }
     foreach (du; 0 .. 2) {
         foreach (dv; 0 .. 2) {
-            if (boundarySideTested(voxelData, layout, face, uAxis, du) && boundarySideTested(voxelData, layout, face, vAxis, dv)) {
-                cornerContact(section, layout, face, du, dv, hit, tanhDistance);
+            if (isBoundarySideTested(voxelData, layout, face, uAxis, du) && isBoundarySideTested(voxelData, layout, face, vAxis, dv)) {
+                hit = cornerContact(section, layout, face, du, dv, hit, tanhDistance);
             }
         }
     }
+    return hit;
 }
 
-void edgeContact(const(Section)* section, ChunkLayout layout, SurfaceFace face, size_t edgeAxis, size_t freeAxis, int side, ChunkCollisionHit* hit, float tanhDistance) {
+ChunkCollisionHit edgeContact(const(Section)* section, ChunkLayout layout, SurfaceFace face, size_t edgeAxis, size_t freeAxis, int side, ChunkCollisionHit best, float tanhDistance) {
     EdgeLine line = edgeLine(layout, face, edgeAxis, side);
     ContactTerms terms = section.ray.lineTerms(line.facePlane, line.edgePlane);
-    float touch = contactTime(terms, section.sinhRadius);
-    if (!isNan(touch) && !(touch > tanhDistance)) {
-        float stop = stopDistance(section, terms, touch);
-        if (cellOwns(layout, edgeFoot(line, section.ray.rayPoint(touch)), freeAxis, face.cell[freeAxis]) && improves(hit, stop)) {
+    float touch = terms.contactTime(section.sinhRadius);
+    if (!isTouchWithin(touch, tanhDistance)) {
+        return best;
+    } else {
+        float stop = section.stopDistance(terms, touch);
+        if (isOwnedByCell(layout, line.foot(section.ray.rayPoint(touch)), freeAxis, face.cell[freeAxis]) && best.isImprovedBy(stop)) {
             MVector!float center = section.ray.rayPoint(stop);
-            takeHit(hit, section, stop, gapAt(section, terms, stop), center - edgeFoot(line, center), edgeFeature(layout, face, edgeAxis, side));
+            return section.hit(stop, section.gapAt(terms, stop), center - line.foot(center), edgeFeature(layout, face, edgeAxis, side));
+        } else {
+            return best;
         }
     }
 }
 
-void cornerContact(const(Section)* section, ChunkLayout layout, SurfaceFace face, int du, int dv, ChunkCollisionHit* hit, float tanhDistance) {
+ChunkCollisionHit cornerContact(const(Section)* section, ChunkLayout layout, SurfaceFace face, int du, int dv, ChunkCollisionHit best, float tanhDistance) {
     CornerFrame corner = cornerFrame(layout, face, du, dv);
     ContactTerms terms = section.ray.pointTerms(corner.planes[0], corner.planes[1], corner.planes[2]);
-    float touch = contactTime(terms, section.sinhRadius);
-    if (!isNan(touch) && !(touch > tanhDistance)) {
-        float stop = stopDistance(section, terms, touch);
-        if (improves(hit, stop)) {
-            takeHit(hit, section, stop, gapAt(section, terms, stop), section.ray.rayPoint(stop) - corner.point, cornerFeature(layout, face, du, dv));
+    float touch = terms.contactTime(section.sinhRadius);
+    if (!isTouchWithin(touch, tanhDistance)) {
+        return best;
+    } else {
+        float stop = section.stopDistance(terms, touch);
+        if (best.isImprovedBy(stop)) {
+            return section.hit(stop, section.gapAt(terms, stop), section.ray.rayPoint(stop) - corner.point, cornerFeature(layout, face, du, dv));
+        } else {
+            return best;
         }
     }
 }
 
-bool capsuleIntersectsVoxel(SweptShape shape, ChunkLayout layout, ubyte[3] cell, MPoint!float center) {
-    uint sectionCount = capsuleSectionCount(shape);
+bool isCapsuleIntersectingVoxel(SweptShape shape, ChunkLayout layout, ubyte[3] cell, MPoint!float center) {
+    uint sectionCount = shape.sectionCount();
     float sinhRadius = sinhf(shape.radius);
-    bool result = false;
     foreach (sectionIndex; 0 .. sectionCount) {
-        if (!result) {
-            result = sphereIntersectsVoxel(layout, cell, axisPoint(center, shape.axis, sectionOffset(shape, sectionIndex, sectionCount)), sinhRadius);
+        if (isSphereIntersectingVoxel(layout, cell, axisPoint(center, shape.axis, shape.sectionOffset(sectionIndex, sectionCount)), sinhRadius)) {
+            return true;
         }
     }
-    return result;
+    return false;
 }
 
-bool sphereIntersectsVoxel(ChunkLayout layout, ubyte[3] cell, MPoint!float center, float sinhRadius) {
-    Ray probe = Ray(center, MDirection!float.x());
-    float limit = sinhRadius * sinhRadius;
-    bool inside = true;
-    bool touching = false;
+bool isInsideVoxel(ChunkLayout layout, ubyte[3] cell, MPoint!float center) {
     foreach (axis; 0 .. 3) {
         foreach (sign; FACE_SIGNS) {
+            if (center.mip(SurfaceFace(cell, cast(ubyte) axis, sign).outward(layout).vec) >= 0) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool isSphereTouchingVoxel(ChunkLayout layout, ubyte[3] cell, MPoint!float center, float sinhRadius) {
+    Ray probe = Ray(center, MDirection!float.x());
+    float limit = sinhRadius * sinhRadius;
+    foreach (axis; 0 .. 3) {
+        size_t uAxis = (axis + 1) % 3;
+        size_t vAxis = (axis + 2) % 3;
+        foreach (sign; FACE_SIGNS) {
             SurfaceFace face = SurfaceFace(cell, cast(ubyte) axis, sign);
-            MDirection!float outward = faceOutward(layout, face);
+            MDirection!float outward = face.outward(layout);
             float signedSinh = center.mip(outward.vec);
-            size_t uAxis = (axis + 1) % 3;
-            size_t vAxis = (axis + 2) % 3;
-            if (signedSinh >= 0) {
-                inside = false;
-                MVector!float foot = center.vec - outward.vec * signedSinh;
-                if (signedSinh * signedSinh < limit && cellOwns(layout, foot, uAxis, cell[uAxis]) && cellOwns(layout, foot, vAxis, cell[vAxis])) {
-                    touching = true;
-                }
+            MVector!float foot = center.vec - outward.vec * signedSinh;
+            if (signedSinh >= 0 && signedSinh * signedSinh < limit && isOwnedByCell(layout, foot, uAxis, cell[uAxis]) && isOwnedByCell(layout, foot, vAxis, cell[vAxis])) {
+                return true;
             }
             foreach (side; 0 .. 2) {
                 EdgeLine uLine = edgeLine(layout, face, uAxis, side);
-                if (probe.lineTerms(uLine.facePlane, uLine.edgePlane).separationSquared < limit && cellOwns(layout, edgeFoot(uLine, center.vec), vAxis, cell[vAxis])) {
-                    touching = true;
+                if (probe.lineTerms(uLine.facePlane, uLine.edgePlane).separationSquared < limit && isOwnedByCell(layout, uLine.foot(center.vec), vAxis, cell[vAxis])) {
+                    return true;
                 }
                 foreach (dv; 0 .. 2) {
                     CornerFrame corner = cornerFrame(layout, face, side, dv);
                     if (probe.pointTerms(corner.planes[0], corner.planes[1], corner.planes[2]).separationSquared < limit) {
-                        touching = true;
+                        return true;
                     }
                 }
             }
         }
     }
-    return inside || touching;
+    return false;
 }
 
-bool voxelSolidWithMargins(const(VoxelData)* voxelData, ChunkLayout layout, int[3] coords) {
-    bool inRange = true;
+bool isSphereIntersectingVoxel(ChunkLayout layout, ubyte[3] cell, MPoint!float center, float sinhRadius) {
+    return isInsideVoxel(layout, cell, center) || isSphereTouchingVoxel(layout, cell, center, sinhRadius);
+}
+
+bool isVoxelSolidWithMargins(const(VoxelData)* voxelData, ChunkLayout layout, int[3] coords) {
     foreach (i; 0 .. 3) {
         if (coords[i] < -1 || coords[i] > layout.dimension) {
-            inRange = false;
+            return false;
         }
     }
-    bool result = false;
-    if (inRange) {
-        size_t stride = layout.dimension + 2;
-        size_t index = (coords[0] + 1) + (coords[1] + 1) * stride + (coords[2] + 1) * stride * stride;
-        result = voxelData.get(index) != Material.Void;
-    }
-    return result;
+    size_t stride = layout.dimension + 2;
+    size_t index = (coords[0] + 1) + (coords[1] + 1) * stride + (coords[2] + 1) * stride * stride;
+    return voxelData.get(index) != Material.Void;
 }
 
-bool voxelIsSolid(const(VoxelData)* voxelData, ChunkLayout layout, ubyte[3] coords) {
-    bool result = false;
-    if (coords[0] < layout.dimension && coords[1] < layout.dimension && coords[2] < layout.dimension) {
-        result = voxelData.get(Coords(coords).toIndex(layout.dimension)) != Material.Void;
-    }
-    return result;
+bool isVoxelSolid(const(VoxelData)* voxelData, ChunkLayout layout, ubyte[3] coords) {
+    return coords[0] < layout.dimension && coords[1] < layout.dimension && coords[2] < layout.dimension && voxelData.get(Coords(coords).toIndex(layout.dimension)) != Material.Void;
 }
 
 unittest {
     SweptShape shape = SweptShape(MVector!float(0, 1, 0, 0), 0.4f, 0.9f, 0.01f);
-    uint count = capsuleSectionCount(shape);
-    assert(sectionOffset(shape, 0, count) == -capOffset(shape));
-    assert(sectionOffset(shape, count - 1, count) == capOffset(shape));
-    float spacing = sectionOffset(shape, 1, count) - sectionOffset(shape, 0, count);
+    uint count = shape.sectionCount();
+    assert(shape.sectionOffset(0, count) == -shape.capOffset());
+    assert(shape.sectionOffset(count - 1, count) == shape.capOffset());
+    float spacing = shape.sectionOffset(1, count) - shape.sectionOffset(0, count);
     float half = spacing / 2;
     float ripple = shape.radius - sqrt(shape.radius * shape.radius - half * half);
     assert(ripple <= shape.skin);
     SweptShape sphere = SweptShape(MVector!float(0, 1, 0, 0), 0.4f, 0.4f, 0.01f);
-    assert(capsuleSectionCount(sphere) == 1);
+    assert(sphere.sectionCount() == 1);
 }
 
 unittest {
@@ -481,9 +513,9 @@ unittest {
     ubyte[3] cell = [5, 5, 5];
     MPoint!float center = gridPoint([5.5f, 5.5f, 5.5f]);
     MPoint!float outside = gridPoint([7.5f, 5.5f, 5.5f]);
-    float sinhFaceDistance = outside.mip(faceOutward(layout, SurfaceFace(cell, 0, 1)).vec);
+    float sinhFaceDistance = outside.mip(SurfaceFace(cell, 0, 1).outward(layout).vec);
     assert(sinhFaceDistance > 0);
-    assert(sphereIntersectsVoxel(layout, cell, center, sinhf(0.001f)));
-    assert(sphereIntersectsVoxel(layout, cell, outside, sinhFaceDistance * 1.01f));
-    assert(!sphereIntersectsVoxel(layout, cell, outside, sinhFaceDistance * 0.99f));
+    assert(isSphereIntersectingVoxel(layout, cell, center, sinhf(0.001f)));
+    assert(isSphereIntersectingVoxel(layout, cell, outside, sinhFaceDistance * 1.01f));
+    assert(!isSphereIntersectingVoxel(layout, cell, outside, sinhFaceDistance * 0.99f));
 }

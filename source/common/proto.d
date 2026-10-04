@@ -6,10 +6,10 @@ import common.math : MIsometry;
 struct Position {
     NodeId node;
     MIsometry!float local;
-}
 
-Position originPosition() {
-    return Position(ROOT_NODE, MIsometry!float.identity());
+    static Position origin() {
+        return Position(ROOT_NODE, MIsometry!float.identity());
+    }
 }
 
 enum MovementMode : ubyte {
@@ -21,5 +21,5 @@ enum MovementMode : ubyte {
 struct CharacterInput {
     float[3] movement = [0, 0, 0];
     MovementMode mode;
-    bool jump;
+    bool isJumpHeld;
 }

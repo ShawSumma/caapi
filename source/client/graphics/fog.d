@@ -12,7 +12,7 @@ struct FogPipeline {
     VkPipelineLayout pipelineLayout;
     VkPipeline pipeline;
 
-    bool setup(VkDevice device, VkRenderPass renderPass, VkDescriptorSetLayout commonLayout) {
+    void setup(VkDevice device, VkRenderPass renderPass, VkDescriptorSetLayout commonLayout) {
         VkShaderModule vertexShader = createShader(device, FULLSCREEN_VERT_SPV);
         VkShaderModule fragmentShader = createShader(device, FOG_FRAG_SPV);
         VkDescriptorSetLayout[1] setLayouts = [
@@ -27,12 +27,9 @@ struct FogPipeline {
         settings.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
         settings.subpass = FOG_SUBPASS;
         settings.blend = Blend.transmittance;
-        if (vertexShader !is null && fragmentShader !is null && pipelineLayout !is null) {
-            pipeline = createGraphicsPipeline(device, settings);
-        }
+        pipeline = createGraphicsPipeline(device, settings);
         vkDestroyShaderModule(device, vertexShader, null);
         vkDestroyShaderModule(device, fragmentShader, null);
-        return pipeline !is null;
     }
 
     void draw(VkCommandBuffer commands, VkDescriptorSet commonSet) {
@@ -42,11 +39,7 @@ struct FogPipeline {
     }
 
     void cleanup(VkDevice device) {
-        if (pipeline !is null) {
-            vkDestroyPipeline(device, pipeline, null);
-        }
-        if (pipelineLayout !is null) {
-            vkDestroyPipelineLayout(device, pipelineLayout, null);
-        }
+        vkDestroyPipeline(device, pipeline, null);
+        vkDestroyPipelineLayout(device, pipelineLayout, null);
     }
 }

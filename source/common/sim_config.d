@@ -1,11 +1,16 @@
 module common.sim_config;
 
-import common.dodeca : Vertex, vertexChunkToNode;
+import common.dodeca : Vertex, chunkToNode;
 import common.math : MVector, Matrix4;
 
 struct SimConfig {
     CharacterConfig character;
     float metersToAbsolute;
+
+    static SimConfig fromRaw(SimConfigRaw raw) {
+        float scale = metersToAbsoluteFor(raw.chunkSize, raw.voxelSize);
+        return SimConfig(CharacterConfig.fromRaw(raw.character, scale), scale);
+    }
 }
 
 struct SimConfigRaw {
@@ -30,6 +35,26 @@ struct CharacterConfig {
     float characterRadius;
     float characterHalfHeight;
     float eyeOffset;
+
+    static CharacterConfig fromRaw(CharacterConfigRaw raw, float metersToAbsolute) {
+        CharacterConfig config;
+        config.noClipMovementSpeed = raw.noClipMovementSpeed * metersToAbsolute;
+        config.flyMovementSpeed = raw.flyMovementSpeed * metersToAbsolute;
+        config.maxGroundSpeed = raw.maxGroundSpeed * metersToAbsolute;
+        config.speedCap = raw.speedCap * metersToAbsolute;
+        config.maxGroundSlope = raw.maxGroundSlope;
+        config.groundAcceleration = raw.groundAcceleration * metersToAbsolute;
+        config.airAcceleration = raw.airAcceleration * metersToAbsolute;
+        config.gravityAcceleration = raw.gravityAcceleration * metersToAbsolute;
+        config.airResistance = raw.airResistance;
+        config.jumpSpeed = raw.jumpSpeed * metersToAbsolute;
+        config.stepHeight = raw.stepHeight * metersToAbsolute;
+        config.contactSkin = raw.contactSkin * metersToAbsolute;
+        config.characterRadius = raw.characterRadius * metersToAbsolute;
+        config.characterHalfHeight = raw.characterHeight / 2.0f * metersToAbsolute;
+        config.eyeOffset = (raw.eyeHeight - raw.characterHeight / 2.0f) * metersToAbsolute;
+        return config;
+    }
 }
 
 struct CharacterConfigRaw {
@@ -50,38 +75,10 @@ struct CharacterConfigRaw {
     float eyeHeight = 1.5f;
 }
 
-SimConfig simConfigFromRaw(SimConfigRaw raw) {
-    float metersToAbsolute = metersToAbsoluteCalc(raw.chunkSize, raw.voxelSize);
-    SimConfig config;
-    config.metersToAbsolute = metersToAbsolute;
-    config.character = characterConfigFromRaw(raw.character, metersToAbsolute);
-    return config;
-}
-
-CharacterConfig characterConfigFromRaw(CharacterConfigRaw raw, float metersToAbsolute) {
-    CharacterConfig config;
-    config.noClipMovementSpeed = raw.noClipMovementSpeed * metersToAbsolute;
-    config.flyMovementSpeed = raw.flyMovementSpeed * metersToAbsolute;
-    config.maxGroundSpeed = raw.maxGroundSpeed * metersToAbsolute;
-    config.speedCap = raw.speedCap * metersToAbsolute;
-    config.maxGroundSlope = raw.maxGroundSlope;
-    config.groundAcceleration = raw.groundAcceleration * metersToAbsolute;
-    config.airAcceleration = raw.airAcceleration * metersToAbsolute;
-    config.gravityAcceleration = raw.gravityAcceleration * metersToAbsolute;
-    config.airResistance = raw.airResistance;
-    config.jumpSpeed = raw.jumpSpeed * metersToAbsolute;
-    config.stepHeight = raw.stepHeight * metersToAbsolute;
-    config.contactSkin = raw.contactSkin * metersToAbsolute;
-    config.characterRadius = raw.characterRadius * metersToAbsolute;
-    config.characterHalfHeight = raw.characterHeight / 2.0f * metersToAbsolute;
-    config.eyeOffset = (raw.eyeHeight - raw.characterHeight / 2.0f) * metersToAbsolute;
-    return config;
-}
-
-float metersToAbsoluteCalc(ubyte chunkSize, float voxelSize) {
-    Matrix4!float chunkToNode = vertexChunkToNode(Vertex.A);
-    MVector!float faceA = chunkToNode * MVector!float(1.0f, 0.5f, 0.5f, 1.0f);
-    MVector!float faceB = chunkToNode * MVector!float(0.0f, 0.5f, 0.5f, 1.0f);
+float metersToAbsoluteFor(ubyte chunkSize, float voxelSize) {
+    Matrix4!float chunkMatrix = Vertex.A.chunkToNode;
+    MVector!float faceA = chunkMatrix * MVector!float(1.0f, 0.5f, 0.5f, 1.0f);
+    MVector!float faceB = chunkMatrix * MVector!float(0.0f, 0.5f, 0.5f, 1.0f);
     float minChunkFaceSeparation = faceA.normalizedPoint().distance(faceB.normalizedPoint());
     return minChunkFaceSeparation / cast(float) chunkSize / voxelSize;
 }

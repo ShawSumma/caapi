@@ -1,7 +1,7 @@
-local world, script_dir = ...
+local world, script_path = ...
 local player = world.player
 
-package.path = script_dir .. "/?.lua;" .. package.path
+package.path = script_path:gsub("[^/]*$", "") .. "?.lua;" .. package.path
 
 function world:wait(seconds)
   self:frames(math.floor(seconds / self:timestep() + 0.5))
@@ -19,3 +19,5 @@ function player:turn(yaw_degrees, pitch_degrees, seconds)
   world:wait(seconds)
   self:turn_rate(saved_yaw, saved_pitch)
 end
+
+assert(loadfile(script_path))(world)

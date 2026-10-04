@@ -4,6 +4,52 @@ D + Vulkan voxel game in hyperbolic space (H^3). Client in `source/client`,
 shared simulation code in `source/common`. Two entry points: `source/main.d`
 (windowed client) and `source/headless.d` (scripts, dumps, benches).
 
+## Code structure
+
+- `source/main.d` - windowed client: X11 window, XInput2 raw mouse, input
+  capture, frame loop; also `--screenshot` and `--bench-load` (offscreen).
+- `source/headless.d` - script runner and `--dump-world`/`--bench-*`
+  dispatch; `source/worldcheck.d` holds the dumps and benches.
+- `source/unittests.d` - betterC unittest runner over imported modules.
+- `source/bindings/` - ImportC shims: `lua.c`, `platform.c` (Xlib, XI2,
+  Vulkan).
+- `source/client/` - per-client state:
+  - `game.d` - Game: world, character, spawn, frame step, modes, input
+    mapping.
+  - `local_world.d` - LocalWorld: graph, worldgen driver, double-buffered
+    nearby node set, camera, edits (`setVoxel`, ray picks).
+  - `worldgen_driver.d` - worker pool (generation requests and fork-join
+    `runParallel` jobs), request scan, budgeted integration, chunk
+    population and margin connection.
+  - `meshing.d` - chunk surface extraction with ambient occlusion.
+  - `local_character_controller.d` - camera orientation and eye smoothing.
+  - `script.d` - Lua API and the recorder; `config.d` - client config;
+    `png.d` - PNG writer for screenshots.
+  - `graphics/` - Vulkan: `core.d` (instance, device), `base.d`
+    (swapchain or offscreen target, render pass), `pipeline.d` (buffers,
+    pipelines), `matrices.d` (flat 4x4 helpers), `renderer.d` (frame),
+    `voxels/chunk_meshes.d` (face pool, drawable and node buffers,
+    parallel mesh batch), `voxels/cull.d` (compute cull pipeline),
+    `voxels/surface.d` (voxel pipeline, textures, common UBO), `fog.d`,
+    `highlight.d`, `crosshair.d`, `frustum.d`.
+- `source/common/` - simulation shared by client and headless:
+  - geometry: `math.d`, `vector3.d`, `dodeca.d` (honeycomb tables),
+    `voxel_math.d`, `collision_math.d`.
+  - world: `graph.d` (node graph, node and chunk slabs, change queue),
+    `node.d` (chunk and voxel storage), `margins.d`, `chunk_neighbors.d` (cross-chunk
+    cell resolution), `traversal.d` (nearby BFS), `world.d` (materials).
+  - worldgen: `worldgen/generation.d` (node state, chunk params, proofs,
+    voxels), `terraingen.d`, `plane.d`, `spawn.d`.
+  - collision: `chunk_collision.d`, `graph_collision.d`,
+    `character_controller/` (controller, collision), ray casting in
+    `chunk_ray_casting.d`, `graph_ray_casting.d`.
+  - containers: `array.d`, `hash_map.d`, `slab.d`, `range_allocator.d`.
+- `source/shaders/` - GLSL, compiled to `spv/` by the pre-build step;
+  `common.h` (common UBO), `draw.h` (structs shared by `cull.comp` and
+  `voxels.vert`).
+- `tests/` - behavior scripts, `tests/lib/` shared Lua, `tests/visual/`
+  screenshot scenes; `import/prelude.lua` - Lua conveniences.
+
 ## Build, test, run
 
 Always ldc2 through dub, always release: dmd debug builds are 5-10x slower
@@ -194,14 +240,19 @@ coordinates (projective, `ChunkLayout.dualToGridFactor` maps between them).
   reversed (near 1) and the projection flips y, so visible faces wind
   clockwise; the swapchain is sRGB and constant colors are converted
   from sRGB.
-- Chunk meshes are built on the CPU (`client/meshing.d`) under a per
-  frame time budget, nearest first, and kept while the chunk is in the
-  nearby set. Faces live in one growing device buffer managed by a range
-  allocator; the CPU writes indirect draws and per-chunk transforms.
+- Chunk meshes are built on the CPU (`client/meshing.d`) from the graph's
+  change queue by the whole worker pool, the main thread included, as a
+  `runParallel` job under a per-frame time budget; the graph is read-only
+  while the job runs. Faces live in one growing device buffer managed by
+  a range allocator. The CPU writes a drawable record (node, vertex, face
+  range) and the listed nodes' transforms only when the nearby set is
+  relisted or a mesh changes; `cull.comp` composes each chunk's transform,
+  frustum-culls its bounding sphere and writes the indirect draws, so
+  per-frame CPU cost does not scale with the number of drawables.
   Ambient occlusion reads cells beyond the face margins by hopping
   through slot-based chunk neighbors (`common/chunk_neighbors.d`), so a
-  change to a chunk bumps the generation of every chunk sharing a face,
-  edge or corner with it.
+  change to a chunk re-queues every chunk sharing a face, edge or corner
+  with it.
 - `Side.init == Side.A`. It isn't a free sentinel, so check for "no side"
   some other way. The invalid `Vertex` is 255.
 
@@ -240,7 +291,11 @@ coordinates (projective, `ChunkLayout.dualToGridFactor` maps between them).
   the sign of colliding against the wrong geometry.
 - The graph is append-only: node slots and node pointers are stable
   (slabbed storage). Node ids derive from the parent path, so worldgen is
-  deterministic; `--dump-world` is the proof.
+  deterministic; `--dump-world` is the proof. Chunks live in their own
+  slab at slot * 20 + vertex (`Graph.chunkAt`): chunk params read the 8
+  nodes around the chunk's vertex, which creates a shell of nodes ~4.5x
+  the nearby set that never hold chunks, and their chunk pages are never
+  touched.
 
 ## Character controller
 
@@ -326,7 +381,10 @@ conditioning guard.
   frame/step/render average and worst) and then 5 s of noclip flight.
   Judge changes by its worst frames.
 - Chunk generation is async on worker threads (cores minus two); the main
-  thread only builds params and integrates results. Unloaded world is
+  thread builds params and integrates results. A chunk whose occupancy
+  worldgen proves (`predictOccupancy`) has trivial voxels and is generated
+  and populated inline; only unknown chunks go to the workers. Workers
+  take an open `runParallel` job before generation requests. Unloaded world is
   impassable to the character (`regionPopulated`) - bodies must never
   occupy space that later materializes.
 - A solid chunk stays solid (no dense storage) unless a neighbor's

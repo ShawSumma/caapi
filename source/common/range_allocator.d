@@ -11,7 +11,7 @@ struct Range {
 
 struct Allocation {
     uint offset;
-    bool found;
+    bool isFound;
 }
 
 struct RangeAllocator {
@@ -19,15 +19,14 @@ struct RangeAllocator {
     uint capacity;
 
     Allocation allocate(uint count) {
-        Allocation result;
         foreach (i, range; free.slice()) {
-            if (!result.found && range.count >= count) {
-                result = Allocation(range.offset, true);
+            if (range.count >= count) {
                 free.ptr[i] = Range(range.offset + count, range.count - count);
+                removeEmpty();
+                return Allocation(range.offset, true);
             }
         }
-        removeEmpty();
-        return result;
+        return Allocation(0, false);
     }
 
     void release(uint offset, uint count) {
@@ -45,7 +44,7 @@ struct RangeAllocator {
         coalesce();
     }
 
-    uint used() {
+    uint used() const {
         uint available = 0;
         foreach (range; free.slice()) {
             available += range.count;
@@ -94,9 +93,9 @@ unittest {
     Allocation a = allocator.allocate(30);
     Allocation b = allocator.allocate(30);
     Allocation c = allocator.allocate(30);
-    assert(a.found && b.found && c.found);
+    assert(a.isFound && b.isFound && c.isFound);
     assert(a.offset == 0 && b.offset == 30 && c.offset == 60);
-    assert(!allocator.allocate(30).found);
+    assert(!allocator.allocate(30).isFound);
     allocator.release(b.offset, 30);
     assert(allocator.allocate(20).offset == 30);
     allocator.release(a.offset, 30);

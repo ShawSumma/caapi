@@ -1,7 +1,15 @@
 module common.array;
 
 import core.stdc.stdlib : free, realloc;
-import core.stdc.string : memset;
+import core.stdc.string : memcpy, memset;
+
+size_t grownCapacity(size_t current, size_t needed) {
+    if (current * 2 > needed) {
+        return current * 2;
+    } else {
+        return needed;
+    }
+}
 
 struct Array(T) {
     T* ptr;
@@ -10,12 +18,8 @@ struct Array(T) {
 
     void reserve(size_t wanted) {
         if (wanted > capacity) {
-            size_t grown = capacity * 2;
-            if (grown < wanted) {
-                grown = wanted;
-            }
-            ptr = cast(T*) realloc(ptr, grown * T.sizeof);
-            capacity = grown;
+            capacity = grownCapacity(capacity, wanted);
+            ptr = cast(T*) realloc(ptr, capacity * T.sizeof);
         }
     }
 
@@ -23,6 +27,12 @@ struct Array(T) {
         reserve(length + 1);
         ptr[length] = value;
         length += 1;
+    }
+
+    void appendAll(const(T)[] values) {
+        reserve(length + values.length);
+        memcpy(ptr + length, values.ptr, values.length * T.sizeof);
+        length += values.length;
     }
 
     void resize(size_t newLength) {
@@ -37,7 +47,7 @@ struct Array(T) {
         length = 0;
     }
 
-    T[] slice() {
+    inout(T)[] slice() inout {
         return ptr[0 .. length];
     }
 

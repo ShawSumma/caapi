@@ -19,6 +19,9 @@ enum uint RGBA_BYTES = 4;
 enum uint HEADER_BYTES = 13;
 enum uint STORED_BLOCK_HEADER_BYTES = 5;
 enum uint ZLIB_HEADER_BYTES = 2;
+enum uint CHUNK_LENGTH_BYTES = 4;
+enum uint CHUNK_KIND_BYTES = 4;
+enum uint CHUNK_CRC_BYTES = 4;
 enum uint ADLER_BYTES = 4;
 enum uint CRC_INITIAL = 0xFFFFFFFF;
 enum uint BYTE_MASK = 0xFF;
@@ -83,17 +86,37 @@ void putBigEndian(ubyte* target, uint value) {
     target[3] = cast(ubyte) value;
 }
 
-bool writeChunk(FILE* file, const(char)[4] kind, const(ubyte)[] data) {
-    ubyte[4] length;
-    putBigEndian(length.ptr, cast(uint) data.length);
-    ubyte[4] crc;
-    putBigEndian(crc.ptr, crcUpdate(crcUpdate(CRC_INITIAL, cast(const(ubyte)[]) kind[]), data) ^ CRC_INITIAL);
-    return fwrite(length.ptr, 1, length.length, file) == length.length && fwrite(kind.ptr, 1, kind.length, file) == kind.length && fwrite(data.ptr, 1, data.length, file) == data.length && fwrite(crc.ptr, 1, crc.length, file) == crc.length;
+size_t chunkSize(size_t dataBytes) {
+    return CHUNK_LENGTH_BYTES + CHUNK_KIND_BYTES + dataBytes + CHUNK_CRC_BYTES;
+}
+
+size_t putChunk(ubyte* target, const(char)[4] kind, const(ubyte)[] data) {
+    putBigEndian(target, cast(uint) data.length);
+    target[CHUNK_LENGTH_BYTES .. CHUNK_LENGTH_BYTES + CHUNK_KIND_BYTES] = cast(const(ubyte)[]) kind[];
+    target[CHUNK_LENGTH_BYTES + CHUNK_KIND_BYTES .. CHUNK_LENGTH_BYTES + CHUNK_KIND_BYTES + data.length] = data[];
+    putBigEndian(target + CHUNK_LENGTH_BYTES + CHUNK_KIND_BYTES + data.length, crcUpdate(crcUpdate(CRC_INITIAL, cast(const(ubyte)[]) kind[]), data) ^ CRC_INITIAL);
+    return chunkSize(data.length);
 }
 
 size_t storedSize(size_t raw) {
     size_t blocks = (raw + STORED_BLOCK_LIMIT - 1) / STORED_BLOCK_LIMIT;
     return ZLIB_HEADER_BYTES + raw + blocks * STORED_BLOCK_HEADER_BYTES + ADLER_BYTES;
+}
+
+size_t blockLength(size_t remaining, bool isFinal) {
+    if (isFinal) {
+        return remaining;
+    } else {
+        return STORED_BLOCK_LIMIT;
+    }
+}
+
+ubyte blockKind(bool isFinal) {
+    if (isFinal) {
+        return FINAL_BLOCK;
+    } else {
+        return MORE_BLOCKS;
+    }
 }
 
 size_t deflateStored(const(ubyte)[] raw, ubyte* output) {
@@ -103,13 +126,9 @@ size_t deflateStored(const(ubyte)[] raw, ubyte* output) {
     at += ZLIB_HEADER_BYTES;
     size_t consumed = 0;
     while (consumed < raw.length) {
-        size_t length = raw.length - consumed;
-        ubyte blockKind = FINAL_BLOCK;
-        if (length > STORED_BLOCK_LIMIT) {
-            length = STORED_BLOCK_LIMIT;
-            blockKind = MORE_BLOCKS;
-        }
-        output[at] = blockKind;
+        immutable bool isFinal = raw.length - consumed <= STORED_BLOCK_LIMIT;
+        size_t length = blockLength(raw.length - consumed, isFinal);
+        output[at] = blockKind(isFinal);
         output[at + 1] = cast(ubyte) length;
         output[at + 2] = cast(ubyte)(length >> 8);
         output[at + 3] = cast(ubyte) ~length;
@@ -142,18 +161,25 @@ bool writePng(const(char)* path, uint width, uint height, const(ubyte)[] rgba) {
     putBigEndian(header.ptr + 4, height);
     header[8] = BIT_DEPTH;
     header[9] = COLOR_TYPE_RGB;
-    FILE* file = fopen(path, "wb");
-    bool ok = file !is null;
-    if (ok) {
-        ok = fwrite(PNG_SIGNATURE.ptr, 1, PNG_SIGNATURE.length, file) == PNG_SIGNATURE.length;
-        ok = ok && writeChunk(file, "IHDR", header[]);
-        ok = ok && writeChunk(file, "IDAT", compressed[0 .. compressedBytes]);
-        ok = ok && writeChunk(file, "IEND", null);
-        ok = fclose(file) == 0 && ok;
-    }
+    size_t fileBytes = PNG_SIGNATURE.length + chunkSize(header.length) + chunkSize(compressedBytes) + chunkSize(0);
+    ubyte* bytes = cast(ubyte*) malloc(fileBytes);
+    bytes[0 .. PNG_SIGNATURE.length] = PNG_SIGNATURE[];
+    size_t at = PNG_SIGNATURE.length;
+    at += putChunk(bytes + at, "IHDR", header[]);
+    at += putChunk(bytes + at, "IDAT", compressed[0 .. compressedBytes]);
+    putChunk(bytes + at, "IEND", null);
     free(raw);
     free(compressed);
-    return ok;
+    FILE* file = fopen(path, "wb");
+    if (file is null) {
+        free(bytes);
+        return false;
+    } else {
+        immutable size_t written = fwrite(bytes, 1, fileBytes, file);
+        immutable int closeStatus = fclose(file);
+        free(bytes);
+        return written == fileBytes && closeStatus == 0;
+    }
 }
 
 unittest {

@@ -10,25 +10,52 @@ struct ClientConfig {
     float mouseRadiansPerCount = 0.001f;
     float turnSpeed = 1.5f;
     float reachMeters = 10.0f;
-    bool invertY;
+    bool isYInverted;
+
+    static ClientConfig load(const(char)* path) {
+        ClientConfig config;
+        FILE* file = fopen(path, "r");
+        if (file is null) {
+            return config;
+        } else {
+            char[CONFIG_LINE_CAPACITY] line;
+            while (fgets(line.ptr, cast(int) line.length, file) !is null) {
+                config.apply(ConfigEntry.parse(line[0 .. strlen(line.ptr)]));
+            }
+            fclose(file);
+            return config;
+        }
+    }
+
+    void apply(ConfigEntry entry) {
+        if (entry.key == "mouse_sensitivity") {
+            mouseRadiansPerCount = strtof(entry.value.ptr, null);
+        } else if (entry.key == "turn_speed") {
+            turnSpeed = strtof(entry.value.ptr, null);
+        } else if (entry.key == "reach") {
+            reachMeters = strtof(entry.value.ptr, null);
+        } else if (entry.key == "invert_y") {
+            isYInverted = entry.value == "1" || entry.value == "true" || entry.value == "yes" || entry.value == "on";
+        }
+    }
 }
 
 struct ConfigEntry {
     const(char)[] key;
     const(char)[] value;
-}
 
-ClientConfig loadClientConfig(const(char)* path) {
-    ClientConfig config;
-    FILE* file = fopen(path, "r");
-    if (file !is null) {
-        char[CONFIG_LINE_CAPACITY] line;
-        while (fgets(line.ptr, cast(int) line.length, file) !is null) {
-            applyConfigEntry(&config, parseConfigLine(line[0 .. strlen(line.ptr)]));
+    static ConfigEntry parse(const(char)[] line) {
+        const(char)[] trimmed = trim(line);
+        size_t equals = 0;
+        while (equals < trimmed.length && trimmed[equals] != '=') {
+            equals += 1;
         }
-        fclose(file);
+        if (equals < trimmed.length && trimmed[0] != '#') {
+            return ConfigEntry(trim(trimmed[0 .. equals]), trim(trimmed[equals + 1 .. $]));
+        } else {
+            return ConfigEntry.init;
+        }
     }
-    return config;
 }
 
 bool isSpace(char c) {
@@ -45,30 +72,4 @@ const(char)[] trim(const(char)[] text) {
         end -= 1;
     }
     return text[start .. end];
-}
-
-ConfigEntry parseConfigLine(const(char)[] line) {
-    const(char)[] trimmed = trim(line);
-    ConfigEntry entry;
-    size_t equals = 0;
-    while (equals < trimmed.length && trimmed[equals] != '=') {
-        equals += 1;
-    }
-    if (equals < trimmed.length && trimmed[0] != '#') {
-        entry.key = trim(trimmed[0 .. equals]);
-        entry.value = trim(trimmed[equals + 1 .. $]);
-    }
-    return entry;
-}
-
-void applyConfigEntry(ClientConfig* config, ConfigEntry entry) {
-    if (entry.key == "mouse_sensitivity") {
-        config.mouseRadiansPerCount = strtof(entry.value.ptr, null);
-    } else if (entry.key == "turn_speed") {
-        config.turnSpeed = strtof(entry.value.ptr, null);
-    } else if (entry.key == "reach") {
-        config.reachMeters = strtof(entry.value.ptr, null);
-    } else if (entry.key == "invert_y") {
-        config.invertY = entry.value == "1" || entry.value == "true" || entry.value == "yes" || entry.value == "on";
-    }
 }

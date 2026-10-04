@@ -1,26 +1,25 @@
 module client.graphics.renderer;
 
-import core.stdc.math : logf, powf;
-import core.sys.posix.time : CLOCK_MONOTONIC, clock_gettime, timespec;
-import bindings.platform : Display, VK_ACCESS_HOST_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_ERROR_OUT_OF_DATE_KHR, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_BIND_POINT_GRAPHICS, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_SHADER_STAGE_VERTEX_BIT, VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, VK_STRUCTURE_TYPE_MEMORY_BARRIER, VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, VK_STRUCTURE_TYPE_SUBMIT_INFO, VK_SUBOPTIMAL_KHR, VK_SUBPASS_CONTENTS_INLINE, VK_SUCCESS, VkBufferImageCopy, VkClearValue, VkCommandBuffer, VkCommandBufferBeginInfo, VkDescriptorSet, VkDeviceSize, VkDrawIndirectCommand, VkExtent2D, VkExtent3D, VkImageSubresourceLayers, VkMemoryBarrier, VkPipelineStageFlags, VkPresentInfoKHR, VkRect2D, VkRenderPassBeginInfo, VkResult, VkSubmitInfo, VkViewport, Window, vkAcquireNextImageKHR, vkBeginCommandBuffer, vkCmdBeginRenderPass, vkCmdBindDescriptorSets, vkCmdBindPipeline, vkCmdBindVertexBuffers, vkCmdCopyImageToBuffer, vkCmdDrawIndirect, vkCmdEndRenderPass, vkCmdNextSubpass, vkCmdPipelineBarrier, vkCmdPushConstants, vkCmdSetScissor, vkCmdSetViewport, vkDeviceWaitIdle, vkEndCommandBuffer, vkQueuePresentKHR, vkQueueSubmit, vkResetCommandBuffer, vkResetFences, vkWaitForFences;
+import core.stdc.math : logf, powf, sinhf;
+import bindings.platform : Display, VK_ACCESS_HOST_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_ERROR_OUT_OF_DATE_KHR, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_BIND_POINT_GRAPHICS, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_QUERY_RESULT_64_BIT, VK_QUERY_TYPE_TIMESTAMP, VK_SHADER_STAGE_VERTEX_BIT, VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, VK_STRUCTURE_TYPE_MEMORY_BARRIER, VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, VK_STRUCTURE_TYPE_SUBMIT_INFO, VK_SUBOPTIMAL_KHR, VK_SUBPASS_CONTENTS_INLINE, VK_SUCCESS, VkBufferImageCopy, VkClearValue, VkCommandBuffer, VkCommandBufferBeginInfo, VkDescriptorSet, VkDevice, VkDeviceSize, VkDrawIndirectCommand, VkExtent2D, VkExtent3D, VkImageSubresourceLayers, VkMemoryBarrier, VkPhysicalDevice, VkPhysicalDeviceProperties, VkPipelineStageFlags, VkPresentInfoKHR, VkQueryPool, VkQueryPoolCreateInfo, VkRect2D, VkRenderPassBeginInfo, VkResult, VkSubmitInfo, VkViewport, Window, vkAcquireNextImageKHR, vkBeginCommandBuffer, vkCmdBeginRenderPass, vkCmdBindDescriptorSets, vkCmdBindPipeline, vkCmdCopyImageToBuffer, vkCmdDrawIndirect, vkCmdEndRenderPass, vkCmdNextSubpass, vkCmdPipelineBarrier, vkCmdPushConstants, vkCmdResetQueryPool, vkCmdSetScissor, vkCmdSetViewport, vkCmdWriteTimestamp, vkCreateQueryPool, vkDestroyQueryPool, vkDeviceWaitIdle, vkEndCommandBuffer, vkGetPhysicalDeviceProperties, vkGetQueryPoolResults, vkQueuePresentKHR, vkQueueSubmit, vkResetCommandBuffer, vkResetFences, vkWaitForFences;
 import client.graphics.base : SwapchainState;
 import client.graphics.core : VulkanCore;
 import client.graphics.crosshair : CrosshairPipeline;
 import client.graphics.fog : FogPipeline;
-import client.graphics.frustum : FRUSTUM_PLANE_COUNT, Frustum, frustumFromVerticalFov, sphereOutside;
+import client.graphics.frustum : FRUSTUM_PLANE_COUNT, Frustum;
 import client.graphics.highlight : HighlightPipeline;
-import client.graphics.pipeline : GpuBuffer, VULKAN_TRUE, createMappedBuffer, destroyBuffer;
-import client.graphics.voxels.chunk_meshes : ChunkMeshes, RenderChunk, TRANSFORM_FLOATS;
-import client.graphics.voxels.surface : SurfacePipeline;
-import client.local_world : LocalWorld, cameraInNearbyFrame, castCenterRay;
-import common.dodeca : CHUNK_BOUNDING_SPHERE_RADIUS, VERTEX_COUNT, Vertex, vertexChunkBoundingSphereCenter, vertexChunkToNode;
-import common.chunk_neighbors : chunkNeighborSlot;
-import common.graph : Graph, NO_SLOT;
+import client.graphics.matrices : MATRIX_FLOATS, determinant, flatten, matrixInverse, matrixMultiply;
+import client.graphics.pipeline : GpuBuffer, VULKAN_TRUE, expectSuccess;
+import client.graphics.voxels.chunk_meshes : ChunkMeshes, meshJob;
+import client.graphics.voxels.cull : CullPipeline;
+import client.graphics.voxels.surface : CommonUniforms, FACES_BINDING, SurfacePipeline, TRANSFORMS_BINDING;
+import client.local_world : LocalWorld;
+import client.worldgen_driver : ParallelJob;
+import common.dodeca : CHUNK_BOUNDING_SPHERE_RADIUS, chunkToNode;
+import common.graph : Graph;
 import common.graph_ray_casting : GraphCastHit;
-import common.math : MDirection, MIsometry, Matrix4, PI, isNan;
-import common.node : Chunk, ChunkSlot, ChunkState;
-import common.traversal : NearbyNode;
-import common.voxel_math : CHUNK_DIRECTIONS;
+import common.math : MDirection, MIsometry, PI;
+import common.traversal : NOT_COLLECTED, nowMilliseconds;
 
 enum float VERTICAL_HALF_FOV_RADIANS = 45.0f * (PI / 180.0f);
 enum float NEAR_PLANE = 1.0e-4f;
@@ -30,11 +29,14 @@ enum float CLEAR_DEPTH = 0.0f;
 enum uint DIMENSION_PUSH_BYTES = 4;
 enum ulong NO_TIMEOUT = ulong.max;
 enum double MESH_BUDGET_MILLISECONDS = 2.0;
-enum double NANOSECONDS_PER_MILLISECOND = 1e6;
-enum double MILLISECONDS_PER_SECOND = 1e3;
 enum uint PIXEL_BYTES = 4;
-enum uint COFACTOR_COUNT = 12;
 enum uint NO_EPOCH = uint.max;
+enum uint OFFSCREEN_IMAGE = 0;
+enum uint TIMESTAMP_COUNT = 3;
+enum uint FRAME_START_STAMP = 0;
+enum uint CULL_END_STAMP = 1;
+enum uint FRAME_END_STAMP = 2;
+enum double NANOSECONDS_PER_MILLISECOND = 1e6;
 
 enum float SRGB_LINEAR_LIMIT = 0.04045f;
 enum float SRGB_LINEAR_SLOPE = 12.92f;
@@ -50,9 +52,63 @@ immutable float[4] SKY_SRGB = [
 ];
 
 struct HighlightTarget {
-    float[16] mvp;
+    float[MATRIX_FLOATS] mvp;
     float[3] voxel;
-    bool found;
+    bool isFound;
+}
+
+struct GpuTimes {
+    double frameMs = 0;
+    double cullMs = 0;
+}
+
+struct FrameTimes {
+    GpuTimes gpu;
+    double fenceWaitMs = 0;
+    double chunkUpdateMs = 0;
+}
+
+struct GpuTimer {
+    VkQueryPool pool;
+    double millisecondsPerTick = 0;
+
+    void setup(VkPhysicalDevice physicalDevice, VkDevice device) {
+        VkPhysicalDeviceProperties properties;
+        vkGetPhysicalDeviceProperties(physicalDevice, &properties);
+        millisecondsPerTick = properties.limits.timestampPeriod / NANOSECONDS_PER_MILLISECOND;
+        VkQueryPoolCreateInfo info;
+        info.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+        info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+        info.queryCount = TIMESTAMP_COUNT;
+        expectSuccess(vkCreateQueryPool(device, &info, null, &pool));
+    }
+
+    void begin(VkCommandBuffer commands) {
+        vkCmdResetQueryPool(commands, pool, 0, TIMESTAMP_COUNT);
+        vkCmdWriteTimestamp(commands, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, pool, FRAME_START_STAMP);
+    }
+
+    void markCullEnd(VkCommandBuffer commands) {
+        vkCmdWriteTimestamp(commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, pool, CULL_END_STAMP);
+    }
+
+    void end(VkCommandBuffer commands) {
+        vkCmdWriteTimestamp(commands, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, pool, FRAME_END_STAMP);
+    }
+
+    GpuTimes read(VkDevice device, GpuTimes previous) {
+        ulong[TIMESTAMP_COUNT] stamps;
+        immutable VkResult result = vkGetQueryPoolResults(device, pool, 0, TIMESTAMP_COUNT, stamps.sizeof, stamps.ptr, ulong.sizeof, VK_QUERY_RESULT_64_BIT);
+        if (result == VK_SUCCESS) {
+            return GpuTimes((stamps[FRAME_END_STAMP] - stamps[FRAME_START_STAMP]) * millisecondsPerTick, (stamps[CULL_END_STAMP] - stamps[FRAME_START_STAMP]) * millisecondsPerTick);
+        } else {
+            return previous;
+        }
+    }
+
+    void cleanup(VkDevice device) {
+        vkDestroyQueryPool(device, pool, null);
+    }
 }
 
 struct Renderer {
@@ -60,37 +116,31 @@ struct Renderer {
     SwapchainState swapchain;
     SurfacePipeline voxels;
     ChunkMeshes meshes;
+    CullPipeline cull;
     FogPipeline fog;
     HighlightPipeline highlight;
     CrosshairPipeline crosshair;
+    GpuTimer timer;
+    FrameTimes frameTimes;
     GpuBuffer readback;
-    float[TRANSFORM_FLOATS][VERTEX_COUNT] vertexMatrices;
-    float[VERTEX_COUNT] vertexOrientations;
     float[4] skyLinear;
     uint dimension;
     uint worldEpoch = NO_EPOCH;
     uint backlog;
 
-    bool setup(Display* display, Window window, ubyte chunkDimension) {
+    void setup(Display* display, Window window, ubyte chunkDimension) {
         prepare(chunkDimension);
-        bool ok = core.setup(display, window);
-        if (ok) {
-            ok = swapchain.setup(core.physicalDevice, core.device, core.surface, core.graphicsQueueFamily);
-        }
-        return ok && setupPipelines();
+        core.setup(display, window);
+        swapchain.setup(core.physicalDevice, core.device, core.surface, core.graphicsQueueFamily);
+        setupPipelines();
     }
 
-    bool setupOffscreen(VkExtent2D extent, ubyte chunkDimension) {
+    void setupOffscreen(VkExtent2D extent, ubyte chunkDimension) {
         prepare(chunkDimension);
-        bool ok = core.setupOffscreen();
-        if (ok) {
-            ok = swapchain.setupOffscreen(core.physicalDevice, core.device, core.graphicsQueueFamily, extent);
-        }
-        if (ok) {
-            readback = createMappedBuffer(core.physicalDevice, core.device, cast(VkDeviceSize) extent.width * extent.height * PIXEL_BYTES, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
-            ok = readback.ready;
-        }
-        return ok && setupPipelines();
+        core.setupOffscreen();
+        swapchain.setupOffscreen(core.physicalDevice, core.device, core.graphicsQueueFamily, extent);
+        readback = GpuBuffer.makeMapped(core.physicalDevice, core.device, cast(VkDeviceSize) extent.width * extent.height * PIXEL_BYTES, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        setupPipelines();
     }
 
     void prepare(ubyte chunkDimension) {
@@ -99,140 +149,134 @@ struct Renderer {
         foreach (channel; 0 .. COLOR_CHANNELS) {
             skyLinear[channel] = srgbToLinear(SKY_SRGB[channel]);
         }
-        foreach (vertexIndex; 0 .. VERTEX_COUNT) {
-            vertexMatrices[vertexIndex] = flatten(vertexChunkToNode(cast(Vertex) vertexIndex));
-            vertexOrientations[vertexIndex] = determinant(vertexMatrices[vertexIndex]);
-        }
     }
 
-    bool setupPipelines() {
-        bool ok = meshes.setup(core.physicalDevice, core.device, cast(ubyte) dimension);
-        if (ok) {
-            ok = voxels.setup(core.physicalDevice, core.device, swapchain.renderPass, core.graphicsQueue, swapchain.commandPool, swapchain.depthView);
-        }
-        if (ok) {
-            voxels.bindFaces(core.device, meshes.faces.buffer);
-            ok = fog.setup(core.device, swapchain.renderPass, voxels.commonLayout);
-        }
-        if (ok) {
-            ok = highlight.setup(core.device, swapchain.renderPass);
-        }
-        if (ok) {
-            ok = crosshair.setup(core.device, swapchain.renderPass);
-        }
-        return ok;
+    void setupPipelines() {
+        meshes.setup(core.physicalDevice, core.device, cast(ubyte) dimension);
+        voxels.setup(core.physicalDevice, core.device, swapchain.renderPass, core.graphicsQueue, swapchain.commandPool, swapchain.depthView);
+        cull.setup(core.device, voxels.commonUbo.buffer);
+        bindMeshBuffers();
+        fog.setup(core.device, swapchain.renderPass, voxels.commonLayout);
+        highlight.setup(core.device, swapchain.renderPass);
+        crosshair.setup(core.device, swapchain.renderPass);
+        timer.setup(core.physicalDevice, core.device);
     }
 
-    bool render(LocalWorld* world) {
-        bool healthy = true;
-        if (swapchainMinimized()) {
-            healthy = recreateSwapchain();
-        }
-        if (healthy && !swapchainMinimized()) {
-            healthy = renderFrame(world);
-        }
-        return healthy;
+    void bindMeshBuffers() {
+        voxels.bindStorage(core.device, FACES_BINDING, meshes.faces.buffer);
+        voxels.bindStorage(core.device, TRANSFORMS_BINDING, meshes.transforms.buffer);
+        cull.bindBuffers(core.device, &meshes);
     }
 
-    bool swapchainMinimized() const {
-        return swapchain.extent.width == 0 || swapchain.extent.height == 0;
+    void render(LocalWorld* world) {
+        if (swapchain.isMinimized()) {
+            recreateSwapchain();
+        }
+        if (!swapchain.isMinimized()) {
+            renderFrame(world);
+        }
     }
 
     uint meshBacklog() const {
         return backlog;
     }
 
-    bool renderFrame(LocalWorld* world) {
-        bool ok = vkWaitForFences(core.device, 1, &swapchain.inFlightFence, VULKAN_TRUE, NO_TIMEOUT) == VK_SUCCESS;
-        if (ok) {
-            VkExtent2D extent = swapchain.extent;
-            Frustum frustum = frustumFromVerticalFov(VERTICAL_HALF_FOV_RADIANS, cast(float) extent.width / cast(float) extent.height);
-            MIsometry!float cameraInverse = cameraInNearbyFrame(world).inverse();
-            float[16] projection = frustum.projection(NEAR_PLANE);
-            float[16] viewProjection = matrixMultiply(projection, flatten(cameraInverse.mat));
-            ok = collectChunks(world, cameraInverse, frustum.planes(), determinant(viewProjection));
-            HighlightTarget target = findHighlightTarget(world, viewProjection);
-            voxels.updateCommonUbo(viewProjection, matrixInverse(projection), skyLinear, powf(logf(1.0f / FOG_VISIBILITY_THRESHOLD), 1.0f / FOG_EXPONENT) / world.renderRadius, FOG_EXPONENT);
-            if (ok && swapchain.offscreen) {
-                vkResetFences(core.device, 1, &swapchain.inFlightFence);
-                recordCommands(0, target);
-                ok = submit(false);
-            } else if (ok) {
-                uint imageIndex;
-                VkResult acquired = vkAcquireNextImageKHR(core.device, swapchain.swapchain, NO_TIMEOUT, swapchain.imageAvailableSemaphore, null, &imageIndex);
-                if (acquired == VK_ERROR_OUT_OF_DATE_KHR) {
-                    ok = recreateSwapchain();
-                } else if (acquired == VK_SUCCESS || acquired == VK_SUBOPTIMAL_KHR) {
-                    vkResetFences(core.device, 1, &swapchain.inFlightFence);
-                    recordCommands(imageIndex, target);
-                    ok = submit(true) && present(imageIndex);
-                } else {
-                    ok = false;
-                }
-            }
+    CommonUniforms commonUniforms(const(LocalWorld)* world) const {
+        VkExtent2D extent = swapchain.extent;
+        Frustum frustum = Frustum.fromVerticalFov(VERTICAL_HALF_FOV_RADIANS, cast(float) extent.width / cast(float) extent.height);
+        MIsometry!float cameraInverse = world.cameraInNearbyFrame().inverse();
+        float[MATRIX_FLOATS] projection = frustum.projection(NEAR_PLANE);
+        CommonUniforms uniforms;
+        uniforms.cameraInverse = flatten(cameraInverse.mat);
+        uniforms.viewProjection = matrixMultiply(projection, uniforms.cameraInverse);
+        uniforms.inverseProjection = matrixInverse(projection);
+        MDirection!float[FRUSTUM_PLANE_COUNT] planes = frustum.planes();
+        foreach (i; 0 .. FRUSTUM_PLANE_COUNT) {
+            uniforms.frustumPlanes[i] = planes[i].vec.data;
         }
-        return ok;
+        uniforms.fogColor = skyLinear;
+        uniforms.fogDensity = powf(logf(1.0f / FOG_VISIBILITY_THRESHOLD), 1.0f / FOG_EXPONENT) / world.renderRadius;
+        uniforms.fogExponent = FOG_EXPONENT;
+        uniforms.viewParity = parityOf(determinant(uniforms.viewProjection));
+        uniforms.cullSinhRadius = sinhf(CHUNK_BOUNDING_SPHERE_RADIUS);
+        return uniforms;
     }
 
-    bool collectChunks(LocalWorld* world, MIsometry!float cameraInverse, MDirection!float[FRUSTUM_PLANE_COUNT] planes, float viewOrientation) {
+    void renderFrame(LocalWorld* world) {
+        double waitStart = nowMilliseconds();
+        expectSuccess(vkWaitForFences(core.device, 1, &swapchain.inFlightFence, VULKAN_TRUE, NO_TIMEOUT));
+        double updateStart = nowMilliseconds();
+        frameTimes.fenceWaitMs = updateStart - waitStart;
+        frameTimes.gpu = timer.read(core.device, frameTimes.gpu);
+        CommonUniforms uniforms = commonUniforms(world);
+        voxels.updateCommonUbo(&uniforms);
+        updateChunks(world);
+        frameTimes.chunkUpdateMs = nowMilliseconds() - updateStart;
+        HighlightTarget target = findHighlightTarget(world, uniforms.viewProjection);
+        if (swapchain.isOffscreen) {
+            expectSuccess(vkResetFences(core.device, 1, &swapchain.inFlightFence));
+            recordCommands(OFFSCREEN_IMAGE, target);
+            submit(false);
+        } else {
+            uint imageIndex;
+            immutable VkResult acquired = vkAcquireNextImageKHR(core.device, swapchain.swapchain, NO_TIMEOUT, swapchain.imageAvailableSemaphore, null, &imageIndex);
+            if (acquired == VK_ERROR_OUT_OF_DATE_KHR) {
+                recreateSwapchain();
+            } else {
+                expectAcquired(acquired);
+                expectSuccess(vkResetFences(core.device, 1, &swapchain.inFlightFence));
+                recordCommands(imageIndex, target);
+                submit(true);
+                present(imageIndex);
+            }
+        }
+    }
+
+    void updateChunks(LocalWorld* world) {
         if (world.epoch != worldEpoch) {
             meshes.forgetWorld();
             worldEpoch = world.epoch;
         }
-        meshes.beginFrame(world.graph.nodeCount);
-        if (world.nearbyVersion != meshes.nearbyVersion) {
-            meshes.listNearby(world.cachedNodes, world.nearbyVersion);
+        meshes.beginFrame();
+        meshes.list(&world.nearby[world.published], world.nearbyVersion);
+        meshChanged(world);
+        if (meshes.hasReplacedFaces || meshes.hasReplacedDrawBuffers) {
+            bindMeshBuffers();
         }
-        bool ok = meshChanged(&world.graph);
-        foreach (drawable; meshes.drawables.slice()) {
-            const(RenderChunk)* entry = meshes.chunks.at(drawable.chunkIndex);
-            const(NearbyNode)* nearbyNode = &world.cachedNodes[drawable.nearbyIndex];
-            Vertex vertex = cast(Vertex)(drawable.chunkIndex % VERTEX_COUNT);
-            if (ok && entry.faceCount > 0 && !sphereOutside(planes[], cameraInverse * (nearbyNode.transform * vertexChunkBoundingSphereCenter(vertex)), CHUNK_BOUNDING_SPHERE_RADIUS)) {
-                float[16] nodeMatrix = flatten(nearbyNode.transform.mat);
-                bool reversed = viewOrientation * determinant(nodeMatrix) * vertexOrientations[vertex] < 0;
-                ok = meshes.addDraw(entry, matrixMultiply(nodeMatrix, vertexMatrices[vertex]), reversed);
-            }
-        }
-        if (meshes.facesReplaced) {
-            voxels.bindFaces(core.device, meshes.faces.buffer);
-        }
-        return ok;
     }
 
-    bool meshChanged(Graph* graph) {
-        double meshingMs = 0;
-        bool ok = true;
-        while (ok && graph.hasChanges() && meshingMs < MESH_BUDGET_MILLISECONDS) {
-            double start = nowMilliseconds();
-            ChunkSlot slot = graph.takeChanged();
-            const(Chunk)* chunk = &graph.nodeAt(slot.slot).chunks[slot.vertex];
-            if (chunk.state == ChunkState.Populated && !chunk.voxels.isSolid() && !faceNeighborGenerating(graph, slot)) {
-                ok = meshes.mesh(graph, slot);
+    void meshChanged(LocalWorld* world) {
+        Graph* graph = &world.graph;
+        if (graph.hasChanges()) {
+            meshes.prepareBatch(graph, world.worldgenDriver.workerCount + 1);
+            ParallelJob job;
+            job.run = &meshJob;
+            job.context = &meshes.batch;
+            job.deadline = nowMilliseconds() + MESH_BUDGET_MILLISECONDS;
+            job.count = graph.changedChunks.length - graph.changedHead;
+            world.worldgenDriver.runParallel(&job);
+            foreach (i; 0 .. job.count) {
+                graph.takeChanged();
             }
-            meshingMs += nowMilliseconds() - start;
+            meshes.applyBatch(&world.nearby[world.published]);
         }
         backlog = cast(uint)(graph.changedChunks.length - graph.changedHead);
-        return ok;
     }
 
-    HighlightTarget findHighlightTarget(LocalWorld* world, float[16] viewProjection) {
-        HighlightTarget target;
-        GraphCastHit hit = castCenterRay(world);
-        if (!isNan(hit.tanhDistance)) {
-            foreach (nearbyNode; world.cachedNodes) {
-                if (!target.found && nearbyNode.id == hit.chunk.node) {
-                    target.mvp = matrixMultiply(viewProjection, matrixMultiply(flatten(nearbyNode.transform.mat), vertexMatrices[hit.chunk.vertex]));
-                    target.voxel = [
-                        cast(float) hit.voxelCoords.data[0],
-                        cast(float) hit.voxelCoords.data[1],
-                        cast(float) hit.voxelCoords.data[2],
-                    ];
-                    target.found = true;
-                }
-            }
+    HighlightTarget findHighlightTarget(const(LocalWorld)* world, float[MATRIX_FLOATS] viewProjection) const {
+        GraphCastHit hit = world.castCenterRay();
+        uint index = world.nearby[world.published].indexOf(world.graph.slotOf(hit.chunk.node));
+        if (!hit.isHit() || index == NOT_COLLECTED) {
+            return HighlightTarget.init;
+        } else {
+            float[MATRIX_FLOATS] chunkToWorld = matrixMultiply(flatten(world.cachedNodes[index].transform.mat), flatten(hit.chunk.vertex.chunkToNode));
+            float[3] voxel = [
+                cast(float) hit.voxelCoords.data[0],
+                cast(float) hit.voxelCoords.data[1],
+                cast(float) hit.voxelCoords.data[2],
+            ];
+            return HighlightTarget(matrixMultiply(viewProjection, chunkToWorld), voxel, true);
         }
-        return target;
     }
 
     void recordCommands(uint imageIndex, HighlightTarget target) {
@@ -241,7 +285,10 @@ struct Renderer {
         VkCommandBufferBeginInfo beginInfo;
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         vkBeginCommandBuffer(commands, &beginInfo);
+        timer.begin(commands);
         meshes.recordUploads(commands);
+        cull.record(commands, meshes.drawableCount);
+        timer.markCullEnd(commands);
         VkClearValue[2] clears;
         clears[0].color.float32 = skyLinear;
         clears[1].depthStencil.depth = CLEAR_DEPTH;
@@ -264,28 +311,24 @@ struct Renderer {
             voxels.staticSet,
         ];
         vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, voxels.pipelineLayout, 0, sets.length, sets.ptr, 0, null);
-        VkDeviceSize vertexOffset = 0;
-        vkCmdBindVertexBuffers(commands, 0, 1, &meshes.instances.buffer, &vertexOffset);
         vkCmdPushConstants(commands, voxels.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, DIMENSION_PUSH_BYTES, &dimension);
         uint drawn = 0;
-        while (drawn < meshes.drawCount) {
-            uint batch = meshes.drawCount - drawn;
-            if (batch > core.maxDrawIndirectCount) {
-                batch = core.maxDrawIndirectCount;
-            }
-            vkCmdDrawIndirect(commands, meshes.indirect.buffer, cast(VkDeviceSize) drawn * VkDrawIndirectCommand.sizeof, batch, VkDrawIndirectCommand.sizeof);
+        while (drawn < meshes.drawableCount) {
+            uint batch = drawBatch(meshes.drawableCount - drawn, core.maxDrawIndirectCount);
+            vkCmdDrawIndirect(commands, meshes.commands.buffer, cast(VkDeviceSize) drawn * VkDrawIndirectCommand.sizeof, batch, VkDrawIndirectCommand.sizeof);
             drawn += batch;
         }
-        if (target.found) {
+        if (target.isFound) {
             highlight.draw(commands, target.mvp, target.voxel, cast(float) dimension);
         }
         vkCmdNextSubpass(commands, VK_SUBPASS_CONTENTS_INLINE);
         fog.draw(commands, voxels.commonSet);
         crosshair.draw(commands, cast(float) swapchain.extent.width / cast(float) swapchain.extent.height);
         vkCmdEndRenderPass(commands);
-        if (swapchain.offscreen) {
+        if (swapchain.isOffscreen) {
             recordReadback(commands);
         }
+        timer.end(commands);
         vkEndCommandBuffer(commands);
     }
 
@@ -301,23 +344,23 @@ struct Renderer {
         vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, null, 0, null);
     }
 
-    bool submit(bool presenting) {
+    void submit(bool isPresenting) {
         VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSubmitInfo submitInfo;
         submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         submitInfo.commandBufferCount = 1;
         submitInfo.pCommandBuffers = &swapchain.commandBuffer;
-        if (presenting) {
+        if (isPresenting) {
             submitInfo.waitSemaphoreCount = 1;
             submitInfo.pWaitSemaphores = &swapchain.imageAvailableSemaphore;
             submitInfo.pWaitDstStageMask = &waitStage;
             submitInfo.signalSemaphoreCount = 1;
             submitInfo.pSignalSemaphores = &swapchain.renderFinishedSemaphore;
         }
-        return vkQueueSubmit(core.graphicsQueue, 1, &submitInfo, swapchain.inFlightFence) == VK_SUCCESS;
+        expectSuccess(vkQueueSubmit(core.graphicsQueue, 1, &submitInfo, swapchain.inFlightFence));
     }
 
-    bool present(uint imageIndex) {
+    void present(uint imageIndex) {
         VkPresentInfoKHR presentInfo;
         presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
         presentInfo.waitSemaphoreCount = 1;
@@ -325,140 +368,67 @@ struct Renderer {
         presentInfo.swapchainCount = 1;
         presentInfo.pSwapchains = &swapchain.swapchain;
         presentInfo.pImageIndices = &imageIndex;
-        VkResult presented = vkQueuePresentKHR(core.graphicsQueue, &presentInfo);
-        bool ok = presented == VK_SUCCESS;
+        immutable VkResult presented = vkQueuePresentKHR(core.graphicsQueue, &presentInfo);
         if (presented == VK_ERROR_OUT_OF_DATE_KHR || presented == VK_SUBOPTIMAL_KHR) {
-            ok = recreateSwapchain();
+            recreateSwapchain();
+        } else {
+            expectSuccess(presented);
         }
-        return ok;
     }
 
     const(ubyte)[] capture() {
-        const(ubyte)[] result = null;
-        if (vkWaitForFences(core.device, 1, &swapchain.inFlightFence, VULKAN_TRUE, NO_TIMEOUT) == VK_SUCCESS) {
-            result = (cast(const(ubyte)*) readback.mapped)[0 .. readback.size];
-        }
-        return result;
+        expectSuccess(vkWaitForFences(core.device, 1, &swapchain.inFlightFence, VULKAN_TRUE, NO_TIMEOUT));
+        return (cast(const(ubyte)*) readback.mapped)[0 .. readback.size];
     }
 
-    bool recreateSwapchain() {
-        bool ok = swapchain.recreate(core.device);
-        if (ok) {
+    void recreateSwapchain() {
+        swapchain.recreate(core.device);
+        if (!swapchain.isMinimized()) {
             voxels.updateDepthDescriptor(core.device, swapchain.depthView);
         }
-        return ok || swapchainMinimized();
     }
 
     void cleanup() {
-        if (core.device !is null) {
-            vkDeviceWaitIdle(core.device);
-            crosshair.cleanup(core.device);
-            highlight.cleanup(core.device);
-            fog.cleanup(core.device);
-            voxels.cleanup(core.device);
-            meshes.cleanup();
-            destroyBuffer(core.device, &readback);
-            swapchain.cleanup(core.device);
-        }
+        vkDeviceWaitIdle(core.device);
+        timer.cleanup(core.device);
+        crosshair.cleanup(core.device);
+        highlight.cleanup(core.device);
+        fog.cleanup(core.device);
+        cull.cleanup(core.device);
+        voxels.cleanup(core.device);
+        meshes.cleanup();
+        readback.destroy(core.device);
+        swapchain.cleanup(core.device);
         core.cleanup();
     }
 }
 
-bool faceNeighborGenerating(const(Graph)* graph, ChunkSlot chunk) {
-    bool result = false;
-    foreach (direction; CHUNK_DIRECTIONS) {
-        ChunkSlot neighbor = chunkNeighborSlot(graph, chunk, direction);
-        if (neighbor.slot != NO_SLOT && graph.nodeAt(neighbor.slot).chunks[neighbor.vertex].state == ChunkState.Generating) {
-            result = true;
-        }
+void expectAcquired(VkResult acquired) {
+    if (acquired != VK_SUBOPTIMAL_KHR) {
+        expectSuccess(acquired);
     }
-    return result;
 }
 
-double nowMilliseconds() {
-    timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    return now.tv_sec * MILLISECONDS_PER_SECOND + now.tv_nsec / NANOSECONDS_PER_MILLISECOND;
+uint drawBatch(uint remaining, uint limit) {
+    if (remaining > limit) {
+        return limit;
+    } else {
+        return remaining;
+    }
+}
+
+float parityOf(float value) {
+    if (value < 0) {
+        return -1.0f;
+    } else {
+        return 1.0f;
+    }
 }
 
 float srgbToLinear(float encoded) {
-    float result = encoded / SRGB_LINEAR_SLOPE;
     if (encoded > SRGB_LINEAR_LIMIT) {
-        result = powf((encoded + SRGB_OFFSET) / (1.0f + SRGB_OFFSET), SRGB_GAMMA);
+        return powf((encoded + SRGB_OFFSET) / (1.0f + SRGB_OFFSET), SRGB_GAMMA);
+    } else {
+        return encoded / SRGB_LINEAR_SLOPE;
     }
-    return result;
-}
-
-float[16] flatten(Matrix4!float matrix) {
-    float[16] result;
-    foreach (column; 0 .. 4) {
-        foreach (row; 0 .. 4) {
-            result[column * 4 + row] = matrix.data[column][row];
-        }
-    }
-    return result;
-}
-
-float[16] matrixMultiply(float[16] a, float[16] b) {
-    float[16] result = 0;
-    foreach (column; 0 .. 4) {
-        foreach (row; 0 .. 4) {
-            float sum = 0;
-            foreach (k; 0 .. 4) {
-                sum += a[k * 4 + row] * b[column * 4 + k];
-            }
-            result[column * 4 + row] = sum;
-        }
-    }
-    return result;
-}
-
-float[COFACTOR_COUNT] cofactors(float[16] m) {
-    float[COFACTOR_COUNT] b = [
-        m[0] * m[5] - m[1] * m[4],
-        m[0] * m[6] - m[2] * m[4],
-        m[0] * m[7] - m[3] * m[4],
-        m[1] * m[6] - m[2] * m[5],
-        m[1] * m[7] - m[3] * m[5],
-        m[2] * m[7] - m[3] * m[6],
-        m[8] * m[13] - m[9] * m[12],
-        m[8] * m[14] - m[10] * m[12],
-        m[8] * m[15] - m[11] * m[12],
-        m[9] * m[14] - m[10] * m[13],
-        m[9] * m[15] - m[11] * m[13],
-        m[10] * m[15] - m[11] * m[14],
-    ];
-    return b;
-}
-
-float determinantOf(float[COFACTOR_COUNT] b) {
-    return b[0] * b[11] - b[1] * b[10] + b[2] * b[9] + b[3] * b[8] - b[4] * b[7] + b[5] * b[6];
-}
-
-float determinant(float[16] m) {
-    return determinantOf(cofactors(m));
-}
-
-float[16] matrixInverse(float[16] m) {
-    float[COFACTOR_COUNT] b = cofactors(m);
-    float inverseDeterminant = 1.0f / determinantOf(b);
-    float[16] result = [
-        (m[5] * b[11] - m[6] * b[10] + m[7] * b[9]) * inverseDeterminant,
-        (-m[1] * b[11] + m[2] * b[10] - m[3] * b[9]) * inverseDeterminant,
-        (m[13] * b[5] - m[14] * b[4] + m[15] * b[3]) * inverseDeterminant,
-        (-m[9] * b[5] + m[10] * b[4] - m[11] * b[3]) * inverseDeterminant,
-        (-m[4] * b[11] + m[6] * b[8] - m[7] * b[7]) * inverseDeterminant,
-        (m[0] * b[11] - m[2] * b[8] + m[3] * b[7]) * inverseDeterminant,
-        (-m[12] * b[5] + m[14] * b[2] - m[15] * b[1]) * inverseDeterminant,
-        (m[8] * b[5] - m[10] * b[2] + m[11] * b[1]) * inverseDeterminant,
-        (m[4] * b[10] - m[5] * b[8] + m[7] * b[6]) * inverseDeterminant,
-        (-m[0] * b[10] + m[1] * b[8] - m[3] * b[6]) * inverseDeterminant,
-        (m[12] * b[4] - m[13] * b[2] + m[15] * b[0]) * inverseDeterminant,
-        (-m[8] * b[4] + m[9] * b[2] - m[11] * b[0]) * inverseDeterminant,
-        (-m[4] * b[9] + m[5] * b[7] - m[6] * b[6]) * inverseDeterminant,
-        (m[0] * b[9] - m[1] * b[7] + m[2] * b[6]) * inverseDeterminant,
-        (-m[12] * b[3] + m[13] * b[1] - m[14] * b[0]) * inverseDeterminant,
-        (m[8] * b[3] - m[9] * b[1] + m[10] * b[0]) * inverseDeterminant,
-    ];
-    return result;
 }

@@ -1,7 +1,7 @@
 module client.graphics.frustum;
 
-import core.stdc.math : atanf, cosf, sinf, sinhf, tanf;
-import common.math : MDirection, MPoint, MVector;
+import core.stdc.math : atanf, cosf, sinf, tanf;
+import common.math : MDirection, MVector;
 
 enum uint FRUSTUM_PLANE_COUNT = 5;
 enum float KLEIN_FAR_PLANE = 1.0f;
@@ -11,6 +11,11 @@ struct Frustum {
     float right;
     float down;
     float up;
+
+    static Frustum fromVerticalFov(float verticalFov, float aspectRatio) {
+        float horizontalFov = atanf(aspectRatio * tanf(verticalFov));
+        return Frustum(-horizontalFov, horizontalFov, -verticalFov, verticalFov);
+    }
 
     MDirection!float[FRUSTUM_PLANE_COUNT] planes() const {
         MDirection!float[FRUSTUM_PLANE_COUNT] result = [
@@ -40,20 +45,4 @@ struct Frustum {
         result[14] = -(near * KLEIN_FAR_PLANE) / (near - KLEIN_FAR_PLANE);
         return result;
     }
-}
-
-Frustum frustumFromVerticalFov(float verticalFov, float aspectRatio) {
-    float horizontalFov = atanf(aspectRatio * tanf(verticalFov));
-    return Frustum(-horizontalFov, horizontalFov, -verticalFov, verticalFov);
-}
-
-bool sphereOutside(const(MDirection!float)[] planes, MPoint!float center, float radius) {
-    float threshold = sinhf(radius);
-    bool outside = false;
-    foreach (plane; planes) {
-        if (plane.mip(center.vec) < -threshold) {
-            outside = true;
-        }
-    }
-    return outside;
 }

@@ -2,9 +2,8 @@ module client.graphics.pipeline;
 
 import core.stdc.stdlib : free, malloc;
 import core.stdc.string : memcpy, memset;
-import bindings.platform : VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_OP_ADD, VK_COMPARE_OP_GREATER, VK_CULL_MODE_BACK_BIT, VK_CULL_MODE_NONE, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_VIEWPORT, VK_FRONT_FACE_CLOCKWISE, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, VK_POLYGON_MODE_FILL, VK_SAMPLE_COUNT_1_BIT, VK_SHADER_STAGE_COMPUTE_BIT, VK_SHADER_STAGE_FRAGMENT_BIT, VK_SHADER_STAGE_VERTEX_BIT, VK_SHARING_MODE_EXCLUSIVE, VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO, VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO, VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, VK_SUCCESS, VkAccessFlags, VkBuffer, VkBufferCreateInfo, VkBufferMemoryBarrier, VkBufferUsageFlags, VkComputePipelineCreateInfo, VkDescriptorBufferInfo, VkDescriptorImageInfo, VkDescriptorSet, VkDescriptorSetLayout, VkDescriptorSetLayoutBinding, VkDescriptorSetLayoutCreateInfo, VkDescriptorType, VkDevice, VkDeviceMemory, VkDeviceSize, VkDynamicState, VkGraphicsPipelineCreateInfo, VkMemoryAllocateInfo, VkMemoryPropertyFlags, VkMemoryRequirements, VkPhysicalDevice, VkPhysicalDeviceMemoryProperties, VkPipeline, VkPipelineColorBlendAttachmentState, VkPipelineColorBlendStateCreateInfo, VkPipelineDepthStencilStateCreateInfo, VkPipelineDynamicStateCreateInfo, VkPipelineInputAssemblyStateCreateInfo, VkPipelineLayout, VkPipelineLayoutCreateInfo, VkPipelineMultisampleStateCreateInfo, VkPipelineRasterizationStateCreateInfo, VkPipelineShaderStageCreateInfo, VkPipelineVertexInputStateCreateInfo, VkPipelineViewportStateCreateInfo, VkPrimitiveTopology, VkPushConstantRange, VkRenderPass, VkShaderModule, VkShaderModuleCreateInfo, VkShaderStageFlagBits, VkShaderStageFlags, VkWriteDescriptorSet, vkAllocateMemory, vkBindBufferMemory, vkCreateBuffer, vkCreateComputePipelines, vkCreateDescriptorSetLayout, vkCreateGraphicsPipelines, vkCreatePipelineLayout, vkCreateShaderModule, vkDestroyBuffer, vkFreeMemory, vkGetBufferMemoryRequirements, vkGetPhysicalDeviceMemoryProperties, vkMapMemory;
+import bindings.platform : VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_OP_ADD, VK_COMPARE_OP_GREATER, VK_CULL_MODE_BACK_BIT, VK_CULL_MODE_NONE, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_VIEWPORT, VK_FRONT_FACE_CLOCKWISE, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, VK_POLYGON_MODE_FILL, VK_SAMPLE_COUNT_1_BIT, VK_SHADER_STAGE_COMPUTE_BIT, VK_SHADER_STAGE_FRAGMENT_BIT, VK_SHADER_STAGE_VERTEX_BIT, VK_SHARING_MODE_EXCLUSIVE, VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO, VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO, VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, VK_SUCCESS, VkBlendFactor, VkBuffer, VkBufferCreateInfo, VkBufferUsageFlags, VkComputePipelineCreateInfo, VkCullModeFlags, VkDescriptorBufferInfo, VkDescriptorImageInfo, VkDescriptorSet, VkDescriptorSetLayout, VkDescriptorSetLayoutBinding, VkDescriptorSetLayoutCreateInfo, VkDescriptorType, VkDevice, VkDeviceMemory, VkDeviceSize, VkDynamicState, VkGraphicsPipelineCreateInfo, VkImage, VkMemoryAllocateInfo, VkMemoryPropertyFlags, VkMemoryRequirements, VkPhysicalDevice, VkPhysicalDeviceMemoryProperties, VkPipeline, VkPipelineColorBlendAttachmentState, VkPipelineColorBlendStateCreateInfo, VkPipelineDepthStencilStateCreateInfo, VkPipelineDynamicStateCreateInfo, VkPipelineInputAssemblyStateCreateInfo, VkPipelineLayout, VkPipelineLayoutCreateInfo, VkPipelineMultisampleStateCreateInfo, VkPipelineRasterizationStateCreateInfo, VkPipelineShaderStageCreateInfo, VkPipelineVertexInputStateCreateInfo, VkPipelineViewportStateCreateInfo, VkPrimitiveTopology, VkPushConstantRange, VkRenderPass, VkResult, VkShaderModule, VkShaderModuleCreateInfo, VkShaderStageFlagBits, VkShaderStageFlags, VkWriteDescriptorSet, vkAllocateMemory, vkBindBufferMemory, vkBindImageMemory, vkCreateBuffer, vkCreateComputePipelines, vkCreateDescriptorSetLayout, vkCreateGraphicsPipelines, vkCreatePipelineLayout, vkCreateShaderModule, vkDestroyBuffer, vkFreeMemory, vkGetBufferMemoryRequirements, vkGetImageMemoryRequirements, vkGetPhysicalDeviceMemoryProperties, vkMapMemory;
 
-enum uint NO_MEMORY_TYPE = uint.max;
 enum uint COLOR_WRITE_RGB = 0x7;
 enum uint COLOR_WRITE_RGBA = 0xf;
 enum ulong WHOLE_SIZE = ulong.max;
@@ -12,12 +11,85 @@ enum uint QUEUE_FAMILY_IGNORED = uint.max;
 enum uint SUBPASS_EXTERNAL = uint.max;
 enum uint VULKAN_TRUE = 1;
 
+void expectSuccess(VkResult result) {
+    if (result != VK_SUCCESS) {
+        assert(false);
+    }
+}
+
 struct GpuBuffer {
     VkBuffer buffer;
     VkDeviceMemory memory;
     VkDeviceSize size;
     void* mapped;
-    bool ready;
+
+    static GpuBuffer make(VkPhysicalDevice physicalDevice, VkDevice device, VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties) {
+        GpuBuffer result;
+        result.size = size;
+        VkBufferCreateInfo bufferInfo;
+        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferInfo.size = size;
+        bufferInfo.usage = usage;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        expectSuccess(vkCreateBuffer(device, &bufferInfo, null, &result.buffer));
+        VkMemoryRequirements requirements;
+        vkGetBufferMemoryRequirements(device, result.buffer, &requirements);
+        result.memory = allocateMemory(physicalDevice, device, requirements, properties);
+        expectSuccess(vkBindBufferMemory(device, result.buffer, result.memory, 0));
+        return result;
+    }
+
+    static GpuBuffer makeDeviceLocal(VkPhysicalDevice physicalDevice, VkDevice device, VkDeviceSize size, VkBufferUsageFlags usage) {
+        return make(physicalDevice, device, size, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    }
+
+    static GpuBuffer makeMapped(VkPhysicalDevice physicalDevice, VkDevice device, VkDeviceSize size, VkBufferUsageFlags usage) {
+        GpuBuffer result = make(physicalDevice, device, size, usage, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        expectSuccess(vkMapMemory(device, result.memory, 0, size, 0, &result.mapped));
+        memset(result.mapped, 0, size);
+        return result;
+    }
+
+    static GpuBuffer makeFilled(VkPhysicalDevice physicalDevice, VkDevice device, const(void)[] data, VkBufferUsageFlags usage) {
+        GpuBuffer result = makeMapped(physicalDevice, device, data.length, usage);
+        memcpy(result.mapped, data.ptr, data.length);
+        return result;
+    }
+
+    void destroy(VkDevice device) {
+        vkDestroyBuffer(device, buffer, null);
+        vkFreeMemory(device, memory, null);
+        this = GpuBuffer.init;
+    }
+}
+
+uint memoryTypeIndex(VkPhysicalDevice physicalDevice, uint typeBits, VkMemoryPropertyFlags wanted) {
+    VkPhysicalDeviceMemoryProperties properties;
+    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &properties);
+    foreach (i; 0 .. properties.memoryTypeCount) {
+        if ((typeBits & (1u << i)) != 0 && (properties.memoryTypes[i].propertyFlags & wanted) == wanted) {
+            return i;
+        }
+    }
+    assert(false);
+}
+
+VkDeviceMemory allocateMemory(VkPhysicalDevice physicalDevice, VkDevice device, VkMemoryRequirements requirements, VkMemoryPropertyFlags properties) {
+    VkMemoryAllocateInfo allocateInfo;
+    allocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocateInfo.allocationSize = requirements.size;
+    allocateInfo.memoryTypeIndex = memoryTypeIndex(physicalDevice, requirements.memoryTypeBits, properties);
+    VkDeviceMemory memory;
+    expectSuccess(vkAllocateMemory(device, &allocateInfo, null, &memory));
+    return memory;
+}
+
+VkDeviceMemory bindDeviceLocalImage(VkPhysicalDevice physicalDevice, VkDevice device, VkImage image) {
+    VkMemoryRequirements requirements;
+    vkGetImageMemoryRequirements(device, image, &requirements);
+    VkDeviceMemory memory = allocateMemory(physicalDevice, device, requirements, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    expectSuccess(vkBindImageMemory(device, image, memory, 0));
+    return memory;
 }
 
 enum Blend : ubyte {
@@ -27,7 +99,6 @@ enum Blend : ubyte {
 }
 
 struct PipelineSettings {
-    VkPipelineVertexInputStateCreateInfo* vertexInput;
     VkPipelineLayout layout;
     VkRenderPass renderPass;
     VkShaderModule vertexShader;
@@ -35,76 +106,40 @@ struct PipelineSettings {
     VkPrimitiveTopology topology;
     uint subpass;
     Blend blend;
-    bool depthTest;
-    bool depthWrite;
-    bool cullBackFaces;
-}
+    bool isDepthTested;
+    bool isDepthWritten;
+    bool isCullingBackFaces;
 
-uint findMemoryType(VkPhysicalDevice physicalDevice, uint typeBits, VkMemoryPropertyFlags wanted) {
-    VkPhysicalDeviceMemoryProperties properties;
-    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &properties);
-    uint result = NO_MEMORY_TYPE;
-    foreach (i; 0 .. properties.memoryTypeCount) {
-        if (result == NO_MEMORY_TYPE && (typeBits & (1u << i)) != 0 && (properties.memoryTypes[i].propertyFlags & wanted) == wanted) {
-            result = i;
+    VkCullModeFlags cullMode() const {
+        if (isCullingBackFaces) {
+            return VK_CULL_MODE_BACK_BIT;
+        } else {
+            return VK_CULL_MODE_NONE;
         }
     }
-    return result;
-}
 
-GpuBuffer createBuffer(VkPhysicalDevice physicalDevice, VkDevice device, VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties) {
-    GpuBuffer result;
-    result.size = size;
-    VkBufferCreateInfo bufferInfo;
-    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bufferInfo.size = size;
-    bufferInfo.usage = usage;
-    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (vkCreateBuffer(device, &bufferInfo, null, &result.buffer) == VK_SUCCESS) {
-        VkMemoryRequirements requirements;
-        vkGetBufferMemoryRequirements(device, result.buffer, &requirements);
-        VkMemoryAllocateInfo allocateInfo;
-        allocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        allocateInfo.allocationSize = requirements.size;
-        allocateInfo.memoryTypeIndex = findMemoryType(physicalDevice, requirements.memoryTypeBits, properties);
-        if (allocateInfo.memoryTypeIndex != NO_MEMORY_TYPE && vkAllocateMemory(device, &allocateInfo, null, &result.memory) == VK_SUCCESS) {
-            result.ready = vkBindBufferMemory(device, result.buffer, result.memory, 0) == VK_SUCCESS;
+    VkPipelineColorBlendAttachmentState blendAttachment() const {
+        VkPipelineColorBlendAttachmentState attachment;
+        if (blend == Blend.opaque) {
+            attachment.colorWriteMask = COLOR_WRITE_RGBA;
+        } else if (blend == Blend.transmittance) {
+            attachment = blendedAttachment(VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_FACTOR_SRC_ALPHA);
+        } else {
+            attachment = blendedAttachment(VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
         }
+        return attachment;
     }
-    return result;
 }
 
-GpuBuffer createDeviceLocalBuffer(VkPhysicalDevice physicalDevice, VkDevice device, VkDeviceSize size, VkBufferUsageFlags usage) {
-    return createBuffer(physicalDevice, device, size, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-}
-
-GpuBuffer createMappedBuffer(VkPhysicalDevice physicalDevice, VkDevice device, VkDeviceSize size, VkBufferUsageFlags usage) {
-    GpuBuffer result = createBuffer(physicalDevice, device, size, usage, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    if (result.ready) {
-        result.ready = vkMapMemory(device, result.memory, 0, size, 0, &result.mapped) == VK_SUCCESS;
-    }
-    if (result.ready) {
-        memset(result.mapped, 0, size);
-    }
-    return result;
-}
-
-GpuBuffer createFilledBuffer(VkPhysicalDevice physicalDevice, VkDevice device, const(void)[] data, VkBufferUsageFlags usage) {
-    GpuBuffer result = createMappedBuffer(physicalDevice, device, data.length, usage);
-    if (result.ready) {
-        memcpy(result.mapped, data.ptr, data.length);
-    }
-    return result;
-}
-
-void destroyBuffer(VkDevice device, GpuBuffer* buffer) {
-    if (buffer.buffer !is null) {
-        vkDestroyBuffer(device, buffer.buffer, null);
-    }
-    if (buffer.memory !is null) {
-        vkFreeMemory(device, buffer.memory, null);
-    }
-    *buffer = GpuBuffer.init;
+VkPipelineColorBlendAttachmentState blendedAttachment(VkBlendFactor sourceFactor, VkBlendFactor destinationFactor) {
+    VkPipelineColorBlendAttachmentState attachment;
+    attachment.blendEnable = VULKAN_TRUE;
+    attachment.srcColorBlendFactor = sourceFactor;
+    attachment.dstColorBlendFactor = destinationFactor;
+    attachment.colorBlendOp = VK_BLEND_OP_ADD;
+    attachment.alphaBlendOp = VK_BLEND_OP_ADD;
+    attachment.colorWriteMask = COLOR_WRITE_RGB;
+    return attachment;
 }
 
 VkShaderModule createShader(VkDevice device, const(char)[] spirv) {
@@ -114,11 +149,10 @@ VkShaderModule createShader(VkDevice device, const(char)[] spirv) {
     info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     info.codeSize = spirv.length;
     info.pCode = code;
-    VkShaderModule result = null;
-    if (vkCreateShaderModule(device, &info, null, &result) != VK_SUCCESS) {
-        result = null;
-    }
+    VkShaderModule result;
+    immutable VkResult created = vkCreateShaderModule(device, &info, null, &result);
     free(code);
+    expectSuccess(created);
     return result;
 }
 
@@ -131,8 +165,8 @@ VkPipeline createGraphicsPipeline(VkDevice device, PipelineSettings settings) {
         shaderStage(VK_SHADER_STAGE_VERTEX_BIT, settings.vertexShader),
         shaderStage(VK_SHADER_STAGE_FRAGMENT_BIT, settings.fragmentShader),
     ];
-    VkPipelineVertexInputStateCreateInfo emptyVertexInput;
-    emptyVertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    VkPipelineVertexInputStateCreateInfo vertexInput;
+    vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     VkPipelineInputAssemblyStateCreateInfo inputAssembly;
     inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
     inputAssembly.topology = settings.topology;
@@ -143,34 +177,18 @@ VkPipeline createGraphicsPipeline(VkDevice device, PipelineSettings settings) {
     VkPipelineRasterizationStateCreateInfo rasterization;
     rasterization.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rasterization.polygonMode = VK_POLYGON_MODE_FILL;
-    rasterization.cullMode = VK_CULL_MODE_NONE;
+    rasterization.cullMode = settings.cullMode();
     rasterization.frontFace = VK_FRONT_FACE_CLOCKWISE;
-    if (settings.cullBackFaces) {
-        rasterization.cullMode = VK_CULL_MODE_BACK_BIT;
-    }
     rasterization.lineWidth = 1.0f;
     VkPipelineMultisampleStateCreateInfo multisample;
     multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
     multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
     VkPipelineDepthStencilStateCreateInfo depthStencil;
     depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    depthStencil.depthTestEnable = settings.depthTest;
-    depthStencil.depthWriteEnable = settings.depthWrite;
+    depthStencil.depthTestEnable = settings.isDepthTested;
+    depthStencil.depthWriteEnable = settings.isDepthWritten;
     depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER;
-    VkPipelineColorBlendAttachmentState blendAttachment;
-    blendAttachment.colorWriteMask = COLOR_WRITE_RGBA;
-    if (settings.blend != Blend.opaque) {
-        blendAttachment.blendEnable = VULKAN_TRUE;
-        blendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-        blendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-        blendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
-        blendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
-        blendAttachment.colorWriteMask = COLOR_WRITE_RGB;
-    }
-    if (settings.blend == Blend.transmittance) {
-        blendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-        blendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-    }
+    VkPipelineColorBlendAttachmentState blendAttachment = settings.blendAttachment();
     VkPipelineColorBlendStateCreateInfo colorBlend;
     colorBlend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
     colorBlend.attachmentCount = 1;
@@ -187,10 +205,7 @@ VkPipeline createGraphicsPipeline(VkDevice device, PipelineSettings settings) {
     info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
     info.stageCount = 2;
     info.pStages = stages.ptr;
-    info.pVertexInputState = &emptyVertexInput;
-    if (settings.vertexInput !is null) {
-        info.pVertexInputState = settings.vertexInput;
-    }
+    info.pVertexInputState = &vertexInput;
     info.pInputAssemblyState = &inputAssembly;
     info.pViewportState = &viewport;
     info.pRasterizationState = &rasterization;
@@ -201,10 +216,8 @@ VkPipeline createGraphicsPipeline(VkDevice device, PipelineSettings settings) {
     info.layout = settings.layout;
     info.renderPass = settings.renderPass;
     info.subpass = settings.subpass;
-    VkPipeline result = null;
-    if (vkCreateGraphicsPipelines(device, null, 1, &info, null, &result) != VK_SUCCESS) {
-        result = null;
-    }
+    VkPipeline result;
+    expectSuccess(vkCreateGraphicsPipelines(device, null, 1, &info, null, &result));
     return result;
 }
 
@@ -213,23 +226,9 @@ VkPipeline createComputePipeline(VkDevice device, VkShaderModule shader, VkPipel
     info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     info.stage = shaderStage(VK_SHADER_STAGE_COMPUTE_BIT, shader);
     info.layout = layout;
-    VkPipeline result = null;
-    if (vkCreateComputePipelines(device, null, 1, &info, null, &result) != VK_SUCCESS) {
-        result = null;
-    }
+    VkPipeline result;
+    expectSuccess(vkCreateComputePipelines(device, null, 1, &info, null, &result));
     return result;
-}
-
-VkBufferMemoryBarrier bufferBarrier(VkBuffer buffer, VkAccessFlags sourceAccess, VkAccessFlags destinationAccess) {
-    VkBufferMemoryBarrier barrier;
-    barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-    barrier.srcAccessMask = sourceAccess;
-    barrier.dstAccessMask = destinationAccess;
-    barrier.srcQueueFamilyIndex = QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = QUEUE_FAMILY_IGNORED;
-    barrier.buffer = buffer;
-    barrier.size = WHOLE_SIZE;
-    return barrier;
 }
 
 VkWriteDescriptorSet bufferWrite(VkDescriptorSet set, uint binding, VkDescriptorType type, VkDescriptorBufferInfo* info) {
@@ -268,8 +267,8 @@ VkDescriptorSetLayout createSetLayout(VkDevice device, VkDescriptorSetLayoutBind
     info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     info.bindingCount = cast(uint) bindings.length;
     info.pBindings = bindings.ptr;
-    VkDescriptorSetLayout result = null;
-    vkCreateDescriptorSetLayout(device, &info, null, &result);
+    VkDescriptorSetLayout result;
+    expectSuccess(vkCreateDescriptorSetLayout(device, &info, null, &result));
     return result;
 }
 
@@ -280,9 +279,7 @@ VkPipelineLayout createPipelineLayout(VkDevice device, VkDescriptorSetLayout[] s
     info.pSetLayouts = setLayouts.ptr;
     info.pushConstantRangeCount = cast(uint) pushConstants.length;
     info.pPushConstantRanges = pushConstants.ptr;
-    VkPipelineLayout result = null;
-    if (vkCreatePipelineLayout(device, &info, null, &result) != VK_SUCCESS) {
-        result = null;
-    }
+    VkPipelineLayout result;
+    expectSuccess(vkCreatePipelineLayout(device, &info, null, &result));
     return result;
 }

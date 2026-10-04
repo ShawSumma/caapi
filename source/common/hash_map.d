@@ -7,17 +7,19 @@ enum size_t MIGRATED_SLOTS_PER_INSERT = 8;
 enum size_t TEST_KEYS = 100000;
 enum size_t TEST_HASH_MULTIPLIER = 0x9E3779B97F4A7C15;
 
+struct HashEntry(K, V) {
+    K key;
+    V value;
+    bool isUsed;
+}
+
 struct HashTable(K, V) {
-    K* keys;
-    V* values;
-    bool* used;
+    HashEntry!(K, V)* entries;
     size_t capacity;
     size_t count;
 
     void allocate(size_t slots) {
-        keys = cast(K*) calloc(slots, K.sizeof);
-        values = cast(V*) calloc(slots, V.sizeof);
-        used = cast(bool*) calloc(slots, bool.sizeof);
+        entries = cast(HashEntry!(K, V)*) calloc(slots, HashEntry!(K, V).sizeof);
         capacity = slots;
         count = 0;
     }
@@ -25,39 +27,45 @@ struct HashTable(K, V) {
     size_t slotOf(K key) const {
         size_t mask = capacity - 1;
         size_t index = key.toHash() & mask;
-        while (used[index] && !(keys[index] == key)) {
+        while (entries[index].isUsed && !(entries[index].key == key)) {
             index = (index + 1) & mask;
         }
         return index;
     }
 
     inout(V)* find(K key) inout {
-        inout(V)* found = null;
-        if (capacity > 0) {
-            size_t index = slotOf(key);
-            if (used[index]) {
-                found = &values[index];
+        if (capacity == 0) {
+            return null;
+        } else {
+            inout(HashEntry!(K, V))* entry = &entries[slotOf(key)];
+            if (entry.isUsed) {
+                return &entry.value;
+            } else {
+                return null;
             }
         }
-        return found;
     }
 
-    void put(K key, V value, bool overwrite) {
-        size_t index = slotOf(key);
-        if (!used[index]) {
-            used[index] = true;
-            keys[index] = key;
-            values[index] = value;
+    void assign(K key, V value) {
+        HashEntry!(K, V)* entry = &entries[slotOf(key)];
+        if (entry.isUsed) {
+            entry.value = value;
+        } else {
+            *entry = HashEntry!(K, V)(key, value, true);
             count += 1;
-        } else if (overwrite) {
-            values[index] = value;
+        }
+    }
+
+    void assignIfMissing(K key, V value) {
+        HashEntry!(K, V)* entry = &entries[slotOf(key)];
+        if (!entry.isUsed) {
+            *entry = HashEntry!(K, V)(key, value, true);
+            count += 1;
         }
     }
 
     void release() {
-        free(keys);
-        free(values);
-        free(used);
+        free(entries);
         this = HashTable.init;
     }
 }
@@ -70,27 +78,28 @@ struct HashMap(K, V) {
     inout(V)* find(K key) inout {
         inout(V)* found = current.find(key);
         if (found is null) {
-            found = previous.find(key);
+            return previous.find(key);
+        } else {
+            return found;
         }
-        return found;
     }
 
     void insert(K key, V value) {
         if ((current.count + 1) * 2 > current.capacity) {
             grow();
         }
-        current.put(key, value, true);
+        current.assign(key, value);
         migrate(MIGRATED_SLOTS_PER_INSERT);
     }
 
     void grow() {
         migrate(previous.capacity);
-        size_t slots = INITIAL_HASH_MAP_CAPACITY;
-        if (current.capacity > 0) {
-            slots = current.capacity * 2;
-        }
         previous = current;
-        current.allocate(slots);
+        if (previous.capacity == 0) {
+            current.allocate(INITIAL_HASH_MAP_CAPACITY);
+        } else {
+            current.allocate(previous.capacity * 2);
+        }
         migrated = 0;
     }
 
@@ -100,8 +109,8 @@ struct HashMap(K, V) {
             end = previous.capacity;
         }
         foreach (i; migrated .. end) {
-            if (previous.used[i]) {
-                current.put(previous.keys[i], previous.values[i], false);
+            if (previous.entries[i].isUsed) {
+                current.assignIfMissing(previous.entries[i].key, previous.entries[i].value);
             }
         }
         migrated = end;

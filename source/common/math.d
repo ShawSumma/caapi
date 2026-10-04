@@ -236,14 +236,14 @@ struct MIsometry(N) {
 
     static MIsometry translationAlong(N[3] v) {
         N norm = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-        MIsometry result = identity();
-        if (norm != 0) {
+        if (norm == 0) {
+            return identity();
+        } else {
             N sinhcValue = cast(N) sinh(norm) / norm;
             N coshValue = cast(N) cosh(norm);
             MVector!N target = MVector!N(v[0] * sinhcValue, v[1] * sinhcValue, v[2] * sinhcValue, coshValue);
-            result = translation(MPoint!N.origin(), MPoint!N(target));
+            return translation(MPoint!N.origin(), MPoint!N(target));
         }
-        return result;
     }
 
     static MIsometry fromColumnsUnchecked(MDirection!N[3] dirs, MPoint!N point) {
@@ -345,11 +345,12 @@ struct MIsometry(N) {
 
 float[3] limitToUnitLength(float[3] v) {
     float norm = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-    float[3] result = v;
     if (norm > 1.0f) {
-        result = [v[0] / norm, v[1] / norm, v[2] / norm];
+        float[3] limited = [v[0] / norm, v[1] / norm, v[2] / norm];
+        return limited;
+    } else {
+        return v;
     }
-    return result;
 }
 
 float[3] projectToPlane(float[3] subject, float[3] normal, float[3] projectionDirection, float distance) {

@@ -52,6 +52,8 @@ enum float CHUNK_BOUNDING_SPHERE_RADIUS = cast(float)(BOUNDING_SPHERE_RADIUS_F64
 enum double ADJACENCY_PRODUCT_LIMIT = 0.5;
 enum float TABLE_TOLERANCE = 1e-5f;
 
+alias SidesToVertex = ubyte[SIDE_COUNT][SIDE_COUNT][SIDE_COUNT];
+
 struct DodecaTables {
     MIsometry!float[VERTEX_COUNT] dualToNode;
     MIsometry!float[VERTEX_COUNT] nodeToDual;
@@ -63,7 +65,7 @@ struct DodecaTables {
     ChunkAxisPermutation[3][VERTEX_COUNT] chunkAxisPermutations;
     Side[3][VERTEX_COUNT] vertexCanonicalSides;
     Vertex[3][VERTEX_COUNT] adjacentVertices;
-    bool[SIDE_COUNT][SIDE_COUNT] adjacent;
+    bool[SIDE_COUNT][SIDE_COUNT] isAdjacent;
 }
 
 immutable DodecaTables DODECA_TABLES = buildTables();
@@ -102,11 +104,11 @@ DodecaTables buildTables() {
     foreach (i; 0 .. SIDE_COUNT) {
         foreach (j; 0 .. SIDE_COUNT) {
             double product = sideNormals[i].mip(sideNormals[j].vec);
-            t.adjacent[i][j] = product > -ADJACENCY_PRODUCT_LIMIT && product < ADJACENCY_PRODUCT_LIMIT;
+            t.isAdjacent[i][j] = product > -ADJACENCY_PRODUCT_LIMIT && product < ADJACENCY_PRODUCT_LIMIT;
         }
     }
 
-    ubyte[SIDE_COUNT][SIDE_COUNT][SIDE_COUNT] sidesToVertex;
+    SidesToVertex sidesToVertex;
     foreach (i; 0 .. SIDE_COUNT) {
         foreach (j; 0 .. SIDE_COUNT) {
             foreach (k; 0 .. SIDE_COUNT) {
@@ -119,7 +121,7 @@ DodecaTables buildTables() {
     foreach (a; 0 .. SIDE_COUNT) {
         foreach (b; a + 1 .. SIDE_COUNT) {
             foreach (c; b + 1 .. SIDE_COUNT) {
-                if (t.adjacent[a][b] && t.adjacent[b][c] && t.adjacent[c][a]) {
+                if (t.isAdjacent[a][b] && t.isAdjacent[b][c] && t.isAdjacent[c][a]) {
                     t.vertexCanonicalSides[vertexCount][0] = cast(Side) a;
                     t.vertexCanonicalSides[vertexCount][1] = cast(Side) b;
                     t.vertexCanonicalSides[vertexCount][2] = cast(Side) c;
@@ -161,32 +163,30 @@ DodecaTables buildTables() {
 
     foreach (vi; 0 .. VERTEX_COUNT) {
         foreach (axisIndex; 0 .. 3) {
-            bool found = false;
-            foreach (testSide; 0 .. SIDE_COUNT) {
-                if (!found && testSide != t.vertexCanonicalSides[vi][axisIndex]) {
-                    Side[3] testSides;
-                    foreach (k; 0 .. 3) {
-                        if (k == axisIndex) {
-                            testSides[k] = cast(Side) testSide;
-                        } else {
-                            testSides[k] = t.vertexCanonicalSides[vi][k];
-                        }
-                    }
-                    ubyte adjacentVertex = sidesToVertex[testSides[0]][testSides[1]][testSides[2]];
-                    if (adjacentVertex != NO_VERTEX_INDEX) {
-                        Side[3] adjacentSides;
-                        foreach (k; 0 .. 3) {
-                            adjacentSides[k] = t.vertexCanonicalSides[adjacentVertex][k];
-                        }
-                        t.adjacentVertices[vi][axisIndex] = cast(Vertex) adjacentVertex;
-                        t.chunkAxisPermutations[vi][axisIndex] = permutationFromSides(testSides, adjacentSides);
-                        found = true;
-                    }
-                }
-            }
+            Side[3] testSides = sidesAcrossAxis(&sidesToVertex, t.vertexCanonicalSides[vi], axisIndex);
+            ubyte adjacentVertex = sidesToVertex[testSides[0]][testSides[1]][testSides[2]];
+            t.adjacentVertices[vi][axisIndex] = cast(Vertex) adjacentVertex;
+            t.chunkAxisPermutations[vi][axisIndex] = permutationFromSides(testSides, t.vertexCanonicalSides[adjacentVertex]);
         }
     }
     return t;
+}
+
+Side[3] sidesAcrossAxis(const(SidesToVertex)* sidesToVertex, Side[3] sides, size_t axis) {
+    foreach (testSide; 0 .. SIDE_COUNT) {
+        Side[3] candidate;
+        foreach (k; 0 .. 3) {
+            if (k == axis) {
+                candidate[k] = cast(Side) testSide;
+            } else {
+                candidate[k] = sides[k];
+            }
+        }
+        if (testSide != sides[axis] && (*sidesToVertex)[candidate[0]][candidate[1]][candidate[2]] != NO_VERTEX_INDEX) {
+            return candidate;
+        }
+    }
+    assert(false);
 }
 
 MIsometry!double vertexDualFrame(MDirection!double[SIDE_COUNT] sideNormals, Side[3] sides) {
@@ -199,37 +199,37 @@ MIsometry!double vertexDualFrame(MDirection!double[SIDE_COUNT] sideNormals, Side
     return MIsometry!double.fromColumnsUnchecked(columns, vertexPosition);
 }
 
-MDirection!float sideNormal(Side side) {
+MDirection!float normal(Side side) {
     return DODECA_TABLES.sideNormals[side];
 }
 
-MIsometry!float sideReflection(Side side) {
+MIsometry!float reflection(Side side) {
     return DODECA_TABLES.reflections[side];
 }
 
-bool sideAdjacentTo(Side a, Side b) {
-    return DODECA_TABLES.adjacent[a][b];
+bool isAdjacentTo(Side a, Side b) {
+    return DODECA_TABLES.isAdjacent[a][b];
 }
 
-bool sideIsFacing(Side side, MPoint!float p) {
+bool isFacing(Side side, MPoint!float p) {
     float[4] r = DODECA_TABLES.reflections[side].row(3);
     float dot = r[0] * p.vec.data[0] + r[1] * p.vec.data[1] + r[2] * p.vec.data[2] + r[3] * p.vec.data[3];
     return dot < p.vec.data[3];
 }
 
-Side[3] vertexCanonicalSides(Vertex v) {
+Side[3] canonicalSides(Vertex v) {
     return DODECA_TABLES.vertexCanonicalSides[v];
 }
 
-Vertex[3] vertexAdjacentVertices(Vertex v) {
+Vertex[3] adjacentVertices(Vertex v) {
     return DODECA_TABLES.adjacentVertices[v];
 }
 
-ChunkAxisPermutation[3] vertexChunkAxisPermutations(Vertex v) {
+ChunkAxisPermutation[3] chunkAxisPermutations(Vertex v) {
     return DODECA_TABLES.chunkAxisPermutations[v];
 }
 
-MIsometry!float vertexNodeToDual(Vertex v) {
+MIsometry!float nodeToDual(Vertex v) {
     return DODECA_TABLES.nodeToDual[v];
 }
 
@@ -241,27 +241,28 @@ float chunkGridCenterRadius() {
     return acoshf(DODECA_TABLES.chunkGridCenterCornerCosh);
 }
 
-MPoint!float vertexChunkBoundingSphereCenter(Vertex v) {
+MPoint!float chunkBoundingSphereCenter(Vertex v) {
     return DODECA_TABLES.chunkBoundingSphereCenters[v];
 }
 
-Matrix4!float vertexChunkToNode(Vertex v) {
+Matrix4!float chunkToNode(Vertex v) {
     return DODECA_TABLES.dualToNode[v].mat * Matrix4!float.newScaling(1.0f / DODECA_TABLES.dualToChunkFactor);
 }
 
 unittest {
     foreach (v; 0 .. VERTEX_COUNT) {
+        Vertex vertex = cast(Vertex) v;
         MPoint!float vertexPoint = DODECA_TABLES.dualToNode[v] * MPoint!float.origin();
         assert(fabs(MPoint!float.origin().distance(vertexPoint) - BOUNDING_SPHERE_RADIUS) < TABLE_TOLERANCE);
-        MVector!float nodeCenter = DODECA_TABLES.nodeToDual[v] * MVector!float.origin();
+        MVector!float nodeCenter = vertex.nodeToDual * MVector!float.origin();
         foreach (axis; 0 .. 3) {
             assert(fabs(nodeCenter.data[axis] / nodeCenter.data[3] * DODECA_TABLES.dualToChunkFactor - 1) < TABLE_TOLERANCE);
         }
-        MPoint!float center = vertexChunkBoundingSphereCenter(cast(Vertex) v);
-        MPoint!float gridCenter = (vertexChunkToNode(cast(Vertex) v) * MVector!float(0.5f, 0.5f, 0.5f, 1)).normalizedPoint();
+        MPoint!float center = vertex.chunkBoundingSphereCenter;
+        MPoint!float gridCenter = (vertex.chunkToNode * MVector!float(0.5f, 0.5f, 0.5f, 1)).normalizedPoint();
         foreach (corner; 0 .. 8) {
             MVector!float chunkCorner = MVector!float(corner & 1, (corner >> 1) & 1, (corner >> 2) & 1, 1);
-            MPoint!float cornerPoint = (vertexChunkToNode(cast(Vertex) v) * chunkCorner).normalizedPoint();
+            MPoint!float cornerPoint = (vertex.chunkToNode * chunkCorner).normalizedPoint();
             assert(center.distance(cornerPoint) < CHUNK_BOUNDING_SPHERE_RADIUS + TABLE_TOLERANCE);
             assert(gridCenter.distance(cornerPoint) < chunkGridCenterRadius() + TABLE_TOLERANCE);
         }

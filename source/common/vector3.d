@@ -49,17 +49,16 @@ float[3] rejectAlong(float[3] v, float[3] unitAxis) {
 }
 
 float[3] capMagnitude3(float[3] v, float maxMagnitude) {
-    float magnitudeSquared = dot3(v, v);
-    float[3] result = v;
+    float magnitudeSquared = v.dot3(v);
     if (magnitudeSquared > maxMagnitude * maxMagnitude) {
-        result = scale3(v, maxMagnitude / sqrt(magnitudeSquared));
+        return v.scale3(maxMagnitude / sqrt(magnitudeSquared));
+    } else {
+        return v;
     }
-    return result;
 }
 
 float[3] moveToward3(float[3] current, float[3] target, float maxStep) {
-    float[3] toTarget = sub3(target, current);
-    return add3(current, capMagnitude3(toTarget, maxStep));
+    return current.add3(target.sub3(current).capMagnitude3(maxStep));
 }
 
 unittest {

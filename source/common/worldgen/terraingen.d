@@ -23,29 +23,27 @@ Material terraingenVoronoi(float elevation, float rain, float temperature, float
 }
 
 const(Material)[] materialTable(float elevation, float distance) {
-    const(Material)[] result;
     if (distance <= TERRAIN_SURFACE_THICKNESS) {
         if (elevation < DEEP_ELEVATION) {
-            result = SURFACE_DEEP[];
+            return SURFACE_DEEP[];
         } else if (elevation < LOW_ELEVATION) {
-            result = SURFACE_LOW[];
+            return SURFACE_LOW[];
         } else if (elevation < MEDIUM_ELEVATION) {
-            result = SURFACE_MED[];
+            return SURFACE_MED[];
         } else {
-            result = SURFACE_HIGH[];
+            return SURFACE_HIGH[];
         }
     } else {
         if (elevation < DEEP_ELEVATION) {
-            result = GENERAL_DEEP[];
+            return GENERAL_DEEP[];
         } else if (elevation < LOW_ELEVATION) {
-            result = GENERAL_LOW[];
+            return GENERAL_LOW[];
         } else if (elevation < MEDIUM_ELEVATION) {
-            result = GENERAL_MED[];
+            return GENERAL_MED[];
         } else {
-            result = GENERAL_HIGH[];
+            return GENERAL_HIGH[];
         }
     }
-    return result;
 }
 
 float[2] latticeLocation(int row, int column) {
@@ -61,13 +59,13 @@ uint latticeIndex(int row, int column) {
 }
 
 int clampLine(int line) {
-    int result = line;
     if (line < 0) {
-        result = 0;
+        return 0;
     } else if (line > LATTICE_LAST_LINE) {
-        result = LATTICE_LAST_LINE;
+        return LATTICE_LAST_LINE;
+    } else {
+        return line;
     }
-    return result;
 }
 
 uint nearestLatticePoint(float rain, float temperature) {

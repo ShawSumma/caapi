@@ -1,16 +1,18 @@
 #version 460
 
 #include "common.h"
+#include "draw.h"
 #include "surface-extraction/surface.h"
-
-layout(location = 0) in mat4 transform;
-layout(location = 4) in float reversed_winding;
 
 layout(location = 0) out vec3 texcoords_out;
 layout(location = 1) out float occlusion;
 
 layout(set = 1, binding = 0) readonly restrict buffer Surfaces {
     Surface surfaces[];
+};
+
+layout(set = 1, binding = 2) readonly restrict buffer Transforms {
+    DrawTransform draws[];
 };
 
 layout(push_constant) uniform PushConstants {
@@ -51,7 +53,8 @@ void main() {
     Surface s = surfaces[index];
     uvec3 pos = get_pos(s);
     uint axis = get_axis(s);
-    if (reversed_winding != 0.0) {
+    DrawTransform draw = draws[gl_InstanceIndex];
+    if (draw.reversed.x != 0.0) {
         if (axis % FLIPPED_DIAGONAL_OFFSET < REVERSED_AXIS_OFFSET) {
             axis += REVERSED_AXIS_OFFSET;
         } else {
@@ -62,5 +65,5 @@ void main() {
     texcoords_out = vec3(uv, get_mat(s) - FIRST_SOLID_MATERIAL);
     occlusion = get_occlusion(s, uv);
     vec3 relative_coords = vertices[axis][vertex] + pos;
-    gl_Position = view_projection * transform * vec4(relative_coords / dimension, 1);
+    gl_Position = view_projection * draw.transform * vec4(relative_coords / dimension, 1);
 }

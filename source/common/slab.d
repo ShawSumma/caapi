@@ -4,7 +4,7 @@ import core.stdc.stdlib : calloc, free, malloc;
 import common.array : Array;
 
 enum uint SLAB_SHIFT = 12;
-enum uint SLAB_SIZE = 1u << SLAB_SHIFT;
+enum uint SLAB_SIZE = 2 ^^ SLAB_SHIFT;
 enum uint SLAB_MASK = SLAB_SIZE - 1;
 
 struct Slab(T) {
@@ -16,15 +16,30 @@ struct Slab(T) {
 
     void ensure(size_t count) {
         while (blocks.length * SLAB_SIZE < count) {
-            static if (__traits(isZeroInit, T)) {
-                T* block = cast(T*) calloc(SLAB_SIZE, T.sizeof);
-            } else {
-                T* block = cast(T*) malloc(SLAB_SIZE * T.sizeof);
-                foreach (i; 0 .. SLAB_SIZE) {
-                    block[i] = T.init;
-                }
+            blocks.append(allocateBlock());
+        }
+    }
+
+    T* touch(size_t index) {
+        size_t block = index >> SLAB_SHIFT;
+        while (blocks.length <= block) {
+            blocks.append(null);
+        }
+        if (blocks.ptr[block] is null) {
+            blocks.ptr[block] = allocateBlock();
+        }
+        return at(index);
+    }
+
+    T* allocateBlock() {
+        static if (__traits(isZeroInit, T)) {
+            return cast(T*) calloc(SLAB_SIZE, T.sizeof);
+        } else {
+            T* block = cast(T*) malloc(SLAB_SIZE * T.sizeof);
+            foreach (i; 0 .. SLAB_SIZE) {
+                block[i] = T.init;
             }
-            blocks.append(block);
+            return block;
         }
     }
 
@@ -46,4 +61,9 @@ unittest {
     assert(*slab.at(SLAB_SIZE) == SLAB_SIZE);
     assert(*slab.at(SLAB_SIZE * 3 - 1) == 0);
     slab.release();
+    Slab!uint sparse;
+    *sparse.touch(SLAB_SIZE * 5) = 7;
+    assert(sparse.blocks.ptr[0] is null);
+    assert(*sparse.touch(SLAB_SIZE * 5) == 7);
+    sparse.release();
 }

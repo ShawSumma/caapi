@@ -4,8 +4,8 @@ import core.stdc.stdio : FILE, fclose, fopen, fprintf;
 import core.stdc.stdlib : strtof;
 import core.stdc.string : strcmp;
 import client.config : ClientConfig;
-import client.game : Game, createGame, releaseGame;
-import client.script : ScriptHost, closeScript, runScript;
+import client.game : Game;
+import client.script : ScriptHost;
 import common.array : Array;
 import common.sim_config : SimConfigRaw;
 import worldcheck : benchDrive, benchGen, benchMesh, benchNearby, dumpWorld;
@@ -29,7 +29,7 @@ enum Command : ubyte {
 
 struct NumberArgument {
     float value;
-    bool present;
+    bool isPresent;
 }
 
 struct HeadlessArguments {
@@ -38,15 +38,27 @@ struct HeadlessArguments {
     NumberArgument radius;
     NumberArgument iterations;
     Command command;
-    bool flatWorldgen;
-    bool valid = true;
+    bool isFlat;
+    bool isValid = true;
+
+    float radiusOr(float fallback) const {
+        if (radius.isPresent) {
+            return radius.value;
+        } else {
+            return fallback;
+        }
+    }
+
+    bool isUsable() const {
+        return isValid && outputPath !is null && (command != Command.Scripts || scripts.length > 0);
+    }
 }
 
 NumberArgument parseNumber(const(char)* text) {
     const(char)* end;
     NumberArgument result;
     result.value = strtof(text, &end);
-    result.present = end != text && *end == 0;
+    result.isPresent = end != text && *end == 0;
     return result;
 }
 
@@ -60,7 +72,7 @@ HeadlessArguments parseArguments(int argc, char** argv) {
             arguments.outputPath = argv[index];
             index += 1;
         } else if (strcmp(argument, "--flat") == 0) {
-            arguments.flatWorldgen = true;
+            arguments.isFlat = true;
         } else if (strcmp(argument, "--dump-world") == 0) {
             arguments.command = Command.DumpWorld;
         } else if (strcmp(argument, "--bench-gen") == 0) {
@@ -71,12 +83,12 @@ HeadlessArguments parseArguments(int argc, char** argv) {
             arguments.command = Command.BenchNearby;
         } else if (strcmp(argument, "--bench-mesh") == 0) {
             arguments.command = Command.BenchMesh;
-        } else if (parseNumber(argument).present && !arguments.radius.present) {
+        } else if (parseNumber(argument).isPresent && !arguments.radius.isPresent) {
             arguments.radius = parseNumber(argument);
-        } else if (parseNumber(argument).present) {
+        } else if (parseNumber(argument).isPresent) {
             arguments.iterations = parseNumber(argument);
         } else if (argument[0] == '-') {
-            arguments.valid = false;
+            arguments.isValid = false;
         } else {
             arguments.scripts.append(argument);
         }
@@ -84,89 +96,93 @@ HeadlessArguments parseArguments(int argc, char** argv) {
     return arguments;
 }
 
-float radiusOr(HeadlessArguments arguments, float fallback) {
-    float result = fallback;
-    if (arguments.radius.present) {
-        result = arguments.radius.value;
-    }
-    return result;
-}
-
-bool runScriptFile(const(char)* path, bool flatWorldgen, FILE* report) {
+bool runScriptFile(const(char)* path, bool isFlat, FILE* report) {
     ClientConfig config;
-    Game game = createGame(flatWorldgen, config.reachMeters);
-    game.settleWorldgenEachFrame = true;
+    Game game = Game.make(isFlat, config.reachMeters);
+    game.isSettlingWorldgenEachFrame = true;
     ScriptHost host;
     host.game = &game;
     host.report = report;
-    if (report !is null) {
-        fprintf(report, "== %s\n", path);
-    }
-    bool ok = runScript(&host, path);
-    closeScript(&host);
-    if (report !is null) {
-        const(char)* suffix = "";
-        if (!ok) {
-            suffix = " error";
-        }
-        fprintf(report, "session: frames=%u time=%.2f traveled=%.2f failures=%u%s\n", host.frames, cast(double) game.simTime, cast(double)(game.traveled / game.simConfig.metersToAbsolute), host.failures, suffix);
-    }
-    releaseGame(&game);
-    return ok && host.failures == 0;
+    fprintf(report, "== %s\n", path);
+    immutable bool isCompleted = host.run(path);
+    host.close();
+    fprintf(report, "session: frames=%u time=%.2f traveled=%.2f failures=%u%s\n", host.frames, cast(double) game.simTime, cast(double)(game.traveled / game.simConfig.metersToAbsolute), host.failures, sessionSuffix(isCompleted));
+    game.release();
+    return isCompleted && host.failures == 0;
 }
 
-int runScripts(HeadlessArguments arguments, FILE* report) {
+immutable(char)* sessionSuffix(bool isCompleted) {
+    if (isCompleted) {
+        return "";
+    } else {
+        return " error";
+    }
+}
+
+int runScripts(const(HeadlessArguments)* arguments, FILE* report) {
     uint failed = 0;
     foreach (path; arguments.scripts.slice()) {
-        if (!runScriptFile(path, arguments.flatWorldgen, report)) {
+        immutable bool isPassed = runScriptFile(path, arguments.isFlat, report);
+        if (!isPassed) {
             failed += 1;
         }
     }
-    if (report !is null) {
-        fprintf(report, "%u passed, %u failed\n", cast(uint) arguments.scripts.length - failed, failed);
-    }
-    int status = EXIT_PASSED;
+    fprintf(report, "%u passed, %u failed\n", cast(uint) arguments.scripts.length - failed, failed);
     if (failed > 0) {
-        status = EXIT_FAILED;
+        return EXIT_FAILED;
+    } else {
+        return EXIT_PASSED;
     }
-    return status;
 }
 
-int runWorldCommand(HeadlessArguments arguments, FILE* output) {
+void runWorldCommand(const(HeadlessArguments)* arguments, FILE* output) {
     SimConfigRaw raw;
     if (arguments.command == Command.DumpWorld) {
-        dumpWorld(output, radiusOr(arguments, DEFAULT_DUMP_RADIUS), raw.chunkSize);
+        dumpWorld(output, arguments.radiusOr(DEFAULT_DUMP_RADIUS), raw.chunkSize);
     } else if (arguments.command == Command.BenchGen) {
-        benchGen(output, radiusOr(arguments, DEFAULT_GEN_RADIUS), raw.chunkSize);
+        benchGen(output, arguments.radiusOr(DEFAULT_GEN_RADIUS), raw.chunkSize);
     } else if (arguments.command == Command.BenchDrive) {
-        benchDrive(output, radiusOr(arguments, DEFAULT_GEN_RADIUS), raw.chunkSize);
+        benchDrive(output, arguments.radiusOr(DEFAULT_GEN_RADIUS), raw.chunkSize);
     } else if (arguments.command == Command.BenchMesh) {
-        benchMesh(output, radiusOr(arguments, DEFAULT_GEN_RADIUS), raw.chunkSize);
+        benchMesh(output, arguments.radiusOr(DEFAULT_GEN_RADIUS), raw.chunkSize);
+    } else if (arguments.iterations.isPresent) {
+        benchNearby(output, arguments.radiusOr(DEFAULT_NEARBY_RADIUS), cast(uint) arguments.iterations.value, raw.chunkSize);
     } else {
-        uint iterations = DEFAULT_NEARBY_ITERATIONS;
-        if (arguments.iterations.present) {
-            iterations = cast(uint) arguments.iterations.value;
-        }
-        benchNearby(output, radiusOr(arguments, DEFAULT_NEARBY_RADIUS), iterations, raw.chunkSize);
+        benchNearby(output, arguments.radiusOr(DEFAULT_NEARBY_RADIUS), DEFAULT_NEARBY_ITERATIONS, raw.chunkSize);
     }
-    return EXIT_PASSED;
+}
+
+int runCommand(const(HeadlessArguments)* arguments, FILE* output) {
+    if (arguments.command == Command.Scripts) {
+        return runScripts(arguments, output);
+    } else {
+        runWorldCommand(arguments, output);
+        return EXIT_PASSED;
+    }
+}
+
+int runWithOutput(const(HeadlessArguments)* arguments) {
+    FILE* output = fopen(arguments.outputPath, "w");
+    if (output is null) {
+        return EXIT_FAILED;
+    } else {
+        immutable int status = runCommand(arguments, output);
+        fclose(output);
+        return status;
+    }
 }
 
 extern (C) int main(int argc, char** argv) {
     HeadlessArguments arguments = parseArguments(argc, argv);
-    FILE* output = null;
-    if (arguments.outputPath !is null) {
-        output = fopen(arguments.outputPath, "w");
-    }
-    int status = EXIT_USAGE;
-    if (arguments.valid && arguments.command == Command.Scripts && arguments.scripts.length > 0) {
-        status = runScripts(arguments, output);
-    } else if (arguments.valid && arguments.command != Command.Scripts && output !is null) {
-        status = runWorldCommand(arguments, output);
-    }
-    if (output !is null) {
-        fclose(output);
-    }
+    immutable int status = startCommand(&arguments);
     arguments.scripts.release();
     return status;
+}
+
+int startCommand(const(HeadlessArguments)* arguments) {
+    if (!arguments.isUsable()) {
+        return EXIT_USAGE;
+    } else {
+        return runWithOutput(arguments);
+    }
 }

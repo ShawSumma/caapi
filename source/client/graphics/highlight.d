@@ -14,7 +14,7 @@ struct HighlightPipeline {
     VkPipelineLayout pipelineLayout;
     VkPipeline pipeline;
 
-    bool setup(VkDevice device, VkRenderPass renderPass) {
+    void setup(VkDevice device, VkRenderPass renderPass) {
         VkShaderModule vertexShader = createShader(device, HIGHLIGHT_VERT_SPV);
         VkShaderModule fragmentShader = createShader(device, HIGHLIGHT_FRAG_SPV);
         VkPushConstantRange[1] pushConstants = [
@@ -27,13 +27,10 @@ struct HighlightPipeline {
         settings.vertexShader = vertexShader;
         settings.fragmentShader = fragmentShader;
         settings.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
-        settings.depthTest = true;
-        if (vertexShader !is null && fragmentShader !is null && pipelineLayout !is null) {
-            pipeline = createGraphicsPipeline(device, settings);
-        }
+        settings.isDepthTested = true;
+        pipeline = createGraphicsPipeline(device, settings);
         vkDestroyShaderModule(device, vertexShader, null);
         vkDestroyShaderModule(device, fragmentShader, null);
-        return pipeline !is null;
     }
 
     void draw(VkCommandBuffer commands, float[16] mvp, float[3] voxelCoords, float dimension) {
@@ -47,11 +44,7 @@ struct HighlightPipeline {
     }
 
     void cleanup(VkDevice device) {
-        if (pipeline !is null) {
-            vkDestroyPipeline(device, pipeline, null);
-        }
-        if (pipelineLayout !is null) {
-            vkDestroyPipelineLayout(device, pipelineLayout, null);
-        }
+        vkDestroyPipeline(device, pipeline, null);
+        vkDestroyPipelineLayout(device, pipelineLayout, null);
     }
 }

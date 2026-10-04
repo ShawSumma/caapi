@@ -23,11 +23,11 @@ struct Coords {
 }
 
 ubyte boundaryCoord(ubyte chunkSize, CoordSign sign) {
-    ubyte result = 0;
     if (sign == CoordSign.Plus) {
-        result = cast(ubyte)(chunkSize - 1);
+        return cast(ubyte)(chunkSize - 1);
+    } else {
+        return 0;
     }
-    return result;
 }
 
 struct ChunkDirection {
@@ -47,8 +47,8 @@ immutable ChunkDirection[6] CHUNK_DIRECTIONS = [
 struct ChunkAxisPermutation {
     CoordAxis[3] axes = [CoordAxis.X, CoordAxis.Y, CoordAxis.Z];
 
-    Coords apply(Coords rhs) const {
-        Coords result;
+    C apply(C)(C rhs) const {
+        C result;
         foreach (i; 0 .. 3) {
             result.data[axes[i]] = rhs.data[i];
         }

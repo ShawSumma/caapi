@@ -1,42 +1,89 @@
 module client.graphics.voxels.chunk_meshes;
 
 import core.stdc.string : memcpy;
-import bindings.platform : VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, VK_STRUCTURE_TYPE_MEMORY_BARRIER, VkBuffer, VkBufferCopy, VkBufferUsageFlags, VkCommandBuffer, VkDevice, VkDeviceSize, VkDrawIndirectCommand, VkMemoryBarrier, VkPhysicalDevice, vkCmdCopyBuffer, vkCmdPipelineBarrier;
-import client.graphics.pipeline : GpuBuffer, createDeviceLocalBuffer, createMappedBuffer, destroyBuffer;
+import bindings.platform : VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, VK_STRUCTURE_TYPE_MEMORY_BARRIER, VkBuffer, VkBufferCopy, VkBufferUsageFlags, VkCommandBuffer, VkDevice, VkDeviceSize, VkDrawIndirectCommand, VkMemoryBarrier, VkPhysicalDevice, vkCmdCopyBuffer, vkCmdPipelineBarrier;
+import client.graphics.matrices : MATRIX_FLOATS, flatten;
+import client.graphics.pipeline : GpuBuffer;
 import client.meshing : Face, Mesher;
-import common.array : Array;
-import common.dodeca : VERTEX_COUNT;
-import common.graph : Graph;
-import common.node : ChunkSlot;
+import common.array : Array, grownCapacity;
+import common.chunk_neighbors : chunkNeighborSlot;
+import common.dodeca : VERTEX_COUNT, Vertex, chunkBoundingSphereCenter, chunkToNode;
+import common.graph : Graph, NO_SLOT;
+import common.node : Chunk, ChunkSlot, ChunkState;
 import common.range_allocator : Allocation, RangeAllocator;
 import common.slab : Slab;
-import common.traversal : NearbyNode;
+import common.traversal : NearbyNode, NearbyScratch;
+import common.voxel_math : CHUNK_DIRECTIONS;
 
-enum uint INITIAL_FACE_CAPACITY = 1u << 20;
-enum uint INITIAL_DRAW_CAPACITY = 1u << 12;
-enum uint INITIAL_STAGING_FACES = 1u << 14;
-enum uint TRANSFORM_FLOATS = 16;
-enum uint INSTANCE_FLOATS = TRANSFORM_FLOATS + 1;
-enum uint INSTANCE_BYTES = INSTANCE_FLOATS * float.sizeof;
-enum uint VERTICES_PER_FACE = 6;
-enum float REVERSED_WINDING = 1.0f;
-enum float NATURAL_WINDING = 0.0f;
-enum uint NOT_LISTED = uint.max;
+enum uint INITIAL_FACE_CAPACITY = 2 ^^ 20;
+enum uint INITIAL_STAGING_FACES = 2 ^^ 16;
+enum uint INITIAL_DRAWABLE_CAPACITY = 2 ^^ 14;
+enum uint INITIAL_NODE_CAPACITY = 2 ^^ 16;
+enum uint NO_VERSION = uint.max;
+enum uint POINT_FLOATS = 4;
+
+struct ChunkVertex {
+    float[MATRIX_FLOATS] chunkToNode;
+    float[POINT_FLOATS] sphereCenter;
+}
+
+struct DrawableRecord {
+    uint node;
+    uint vertex;
+    uint faceOffset;
+    uint faceCount;
+}
+
+struct DrawTransform {
+    float[MATRIX_FLOATS] transform;
+    float[POINT_FLOATS] reversed;
+}
 
 struct RenderChunk {
     uint faceOffset;
     uint faceCount;
-    bool listed;
+    uint drawable;
+    bool hasDrawable;
 }
 
-struct NearbyEntry {
-    uint stamp;
-    uint index;
+struct MeshRecord {
+    ChunkSlot slot;
+    uint offset;
+    uint count;
 }
 
-struct Drawable {
-    uint chunkIndex;
-    uint nearbyIndex;
+struct WorkerMeshes {
+    Mesher mesher;
+    Array!Face faces;
+    Array!MeshRecord records;
+}
+
+struct MeshBatch {
+    Array!WorkerMeshes workers;
+    const(Graph)* graph;
+}
+
+void meshJob(void* context, size_t index, uint worker) {
+    MeshBatch* batch = cast(MeshBatch*) context;
+    const(Graph)* graph = batch.graph;
+    ChunkSlot slot = graph.changedChunks.ptr[graph.changedHead + index];
+    const(Chunk)* chunk = graph.chunkAt(slot);
+    if (chunk.state == ChunkState.Populated && !chunk.voxels.isSolid() && !isFaceNeighborGenerating(graph, slot)) {
+        WorkerMeshes* output = &batch.workers.ptr[worker];
+        const(Face)[] meshed = output.mesher.mesh(graph, slot);
+        output.records.append(MeshRecord(slot, cast(uint) output.faces.length, cast(uint) meshed.length));
+        output.faces.appendAll(meshed);
+    }
+}
+
+bool isFaceNeighborGenerating(const(Graph)* graph, ChunkSlot chunk) {
+    foreach (direction; CHUNK_DIRECTIONS) {
+        ChunkSlot neighbor = graph.chunkNeighborSlot(chunk, direction);
+        if (neighbor.slot != NO_SLOT && graph.chunkAt(neighbor).state == ChunkState.Generating) {
+            return true;
+        }
+    }
+    return false;
 }
 
 struct BufferCopy {
@@ -48,233 +95,262 @@ struct BufferCopy {
 struct ChunkMeshes {
     GpuBuffer faces;
     GpuBuffer staging;
-    GpuBuffer indirect;
-    GpuBuffer instances;
+    GpuBuffer vertices;
+    GpuBuffer nodes;
+    GpuBuffer drawables;
+    GpuBuffer transforms;
+    GpuBuffer commands;
     Slab!RenderChunk chunks;
-    Slab!uint facedVertices;
-    Slab!NearbyEntry nearby;
-    Array!Drawable drawables;
+    Array!uint drawableChunks;
     Array!VkBufferCopy uploads;
     Array!BufferCopy growthCopies;
     Array!GpuBuffer retired;
+    MeshBatch batch;
     RangeAllocator allocator;
-    Mesher mesher;
     VkPhysicalDevice physicalDevice;
     VkDevice device;
-    uint nearbyVersion = NOT_LISTED;
-    uint drawCount;
-    uint drawCapacity;
+    uint listedVersion = NO_VERSION;
+    uint listedNodes;
+    uint drawableCapacity;
+    uint nodeCapacity;
     uint stagedFaces;
     uint stagingCapacity;
     uint meshedChunks;
-    bool facesReplaced;
+    ubyte dimension;
+    bool hasReplacedFaces;
+    bool hasReplacedDrawBuffers;
 
-    bool setup(VkPhysicalDevice physical, VkDevice logical, ubyte dimension) {
+    void setup(VkPhysicalDevice physical, VkDevice logical, ubyte chunkDimension) {
         physicalDevice = physical;
         device = logical;
-        mesher.setup(dimension);
-        faces = createDeviceLocalBuffer(physicalDevice, device, cast(VkDeviceSize) INITIAL_FACE_CAPACITY * Face.sizeof, faceUsage());
+        dimension = chunkDimension;
+        ChunkVertex[VERTEX_COUNT] table;
+        foreach (vertexIndex; 0 .. VERTEX_COUNT) {
+            Vertex vertex = cast(Vertex) vertexIndex;
+            table[vertexIndex].chunkToNode = flatten(vertex.chunkToNode);
+            table[vertexIndex].sphereCenter = vertex.chunkBoundingSphereCenter.vec.data;
+        }
+        vertices = GpuBuffer.makeFilled(physicalDevice, device, table[], VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        faces = GpuBuffer.makeDeviceLocal(physicalDevice, device, cast(VkDeviceSize) INITIAL_FACE_CAPACITY * Face.sizeof, faceUsage());
         allocator.grow(INITIAL_FACE_CAPACITY);
-        staging = createMappedBuffer(physicalDevice, device, cast(VkDeviceSize) INITIAL_STAGING_FACES * Face.sizeof, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+        staging = GpuBuffer.makeMapped(physicalDevice, device, cast(VkDeviceSize) INITIAL_STAGING_FACES * Face.sizeof, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
         stagingCapacity = INITIAL_STAGING_FACES;
-        indirect = createMappedBuffer(physicalDevice, device, cast(VkDeviceSize) INITIAL_DRAW_CAPACITY * VkDrawIndirectCommand.sizeof, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
-        instances = createMappedBuffer(physicalDevice, device, cast(VkDeviceSize) INITIAL_DRAW_CAPACITY * INSTANCE_BYTES, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-        drawCapacity = INITIAL_DRAW_CAPACITY;
-        return faces.ready && staging.ready && indirect.ready && instances.ready;
+        growDrawBuffers(INITIAL_DRAWABLE_CAPACITY);
+        nodes = grownMapped(nodes, cast(VkDeviceSize) INITIAL_NODE_CAPACITY * MATRIX_FLOATS * float.sizeof, 0);
+        nodeCapacity = INITIAL_NODE_CAPACITY;
+    }
+
+    uint drawableCount() const {
+        return cast(uint) drawableChunks.length;
+    }
+
+    GpuBuffer grownMapped(GpuBuffer old, VkDeviceSize size, size_t preservedBytes) {
+        GpuBuffer larger = GpuBuffer.makeMapped(physicalDevice, device, size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        memcpy(larger.mapped, old.mapped, preservedBytes);
+        retired.append(old);
+        hasReplacedDrawBuffers = true;
+        return larger;
+    }
+
+    void growDrawBuffers(uint capacity) {
+        drawables = grownMapped(drawables, cast(VkDeviceSize) capacity * DrawableRecord.sizeof, drawableCount * DrawableRecord.sizeof);
+        retired.append(transforms);
+        retired.append(commands);
+        transforms = GpuBuffer.makeDeviceLocal(physicalDevice, device, cast(VkDeviceSize) capacity * DrawTransform.sizeof, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        commands = GpuBuffer.makeDeviceLocal(physicalDevice, device, cast(VkDeviceSize) capacity * VkDrawIndirectCommand.sizeof, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
+        drawableCapacity = capacity;
     }
 
     void forgetWorld() {
         chunks.release();
-        facedVertices.release();
-        nearby.release();
-        drawables.clear();
+        drawableChunks.clear();
         allocator.release();
         allocator.grow(cast(uint)(faces.size / Face.sizeof));
-        nearbyVersion = NOT_LISTED;
+        listedVersion = NO_VERSION;
+        listedNodes = 0;
         meshedChunks = 0;
     }
 
-    void beginFrame(uint nodeCount) {
+    void beginFrame() {
         foreach (i; 0 .. retired.length) {
-            destroyBuffer(device, &retired.ptr[i]);
+            retired.ptr[i].destroy(device);
         }
         retired.clear();
         uploads.clear();
         growthCopies.clear();
-        chunks.ensure(cast(size_t) nodeCount * VERTEX_COUNT);
-        facedVertices.ensure(nodeCount);
-        nearby.ensure(nodeCount);
-        drawCount = 0;
         stagedFaces = 0;
-        facesReplaced = false;
+        hasReplacedFaces = false;
+        hasReplacedDrawBuffers = false;
     }
 
-    void listNearby(const(NearbyNode)[] nodes, uint stamp) {
-        foreach (drawable; drawables.slice()) {
-            chunks.at(drawable.chunkIndex).listed = false;
+    void list(const(NearbyScratch)* nearby, uint nearbyVersion) {
+        if (nearbyVersion != listedVersion) {
+            listedVersion = nearbyVersion;
+            listedNodes = 0;
         }
-        drawables.clear();
-        nearbyVersion = stamp;
-        foreach (i, node; nodes) {
-            *nearby.at(node.slot) = NearbyEntry(stamp, cast(uint) i);
-            uint mask = *facedVertices.at(node.slot);
-            foreach (vertex; 0 .. VERTEX_COUNT) {
-                if ((mask & (1u << vertex)) != 0) {
-                    list(node.slot * VERTEX_COUNT + vertex, cast(uint) i);
-                }
+        if (nearby.nodes.length > listedNodes) {
+            writeNodes(nearby.nodes.slice());
+            refreshDrawableNodes(nearby);
+        }
+    }
+
+    void writeNodes(const(NearbyNode)[] listed) {
+        if (listed.length > nodeCapacity) {
+            uint capacity = cast(uint) grownCapacity(nodeCapacity, listed.length);
+            nodes = grownMapped(nodes, cast(VkDeviceSize) capacity * MATRIX_FLOATS * float.sizeof, listedNodes * MATRIX_FLOATS * float.sizeof);
+            nodeCapacity = capacity;
+        }
+        float[MATRIX_FLOATS]* nodeMatrices = cast(float[MATRIX_FLOATS]*) nodes.mapped;
+        foreach (index; listedNodes .. listed.length) {
+            nodeMatrices[index] = flatten(listed[index].transform.mat);
+        }
+        listedNodes = cast(uint) listed.length;
+    }
+
+    void refreshDrawableNodes(const(NearbyScratch)* nearby) {
+        DrawableRecord* records = cast(DrawableRecord*) drawables.mapped;
+        foreach (drawable, chunkIndex; drawableChunks.slice()) {
+            records[drawable].node = nearby.indexOf(chunkIndex / VERTEX_COUNT);
+        }
+    }
+
+    void prepareBatch(const(Graph)* graph, uint workers) {
+        batch.graph = graph;
+        while (batch.workers.length < workers) {
+            batch.workers.append(WorkerMeshes.init);
+            batch.workers.ptr[batch.workers.length - 1].mesher.setup(dimension);
+        }
+        foreach (i; 0 .. batch.workers.length) {
+            batch.workers.ptr[i].faces.clear();
+            batch.workers.ptr[i].records.clear();
+        }
+    }
+
+    void applyBatch(const(NearbyScratch)* nearby) {
+        foreach (worker; batch.workers.slice()) {
+            foreach (record; worker.records.slice()) {
+                apply(nearby, record.slot, worker.faces.ptr[record.offset .. record.offset + record.count]);
             }
         }
     }
 
-    void list(uint chunkIndex, uint nearbyIndex) {
-        chunks.at(chunkIndex).listed = true;
-        drawables.append(Drawable(chunkIndex, nearbyIndex));
-    }
-
-    bool mesh(const(Graph)* graph, ChunkSlot slot) {
+    void apply(const(NearbyScratch)* nearby, ChunkSlot slot, const(Face)[] meshed) {
         uint chunkIndex = slot.slot * VERTEX_COUNT + slot.vertex;
-        RenderChunk* entry = chunks.at(chunkIndex);
-        const(Face)[] meshed = mesher.mesh(graph, slot);
+        RenderChunk* entry = chunks.touch(chunkIndex);
         if (entry.faceCount > 0) {
             allocator.release(entry.faceOffset, entry.faceCount);
         }
         entry.faceCount = cast(uint) meshed.length;
         meshedChunks += 1;
-        uint* mask = facedVertices.at(slot.slot);
-        *mask &= ~(1u << slot.vertex);
-        bool ok = true;
-        if (meshed.length > 0) {
-            *mask |= 1u << slot.vertex;
-            Allocation allocation = allocator.allocate(entry.faceCount);
-            if (!allocation.found) {
-                ok = growFaces(entry.faceCount);
-                allocation = allocator.allocate(entry.faceCount);
-            }
-            ok = ok && stage(meshed, allocation.offset);
-            entry.faceOffset = allocation.offset;
-            const(NearbyEntry)* place = nearby.at(slot.slot);
-            if (!entry.listed && place.stamp == nearbyVersion) {
-                list(chunkIndex, place.index);
-            }
-        }
-        return ok;
-    }
-
-    bool stage(const(Face)[] meshed, uint deviceOffset) {
-        bool ok = true;
-        if (stagedFaces + meshed.length > stagingCapacity) {
-            uint grown = stagingCapacity * 2;
-            while (grown < stagedFaces + meshed.length) {
-                grown *= 2;
-            }
-            GpuBuffer larger = createMappedBuffer(physicalDevice, device, cast(VkDeviceSize) grown * Face.sizeof, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
-            ok = larger.ready;
-            if (ok) {
-                memcpy(larger.mapped, staging.mapped, stagedFaces * Face.sizeof);
-                retired.append(staging);
-                staging = larger;
-                stagingCapacity = grown;
-            } else {
-                retired.append(larger);
-            }
-        }
-        if (ok) {
-            memcpy(cast(Face*) staging.mapped + stagedFaces, meshed.ptr, meshed.length * Face.sizeof);
-            uploads.append(VkBufferCopy(cast(VkDeviceSize) stagedFaces * Face.sizeof, cast(VkDeviceSize) deviceOffset * Face.sizeof, meshed.length * Face.sizeof));
-            stagedFaces += cast(uint) meshed.length;
-        }
-        return ok;
-    }
-
-    bool growFaces(uint needed) {
-        uint grown = allocator.capacity * 2;
-        while (grown < allocator.capacity + needed) {
-            grown *= 2;
-        }
-        GpuBuffer larger = createDeviceLocalBuffer(physicalDevice, device, cast(VkDeviceSize) grown * Face.sizeof, faceUsage());
-        if (larger.ready) {
-            growthCopies.append(BufferCopy(faces.buffer, larger.buffer, cast(VkDeviceSize) allocator.capacity * Face.sizeof));
-            retired.append(faces);
-            faces = larger;
-            allocator.grow(grown);
-            facesReplaced = true;
+        if (meshed.length == 0) {
+            removeDrawable(chunkIndex);
         } else {
-            retired.append(larger);
+            entry.faceOffset = allocateFaces(entry.faceCount);
+            stage(meshed, entry.faceOffset);
+            writeDrawable(chunkIndex, slot, nearby.indexOf(slot.slot));
         }
-        return larger.ready;
     }
 
-    bool addDraw(const(RenderChunk)* entry, float[TRANSFORM_FLOATS] transform, bool reversedWinding) {
-        bool ok = true;
-        if (drawCount == drawCapacity) {
-            ok = growDraws();
-        }
-        if (ok) {
-            VkDrawIndirectCommand command = VkDrawIndirectCommand(entry.faceCount * VERTICES_PER_FACE, 1, entry.faceOffset * VERTICES_PER_FACE, drawCount);
-            memcpy(cast(VkDrawIndirectCommand*) indirect.mapped + drawCount, &command, VkDrawIndirectCommand.sizeof);
-            float[INSTANCE_FLOATS] instance;
-            instance[0 .. TRANSFORM_FLOATS] = transform[];
-            instance[TRANSFORM_FLOATS] = NATURAL_WINDING;
-            if (reversedWinding) {
-                instance[TRANSFORM_FLOATS] = REVERSED_WINDING;
-            }
-            memcpy(cast(float*) instances.mapped + drawCount * INSTANCE_FLOATS, instance.ptr, INSTANCE_BYTES);
-            drawCount += 1;
-        }
-        return ok;
-    }
-
-    bool growDraws() {
-        uint grown = drawCapacity * 2;
-        GpuBuffer largerIndirect = createMappedBuffer(physicalDevice, device, cast(VkDeviceSize) grown * VkDrawIndirectCommand.sizeof, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
-        GpuBuffer largerInstances = createMappedBuffer(physicalDevice, device, cast(VkDeviceSize) grown * INSTANCE_BYTES, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-        bool ok = largerIndirect.ready && largerInstances.ready;
-        if (ok) {
-            memcpy(largerIndirect.mapped, indirect.mapped, drawCount * VkDrawIndirectCommand.sizeof);
-            memcpy(largerInstances.mapped, instances.mapped, drawCount * INSTANCE_BYTES);
-            retired.append(indirect);
-            retired.append(instances);
-            indirect = largerIndirect;
-            instances = largerInstances;
-            drawCapacity = grown;
+    uint allocateFaces(uint count) {
+        Allocation allocation = allocator.allocate(count);
+        if (allocation.isFound) {
+            return allocation.offset;
         } else {
-            retired.append(largerIndirect);
-            retired.append(largerInstances);
+            growFaces(count);
+            return allocator.allocate(count).offset;
         }
-        return ok;
     }
 
-    void recordUploads(VkCommandBuffer commands) {
+    void writeDrawable(uint chunkIndex, ChunkSlot slot, uint node) {
+        RenderChunk* entry = chunks.at(chunkIndex);
+        if (!entry.hasDrawable) {
+            if (drawableCount == drawableCapacity) {
+                growDrawBuffers(drawableCapacity * 2);
+            }
+            entry.drawable = drawableCount;
+            entry.hasDrawable = true;
+            drawableChunks.append(chunkIndex);
+        }
+        DrawableRecord* records = cast(DrawableRecord*) drawables.mapped;
+        records[entry.drawable] = DrawableRecord(node, slot.vertex, entry.faceOffset, entry.faceCount);
+    }
+
+    void removeDrawable(uint chunkIndex) {
+        RenderChunk* entry = chunks.at(chunkIndex);
+        if (entry.hasDrawable) {
+            DrawableRecord* records = cast(DrawableRecord*) drawables.mapped;
+            uint last = drawableCount - 1;
+            uint movedChunk = drawableChunks.ptr[last];
+            records[entry.drawable] = records[last];
+            drawableChunks.ptr[entry.drawable] = movedChunk;
+            chunks.at(movedChunk).drawable = entry.drawable;
+            drawableChunks.length = last;
+            entry.hasDrawable = false;
+        }
+    }
+
+    void stage(const(Face)[] meshed, uint deviceOffset) {
+        uint needed = stagedFaces + cast(uint) meshed.length;
+        if (needed > stagingCapacity) {
+            uint capacity = cast(uint) grownCapacity(stagingCapacity, needed);
+            GpuBuffer larger = GpuBuffer.makeMapped(physicalDevice, device, cast(VkDeviceSize) capacity * Face.sizeof, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+            memcpy(larger.mapped, staging.mapped, stagedFaces * Face.sizeof);
+            retired.append(staging);
+            staging = larger;
+            stagingCapacity = capacity;
+        }
+        memcpy(cast(Face*) staging.mapped + stagedFaces, meshed.ptr, meshed.length * Face.sizeof);
+        uploads.append(VkBufferCopy(cast(VkDeviceSize) stagedFaces * Face.sizeof, cast(VkDeviceSize) deviceOffset * Face.sizeof, meshed.length * Face.sizeof));
+        stagedFaces = needed;
+    }
+
+    void growFaces(uint needed) {
+        uint capacity = cast(uint) grownCapacity(allocator.capacity, allocator.capacity + needed);
+        GpuBuffer larger = GpuBuffer.makeDeviceLocal(physicalDevice, device, cast(VkDeviceSize) capacity * Face.sizeof, faceUsage());
+        growthCopies.append(BufferCopy(faces.buffer, larger.buffer, cast(VkDeviceSize) allocator.capacity * Face.sizeof));
+        retired.append(faces);
+        faces = larger;
+        allocator.grow(capacity);
+        hasReplacedFaces = true;
+    }
+
+    void recordUploads(VkCommandBuffer commandBuffer) {
         foreach (copy; growthCopies.slice()) {
             VkBufferCopy region = VkBufferCopy(0, 0, copy.size);
-            vkCmdCopyBuffer(commands, copy.source, copy.destination, 1, &region);
-            transferBarrier(commands, VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+            vkCmdCopyBuffer(commandBuffer, copy.source, copy.destination, 1, &region);
+            transferBarrier(commandBuffer, VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
         }
         if (uploads.length > 0) {
-            vkCmdCopyBuffer(commands, staging.buffer, faces.buffer, cast(uint) uploads.length, uploads.ptr);
+            vkCmdCopyBuffer(commandBuffer, staging.buffer, faces.buffer, cast(uint) uploads.length, uploads.ptr);
         }
         if (uploads.length > 0 || growthCopies.length > 0) {
-            transferBarrier(commands, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);
+            transferBarrier(commandBuffer, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
         }
     }
 
     void cleanup() {
         foreach (i; 0 .. retired.length) {
-            destroyBuffer(device, &retired.ptr[i]);
+            retired.ptr[i].destroy(device);
         }
-        destroyBuffer(device, &faces);
-        destroyBuffer(device, &staging);
-        destroyBuffer(device, &indirect);
-        destroyBuffer(device, &instances);
+        faces.destroy(device);
+        staging.destroy(device);
+        vertices.destroy(device);
+        nodes.destroy(device);
+        drawables.destroy(device);
+        transforms.destroy(device);
+        commands.destroy(device);
+        foreach (i; 0 .. batch.workers.length) {
+            batch.workers.ptr[i].mesher.release();
+            batch.workers.ptr[i].faces.release();
+            batch.workers.ptr[i].records.release();
+        }
+        batch.workers.release();
         retired.release();
         uploads.release();
         growthCopies.release();
-        drawables.release();
+        drawableChunks.release();
         allocator.release();
         chunks.release();
-        facedVertices.release();
-        nearby.release();
-        mesher.release();
     }
 }
 
@@ -282,10 +358,10 @@ VkBufferUsageFlags faceUsage() {
     return VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
 }
 
-void transferBarrier(VkCommandBuffer commands, uint destinationAccess, uint destinationStage) {
+void transferBarrier(VkCommandBuffer commandBuffer, uint destinationAccess, uint destinationStage) {
     VkMemoryBarrier barrier;
     barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
     barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     barrier.dstAccessMask = destinationAccess;
-    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, destinationStage, 0, 1, &barrier, 0, null, 0, null);
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, destinationStage, 0, 1, &barrier, 0, null, 0, null);
 }

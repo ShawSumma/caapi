@@ -1,8 +1,8 @@
 module common.chunk_neighbors;
 
-import common.dodeca : SIDE_COUNT, Side, VERTEX_COUNT, Vertex, vertexAdjacentVertices, vertexCanonicalSides;
-import common.graph : Graph, NO_SLOT, ROOT_NODE, createGraph;
-import common.margins : CoordsWithMargins, boundaryCoordWithMargins, marginCoord, neighborAxisPermutation, permuteCoordsWithMargins;
+import common.dodeca : SIDE_COUNT, Side, VERTEX_COUNT, Vertex, adjacentVertices, canonicalSides;
+import common.graph : Graph, NO_SLOT, ROOT_NODE;
+import common.margins : CoordsWithMargins, boundaryCoordWithMargins, marginCoord, neighborAxisPermutation;
 import common.node : Chunk, ChunkSlot, ChunkState, Occupancy;
 import common.voxel_math : ChunkDirection, CoordAxis, CoordSign;
 import common.world : Material;
@@ -14,86 +14,99 @@ enum ubyte TEST_EDGE_COORD = 2;
 struct CellHop {
     CoordsWithMargins coords;
     ChunkSlot chunk;
-    bool populated;
+    bool isPopulated;
 }
 
 ChunkSlot chunkNeighborSlot(const(Graph)* graph, ChunkSlot chunk, ChunkDirection direction) {
-    ChunkSlot result = ChunkSlot(chunk.slot, vertexAdjacentVertices(chunk.vertex)[direction.axis]);
     if (direction.sign == CoordSign.Minus) {
-        result = ChunkSlot(graph.neighborSlot(chunk.slot, vertexCanonicalSides(chunk.vertex)[direction.axis]), chunk.vertex);
+        return ChunkSlot(graph.neighborSlot(chunk.slot, chunk.vertex.canonicalSides[direction.axis]), chunk.vertex);
+    } else {
+        return ChunkSlot(chunk.slot, chunk.vertex.adjacentVertices[direction.axis]);
     }
-    return result;
 }
 
-bool outsideInterior(ubyte dimension, ubyte coord) {
+bool isOutsideInterior(ubyte dimension, ubyte coord) {
     return coord == 0 || coord == dimension + 1;
 }
 
-CellHop hopCell(const(Graph)* graph, ChunkSlot chunk, CoordsWithMargins coords, size_t axis) {
-    ubyte dimension = graph.layout.dimension;
-    CoordSign sign = CoordSign.Plus;
-    if (coords.data[axis] == 0) {
-        sign = CoordSign.Minus;
-    }
-    ChunkDirection direction = ChunkDirection(cast(CoordAxis) axis, sign);
-    CellHop result;
-    result.chunk = chunkNeighborSlot(graph, chunk, direction);
-    if (result.chunk.slot != NO_SLOT) {
-        CoordsWithMargins moved = coords;
-        moved.data[axis] = boundaryCoordWithMargins(dimension, sign);
-        result.coords = permuteCoordsWithMargins(neighborAxisPermutation(chunk.vertex, direction), moved);
-        result.populated = graph.nodeAt(result.chunk.slot).chunks[result.chunk.vertex].state == ChunkState.Populated;
-    }
-    return result;
-}
-
-bool cellOccupied(const(Graph)* graph, ChunkSlot chunk, CoordsWithMargins coords) {
-    ubyte dimension = graph.layout.dimension;
-    bool result = false;
-    bool interior = true;
+bool isInteriorCell(ubyte dimension, CoordsWithMargins coords) {
     foreach (axis; 0 .. AXIS_COUNT) {
-        if (outsideInterior(dimension, coords.data[axis])) {
-            interior = false;
-            CellHop hop = hopCell(graph, chunk, coords, axis);
-            if (hop.populated) {
-                result = result || cellOccupied(graph, hop.chunk, hop.coords);
-            } else {
-                result = result || hop.chunk.slot == NO_SLOT || assumedOccupied(graph.nodeAt(hop.chunk.slot).chunks[hop.chunk.vertex].predicted);
-            }
+        if (isOutsideInterior(dimension, coords.data[axis])) {
+            return false;
         }
     }
-    if (interior) {
-        result = graph.nodeAt(chunk.slot).chunks[chunk.vertex].voxels.get(coords.toIndex(dimension)) != Material.Void;
-    }
-    return result;
+    return true;
 }
 
-bool assumedOccupied(Occupancy predicted) {
+CoordSign marginSign(ubyte coord) {
+    if (coord == 0) {
+        return CoordSign.Minus;
+    } else {
+        return CoordSign.Plus;
+    }
+}
+
+CellHop hopCell(const(Graph)* graph, ChunkSlot chunk, CoordsWithMargins coords, size_t axis) {
+    CoordSign sign = marginSign(coords.data[axis]);
+    ChunkDirection direction = ChunkDirection(cast(CoordAxis) axis, sign);
+    ChunkSlot neighbor = graph.chunkNeighborSlot(chunk, direction);
+    if (neighbor.slot == NO_SLOT) {
+        return CellHop(CoordsWithMargins.init, neighbor, false);
+    } else {
+        CoordsWithMargins moved = coords;
+        moved.data[axis] = boundaryCoordWithMargins(graph.layout.dimension, sign);
+        CoordsWithMargins permuted = neighborAxisPermutation(chunk.vertex, direction).apply(moved);
+        return CellHop(permuted, neighbor, graph.chunkAt(neighbor).state == ChunkState.Populated);
+    }
+}
+
+bool isCellOccupied(const(Graph)* graph, ChunkSlot chunk, CoordsWithMargins coords) {
+    ubyte dimension = graph.layout.dimension;
+    if (isInteriorCell(dimension, coords)) {
+        return graph.chunkAt(chunk).voxels.get(coords.toIndex(dimension)) != Material.Void;
+    } else {
+        foreach (axis; 0 .. AXIS_COUNT) {
+            if (isOutsideInterior(dimension, coords.data[axis]) && isHopOccupied(graph, hopCell(graph, chunk, coords, axis))) {
+                return true;
+            }
+        }
+        return false;
+    }
+}
+
+bool isHopOccupied(const(Graph)* graph, CellHop hop) {
+    if (hop.isPopulated) {
+        return isCellOccupied(graph, hop.chunk, hop.coords);
+    } else {
+        return hop.chunk.slot == NO_SLOT || isAssumedOccupied(graph.chunkAt(hop.chunk).predicted);
+    }
+}
+
+bool isAssumedOccupied(Occupancy predicted) {
     return predicted != Occupancy.empty;
 }
 
-bool contradictsPrediction(const(Chunk)* chunk) {
-    bool result = !chunk.voxels.isSolid();
+bool isPredictionContradicted(const(Chunk)* chunk) {
     if (chunk.voxels.isSolid()) {
-        result = (chunk.voxels.solidMaterial != Material.Void) != assumedOccupied(chunk.predicted);
+        return (chunk.voxels.solidMaterial != Material.Void) != isAssumedOccupied(chunk.predicted);
+    } else {
+        return true;
     }
-    return result;
 }
 
 void touchHolders(Graph* graph, ChunkSlot chunk, CoordsWithMargins coords) {
     ubyte dimension = graph.layout.dimension;
-    bool interior = true;
-    foreach (axis; 0 .. AXIS_COUNT) {
-        if (outsideInterior(dimension, coords.data[axis])) {
-            interior = false;
-            CellHop hop = hopCell(graph, chunk, coords, axis);
-            if (hop.populated) {
-                touchHolders(graph, hop.chunk, hop.coords);
+    if (isInteriorCell(dimension, coords)) {
+        graph.markChanged(chunk);
+    } else {
+        foreach (axis; 0 .. AXIS_COUNT) {
+            if (isOutsideInterior(dimension, coords.data[axis])) {
+                CellHop hop = hopCell(graph, chunk, coords, axis);
+                if (hop.isPopulated) {
+                    touchHolders(graph, hop.chunk, hop.coords);
+                }
             }
         }
-    }
-    if (interior) {
-        graph.markChanged(chunk);
     }
 }
 
@@ -128,9 +141,10 @@ void touchChunksAround(Graph* graph, ChunkSlot chunk) {
     foreach (corner; 0 .. 1u << AXIS_COUNT) {
         CoordsWithMargins cell;
         foreach (axis; 0 .. AXIS_COUNT) {
-            cell.data[axis] = boundaryCoordWithMargins(dimension, CoordSign.Minus);
             if ((corner & (1u << axis)) != 0) {
                 cell.data[axis] = boundaryCoordWithMargins(dimension, CoordSign.Plus);
+            } else {
+                cell.data[axis] = boundaryCoordWithMargins(dimension, CoordSign.Minus);
             }
         }
         touchChunksReading(graph, chunk, cell);
@@ -138,17 +152,16 @@ void touchChunksAround(Graph* graph, ChunkSlot chunk) {
 }
 
 CellHop hopRemaining(const(Graph)* graph, CellHop hop) {
-    CellHop result = hop;
-    foreach (axis; 0 .. AXIS_COUNT) {
-        if (outsideInterior(graph.layout.dimension, hop.coords.data[axis])) {
-            result = hopCell(graph, hop.chunk, hop.coords, axis);
+    foreach_reverse (axis; 0 .. AXIS_COUNT) {
+        if (isOutsideInterior(graph.layout.dimension, hop.coords.data[axis])) {
+            return hopCell(graph, hop.chunk, hop.coords, axis);
         }
     }
-    return result;
+    return hop;
 }
 
 unittest {
-    Graph graph = createGraph(TEST_DIMENSION);
+    Graph graph = Graph.make(TEST_DIMENSION);
     uint root = graph.slotOf(ROOT_NODE);
     foreach (side; 0 .. SIDE_COUNT) {
         uint neighbor = graph.ensureNeighborSlot(root, cast(Side) side);
@@ -177,12 +190,12 @@ unittest {
                     edge.data[b] = marginCoord(TEST_DIMENSION, signB);
                     CellHop viaA = hopRemaining(&graph, hopCell(&graph, chunk, edge, a));
                     CellHop viaB = hopRemaining(&graph, hopCell(&graph, chunk, edge, b));
-                    bool same = viaA.chunk == viaB.chunk && viaA.coords == viaB.coords;
+                    immutable bool isSame = viaA.chunk == viaB.chunk && viaA.coords == viaB.coords;
                     if (signA == CoordSign.Plus && signB == CoordSign.Plus) {
-                        assert(!same);
+                        assert(!isSame);
                         valenceFiveEdges += 1;
                     } else {
-                        assert(same);
+                        assert(isSame);
                         valenceFourEdges += 1;
                     }
                 }
