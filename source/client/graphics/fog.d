@@ -19,14 +19,18 @@ struct FogPipeline {
             commonLayout,
         ];
         pipelineLayout = createPipelineLayout(device, setLayouts[], null);
-        PipelineSettings settings;
-        settings.layout = pipelineLayout;
-        settings.renderPass = renderPass;
-        settings.vertexShader = vertexShader;
-        settings.fragmentShader = fragmentShader;
-        settings.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-        settings.subpass = FOG_SUBPASS;
-        settings.blend = Blend.transmittance;
+        PipelineSettings settings = PipelineSettings(
+            pipelineLayout,
+            renderPass,
+            vertexShader,
+            fragmentShader,
+            VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+            FOG_SUBPASS,
+            Blend.transmittance,
+            false,
+            false,
+            false,
+        );
         pipeline = createGraphicsPipeline(device, settings);
         vkDestroyShaderModule(device, vertexShader, null);
         vkDestroyShaderModule(device, fragmentShader, null);

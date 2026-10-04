@@ -12,7 +12,7 @@ import client.png : writePng;
 import client.script : ScriptHost, ScriptRecorder;
 import common.dodeca : VERTEX_COUNT;
 import common.proto : MovementMode;
-import common.sim_config : SimConfigRaw;
+import common.settings : SimMeters;
 
 enum uint WINDOW_WIDTH = 1280;
 enum uint WINDOW_HEIGHT = 720;
@@ -53,6 +53,46 @@ struct Arguments {
     bool isYInverted;
     bool isFlat;
     bool isBenchLoad;
+
+    static Arguments fromArgv(int argc, char** argv) {
+        Arguments arguments;
+        int index = 1;
+        while (index < argc) {
+            const(char)* argument = argv[index];
+            bool hasValue = index + 1 < argc;
+            if (strcmp(argument, "--config") == 0 && hasValue) {
+                arguments.configPath = argv[index + 1];
+                index += 1;
+            } else if (strcmp(argument, "--record") == 0 && hasValue) {
+                arguments.recordPath = argv[index + 1];
+                index += 1;
+            } else if (strcmp(argument, "--sensitivity") == 0 && hasValue) {
+                arguments.sensitivity = strtof(argv[index + 1], null);
+                arguments.hasSensitivity = true;
+                index += 1;
+            } else if (strcmp(argument, "--invert-y") == 0) {
+                arguments.isYInverted = true;
+            } else if (strcmp(argument, "--flat") == 0) {
+                arguments.isFlat = true;
+            } else if (strcmp(argument, "--screenshot") == 0 && hasValue) {
+                arguments.screenshotPath = argv[index + 1];
+                index += 1;
+            } else if (strcmp(argument, "--bench-load") == 0) {
+                arguments.isBenchLoad = true;
+            } else if (strcmp(argument, "--out") == 0 && hasValue) {
+                arguments.reportPath = argv[index + 1];
+                index += 1;
+            } else if (argument[0] != '-') {
+                arguments.scriptPath = argument;
+            }
+            index += 1;
+        }
+        return arguments;
+    }
+
+    bool isOffscreenRunnable() const {
+        return reportPath !is null && scriptPath !is null;
+    }
 }
 
 struct KeyBinding {
@@ -81,8 +121,8 @@ struct PointerAxis {
 
     double delta(double value) {
         if (isAbsolute) {
-            immutable double previous = last;
-            immutable bool hadLast = hasLast;
+            double previous = last;
+            bool hadLast = hasLast;
             last = value;
             hasLast = true;
             if (hadLast) {
@@ -132,7 +172,7 @@ struct Session {
                 return EXIT_FAILED;
             } else {
                 isRecording = true;
-                immutable int status = runWindow(arguments.isFlat);
+                int status = runWindow(arguments.isFlat);
                 recorder.close();
                 return status;
             }
@@ -144,8 +184,8 @@ struct Session {
         if (!isWindowOpen) {
             return EXIT_FAILED;
         } else {
-            SimConfigRaw raw;
-            renderer.setup(display, window, raw.chunkSize);
+            SimMeters meters;
+            renderer.setup(display, window, meters.chunkSize);
             game = Game.make(isFlat, config.reachMeters);
             runLoop();
             game.release();
@@ -293,7 +333,7 @@ struct Session {
 
     void recordModeChange() {
         char[TEXT_CAPACITY] call;
-        snprintf(call.ptr, call.length, "player:mode(\"%s\")", game.modeName());
+        snprintf(call.ptr, call.length, "world:mode(\"%s\")", game.modeName());
         recordEvent(call.ptr);
         isTitleDirty = true;
     }
@@ -332,7 +372,7 @@ struct Session {
         if (index < MATERIAL_PALETTE.length && index != game.materialIndex) {
             game.materialIndex = index;
             char[TEXT_CAPACITY] call;
-            snprintf(call.ptr, call.length, "player:material(%u)", index + 1);
+            snprintf(call.ptr, call.length, "world:material(%u)", index + 1);
             recordEvent(call.ptr);
             isTitleDirty = true;
         }
@@ -343,10 +383,10 @@ struct Session {
             capture();
         } else if (button == Button1) {
             game.breakBlock();
-            recordEvent("player:break_block()");
+            recordEvent("world:break_block()");
         } else if (button == Button3) {
             game.placeBlock();
-            recordEvent("player:place_block()");
+            recordEvent("world:place_block()");
         }
     }
 
@@ -386,11 +426,9 @@ struct Session {
     FrameInput buildFrameInput(float dt) {
         float yawRate = (axisValue(isHeld[Key.yawRight]) - axisValue(isHeld[Key.yawLeft])) * config.turnSpeed;
         float pitchRate = (axisValue(isHeld[Key.pitchDown]) - axisValue(isHeld[Key.pitchUp])) * config.turnSpeed;
-        FrameInput frame;
-        frame.isHeld = isHeld;
-        frame.yaw = yawRate * dt + cast(float)(mouseDx * config.mouseRadiansPerCount);
-        frame.pitch = pitchRate * dt + cast(float)(mouseDy * config.mouseRadiansPerCount) * pitchSign(config.isYInverted);
-        return frame;
+        float yaw = yawRate * dt + cast(float)(mouseDx * config.mouseRadiansPerCount);
+        float pitch = pitchRate * dt + cast(float)(mouseDy * config.mouseRadiansPerCount) * pitchSign(config.isYInverted);
+        return FrameInput(yaw, pitch, isHeld);
     }
 
     void runLoop() {
@@ -414,7 +452,7 @@ struct Session {
                     recorder.recordFrame(frame, dt);
                 }
                 game.step(frame, dt);
-                renderer.render(&game.world);
+                renderer.render(game.world);
                 framesSinceTitle += 1;
                 if (now - lastTitleTime >= TITLE_INTERVAL_SECONDS) {
                     fps = cast(float)(framesSinceTitle / (now - lastTitleTime));
@@ -464,42 +502,6 @@ void pauseUntilFrameEnd(double frameStart) {
     }
 }
 
-Arguments parseArguments(int argc, char** argv) {
-    Arguments arguments;
-    int index = 1;
-    while (index < argc) {
-        const(char)* argument = argv[index];
-        bool hasValue = index + 1 < argc;
-        if (strcmp(argument, "--config") == 0 && hasValue) {
-            arguments.configPath = argv[index + 1];
-            index += 1;
-        } else if (strcmp(argument, "--record") == 0 && hasValue) {
-            arguments.recordPath = argv[index + 1];
-            index += 1;
-        } else if (strcmp(argument, "--sensitivity") == 0 && hasValue) {
-            arguments.sensitivity = strtof(argv[index + 1], null);
-            arguments.hasSensitivity = true;
-            index += 1;
-        } else if (strcmp(argument, "--invert-y") == 0) {
-            arguments.isYInverted = true;
-        } else if (strcmp(argument, "--flat") == 0) {
-            arguments.isFlat = true;
-        } else if (strcmp(argument, "--screenshot") == 0 && hasValue) {
-            arguments.screenshotPath = argv[index + 1];
-            index += 1;
-        } else if (strcmp(argument, "--bench-load") == 0) {
-            arguments.isBenchLoad = true;
-        } else if (strcmp(argument, "--out") == 0 && hasValue) {
-            arguments.reportPath = argv[index + 1];
-            index += 1;
-        } else if (argument[0] != '-') {
-            arguments.scriptPath = argument;
-        }
-        index += 1;
-    }
-    return arguments;
-}
-
 immutable(char)* writtenText(bool isWritten) {
     if (isWritten) {
         return "written";
@@ -513,14 +515,14 @@ bool renderScreenshot(Arguments arguments) {
     if (report is null) {
         return false;
     } else {
-        SimConfigRaw raw;
+        SimMeters meters;
         ClientConfig config;
         Renderer* renderer = cast(Renderer*) malloc(Renderer.sizeof);
         *renderer = Renderer.init;
-        renderer.setupOffscreen(VkExtent2D(SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT), raw.chunkSize);
+        renderer.setupOffscreen(VkExtent2D(SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT), meters.chunkSize);
         Game game = Game.make(arguments.isFlat, config.reachMeters);
         game.isSettlingWorldgenEachFrame = true;
-        immutable bool isWritten = captureScreenshot(arguments, report, renderer, &game);
+        bool isWritten = captureScreenshot(arguments, report, *renderer, game);
         renderer.cleanup();
         free(renderer);
         game.release();
@@ -529,26 +531,24 @@ bool renderScreenshot(Arguments arguments) {
     }
 }
 
-bool captureScreenshot(Arguments arguments, FILE* report, Renderer* renderer, Game* game) {
-    ScriptHost host;
-    host.game = game;
-    host.report = report;
+bool captureScreenshot(Arguments arguments, FILE* report, ref Renderer renderer, ref Game game) {
+    ScriptHost host = ScriptHost.make(&game, report);
     immutable bool isCompleted = host.run(arguments.scriptPath);
     host.close();
-    if (!isCompleted || host.failures > 0) {
+    if (!isCompleted) {
         fprintf(report, "screenshot: not taken, the script failed\n");
         return false;
     } else {
         while (!game.world.isWorldgenSettled()) {
             game.world.update(true);
-            game.world.worldgenDriver.settle(&game.world.graph);
+            game.world.streamer.settle(game.world.graph);
         }
         uint frames = 0;
         do {
-            renderer.render(&game.world);
+            renderer.render(game.world);
             frames += 1;
         } while (renderer.meshBacklog() > 0);
-        immutable bool isWritten = writePng(arguments.screenshotPath, SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT, renderer.capture());
+        bool isWritten = writePng(arguments.screenshotPath, SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT, renderer.capture());
         fprintf(report, "screenshot: %s after %u frames (%u chunks meshed, %u faces)\n", writtenText(isWritten), frames, renderer.meshes.meshedChunks, renderer.meshes.allocator.used());
         return isWritten;
     }
@@ -572,7 +572,7 @@ struct RenderBreakdown {
     PhaseTimes gpuFrame;
     PhaseTimes gpuCull;
 
-    void add(const(FrameTimes)* times) {
+    void add(FrameTimes times) {
         fenceWait.add(times.fenceWaitMs);
         chunkUpdate.add(times.chunkUpdateMs);
         gpuFrame.add(times.gpu.frameMs);
@@ -590,14 +590,14 @@ bool benchLoad(Arguments arguments) {
     if (report is null) {
         return false;
     } else {
-        SimConfigRaw raw;
+        SimMeters meters;
         ClientConfig config;
         Renderer* renderer = cast(Renderer*) malloc(Renderer.sizeof);
         *renderer = Renderer.init;
-        renderer.setupOffscreen(VkExtent2D(SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT), raw.chunkSize);
+        renderer.setupOffscreen(VkExtent2D(SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT), meters.chunkSize);
         Game game = Game.make(arguments.isFlat, config.reachMeters);
-        measureLoad(report, renderer, &game);
-        measureFlight(report, renderer, &game);
+        measureLoad(report, *renderer, game);
+        measureFlight(report, *renderer, game);
         renderer.cleanup();
         free(renderer);
         game.release();
@@ -606,7 +606,7 @@ bool benchLoad(Arguments arguments) {
     }
 }
 
-void measureLoad(FILE* report, Renderer* renderer, Game* game) {
+void measureLoad(FILE* report, ref Renderer renderer, ref Game game) {
     PhaseTimes step;
     PhaseTimes render;
     PhaseTimes frame;
@@ -617,15 +617,14 @@ void measureLoad(FILE* report, Renderer* renderer, Game* game) {
     double start = nowSeconds();
     do {
         double frameStart = nowSeconds();
-        FrameInput input;
-        game.step(input, cast(float) BENCH_FRAME_SECONDS);
+        game.step(FrameInput.init, cast(float) BENCH_FRAME_SECONDS);
         double stepped = nowSeconds();
-        renderer.render(&game.world);
+        renderer.render(game.world);
         double rendered = nowSeconds();
         step.add((stepped - frameStart) * MILLISECONDS_PER_SECOND);
         render.add((rendered - stepped) * MILLISECONDS_PER_SECOND);
         frame.add((rendered - frameStart) * MILLISECONDS_PER_SECOND);
-        breakdown.add(&renderer.frameTimes);
+        breakdown.add(renderer.frameTimes);
         frames += 1;
         if (nearbyFrame == 0 && game.world.hasNearby) {
             nearbyFrame = frames;
@@ -650,7 +649,7 @@ void measureLoad(FILE* report, Renderer* renderer, Game* game) {
     breakdown.print(report, frames);
 }
 
-void measureFlight(FILE* report, Renderer* renderer, Game* game) {
+void measureFlight(FILE* report, ref Renderer renderer, ref Game game) {
     PhaseTimes moving;
     PhaseTimes movingStep;
     PhaseTimes movingRender;
@@ -659,16 +658,16 @@ void measureFlight(FILE* report, Renderer* renderer, Game* game) {
     game.mode = MovementMode.noclip;
     FrameInput forward;
     forward.isHeld[Key.fwd] = true;
-    foreach (i; 0 .. BENCH_MOVE_FRAMES) {
+    foreach (_; 0 .. BENCH_MOVE_FRAMES) {
         double frameStart = nowSeconds();
         game.step(forward, cast(float) BENCH_FRAME_SECONDS);
         double stepped = nowSeconds();
-        renderer.render(&game.world);
+        renderer.render(game.world);
         double rendered = nowSeconds();
         moving.add((rendered - frameStart) * MILLISECONDS_PER_SECOND);
         movingStep.add((stepped - frameStart) * MILLISECONDS_PER_SECOND);
         movingRender.add((rendered - stepped) * MILLISECONDS_PER_SECOND);
-        breakdown.add(&renderer.frameTimes);
+        breakdown.add(renderer.frameTimes);
         if (renderer.meshBacklog() > 0 || !game.world.isWorldgenSettled()) {
             backloggedFrames += 1;
         }
@@ -690,27 +689,23 @@ int exitStatus(bool isSucceeded) {
 int runWindowed(Arguments arguments) {
     Session* session = cast(Session*) malloc(Session.sizeof);
     *session = Session.init;
-    session.config = ClientConfig.load(arguments.configPath);
+    session.config = ClientConfig.fromFile(arguments.configPath);
     if (arguments.hasSensitivity) {
         session.config.mouseRadiansPerCount = arguments.sensitivity;
     }
     if (arguments.isYInverted) {
         session.config.isYInverted = true;
     }
-    immutable int status = session.run(arguments);
+    int status = session.run(arguments);
     free(session);
     return status;
 }
 
-bool isOffscreenRunnable(Arguments arguments) {
-    return arguments.reportPath !is null && arguments.scriptPath !is null;
-}
-
 extern (C) int main(int argc, char** argv) {
-    Arguments arguments = parseArguments(argc, argv);
+    Arguments arguments = Arguments.fromArgv(argc, argv);
     if (arguments.isBenchLoad && arguments.reportPath !is null) {
         return exitStatus(benchLoad(arguments));
-    } else if (arguments.screenshotPath !is null && isOffscreenRunnable(arguments)) {
+    } else if (arguments.screenshotPath !is null && arguments.isOffscreenRunnable()) {
         return exitStatus(renderScreenshot(arguments));
     } else if (arguments.isBenchLoad || arguments.screenshotPath !is null) {
         return EXIT_FAILED;

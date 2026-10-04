@@ -2,20 +2,21 @@ module common.worldgen.spawn;
 
 import core.stdc.math : coshf;
 import common.array : Array;
-import common.character_controller.controller : relativeUp;
+import common.character.controller : relativeUp;
+import common.collision.graph : NodeVisit, isVisited;
 import common.dodeca : BOUNDING_SPHERE_RADIUS, CHUNK_BOUNDING_SPHERE_RADIUS, SIDE_COUNT, Side, VERTEX_COUNT, Vertex, chunkBoundingSphereCenter, reflection;
 import common.graph : Graph, ROOT_NODE;
-import common.graph_collision : NodeVisit, isVisited;
 import common.math : MIsometry, MPoint, MVector;
 import common.node : ChunkSlot;
 import common.proto : Position;
-import common.vector3 : scale3;
+import common.vector3 : scaled;
 import common.worldgen.generation : ChunkParams;
 
 enum float TEST_BODY_REACH = 0.1f;
 enum float TEST_ALTITUDE_TOLERANCE = 1e-4f;
+enum ubyte TEST_DIMENSION = 12;
 
-Array!ChunkSlot collectChunksNear(Graph* graph, Position position, float distance) {
+Array!ChunkSlot collectChunksNear(ref Graph graph, Position position, float distance) {
     float nodeThreshold = coshf(distance + BOUNDING_SPHERE_RADIUS + CHUNK_BOUNDING_SPHERE_RADIUS);
     float chunkThreshold = coshf(distance + CHUNK_BOUNDING_SPHERE_RADIUS);
     MVector!float point = (position.local * MPoint!float.origin()).vec;
@@ -48,51 +49,49 @@ Array!ChunkSlot collectChunksNear(Graph* graph, Position position, float distanc
     return chunks;
 }
 
-bool isEveryChunkProvenClear(Graph* graph, const(ChunkSlot)[] chunks, bool isFlat) {
-    foreach (chunk; chunks) {
-        ChunkParams params = ChunkParams.make(graph, chunk.slot, chunk.vertex, isFlat);
-        if (!params.isProvenClear()) {
-            return false;
-        }
+bool isEveryChunkProvenClear(ref Graph graph, const(ChunkSlot)[] chunks, bool isFlat) {
+    size_t index = 0;
+    while (index < chunks.length && ChunkParams.make(graph, chunks[index].slot, chunks[index].vertex, isFlat).isProvenClear()) {
+        index += 1;
     }
-    return true;
+    return index == chunks.length;
 }
 
-bool isRegionProvenClear(Graph* graph, bool isFlat, Position position, float distance) {
-    Array!ChunkSlot chunks = collectChunksNear(graph, position, distance);
-    immutable bool isClear = isEveryChunkProvenClear(graph, chunks.slice(), isFlat);
+bool isRegionProvenClear(ref Graph graph, bool isFlat, Position position, float distance) {
+    Array!ChunkSlot chunks = graph.collectChunksNear(position, distance);
+    bool isClear = graph.isEveryChunkProvenClear(chunks.slice(), isFlat);
     chunks.release();
     return isClear;
 }
 
-Position clearSpawnPosition(Graph* graph, bool isFlat, float bodyReach) {
+Position clearSpawnPosition(ref Graph graph, bool isFlat, float bodyReach) {
     graph.ensureNodeState(ROOT_NODE);
     float[3] up = graph.relativeUp(Position.origin());
     float rootAltitude = graph.nodeState(ROOT_NODE).surface.distanceTo(MPoint!float.origin());
-    return clearPositionFrom(graph, isFlat, up, rootAltitude, bodyReach, bodyReach);
+    return graph.clearPositionFrom(isFlat, up, rootAltitude, bodyReach, bodyReach);
 }
 
-Position clearPositionFrom(Graph* graph, bool isFlat, float[3] up, float rootAltitude, float altitude, float bodyReach) {
-    Position candidate = positionAtRise(graph, up, altitude - rootAltitude);
-    immutable bool isClear = isRegionProvenClear(graph, isFlat, candidate, bodyReach);
+Position clearPositionFrom(ref Graph graph, bool isFlat, float[3] up, float rootAltitude, float altitude, float bodyReach) {
+    Position candidate = graph.positionAtRise(up, altitude - rootAltitude);
+    immutable bool isClear = graph.isRegionProvenClear(isFlat, candidate, bodyReach);
     if (isClear) {
         return candidate;
     } else {
-        return clearPositionFrom(graph, isFlat, up, rootAltitude, altitude + bodyReach, bodyReach);
+        return graph.clearPositionFrom(isFlat, up, rootAltitude, altitude + bodyReach, bodyReach);
     }
 }
 
-Position positionAtRise(Graph* graph, float[3] up, float rise) {
-    Position result = graph.ensureNormalized(Position(ROOT_NODE, MIsometry!float.translationAlong(up.scale3(rise))));
+Position positionAtRise(ref Graph graph, float[3] up, float rise) {
+    Position result = graph.ensureNormalized(Position(ROOT_NODE, MIsometry!float.fromDisplacement(up.scaled(rise))));
     graph.ensureNodeState(result.node);
     return result;
 }
 
 unittest {
-    Graph graph = Graph.make(12);
-    Position spawn = clearSpawnPosition(&graph, true, TEST_BODY_REACH);
+    Graph graph = Graph.make(TEST_DIMENSION);
+    Position spawn = graph.clearSpawnPosition(true, TEST_BODY_REACH);
     float altitude = graph.nodeState(spawn.node).surface.distanceTo(spawn.local * MPoint!float.origin());
     assert(altitude > TEST_BODY_REACH - TEST_ALTITUDE_TOLERANCE);
-    assert(isRegionProvenClear(&graph, true, spawn, TEST_BODY_REACH));
+    assert(graph.isRegionProvenClear(true, spawn, TEST_BODY_REACH));
     graph.release();
 }

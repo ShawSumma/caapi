@@ -62,12 +62,10 @@ ulong[2] murmurHash3(const(ubyte)[] data) {
     if (tailLength > 8) {
         h2 ^= mixK2(readLittleEndian(data, tailOffset + 8, tailLength - 8));
     }
-    if (tailLength > 0) {
-        size_t lowLength = tailLength;
-        if (lowLength > 8) {
-            lowLength = 8;
-        }
-        h1 ^= mixK1(readLittleEndian(data, tailOffset, lowLength));
+    if (tailLength > 8) {
+        h1 ^= mixK1(readLittleEndian(data, tailOffset, 8));
+    } else if (tailLength > 0) {
+        h1 ^= mixK1(readLittleEndian(data, tailOffset, tailLength));
     }
     h1 ^= data.length;
     h2 ^= data.length;

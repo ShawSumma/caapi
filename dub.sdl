@@ -4,7 +4,6 @@ license "Apache-2.0"
 targetType "executable"
 sourcePaths "source"
 importPaths "source"
-stringImportPaths "import"
 
 sourceFiles "deps/lua/lapi.c" "deps/lua/lcode.c" "deps/lua/lctype.c" "deps/lua/ldebug.c" "deps/lua/ldo.c" "deps/lua/ldump.c" "deps/lua/lfunc.c" "deps/lua/lgc.c" "deps/lua/llex.c" "deps/lua/lmem.c" "deps/lua/lobject.c" "deps/lua/lopcodes.c" "deps/lua/lparser.c" "deps/lua/lstate.c" "deps/lua/lstring.c" "deps/lua/ltable.c" "deps/lua/ltm.c" "deps/lua/lundump.c" "deps/lua/lvm.c" "deps/lua/lzio.c" "deps/lua/lauxlib.c" "deps/lua/lbaselib.c" "deps/lua/lcorolib.c" "deps/lua/ldblib.c" "deps/lua/liolib.c" "deps/lua/lmathlib.c" "deps/lua/loadlib.c" "deps/lua/loslib.c" "deps/lua/lstrlib.c" "deps/lua/ltablib.c" "deps/lua/lutf8lib.c" "deps/lua/linit.c"
 dflags "-betterC" "-checkaction=halt" "-P-Ideps/lua" "-P-DLUA_USE_LINUX" "-P-DLUA_USE_JUMPTABLE=0"

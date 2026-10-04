@@ -16,15 +16,8 @@ bool isInfinite(float value) {
 struct MVector(N) {
     N[4] data = [0, 0, 0, 0];
 
-    this(N x, N y, N z, N w) {
-        data[0] = x;
-        data[1] = y;
-        data[2] = z;
-        data[3] = w;
-    }
-
     static MVector origin() {
-        return MVector(0, 0, 0, 1);
+        return MVector([0, 0, 0, 1]);
     }
 
     N mip(MVector other) const {
@@ -45,14 +38,11 @@ struct MVector(N) {
     }
 
     Matrix4!N minkowskiOuterProduct(MVector other) const {
+        MVector lowered = MVector([other.data[0], other.data[1], other.data[2], -other.data[3]]);
         Matrix4!N result;
         foreach (col; 0 .. 4) {
-            N factor = other.data[col];
-            if (col == 3) {
-                factor = -other.data[col];
-            }
             foreach (row; 0 .. 4) {
-                result.data[col][row] = data[row] * factor;
+                result.data[col][row] = data[row] * lowered.data[col];
             }
         }
         return result;
@@ -94,10 +84,6 @@ struct MVector(N) {
 struct MPoint(N) {
     MVector!N vec;
 
-    this(MVector!N value) {
-        vec = value;
-    }
-
     static MPoint origin() {
         return MPoint(MVector!N.origin());
     }
@@ -121,14 +107,6 @@ struct MPoint(N) {
 
 struct MDirection(N) {
     MVector!N vec;
-
-    this(MVector!N value) {
-        vec = value;
-    }
-
-    static MDirection x() {
-        return MDirection(MVector!N(1, 0, 0, 0));
-    }
 
     N mip(MVector!N other) const {
         return vec.mip(other);
@@ -154,7 +132,7 @@ struct Matrix4(N) {
         return result;
     }
 
-    static Matrix4 newScaling(N scale) {
+    static Matrix4 fromScale(N scale) {
         Matrix4 result;
         result.data[0][0] = scale;
         result.data[1][1] = scale;
@@ -213,20 +191,16 @@ struct Matrix4(N) {
 struct MIsometry(N) {
     Matrix4!N mat;
 
-    this(Matrix4!N value) {
-        mat = value;
-    }
-
     static MIsometry identity() {
         return MIsometry(Matrix4!N.identity());
     }
 
-    static MIsometry reflection(MDirection!N normal) {
+    static MIsometry fromReflection(MDirection!N normal) {
         Matrix4!N outer = normal.vec.minkowskiOuterProduct(normal.vec);
         return MIsometry(Matrix4!N.identity() - outer * cast(N) 2);
     }
 
-    static MIsometry translation(MPoint!N a, MPoint!N b) {
+    static MIsometry fromTranslation(MPoint!N a, MPoint!N b) {
         MVector!N aPlusB = a.vec + b.vec;
         Matrix4!N outerBA = b.vec.minkowskiOuterProduct(a.vec) * cast(N) 2;
         Matrix4!N outerAB = aPlusB.minkowskiOuterProduct(aPlusB);
@@ -234,15 +208,15 @@ struct MIsometry(N) {
         return MIsometry(Matrix4!N.identity() - outerBA + outerAB * (cast(N) 1 / denominator));
     }
 
-    static MIsometry translationAlong(N[3] v) {
+    static MIsometry fromDisplacement(N[3] v) {
         N norm = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
         if (norm == 0) {
             return identity();
         } else {
             N sinhcValue = cast(N) sinh(norm) / norm;
             N coshValue = cast(N) cosh(norm);
-            MVector!N target = MVector!N(v[0] * sinhcValue, v[1] * sinhcValue, v[2] * sinhcValue, coshValue);
-            return translation(MPoint!N.origin(), MPoint!N(target));
+            MVector!N target = MVector!N([v[0] * sinhcValue, v[1] * sinhcValue, v[2] * sinhcValue, coshValue]);
+            return fromTranslation(MPoint!N.origin(), MPoint!N(target));
         }
     }
 
@@ -309,8 +283,8 @@ struct MIsometry(N) {
     }
 
     MIsometry renormalized() const {
-        MVector!N translationColumn = MVector!N(mat.data[3][0], mat.data[3][1], mat.data[3][2], mat.data[3][3]);
-        MIsometry normalizedTranslation = translation(MPoint!N.origin(), translationColumn.normalizedPoint());
+        MVector!N translationColumn = MVector!N(mat.data[3]);
+        MIsometry normalizedTranslation = fromTranslation(MPoint!N.origin(), translationColumn.normalizedPoint());
         MIsometry orientation = normalizedTranslation.inverse() * this;
         N[3][3] orthonormal;
         foreach (col; 0 .. 3) {

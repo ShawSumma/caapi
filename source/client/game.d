@@ -1,18 +1,18 @@
 module client.game;
 
 import core.stdc.math : fabsf, tanhf;
-import client.local_character_controller : LocalCharacterController;
-import client.local_world : LocalWorld, Placement;
-import client.worldgen_driver : generateNow;
+import client.camera : Camera;
+import client.streaming : generateNow;
+import client.world : LocalWorld, Placement;
 import common.array : Array;
-import common.character_controller.controller : CharacterState, Mover, Slide, relativeUp;
-import common.graph : Graph;
-import common.graph_collision : Capsule, isCapsuleOverlappingVoxel;
+import common.character.controller : CharacterState, Mover, Slide, relativeUp;
+import common.collision.graph : Capsule, isCapsuleOverlappingVoxel;
+import common.material : Material;
 import common.math : MPoint;
 import common.node : ChunkSlot;
 import common.proto : CharacterInput, MovementMode, Position;
-import common.sim_config : CharacterConfig, SimConfig, SimConfigRaw;
-import common.world : Material;
+import common.settings : SimConfig, SimMeters;
+import common.vector3 : ZERO_VECTOR;
 import common.worldgen.generation : NodeState;
 import common.worldgen.spawn : clearSpawnPosition, collectChunksNear;
 
@@ -25,15 +25,15 @@ immutable string[MODE_COUNT] MODE_NAMES = [
 ];
 
 immutable Material[9] MATERIAL_PALETTE = [
-    Material.WoodPlanks,
-    Material.Wood,
-    Material.Leaves,
-    Material.GreyBrick,
-    Material.WhiteBrick,
-    Material.Sandstone,
-    Material.Marble,
-    Material.Granite,
-    Material.Basalt,
+    Material.woodPlanks,
+    Material.wood,
+    Material.leaves,
+    Material.greyBrick,
+    Material.whiteBrick,
+    Material.sandstone,
+    Material.marble,
+    Material.granite,
+    Material.basalt,
 ];
 
 enum Key : ubyte {
@@ -67,18 +67,21 @@ immutable string[KEY_COUNT] KEY_NAMES = [
 struct KeyLookup {
     Key key;
     bool isFound;
-}
 
-KeyLookup keyFromName(const(char)[] name) {
-    if (name == "jump") {
-        return KeyLookup(Key.up, true);
-    } else {
-        foreach (i, keyName; KEY_NAMES) {
-            if (keyName == name) {
-                return KeyLookup(cast(Key) i, true);
+    static KeyLookup fromName(const(char)[] name) {
+        if (name == "jump") {
+            return KeyLookup(Key.up, true);
+        } else {
+            uint key = 0;
+            while (key < KEY_COUNT && KEY_NAMES[key] != name) {
+                key += 1;
+            }
+            if (key < KEY_COUNT) {
+                return KeyLookup(cast(Key) key, true);
+            } else {
+                return KeyLookup(Key.init, false);
             }
         }
-        return KeyLookup(Key.init, false);
     }
 }
 
@@ -98,12 +101,12 @@ float axisValue(bool isHeld) {
 
 struct Game {
     LocalWorld world;
-    LocalCharacterController character;
+    Camera camera;
     CharacterState characterState;
     SimConfig simConfig;
     float simTime = 0;
     float traveled = 0;
-    float vacc = 0;
+    float cameraVerticalAcceleration = 0;
     float cameraAltitude = 0;
     float cameraVerticalVelocity = 0;
     uint materialIndex;
@@ -112,41 +115,37 @@ struct Game {
     bool hasCameraVerticalVelocity;
 
     static Game make(bool isFlat, float reachMeters) {
-        SimConfigRaw raw;
+        SimMeters meters;
+        SimConfig simConfig = SimConfig.fromMeters(meters);
         Game game;
-        game.simConfig = SimConfig.fromRaw(raw);
-        game.world = LocalWorld.make(raw.chunkSize, isFlat, tanhf(reachMeters * game.simConfig.metersToAbsolute));
-        game.character = LocalCharacterController.make(game.simConfig.character.eyeOffset);
+        game.simConfig = simConfig;
+        game.world = LocalWorld.make(meters.chunkSize, isFlat, tanhf(reachMeters * simConfig.metersToAbsolute));
+        game.camera = Camera.make(simConfig.character.eyeOffset);
         game.placeAtSpawn();
         return game;
     }
 
     void placeAtSpawn() {
-        const(CharacterConfig)* cfg = &simConfig.character;
-        Graph* graph = &world.graph;
-        bool isFlat = world.worldgenDriver.isFlat;
-        float bodyReach = cfg.characterHalfHeight + cfg.characterRadius + cfg.contactSkin;
-        Position position = clearSpawnPosition(graph, isFlat, bodyReach);
+        bool isFlat = world.streamer.isFlat;
+        float bodyReach = simConfig.character.characterHalfHeight + simConfig.character.characterRadius + simConfig.character.contactSkin;
+        Position position = world.graph.clearSpawnPosition(isFlat, bodyReach);
         Slide drop;
         while (!drop.hasLanded) {
-            Array!ChunkSlot chunks = collectChunksNear(graph, position, 2.0f * bodyReach);
+            Array!ChunkSlot chunks = world.graph.collectChunksNear(position, 2.0f * bodyReach);
             foreach (chunk; chunks.slice()) {
-                generateNow(graph, chunk, isFlat);
+                world.graph.generateNow(chunk, isFlat);
             }
             chunks.release();
-            Mover mover = Mover.make(cfg, graph, graph.relativeUp(position));
+            Mover mover = Mover.make(simConfig.character, world.graph, world.graph.relativeUp(position));
             drop = mover.settle(position, bodyReach);
-            position = graph.normalized(Position(drop.position.node, drop.position.local.renormalized()));
-            graph.ensureNodeState(position.node);
+            position = world.graph.normalized(Position(drop.position.node, drop.position.local.renormalized()));
+            world.graph.ensureNodeState(position.node);
         }
-        characterState = CharacterState.init;
-        characterState.position = position;
-        characterState.isOnGround = true;
-        characterState.groundNormal = drop.groundNormal;
-        character.updatePosition(position, graph.relativeUp(position));
-        character.alignToGravity();
-        world.cameraPosition = character.orientedPosition();
-        cameraAltitude = characterAltitude() + character.eyeOffset;
+        characterState = CharacterState(position, ZERO_VECTOR, drop.groundNormal, true);
+        camera.updatePosition(position, world.graph.relativeUp(position));
+        camera.alignToGravity();
+        world.cameraPosition = camera.orientedPosition();
+        cameraAltitude = characterAltitude() + camera.eyeOffset;
         hasCameraVerticalVelocity = false;
     }
 
@@ -170,8 +169,8 @@ struct Game {
 
     bool placeBlock() {
         Placement placement = world.placementTarget();
-        Capsule capsule = Capsule(character.up, simConfig.character.characterRadius, simConfig.character.characterHalfHeight, simConfig.character.contactSkin);
-        if (placement.isFound && !isCapsuleOverlappingVoxel(capsule, &world.graph, characterState.position, placement.chunk, placement.coords)) {
+        Capsule capsule = Capsule(camera.up, simConfig.character.characterRadius, simConfig.character.characterHalfHeight, simConfig.character.contactSkin);
+        if (placement.isFound && !world.graph.isCapsuleOverlappingVoxel(capsule, characterState.position, placement.chunk, placement.coords)) {
             return world.setVoxel(placement.chunk, placement.coords, MATERIAL_PALETTE[materialIndex]);
         } else {
             return false;
@@ -179,8 +178,8 @@ struct Game {
     }
 
     void look(float yaw, float pitch) {
-        character.lookLevel(-yaw, -pitch);
-        world.cameraPosition = character.orientedPosition();
+        camera.lookLevel(-yaw, -pitch);
+        world.cameraPosition = camera.orientedPosition();
     }
 
     float characterAltitude() const {
@@ -195,33 +194,29 @@ struct Game {
         float moveZ = axisValue(input.isHeld[Key.back]) - axisValue(input.isHeld[Key.fwd]);
         float altitudeBefore = characterAltitude();
         bool wasOnGround = characterState.isOnGround;
-        traveled += characterState.runStep(&simConfig, &world.graph, characterInput(moveX, moveY, moveZ, input.isHeld[Key.up]), dt);
+        traveled += characterState.runStep(simConfig, world.graph, characterInput(moveX, moveY, moveZ, input.isHeld[Key.up]), dt);
         world.graph.ensureNodeState(characterState.position.node);
         float altitude = characterAltitude();
-        character.smoothEyeVertical(groundedRise(wasOnGround, altitude - altitudeBefore), simConfig.character.stepHeight, dt);
-        character.updatePosition(characterState.position, relativeUp(&world.graph, characterState.position));
-        character.alignToGravity();
-        world.cameraPosition = character.orientedPosition();
-        trackCameraAcceleration(altitude + character.eyeOffset - character.eyeLag, dt);
+        camera.smoothEyeVertical(groundedRise(wasOnGround, altitude - altitudeBefore), simConfig.character.stepHeight, dt);
+        camera.updatePosition(characterState.position, world.graph.relativeUp(characterState.position));
+        camera.alignToGravity();
+        world.cameraPosition = camera.orientedPosition();
+        trackCameraAcceleration(altitude + camera.eyeOffset - camera.eyeLag, dt);
         world.update(isSettlingWorldgenEachFrame);
         if (isSettlingWorldgenEachFrame) {
-            world.worldgenDriver.settle(&world.graph);
+            world.streamer.settle(world.graph);
         }
         simTime += dt;
     }
 
     CharacterInput characterInput(float moveX, float moveY, float moveZ, bool isUpHeld) const {
-        CharacterInput input;
-        input.mode = mode;
         if (mode == MovementMode.noclip) {
-            input.movement = character.viewOrientation().rotate([moveX, moveY, moveZ]);
+            return CharacterInput(camera.viewOrientation().rotate([moveX, moveY, moveZ]), mode, false);
         } else if (mode == MovementMode.fly) {
-            input.movement = character.orientation.rotate([moveX, moveY, moveZ]);
+            return CharacterInput(camera.orientation.rotate([moveX, moveY, moveZ]), mode, false);
         } else {
-            input.movement = character.orientation.rotate([moveX, 0, moveZ]);
-            input.isJumpHeld = isUpHeld;
+            return CharacterInput(camera.orientation.rotate([moveX, 0, moveZ]), mode, isUpHeld);
         }
-        return input;
     }
 
     float groundedRise(bool wasOnGround, float rise) const {
@@ -235,9 +230,9 @@ struct Game {
     void trackCameraAcceleration(float newCameraAltitude, float dt) {
         float verticalVelocity = (newCameraAltitude - cameraAltitude) / dt;
         if (hasCameraVerticalVelocity) {
-            vacc = fabsf((verticalVelocity - cameraVerticalVelocity) / dt);
+            cameraVerticalAcceleration = fabsf((verticalVelocity - cameraVerticalVelocity) / dt);
         } else {
-            vacc = 0;
+            cameraVerticalAcceleration = 0;
         }
         cameraAltitude = newCameraAltitude;
         cameraVerticalVelocity = verticalVelocity;
@@ -245,13 +240,16 @@ struct Game {
     }
 
     bool setMode(const(char)[] name) {
-        foreach (i, candidate; MODE_NAMES) {
-            if (candidate == name) {
-                mode = cast(MovementMode) i;
-                return true;
-            }
+        uint index = 0;
+        while (index < MODE_COUNT && MODE_NAMES[index] != name) {
+            index += 1;
         }
-        return false;
+        if (index < MODE_COUNT) {
+            mode = cast(MovementMode) index;
+            return true;
+        } else {
+            return false;
+        }
     }
 
     void toggleMode(MovementMode toggled) {

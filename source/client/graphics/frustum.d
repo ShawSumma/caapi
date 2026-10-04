@@ -19,11 +19,11 @@ struct Frustum {
 
     MDirection!float[FRUSTUM_PLANE_COUNT] planes() const {
         MDirection!float[FRUSTUM_PLANE_COUNT] result = [
-            MDirection!float(MVector!float(cosf(left), 0, sinf(left), 0)),
-            MDirection!float(MVector!float(-cosf(right), 0, -sinf(right), 0)),
-            MDirection!float(MVector!float(0, cosf(down), sinf(down), 0)),
-            MDirection!float(MVector!float(0, -cosf(up), -sinf(up), 0)),
-            MDirection!float(MVector!float(0, 0, -1, 0)),
+            MDirection!float(MVector!float([cosf(left), 0, sinf(left), 0])),
+            MDirection!float(MVector!float([-cosf(right), 0, -sinf(right), 0])),
+            MDirection!float(MVector!float([0, cosf(down), sinf(down), 0])),
+            MDirection!float(MVector!float([0, -cosf(up), -sinf(up), 0])),
+            MDirection!float(MVector!float([0, 0, -1, 0])),
         ];
         return result;
     }

@@ -7,46 +7,71 @@ walk.CONTACT_SKIN = 0.01
 walk.STANDING_ALTITUDE = walk.HALF_HEIGHT + walk.CONTACT_SKIN
 walk.ALTITUDE_TOLERANCE = 0.002
 walk.MAX_FALL_SPEED = 15
+walk.STEP_AIM_DOWN_DEGREES = 30
+walk.STEP_ROW_YAWS = { -16, 0, 16 }
+walk.TURN_SECONDS = 0.96
+walk.TERRAIN_WALK_SECONDS = 11.2
+walk.SETTLE_SECONDS = 0.48
 
 function walk.spawn(world)
-  local player = world.player
-  world:check(player:mode() == "walk", "spawned walking")
-  world:check(player:on_ground(), "spawned standing on the ground")
+  assert(world:mode() == "walk", "spawned walking")
+  assert(world:is_on_ground(), "spawned standing on the ground")
 end
 
 function walk.forward(world, seconds, min_fraction)
-  local player = world.player
-  local start = player:traveled()
-  player:press(seconds, "fwd")
-  local walked = player:traveled() - start
+  local start = world:traveled()
+  world:press(seconds, "fwd")
+  local walked = world:traveled() - start
   local free = walk.SPEED * seconds
-  world:check(walked >= min_fraction * free, string.format("walked %.1f m of an unobstructed %.1f m", walked, free))
+  assert(walked >= min_fraction * free, string.format("walked %.1f m of an unobstructed %.1f m", walked, free))
   return walked
 end
 
 function walk.track_horizontal_speed(world)
   local peak = { speed = 0, at = 0, fall = 0 }
-  world:every_frame(function()
-    local speed = world.player:horizontal_speed()
+  world:on_step(function()
+    local speed = world:horizontal_speed()
     if speed > peak.speed then
       peak.speed = speed
       peak.at = world:time()
     end
-    peak.fall = math.max(peak.fall, -world.player:vertical_speed())
+    peak.fall = math.max(peak.fall, -world:vertical_speed())
   end)
   return peak
 end
 
-function walk.check_speed_limit(world, peak)
+function walk.check_speed_limit(peak)
   local limit = walk.SPEED + walk.SPEED_TOLERANCE
-  world:check(peak.speed <= limit, string.format("horizontal speed reached %.2f m/s at t=%.2f (limit %.2f)", peak.speed, peak.at, limit))
-  world:check(peak.fall <= walk.MAX_FALL_SPEED, string.format("fell at %.1f m/s (limit %.1f), through the ground or off a cliff", peak.fall, walk.MAX_FALL_SPEED))
+  assert(peak.speed <= limit, string.format("horizontal speed reached %.2f m/s at t=%.2f (limit %.2f)", peak.speed, peak.at, limit))
+  assert(peak.fall <= walk.MAX_FALL_SPEED, string.format("fell at %.1f m/s (limit %.1f), through the ground or off a cliff", peak.fall, walk.MAX_FALL_SPEED))
 end
 
 function walk.check_standing(world, what)
-  local altitude = world.player:altitude()
-  world:check(world.player:on_ground(), what .. ": on ground")
-  world:check(math.abs(altitude - walk.STANDING_ALTITUDE) <= walk.ALTITUDE_TOLERANCE, string.format("%s: standing at altitude %.3f m (expected %.2f)", what, altitude, walk.STANDING_ALTITUDE))
+  local altitude = world:altitude()
+  assert(world:is_on_ground(), what .. ": on ground")
+  assert(math.abs(altitude - walk.STANDING_ALTITUDE) <= walk.ALTITUDE_TOLERANCE, string.format("%s: standing at altitude %.3f m (expected %.2f)", what, altitude, walk.STANDING_ALTITUDE))
+end
+
+function walk.build_step(world)
+  world:look(0, walk.STEP_AIM_DOWN_DEGREES)
+  for _, yaw in ipairs(walk.STEP_ROW_YAWS) do
+    world:look(yaw, 0)
+    assert(world:place_block(), string.format("placed step block at yaw %d", yaw))
+    world:look(-yaw, 0)
+  end
+  world:look(0, -walk.STEP_AIM_DOWN_DEGREES)
+end
+
+function walk.across_terrain(heading_degrees, min_fraction)
+  return function(world)
+    walk.spawn(world)
+    world:turn(heading_degrees, 0, walk.TURN_SECONDS)
+    local peak = walk.track_horizontal_speed(world)
+    walk.forward(world, walk.TERRAIN_WALK_SECONDS, min_fraction)
+    world:wait(walk.SETTLE_SECONDS)
+    walk.check_speed_limit(peak)
+    assert(world:is_on_ground(), "on ground at the end")
+  end
 end
 
 return walk

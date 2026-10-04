@@ -105,9 +105,7 @@ struct VulkanCore {
                 bestRank = rank;
             }
         }
-        if (bestRank == RANK_UNUSABLE) {
-            assert(false);
-        }
+        assert(bestRank != RANK_UNUSABLE);
         graphicsQueueFamily = usableGraphicsFamily(physicalDevice);
         VkPhysicalDeviceProperties properties;
         vkGetPhysicalDeviceProperties(physicalDevice, &properties);
@@ -128,13 +126,15 @@ struct VulkanCore {
         VkQueueFamilyProperties[MAX_QUEUE_FAMILIES] families;
         uint familyCount = MAX_QUEUE_FAMILIES;
         vkGetPhysicalDeviceQueueFamilyProperties(candidate, &familyCount, families.ptr);
-        foreach (i; 0 .. familyCount) {
-            immutable bool isFamilyPresentable = isPresentable(candidate, i);
-            if ((families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0 && isFamilyPresentable) {
-                return i;
-            }
+        uint family = 0;
+        while (family < familyCount && !((families[family].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0 && isPresentable(candidate, family))) {
+            family += 1;
         }
-        return NO_QUEUE_FAMILY;
+        if (family < familyCount) {
+            return family;
+        } else {
+            return NO_QUEUE_FAMILY;
+        }
     }
 
     void createDevice() {

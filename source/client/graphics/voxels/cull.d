@@ -2,7 +2,7 @@ module client.graphics.voxels.cull;
 
 import bindings.platform : VK_ACCESS_INDIRECT_COMMAND_READ_BIT, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_PIPELINE_BIND_POINT_COMPUTE, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, VK_SHADER_STAGE_COMPUTE_BIT, VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, VK_STRUCTURE_TYPE_MEMORY_BARRIER, VkBuffer, VkCommandBuffer, VkDescriptorBufferInfo, VkDescriptorPool, VkDescriptorPoolCreateInfo, VkDescriptorPoolSize, VkDescriptorSet, VkDescriptorSetAllocateInfo, VkDescriptorSetLayout, VkDescriptorSetLayoutBinding, VkDevice, VkMemoryBarrier, VkPipeline, VkPipelineLayout, VkPushConstantRange, VkShaderModule, VkWriteDescriptorSet, vkAllocateDescriptorSets, vkCmdBindDescriptorSets, vkCmdBindPipeline, vkCmdDispatch, vkCmdPipelineBarrier, vkCmdPushConstants, vkCreateDescriptorPool, vkDestroyDescriptorPool, vkDestroyDescriptorSetLayout, vkDestroyPipeline, vkDestroyPipelineLayout, vkDestroyShaderModule, vkUpdateDescriptorSets;
 import client.graphics.pipeline : WHOLE_SIZE, bufferWrite, createComputePipeline, createPipelineLayout, createSetLayout, createShader, expectSuccess, layoutBinding;
-import client.graphics.voxels.chunk_meshes : ChunkMeshes;
+import client.graphics.voxels.meshes : ChunkMeshes;
 
 enum string CULL_COMP_SPV = import("cull.comp.spv");
 enum uint CULL_WORKGROUP = 64;
@@ -54,7 +54,7 @@ struct CullPipeline {
         vkDestroyShaderModule(device, shader, null);
     }
 
-    void bindBuffers(VkDevice device, ChunkMeshes* meshes) {
+    void bindBuffers(VkDevice device, ref ChunkMeshes meshes) {
         VkDescriptorBufferInfo[CULL_STORAGE_BINDINGS] infos = [
             VkDescriptorBufferInfo(meshes.vertices.buffer, 0, WHOLE_SIZE),
             VkDescriptorBufferInfo(meshes.nodes.buffer, 0, WHOLE_SIZE),

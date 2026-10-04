@@ -1,7 +1,7 @@
 module client.graphics.highlight;
 
 import bindings.platform : VK_PIPELINE_BIND_POINT_GRAPHICS, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_SHADER_STAGE_VERTEX_BIT, VkCommandBuffer, VkDevice, VkPipeline, VkPipelineLayout, VkPushConstantRange, VkRenderPass, VkShaderModule, vkCmdBindPipeline, vkCmdDraw, vkCmdPushConstants, vkDestroyPipeline, vkDestroyPipelineLayout, vkDestroyShaderModule;
-import client.graphics.pipeline : PipelineSettings, createGraphicsPipeline, createPipelineLayout, createShader;
+import client.graphics.pipeline : Blend, PipelineSettings, createGraphicsPipeline, createPipelineLayout, createShader;
 
 enum string HIGHLIGHT_VERT_SPV = import("highlight.vert.spv");
 enum string HIGHLIGHT_FRAG_SPV = import("highlight.frag.spv");
@@ -21,13 +21,18 @@ struct HighlightPipeline {
             VkPushConstantRange(VK_SHADER_STAGE_VERTEX_BIT, 0, HIGHLIGHT_PUSH_BYTES),
         ];
         pipelineLayout = createPipelineLayout(device, null, pushConstants[]);
-        PipelineSettings settings;
-        settings.layout = pipelineLayout;
-        settings.renderPass = renderPass;
-        settings.vertexShader = vertexShader;
-        settings.fragmentShader = fragmentShader;
-        settings.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
-        settings.isDepthTested = true;
+        PipelineSettings settings = PipelineSettings(
+            pipelineLayout,
+            renderPass,
+            vertexShader,
+            fragmentShader,
+            VK_PRIMITIVE_TOPOLOGY_LINE_LIST,
+            0,
+            Blend.opaque,
+            true,
+            false,
+            false,
+        );
         pipeline = createGraphicsPipeline(device, settings);
         vkDestroyShaderModule(device, vertexShader, null);
         vkDestroyShaderModule(device, fragmentShader, null);

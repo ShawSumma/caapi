@@ -323,26 +323,33 @@ uint clampUint(uint value, uint low, uint high) {
     }
 }
 
+bool isSrgbSurfaceFormat(VkSurfaceFormatKHR candidate) {
+    return candidate.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR && (candidate.format == VK_FORMAT_B8G8R8A8_SRGB || candidate.format == VK_FORMAT_R8G8B8A8_SRGB);
+}
+
 VkSurfaceFormatKHR selectSurfaceFormat(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface) {
     VkSurfaceFormatKHR[MAX_SURFACE_FORMATS] formats;
     uint count = MAX_SURFACE_FORMATS;
     expectSuccess(vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &count, formats.ptr));
-    foreach (candidate; formats[0 .. count]) {
-        if (candidate.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR && (candidate.format == VK_FORMAT_B8G8R8A8_SRGB || candidate.format == VK_FORMAT_R8G8B8A8_SRGB)) {
-            return candidate;
-        }
+    uint index = 0;
+    while (index < count && !isSrgbSurfaceFormat(formats[index])) {
+        index += 1;
     }
-    assert(false);
+    assert(index < count);
+    return formats[index];
 }
 
 VkPresentModeKHR selectPresentMode(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface) {
     VkPresentModeKHR[MAX_PRESENT_MODES] modes;
     uint count = MAX_PRESENT_MODES;
     expectSuccess(vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface, &count, modes.ptr));
-    foreach (mode; modes[0 .. count]) {
-        if (mode == VK_PRESENT_MODE_MAILBOX_KHR) {
-            return mode;
-        }
+    uint index = 0;
+    while (index < count && modes[index] != VK_PRESENT_MODE_MAILBOX_KHR) {
+        index += 1;
     }
-    return VK_PRESENT_MODE_FIFO_KHR;
+    if (index < count) {
+        return VK_PRESENT_MODE_MAILBOX_KHR;
+    } else {
+        return VK_PRESENT_MODE_FIFO_KHR;
+    }
 }

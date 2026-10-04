@@ -63,15 +63,19 @@ struct GpuBuffer {
     }
 }
 
+bool isMemoryTypeUsable(ref const VkPhysicalDeviceMemoryProperties properties, uint index, uint typeBits, VkMemoryPropertyFlags wanted) {
+    return (typeBits & (1u << index)) != 0 && (properties.memoryTypes[index].propertyFlags & wanted) == wanted;
+}
+
 uint memoryTypeIndex(VkPhysicalDevice physicalDevice, uint typeBits, VkMemoryPropertyFlags wanted) {
     VkPhysicalDeviceMemoryProperties properties;
     vkGetPhysicalDeviceMemoryProperties(physicalDevice, &properties);
-    foreach (i; 0 .. properties.memoryTypeCount) {
-        if ((typeBits & (1u << i)) != 0 && (properties.memoryTypes[i].propertyFlags & wanted) == wanted) {
-            return i;
-        }
+    uint index = 0;
+    while (index < properties.memoryTypeCount && !isMemoryTypeUsable(properties, index, typeBits, wanted)) {
+        index += 1;
     }
-    assert(false);
+    assert(index < properties.memoryTypeCount);
+    return index;
 }
 
 VkDeviceMemory allocateMemory(VkPhysicalDevice physicalDevice, VkDevice device, VkMemoryRequirements requirements, VkMemoryPropertyFlags properties) {
@@ -119,16 +123,20 @@ struct PipelineSettings {
     }
 
     VkPipelineColorBlendAttachmentState blendAttachment() const {
-        VkPipelineColorBlendAttachmentState attachment;
         if (blend == Blend.opaque) {
-            attachment.colorWriteMask = COLOR_WRITE_RGBA;
+            return opaqueAttachment();
         } else if (blend == Blend.transmittance) {
-            attachment = blendedAttachment(VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_FACTOR_SRC_ALPHA);
+            return blendedAttachment(VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_FACTOR_SRC_ALPHA);
         } else {
-            attachment = blendedAttachment(VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
+            return blendedAttachment(VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
         }
-        return attachment;
     }
+}
+
+VkPipelineColorBlendAttachmentState opaqueAttachment() {
+    VkPipelineColorBlendAttachmentState attachment;
+    attachment.colorWriteMask = COLOR_WRITE_RGBA;
+    return attachment;
 }
 
 VkPipelineColorBlendAttachmentState blendedAttachment(VkBlendFactor sourceFactor, VkBlendFactor destinationFactor) {

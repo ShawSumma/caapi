@@ -10,15 +10,14 @@ import client.graphics.frustum : FRUSTUM_PLANE_COUNT, Frustum;
 import client.graphics.highlight : HighlightPipeline;
 import client.graphics.matrices : MATRIX_FLOATS, determinant, flatten, matrixInverse, matrixMultiply;
 import client.graphics.pipeline : GpuBuffer, VULKAN_TRUE, expectSuccess;
-import client.graphics.voxels.chunk_meshes : ChunkMeshes, meshJob;
 import client.graphics.voxels.cull : CullPipeline;
+import client.graphics.voxels.meshes : ChunkMeshes, meshJob;
 import client.graphics.voxels.surface : CommonUniforms, FACES_BINDING, SurfacePipeline, TRANSFORMS_BINDING;
-import client.local_world : LocalWorld;
-import client.worldgen_driver : ParallelJob;
+import client.streaming : ParallelJob;
+import client.world : LocalWorld;
 import common.dodeca : CHUNK_BOUNDING_SPHERE_RADIUS, chunkToNode;
-import common.graph : Graph;
-import common.graph_ray_casting : GraphCastHit;
-import common.math : MDirection, MIsometry, PI;
+import common.math : MDirection, PI;
+import common.raycast.graph : GraphCastHit;
 import common.traversal : NOT_COLLECTED, nowMilliseconds;
 
 enum float VERTICAL_HALF_FOV_RADIANS = 45.0f * (PI / 180.0f);
@@ -165,10 +164,10 @@ struct Renderer {
     void bindMeshBuffers() {
         voxels.bindStorage(core.device, FACES_BINDING, meshes.faces.buffer);
         voxels.bindStorage(core.device, TRANSFORMS_BINDING, meshes.transforms.buffer);
-        cull.bindBuffers(core.device, &meshes);
+        cull.bindBuffers(core.device, meshes);
     }
 
-    void render(LocalWorld* world) {
+    void render(ref LocalWorld world) {
         if (swapchain.isMinimized()) {
             recreateSwapchain();
         }
@@ -181,35 +180,38 @@ struct Renderer {
         return backlog;
     }
 
-    CommonUniforms commonUniforms(const(LocalWorld)* world) const {
+    CommonUniforms commonUniforms(ref const LocalWorld world) const {
         VkExtent2D extent = swapchain.extent;
         Frustum frustum = Frustum.fromVerticalFov(VERTICAL_HALF_FOV_RADIANS, cast(float) extent.width / cast(float) extent.height);
-        MIsometry!float cameraInverse = world.cameraInNearbyFrame().inverse();
+        float[MATRIX_FLOATS] cameraInverse = flatten(world.cameraInNearbyFrame().inverse().mat);
         float[MATRIX_FLOATS] projection = frustum.projection(NEAR_PLANE);
-        CommonUniforms uniforms;
-        uniforms.cameraInverse = flatten(cameraInverse.mat);
-        uniforms.viewProjection = matrixMultiply(projection, uniforms.cameraInverse);
-        uniforms.inverseProjection = matrixInverse(projection);
+        float[MATRIX_FLOATS] viewProjection = matrixMultiply(projection, cameraInverse);
         MDirection!float[FRUSTUM_PLANE_COUNT] planes = frustum.planes();
+        float[4][FRUSTUM_PLANE_COUNT] frustumPlanes;
         foreach (i; 0 .. FRUSTUM_PLANE_COUNT) {
-            uniforms.frustumPlanes[i] = planes[i].vec.data;
+            frustumPlanes[i] = planes[i].vec.data;
         }
-        uniforms.fogColor = skyLinear;
-        uniforms.fogDensity = powf(logf(1.0f / FOG_VISIBILITY_THRESHOLD), 1.0f / FOG_EXPONENT) / world.renderRadius;
-        uniforms.fogExponent = FOG_EXPONENT;
-        uniforms.viewParity = parityOf(determinant(uniforms.viewProjection));
-        uniforms.cullSinhRadius = sinhf(CHUNK_BOUNDING_SPHERE_RADIUS);
-        return uniforms;
+        return CommonUniforms(
+            viewProjection,
+            matrixInverse(projection),
+            cameraInverse,
+            frustumPlanes,
+            skyLinear,
+            powf(logf(1.0f / FOG_VISIBILITY_THRESHOLD), 1.0f / FOG_EXPONENT) / world.renderRadius,
+            FOG_EXPONENT,
+            parityOf(determinant(viewProjection)),
+            sinhf(CHUNK_BOUNDING_SPHERE_RADIUS),
+        );
     }
 
-    void renderFrame(LocalWorld* world) {
+    void renderFrame(ref LocalWorld world) {
         double waitStart = nowMilliseconds();
         expectSuccess(vkWaitForFences(core.device, 1, &swapchain.inFlightFence, VULKAN_TRUE, NO_TIMEOUT));
         double updateStart = nowMilliseconds();
         frameTimes.fenceWaitMs = updateStart - waitStart;
         frameTimes.gpu = timer.read(core.device, frameTimes.gpu);
         CommonUniforms uniforms = commonUniforms(world);
-        voxels.updateCommonUbo(&uniforms);
+        voxels.updateCommonUbo(uniforms);
         updateChunks(world);
         frameTimes.chunkUpdateMs = nowMilliseconds() - updateStart;
         HighlightTarget target = findHighlightTarget(world, uniforms.viewProjection);
@@ -232,38 +234,33 @@ struct Renderer {
         }
     }
 
-    void updateChunks(LocalWorld* world) {
+    void updateChunks(ref LocalWorld world) {
         if (world.epoch != worldEpoch) {
             meshes.forgetWorld();
             worldEpoch = world.epoch;
         }
         meshes.beginFrame();
-        meshes.list(&world.nearby[world.published], world.nearbyVersion);
+        meshes.list(world.nearby[world.published], world.nearbyVersion);
         meshChanged(world);
         if (meshes.hasReplacedFaces || meshes.hasReplacedDrawBuffers) {
             bindMeshBuffers();
         }
     }
 
-    void meshChanged(LocalWorld* world) {
-        Graph* graph = &world.graph;
-        if (graph.hasChanges()) {
-            meshes.prepareBatch(graph, world.worldgenDriver.workerCount + 1);
-            ParallelJob job;
-            job.run = &meshJob;
-            job.context = &meshes.batch;
-            job.deadline = nowMilliseconds() + MESH_BUDGET_MILLISECONDS;
-            job.count = graph.changedChunks.length - graph.changedHead;
-            world.worldgenDriver.runParallel(&job);
-            foreach (i; 0 .. job.count) {
-                graph.takeChanged();
+    void meshChanged(ref LocalWorld world) {
+        if (world.graph.hasChanges()) {
+            meshes.prepareBatch(world.graph, world.streamer.workerCount + 1);
+            ParallelJob job = ParallelJob(&meshJob, &meshes.batch, nowMilliseconds() + MESH_BUDGET_MILLISECONDS, world.graph.changedChunks.length - world.graph.changedHead);
+            world.streamer.runParallel(&job);
+            foreach (_; 0 .. job.count) {
+                world.graph.takeChanged();
             }
-            meshes.applyBatch(&world.nearby[world.published]);
+            meshes.applyBatch(world.nearby[world.published]);
         }
-        backlog = cast(uint)(graph.changedChunks.length - graph.changedHead);
+        backlog = cast(uint)(world.graph.changedChunks.length - world.graph.changedHead);
     }
 
-    HighlightTarget findHighlightTarget(const(LocalWorld)* world, float[MATRIX_FLOATS] viewProjection) const {
+    HighlightTarget findHighlightTarget(ref const LocalWorld world, float[MATRIX_FLOATS] viewProjection) const {
         GraphCastHit hit = world.castCenterRay();
         uint index = world.nearby[world.published].indexOf(world.graph.slotOf(hit.chunk.node));
         if (!hit.isHit() || index == NOT_COLLECTED) {

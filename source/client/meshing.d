@@ -1,11 +1,11 @@
 module client.meshing;
 
 import core.stdc.stdlib : free, malloc;
-import common.chunk_neighbors : AXIS_COUNT, isCellOccupied, isOutsideInterior;
 import common.graph : Graph;
 import common.margins : CoordsWithMargins;
+import common.material : Material;
+import common.neighbors : AXIS_COUNT, isCellOccupied, isOutsideInterior;
 import common.node : ChunkSlot;
-import common.world : Material;
 
 enum uint CORNERS_PER_FACE = 4;
 enum uint OCCLUSION_LEVELS = 3;
@@ -22,6 +22,15 @@ enum ubyte TEST_CELL = 2;
 struct Face {
     uint posAxis;
     uint occlusionMaterial;
+
+    static Face fromVoxel(int[3] voxel, size_t axis, bool isInward, Material material, uint[CORNERS_PER_FACE] occlusion) {
+        uint axisCode = cast(uint) axis + reversedOffset(isInward) + flippedOffset(occlusion);
+        uint packed = material;
+        foreach (corner; 0 .. CORNERS_PER_FACE) {
+            packed |= occlusion[corner] << (OCCLUSION_SHIFT + OCCLUSION_BITS * corner);
+        }
+        return Face(cast(uint) voxel[0] | cast(uint) voxel[1] << COORD_BITS | cast(uint) voxel[2] << (2 * COORD_BITS) | axisCode << AXIS_SHIFT, packed);
+    }
 }
 
 struct ChunkCells {
@@ -40,9 +49,67 @@ struct ChunkCells {
             }
         }
         if (outside > 1) {
-            return isCellOccupied(graph, chunk, coords);
+            return (*graph).isCellOccupied(chunk, coords);
         } else {
-            return padded[coords.toIndex(dimension)] != Material.Void;
+            return padded[coords.toIndex(dimension)] != Material.none;
+        }
+    }
+
+    uint[CORNERS_PER_FACE] faceOcclusion(int[3] base, size_t axis) const {
+        size_t bAxis = (axis + 1) % AXIS_COUNT;
+        size_t cAxis = (axis + 2) % AXIS_COUNT;
+        uint[CORNERS_PER_FACE] result;
+        foreach (corner; 0 .. CORNERS_PER_FACE) {
+            int stepB = cast(int)(corner & 1) * 2 - 1;
+            int stepC = cast(int)(corner >> 1) * 2 - 1;
+            int[3] edgeB = base;
+            edgeB[bAxis] += stepB;
+            int[3] edgeC = base;
+            edgeC[cAxis] += stepC;
+            int[3] diagonal = edgeB;
+            diagonal[cAxis] += stepC;
+            result[corner] = cornerOcclusion(isOccupied(edgeB), isOccupied(edgeC), isOccupied(diagonal));
+        }
+        return result;
+    }
+
+    uint extractFaces(Face* faces) const {
+        size_t side = dimension + 2 * MARGIN_CELLS;
+        size_t[AXIS_COUNT] strides = [1, side, side * side];
+        uint count = 0;
+        foreach (axis; 0 .. AXIS_COUNT) {
+            size_t bAxis = (axis + 1) % AXIS_COUNT;
+            size_t cAxis = (axis + 2) % AXIS_COUNT;
+            size_t step = strides[axis];
+            foreach (c; 0 .. dimension) {
+                foreach (b; 0 .. dimension) {
+                    size_t rowStart = (b + MARGIN_CELLS) * strides[bAxis] + (c + MARGIN_CELLS) * strides[cAxis] + MARGIN_CELLS * step;
+                    foreach (a; 0 .. dimension + 1) {
+                        size_t index = rowStart + a * step;
+                        bool isSelfVoid = padded[index] == Material.none;
+                        bool isOtherVoid = padded[index - step] == Material.none;
+                        if (isSelfVoid != isOtherVoid && !(isSelfVoid && a == dimension) && !(isOtherVoid && a == 0)) {
+                            int[3] voxel;
+                            voxel[axis] = cast(int) a;
+                            voxel[bAxis] = cast(int) b;
+                            voxel[cAxis] = cast(int) c;
+                            int[3] base = voxel;
+                            base[axis] -= solidSideStep(isSelfVoid);
+                            faces[count] = Face.fromVoxel(voxel, axis, isSelfVoid, solidMaterial(index, step, isSelfVoid), faceOcclusion(base, axis));
+                            count += 1;
+                        }
+                    }
+                }
+            }
+        }
+        return count;
+    }
+
+    Material solidMaterial(size_t index, size_t step, bool isSelfVoid) const {
+        if (isSelfVoid) {
+            return padded[index - step];
+        } else {
+            return padded[index];
         }
     }
 }
@@ -59,9 +126,9 @@ struct Mesher {
         faces = null;
     }
 
-    const(Face)[] mesh(const(Graph)* graph, ChunkSlot chunk) {
-        ChunkCells cells = ChunkCells(graph.chunkAt(chunk).voxels.denseData, graph, chunk, graph.layout.dimension);
-        return faces[0 .. extractFaces(&cells, faces)];
+    const(Face)[] mesh(ref const Graph graph, ChunkSlot chunk) {
+        ChunkCells cells = ChunkCells(graph.chunkAt(chunk).voxels.denseData, &graph, chunk, graph.layout.dimension);
+        return faces[0 .. cells.extractFaces(faces)];
     }
 }
 
@@ -72,24 +139,6 @@ size_t paddedCellCount(ubyte dimension) {
 
 uint maxFaces(ubyte dimension) {
     return AXIS_COUNT * (dimension * dimension * dimension + dimension * dimension);
-}
-
-uint[CORNERS_PER_FACE] faceOcclusion(const(ChunkCells)* cells, int[3] base, size_t axis) {
-    size_t bAxis = (axis + 1) % AXIS_COUNT;
-    size_t cAxis = (axis + 2) % AXIS_COUNT;
-    uint[CORNERS_PER_FACE] result;
-    foreach (corner; 0 .. CORNERS_PER_FACE) {
-        int stepB = cast(int)(corner & 1) * 2 - 1;
-        int stepC = cast(int)(corner >> 1) * 2 - 1;
-        int[3] edgeB = base;
-        edgeB[bAxis] += stepB;
-        int[3] edgeC = base;
-        edgeC[cAxis] += stepC;
-        int[3] diagonal = edgeB;
-        diagonal[cAxis] += stepC;
-        result[corner] = cornerOcclusion(cells.isOccupied(edgeB), cells.isOccupied(edgeC), cells.isOccupied(diagonal));
-    }
-    return result;
 }
 
 uint cornerOcclusion(bool isEdgeBOccupied, bool isEdgeCOccupied, bool isDiagonalOccupied) {
@@ -116,17 +165,6 @@ uint flippedOffset(uint[CORNERS_PER_FACE] occlusion) {
     }
 }
 
-Face packFace(int[3] voxel, size_t axis, bool isInward, Material material, uint[CORNERS_PER_FACE] occlusion) {
-    uint axisCode = cast(uint) axis + reversedOffset(isInward) + flippedOffset(occlusion);
-    Face face;
-    face.posAxis = cast(uint) voxel[0] | cast(uint) voxel[1] << COORD_BITS | cast(uint) voxel[2] << (2 * COORD_BITS) | axisCode << AXIS_SHIFT;
-    face.occlusionMaterial = material;
-    foreach (corner; 0 .. CORNERS_PER_FACE) {
-        face.occlusionMaterial |= occlusion[corner] << (OCCLUSION_SHIFT + OCCLUSION_BITS * corner);
-    }
-    return face;
-}
-
 int solidSideStep(bool isSelfVoid) {
     if (isSelfVoid) {
         return 0;
@@ -135,62 +173,20 @@ int solidSideStep(bool isSelfVoid) {
     }
 }
 
-Material solidMaterial(const(Material)* padded, size_t index, size_t step, bool isSelfVoid) {
-    if (isSelfVoid) {
-        return padded[index - step];
-    } else {
-        return padded[index];
-    }
-}
-
-uint extractFaces(const(ChunkCells)* cells, Face* faces) {
-    ubyte dimension = cells.dimension;
-    size_t side = dimension + 2 * MARGIN_CELLS;
-    size_t[AXIS_COUNT] strides = [1, side, side * side];
-    const(Material)* padded = cells.padded.ptr;
-    uint count = 0;
-    foreach (axis; 0 .. AXIS_COUNT) {
-        size_t bAxis = (axis + 1) % AXIS_COUNT;
-        size_t cAxis = (axis + 2) % AXIS_COUNT;
-        size_t step = strides[axis];
-        foreach (c; 0 .. dimension) {
-            foreach (b; 0 .. dimension) {
-                size_t rowStart = (b + MARGIN_CELLS) * strides[bAxis] + (c + MARGIN_CELLS) * strides[cAxis] + MARGIN_CELLS * step;
-                foreach (a; 0 .. dimension + 1) {
-                    size_t index = rowStart + a * step;
-                    immutable bool isSelfVoid = padded[index] == Material.Void;
-                    immutable bool isOtherVoid = padded[index - step] == Material.Void;
-                    if (isSelfVoid != isOtherVoid && !(isSelfVoid && a == dimension) && !(isOtherVoid && a == 0)) {
-                        int[3] voxel;
-                        voxel[axis] = cast(int) a;
-                        voxel[bAxis] = cast(int) b;
-                        voxel[cAxis] = cast(int) c;
-                        int[3] base = voxel;
-                        base[axis] -= solidSideStep(isSelfVoid);
-                        faces[count] = packFace(voxel, axis, isSelfVoid, solidMaterial(padded, index, step, isSelfVoid), faceOcclusion(cells, base, axis));
-                        count += 1;
-                    }
-                }
-            }
-        }
-    }
-    return count;
-}
-
 unittest {
     Material[] padded = (cast(Material*) malloc(paddedCellCount(TEST_DIMENSION) * Material.sizeof))[0 .. paddedCellCount(TEST_DIMENSION)];
-    padded[] = Material.Void;
+    padded[] = Material.none;
     int[3] center = [TEST_CELL, TEST_CELL, TEST_CELL];
     ChunkCells cells = ChunkCells(padded, null, ChunkSlot.init, TEST_DIMENSION);
     size_t stride = TEST_DIMENSION + 2 * MARGIN_CELLS;
-    padded[(TEST_CELL + MARGIN_CELLS) + (TEST_CELL + MARGIN_CELLS) * stride + (TEST_CELL + MARGIN_CELLS) * stride * stride] = Material.Granite;
+    padded[(TEST_CELL + MARGIN_CELLS) + (TEST_CELL + MARGIN_CELLS) * stride + (TEST_CELL + MARGIN_CELLS) * stride * stride] = Material.granite;
     assert(cells.isOccupied(center));
     Face* faces = cast(Face*) malloc(maxFaces(TEST_DIMENSION) * Face.sizeof);
-    uint count = extractFaces(&cells, faces);
+    uint count = cells.extractFaces(faces);
     assert(count == 2 * AXIS_COUNT);
     uint[CORNERS_PER_FACE] unoccluded = OCCLUSION_LEVELS;
     foreach (face; faces[0 .. count]) {
-        assert(face.occlusionMaterial == packFace(center, 0, false, Material.Granite, unoccluded).occlusionMaterial);
+        assert(face.occlusionMaterial == Face.fromVoxel(center, 0, false, Material.granite, unoccluded).occlusionMaterial);
     }
     free(faces);
     free(padded.ptr);

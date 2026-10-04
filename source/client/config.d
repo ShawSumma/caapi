@@ -12,7 +12,7 @@ struct ClientConfig {
     float reachMeters = 10.0f;
     bool isYInverted;
 
-    static ClientConfig load(const(char)* path) {
+    static ClientConfig fromFile(const(char)* path) {
         ClientConfig config;
         FILE* file = fopen(path, "r");
         if (file is null) {
@@ -20,7 +20,7 @@ struct ClientConfig {
         } else {
             char[CONFIG_LINE_CAPACITY] line;
             while (fgets(line.ptr, cast(int) line.length, file) !is null) {
-                config.apply(ConfigEntry.parse(line[0 .. strlen(line.ptr)]));
+                config.apply(ConfigEntry.fromLine(line[0 .. strlen(line.ptr)]));
             }
             fclose(file);
             return config;
@@ -44,7 +44,7 @@ struct ConfigEntry {
     const(char)[] key;
     const(char)[] value;
 
-    static ConfigEntry parse(const(char)[] line) {
+    static ConfigEntry fromLine(const(char)[] line) {
         const(char)[] trimmed = trim(line);
         size_t equals = 0;
         while (equals < trimmed.length && trimmed[equals] != '=') {

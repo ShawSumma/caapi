@@ -1,5 +1,4 @@
-local world = ...
-local player = world.player
-
-player:look(0, 10)
-world:frames(1)
+return function(world)
+  world:look(0, 10)
+  world:step()
+end

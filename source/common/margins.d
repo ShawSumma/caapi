@@ -1,12 +1,28 @@
 module common.margins;
 
+import common.coords : ChunkAxisPermutation, ChunkDirection, CoordSign, Coords, IDENTITY_PERMUTATION;
 import common.dodeca : Vertex, chunkAxisPermutations;
+import common.material : Material;
 import common.node : VoxelData;
-import common.voxel_math : ChunkAxisPermutation, ChunkDirection, CoordSign, Coords, IDENTITY_PERMUTATION;
-import common.world : Material;
 
 struct CoordsWithMargins {
     ubyte[3] data;
+
+    static CoordsWithMargins fromCoords(Coords coords) {
+        CoordsWithMargins result;
+        foreach (axis; 0 .. 3) {
+            result.data[axis] = cast(ubyte)(coords.data[axis] + 1);
+        }
+        return result;
+    }
+
+    static CoordsWithMargins fromTuv(ubyte t, ubyte u, ubyte v, size_t tAxis) {
+        CoordsWithMargins result;
+        result.data[tAxis] = t;
+        result.data[(tAxis + 1) % 3] = u;
+        result.data[(tAxis + 2) % 3] = v;
+        return result;
+    }
 
     size_t toIndex(ubyte chunkSize) const {
         size_t stride = chunkSize + 2;
@@ -14,16 +30,8 @@ struct CoordsWithMargins {
     }
 }
 
-CoordsWithMargins withMargins(Coords coords) {
-    CoordsWithMargins result;
-    foreach (axis; 0 .. 3) {
-        result.data[axis] = cast(ubyte)(coords.data[axis] + 1);
-    }
-    return result;
-}
-
 ubyte marginCoord(ubyte chunkSize, CoordSign sign) {
-    if (sign == CoordSign.Plus) {
+    if (sign == CoordSign.plus) {
         return cast(ubyte)(chunkSize + 1);
     } else {
         return 0;
@@ -31,7 +39,7 @@ ubyte marginCoord(ubyte chunkSize, CoordSign sign) {
 }
 
 ubyte boundaryCoordWithMargins(ubyte chunkSize, CoordSign sign) {
-    if (sign == CoordSign.Plus) {
+    if (sign == CoordSign.plus) {
         return chunkSize;
     } else {
         return 1;
@@ -49,19 +57,11 @@ ubyte clampToInterior(size_t index, ubyte dimension) {
 }
 
 ChunkAxisPermutation neighborAxisPermutation(Vertex vertex, ChunkDirection direction) {
-    if (direction.sign == CoordSign.Plus) {
+    if (direction.sign == CoordSign.plus) {
         return vertex.chunkAxisPermutations[direction.axis];
     } else {
         return IDENTITY_PERMUTATION;
     }
-}
-
-CoordsWithMargins tuvToXyz(ubyte t, ubyte u, ubyte v, size_t tAxis) {
-    CoordsWithMargins result;
-    result.data[tAxis] = t;
-    result.data[(tAxis + 1) % 3] = u;
-    result.data[(tAxis + 2) % 3] = v;
-    return result;
 }
 
 struct MarginFace {
@@ -76,11 +76,11 @@ struct MarginFace {
     }
 
     CoordsWithMargins boundaryCell(size_t i, size_t j) const {
-        return tuvToXyz(boundary, clampToInterior(i, dimension), clampToInterior(j, dimension), axis);
+        return CoordsWithMargins.fromTuv(boundary, clampToInterior(i, dimension), clampToInterior(j, dimension), axis);
     }
 
     CoordsWithMargins marginCell(size_t i, size_t j) const {
-        return tuvToXyz(margin, cast(ubyte) i, cast(ubyte) j, axis);
+        return CoordsWithMargins.fromTuv(margin, cast(ubyte) i, cast(ubyte) j, axis);
     }
 
     size_t neighborIndex(CoordsWithMargins coords) const {
@@ -95,23 +95,20 @@ struct MarginFace {
         }
     }
 
-    bool hasBoundaryVoidnessOtherThan(const(VoxelData)* source, bool isNeighborSide, bool isVoid) const {
+    bool hasBoundaryVoidnessOtherThan(ref const VoxelData source, bool isNeighborSide, bool isVoid) const {
         if (source.isSolid()) {
-            return (source.solidMaterial == Material.Void) != isVoid;
+            return (source.solidMaterial == Material.none) != isVoid;
         } else {
-            foreach (j; 1 .. dimension + 1) {
-                foreach (i; 1 .. dimension + 1) {
-                    if ((source.get(boundaryIndex(i, j, isNeighborSide)) == Material.Void) != isVoid) {
-                        return true;
-                    }
-                }
+            size_t cellCount = cast(size_t) dimension * dimension;
+            size_t cell = 0;
+            while (cell < cellCount && (source.get(boundaryIndex(cell % dimension + 1, cell / dimension + 1, isNeighborSide)) == Material.none) == isVoid) {
+                cell += 1;
             }
-            return false;
+            return cell < cellCount;
         }
     }
 
-    bool isMarginStale(const(VoxelData)* target, const(VoxelData)* source, bool isSourceNeighbor) const {
-        return !target.isSolid() || hasBoundaryVoidnessOtherThan(source, isSourceNeighbor, target.solidMaterial == Material.Void);
+    bool isMarginStale(ref const VoxelData target, ref const VoxelData source, bool isSourceNeighbor) const {
+        return !target.isSolid() || hasBoundaryVoidnessOtherThan(source, isSourceNeighbor, target.solidMaterial == Material.none);
     }
 }
-

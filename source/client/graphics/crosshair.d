@@ -19,14 +19,18 @@ struct CrosshairPipeline {
             VkPushConstantRange(VK_SHADER_STAGE_VERTEX_BIT, 0, float.sizeof),
         ];
         pipelineLayout = createPipelineLayout(device, null, pushConstants[]);
-        PipelineSettings settings;
-        settings.layout = pipelineLayout;
-        settings.renderPass = renderPass;
-        settings.vertexShader = vertexShader;
-        settings.fragmentShader = fragmentShader;
-        settings.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-        settings.subpass = CROSSHAIR_SUBPASS;
-        settings.blend = Blend.alpha;
+        PipelineSettings settings = PipelineSettings(
+            pipelineLayout,
+            renderPass,
+            vertexShader,
+            fragmentShader,
+            VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+            CROSSHAIR_SUBPASS,
+            Blend.alpha,
+            false,
+            false,
+            false,
+        );
         pipeline = createGraphicsPipeline(device, settings);
         vkDestroyShaderModule(device, vertexShader, null);
         vkDestroyShaderModule(device, fragmentShader, null);

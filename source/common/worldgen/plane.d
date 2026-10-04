@@ -47,7 +47,7 @@ struct Plane {
     }
 
     float distanceToChunk(Vertex chunk, float[3] coord) const {
-        MVector!float transformed = chunk.chunkToNode * MVector!float(coord[0], coord[1], coord[2], 1.0f);
+        MVector!float transformed = chunk.chunkToNode * MVector!float([coord[0], coord[1], coord[2], 1.0f]);
         return distanceTo(transformed.normalizedPoint());
     }
 }

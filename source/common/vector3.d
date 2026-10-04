@@ -2,35 +2,37 @@ module common.vector3;
 
 import core.math : sqrt;
 
-float dot3(float[3] a, float[3] b) {
+immutable float[3] ZERO_VECTOR = [0.0f, 0.0f, 0.0f];
+
+float dot(float[3] a, float[3] b) {
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
-float magnitude3(float[3] v) {
-    return sqrt(dot3(v, v));
+float magnitude(float[3] v) {
+    return sqrt(v.dot(v));
 }
 
-float[3] scale3(float[3] v, float s) {
+float[3] scaled(float[3] v, float s) {
     float[3] result = [v[0] * s, v[1] * s, v[2] * s];
     return result;
 }
 
-float[3] add3(float[3] a, float[3] b) {
+float[3] plus(float[3] a, float[3] b) {
     float[3] result = [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
     return result;
 }
 
-float[3] sub3(float[3] a, float[3] b) {
+float[3] minus(float[3] a, float[3] b) {
     float[3] result = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
     return result;
 }
 
-float[3] neg3(float[3] v) {
+float[3] negated(float[3] v) {
     float[3] result = [-v[0], -v[1], -v[2]];
     return result;
 }
 
-float[3] cross3(float[3] a, float[3] b) {
+float[3] cross(float[3] a, float[3] b) {
     float[3] result = [
         a[1] * b[2] - a[2] * b[1],
         a[2] * b[0] - a[0] * b[2],
@@ -39,36 +41,32 @@ float[3] cross3(float[3] a, float[3] b) {
     return result;
 }
 
-float[3] zero3() {
-    float[3] result = [0.0f, 0.0f, 0.0f];
-    return result;
-}
-
 float[3] rejectAlong(float[3] v, float[3] unitAxis) {
-    return sub3(v, scale3(unitAxis, dot3(v, unitAxis)));
+    return v.minus(unitAxis.scaled(v.dot(unitAxis)));
 }
 
-float[3] capMagnitude3(float[3] v, float maxMagnitude) {
-    float magnitudeSquared = v.dot3(v);
+float[3] cappedTo(float[3] v, float maxMagnitude) {
+    float magnitudeSquared = v.dot(v);
     if (magnitudeSquared > maxMagnitude * maxMagnitude) {
-        return v.scale3(maxMagnitude / sqrt(magnitudeSquared));
+        return v.scaled(maxMagnitude / sqrt(magnitudeSquared));
     } else {
         return v;
     }
 }
 
-float[3] moveToward3(float[3] current, float[3] target, float maxStep) {
-    return current.add3(target.sub3(current).capMagnitude3(maxStep));
+float[3] movedToward(float[3] current, float[3] target, float maxStep) {
+    return current.plus(target.minus(current).cappedTo(maxStep));
 }
 
 unittest {
     float[3] v = [3, 4, 0];
-    assert(magnitude3(capMagnitude3(v, 1)) < 1.0001f);
+    assert(v.cappedTo(1).magnitude < 1.0001f);
     float[3] z = [0, 0, 1];
-    assert(dot3(cross3(v, z), v) == 0);
-    float[3] reached = moveToward3(zero3(), v, 10);
+    assert(v.cross(z).dot(v) == 0);
+    float[3] reached = ZERO_VECTOR.movedToward(v, 10);
     assert(reached[0] == 3 && reached[1] == 4);
-    float[3] partial = moveToward3(zero3(), v, 1);
-    assert(magnitude3(partial) < 1.0001f && magnitude3(partial) > 0.9999f);
-    assert(dot3(rejectAlong(v, [1, 0, 0]), [1, 0, 0]) == 0);
+    float[3] partial = ZERO_VECTOR.movedToward(v, 1);
+    assert(partial.magnitude < 1.0001f && partial.magnitude > 0.9999f);
+    float[3] xAxis = [1, 0, 0];
+    assert(v.rejectAlong(xAxis).dot(xAxis) == 0);
 }

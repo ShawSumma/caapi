@@ -28,7 +28,6 @@ struct NearbyScratch {
     size_t front;
     float coshThreshold = 0;
     uint generation;
-    bool isBuilding;
 
     void release() {
         nodes.release();
@@ -44,17 +43,20 @@ struct NearbyScratch {
         }
     }
 
-    void begin(Graph* graph, Position start, float distance) {
+    bool isBuilding() const {
+        return front < nodes.length;
+    }
+
+    void begin(ref Graph graph, Position start, float distance) {
         coshThreshold = coshf(distance + BOUNDING_SPHERE_RADIUS);
         nodes.clear();
         front = 0;
         generation += 1;
-        isBuilding = true;
         startPoint = start.local * MPoint!float.origin();
         collect(graph, NearbyNode(start.node, MIsometry!float.identity(), graph.slotOf(start.node)));
     }
 
-    void collect(Graph* graph, NearbyNode node) {
+    void collect(ref Graph graph, NearbyNode node) {
         if (stamp.length < graph.nodeCount) {
             stamp.resize(graph.nodeCount);
             position.resize(graph.nodeCount);
@@ -64,27 +66,26 @@ struct NearbyScratch {
         nodes.append(node);
     }
 
-    bool advance(Graph* graph, double deadline) {
+    bool isOverBudget(uint processed, double deadline) const {
+        return processed > 0 && processed % NODES_PER_CLOCK_CHECK == 0 && nowMilliseconds() >= deadline;
+    }
+
+    void advance(ref Graph graph, double deadline) {
         uint processed = 0;
-        while (front < nodes.length) {
+        while (isBuilding() && !isOverBudget(processed, deadline)) {
             expand(graph, nodes.ptr[front]);
             front += 1;
             processed += 1;
-            if (processed % NODES_PER_CLOCK_CHECK == 0 && nowMilliseconds() >= deadline) {
-                return false;
-            }
         }
-        isBuilding = false;
-        return true;
     }
 
     bool isWithinReach(NearbyNode current, Side side) const {
         MIsometry!float step = side.reflection;
-        MVector!float reflectedOrigin = MVector!float(step.mat.data[3][0], step.mat.data[3][1], step.mat.data[3][2], step.mat.data[3][3]);
+        MVector!float reflectedOrigin = MVector!float(step.mat.data[3]);
         return !(-startPoint.mip(current.transform * reflectedOrigin) > coshThreshold);
     }
 
-    void expand(Graph* graph, NearbyNode current) {
+    void expand(ref Graph graph, NearbyNode current) {
         foreach (sideIndex; 0 .. SIDE_COUNT) {
             Side side = cast(Side) sideIndex;
             uint existing = graph.neighborSlot(current.slot, side);
@@ -97,7 +98,7 @@ struct NearbyScratch {
         }
     }
 
-    NearbyNode[] collectAll(Graph* graph, Position start, float distance) {
+    NearbyNode[] collectAll(ref Graph graph, Position start, float distance) {
         begin(graph, start, distance);
         advance(graph, NO_DEADLINE);
         return nodes.slice();

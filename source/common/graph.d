@@ -1,9 +1,8 @@
 module common.graph;
 
-import core.stdc.string : memcpy;
 import common.array : Array;
 import common.dodeca : SIDE_COUNT, Side, VERTEX_COUNT, isAdjacentTo, isFacing, reflection;
-import common.hash_map : HashMap;
+import common.hashmap : HashMap;
 import common.math : MIsometry, MPoint;
 import common.murmur : murmurHash3;
 import common.node : Chunk, ChunkLayout, ChunkSlot;
@@ -12,6 +11,7 @@ import common.slab : Slab;
 import common.worldgen.generation : NodeState;
 
 enum ulong NODE_HASH_MULTIPLIER = 0x9E3779B97F4A7C15;
+enum size_t NODE_ID_BYTES = 16;
 
 struct NodeId {
     ulong[2] value;
@@ -55,6 +55,23 @@ struct ParentList {
 struct FacingSide {
     Side side;
     bool isFound;
+
+    static FacingSide fromIndex(uint side) {
+        if (side == SIDE_COUNT) {
+            return FacingSide(Side.init, false);
+        } else {
+            return FacingSide(cast(Side) side, true);
+        }
+    }
+
+    static FacingSide fromLocal(MIsometry!float local) {
+        MPoint!float location = local * MPoint!float.origin();
+        uint side = 0;
+        while (side < SIDE_COUNT && !(cast(Side) side).isFacing(location)) {
+            side += 1;
+        }
+        return FacingSide.fromIndex(side);
+    }
 }
 
 struct SlotPosition {
@@ -73,7 +90,7 @@ struct Graph {
 
     static Graph make(ubyte dimension) {
         Graph graph;
-        graph.layout = ChunkLayout(dimension);
+        graph.layout = ChunkLayout.fromDimension(dimension);
         graph.addNode(ROOT_NODE, 0);
         return graph;
     }
@@ -176,9 +193,9 @@ struct Graph {
         }
 
         NodeId primaryParent = idAt(parents[0].slot);
-        ubyte[17] hashInput;
-        memcpy(hashInput.ptr, primaryParent.value.ptr, 16);
-        hashInput[16] = parents[0].side;
+        ubyte[NODE_ID_BYTES + 1] hashInput;
+        hashInput[0 .. NODE_ID_BYTES] = (cast(const(ubyte)*) primaryParent.value.ptr)[0 .. NODE_ID_BYTES];
+        hashInput[NODE_ID_BYTES] = parents[0].side;
         NodeId id = NodeId(murmurHash3(hashInput[]));
 
         uint newSlot = existingOrAdded(id, nodeAt(nodeSlot).depth + 1);
@@ -226,7 +243,7 @@ struct Graph {
             foreach (i; 0 .. parentList.count) {
                 ensureNodeStateAt(parentList.links[i].slot);
             }
-            nodeAt(slot).state = NodeState.fromParents(&this, slot);
+            nodeAt(slot).state = NodeState.fromParents(this, slot);
             nodeAt(slot).hasState = true;
         }
         return &nodeAt(slot).state;
@@ -240,15 +257,17 @@ struct Graph {
         return &nodeAt(slotOf(nodeId)).state;
     }
 
+    bool isLinkedFacing(SlotPosition position, MPoint!float location, Side side) const {
+        return side.isFacing(location) && neighborSlot(position.slot, side) != NO_SLOT;
+    }
+
     FacingSide facingLinkedSide(SlotPosition position) const {
         MPoint!float location = position.local * MPoint!float.origin();
-        foreach (sideIndex; 0 .. SIDE_COUNT) {
-            Side side = cast(Side) sideIndex;
-            if (side.isFacing(location) && neighborSlot(position.slot, side) != NO_SLOT) {
-                return FacingSide(side, true);
-            }
+        uint side = 0;
+        while (side < SIDE_COUNT && !isLinkedFacing(position, location, cast(Side) side)) {
+            side += 1;
         }
-        return FacingSide(Side.init, false);
+        return FacingSide.fromIndex(side);
     }
 
     Position normalized(Position start) const {
@@ -263,10 +282,10 @@ struct Graph {
 
     Position ensureNormalized(Position start) {
         SlotPosition current = SlotPosition(start.local, slotOf(start.node));
-        FacingSide facing = facingSide(current.local);
+        FacingSide facing = FacingSide.fromLocal(current.local);
         while (facing.isFound) {
             current = SlotPosition(facing.side.reflection * current.local, ensureNeighborSlot(current.slot, facing.side));
-            facing = facingSide(current.local);
+            facing = FacingSide.fromLocal(current.local);
         }
         return Position(idAt(current.slot), current.local);
     }
@@ -281,15 +300,4 @@ struct Graph {
         changedChunks.release();
         nodeCount = 0;
     }
-}
-
-FacingSide facingSide(MIsometry!float local) {
-    MPoint!float location = local * MPoint!float.origin();
-    foreach (sideIndex; 0 .. SIDE_COUNT) {
-        Side side = cast(Side) sideIndex;
-        if (side.isFacing(location)) {
-            return FacingSide(side, true);
-        }
-    }
-    return FacingSide(Side.init, false);
 }

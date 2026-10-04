@@ -43,7 +43,7 @@ uint[CRC_TABLE_SIZE] buildCrcTable() {
     uint[CRC_TABLE_SIZE] table;
     foreach (n; 0 .. CRC_TABLE_SIZE) {
         uint c = n;
-        foreach (bit; 0 .. 8) {
+        foreach (_; 0 .. 8) {
             if ((c & 1) != 0) {
                 c = CRC_POLYNOMIAL ^ (c >> 1);
             } else {
@@ -126,7 +126,7 @@ size_t deflateStored(const(ubyte)[] raw, ubyte* output) {
     at += ZLIB_HEADER_BYTES;
     size_t consumed = 0;
     while (consumed < raw.length) {
-        immutable bool isFinal = raw.length - consumed <= STORED_BLOCK_LIMIT;
+        bool isFinal = raw.length - consumed <= STORED_BLOCK_LIMIT;
         size_t length = blockLength(raw.length - consumed, isFinal);
         output[at] = blockKind(isFinal);
         output[at + 1] = cast(ubyte) length;
