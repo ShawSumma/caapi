@@ -16,7 +16,7 @@ configuration "application" {
 	stringImportPaths "source/shaders/spv"
 	dflags "-P-Ideps/vulkan-headers/include"
 	libs "vulkan" "X11" ":libXi.so.6"
-	preBuildCommands "mkdir -p source/shaders/spv" "glslc -I source/shaders source/shaders/voxels.vert -o source/shaders/spv/voxels.vert.spv" "glslc source/shaders/voxels.frag -o source/shaders/spv/voxels.frag.spv" "glslc source/shaders/fullscreen.vert -o source/shaders/spv/fullscreen.vert.spv" "glslc -I source/shaders source/shaders/fog.frag -o source/shaders/spv/fog.frag.spv" "glslc source/shaders/highlight.vert -o source/shaders/spv/highlight.vert.spv" "glslc source/shaders/highlight.frag -o source/shaders/spv/highlight.frag.spv" "glslc -I source/shaders source/shaders/cull.comp -o source/shaders/spv/cull.comp.spv" "glslc source/shaders/crosshair.vert -o source/shaders/spv/crosshair.vert.spv" "glslc source/shaders/crosshair.frag -o source/shaders/spv/crosshair.frag.spv"
+	preBuildCommands "mkdir -p source/shaders/spv" "glslc -I source/shaders source/shaders/voxels.vert -o source/shaders/spv/voxels.vert.spv" "glslc source/shaders/voxels.frag -o source/shaders/spv/voxels.frag.spv" "glslc source/shaders/fullscreen.vert -o source/shaders/spv/fullscreen.vert.spv" "glslc -I source/shaders source/shaders/fog.frag -o source/shaders/spv/fog.frag.spv" "glslc -I source/shaders source/shaders/highlight.vert -o source/shaders/spv/highlight.vert.spv" "glslc source/shaders/highlight.frag -o source/shaders/spv/highlight.frag.spv" "glslc -I source/shaders source/shaders/cull.comp -o source/shaders/spv/cull.comp.spv" "glslc source/shaders/crosshair.vert -o source/shaders/spv/crosshair.vert.spv" "glslc source/shaders/crosshair.frag -o source/shaders/spv/crosshair.frag.spv"
 }
 
 configuration "headless" {

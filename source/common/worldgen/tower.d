@@ -6,7 +6,7 @@ import common.graph : Graph, NodeId, ROOT_NODE;
 import common.material : Material;
 import common.math : MPoint;
 import common.worldgen.building : Building, NO_CELL, NO_CLEARANCE, StairSearch;
-import common.worldgen.generation : NodeState, NodeStateKind, NodeStateRoad, SplitMix, StructureKind, StructureWorld, Worldgen, WorldgenKind, stairLimits;
+import common.worldgen.generation : NodeState, NodeStateKind, NodeStateRoad, SplitMix, StructureKind, StructureWorld, Worldgen, WorldgenKind;
 
 enum ulong TOWER_RARITY = 48;
 enum uint RARITY_SHIFT = 40;
@@ -270,11 +270,15 @@ unittest {
     Array!uint nodes = graph.towerNodes();
     foreach (slot; nodes.slice()) {
         NodeStructure structure = graph.ensureStructureAt(slot);
-        Building building = Building.make(structure, graph.nodeAt(slot).state.surface, graph.layout, stairLimits());
+        Building building = Building.make(structure, graph.nodeAt(slot).state.surface, graph.layout);
         assert(building.connected == structure.outgoing);
         StairSearch search = StairSearch.make(building.shape, building.stamps.ptr);
+        foreach (step; building.route.slice()) {
+            int support = search.below(step);
+            assert(support == NO_CELL || building.materialAt(building.shape.vertexOf(support), building.shape.cellOf(support), Material.none) != Material.none);
+        }
         foreach (index; 1 .. building.route.length) {
-            int top = search.clearance(building.route.ptr[index - 1], search.headroomBefore(building.route.ptr[index - 1], building.route.ptr[index]));
+            int top = search.clearance(building.route.ptr[index - 1]);
             assert(top != NO_CLEARANCE);
             foreach (height; 0 .. top + 1) {
                 int cell = search.raised(building.route.ptr[index - 1], height);

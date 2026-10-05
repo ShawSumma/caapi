@@ -12,6 +12,60 @@ enum uint NODES_PER_CLOCK_CHECK = 64;
 enum double NO_DEADLINE = double.infinity;
 enum uint NOT_COLLECTED = uint.max;
 
+struct NodeVisit {
+    uint slot;
+    MIsometry!float inverse;
+}
+
+bool isVisited(const(NodeVisit)[] visits, uint slot) {
+    size_t index = 0;
+    while (index < visits.length && visits[index].slot != slot) {
+        index += 1;
+    }
+    return index < visits.length;
+}
+
+struct VisitQueue(uint capacity) {
+    NodeVisit[capacity] visits = void;
+    uint count;
+    uint front;
+
+    static VisitQueue fromSlot(uint slot) {
+        VisitQueue queue;
+        queue.visits[0] = NodeVisit(slot, MIsometry!float.identity());
+        queue.count = 1;
+        return queue;
+    }
+
+    bool hasNext() const {
+        return front < count;
+    }
+
+    NodeVisit current() const {
+        return visits[front];
+    }
+
+    bool isVisited(uint slot) const {
+        return visits[0 .. count].isVisited(slot);
+    }
+
+    bool isUnvisitedWithin(ref const Graph graph, NodeVisit visit, Side side, MVector!float point, float nodeThreshold) const {
+        uint neighbor = graph.neighborSlot(visit.slot, side);
+        return neighbor != NO_SLOT && !isVisited(neighbor) && !((side.reflection * visit.inverse * point).data[3] > nodeThreshold);
+    }
+
+    void expand(ref const Graph graph, NodeVisit visit, MVector!float point, float nodeThreshold) {
+        foreach (sideIndex; 0 .. SIDE_COUNT) {
+            Side side = cast(Side) sideIndex;
+            if (count < capacity && isUnvisitedWithin(graph, visit, side, point, nodeThreshold)) {
+                visits[count] = NodeVisit(graph.neighborSlot(visit.slot, side), side.reflection * visit.inverse);
+                count += 1;
+            }
+        }
+        front += 1;
+    }
+}
+
 struct NearbyNode {
     NodeId id;
     MIsometry!float transform;

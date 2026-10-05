@@ -38,6 +38,9 @@ float mip(vec4 a, vec4 b) {
 }
 
 bool inside_frustum(vec4 center) {
+    if (center.w < warp_cull_cosh) {
+        return true;
+    }
     for (uint plane = 0; plane < FRUSTUM_PLANES; plane++) {
         if (mip(frustum_planes[plane], center) < -cull_sinh_radius) {
             return false;

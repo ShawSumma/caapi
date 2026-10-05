@@ -1,11 +1,10 @@
 module common.worldgen.building;
 
-import core.stdc.math : ceilf;
 import common.array : Array;
 import common.coords : CELL_NEIGHBOR_OFFSETS, Coords;
 import common.dodeca : SIDE_COUNT, Side, VERTEX_COUNT, Vertex, adjacentVertices, canonicalSides, chunkAxisPermutations, chunkToNode, opposite;
 import common.material : Material;
-import common.math : MPoint, MVector, higherOf;
+import common.math : MPoint, MVector;
 import common.node : ChunkLayout;
 import common.worldgen.plane : Plane;
 import common.worldgen.tower : NodeStructure, TOWER_PALETTES, TowerPalette, TowerSymbol, faceBit;
@@ -13,8 +12,7 @@ import common.worldgen.tower : NodeStructure, TOWER_PALETTES, TowerPalette, Towe
 enum int STORY_LAYERS = 4;
 enum int FLOOR_LAYER = 0;
 enum int WINDOW_LAYER = 2;
-enum int BODY_BLOCKS = 2;
-enum int CEILING_BLOCKS = 3;
+enum int HEADROOM_BLOCKS = 3;
 enum int MAX_CLEARANCE_CELLS = 8;
 enum int NO_CLEARANCE = -1;
 enum int PRISM_WIDTH = 7;
@@ -23,6 +21,11 @@ enum int SPIRE_WIDTH = 2;
 enum int WINDOW_PERIOD = 2;
 enum uint PORTAL_VERTEX_RANK = 0;
 enum int PORTAL_INSET = 1;
+enum int PORTAL_WALL_INSET = 2;
+enum int EDGE_COST_PER_CELL = 4;
+enum long GRAVITY_FLIP_COST = 1L << 32;
+enum long UNREACHED_COST = long.max;
+enum ubyte FAR_FROM_WALL = ubyte.max;
 enum int PORTAL_NEIGHBOR_SHIFT = -1;
 enum uint DOOR_VERTEX_RANK = 1;
 enum int DOOR_EDGE_OFFSET = 1;
@@ -32,11 +35,6 @@ enum int DOOR_HEIGHT = 2;
 enum int NO_CELL = -1;
 enum int SOURCE_PARENT = -1;
 
-struct StairLimits {
-    float rise;
-    float height;
-}
-
 enum Stamp : ubyte {
     none,
     air,
@@ -45,7 +43,6 @@ enum Stamp : ubyte {
 
 struct BuildingShape {
     Plane surface;
-    StairLimits stairs;
     ushort prisms;
     ushort outgoing;
     ChunkLayout layout;
@@ -55,10 +52,9 @@ struct BuildingShape {
     bool hasDoor;
     bool hasSpire;
 
-    static BuildingShape make(NodeStructure structure, Plane surface, ChunkLayout layout, StairLimits stairs) {
+    static BuildingShape make(NodeStructure structure, Plane surface, ChunkLayout layout) {
         return BuildingShape(
             surface,
-            stairs,
             structure.incoming | structure.outgoing,
             structure.outgoing,
             layout,
@@ -212,6 +208,17 @@ struct BuildingShape {
         }
     }
 
+    uint carriedDirection(int from, int to, uint crossing, uint direction) const {
+        if (to == NO_CELL || vertexOf(to) == vertexOf(from)) {
+            return direction;
+        } else {
+            uint crossingAxis = crossing / 2;
+            uint axis = direction / 2;
+            uint mapped = vertexOf(from).chunkAxisPermutations[crossingAxis].axes[axis];
+            return directionIndex(mapped, (direction % 2 == 1) != (axis == crossingAxis));
+        }
+    }
+
     bool isInteriorAt(int index) const {
         return index == NO_CELL || (isInBuilding(vertexOf(index), cellOf(index)) && !isWall(vertexOf(index), cellOf(index)));
     }
@@ -234,7 +241,7 @@ struct BuildingShape {
         int[3] cell;
         cell[frame.axis] = 0;
         cell[frame.along] = dimension - PORTAL_INSET + alongShift;
-        cell[frame.across] = dimension - PORTAL_INSET;
+        cell[frame.across] = innerEdge() + PORTAL_WALL_INSET;
         return cellIndex(frame.vertex, cell);
     }
 
@@ -253,10 +260,12 @@ struct Building {
     Array!int route;
     BuildingShape shape;
     uint reached;
+    uint flips;
+    uint edgeDistance;
     ushort connected;
 
-    static Building make(NodeStructure structure, Plane surface, ChunkLayout layout, StairLimits stairs) {
-        Building building = Building(Array!Stamp.init, Array!int.init, BuildingShape.make(structure, surface, layout, stairs), 0, 0);
+    static Building make(NodeStructure structure, Plane surface, ChunkLayout layout) {
+        Building building = Building(Array!Stamp.init, Array!int.init, BuildingShape.make(structure, surface, layout), 0, 0, 0, 0);
         if (!building.shape.isFoundation && building.shape.prisms != 0) {
             building.planStairs();
         }
@@ -296,8 +305,8 @@ struct Building {
             int target = shape.portal(face, 0);
             if ((shape.outgoing & faceBit(face)) != 0) {
                 search.run(source);
-                if (search.queue.length > reached) {
-                    reached = cast(uint) search.queue.length;
+                if (search.settled > reached) {
+                    reached = search.settled;
                 }
                 if (search.isReached(target)) {
                     connected |= faceBit(face);
@@ -316,8 +325,7 @@ struct Building {
             return shape.doorStep();
         } else if (search.isVerticalCrossing(shape.down)) {
             int lowerHead = shape.portal(shape.down, 0);
-            float lowerFoot = search.bottomAltitude(lowerHead) - search.cellHeight(lowerHead);
-            foreach (height; 0 .. search.clearanceFrom(lowerHead, lowerFoot, search.climbHeadroom()) + 1) {
+            foreach (height; 0 .. search.clearance(lowerHead) + 1) {
                 stampAir(search.raised(lowerHead, height));
             }
             return shape.portal(shape.down, PORTAL_NEIGHBOR_SHIFT);
@@ -333,8 +341,14 @@ struct Building {
             path.append(cell);
             cell = search.parentOf(cell);
         }
-        foreach (index, step; path.slice()) {
-            foreach (height; 0 .. search.clearance(step, headroomAt(search, path, index)) + 1) {
+        if (search.flipsTo(target) > flips) {
+            flips = search.flipsTo(target);
+        }
+        foreach (step; path.slice()) {
+            if (search.wallDistances.ptr[step] > edgeDistance) {
+                edgeDistance = search.wallDistances.ptr[step];
+            }
+            foreach (height; 0 .. search.clearance(step) + 1) {
                 stampAir(search.raised(step, height));
             }
         }
@@ -342,15 +356,17 @@ struct Building {
             stampSolid(search.below(step));
         }
         foreach (step; path.slice()) {
-            int fill = search.below(search.below(step));
+            int depth = 2;
+            int fill = search.sunk(step, depth);
             while (fill != NO_CELL && stamps.ptr[fill] == Stamp.none && shape.isInteriorAt(fill) && !shape.isStoryLayer(shape.vertexOf(fill), shape.cellOf(fill), FLOOR_LAYER)) {
                 stamps.ptr[fill] = Stamp.solid;
-                fill = search.below(fill);
+                depth += 1;
+                fill = search.sunk(step, depth);
             }
         }
-        foreach (index, step; path.slice()) {
-            foreach (height; 0 .. search.clearance(step, headroomAt(search, path, index)) + 1) {
-                stampAirBeside(search, search.raised(step, height), height == 0);
+        foreach (step; path.slice()) {
+            foreach (height; 0 .. search.clearance(step) + 1) {
+                stampAirBeside(search.column(step, height), height == 0);
             }
         }
         if (route.length == 0) {
@@ -361,26 +377,23 @@ struct Building {
         path.release();
     }
 
-    Headroom headroomAt(ref StairSearch search, ref const Array!int path, size_t index) {
-        if (index == 0) {
-            return search.climbHeadroom();
-        } else {
-            return search.headroomBefore(path.ptr[index], path.ptr[index - 1]);
-        }
-    }
-
-    void stampAirBeside(ref StairSearch search, int cell, bool isTread) {
-        if (cell != NO_CELL) {
-            uint rising = search.risingAt(cell);
+    void stampAirBeside(Straight column, bool isTread) {
+        if (column.cell != NO_CELL) {
             foreach (direction; 0 .. cast(uint) CELL_NEIGHBOR_OFFSETS.length) {
-                int side = shape.neighborIndex(cell, direction);
-                if (direction / 2 != rising / 2 && side != NO_CELL && shape.isInteriorAt(side)) {
+                int side = shape.neighborIndex(column.cell, direction);
+                if (direction / 2 != column.heading / 2 && side != NO_CELL && shape.isInteriorAt(side)) {
                     stampAir(side);
-                    if (isTread && shape.isInteriorAt(search.below(side))) {
-                        stampSolid(search.below(side));
+                    if (isTread) {
+                        stampTread(shape.neighborIndex(side, shape.carriedDirection(column.cell, side, direction, column.heading ^ 1)));
                     }
                 }
             }
+        }
+    }
+
+    void stampTread(int cell) {
+        if (cell != NO_CELL && shape.isInteriorAt(cell)) {
+            stampSolid(cell);
         }
     }
 
@@ -397,29 +410,124 @@ struct Building {
     }
 }
 
-struct Headroom {
-    float meters;
-    int blocks;
+struct HeapEntry {
+    long cost;
+    int cell;
+}
+
+struct CostHeap {
+    Array!HeapEntry entries;
+
+    bool isEmpty() const {
+        return entries.length == 0;
+    }
+
+    void push(HeapEntry entry) {
+        entries.append(entry);
+        size_t index = entries.length - 1;
+        while (index > 0 && entries.ptr[(index - 1) / 2].cost > entries.ptr[index].cost) {
+            swap(index, (index - 1) / 2);
+            index = (index - 1) / 2;
+        }
+    }
+
+    HeapEntry pop() {
+        HeapEntry top = entries.ptr[0];
+        entries.ptr[0] = entries.ptr[entries.length - 1];
+        entries.resize(entries.length - 1);
+        size_t index = 0;
+        size_t child = smallerChild(index);
+        while (child < entries.length && entries.ptr[child].cost < entries.ptr[index].cost) {
+            swap(index, child);
+            index = child;
+            child = smallerChild(index);
+        }
+        return top;
+    }
+
+    size_t smallerChild(size_t index) const {
+        size_t left = 2 * index + 1;
+        if (left + 1 < entries.length && entries.ptr[left + 1].cost < entries.ptr[left].cost) {
+            return left + 1;
+        } else {
+            return left;
+        }
+    }
+
+    void swap(size_t a, size_t b) {
+        HeapEntry held = entries.ptr[a];
+        entries.ptr[a] = entries.ptr[b];
+        entries.ptr[b] = held;
+    }
 }
 
 struct StairSearch {
+    Array!long costs;
     Array!int parents;
     Array!byte risings;
-    Array!int queue;
+    Array!ubyte wallDistances;
+    CostHeap heap;
     const(BuildingShape)* shape;
     const(Stamp)* stamps;
+    uint settled;
 
     static StairSearch make(ref const BuildingShape shape, const(Stamp)* stamps) {
-        StairSearch search = StairSearch(Array!int.init, Array!byte.init, Array!int.init, &shape, stamps);
-        search.parents.resize(VERTEX_COUNT * shape.cellsPerChunk());
-        search.risings.resize(VERTEX_COUNT * shape.cellsPerChunk());
+        StairSearch search = StairSearch(Array!long.init, Array!int.init, Array!byte.init, Array!ubyte.init, CostHeap.init, &shape, stamps, 0);
+        size_t cellCount = VERTEX_COUNT * shape.cellsPerChunk();
+        search.parents.resize(cellCount);
+        search.costs.resize(cellCount);
+        search.risings.resize(cellCount);
+        search.measureWallDistances();
         return search;
     }
 
     void release() {
         parents.release();
+        costs.release();
         risings.release();
-        queue.release();
+        wallDistances.release();
+        heap.entries.release();
+    }
+
+    bool isLateral(int cell, uint direction) {
+        return direction / 2 != risingAt(cell) / 2;
+    }
+
+    bool isBesideWall(int cell) {
+        uint direction = 0;
+        while (direction < CELL_NEIGHBOR_OFFSETS.length && shape.isInteriorAt(shape.neighborIndex(cell, direction))) {
+            direction += 1;
+        }
+        return direction < CELL_NEIGHBOR_OFFSETS.length;
+    }
+
+    void measureWallDistances() {
+        wallDistances.resize(parents.length);
+        Array!int frontier;
+        foreach (cell; 0 .. cast(int) parents.length) {
+            if (shape.isInteriorAt(cell) && isBesideWall(cell)) {
+                frontier.append(cell);
+            } else {
+                wallDistances.ptr[cell] = FAR_FROM_WALL;
+            }
+        }
+        size_t front = 0;
+        while (front < frontier.length) {
+            int cell = frontier.ptr[front];
+            foreach (direction; 0 .. cast(uint) CELL_NEIGHBOR_OFFSETS.length) {
+                int neighbor = shape.neighborIndex(cell, direction);
+                if (neighbor != NO_CELL && wallDistances.ptr[neighbor] == FAR_FROM_WALL && shape.isInteriorAt(neighbor) && wallDistances.ptr[cell] + 1 < FAR_FROM_WALL) {
+                    wallDistances.ptr[neighbor] = cast(ubyte)(wallDistances.ptr[cell] + 1);
+                    frontier.append(neighbor);
+                }
+            }
+            front += 1;
+        }
+        frontier.release();
+    }
+
+    int stepCost(int cell) {
+        return 1 + EDGE_COST_PER_CELL * wallDistances.ptr[cell];
     }
 
     int risingAt(int cell) {
@@ -427,14 +535,6 @@ struct StairSearch {
             risings.ptr[cell] = cast(byte)(shape.surface.risingNeighbor(shape.vertexOf(cell), shape.layout, shape.cellOf(cell)) + 1);
         }
         return risings.ptr[cell] - 1;
-    }
-
-    int above(int cell) {
-        if (cell == NO_CELL) {
-            return NO_CELL;
-        } else {
-            return shape.neighborIndex(cell, risingAt(cell));
-        }
     }
 
     int below(int cell) {
@@ -445,64 +545,44 @@ struct StairSearch {
         }
     }
 
-    int raised(int cell, int height) {
-        int result = cell;
-        foreach (_; 0 .. height) {
-            result = above(result);
+    Straight straightFrom(int cell, uint direction, int count) {
+        Straight straight = Straight(cell, direction);
+        int steps = 0;
+        while (steps < count && straight.cell != NO_CELL) {
+            int next = shape.neighborIndex(straight.cell, straight.heading);
+            straight = Straight(next, shape.carriedDirection(straight.cell, next, straight.heading, straight.heading));
+            steps += 1;
         }
-        return result;
+        return straight;
     }
 
-    float cellHeight(int cell) {
-        int up = above(cell);
-        if (up == NO_CELL) {
-            return altitudeAt(cell) - altitudeAt(below(cell));
+    Straight column(int walk, int height) {
+        if (walk == NO_CELL) {
+            return Straight(NO_CELL, 0);
         } else {
-            return altitudeAt(up) - altitudeAt(cell);
+            return straightFrom(walk, risingAt(walk), height);
         }
     }
 
-    float bottomAltitude(int cell) {
-        return altitudeAt(cell) - cellHeight(cell) / 2;
+    int raised(int cell, int height) {
+        return column(cell, height).cell;
     }
 
-    int clearance(int walk, Headroom needed) {
-        return clearanceFrom(walk, bottomAltitude(walk), needed);
+    int sunk(int walk, int depth) {
+        return straightFrom(walk, risingAt(walk) ^ 1, depth).cell;
     }
 
-    int clearanceFrom(int walk, float foot, Headroom needed) {
+    int clearance(int walk) {
         int height = 0;
-        int cell = walk;
-        while (height < MAX_CLEARANCE_CELLS && isOpen(cell) && (height + 1 < needed.blocks || bottomAltitude(cell) + cellHeight(cell) - foot < needed.meters)) {
-            cell = above(cell);
+        while (height < MAX_CLEARANCE_CELLS && isOpen(raised(walk, height)) && height + 1 < HEADROOM_BLOCKS) {
             height += 1;
         }
+        int cell = raised(walk, height);
         if (height < MAX_CLEARANCE_CELLS && (cell == NO_CELL || isOpen(cell))) {
             return height;
         } else {
             return NO_CLEARANCE;
         }
-    }
-
-    float riseBetween(int walk, int next) {
-        return bottomAltitude(next) - bottomAltitude(walk);
-    }
-
-    Headroom bodyHeadroom() const {
-        return Headroom(shape.stairs.height, CEILING_BLOCKS);
-    }
-
-    Headroom climbHeadroom() const {
-        return Headroom(shape.stairs.height + shape.stairs.rise, BODY_BLOCKS + 1);
-    }
-
-    Headroom headroomBefore(int walk, int next) {
-        float rise = higherOf(riseBetween(walk, next), 0);
-        int blocks = BODY_BLOCKS + cast(int) ceilf(rise / cellHeight(walk));
-        if (blocks < CEILING_BLOCKS) {
-            blocks = CEILING_BLOCKS;
-        }
-        return Headroom(shape.stairs.height + rise, blocks);
     }
 
     bool isOpen(int cell) {
@@ -511,7 +591,7 @@ struct StairSearch {
 
     bool isWalkable(int cell) {
         int support = below(cell);
-        return cell != NO_CELL && clearance(cell, bodyHeadroom()) != NO_CLEARANCE && shape.isInBuildingAt(support) && (support == NO_CELL || stamps[support] != Stamp.air);
+        return cell != NO_CELL && clearance(cell) != NO_CLEARANCE && shape.isInBuildingAt(support) && (support == NO_CELL || stamps[support] != Stamp.air);
     }
 
     bool isVerticalCrossing(Side face) {
@@ -531,19 +611,19 @@ struct StairSearch {
         }
     }
 
-    float altitudeAt(int cell) {
-        return shape.surface.distanceToCell(shape.vertexOf(cell), shape.layout, shape.cellOf(cell));
-    }
-
-    void visit(int cell, int parent) {
-        if (cell != NO_CELL && !isReached(cell) && isWalkable(cell) && riseBetween(parent, cell) <= shape.stairs.rise &&clearance(parent, headroomBefore(parent, cell)) != NO_CLEARANCE && isClearOfPath(cell, parent)) {
-            parents.ptr[cell] = parent + 1;
-            queue.append(cell);
+    void relax(int cell, int parent, long extraCost) {
+        if (cell != NO_CELL) {
+            long cost = costs.ptr[parent] + stepCost(cell) + extraCost;
+            if (cost < costs.ptr[cell] && isWalkable(cell) && isClearOfPath(cell, parent)) {
+                parents.ptr[cell] = parent + 1;
+                costs.ptr[cell] = cost;
+                heap.push(HeapEntry(cost, cell));
+            }
         }
     }
 
-    bool isInClearance(int walk, Headroom needed, int cell) {
-        int top = clearance(walk, needed);
+    bool isInClearance(int walk, int cell) {
+        int top = clearance(walk);
         int height = 0;
         while (height <= top && raised(walk, height) != cell) {
             height += 1;
@@ -551,13 +631,13 @@ struct StairSearch {
         return cell != NO_CELL && height <= top;
     }
 
-    Column columnBelow(int cell) {
+    Column columnBelow(int walk) {
         Column column;
-        int current = cell;
+        int current = sunk(walk, 1);
         while (column.count < column.cells.length && current != NO_CELL) {
             column.cells[column.count] = current;
             column.count += 1;
-            current = below(current);
+            current = sunk(walk, column.count + 1);
         }
         return column;
     }
@@ -571,19 +651,17 @@ struct StairSearch {
         return column;
     }
 
-    bool isConflicting(int ancestor, int child, ref const Column underSupport, int support, ref const Column overWalk) {
-        bool isSupportInClearance = underSupport.contains(ancestor) && isInClearance(ancestor, headroomBefore(ancestor, child), support);
+    bool isConflicting(int ancestor, ref const Column underSupport, int support, ref const Column overWalk) {
+        bool isSupportInClearance = underSupport.contains(ancestor) && isInClearance(ancestor, support);
         return isSupportInClearance || overWalk.contains(below(ancestor));
     }
 
     bool isClearOfPath(int walk, int parent) {
         int support = below(walk);
-        Column underSupport = columnBelow(support);
-        Column overWalk = columnAbove(walk, clearance(walk, bodyHeadroom()));
-        int child = walk;
+        Column underSupport = columnBelow(walk);
+        Column overWalk = columnAbove(walk, clearance(walk));
         int ancestor = parent;
-        while (ancestor != SOURCE_PARENT && !isConflicting(ancestor, child, underSupport, support, overWalk)) {
-            child = ancestor;
+        while (ancestor != SOURCE_PARENT && !isConflicting(ancestor, underSupport, support, overWalk)) {
             ancestor = parentOf(ancestor);
         }
         return ancestor == SOURCE_PARENT;
@@ -593,25 +671,53 @@ struct StairSearch {
         size_t cellCount = parents.length;
         parents.clear();
         parents.resize(cellCount);
-        queue.clear();
+        foreach (cell; 0 .. cellCount) {
+            costs.ptr[cell] = UNREACHED_COST;
+        }
+        heap.entries.clear();
+        settled = 0;
         if (isWalkable(source)) {
             parents.ptr[source] = SOURCE_PARENT;
-            queue.append(source);
+            costs.ptr[source] = 0;
+            heap.push(HeapEntry(0, source));
         }
-        size_t front = 0;
-        while (front < queue.length) {
-            int cell = queue.ptr[front];
-            int rising = risingAt(cell);
-            foreach (direction; 0 .. cast(uint) CELL_NEIGHBOR_OFFSETS.length) {
-                int neighbor = shape.neighborIndex(cell, direction);
-                if (direction / 2 != rising / 2 && neighbor != NO_CELL) {
-                    visit(neighbor, cell);
-                    visit(above(neighbor), cell);
-                }
+        while (!heap.isEmpty()) {
+            HeapEntry entry = heap.pop();
+            if (entry.cost == costs.ptr[entry.cell]) {
+                settled += 1;
+                expand(entry.cell);
             }
-            front += 1;
         }
     }
+
+    void expand(int cell) {
+        uint rising = risingAt(cell);
+        foreach (direction; 0 .. cast(uint) CELL_NEIGHBOR_OFFSETS.length) {
+            int neighbor = shape.neighborIndex(cell, direction);
+            if (isLateral(cell, direction) && neighbor != NO_CELL) {
+                long flip = flipCost(neighbor, shape.carriedDirection(cell, neighbor, direction, rising));
+                relax(neighbor, cell, flip);
+                relax(shape.neighborIndex(neighbor, risingAt(neighbor)), cell, flip);
+            }
+        }
+    }
+
+    long flipCost(int cell, uint carriedRising) {
+        if (risingAt(cell) == carriedRising) {
+            return 0;
+        } else {
+            return GRAVITY_FLIP_COST;
+        }
+    }
+
+    uint flipsTo(int cell) const {
+        return cast(uint)(costs.ptr[cell] / GRAVITY_FLIP_COST);
+    }
+}
+
+struct Straight {
+    int cell;
+    uint heading;
 }
 
 struct Column {
@@ -645,6 +751,14 @@ struct FaceFrame {
         Vertex vertex = cast(Vertex) index;
         size_t axis = sideAxis(vertex, face);
         return FaceFrame(vertex, axis, (axis + 1) % 3, (axis + 2) % 3);
+    }
+}
+
+uint directionIndex(uint axis, bool isPositive) {
+    if (isPositive) {
+        return 2 * axis + 1;
+    } else {
+        return 2 * axis;
     }
 }
 

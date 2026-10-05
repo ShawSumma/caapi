@@ -75,15 +75,19 @@ struct LayoutPush {
 }
 
 struct CommonUniforms {
-    float[MATRIX_FLOATS] viewProjection;
+    float[MATRIX_FLOATS] projection;
     float[MATRIX_FLOATS] inverseProjection;
     float[MATRIX_FLOATS] cameraInverse;
+    float[MATRIX_FLOATS] viewWarp;
     float[4][FRUSTUM_PLANE_COUNT] frustumPlanes;
     float[4] fogColor;
     float fogDensity;
     float fogExponent;
     float viewParity;
     float cullSinhRadius;
+    float warpInner;
+    float warpOuter;
+    float warpCullCosh;
 }
 
 struct SurfacePipeline {

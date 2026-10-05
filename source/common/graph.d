@@ -245,6 +245,25 @@ struct Graph {
         return result;
     }
 
+    Array!Side sidesToRoot(NodeId node) const {
+        Array!Side sides;
+        uint slot = slotOf(node);
+        while (nodeAt(slot).depth > 0) {
+            ParentEntry parent = parents(slot).links[0];
+            sides.append(parent.side);
+            slot = parent.slot;
+        }
+        return sides;
+    }
+
+    NodeId ensureFromRoot(const(Side)[] sidesToRoot) {
+        uint slot = slotOf(ROOT_NODE);
+        foreach_reverse (side; sidesToRoot) {
+            slot = ensureNeighborSlot(slot, side);
+        }
+        return idAt(slot);
+    }
+
     const(NodeState)* ensureNodeStateAt(uint slot) {
         if (!nodeAt(slot).hasState) {
             ParentList parentList = parents(slot);

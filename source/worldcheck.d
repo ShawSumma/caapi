@@ -17,7 +17,7 @@ import common.node : Chunk, ChunkSlot, ChunkState, VoxelData;
 import common.position : Position;
 import common.traversal : NearbyNode, NearbyScratch;
 import common.worldgen.building : Building;
-import common.worldgen.generation : ChunkParams, GeneratedVoxels, StructureWorld, Worldgen, stairLimits;
+import common.worldgen.generation : ChunkParams, GeneratedVoxels, StructureWorld, Worldgen;
 import common.worldgen.tower : NodeStructure, altitude, faceBit;
 
 enum uint DRIVE_NEARBY_VERSION = 1;
@@ -227,8 +227,8 @@ void dumpStructure(FILE* output, ubyte dimension, StructureWorld world) {
     while (front < nodes.length) {
         uint slot = nodes.ptr[front];
         NodeStructure structure = graph.ensureStructureAt(slot);
-        Building building = Building.make(structure, graph.nodeAt(slot).state.surface, graph.layout, stairLimits());
-        fprintf(output, "depth=%u symbol=%u down=%u remaining=%u forks=%u altitude=%.3f incoming=%03x outgoing=%03x connected=%03x reached=%u route=%zu filled=%zu\n", depths.ptr[front], cast(uint) structure.part.symbol, cast(uint) structure.part.down, cast(uint) structure.part.remaining, cast(uint) structure.part.forks, cast(double) graph.nodeAt(slot).state.altitude(), cast(uint) structure.incoming, cast(uint) structure.outgoing, cast(uint) building.connected, building.reached, building.route.length, graph.filledVoxels(slot));
+        Building building = Building.make(structure, graph.nodeAt(slot).state.surface, graph.layout);
+        fprintf(output, "depth=%u symbol=%u down=%u remaining=%u forks=%u altitude=%.3f incoming=%03x outgoing=%03x connected=%03x reached=%u route=%zu flips=%u edge=%u filled=%zu\n", depths.ptr[front], cast(uint) structure.part.symbol, cast(uint) structure.part.down, cast(uint) structure.part.remaining, cast(uint) structure.part.forks, cast(double) graph.nodeAt(slot).state.altitude(), cast(uint) structure.incoming, cast(uint) structure.outgoing, cast(uint) building.connected, building.reached, building.route.length, building.flips, building.edgeDistance, graph.filledVoxels(slot));
         building.release();
         foreach (index; 0 .. SIDE_COUNT) {
             if ((structure.outgoing & faceBit(cast(Side) index)) != 0) {

@@ -9,8 +9,7 @@ import common.graph : Graph, NO_SLOT, NodeId, ParentList;
 import common.material : Material;
 import common.math : PI, clamped;
 import common.node : ChunkLayout, GridSpacing, Occupancy, VoxelData;
-import common.settings : CharacterConfig, SimConfig, SimMeters;
-import common.worldgen.building : Building, StairLimits;
+import common.worldgen.building : Building;
 import common.worldgen.plane : Plane;
 import common.worldgen.terraingen : TERRAIN_SURFACE_THICKNESS, materialTable, nearestLatticePoint, sqr, terraingenVoronoi;
 import common.worldgen.tower : NodeStructure, firstSideAmong, ringFaces;
@@ -76,12 +75,6 @@ struct Worldgen {
         }
         return tilt;
     }
-}
-
-StairLimits stairLimits() {
-    SimMeters meters;
-    CharacterConfig character = SimConfig.fromMeters(meters).character;
-    return StairLimits(character.stepHeight, 2 * (character.characterHalfHeight + character.contactSkin));
 }
 
 float degreesToRadians(float degrees) {
@@ -337,7 +330,6 @@ struct ChunkParams {
     Plane reference;
     float slopeTangent;
     float slopeSecant;
-    StairLimits stairs;
     NodeStructure structure;
     ChunkLayout layout;
     Vertex chunk;
@@ -356,7 +348,6 @@ struct ChunkParams {
             state.reference,
             tanf(graph.worldgen.groundTiltRadians()),
             1.0f / cosf(graph.worldgen.groundTiltRadians()),
-            stairLimits(),
             graph.ensureStructureAt(slot),
             graph.layout,
             vertex,
@@ -530,7 +521,7 @@ struct TerrainGenerator {
     void generateStructure() {
         if (params.structure.isPresent()) {
             ubyte dimension = params.dimension;
-            Building building = Building.make(params.structure, params.surface, params.layout, params.stairs);
+            Building building = Building.make(params.structure, params.surface, params.layout);
             foreach (x; 0 .. dimension) {
                 foreach (y; 0 .. dimension) {
                     foreach (z; 0 .. dimension) {

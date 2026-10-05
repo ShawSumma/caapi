@@ -1,28 +1,21 @@
 module common.character.controller;
 
 import core.math : sqrt;
-import core.stdc.math : asinhf, ceilf, expf;
-import common.character.frame : BodyFrame, UpMode;
-import common.character.sweep : Sweep;
-import common.collision.graph : Capsule, isRegionPopulated, stepBlockHeight;
-import common.graph : Graph, ROOT_NODE;
-import common.math : MIsometry, MPoint, higherOf, lowerOf;
-import common.position : Position;
-import common.settings : CharacterConfig, SimConfig;
-import common.vector3 : ZERO_VECTOR, cappedTo, cross, dot, magnitude, movedToward, negated, plus, projectedOntoPlane, rejectAlong, scaled;
-import common.worldgen.generation : NodeState, Worldgen;
+import core.stdc.math : acosf, ceilf, cosf, expf, sinf;
+import common.character.place : Place, Relocated, gravityUp, isRegionLoaded, relocated;
+import common.character.sweep : Capsule, Sweep;
+import common.graph : Graph;
+import common.math : MIsometry, clamped, higherOf;
+import common.settings : CharacterConfig;
+import common.vector3 : ZERO_VECTOR, cappedTo, cross, dot, magnitude, minus, movedToward, negated, plus, projectedOntoPlane, rejectAlong, scaled;
 
 enum uint MAX_CONTACT_PLANES = 5;
 enum uint MAX_SLIDE_PLANES = MAX_CONTACT_PLANES + 1;
 enum float MIN_CREASE_SINE = 1e-3f;
 enum float MAX_INPUT_LENGTH = 1.0f;
-enum float STEP_RISE_PER_BLOCK = 1.5f;
-enum float MIN_STEP_GAIN_BLOCKS = 0.5f;
-enum float FEET_PROBE_FRACTION = 0.5f;
-enum float UP_PROBE_DISTANCE = 0.1f;
-enum float UP_PROBE_MIN_GAIN = 0.05f;
+enum float MIN_STEP_GAIN_METERS = 0.5f;
+enum float BODY_TURN_RADIANS_PER_SECOND = 1.5707964f;
 enum float TEST_TOLERANCE = 1e-5f;
-enum ubyte TEST_DIMENSION = 12;
 
 enum MovementMode : ubyte {
     walk,
@@ -33,30 +26,39 @@ enum MovementMode : ubyte {
 struct CharacterInput {
     float[3] movement = [0, 0, 0];
     MovementMode mode;
-    UpMode upMode;
     bool isJumpHeld;
     bool isSprinting;
 }
 
+struct Stepped {
+    MIsometry!float toNode;
+    float traveled = 0;
+    float rise = 0;
+}
+
 struct CharacterState {
-    Position position;
+    Place position;
     float[3] velocity = [0, 0, 0];
     float[3] groundNormal = [0, 1, 0];
+    float[3] up = [0, 1, 0];
     bool isOnGround;
 
-    float runStep(ref const SimConfig simConfig, ref const Graph graph, CharacterInput input, float dtSeconds) {
-        CharacterConfig cfg = simConfig.character;
+    Stepped runStep(ref const CharacterConfig cfg, ref const Graph graph, CharacterInput input, float dtSeconds) {
         uint substeps = atLeastOne(cast(uint) ceilf(speedBound(cfg, input, dtSeconds) * dtSeconds / cfg.characterRadius));
         float dt = dtSeconds / substeps;
         float reach = cfg.characterHalfHeight + 2.0f * cfg.characterRadius + cfg.stepHeight + cfg.contactSkin;
-        float traveled = 0;
+        Stepped stepped = Stepped(MIsometry!float.identity(), 0, 0);
         foreach (_; 0 .. substeps) {
-            MIsometry!float before = position.local;
+            Place before = position;
+            float[3] turned = up.turnedToward(graph.gravityUp(position, up, cfg.characterHalfHeight - cfg.characterRadius), BODY_TURN_RADIANS_PER_SECOND * dt);
+            velocity = velocity.rotatedLike(up, turned);
+            float[3] pivot = turned.minus(up).scaled(cfg.characterHalfHeight - cfg.characterRadius);
+            up = turned;
             if (input.mode == MovementMode.noclip) {
                 noClipStep(cfg, input, dt);
-            } else if (graph.isRegionPopulated(position, reach)) {
-                BodyFrame frame = frameAt(cfg, graph, input.upMode);
-                Mover mover = Mover.make(cfg, graph, frame.gravityUp);
+            } else if (graph.isRegionLoaded(position, reach)) {
+                Mover mover = Mover.make(cfg, graph, up);
+                position = mover.slide(position, pivot, ZERO_VECTOR, Sliding.free, PlaneSet.init).position;
                 if (input.mode == MovementMode.fly) {
                     flyStep(mover, input, dt);
                 } else {
@@ -65,15 +67,14 @@ struct CharacterState {
             } else {
                 velocity = ZERO_VECTOR;
             }
-            position.local = position.local.renormalized();
-            traveled += stepLength(before.inverse() * position.local);
-            position = graph.normalized(position);
+            float[3] moved = before.offsetTo(position);
+            stepped.traveled += moved.magnitude;
+            stepped.rise += moved.dot(up);
+            Relocated next = graph.relocated(position);
+            position = next.place;
+            stepped.toNode = next.toNode * stepped.toNode;
         }
-        return traveled;
-    }
-
-    BodyFrame frameAt(ref const CharacterConfig cfg, ref const Graph graph, UpMode upMode) const {
-        return BodyFrame.make(graph, position, graph.relativeUp(position), cfg.characterHalfHeight * FEET_PROBE_FRACTION, upMode);
+        return stepped;
     }
 
     float speedBound(ref const CharacterConfig cfg, CharacterInput input, float dt) const {
@@ -103,7 +104,7 @@ struct CharacterState {
     void noClipStep(ref const CharacterConfig cfg, CharacterInput input, float dt) {
         velocity = input.movement.cappedTo(MAX_INPUT_LENGTH).scaled(cfg.noClipMovementSpeed);
         isOnGround = false;
-        position.local = position.local * MIsometry!float.fromDisplacement(velocity.scaled(dt));
+        position = position.moved(velocity.scaled(dt));
     }
 
     void flyStep(ref const Mover mover, CharacterInput input, float dt) {
@@ -131,7 +132,8 @@ struct CharacterState {
         PlaneSet ground;
         ground.add(ContactPlane(groundNormal, mover.up, 0));
         Slide chosen = mover.slideOrStep(position, displacement, groundVelocity, ground);
-        Slide settled = mover.settle(chosen.position, mover.cfg.stepHeight);        velocity = chosen.velocity.rejectAlong(mover.up);
+        Slide settled = mover.settle(chosen.position, mover.cfg.stepHeight);
+        velocity = chosen.velocity.rejectAlong(mover.up);
         isOnGround = settled.hasLanded;
         if (settled.hasLanded) {
             position = settled.position;
@@ -176,11 +178,11 @@ struct Mover {
         return Mover(&graph, Capsule(up, cfg.characterRadius, cfg.characterHalfHeight, cfg.contactSkin), cfg, up, 1.0f / sqrt(slope * slope + 1.0f));
     }
 
-    Slide slideOrStep(Position start, float[3] displacement, float[3] velocity, PlaneSet ground) const {
+    Slide slideOrStep(Place start, float[3] displacement, float[3] velocity, PlaneSet ground) const {
         Slide slid = slide(start, displacement, velocity, Sliding.walking, ground);
-        if (slid.hasHitWall && slid.wallBlockHeight > 0) {
-            Step stepped = stepOnto(start, displacement, velocity, ground, slid);
-            if (stepped.isValid && horizontalProgress(start, stepped.slide.position, displacement) > horizontalProgress(start, slid.position, displacement)) {
+        if (slid.hasHitWall) {
+            Step stepped = stepUp(start, displacement.plus(skinTowardWall(slid.wallNormal)), velocity, ground);
+            if (isRising(start, stepped) && horizontalProgress(start, stepped.slide.position, displacement) > horizontalProgress(start, slid.position, displacement)) {
                 return stepped.slide;
             } else {
                 return slid;
@@ -190,38 +192,12 @@ struct Mover {
         }
     }
 
-    Step stepOnto(Position start, float[3] displacement, float[3] velocity, PlaneSet ground, ref const Slide slid) const {
-        float rise = lowerOf(STEP_RISE_PER_BLOCK * slid.wallBlockHeight, cfg.stepHeight);
-        float[3] across = displacement.plus(skinTowardWall(slid.wallNormal));
-        Step near = stepUp(start, across, velocity, ground, rise);
-        if (isOnBlock(start, near, slid.wallBlockHeight)) {
-            return near;
-        } else {
-            Step far = stepUp(start, reachedOver(across), velocity, ground, rise);
-            if (isOnBlock(start, far, slid.wallBlockHeight)) {
-                return far;
-            } else {
-                return near;
-            }
-        }
+    bool isRising(Place start, Step step) const {
+        return step.isValid && verticalGain(start, step.slide.position) > MIN_STEP_GAIN_METERS;
     }
 
-    bool isOnBlock(Position start, Step step, float blockHeight) const {
-        return step.isValid && verticalGain(start, step.slide.position) > MIN_STEP_GAIN_BLOCKS * blockHeight;
-    }
-
-    float[3] reachedOver(float[3] across) const {
-        float[3] horizontal = across.rejectAlong(up);
-        float length = horizontal.magnitude;
-        if (length > 0) {
-            return horizontal.scaled(higherOf(length, cfg.characterRadius) / length);
-        } else {
-            return across;
-        }
-    }
-
-    Step stepUp(Position start, float[3] displacement, float[3] velocity, PlaneSet ground, float stepRise) const {
-        Slide raised = slide(start, up.scaled(stepRise), ZERO_VECTOR, Sliding.free, PlaneSet.init);
+    Step stepUp(Place start, float[3] displacement, float[3] velocity, PlaneSet ground) const {
+        Slide raised = slide(start, up.scaled(cfg.stepHeight), ZERO_VECTOR, Sliding.free, PlaneSet.init);
         float rise = verticalGain(start, raised.position);
         if (rise > 0) {
             Slide across = slide(raised.position, displacement, velocity, Sliding.walking, ground);
@@ -249,11 +225,11 @@ struct Mover {
         }
     }
 
-    Slide settle(Position start, float distance) const {
+    Slide settle(Place start, float distance) const {
         return slide(start, up.negated.scaled(distance), ZERO_VECTOR, Sliding.settling, PlaneSet.init);
     }
 
-    Slide slide(Position start, float[3] displacement, float[3] velocity, Sliding sliding, PlaneSet planes) const {
+    Slide slide(Place start, float[3] displacement, float[3] velocity, Sliding sliding, PlaneSet planes) const {
         return slideFrom(Slide(start, velocity), planes, clipToPlanes(planes.slice(), displacement, true), sliding, MAX_CONTACT_PLANES);
     }
 
@@ -263,7 +239,7 @@ struct Mover {
         } else {
             Sweep sweep = Sweep.fromCapsule(*graph, capsule, current.position, remaining);
             Slide moved = current;
-            moved.position.local = current.position.local * sweep.transform;
+            moved.position = current.position.moved(sweep.displacement);
             if (!sweep.hasContact) {
                 return moved;
             } else {
@@ -277,14 +253,14 @@ struct Mover {
         bool isWalkableContact = isWalkable(sweep.normal);
         bool isDescending = shortened.dot(up) < 0;
         bool isLanding = isDescending && isSupporting(sweep);
-        Slide contacted = current;        if (isLanding) {
+        Slide contacted = current;
+        if (isLanding) {
             contacted.hasLanded = true;
             contacted.groundNormal = supportNormal(sweep);
         }
         if (!isWalkableContact && !current.hasHitWall) {
             contacted.hasHitWall = true;
             contacted.wallNormal = sweep.normal;
-            contacted.wallBlockHeight = (*graph).stepBlockHeight(sweep.chunk, sweep.cell);
         }
         PlaneSet clipping = planes;
         clipping.add(ContactPlane(sweep.normal, contactDirection(sweep.normal, isWalkableContact && (isDescending || sliding == Sliding.walking)), cfg.contactSkin - sweep.gap));
@@ -336,17 +312,15 @@ struct Mover {
         return result;
     }
 
-    float verticalGain(Position start, Position end) const {
-        MPoint!float moved = (start.local.inverse() * end.local) * MPoint!float.origin();
-        return moved.vec.xyz().dot(up);
+    float verticalGain(Place start, Place end) const {
+        return start.offsetTo(end).dot(up);
     }
 
-    float horizontalProgress(Position start, Position end, float[3] displacement) const {
-        MPoint!float moved = (start.local.inverse() * end.local) * MPoint!float.origin();
+    float horizontalProgress(Place start, Place end, float[3] displacement) const {
         float[3] horizontal = displacement.rejectAlong(up);
         float horizontalLength = horizontal.magnitude;
         if (horizontalLength > 0) {
-            return moved.vec.xyz().rejectAlong(up).dot(horizontal) / horizontalLength;
+            return start.offsetTo(end).rejectAlong(up).dot(horizontal) / horizontalLength;
         } else {
             return 0;
         }
@@ -391,11 +365,10 @@ struct PlaneSet {
 }
 
 struct Slide {
-    Position position;
+    Place position;
     float[3] velocity = [0, 0, 0];
     float[3] groundNormal = [0, 0, 0];
     float[3] wallNormal = [0, 0, 0];
-    float wallBlockHeight = 0;
     bool hasHitWall;
     bool hasLanded;
 }
@@ -429,8 +402,26 @@ float[3] steered(float[3] velocity, float[3] target, float[3] wish, float maxSte
     }
 }
 
-float stepLength(MIsometry!float step) {
-    return asinhf((step * MPoint!float.origin()).vec.xyz().magnitude);
+float[3] turnedToward(float[3] from, float[3] to, float maxAngle) {
+    if (acosf(clamped(from.dot(to), -1.0f, 1.0f)) <= maxAngle) {
+        return to;
+    } else {
+        float[3] side = to.rejectAlong(from);
+        float[3] turned = from.scaled(cosf(maxAngle)).plus(side.scaled(sinf(maxAngle) / side.magnitude));
+        return turned.scaled(1.0f / turned.magnitude);
+    }
+}
+
+float[3] rotatedLike(float[3] v, float[3] from, float[3] to) {
+    float[3] axis = from.cross(to);
+    float sine = axis.magnitude;
+    if (sine > 0) {
+        float[3] unit = axis.scaled(1.0f / sine);
+        float cosine = from.dot(to);
+        return v.scaled(cosine).plus(unit.cross(v).scaled(sine)).plus(unit.scaled(unit.dot(v) * (1.0f - cosine)));
+    } else {
+        return v;
+    }
 }
 
 float target(ContactPlane plane, bool isRestoringSkin) {
@@ -509,24 +500,6 @@ float[3] clipToPlanes(const(ContactPlane)[] planes, float[3] v, bool isRestoring
     } else {
         return clipToPlane(planes, v, isRestoringSkin);
     }
-}
-
-float[3] relativeUp(ref const Graph graph, Position position) {
-    float[3] gradient = (position.local.inverse() * graph.nodeState(position.node).surface.scaledNormal).xyz();
-    return gradient.scaled(1.0f / gradient.magnitude);
-}
-
-unittest {
-    Graph graph = Graph.make(TEST_DIMENSION, Worldgen.makeTerrain());
-    graph.ensureNodeState(ROOT_NODE);
-    Position start = Position.origin();
-    float[3] up = graph.relativeUp(start);
-    const(NodeState)* state = graph.nodeState(ROOT_NODE);
-    float startDistance = state.surface.distanceTo(start.local * MPoint!float.origin());
-    MIsometry!float raised = start.local * MIsometry!float.fromDisplacement(up.scaled(UP_PROBE_DISTANCE));
-    float endDistance = state.surface.distanceTo(raised * MPoint!float.origin());
-    assert(endDistance > startDistance + UP_PROBE_MIN_GAIN);
-    graph.release();
 }
 
 unittest {

@@ -2,13 +2,13 @@ module common.worldgen.spawn;
 
 import core.stdc.math : coshf;
 import common.array : Array;
-import common.character.controller : relativeUp;
-import common.collision.graph : NodeVisit, isVisited;
+import common.character.place : relativeUp;
 import common.dodeca : BOUNDING_SPHERE_RADIUS, CHUNK_BOUNDING_SPHERE_RADIUS, SIDE_COUNT, Side, VERTEX_COUNT, Vertex, chunkBoundingSphereCenter, reflection;
 import common.graph : Graph, ROOT_NODE;
 import common.math : MIsometry, MPoint, MVector;
 import common.node : ChunkSlot;
 import common.position : Position;
+import common.traversal : NodeVisit, isVisited;
 import common.vector3 : scaled;
 import common.worldgen.generation : ChunkParams, PlaneWorld, Worldgen;
 

@@ -4,7 +4,7 @@ import core.stdc.stdio : FILE, fclose, fopen, fprintf, snprintf;
 import core.stdc.stdlib : free, malloc;
 import core.stdc.string : strcmp;
 import core.sys.posix.time : nanosleep, timespec;
-import bindings.platform : Atom, Button1, Button3, ButtonPress, ClientMessage, CurrentTime, Cursor, Display, False, FocusOut, GenericEvent, GrabModeAsync, GrabSuccess, KeyPress, KeyRelease, KeySym, Pixmap, Success, True, UnmapNotify, VkExtent2D, Window, XBlackPixel, XCloseDisplay, XColor, XCreateBitmapFromData, XCreatePixmapCursor, XCreateSimpleWindow, XDefaultScreen, XDestroyWindow, XDisplayHeight, XDisplayWidth, XEvent, XFlush, XFreeCursor, XFreeEventData, XFreePixmap, XGenericEventCookie, XGetEventData, XGrabPointer, XIAllMasterDevices, XIDeviceInfo, XIEventMask, XIFreeDeviceInfo, XIModeAbsolute, XIQueryDevice, XIQueryVersion, XIRawEvent, XISelectEvents, XIValuatorClass, XIValuatorClassInfo, XI_DeviceChanged, XI_RawMotion, XInternAtom, XK_1, XK_9, XK_Escape, XK_Down, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_g, XK_n, XK_s, XK_space, XK_u, XK_v, XK_w, XLookupKeysym, XMapWindow, XNextEvent, XOpenDisplay, XPending, XQueryExtension, XRootWindow, XSelectInput, XSetWMProtocols, XStoreName, XUngrabPointer, XkbSetDetectableAutoRepeat;
+import bindings.platform : Atom, Button1, Button3, ButtonPress, ClientMessage, CurrentTime, Cursor, Display, False, FocusOut, GenericEvent, GrabModeAsync, GrabSuccess, KeyPress, KeyRelease, KeySym, Pixmap, Success, True, UnmapNotify, VkExtent2D, Window, XBlackPixel, XCloseDisplay, XColor, XCreateBitmapFromData, XCreatePixmapCursor, XCreateSimpleWindow, XDefaultScreen, XDestroyWindow, XDisplayHeight, XDisplayWidth, XEvent, XFlush, XFreeCursor, XFreeEventData, XFreePixmap, XGenericEventCookie, XGetEventData, XGrabPointer, XIAllMasterDevices, XIDeviceInfo, XIEventMask, XIFreeDeviceInfo, XIModeAbsolute, XIQueryDevice, XIQueryVersion, XIRawEvent, XISelectEvents, XIValuatorClass, XIValuatorClassInfo, XI_DeviceChanged, XI_RawMotion, XInternAtom, XK_1, XK_9, XK_Escape, XK_Down, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_g, XK_n, XK_s, XK_space, XK_v, XK_w, XLookupKeysym, XMapWindow, XNextEvent, XOpenDisplay, XPending, XQueryExtension, XRootWindow, XSelectInput, XSetWMProtocols, XStoreName, XUngrabPointer, XkbSetDetectableAutoRepeat;
 import client.arguments : StartupError, FlagValue, NumberArgument, WorldgenArgument;
 import client.config : ClientConfig;
 import client.game : FrameInput, Game, KEY_COUNT, Key, MATERIAL_PALETTE, axisValue;
@@ -12,7 +12,6 @@ import client.graphics.renderer : FrameTimes, Renderer;
 import client.png : writePng;
 import client.script : ScriptHost, ScriptRecorder;
 import common.character.controller : MovementMode;
-import common.character.frame : UpMode;
 import common.clock : MILLISECONDS_PER_SECOND, NANOSECONDS_PER_SECOND, nowSeconds;
 import common.dodeca : VERTEX_COUNT;
 import common.names : ENUM_NAMES;
@@ -424,9 +423,6 @@ struct Session {
         } else if (symbol == XK_g && !isRepeat) {
             game.cycleSpacing();
             isTitleDirty = true;
-        } else if (symbol == XK_u && !isRepeat) {
-            game.cycleUpMode();
-            isTitleDirty = true;
         } else if (symbol >= XK_1 && symbol <= XK_9) {
             selectMaterial(cast(uint)(symbol - XK_1));
         } else {
@@ -482,9 +478,8 @@ struct Session {
         char[TEXT_CAPACITY] title;
         string mode = ENUM_NAMES!MovementMode[game.mode];
         string spacing = ENUM_NAMES!GridSpacing[game.world.graph.layout.spacing];
-        string up = ENUM_NAMES!UpMode[game.upMode];
         char[TEXT_CAPACITY] modes;
-        snprintf(modes.ptr, modes.length, "%.*s (V) - %.*s grid (G) - %.*s up (U)", cast(int) mode.length, mode.ptr, cast(int) spacing.length, spacing.ptr, cast(int) up.length, up.ptr);
+        snprintf(modes.ptr, modes.length, "%.*s (V) - %.*s grid (G)", cast(int) mode.length, mode.ptr, cast(int) spacing.length, spacing.ptr);
         if (isCaptured) {
             snprintf(title.ptr, title.length, "mined - %s - [%u] - Esc to release mouse - FPS %.0f", modes.ptr, game.materialIndex + 1, cast(double) fps);
         } else {

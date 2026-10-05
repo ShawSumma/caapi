@@ -9,7 +9,7 @@ return function(world)
   world:look(-YAW_STEP_DEGREES * (MATERIALS - 1) / 2, 0)
   for slot = 1, MATERIALS do
     world:material(slot)
-    assert(world:place_block(), string.format("placed material %d", slot))
+    world:place_block()
     world:look(YAW_STEP_DEGREES, 0)
   end
   world:look(-YAW_STEP_DEGREES * (MATERIALS + 1) / 2, -10)

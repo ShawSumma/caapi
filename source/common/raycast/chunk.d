@@ -1,7 +1,7 @@
 module common.raycast.chunk;
 
-import common.collision.chunk : isVoxelSolid;
 import common.coords : CoordAxis, CoordSign, Coords;
+import common.material : Material;
 import common.math : MDirection, MVector, isNan;
 import common.node : ChunkLayout, VoxelData;
 import common.ray : Ray;
@@ -73,6 +73,10 @@ ChunkRayCastHit planeCollision(ref const VoxelData voxelData, ChunkLayout layout
             return ChunkRayCastHit.init;
         }
     }
+}
+
+bool isVoxelSolid(ref const VoxelData voxelData, ChunkLayout layout, ubyte[3] coords) {
+    return coords[0] < layout.dimension && coords[1] < layout.dimension && coords[2] < layout.dimension && voxelData.get(Coords(coords).toIndex(layout.dimension)) != Material.none;
 }
 
 ubyte enteredVoxel(ubyte t, bool isEntering) {

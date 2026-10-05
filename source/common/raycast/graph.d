@@ -1,7 +1,6 @@
 module common.raycast.graph;
 
 import core.stdc.math : atanhf, coshf, fminf;
-import common.collision.graph : NodeVisit, VisitQueue;
 import common.coords : CoordAxis, CoordSign, Coords;
 import common.dodeca : BOUNDING_SPHERE_RADIUS, CHUNK_BOUNDING_SPHERE_RADIUS, VERTEX_COUNT, Vertex, chunkBoundingSphereCenter, nodeToDual;
 import common.graph : Graph;
@@ -10,6 +9,7 @@ import common.node : Chunk, ChunkId, ChunkSlot, ChunkState;
 import common.position : Position;
 import common.ray : MAX_TANH_DISTANCE, Ray;
 import common.raycast.chunk : ChunkRayCastHit, chunkRayCast;
+import common.traversal : NodeVisit, VisitQueue;
 
 enum uint RAY_CAST_MAX_NODES = 512;
 

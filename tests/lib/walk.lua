@@ -9,8 +9,6 @@ walk.STANDING_ALTITUDE = walk.HALF_HEIGHT + walk.CONTACT_SKIN
 walk.ALTITUDE_TOLERANCE = 0.002
 walk.MAX_FALL_SPEED = 15
 walk.FLY_SPEED = 8
-walk.STEP_AIM_DOWN_DEGREES = 30
-walk.STEP_ROW_YAWS = { -16, 0, 16 }
 walk.STRAIGHT_DOWN_DEGREES = 89
 walk.WALL_HOVER_PER_BLOCK = 2
 walk.WALL_DISTANCE = 3
@@ -55,6 +53,8 @@ function walk.track_motion(world)
     if speed > motion.speed then
       motion.speed = speed
       motion.at = world:time()
+      motion.vertical_at = vertical
+      motion.grounded_at = world:is_on_ground()
     end
     motion.fall = math.max(motion.fall, -vertical)
     motion.rise = math.max(motion.rise, vertical)
@@ -69,7 +69,7 @@ end
 
 function walk.check_speed_limit(motion, limit)
   local cap = (limit or walk.SPEED) + walk.SPEED_TOLERANCE
-  assert(motion.speed <= cap, string.format("horizontal speed reached %.2f m/s at t=%.2f (limit %.2f)", motion.speed, motion.at, cap))
+  assert(motion.speed <= cap, string.format("horizontal speed reached %.2f m/s at t=%.2f (limit %.2f), vertical %.2f m/s, %s", motion.speed, motion.at, cap, motion.vertical_at, motion.grounded_at and "on ground" or "airborne"))
   assert(motion.fall <= walk.MAX_FALL_SPEED, string.format("fell at %.1f m/s (limit %.1f), through the ground or off a cliff", motion.fall, walk.MAX_FALL_SPEED))
 end
 
@@ -77,16 +77,6 @@ function walk.check_standing(world, what)
   local altitude = world:altitude()
   assert(world:is_on_ground(), what .. ": on ground")
   assert(math.abs(altitude - walk.STANDING_ALTITUDE) <= walk.ALTITUDE_TOLERANCE, string.format("%s: standing at altitude %.3f m (expected %.2f)", what, altitude, walk.STANDING_ALTITUDE))
-end
-
-function walk.build_step(world)
-  world:look(0, walk.STEP_AIM_DOWN_DEGREES)
-  for _, yaw in ipairs(walk.STEP_ROW_YAWS) do
-    world:look(yaw, 0)
-    assert(world:place_block(), string.format("placed step block at yaw %d", yaw))
-    world:look(-yaw, 0)
-  end
-  world:look(0, -walk.STEP_AIM_DOWN_DEGREES)
 end
 
 local function fly(world, meters, key)
@@ -149,6 +139,10 @@ function walk.build_wall(world, blocks)
   strafe(world, -walk.WALL_HALF_WIDTH)
   fly(world, walk.WALL_DISTANCE, "back")
   walk.land(world)
+end
+
+function walk.build_step(world)
+  walk.build_wall(world, 1)
 end
 
 function walk.build_corner(world, blocks)

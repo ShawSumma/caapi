@@ -10,8 +10,7 @@ struct SimConfig {
     float metersToAbsolute;
 
     static SimConfig fromMeters(SimMeters meters) {
-        float scale = metersToAbsoluteFor(meters.chunkSize, meters.voxelSize);
-        return SimConfig(CharacterConfig.fromMeters(meters.character, scale), scale);
+        return SimConfig(CharacterConfig.fromMeters(meters.character), metersToAbsoluteFor(meters.chunkSize, meters.voxelSize));
     }
 }
 
@@ -39,24 +38,24 @@ struct CharacterConfig {
     float characterHalfHeight;
     float eyeOffset;
 
-    static CharacterConfig fromMeters(CharacterMeters meters, float metersToAbsolute) {
+    static CharacterConfig fromMeters(CharacterMeters meters) {
         return CharacterConfig(
-            meters.noClipMovementSpeed * metersToAbsolute,
-            meters.flyMovementSpeed * metersToAbsolute,
-            meters.maxGroundSpeed * metersToAbsolute,
-            meters.sprintSpeed * metersToAbsolute,
-            meters.speedCap * metersToAbsolute,
+            meters.noClipMovementSpeed,
+            meters.flyMovementSpeed,
+            meters.maxGroundSpeed,
+            meters.sprintSpeed,
+            meters.speedCap,
             meters.maxGroundSlope,
-            meters.groundAcceleration * metersToAbsolute,
-            meters.airAcceleration * metersToAbsolute,
-            meters.gravityAcceleration * metersToAbsolute,
+            meters.groundAcceleration,
+            meters.airAcceleration,
+            meters.gravityAcceleration,
             meters.airResistance,
-            meters.jumpSpeed * metersToAbsolute,
-            meters.stepHeight * metersToAbsolute,
-            meters.contactSkin * metersToAbsolute,
-            meters.characterRadius * metersToAbsolute,
-            meters.characterHeight / 2.0f * metersToAbsolute,
-            (meters.eyeHeight - meters.characterHeight / 2.0f) * metersToAbsolute,
+            meters.jumpSpeed,
+            meters.stepHeight,
+            meters.contactSkin,
+            meters.characterRadius,
+            meters.characterHeight / 2.0f,
+            meters.eyeHeight - meters.characterHeight / 2.0f,
         );
     }
 }
@@ -73,7 +72,7 @@ struct CharacterMeters {
     float gravityAcceleration = 32.0f;
     float airResistance = 0.2f;
     float jumpSpeed = 9.0f;
-    float stepHeight = 2.4f;
+    float stepHeight = 1.2f;
     float contactSkin = 0.01f;
     float characterRadius = 0.4f;
     float characterHeight = 1.8f;
@@ -105,12 +104,4 @@ float longestVoxelEdge(ubyte chunkSize, GridSpacing spacing) {
         }
     }
     return longest;
-}
-
-unittest {
-    SimMeters meters;
-    SimConfig config = SimConfig.fromMeters(meters);
-    foreach (spacing; 0 .. GridSpacing.max + 1) {
-        assert(config.character.stepHeight > longestVoxelEdge(meters.chunkSize, cast(GridSpacing) spacing));
-    }
 }

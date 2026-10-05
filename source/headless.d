@@ -148,7 +148,7 @@ bool runScriptFile(const(char)* path, Worldgen worldgen, FILE* report) {
     fprintf(report, "== %s\n", path);
     immutable bool isCompleted = host.run(path);
     host.close();
-    fprintf(report, "session: steps=%u time=%.2f traveled=%.2f%s\n", host.steps, cast(double) game.simTime, cast(double)(game.traveled / game.simConfig.metersToAbsolute), sessionSuffix(isCompleted));
+    fprintf(report, "session: steps=%u time=%.2f traveled=%.2f%s\n", host.steps, cast(double) game.simTime, cast(double) game.traveled, sessionSuffix(isCompleted));
     game.release();
     return isCompleted;
 }

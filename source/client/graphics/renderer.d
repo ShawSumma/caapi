@@ -1,6 +1,6 @@
 module client.graphics.renderer;
 
-import core.stdc.math : logf, powf, sinhf;
+import core.stdc.math : coshf, logf, powf, sinhf;
 import bindings.platform : Display, VK_ACCESS_HOST_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_ERROR_OUT_OF_DATE_KHR, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_BIND_POINT_GRAPHICS, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_QUERY_RESULT_64_BIT, VK_QUERY_TYPE_TIMESTAMP, VK_SHADER_STAGE_VERTEX_BIT, VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, VK_STRUCTURE_TYPE_MEMORY_BARRIER, VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, VK_STRUCTURE_TYPE_SUBMIT_INFO, VK_SUBOPTIMAL_KHR, VK_SUBPASS_CONTENTS_INLINE, VK_SUCCESS, VkBufferImageCopy, VkClearValue, VkCommandBuffer, VkCommandBufferBeginInfo, VkDescriptorSet, VkDevice, VkDeviceSize, VkDrawIndirectCommand, VkExtent2D, VkExtent3D, VkImageSubresourceLayers, VkMemoryBarrier, VkPhysicalDevice, VkPhysicalDeviceProperties, VkPipelineStageFlags, VkPresentInfoKHR, VkQueryPool, VkQueryPoolCreateInfo, VkRect2D, VkRenderPassBeginInfo, VkResult, VkSubmitInfo, VkViewport, Window, vkAcquireNextImageKHR, vkBeginCommandBuffer, vkCmdBeginRenderPass, vkCmdBindDescriptorSets, vkCmdBindPipeline, vkCmdCopyImageToBuffer, vkCmdDrawIndirect, vkCmdEndRenderPass, vkCmdNextSubpass, vkCmdPipelineBarrier, vkCmdPushConstants, vkCmdResetQueryPool, vkCmdSetScissor, vkCmdSetViewport, vkCmdWriteTimestamp, vkCreateQueryPool, vkDestroyQueryPool, vkDeviceWaitIdle, vkEndCommandBuffer, vkGetPhysicalDeviceProperties, vkGetQueryPoolResults, vkQueuePresentKHR, vkQueueSubmit, vkResetCommandBuffer, vkResetFences, vkWaitForFences;
 import client.graphics.base : SwapchainState;
 import client.graphics.core : VulkanCore;
@@ -51,7 +51,7 @@ immutable float[4] SKY_SRGB = [
 ];
 
 struct HighlightTarget {
-    float[MATRIX_FLOATS] mvp;
+    float[MATRIX_FLOATS] model;
     float[3] low;
     float[3] high;
     bool isFound;
@@ -158,7 +158,7 @@ struct Renderer {
         cull.setup(core.device, voxels.commonUbo.buffer);
         bindMeshBuffers();
         fog.setup(core.device, swapchain.renderPass, voxels.commonLayout);
-        highlight.setup(core.device, swapchain.renderPass);
+        highlight.setup(core.device, swapchain.renderPass, voxels.commonLayout);
         crosshair.setup(core.device, swapchain.renderPass);
         timer.setup(core.physicalDevice, core.device);
     }
@@ -187,24 +187,28 @@ struct Renderer {
         Frustum frustum = Frustum.fromVerticalFov(VERTICAL_HALF_FOV_RADIANS, cast(float) extent.width / cast(float) extent.height);
         float[MATRIX_FLOATS] cameraInverse = flatten(world.cameraInNearbyFrame().inverse().mat);
         float[MATRIX_FLOATS] projection = frustum.projection(NEAR_PLANE);
-        float[MATRIX_FLOATS] viewProjection = matrixMultiply(projection, cameraInverse);
         MDirection!float[FRUSTUM_PLANE_COUNT] planes = frustum.planes();
         float[4][FRUSTUM_PLANE_COUNT] frustumPlanes;
         foreach (i; 0 .. FRUSTUM_PLANE_COUNT) {
             frustumPlanes[i] = planes[i].vec.data;
         }
         return CommonUniforms(
-            viewProjection,
+            projection,
             matrixInverse(projection),
             cameraInverse,
+            warpMatrix(world.viewWarp),
             frustumPlanes,
             skyLinear,
             powf(logf(1.0f / FOG_VISIBILITY_THRESHOLD), 1.0f / FOG_EXPONENT) / world.renderRadius,
             FOG_EXPONENT,
-            parityOf(determinant(viewProjection)),
+            parityOf(determinant(matrixMultiply(projection, cameraInverse))),
             sinhf(CHUNK_BOUNDING_SPHERE_RADIUS),
+            world.warpInner,
+            world.warpOuter,
+            coshf(world.warpOuter + CHUNK_BOUNDING_SPHERE_RADIUS),
         );
     }
+
 
     void renderFrame(ref LocalWorld world) {
         layout = world.graph.layout;
@@ -217,7 +221,7 @@ struct Renderer {
         voxels.updateCommonUbo(uniforms);
         updateChunks(world);
         frameTimes.chunkUpdateMs = nowMilliseconds() - updateStart;
-        HighlightTarget target = findHighlightTarget(world, uniforms.viewProjection);
+        HighlightTarget target = findHighlightTarget(world);
         if (swapchain.isOffscreen) {
             expectSuccess(vkResetFences(core.device, 1, &swapchain.inFlightFence));
             recordCommands(OFFSCREEN_IMAGE, target);
@@ -263,7 +267,7 @@ struct Renderer {
         backlog = cast(uint)(world.graph.changedChunks.length - world.graph.changedHead);
     }
 
-    HighlightTarget findHighlightTarget(ref const LocalWorld world, float[MATRIX_FLOATS] viewProjection) const {
+    HighlightTarget findHighlightTarget(ref const LocalWorld world) const {
         GraphCastHit hit = world.castCenterRay();
         uint index = world.nearby[world.published].indexOf(world.graph.slotOf(hit.chunk.node));
         if (!hit.isHit() || index == NOT_COLLECTED) {
@@ -273,7 +277,7 @@ struct Renderer {
             ubyte[3] cell = hit.voxelCoords.data;
             float[3] low = [layout.gridToChunk(cell[0]), layout.gridToChunk(cell[1]), layout.gridToChunk(cell[2])];
             float[3] high = [layout.gridToChunk(cell[0] + 1), layout.gridToChunk(cell[1] + 1), layout.gridToChunk(cell[2] + 1)];
-            return HighlightTarget(matrixMultiply(viewProjection, chunkToWorld), low, high, true);
+            return HighlightTarget(chunkToWorld, low, high, true);
         }
     }
 
@@ -318,7 +322,7 @@ struct Renderer {
             drawn += batch;
         }
         if (target.isFound) {
-            highlight.draw(commands, target.mvp, target.low, target.high);
+            highlight.draw(commands, voxels.commonSet, target.model, target.low, target.high);
         }
         vkCmdNextSubpass(commands, VK_SUBPASS_CONTENTS_INLINE);
         fog.draw(commands, voxels.commonSet);
@@ -414,6 +418,17 @@ uint drawBatch(uint remaining, uint limit) {
     } else {
         return remaining;
     }
+}
+
+float[MATRIX_FLOATS] warpMatrix(float[3][3] warp) {
+    float[MATRIX_FLOATS] result = 0;
+    foreach (column; 0 .. 3) {
+        foreach (row; 0 .. 3) {
+            result[column * 4 + row] = warp[row][column];
+        }
+    }
+    result[15] = 1;
+    return result;
 }
 
 float parityOf(float value) {

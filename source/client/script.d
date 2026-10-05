@@ -8,7 +8,6 @@ import client.game : FrameInput, Game, KEY_COUNT, Key, MATERIAL_PALETTE, StairWa
 import client.world : TargetMaterial;
 import common.array : Array;
 import common.character.controller : MovementMode;
-import common.character.frame : UpMode;
 import common.graph : NodeId;
 import common.names : ENUM_NAMES;
 import common.node : GridSpacing;
@@ -200,7 +199,6 @@ struct ScriptHost {
         registerMethod("turn_rate", &luaTurnRate);
         registerMethod("turn", &luaTurn);
         registerMethod("mode", &luaMode);
-        registerMethod("up", &luaUp);
         registerMethod("material", &luaMaterial);
         registerMethod("break_block", &luaBreakBlock);
         registerMethod("place_block", &luaPlaceBlock);
@@ -267,10 +265,6 @@ struct ScriptHost {
                 luaL_error(lua, "unknown key '%s'", name);
             }
         }
-    }
-
-    float metersPerAbsolute() const {
-        return 1.0f / game.simConfig.metersToAbsolute;
     }
 }
 
@@ -348,10 +342,10 @@ extern (C) int luaGrid(lua_State* lua) {
     if (!isNoneOrNil(lua, SELF + 1)) {
         const(char)* name = luaL_checklstring(lua, SELF + 1, null);
         LuaLookup!GridSpacing lookup = LuaLookup!GridSpacing.fromName(name[0 .. strlen(name)]);
-        if (host.steps > 0) {
-            luaL_error(lua, "the grid must be chosen before the first step");
-        } else if (!lookup.isFound) {
+        if (!lookup.isFound) {
             luaL_error(lua, "unknown grid '%s'", name);
+        } else if (host.steps > 0) {
+            host.game.setSpacing(lookup.value);
         } else {
             Worldgen worldgen = host.game.world.graph.worldgen;
             worldgen.spacing = lookup.value;
@@ -420,8 +414,8 @@ extern (C) int luaStairWaypoint(lua_State* lua) {
     }
     if (waypoint.isFound) {
         lua_pushnumber(lua, -waypoint.yawRadians / RADIANS_PER_DEGREE);
-        lua_pushnumber(lua, waypoint.horizontal * host.metersPerAbsolute());
-        lua_pushnumber(lua, waypoint.rise * host.metersPerAbsolute());
+        lua_pushnumber(lua, waypoint.horizontal);
+        lua_pushnumber(lua, waypoint.rise);
         return 3;
     } else {
         lua_pushnil(lua);
@@ -525,24 +519,6 @@ extern (C) int luaMode(lua_State* lua) {
     return 1;
 }
 
-extern (C) int luaUp(lua_State* lua) {
-    ScriptHost* host = methodHost(lua);
-    if (!isNoneOrNil(lua, SELF + 1)) {
-        host.game.upMode = enumArgument!UpMode(lua, SELF + 1, "up mode");
-    }
-    pushLuaName(lua, host.game.upMode);
-    return 1;
-}
-
-E enumArgument(E)(lua_State* lua, int index, const(char)* what) {
-    const(char)* name = luaL_checklstring(lua, index, null);
-    LuaLookup!E lookup = LuaLookup!E.fromName(name[0 .. strlen(name)]);
-    if (!lookup.isFound) {
-        luaL_error(lua, "unknown %s '%s'", what, name);
-    }
-    return lookup.value;
-}
-
 extern (C) int luaMaterial(lua_State* lua) {
     ScriptHost* host = methodHost(lua);
     if (!isNoneOrNil(lua, SELF + 1)) {
@@ -568,8 +544,7 @@ extern (C) int luaPlaceBlock(lua_State* lua) {
 }
 
 extern (C) int luaTraveled(lua_State* lua) {
-    ScriptHost* host = methodHost(lua);
-    lua_pushnumber(lua, host.game.traveled * host.metersPerAbsolute());
+    lua_pushnumber(lua, methodHost(lua).game.traveled);
     return 1;
 }
 
@@ -579,32 +554,29 @@ extern (C) int luaIsOnGround(lua_State* lua) {
 }
 
 extern (C) int luaAltitude(lua_State* lua) {
-    ScriptHost* host = methodHost(lua);
-    lua_pushnumber(lua, host.game.characterAltitude() * host.metersPerAbsolute());
+    lua_pushnumber(lua, methodHost(lua).game.altitude);
     return 1;
 }
 
 extern (C) int luaSpeed(lua_State* lua) {
-    ScriptHost* host = methodHost(lua);
-    lua_pushnumber(lua, host.game.characterState.velocity.magnitude * host.metersPerAbsolute());
+    lua_pushnumber(lua, methodHost(lua).game.characterState.velocity.magnitude);
     return 1;
 }
 
 extern (C) int luaHorizontalSpeed(lua_State* lua) {
     ScriptHost* host = methodHost(lua);
-    lua_pushnumber(lua, host.game.characterState.velocity.rejectAlong(host.game.camera.up).magnitude * host.metersPerAbsolute());
+    lua_pushnumber(lua, host.game.characterState.velocity.rejectAlong(host.game.characterState.up).magnitude);
     return 1;
 }
 
 extern (C) int luaVerticalSpeed(lua_State* lua) {
     ScriptHost* host = methodHost(lua);
-    lua_pushnumber(lua, host.game.characterState.velocity.dot(host.game.camera.up) * host.metersPerAbsolute());
+    lua_pushnumber(lua, host.game.characterState.velocity.dot(host.game.characterState.up));
     return 1;
 }
 
 extern (C) int luaCameraVerticalAcceleration(lua_State* lua) {
-    ScriptHost* host = methodHost(lua);
-    lua_pushnumber(lua, host.game.cameraVerticalAcceleration * host.metersPerAbsolute());
+    lua_pushnumber(lua, methodHost(lua).game.cameraVerticalAcceleration);
     return 1;
 }
 
