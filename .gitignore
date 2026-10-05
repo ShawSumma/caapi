@@ -11,3 +11,5 @@ mined-headless
 mined-test-application
 mined-*test
 screenshots/
+export.py
+export.har

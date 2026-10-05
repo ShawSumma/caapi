@@ -1,11 +1,9 @@
 local walk = require("lib.walk")
 
-local SEED = 0
 local WALK_SECONDS = 20
 local MAX_WALKED_FRACTION = 0.8
 local TOWER_MATERIALS = {
   concrete = true,
-  glass = true,
   white_brick = true,
   grey_brick = true,
   sandstone = true,
@@ -15,7 +13,7 @@ local TOWER_MATERIALS = {
 }
 
 return function(world)
-  world:worldgen("structure", SEED)
+  world:worldgen("structure", "tower")
   walk.spawn(world)
   local start = world:traveled()
   world:press(WALK_SECONDS, "fwd")

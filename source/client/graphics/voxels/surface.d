@@ -63,12 +63,16 @@ immutable ubyte[COLOR_CHANNELS][TEXTURE_LAYERS] MATERIAL_SRGB = [
     [160, 160, 155],
     [115, 120, 130],
 ];
-enum uint DIMENSION_PUSH_BYTES = 4;
 enum uint FACES_BINDING = 0;
 enum uint TEXTURE_BINDING = 1;
 enum uint TRANSFORMS_BINDING = 2;
 enum uint COMMON_UBO_BINDING = 0;
 enum uint DEPTH_INPUT_BINDING = 1;
+
+struct LayoutPush {
+    uint dimension;
+    float cellRatio;
+}
 
 struct CommonUniforms {
     float[MATRIX_FLOATS] viewProjection;
@@ -169,7 +173,7 @@ struct SurfacePipeline {
             staticLayout,
         ];
         VkPushConstantRange[1] pushConstants = [
-            VkPushConstantRange(VK_SHADER_STAGE_VERTEX_BIT, 0, DIMENSION_PUSH_BYTES),
+            VkPushConstantRange(VK_SHADER_STAGE_VERTEX_BIT, 0, LayoutPush.sizeof),
         ];
         pipelineLayout = createPipelineLayout(device, setLayouts[], pushConstants[]);
         PipelineSettings settings = PipelineSettings(

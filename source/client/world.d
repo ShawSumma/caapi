@@ -14,7 +14,7 @@ import common.position : Position;
 import common.ray : Ray;
 import common.raycast.graph : GraphCastHit, rayCast;
 import common.traversal : NOT_COLLECTED, NO_DEADLINE, NearbyNode, NearbyScratch;
-import common.worldgen.generation : WorldgenSettings;
+import common.worldgen.generation : Worldgen;
 
 enum float NEARBY_PADDING = 0.05f;
 enum float RENDER_RADIUS = 4.5f;
@@ -46,7 +46,7 @@ struct LocalWorld {
     uint epoch;
     bool hasNearby;
 
-    static LocalWorld make(ubyte dimension, WorldgenSettings worldgen, float reach) {
+    static LocalWorld make(ubyte dimension, Worldgen worldgen, float reach) {
         LocalWorld world;
         world.graph = Graph.make(dimension, worldgen);
         world.streamer = Streamer.make();

@@ -6,7 +6,7 @@ import core.stdc.stdlib : alloca;
 import common.coords : Coords;
 import common.material : Material;
 import common.math : MDirection, MIsometry, MPoint, MVector, higherOf, isNan, lowerOf;
-import common.node : ChunkLayout, VoxelData;
+import common.node : ChunkLayout, GridSpacing, VoxelData;
 import common.ray : ContactTerms, MAX_TANH_DISTANCE, Ray;
 
 enum float GRID_PADDING_CELLS = 2.0f;
@@ -22,6 +22,7 @@ struct ChunkCollisionHit {
     float stopDistance = float.nan;
     float gap;
     uint surfaceCount;
+    ubyte[3] cell;
     bool isLowestSection;
 
     bool isHit() const {
@@ -77,14 +78,14 @@ struct GridRange {
     static GridRange fromSweep(ChunkLayout layout, Ray ray, float tanhDistance, float padDistance) {
         MVector!float p0 = ray.position.vec;
         MVector!float p1 = ray.rayPoint(lowerOf(tanhDistance, MAX_TANH_DISTANCE));
-        float pad = tanhf(padDistance) * layout.dualToGridFactor + GRID_PADDING_CELLS;
+        float pad = tanhf(padDistance);
         float[3] lows;
         float[3] highs;
         foreach (i; 0 .. 3) {
-            float g0 = p0.data[i] / p0.data[3] * layout.dualToGridFactor;
-            float g1 = p1.data[i] / p1.data[3] * layout.dualToGridFactor;
-            lows[i] = lowerOf(g0, g1) - pad;
-            highs[i] = higherOf(g0, g1) + pad;
+            float d0 = p0.data[i] / p0.data[3];
+            float d1 = p1.data[i] / p1.data[3];
+            lows[i] = layout.dualToGrid(lowerOf(d0, d1) - pad) - GRID_PADDING_CELLS;
+            highs[i] = layout.dualToGrid(higherOf(d0, d1) + pad) + GRID_PADDING_CELLS;
         }
         return GridRange(
             [gridLow(lows[0]), gridLow(lows[1]), gridLow(lows[2])],
@@ -130,7 +131,6 @@ struct Section {
     MIsometry!float fromSection;
     float radius;
     float skin;
-    float sinhRadius;
     float sinhStopRadius;
     bool isOffset;
     bool isLowest;
@@ -138,19 +138,10 @@ struct Section {
     static Section make(SweptShape shape, Ray ray, uint sectionIndex, uint sectionCount) {
         float offset = shape.sectionOffset(sectionIndex, sectionCount);
         if (offset == 0) {
-            return Section(ray, MIsometry!float.identity(), shape.radius, shape.skin, sinhf(shape.radius), sinhf(shape.radius + shape.skin), false, sectionIndex == 0);
+            return Section(ray, MIsometry!float.identity(), shape.radius, shape.skin, sinhf(shape.radius + shape.skin), false, sectionIndex == 0);
         } else {
             MIsometry!float toSection = axisTranslation(ray.position, shape.axis, offset);
-            return Section(ray.transformedBy(toSection), toSection.inverse(), shape.radius, shape.skin, sinhf(shape.radius), sinhf(shape.radius + shape.skin), true, sectionIndex == 0);
-        }
-    }
-
-    float stopDistance(ContactTerms terms, float touch) const {
-        float stop = terms.contactTime(sinhStopRadius);
-        if (isNan(stop)) {
-            return touch;
-        } else {
-            return stop;
+            return Section(ray.transformedBy(toSection), toSection.inverse(), shape.radius, shape.skin, sinhf(shape.radius + shape.skin), true, sectionIndex == 0);
         }
     }
 
@@ -164,9 +155,9 @@ struct Section {
 
     ChunkCollisionHit hit(float stop, float gap, MVector!float normal, Feature feature) const {
         if (isOffset) {
-            return ChunkCollisionHit(fromSection.mat * normal, feature.transformedBy(fromSection), stop, gap, feature.surfaceCount, isLowest);
+            return ChunkCollisionHit(fromSection.mat * normal, feature.transformedBy(fromSection), stop, gap, feature.surfaceCount, feature.cell, isLowest);
         } else {
-            return ChunkCollisionHit(normal, feature.surfaces, stop, gap, feature.surfaceCount, isLowest);
+            return ChunkCollisionHit(normal, feature.surfaces, stop, gap, feature.surfaceCount, feature.cell, isLowest);
         }
     }
 }
@@ -203,7 +194,7 @@ struct CornerFrame {
         MDirection!float n1 = (n1Raw - n0.vec * n0.mip(n1Raw)).normalizedDirection();
         MVector!float n2Raw = gridPlane(layout, 2, grid[2]).vec;
         MDirection!float n2 = (n2Raw - n0.vec * n0.mip(n2Raw) - n1.vec * n1.mip(n2Raw)).normalizedDirection();
-        MVector!float point = MVector!float([layout.gridToDual(cast(ubyte) grid[0]), layout.gridToDual(cast(ubyte) grid[1]), layout.gridToDual(cast(ubyte) grid[2]), 1.0f]).normalizedPoint().vec;
+        MVector!float point = MVector!float([layout.gridToDual(grid[0]), layout.gridToDual(grid[1]), layout.gridToDual(grid[2]), 1.0f]).normalizedPoint().vec;
         return CornerFrame([n0, n1, n2], point);
     }
 }
@@ -211,17 +202,18 @@ struct CornerFrame {
 struct Feature {
     MVector!float[MAX_FEATURE_SURFACES] surfaces;
     uint surfaceCount;
+    ubyte[3] cell;
 
     static Feature fromFace(ChunkLayout layout, SurfaceFace face) {
-        return Feature([face.outward(layout).vec, MVector!float.init, MVector!float.init], 1);
+        return Feature([face.outward(layout).vec, MVector!float.init, MVector!float.init], 1, face.cell);
     }
 
     static Feature fromEdge(ChunkLayout layout, SurfaceFace face, size_t edgeAxis, int side) {
-        return Feature([face.outward(layout).vec, face.adjacent(edgeAxis, side).outward(layout).vec, MVector!float.init], 2);
+        return Feature([face.outward(layout).vec, face.adjacent(edgeAxis, side).outward(layout).vec, MVector!float.init], 2, face.cell);
     }
 
     static Feature fromCorner(ChunkLayout layout, SurfaceFace face, int du, int dv) {
-        return Feature([face.outward(layout).vec, face.adjacent((face.axis + 1) % 3, du).outward(layout).vec, face.adjacent((face.axis + 2) % 3, dv).outward(layout).vec], 3);
+        return Feature([face.outward(layout).vec, face.adjacent((face.axis + 1) % 3, du).outward(layout).vec, face.adjacent((face.axis + 2) % 3, dv).outward(layout).vec], 3, face.cell);
     }
 
     MVector!float[MAX_FEATURE_SURFACES] transformedBy(MIsometry!float iso) const {
@@ -307,7 +299,7 @@ MIsometry!float axisTranslation(MPoint!float center, MVector!float axis, float o
 MDirection!float gridPlane(ChunkLayout layout, size_t axis, int t) {
     float[4] normal = [0, 0, 0, 0];
     normal[axis] = 1.0f;
-    normal[3] = layout.gridToDual(cast(ubyte) t);
+    normal[3] = layout.gridToDual(t);
     return MVector!float(normal).normalizedDirection();
 }
 
@@ -330,13 +322,12 @@ ChunkCollisionHit faceContact(ref const Section section, ChunkLayout layout, Sur
     size_t vAxis = (face.axis + 2) % 3;
     MDirection!float outward = face.outward(layout);
     ContactTerms terms = section.ray.planeTerms(outward);
-    float touch = terms.contactTime(section.sinhRadius);
-    if (section.ray.direction.mip(outward.vec) >= 0 || !isTouchWithin(touch, tanhDistance)) {
+    float stop = terms.contactTime(section.sinhStopRadius);
+    if (section.ray.direction.mip(outward.vec) >= 0 || !isTouchWithin(stop, tanhDistance)) {
         return best;
     } else {
-        MVector!float center = section.ray.rayPoint(touch);
+        MVector!float center = section.ray.rayPoint(stop);
         MVector!float foot = center - outward.vec * center.mip(outward.vec);
-        float stop = section.stopDistance(terms, touch);
         if (isOwnedByCell(layout, foot, uAxis, face.cell[uAxis]) && isOwnedByCell(layout, foot, vAxis, face.cell[vAxis]) && best.isImprovedBy(stop)) {
             return section.hit(stop, section.gapAt(terms, stop), outward.vec, Feature.fromFace(layout, face));
         } else {
@@ -370,12 +361,11 @@ ChunkCollisionHit faceBoundaryContacts(ref const Section section, ref const Voxe
 ChunkCollisionHit edgeContact(ref const Section section, ChunkLayout layout, SurfaceFace face, size_t edgeAxis, size_t freeAxis, int side, ChunkCollisionHit best, float tanhDistance) {
     EdgeLine line = EdgeLine.fromFace(layout, face, edgeAxis, side);
     ContactTerms terms = section.ray.lineTerms(line.facePlane, line.edgePlane);
-    float touch = terms.contactTime(section.sinhRadius);
-    if (!isTouchWithin(touch, tanhDistance)) {
+    float stop = terms.contactTime(section.sinhStopRadius);
+    if (!isTouchWithin(stop, tanhDistance)) {
         return best;
     } else {
-        float stop = section.stopDistance(terms, touch);
-        if (isOwnedByCell(layout, line.foot(section.ray.rayPoint(touch)), freeAxis, face.cell[freeAxis]) && best.isImprovedBy(stop)) {
+        if (isOwnedByCell(layout, line.foot(section.ray.rayPoint(stop)), freeAxis, face.cell[freeAxis]) && best.isImprovedBy(stop)) {
             MVector!float center = section.ray.rayPoint(stop);
             return section.hit(stop, section.gapAt(terms, stop), center - line.foot(center), Feature.fromEdge(layout, face, edgeAxis, side));
         } else {
@@ -387,11 +377,10 @@ ChunkCollisionHit edgeContact(ref const Section section, ChunkLayout layout, Sur
 ChunkCollisionHit cornerContact(ref const Section section, ChunkLayout layout, SurfaceFace face, int du, int dv, ChunkCollisionHit best, float tanhDistance) {
     CornerFrame corner = CornerFrame.fromFace(layout, face, du, dv);
     ContactTerms terms = section.ray.pointTerms(corner.planes[0], corner.planes[1], corner.planes[2]);
-    float touch = terms.contactTime(section.sinhRadius);
-    if (!isTouchWithin(touch, tanhDistance)) {
+    float stop = terms.contactTime(section.sinhStopRadius);
+    if (!isTouchWithin(stop, tanhDistance)) {
         return best;
     } else {
-        float stop = section.stopDistance(terms, touch);
         if (best.isImprovedBy(stop)) {
             return section.hit(stop, section.gapAt(terms, stop), section.ray.rayPoint(stop) - corner.point, Feature.fromCorner(layout, face, du, dv));
         } else {
@@ -487,9 +476,9 @@ unittest {
 }
 
 unittest {
-    ChunkLayout layout = ChunkLayout.fromDimension(TEST_DIMENSION);
+    ChunkLayout layout = ChunkLayout.make(TEST_DIMENSION, GridSpacing.volume);
     MPoint!float gridPoint(float[3] grid) {
-        return MVector!float([grid[0] / layout.dualToGridFactor, grid[1] / layout.dualToGridFactor, grid[2] / layout.dualToGridFactor, 1.0f]).normalizedPoint();
+        return MVector!float([layout.gridToDual(grid[0]), layout.gridToDual(grid[1]), layout.gridToDual(grid[2]), 1.0f]).normalizedPoint();
     }
     ubyte[3] cell = [5, 5, 5];
     MPoint!float center = gridPoint([5.5f, 5.5f, 5.5f]);

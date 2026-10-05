@@ -1,7 +1,9 @@
 module common.settings;
 
-import common.dodeca : Vertex, chunkToNode;
+import core.stdc.math : cbrtf;
+import common.dodeca : NODE_VOLUME, VERTEX_COUNT, Vertex, chunkToNode;
 import common.math : MVector, Matrix4;
+import common.node : ChunkLayout, GridSpacing;
 
 struct SimConfig {
     CharacterConfig character;
@@ -23,6 +25,7 @@ struct CharacterConfig {
     float noClipMovementSpeed;
     float flyMovementSpeed;
     float maxGroundSpeed;
+    float sprintSpeed;
     float speedCap;
     float maxGroundSlope;
     float groundAcceleration;
@@ -41,6 +44,7 @@ struct CharacterConfig {
             meters.noClipMovementSpeed * metersToAbsolute,
             meters.flyMovementSpeed * metersToAbsolute,
             meters.maxGroundSpeed * metersToAbsolute,
+            meters.sprintSpeed * metersToAbsolute,
             meters.speedCap * metersToAbsolute,
             meters.maxGroundSlope,
             meters.groundAcceleration * metersToAbsolute,
@@ -60,7 +64,8 @@ struct CharacterConfig {
 struct CharacterMeters {
     float noClipMovementSpeed = 12.0f;
     float flyMovementSpeed = 8.0f;
-    float maxGroundSpeed = 4.0f;
+    float maxGroundSpeed = 4.5f;
+    float sprintSpeed = 6.5f;
     float speedCap = 30.0f;
     float maxGroundSlope = 1.73f;
     float groundAcceleration = 50.0f;
@@ -68,7 +73,7 @@ struct CharacterMeters {
     float gravityAcceleration = 32.0f;
     float airResistance = 0.2f;
     float jumpSpeed = 9.0f;
-    float stepHeight = 1.1f;
+    float stepHeight = 2.4f;
     float contactSkin = 0.01f;
     float characterRadius = 0.4f;
     float characterHeight = 1.8f;
@@ -76,9 +81,36 @@ struct CharacterMeters {
 }
 
 float metersToAbsoluteFor(ubyte chunkSize, float voxelSize) {
+    return cbrtf(NODE_VOLUME / VERTEX_COUNT) / chunkSize / voxelSize;
+}
+
+float longestVoxelEdge(ubyte chunkSize, GridSpacing spacing) {
     Matrix4!float chunkMatrix = Vertex.a.chunkToNode;
-    MVector!float faceA = chunkMatrix * MVector!float([1.0f, 0.5f, 0.5f, 1.0f]);
-    MVector!float faceB = chunkMatrix * MVector!float([0.0f, 0.5f, 0.5f, 1.0f]);
-    float minChunkFaceSeparation = faceA.normalizedPoint().distance(faceB.normalizedPoint());
-    return minChunkFaceSeparation / cast(float) chunkSize / voxelSize;
+    ChunkLayout layout = ChunkLayout.make(chunkSize, spacing);
+    float longest = 0;
+    foreach (x; 0 .. chunkSize) {
+        foreach (y; 0 .. chunkSize) {
+            foreach (z; 0 .. chunkSize) {
+                int[3] cell = [x, y, z];
+                float[3] corner = [layout.gridToChunk(x), layout.gridToChunk(y), layout.gridToChunk(z)];
+                foreach (axis; 0 .. 3) {
+                    float[3] far = corner;
+                    far[axis] = layout.gridToChunk(cell[axis] + 1);
+                    float edge = (chunkMatrix * MVector!float([corner[0], corner[1], corner[2], 1.0f])).normalizedPoint().distance((chunkMatrix * MVector!float([far[0], far[1], far[2], 1.0f])).normalizedPoint());
+                    if (edge > longest) {
+                        longest = edge;
+                    }
+                }
+            }
+        }
+    }
+    return longest;
+}
+
+unittest {
+    SimMeters meters;
+    SimConfig config = SimConfig.fromMeters(meters);
+    foreach (spacing; 0 .. GridSpacing.max + 1) {
+        assert(config.character.stepHeight > longestVoxelEdge(meters.chunkSize, cast(GridSpacing) spacing));
+    }
 }

@@ -6,7 +6,7 @@ import common.graph : Graph, NO_SLOT, ROOT_NODE;
 import common.margins : CoordsWithMargins, boundaryCoordWithMargins, marginCoord, neighborAxisPermutation;
 import common.material : Material;
 import common.node : Chunk, ChunkSlot, ChunkState, Occupancy;
-import common.worldgen.generation : WorldgenSettings;
+import common.worldgen.generation : Worldgen;
 
 enum uint AXIS_COUNT = 3;
 enum ubyte TEST_DIMENSION = 4;
@@ -167,7 +167,7 @@ CellHop hopRemaining(ref const Graph graph, CellHop hop) {
 }
 
 unittest {
-    Graph graph = Graph.make(TEST_DIMENSION, WorldgenSettings.init);
+    Graph graph = Graph.make(TEST_DIMENSION, Worldgen.makeTerrain());
     uint root = graph.slotOf(ROOT_NODE);
     foreach (side; 0 .. SIDE_COUNT) {
         uint neighbor = graph.ensureNeighborSlot(root, cast(Side) side);

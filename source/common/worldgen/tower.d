@@ -1,16 +1,14 @@
 module common.worldgen.tower;
 
-import core.stdc.math : atan2f, atanhf, coshf, cosf, fabsf, fmodf, sinhf;
 import common.array : Array;
-import common.dodeca : SIDE_COUNT, Side, faceDirection, faceDistance, faceReference, isAdjacentTo, opposite, reflection;
+import common.dodeca : SIDE_COUNT, Side, isAdjacentTo, opposite, reflection;
 import common.graph : Graph, NodeId, ROOT_NODE;
 import common.material : Material;
 import common.math : MPoint;
-import common.vector3 : cross, dot, magnitude, minus, scaled;
-import common.worldgen.generation : NodeState, NodeStateKind, NodeStateRoad, SplitMix, WorldgenKind, WorldgenSettings;
+import common.worldgen.building : Building, NO_CELL, NO_CLEARANCE, StairSearch;
+import common.worldgen.generation : NodeState, NodeStateKind, NodeStateRoad, SplitMix, StructureKind, StructureWorld, Worldgen, WorldgenKind, stairLimits;
 
 enum ulong TOWER_RARITY = 48;
-enum ulong TOWER_SEED_MULTIPLIER = 0x2545f4914f6cdd1d;
 enum uint RARITY_SHIFT = 40;
 enum float MIN_BASE_ELEVATION = -3.0f;
 enum float MAX_BASE_ELEVATION = 3.0f;
@@ -26,29 +24,19 @@ enum uint FORK_SHIFT = 8;
 enum uint BRANCH_SHIFT = 16;
 enum uint PALETTE_SHIFT = 24;
 enum uint RING_CHOICE_SHIFT = 32;
-enum float OUTER_RADIUS = 0.3f;
-enum float WALL_THICKNESS = 0.09f;
-enum float FLOOR_THICKNESS = 0.09f;
-enum uint FLOORS_PER_FACE_DISTANCE = 5;
-enum float WINDOW_HALF_HEIGHT_PER_FLOOR = 0.22f;
-enum float WINDOW_COLUMNS = 8.0f;
-enum float WINDOW_COLUMN_LIMIT = 0.0f;
-enum float DOOR_HEIGHT = 0.13f;
-enum float DOOR_COLUMN_LIMIT = 0.97f;
 enum ubyte TEST_DIMENSION = 12;
 
 struct TowerPalette {
     Material wall;
-    Material window;
     Material floor;
     Material spire;
 }
 
 immutable TowerPalette[4] TOWER_PALETTES = [
-    TowerPalette(Material.concrete, Material.glass, Material.concrete, Material.steel),
-    TowerPalette(Material.whiteBrick, Material.glass, Material.greyBrick, Material.steel),
-    TowerPalette(Material.sandstone, Material.glass, Material.woodPlanks, Material.steel),
-    TowerPalette(Material.greyBrick, Material.glass, Material.concrete, Material.marble),
+    TowerPalette(Material.concrete, Material.concrete, Material.steel),
+    TowerPalette(Material.whiteBrick, Material.greyBrick, Material.steel),
+    TowerPalette(Material.sandstone, Material.woodPlanks, Material.steel),
+    TowerPalette(Material.greyBrick, Material.concrete, Material.marble),
 ];
 
 enum TowerSymbol : ubyte {
@@ -118,7 +106,7 @@ struct NodeStructure {
 
     static NodeStructure fromNode(ref Graph graph, uint slot) {
         NodeState state = *graph.ensureNodeStateAt(slot);
-        if (graph.worldgen.kind == WorldgenKind.flat) {
+        if (graph.worldgen.kind == WorldgenKind.plane) {
             return NodeStructure.init;
         } else if (state.kind == NodeStateKind.sky && graph.isTowerBase(slot)) {
             TowerPart part = TowerPart.fromBaseBits(graph.towerBits(slot));
@@ -184,7 +172,7 @@ ushort risingFaces(ref const NodeState state, ushort candidates) {
 }
 
 ulong towerBits(ref const Graph graph, uint slot) {
-    return SplitMix(graph.idAt(slot).spice() ^ (graph.worldgen.seed * TOWER_SEED_MULTIPLIER)).next();
+    return SplitMix(graph.idAt(slot).spice()).next();
 }
 
 bool isTowerBase(ref Graph graph, uint slot) {
@@ -192,7 +180,7 @@ bool isTowerBase(ref Graph graph, uint slot) {
     if (state.kind != NodeStateKind.sky) {
         return false;
     } else if (graph.worldgen.kind == WorldgenKind.structure) {
-        return graph.idAt(slot) == graph.worldgen.showcaseBase;
+        return graph.idAt(slot) == graph.worldgen.structure.base;
     } else {
         bool isOnRoadLine = state.road == NodeStateRoad.east || state.road == NodeStateRoad.west;
         bool isLevelGround = state.enviro.maxElevation >= MIN_BASE_ELEVATION && state.enviro.maxElevation <= MAX_BASE_ELEVATION;
@@ -219,7 +207,7 @@ NodeStructure claimedStructure(ref Graph graph, uint slot, NodeState state) {
     return NodeStructure(part, incoming, state.risingFaces(part.productionFaces(graph.towerBits(slot))));
 }
 
-uint showcaseBaseSlot(ref Graph graph) {
+uint structureBaseSlot(ref Graph graph) {
     uint sky = graph.ensureNeighborSlot(graph.slotOf(ROOT_NODE), Side.a);
     return graph.ensureNeighborSlot(sky, firstSideAmong(ringFaces(Side.a)));
 }
@@ -233,124 +221,6 @@ Side firstSideAmong(ushort faces) {
     return cast(Side) index;
 }
 
-struct TowerShape {
-    float[3][SIDE_COUNT] directions;
-    float[3][SIDE_COUNT] references;
-    float[3][SIDE_COUNT] binormals;
-    float[3] spireDirection;
-    float faceLength;
-    float floorSpacing;
-    float sinhOuter;
-    float sinhInner;
-    float coshOuter;
-    float coshInner;
-    uint tubeCount;
-    uint doorTube;
-    TowerPalette palette;
-    bool hasSpire;
-    bool isFoundation;
-
-    static TowerShape fromStructure(NodeStructure structure) {
-        TowerShape shape;
-        ushort tubes = structure.incoming | structure.outgoing;
-        Side straight = structure.part.down.opposite;
-        foreach (index; 0 .. SIDE_COUNT) {
-            Side side = cast(Side) index;
-            if ((tubes & faceBit(side)) != 0) {
-                if (structure.part.symbol == TowerSymbol.base && side == structure.part.down) {
-                    shape.doorTube = shape.tubeCount;
-                }
-                shape.directions[shape.tubeCount] = side.faceDirection;
-                shape.references[shape.tubeCount] = side.faceReference;
-                shape.binormals[shape.tubeCount] = side.faceDirection.cross(side.faceReference);
-                shape.tubeCount += 1;
-            }
-        }
-        if (structure.part.symbol != TowerSymbol.base) {
-            shape.doorTube = shape.tubeCount;
-        }
-        shape.spireDirection = straight.faceDirection;
-        shape.faceLength = faceDistance();
-        shape.floorSpacing = shape.faceLength / FLOORS_PER_FACE_DISTANCE;
-        shape.sinhOuter = sinhf(OUTER_RADIUS);
-        shape.sinhInner = sinhf(OUTER_RADIUS - WALL_THICKNESS);
-        shape.coshOuter = coshf(OUTER_RADIUS);
-        shape.coshInner = coshf(OUTER_RADIUS - WALL_THICKNESS);
-        shape.palette = TOWER_PALETTES[structure.part.palette];
-        shape.hasSpire = structure.part.isGrowing() && structure.outgoing == 0;
-        shape.isFoundation = structure.part.symbol == TowerSymbol.foundation;
-        return shape;
-    }
-
-    bool isInTube(uint tube, float[3] spatial, float sinhRadius) const {
-        float along = spatial.dot(directions[tube]);
-        return along >= 0 && spatial.minus(directions[tube].scaled(along)).magnitude <= sinhRadius;
-    }
-
-    uint tubeAt(float[3] spatial, float sinhRadius) const {
-        uint tube = 0;
-        while (tube < tubeCount && !isInTube(tube, spatial, sinhRadius)) {
-            tube += 1;
-        }
-        return tube;
-    }
-
-    bool isInSpire(float[3] spatial, float w) const {
-        float along = spatial.dot(spireDirection);
-        float axial = atanhf(along / w);
-        return along > 0 && axial < faceLength && spatial.minus(spireDirection.scaled(along)).magnitude <= sinhf(OUTER_RADIUS * (1.0f - axial / faceLength));
-    }
-
-    Material materialAt(MPoint!float point, Material existing) const {
-        float[3] spatial = point.vec.xyz();
-        float w = point.vec.data[3];
-        bool isInOuter = w <= coshOuter || tubeAt(spatial, sinhOuter) < tubeCount;
-        bool isInInner = w <= coshInner || tubeAt(spatial, sinhInner) < tubeCount;
-        if (hasSpire && isInSpire(spatial, w)) {
-            return palette.spire;
-        } else if (!isInOuter) {
-            return existing;
-        } else if (isFoundation) {
-            return palette.wall;
-        } else if (!isInInner) {
-            return wallMaterial(spatial, w, tubeAt(spatial, sinhOuter));
-        } else {
-            return interiorMaterial(spatial, w, tubeAt(spatial, sinhInner));
-        }
-    }
-
-    Material wallMaterial(float[3] spatial, float w, uint tube) const {
-        if (tube == tubeCount) {
-            return palette.wall;
-        } else {
-            float along = spatial.dot(directions[tube]);
-            float axial = atanhf(along / w);
-            float[3] radial = spatial.minus(directions[tube].scaled(along));
-            float angle = atan2f(radial.dot(binormals[tube]), radial.dot(references[tube]));
-            float phase = fmodf(axial, floorSpacing);
-            bool isDoorway = tube == doorTube && axial > faceLength - FLOOR_THICKNESS / 2 - DOOR_HEIGHT && cosf(angle) > DOOR_COLUMN_LIMIT;
-            bool isWindow = fabsf(phase - floorSpacing / 2) < floorSpacing * WINDOW_HALF_HEIGHT_PER_FLOOR && cosf(WINDOW_COLUMNS * angle) > WINDOW_COLUMN_LIMIT;
-            if (isDoorway) {
-                return Material.none;
-            } else if (isWindow) {
-                return palette.window;
-            } else {
-                return palette.wall;
-            }
-        }
-    }
-
-    Material interiorMaterial(float[3] spatial, float w, uint tube) const {
-        if (tube == tubeCount) {
-            return Material.none;
-        } else if (fmodf(atanhf(spatial.dot(directions[tube]) / w) + FLOOR_THICKNESS / 2, floorSpacing) < FLOOR_THICKNESS) {
-            return palette.floor;
-        } else {
-            return Material.none;
-        }
-    }
-}
-
 uint popCount(ushort bits) {
     uint count = 0;
     foreach (index; 0 .. SIDE_COUNT) {
@@ -361,19 +231,13 @@ uint popCount(ushort bits) {
     return count;
 }
 
-unittest {
-    Graph graph = Graph.make(TEST_DIMENSION, WorldgenSettings(NodeId.init, 0, WorldgenKind.structure));
+Array!uint towerNodes(ref Graph graph) {
     Array!uint nodes;
-    nodes.append(graph.slotOf(graph.worldgen.showcaseBase));
+    nodes.append(graph.slotOf(graph.worldgen.structure.base));
     size_t front = 0;
-    uint forks = 0;
     while (front < nodes.length) {
         uint slot = nodes.ptr[front];
         NodeStructure structure = graph.ensureStructureAt(slot);
-        assert(structure.isPresent());
-        if (popCount(structure.outgoing) > 1) {
-            forks += 1;
-        }
         foreach (index; 0 .. SIDE_COUNT) {
             if ((structure.outgoing & faceBit(cast(Side) index)) != 0) {
                 nodes.append(graph.ensureNeighborSlot(slot, cast(Side) index));
@@ -381,8 +245,45 @@ unittest {
         }
         front += 1;
     }
+    return nodes;
+}
+
+unittest {
+    Graph graph = Graph.make(TEST_DIMENSION, Worldgen.fromStructure(StructureWorld(NodeId.init, StructureKind.tower)));
+    Array!uint nodes = graph.towerNodes();
+    uint forks = 0;
+    foreach (slot; nodes.slice()) {
+        NodeStructure structure = graph.ensureStructureAt(slot);
+        assert(structure.isPresent());
+        if (popCount(structure.outgoing) > 1) {
+            forks += 1;
+        }
+    }
     assert(nodes.length >= MIN_TRUNK_NODES + 2);
     assert(forks >= MIN_FORKS);
+    nodes.release();
+    graph.release();
+}
+
+unittest {
+    Graph graph = Graph.make(TEST_DIMENSION, Worldgen.fromStructure(StructureWorld(NodeId.init, StructureKind.tower)));
+    Array!uint nodes = graph.towerNodes();
+    foreach (slot; nodes.slice()) {
+        NodeStructure structure = graph.ensureStructureAt(slot);
+        Building building = Building.make(structure, graph.nodeAt(slot).state.surface, graph.layout, stairLimits());
+        assert(building.connected == structure.outgoing);
+        StairSearch search = StairSearch.make(building.shape, building.stamps.ptr);
+        foreach (index; 1 .. building.route.length) {
+            int top = search.clearance(building.route.ptr[index - 1], search.headroomBefore(building.route.ptr[index - 1], building.route.ptr[index]));
+            assert(top != NO_CLEARANCE);
+            foreach (height; 0 .. top + 1) {
+                int cell = search.raised(building.route.ptr[index - 1], height);
+                assert(cell == NO_CELL || building.materialAt(building.shape.vertexOf(cell), building.shape.cellOf(cell), Material.none) == Material.none);
+            }
+        }
+        search.release();
+        building.release();
+    }
     nodes.release();
     graph.release();
 }

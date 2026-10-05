@@ -1,8 +1,7 @@
-local SEED = 3
-local HEIGHTS = { 5, 40, 80, 120, 160, 200 }
+local HEIGHTS = { 5, 40, 80, 120, 150 }
 
 return function(world)
-  world:worldgen("structure", SEED)
+  world:worldgen("structure", "tower")
   world:mode("noclip")
   for _, height in ipairs(HEIGHTS) do
     world:enter_structure(height)

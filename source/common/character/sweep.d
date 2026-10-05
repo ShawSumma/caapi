@@ -6,6 +6,7 @@ import common.collision.chunk : MAX_FEATURE_SURFACES;
 import common.collision.graph : Capsule, GraphCollisionHit, shapeCast;
 import common.graph : Graph;
 import common.math : MDirection, MIsometry, MPoint, MVector;
+import common.node : ChunkSlot;
 import common.position : Position;
 import common.ray : Ray;
 import common.vector3 : ZERO_VECTOR, dot, magnitude, scaled;
@@ -19,6 +20,8 @@ struct Sweep {
     float[3] normal;
     float gap;
     uint surfaceCount;
+    ChunkSlot chunk;
+    ubyte[3] cell;
     bool hasContact;
     bool isLowestSection;
 
@@ -50,7 +53,7 @@ struct Sweep {
         foreach (i; 0 .. hit.surfaceCount) {
             surfaces[i] = unitDirection(toContactFrame, hit.surfaces[i]);
         }
-        return Sweep(transform, displacement, surfaces, unitDirection(toContactFrame, hit.normal), hit.gap, hit.surfaceCount, true, hit.isLowestSection);
+        return Sweep(transform, displacement, surfaces, unitDirection(toContactFrame, hit.normal), hit.gap, hit.surfaceCount, hit.chunk, hit.cell, true, hit.isLowestSection);
     }
 }
 

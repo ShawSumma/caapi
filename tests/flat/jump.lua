@@ -6,7 +6,7 @@ local IDEAL_RISE = JUMP_SPEED * JUMP_SPEED / (2 * GRAVITY)
 local MIN_RISE_FRACTION = 0.9
 
 return function(world)
-  world:worldgen("flat")
+  world:worldgen("plane")
   walk.spawn(world)
   walk.check_standing(world, "before jumping")
 
@@ -17,7 +17,7 @@ return function(world)
     apex = math.max(apex, world:altitude())
     drift = math.max(drift, world:horizontal_speed())
   end)
-  world:press(0.1, "jump")
+  world:press(0.1, "up")
   world:wait(1.5)
 
   local rise = apex - standing

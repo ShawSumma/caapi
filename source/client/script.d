@@ -3,14 +3,17 @@ module client.script;
 import core.stdc.math : floor;
 import core.stdc.stdio : FILE, fclose, fopen, fprintf;
 import core.stdc.string : strlen;
-import bindings.lua : luaL_checkinteger, luaL_checklstring, luaL_checknumber, luaL_checktype, luaL_error, luaL_loadfilex, luaL_newstate, luaL_openselectedlibs, luaL_optinteger, luaL_optnumber, luaL_ref, luaL_traceback, luaL_unref, lua_CFunction, lua_Integer, lua_State, lua_callk, lua_close, lua_createtable, lua_getglobal, lua_gettop, lua_pcallk, lua_pushboolean, lua_pushcclosure, lua_pushinteger, lua_pushlightuserdata, lua_pushlstring, lua_pushnil, lua_pushnumber, lua_pushstring, lua_pushvalue, lua_rawgeti, lua_setfield, lua_setglobal, lua_settop, lua_tolstring, lua_touserdata, lua_type;
-import client.game : FrameInput, Game, KEY_COUNT, KEY_NAMES, KeyLookup, MATERIAL_PALETTE;
+import bindings.lua : luaL_checkinteger, luaL_checklstring, luaL_checknumber, luaL_checktype, luaL_error, luaL_loadfilex, luaL_newstate, luaL_openselectedlibs, luaL_optnumber, luaL_ref, luaL_traceback, luaL_unref, lua_CFunction, lua_Integer, lua_State, lua_callk, lua_close, lua_createtable, lua_getglobal, lua_gettop, lua_pcallk, lua_pushboolean, lua_pushcclosure, lua_pushinteger, lua_pushlightuserdata, lua_pushlstring, lua_pushnil, lua_pushnumber, lua_pushstring, lua_pushvalue, lua_rawgeti, lua_setfield, lua_setglobal, lua_settop, lua_tolstring, lua_touserdata, lua_type;
+import client.game : FrameInput, Game, KEY_COUNT, Key, MATERIAL_PALETTE, StairWaypoint;
 import client.world : TargetMaterial;
 import common.array : Array;
+import common.character.controller : MovementMode;
+import common.character.frame : UpMode;
 import common.graph : NodeId;
-import common.material : MATERIAL_NAMES;
+import common.names : ENUM_NAMES;
+import common.node : GridSpacing;
 import common.vector3 : dot, magnitude, rejectAlong;
-import common.worldgen.generation : WorldgenKind, WorldgenLookup, WorldgenSettings;
+import common.worldgen.generation : PlaneWorld, StructureKind, StructureWorld, Worldgen, WorldgenKind;
 
 enum int LUA_REGISTRY = -(int.max / 2 + 1000);
 enum int LUA_FIRST_UPVALUE = LUA_REGISTRY - 1;
@@ -36,8 +39,64 @@ enum int SCRIPT_ARGUMENTS = 1;
 enum float DEFAULT_TIMESTEP_SECONDS = 0.016f;
 enum double RADIANS_PER_DEGREE = 0.017453292519943295;
 enum string MODULE_PATTERN = "?.lua";
+enum size_t LUA_NAME_CAPACITY = 32;
+enum char LUA_NAME_SEPARATOR = '_';
 
 alias LuaFunction = extern (C) int function(lua_State*);
+
+struct LuaName {
+    char[LUA_NAME_CAPACITY] text;
+    size_t length;
+
+    static LuaName fromMember(string member) {
+        LuaName name;
+        foreach (c; member) {
+            if (isUpperCase(c)) {
+                name.text[name.length] = LUA_NAME_SEPARATOR;
+                name.text[name.length + 1] = lowerCase(c);
+                name.length += 2;
+            } else {
+                name.text[name.length] = c;
+                name.length += 1;
+            }
+        }
+        return name;
+    }
+
+    const(char)[] slice() const return {
+        return text[0 .. length];
+    }
+}
+
+struct LuaLookup(E) {
+    E value;
+    bool isFound;
+
+    static LuaLookup fromName(const(char)[] name) {
+        uint index = 0;
+        while (index < ENUM_NAMES!E.length && LuaName.fromMember(ENUM_NAMES!E[index]).slice() != name) {
+            index += 1;
+        }
+        if (index < ENUM_NAMES!E.length) {
+            return LuaLookup(cast(E) index, true);
+        } else {
+            return LuaLookup(E.init, false);
+        }
+    }
+}
+
+bool isUpperCase(char c) {
+    return c >= 'A' && c <= 'Z';
+}
+
+char lowerCase(char c) {
+    return cast(char)(c - 'A' + 'a');
+}
+
+void pushLuaName(E)(lua_State* lua, E value) {
+    LuaName name = LuaName.fromMember(ENUM_NAMES!E[value]);
+    lua_pushlstring(lua, name.text.ptr, name.length);
+}
 
 struct ScriptHost {
     lua_State* lua;
@@ -131,6 +190,7 @@ struct ScriptHost {
         registerMethod("timestep", &luaTimestep);
         registerMethod("time", &luaTime);
         registerMethod("worldgen", &luaWorldgen);
+        registerMethod("grid", &luaGrid);
         registerMethod("on_step", &luaOnStep);
         registerMethod("hold", &luaHold);
         registerMethod("release", &luaRelease);
@@ -140,11 +200,14 @@ struct ScriptHost {
         registerMethod("turn_rate", &luaTurnRate);
         registerMethod("turn", &luaTurn);
         registerMethod("mode", &luaMode);
+        registerMethod("up", &luaUp);
         registerMethod("material", &luaMaterial);
         registerMethod("break_block", &luaBreakBlock);
         registerMethod("place_block", &luaPlaceBlock);
         registerMethod("target_material", &luaTargetMaterial);
         registerMethod("enter_structure", &luaEnterStructure);
+        registerMethod("enter_stairs", &luaEnterStairs);
+        registerMethod("stair_waypoint", &luaStairWaypoint);
         registerMethod("traveled", &luaTraveled);
         registerMethod("is_on_ground", &luaIsOnGround);
         registerMethod("altitude", &luaAltitude);
@@ -197,9 +260,9 @@ struct ScriptHost {
     void setKeys(int firstArgument, bool isPressed) {
         foreach (index; firstArgument .. lua_gettop(lua) + 1) {
             const(char)* name = luaL_checklstring(lua, index, null);
-            KeyLookup lookup = KeyLookup.fromName(name[0 .. strlen(name)]);
+            LuaLookup!Key lookup = LuaLookup!Key.fromName(name[0 .. strlen(name)]);
             if (lookup.isFound) {
-                isHeld[lookup.key] = isPressed;
+                isHeld[lookup.value] = isPressed;
             } else {
                 luaL_error(lua, "unknown key '%s'", name);
             }
@@ -267,16 +330,61 @@ extern (C) int luaTime(lua_State* lua) {
 extern (C) int luaWorldgen(lua_State* lua) {
     ScriptHost* host = methodHost(lua);
     const(char)* name = luaL_checklstring(lua, SELF + 1, null);
-    WorldgenLookup lookup = WorldgenLookup.fromName(name[0 .. strlen(name)]);
-    uint seed = cast(uint) luaL_optinteger(lua, SELF + 2, 0);
+    LuaLookup!WorldgenKind lookup = LuaLookup!WorldgenKind.fromName(name[0 .. strlen(name)]);
     if (host.steps > 0) {
         luaL_error(lua, "worldgen must be chosen before the first step");
     } else if (!lookup.isFound) {
         luaL_error(lua, "unknown worldgen '%s'", name);
     } else {
-        host.game.setWorldgen(WorldgenSettings(NodeId.init, seed, lookup.kind));
+        Worldgen worldgen = worldgenOfKind(lua, lookup.value);
+        worldgen.spacing = host.game.world.graph.worldgen.spacing;
+        host.game.setWorldgen(worldgen);
     }
     return 0;
+}
+
+extern (C) int luaGrid(lua_State* lua) {
+    ScriptHost* host = methodHost(lua);
+    if (!isNoneOrNil(lua, SELF + 1)) {
+        const(char)* name = luaL_checklstring(lua, SELF + 1, null);
+        LuaLookup!GridSpacing lookup = LuaLookup!GridSpacing.fromName(name[0 .. strlen(name)]);
+        if (host.steps > 0) {
+            luaL_error(lua, "the grid must be chosen before the first step");
+        } else if (!lookup.isFound) {
+            luaL_error(lua, "unknown grid '%s'", name);
+        } else {
+            Worldgen worldgen = host.game.world.graph.worldgen;
+            worldgen.spacing = lookup.value;
+            host.game.setWorldgen(worldgen);
+        }
+    }
+    pushLuaName(lua, host.game.world.graph.layout.spacing);
+    return 1;
+}
+
+Worldgen worldgenOfKind(lua_State* lua, WorldgenKind kind) {
+    Worldgen worldgen;
+    final switch (kind) {
+        case WorldgenKind.terrain:
+            worldgen = Worldgen.makeTerrain();
+            break;
+        case WorldgenKind.plane:
+            worldgen = Worldgen.fromPlane(PlaneWorld(cast(float)(luaL_optnumber(lua, SELF + 2, 0) * RADIANS_PER_DEGREE)));
+            break;
+        case WorldgenKind.structure:
+            worldgen = Worldgen.fromStructure(StructureWorld(NodeId.init, structureArgument(lua)));
+            break;
+    }
+    return worldgen;
+}
+
+StructureKind structureArgument(lua_State* lua) {
+    const(char)* name = luaL_checklstring(lua, SELF + 2, null);
+    LuaLookup!StructureKind lookup = LuaLookup!StructureKind.fromName(name[0 .. strlen(name)]);
+    if (!lookup.isFound) {
+        luaL_error(lua, "unknown structure '%s'", name);
+    }
+    return lookup.value;
 }
 
 extern (C) int luaEnterStructure(lua_State* lua) {
@@ -290,10 +398,41 @@ extern (C) int luaEnterStructure(lua_State* lua) {
     return 0;
 }
 
+extern (C) int luaEnterStairs(lua_State* lua) {
+    ScriptHost* host = methodHost(lua);
+    if (host.game.world.graph.worldgen.kind != WorldgenKind.structure) {
+        luaL_error(lua, "enter_stairs needs the structure worldgen");
+    } else {
+        immutable bool isEntered = host.game.enterStairs();
+        if (!isEntered) {
+            luaL_error(lua, "the structure's base has no stair route");
+        }
+    }
+    return 0;
+}
+
+extern (C) int luaStairWaypoint(lua_State* lua) {
+    ScriptHost* host = methodHost(lua);
+    lua_Integer number = luaL_checkinteger(lua, SELF + 1);
+    StairWaypoint waypoint;
+    if (number >= 1) {
+        waypoint = host.game.stairWaypoint(cast(size_t)(number - 1));
+    }
+    if (waypoint.isFound) {
+        lua_pushnumber(lua, -waypoint.yawRadians / RADIANS_PER_DEGREE);
+        lua_pushnumber(lua, waypoint.horizontal * host.metersPerAbsolute());
+        lua_pushnumber(lua, waypoint.rise * host.metersPerAbsolute());
+        return 3;
+    } else {
+        lua_pushnil(lua);
+        return 1;
+    }
+}
+
 extern (C) int luaTargetMaterial(lua_State* lua) {
     TargetMaterial target = methodHost(lua).game.world.targetMaterial();
     if (target.isFound) {
-        lua_pushstring(lua, MATERIAL_NAMES[target.material].ptr);
+        pushLuaName(lua, target.material);
     } else {
         lua_pushnil(lua);
     }
@@ -375,13 +514,33 @@ extern (C) int luaMode(lua_State* lua) {
     ScriptHost* host = methodHost(lua);
     if (!isNoneOrNil(lua, SELF + 1)) {
         const(char)* name = luaL_checklstring(lua, SELF + 1, null);
-        immutable bool isKnown = host.game.setMode(name[0 .. strlen(name)]);
-        if (!isKnown) {
+        LuaLookup!MovementMode lookup = LuaLookup!MovementMode.fromName(name[0 .. strlen(name)]);
+        if (lookup.isFound) {
+            host.game.mode = lookup.value;
+        } else {
             luaL_error(lua, "unknown mode '%s'", name);
         }
     }
-    lua_pushstring(lua, host.game.modeName());
+    pushLuaName(lua, host.game.mode);
     return 1;
+}
+
+extern (C) int luaUp(lua_State* lua) {
+    ScriptHost* host = methodHost(lua);
+    if (!isNoneOrNil(lua, SELF + 1)) {
+        host.game.upMode = enumArgument!UpMode(lua, SELF + 1, "up mode");
+    }
+    pushLuaName(lua, host.game.upMode);
+    return 1;
+}
+
+E enumArgument(E)(lua_State* lua, int index, const(char)* what) {
+    const(char)* name = luaL_checklstring(lua, index, null);
+    LuaLookup!E lookup = LuaLookup!E.fromName(name[0 .. strlen(name)]);
+    if (!lookup.isFound) {
+        luaL_error(lua, "unknown %s '%s'", what, name);
+    }
+    return lookup.value;
 }
 
 extern (C) int luaMaterial(lua_State* lua) {
@@ -469,7 +628,8 @@ struct ScriptRecorder {
         foreach (i; 0 .. KEY_COUNT) {
             if (input.isHeld[i] != isHeld[i]) {
                 flush();
-                fprintf(file, "  world:%s(\"%.*s\")\n", keyCall(input.isHeld[i]), cast(int) KEY_NAMES[i].length, KEY_NAMES[i].ptr);
+                LuaName name = LuaName.fromMember(ENUM_NAMES!Key[i]);
+                fprintf(file, "  world:%s(\"%.*s\")\n", keyCall(input.isHeld[i]), cast(int) name.length, name.text.ptr);
             }
         }
         isHeld = input.isHeld;
@@ -484,9 +644,20 @@ struct ScriptRecorder {
         pendingSteps += 1;
     }
 
-    void recordEvent(const(char)* call) {
+    void recordCall(const(char)* call) {
         flush();
-        fprintf(file, "  %s\n", call);
+        fprintf(file, "  world:%s()\n", call);
+    }
+
+    void recordMode(MovementMode mode) {
+        flush();
+        LuaName name = LuaName.fromMember(ENUM_NAMES!MovementMode[mode]);
+        fprintf(file, "  world:mode(\"%.*s\")\n", cast(int) name.length, name.text.ptr);
+    }
+
+    void recordMaterial(uint slot) {
+        flush();
+        fprintf(file, "  world:material(%u)\n", slot);
     }
 
     void flush() {

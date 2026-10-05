@@ -4,11 +4,11 @@ local LEG_SECONDS = 3
 local MIN_WALKED_FRACTION = 0.95
 
 return function(world)
-  world:worldgen("flat")
+  world:worldgen("plane")
   walk.spawn(world)
   walk.check_standing(world, "after landing")
 
-  local peak = walk.track_horizontal_speed(world)
+  local motion = walk.track_motion(world)
   for _, heading in ipairs({ 0, 90, 180, 270 }) do
     local start = world:traveled()
     world:press(LEG_SECONDS, "fwd")
@@ -20,8 +20,8 @@ return function(world)
     world:turn(90, 0, 0.5)
   end
 
-  world:press(LEG_SECONDS, "fwd", "jump")
+  world:press(LEG_SECONDS, "fwd", "up")
   world:wait(1)
-  walk.check_speed_limit(peak)
+  walk.check_speed_limit(motion)
   walk.check_standing(world, "after hopping")
 end

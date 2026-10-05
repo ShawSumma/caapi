@@ -3,11 +3,11 @@ local walk = require("lib.walk")
 local WALK_SECONDS = 2.5
 local MIN_WALKED_FRACTION = 0.9
 local MIN_STAIR_RISE = 0.5
-local STEP_HEIGHT = 1.1
+local STEP_HEIGHT = 1.4
 local VERTICAL_SPEED_TOLERANCE = 0.1
 
 return function(world)
-  world:worldgen("flat")
+  world:worldgen("plane")
   walk.spawn(world)
   walk.check_standing(world, "before building")
   walk.build_step(world)

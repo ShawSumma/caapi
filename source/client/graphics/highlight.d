@@ -5,10 +5,11 @@ import client.graphics.pipeline : Blend, PipelineSettings, createGraphicsPipelin
 
 enum string HIGHLIGHT_VERT_SPV = import("highlight.vert.spv");
 enum string HIGHLIGHT_FRAG_SPV = import("highlight.frag.spv");
-enum uint HIGHLIGHT_PUSH_FLOATS = 20;
+enum uint MVP_FLOATS = 16;
+enum uint CORNER_FLOATS = 4;
+enum uint HIGHLIGHT_PUSH_FLOATS = MVP_FLOATS + 2 * CORNER_FLOATS;
 enum uint HIGHLIGHT_PUSH_BYTES = HIGHLIGHT_PUSH_FLOATS * 4;
 enum uint CUBE_EDGE_VERTICES = 24;
-enum uint MVP_FLOATS = 16;
 
 struct HighlightPipeline {
     VkPipelineLayout pipelineLayout;
@@ -38,11 +39,11 @@ struct HighlightPipeline {
         vkDestroyShaderModule(device, fragmentShader, null);
     }
 
-    void draw(VkCommandBuffer commands, float[16] mvp, float[3] voxelCoords, float dimension) {
-        float[HIGHLIGHT_PUSH_FLOATS] constants;
+    void draw(VkCommandBuffer commands, float[16] mvp, float[3] low, float[3] high) {
+        float[HIGHLIGHT_PUSH_FLOATS] constants = 0;
         constants[0 .. MVP_FLOATS] = mvp[];
-        constants[MVP_FLOATS .. MVP_FLOATS + 3] = voxelCoords[];
-        constants[MVP_FLOATS + 3] = dimension;
+        constants[MVP_FLOATS .. MVP_FLOATS + 3] = low[];
+        constants[MVP_FLOATS + CORNER_FLOATS .. MVP_FLOATS + CORNER_FLOATS + 3] = high[];
         vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
         vkCmdPushConstants(commands, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, HIGHLIGHT_PUSH_BYTES, constants.ptr);
         vkCmdDraw(commands, CUBE_EDGE_VERTICES, 1, 0, 0);

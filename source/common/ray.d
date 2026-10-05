@@ -17,8 +17,10 @@ struct ContactTerms {
         float discriminant = approach * approach - quadraticTerm * constantTerm;
         if (approach >= 0.0f) {
             return float.nan;
-        } else if (constantTerm <= 0.0f) {
+        } else if (constantTerm <= 0.0f && separationSquared - approach * approach / quadraticTerm < separationSquared) {
             return 0.0f;
+        } else if (constantTerm <= 0.0f) {
+            return float.nan;
         } else if (discriminant > 0.0f) {
             return constantTerm / (-approach + sqrt(discriminant));
         } else {
@@ -89,4 +91,11 @@ unittest {
     assert(isNan(away.planeTerms(wall).contactTime(0.1f)));
     Ray along = Ray(MPoint!float.origin(), MDirection!float(MVector!float([0, 1, 0, 0])));
     assert(isNan(along.planeTerms(wall).contactTime(0.1f)));
+}
+
+unittest {
+    float sinhRadius = 0.1f;
+    float inside = 0.9f * sinhRadius * sinhRadius;
+    assert(ContactTerms(inside, -0.01f, 1).contactTime(sinhRadius) == 0);
+    assert(isNan(ContactTerms(inside, -1e-12f, 1).contactTime(sinhRadius)));
 }

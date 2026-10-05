@@ -24,7 +24,9 @@ shared simulation code in `source/common`. Two entry points: `source/main.d`
   - `meshing.d` - chunk surface extraction with ambient occlusion.
   - `camera.d` - Camera: orientation quaternion, pitch, eye smoothing.
   - `script.d` - Lua API (ScriptHost) and the recorder; `config.d` - client
-    config; `png.d` - PNG writer for screenshots.
+    config; `arguments.d` - command-line pieces shared by both entry
+    points (flag values, `--worldgen`, StartupError); `png.d` - PNG writer
+    for screenshots.
   - `graphics/` - Vulkan: `core.d` (instance, device), `base.d`
     (swapchain or offscreen target, render pass), `pipeline.d` (buffers,
     pipelines), `matrices.d` (flat 4x4 helpers), `renderer.d` (frame),
@@ -41,21 +43,31 @@ shared simulation code in `source/common`. Two entry points: `source/main.d`
     `node.d` (chunk and voxel storage), `margins.d`, `neighbors.d`
     (cross-chunk cell resolution), `traversal.d` (nearby BFS),
     `position.d`, `material.d`, `settings.d` (SimMeters to SimConfig).
-  - worldgen: `worldgen/generation.d` (worldgen settings, node state,
-    chunk params, proofs, voxels, trees), `tower.d` (tower L-system,
-    per-node structure, tube geometry), `terraingen.d`, `plane.d`,
+  - worldgen: `worldgen/generation.d` (Worldgen kinds, node state, chunk
+    params, proofs, voxels, trees), `tower.d` (tower L-system, per-node
+    structure), `building.d` (a node's building voxels: prisms, walls,
+    floors, windows, door, stair search), `terraingen.d`, `plane.d`,
     `spawn.d`.
   - collision: `collision/chunk.d`, `collision/graph.d` (shape casts,
-    region checks), `character/controller.d`, `character/sweep.d`; ray
-    picks in `raycast/chunk.d`, `raycast/graph.d`.
+    region checks), `character/controller.d`, `character/sweep.d`,
+    `character/frame.d` (up and body modes: the block under the feet
+    gives gravity, view up and body size); ray picks in
+    `raycast/chunk.d`, `raycast/graph.d`.
   - containers and utilities: `array.d`, `hashmap.d`, `slab.d`,
     `allocator.d` (range allocator), `murmur.d`, `clock.d`.
 - `source/shaders/` - GLSL, compiled to `spv/` by the pre-build step;
   `common.h` (common UBO), `draw.h` (structs shared by `cull.comp` and
   `voxels.vert`), `face.h` (packed face layout, matches `client/meshing.d`).
-- `tests/` - behavior scripts: `tests/flat/`, `tests/terrain/`,
-  `tests/structure/`, `tests/api.lua`; `tests/lib/` shared Lua;
-  `tests/visual/` screenshot scenes.
+- `tests/` - behavior scripts: `tests/flat/` (level plane world),
+  `tests/slope/` (tilted plane world), `tests/structure/` (structure
+  world), `tests/modes/` (up and body modes), `tests/api.lua`;
+  `tests/lib/` shared Lua (`walk.lua` builds walls and corners layer by
+  layer, one material per layer; `climb.lua` follows the base's stair
+  route); `tests/visual/` screenshot scenes. Physics is tested only in
+  plane and structure worlds, never in terrain.
+- `tools/gridvolume.py` - measures block-volume spread and block edge
+  lengths in meters for candidate chunk grid spacings, and the chunk
+  volume.
 - `screenshots/` - gitignored; where offscreen renders go.
 
 ## Build, test, run
@@ -85,10 +97,13 @@ exceptions, no classes, no associative arrays. Memory is `malloc`/`free`
 - Behavior tests: `dub run -b release --compiler=ldc2 -c headless -- --out
   <report> tests/<dir>/<name>.lua...` - exit status 1 on any script error
   or failed assert; the report file holds the details.
-- Nothing ever writes to stdout or stderr. Headless output goes only to the
-  `--out` file; `--dump-world`, `--world-digest` and `--bench-*` require
-  it. Pass/fail is the exit status. `--out /dev/stdout` reads a report
-  without creating a file.
+- Nothing writes to stdout, and stderr carries only startup errors: a bad
+  argument, a file or window that cannot be opened. Each is one line
+  naming what was wrong, with exit status 2 for usage. Never fail
+  silently. Headless output goes only to the `--out` file;
+  `--dump-world`, `--world-digest` and `--bench-*` require it. Pass/fail
+  is the exit status. `--out /dev/stdout` reads a report without creating
+  a file.
 - Dependencies live in `deps/`. C comes in through ImportC only - no cc, no
   make, no cmake, no build output outside dub's cache. Lua's individual
   `.c` files are `sourceFiles`. `deps/lua` carries small ImportC patches:
@@ -121,16 +136,24 @@ Headless verification:
 - `./mined --record <file.lua>` records live play as a replayable Lua
   script (key changes, look deltas, events, and merged runs of identical
   steps as `world:wait(seconds, dt)`).
-- `--worldgen terrain|flat|structure` and `--seed <n>` (or
-  `world:worldgen(kind, seed)` in a script; both clients take them).
-  `flat` fills exactly below the base surface plane. The base plane is
+- `--worldgen terrain`, `--worldgen plane <tilt degrees>`, `--worldgen
+  structure <name>` (both clients; `world:worldgen(kind[, tilt or name])`
+  in a script). A kind takes a fixed number of arguments, parsed per kind
+  with a `final switch`; structure names come from `StructureKind`
+  (`tower`). `plane 0` fills exactly below the base surface plane. The base plane is
   lattice-aligned, so this is a genuinely flat floor with gravity
-  perpendicular to it. Use it to isolate physics from terrain.
-  `structure` is the same flat ground with exactly one tower, varied by
-  the seed, one node from spawn; the player spawns facing it.
-- `--dump-structure [--seed <n>]` - the structure world's tower as its
-  node tree: symbol, counters, altitude, face masks and how many voxels
-  each node fills. Use it to see a structure's shape without rendering.
+  perpendicular to it. Use it to isolate physics from terrain. A nonzero
+  tilt gives a constant grade relative to gravity (gd(altitude) +
+  tan(tilt) * horizontal distance = 0), not a tilted geodesic plane:
+  in H^3 a geodesic plane tilted by t turns vertical within atanh(cos t)
+  of its base line. The player spawns facing uphill. `structure` is the
+  flat ground with exactly one structure one node from spawn; the player
+  spawns facing it.
+- `--dump-structure` (needs `--worldgen structure <name>`) - the tower as
+  its node tree: symbol, counters, altitude, face masks, which up faces
+  the stairs connected, how many cells the stair searches reached, the
+  route length, and how many voxels each node fills. Use it to see a structure's shape without
+  rendering.
 - `--dump-world [radius]` - deterministic world hash dump; byte-diff two
   runs' reports to prove worldgen unchanged. Deferred materials are
   resolved first; each chunk line carries a materials hash and an
@@ -150,7 +173,7 @@ A script returns a function of the world; the API adds no globals and
 everything hangs off that one object:
 
     return function(world)
-      world:worldgen("flat")
+      world:worldgen("plane")
       world:press(1, "fwd")
       assert(world:is_on_ground(), "still standing")
     end
@@ -165,19 +188,27 @@ their receiver, so `world.wait(1)` is an error - always call with `:`.
   Positive yaw turns right and positive pitch looks down (mouse sense).
 - Time: `wait(s[, dt])` (steps of dt, default the timestep), `step([dt])`
   (one step), `timestep([s])` (default 0.016), `time()`,
-  `worldgen("terrain"|"flat"|"structure"[, seed])` (before the first
-  step; it creates a fresh world and respawns), `on_step(fn|nil)` (runs
+  `worldgen("terrain"|"plane"|"structure"[, tilt or name])` and
+  `grid(["volume"|"uniform"])` (both before the first step; they create a
+  fresh world and respawn), `on_step(fn|nil)` (runs
   fn after each step to observe; it cannot advance time).
 - Input: `hold(key...)`, `release(key...)`, `release_all()`,
   `press(s, key...)`, `look(yaw, pitch)` (immediate), `turn_rate([yaw/s,
   pitch/s])` (held look rate; returns the current one), `turn(yaw, pitch,
-  s)`. Keys: fwd back left right up (alias jump) down yaw_left yaw_right
-  pitch_up pitch_down.
-- Actions: `mode([walk|fly|noclip])`, `material([1..9])`, `break_block()`,
+  s)`. Keys are the `Key` members in snake_case: fwd back left right up
+  down yaw_left yaw_right pitch_up pitch_down. In walk mode up jumps and
+  down sprints (space and shift in the client).
+- Actions: `mode([walk|fly|noclip])` (fly to walk keeps the last fly
+  velocity, so take one fly step with no keys before landing),
+  `up([world|grid|camera])` and `body([fixed|stretched])` (see Modes
+  below; each returns the current mode), `material([1..9])`,
+  `break_block()`,
   `place_block()` (both return whether they changed a voxel),
   `enter_structure(m)` (structure world only: puts the player on the
   tower's axis m meters above the ground - the only reliable way to get
-  near a tower's upper floors, see below).
+  near a tower's upper floors, see below), `enter_stairs()` and
+  `stair_waypoint(k)` (the base's stair route: yaw, horizontal distance
+  and rise to its k-th cell, or nil past the end).
 - Observation: `target_material()` (snake_case name of the voxel in reach
   under the crosshair, or nil), `traveled()` (path length),
   `is_on_ground()`, `altitude()`
@@ -190,7 +221,9 @@ their receiver, so `world.wait(1)` is an error - always call with `:`.
   are open, and `print`/`warn` are removed: scripts observe through
   `assert`, never by printing. A failed assert is a script error.
 - The API lives in `client/script.d`. Lua names are snake_case; constants
-  are ALL_CAPS.
+  are ALL_CAPS. Enum names (keys, modes, worldgen kinds, materials) come
+  from the D members by reflection (`ENUM_NAMES`, `LuaName`), never from
+  hand-written name tables.
 
 ## Units
 
@@ -198,19 +231,22 @@ Three unit systems coexist. Confusing them costs days.
 
 1. Absolute units: curvature radius = 1. All math in `common/math.d`,
    collision, traversal, and every stored position/distance. A dodecahedral
-   node cell is on the order of 1; a voxel averages ~0.05 but varies
-   ~2x in edge length within a chunk (see Chunks below).
+   node cell is on the order of 1; a voxel's volume is ~1.2e-4 (edge
+   ~0.05), but its shape varies (see Chunks below).
 2. Meters: human-scale config. All `*Meters` config values (`SimMeters`,
    `CharacterMeters`: speeds, sizes, reach) are meters and seconds;
-   `voxelSize` sets meters per voxel. `SimConfig.fromMeters` converts to
+   `voxelSize` is the cube root of a block's volume in meters
+   (`NODE_VOLUME / 20 / dimension^3`). `SimConfig.fromMeters` converts to
    absolute via `metersToAbsolute` exactly once. Never convert anywhere
    else and never hand-estimate the factor - compute it or read it from
    `SimConfig`.
 3. tanh-parameterized distance: ray/sweep parameters are `tanh(distance)`.
    Values >= 1 mean unbounded. Convert with `atanh`/`tanh` at boundaries only.
 
-Chunks additionally have grid coordinates (0..dimension ints) and dual
-coordinates (projective, `ChunkLayout.dualToGridFactor` maps between them).
+Chunks additionally have grid coordinates (0..dimension), chunk
+coordinates (0..1, what `chunkToNode` takes) and dual coordinates
+(projective). `ChunkLayout` maps between them (`gridToChunk`,
+`gridToDual`, `dualToGrid`, `cellCenter`); never divide by `dimension`.
 
 ## Hyperbolic space - representation
 
@@ -245,11 +281,17 @@ coordinates (projective, `ChunkLayout.dualToGridFactor` maps between them).
   them there.
 - Chunks: each node is split into 20 cubes, one per dodecahedron vertex,
   running from that vertex (grid 0) to the node center (grid `dimension`).
-  The grid is uniform in Klein (projective) coordinates of the vertex's dual
-  frame. That keeps voxel faces geodesic planes, but voxels are not
-  congruent: edges are ~2x longer and volume ~8x larger at the node-center
-  corner than at the vertex corner. `voxelSize` calibrates the mid-line
-  average, so never assume a fixed voxel extent in absolute units.
+  Grid planes are planes of constant Klein (projective) coordinate in the
+  vertex's dual frame, so voxel faces are geodesic planes; the same
+  spacing is used on every axis, so planes line up across seams.
+  `GridSpacing` (part of `Worldgen`, G in the client, `world:grid`)
+  picks the spacing: `volume` (default) is geometric, each cell
+  cosh(R)^(-4/(3d)) the width of the one before, which keeps block volumes
+  within 1.7x across a chunk (exactly equal is impossible for box grids)
+  but stretches blocks up to ~2:1, tall near the base plane; `uniform` is
+  even in Klein coordinates, ~8x volume spread, blocks flat near the base
+  plane. A unit test checks the spread and that the blocks sum to the
+  node volume. Never assume a fixed voxel extent or shape.
 - Chunk adjacency is asymmetric. A low face (coord 0) lies on a node side,
   and its neighbor is the same vertex in the adjacent node, mirrored with
   no axis permutation. A high face (coord `dimension`) is interior to the
@@ -298,8 +340,8 @@ coordinates (projective, `ChunkLayout.dualToGridFactor` maps between them).
   plane; voxel faces are geodesic planes; the two agree nowhere except on
   the base plane itself. Normal worldgen therefore produces terrain that is
   corrugated 1-block staircases relative to gravity, and anything touching
-  ground contact, stepping, or slopes must expect that. `--flat` is the
-  clean-room case.
+  ground contact, stepping, or slopes must expect that. `--worldgen plane
+  0` is the clean-room case.
 - Tangent vectors live at a point. A normal computed at one point (an offset
   collider section, a contact) is wrong at another point until parallel
   transported - a few degrees of error at body scale, which is fatal for
@@ -335,28 +377,45 @@ remaining constants are an iteration bound and a parallel-plane
 conditioning guard.
 
 - Contacts (`common/ray.d`, `common/collision/chunk.d`): a feature is hit
-  when the true radius would touch it within the move, and only while the
+  when radius plus skin would touch it within the move, and only while the
   motion approaches it, so tangent motion never produces contacts. Motion
-  stops one skin short, and the hit reports its gap; clipping restores the
-  skin, which also depenetrates.
+  stops one skin short, and the hit reports its gap against the true
+  radius; clipping restores the skin, which also depenetrates. Detecting
+  at the true radius let bodies drift into the skin band unnoticed and
+  get pushed back out on the next approach - a one-frame oscillation in
+  inside corners (`tests/flat/corner.lua`). Inside the band a contact
+  also needs the move to reduce the separation as computed in float:
+  motion clipped exactly onto a plane is tangent up to rounding, and
+  counting that rounding as an approach re-hits the same plane until the
+  contact budget runs out (a settle that never lands).
 - Collider: spheres along the axis, spaced so the chain stays within one
   skin of the true capsule. Faces own their contact point half-open (exact
   partition within a chunk); edges and corners are tested where convex or
   on the chunk boundary, which closes the float crack between chunks'
   frames.
 - Support: a contact supports when it is on the lowest sphere's lower half
-  and a walkable (`maxGroundSlope`) face meets the feature - a footprint
-  rule, so a ledge rim under the foot holds you. A supporting contact while
-  descending absorbs the downward motion.
+  and either its normal is walkable (`maxGroundSlope`) or a walkable face
+  meets the feature - a footprint rule, so a ledge rim under the foot
+  holds you. The walkable normal matters at chunk boundaries: there the
+  concave edge where a riser meets the tread below is tested as the
+  riser block's feature, whose faces are all steep. A supporting contact
+  while descending absorbs the downward motion.
 - Velocity: on the ground it approaches the input target at
   `groundAcceleration` with no gravity; in the air gravity and drag apply
   and input only steers toward the target. Clipping never adds speed.
 - Walking slides keep the ground plane as a constraint; walkable contacts
   clip along up while walking or descending, others along their normal.
-- Ground move: slide; if a wall blocked it, try a step (slide up
-  `stepHeight`, slide across the step's motion plus the one skin the wall
-  held us off, settle onto support) and keep it if it progressed further;
-  then settle down `stepHeight` to follow stairs, or become airborne.
+- Ground move: slide; if a wall blocked it and the wall's block has empty
+  space above it (`stepBlockHeight`: exactly one block tall along the
+  grid axis nearest up), try a step: slide up 1.5 block heights (capped
+  at `stepHeight`), slide across the step's motion plus the one skin the
+  wall held us off, settle onto support. If that did not rise half a
+  block (a wall leaning back keeps its lip ahead of its base), retry
+  reaching one character radius across. Keep the step if it progressed
+  further; then settle down `stepHeight` to follow stairs, or become
+  airborne. Settling is a downward probe: once it lands, whatever is left
+  of its motion is dropped, so a settle that slid along steep walls never
+  turns into a horizontal move.
 - Block placement is refused where the voxel would overlap the character
   (`isCapsuleOverlappingVoxel`), so geometry never appears inside a body.
 - Steps of any length: a step is split into substeps that each move at
@@ -372,6 +431,18 @@ conditioning guard.
   the bounce metric) are altitudes, the distance to the one global
   surface plane, never node-local coordinates. `CharacterState.runStep`
   returns the path length it moved.
+- Modes (`character/frame.d`, U and B in the client, `world:up` and
+  `world:body`): `BodyFrame` is rebuilt every substep from the block at
+  half the body's half height below its center. Up modes: `world`
+  (gravity and view from the surface plane), `grid` (both along that
+  block's face normal nearest world up, so the player stands flat on
+  blocks), `camera` (world gravity, block-aligned view). Body modes:
+  `fixed` (`CharacterMeters`) and `stretched` (half height, eye and step
+  height scale with the block's height, radius with its width, each over
+  the mean block edge, so the body is always the same number of blocks).
+  When the half height changes, the center moves along up so the feet
+  stay put. Grid gravity follows the grid's tilt, so a hill's steepness
+  in grid terms differs from its world grade wherever the grid leans.
 
 ## Worldgen
 
@@ -387,9 +458,10 @@ conditioning guard.
   void cell appears in its margins. Never assume solid storage means one
   material.
 - Trees are oak, birch and spruce (`TREE_SPECIES`), chosen by climate. A
-  tree grows along the grid axis pointing away from its single ground
-  neighbor and is placed only if its whole box fits inside its chunk:
-  chunks are generated independently, so nothing may cross a chunk.
+  tree grows along the grid axis nearest up (`Plane.risingNeighbor`),
+  needs ground below and air above its base, and is placed only if its
+  whole box fits inside its chunk: chunks are generated independently,
+  so nothing may cross a chunk.
 - Towers are an L-system on the honeycomb (`worldgen/tower.d`). A tower
   node has a down face; its up faces are the opposite face (straight)
   and the five faces ringing it, which in H^3 lead to six genuinely
@@ -400,14 +472,46 @@ conditioning guard.
   memoized per node like `NodeState`), so it is order-independent. A
   node only grows into neighbors that are higher and below
   `MAX_TOWER_ALTITUDE`, which also bounds the downward claim search.
-- Tower geometry is hollow tubes along the geodesics from a node's center
-  to its face centers. Those geodesics cross the face perpendicularly, so
-  a tube continues seamlessly into the neighbor; floor spacing divides
-  the face distance and window angles are measured from a face-plane
-  vector, so floors and windows line up across the seam too. A node with
-  a structure is never proven clear, full or deferred.
-- A node level is ~1.6 absolute (~30 m) tall. Vertical geodesics diverge
-  like cosh(altitude), so from the ground a tower's upper levels squeeze
+- Buildings (`worldgen/building.d`) are whole blocks. For each face a
+  node's tower uses, a prism: in the five chunks around that face's
+  center-to-node-center edge, the cells whose two other coordinates are
+  within `PRISM_WIDTH` of the node center; plus a core of such cells in
+  all 20 chunks. Mirrored chunks across a face make a prism continue
+  into the neighbor. Walls are building cells with a 6-neighbor outside
+  the building (across chunks through the axis permutations). Stories
+  are block layers, `STORY_LAYERS` apart along a prism's own axis (the
+  core uses each cell's rising axis): layer 0 is floor, windows are 1x1
+  holes in layer 2, off chunk seams. Everything is counted in blocks.
+- Stairs are breadth-first searches over the node's interior cells using
+  each cell's own rising direction, with flat or one-block-up moves. A
+  move needs headroom over the cell it leaves: at least
+  `CEILING_BLOCKS` (3) blocks, the fixed body's height plus the rise in
+  meters, and `BODY_BLOCKS` plus one block per block of rise, so both
+  body modes fit. A step's support may not lie in any earlier step's
+  headroom along its path, nor an earlier step's support in its own.
+  One search runs per up face, in turn, from the door (base) or the
+  down-face portal; each sees what earlier routes stamped (a support
+  cannot be air, headroom cannot be solid). A found route stamps its
+  headroom air, its supports solid, fill under them down to a floor
+  layer, and air beside its headroom with a supported tread on each
+  side, so a body wider than one block (the fixed body is ~1.2 blocks
+  wide where blocks are narrow) fits. Both nodes at a face compute the
+  same portal crossing, mirrored, so stairs continue between nodes. The
+  shortest route crosses a node's middle-height band near the center,
+  where the band is thinnest (see the node level note below). The
+  base's first route is kept (`Building.route`) for `enter_stairs` and
+  `stair_waypoint`. A move may rise up to `stepHeight` in altitude, so
+  where a one-block climb adds grid tilt a step rises 1.5-2 m. A node
+  with a structure is never proven clear, full or deferred.
+- A node level is ~1.6 absolute (~30 m) tall. Seen from a node's center
+  its face directions form an icosahedron: the faces around the down
+  face sit 26.6 degrees below horizontal and those around the up face
+  26.6 above. The 10 chunks at a node's middle height touch faces from
+  both rings, so all three of their grid axes are ~63 degrees from
+  vertical near the center: their block faces are steeper than
+  walkable, and every vertical route through a node crosses that band.
+  Vertical geodesics diverge like cosh(altitude), so from the ground a
+  tower's upper levels squeeze
   under the angle of parallelism, and anyone rising beside a tower drifts
   away from it. Seeing a fork means being near the axis at its altitude
   (`enter_structure`, or noclip along the tower).
@@ -480,7 +584,7 @@ conditioning guard.
   UFCS (`graph.hopCell(...)`). No `private`; module boundaries are the
   visibility unit. Setup methods are `setup`, never `init`.
 - Constructors are static methods named `make` or `fromX`
-  (`ChunkLayout.fromDimension`, `Sweep.fromCapsule`), never free
+  (`ChunkLayout.make`, `Sweep.fromCapsule`), never free
   functions and never `this(...)`. Build values with struct literals
   rather than default-constructing and assigning fields.
 - Struct fields are ordered by alignment, largest first, so structs carry

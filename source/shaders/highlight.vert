@@ -2,7 +2,8 @@
 
 layout(push_constant) uniform PushConstants {
     mat4 mvp;
-    vec4 voxel;
+    vec4 low;
+    vec4 high;
 };
 
 const vec3 corners[8] = vec3[](
@@ -20,7 +21,6 @@ const vec3 VOXEL_CENTER = vec3(0.5);
 const float OUTLINE_SCALE = 1.01;
 
 void main() {
-    vec3 c = corners[edges[gl_VertexIndex]];
-    vec3 p = voxel.xyz + VOXEL_CENTER + (c - VOXEL_CENTER) * OUTLINE_SCALE;
-    gl_Position = mvp * vec4(p / voxel.w, 1.0);
+    vec3 c = VOXEL_CENTER + (corners[edges[gl_VertexIndex]] - VOXEL_CENTER) * OUTLINE_SCALE;
+    gl_Position = mvp * vec4(mix(low.xyz, high.xyz, c), 1.0);
 }

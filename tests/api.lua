@@ -12,7 +12,7 @@ return function(world)
 
   assert(math.abs(world:timestep() - DEFAULT_TIMESTEP) < 1e-6, "default timestep is 0.016 s")
   world:timestep(CHOSEN_TIMESTEP)
-  world:worldgen("flat")
+  world:worldgen("plane")
   assert(world:mode() == "walk" and world:is_on_ground(), "the player starts walking, standing on the ground")
   world:wait(1)
   assert(math.abs(world:time() - 1) < CLOCK_TOLERANCE, string.format("waited 1 s, clock reads %.4f s", world:time()))

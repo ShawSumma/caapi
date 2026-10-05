@@ -17,6 +17,7 @@ layout(set = 1, binding = 2) readonly restrict buffer Transforms {
 
 layout(push_constant) uniform PushConstants {
     uint dimension;
+    float cell_ratio;
 };
 
 const uvec3 vertices[12][6] = {
@@ -64,6 +65,10 @@ void main() {
     uvec2 uv = texcoords[axis / AXES][vertex];
     texcoords_out = vec3(uv, face_material(face) - FIRST_SOLID_MATERIAL);
     occlusion = face_occlusion(face, uv);
-    vec3 relative_coords = vertices[axis][vertex] + pos;
-    gl_Position = view_projection * draw.transform * vec4(relative_coords / dimension, 1);
+    vec3 grid_coords = vertices[axis][vertex] + pos;
+    vec3 chunk_coords = grid_coords / float(dimension);
+    if (cell_ratio != 1.0) {
+        chunk_coords = (1.0 - pow(vec3(cell_ratio), grid_coords)) / (1.0 - pow(cell_ratio, float(dimension)));
+    }
+    gl_Position = view_projection * draw.transform * vec4(chunk_coords, 1);
 }

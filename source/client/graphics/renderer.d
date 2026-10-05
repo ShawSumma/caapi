@@ -12,12 +12,13 @@ import client.graphics.matrices : MATRIX_FLOATS, determinant, flatten, matrixInv
 import client.graphics.pipeline : GpuBuffer, VULKAN_TRUE, expectSuccess;
 import client.graphics.voxels.cull : CullPipeline;
 import client.graphics.voxels.meshes : ChunkMeshes, meshJob;
-import client.graphics.voxels.surface : CommonUniforms, FACES_BINDING, SurfacePipeline, TRANSFORMS_BINDING;
+import client.graphics.voxels.surface : CommonUniforms, FACES_BINDING, LayoutPush, SurfacePipeline, TRANSFORMS_BINDING;
 import client.streaming : ParallelJob;
 import client.world : LocalWorld;
 import common.clock : NANOSECONDS_PER_MILLISECOND, nowMilliseconds;
 import common.dodeca : CHUNK_BOUNDING_SPHERE_RADIUS, chunkToNode;
 import common.math : MDirection, PI;
+import common.node : ChunkLayout;
 import common.raycast.graph : GraphCastHit;
 import common.traversal : NOT_COLLECTED;
 
@@ -26,7 +27,6 @@ enum float NEAR_PLANE = 1.0e-4f;
 enum float FOG_VISIBILITY_THRESHOLD = 1e-3f;
 enum float FOG_EXPONENT = 5.0f;
 enum float CLEAR_DEPTH = 0.0f;
-enum uint DIMENSION_PUSH_BYTES = 4;
 enum ulong NO_TIMEOUT = ulong.max;
 enum double MESH_BUDGET_MILLISECONDS = 2.0;
 enum uint PIXEL_BYTES = 4;
@@ -52,7 +52,8 @@ immutable float[4] SKY_SRGB = [
 
 struct HighlightTarget {
     float[MATRIX_FLOATS] mvp;
-    float[3] voxel;
+    float[3] low;
+    float[3] high;
     bool isFound;
 }
 
@@ -123,8 +124,9 @@ struct Renderer {
     FrameTimes frameTimes;
     GpuBuffer readback;
     float[4] skyLinear;
-    uint dimension;
+    ChunkLayout layout;
     uint worldEpoch = NO_EPOCH;
+    ubyte dimension;
     uint backlog;
 
     void setup(Display* display, Window window, ubyte chunkDimension) {
@@ -151,7 +153,7 @@ struct Renderer {
     }
 
     void setupPipelines() {
-        meshes.setup(core.physicalDevice, core.device, cast(ubyte) dimension);
+        meshes.setup(core.physicalDevice, core.device, dimension);
         voxels.setup(core.physicalDevice, core.device, swapchain.renderPass, core.graphicsQueue, swapchain.commandPool, swapchain.depthView);
         cull.setup(core.device, voxels.commonUbo.buffer);
         bindMeshBuffers();
@@ -205,6 +207,7 @@ struct Renderer {
     }
 
     void renderFrame(ref LocalWorld world) {
+        layout = world.graph.layout;
         double waitStart = nowMilliseconds();
         expectSuccess(vkWaitForFences(core.device, 1, &swapchain.inFlightFence, VULKAN_TRUE, NO_TIMEOUT));
         double updateStart = nowMilliseconds();
@@ -267,12 +270,10 @@ struct Renderer {
             return HighlightTarget.init;
         } else {
             float[MATRIX_FLOATS] chunkToWorld = matrixMultiply(flatten(world.cachedNodes[index].transform.mat), flatten(hit.chunk.vertex.chunkToNode));
-            float[3] voxel = [
-                cast(float) hit.voxelCoords.data[0],
-                cast(float) hit.voxelCoords.data[1],
-                cast(float) hit.voxelCoords.data[2],
-            ];
-            return HighlightTarget(matrixMultiply(viewProjection, chunkToWorld), voxel, true);
+            ubyte[3] cell = hit.voxelCoords.data;
+            float[3] low = [layout.gridToChunk(cell[0]), layout.gridToChunk(cell[1]), layout.gridToChunk(cell[2])];
+            float[3] high = [layout.gridToChunk(cell[0] + 1), layout.gridToChunk(cell[1] + 1), layout.gridToChunk(cell[2] + 1)];
+            return HighlightTarget(matrixMultiply(viewProjection, chunkToWorld), low, high, true);
         }
     }
 
@@ -308,7 +309,8 @@ struct Renderer {
             voxels.staticSet,
         ];
         vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, voxels.pipelineLayout, 0, sets.length, sets.ptr, 0, null);
-        vkCmdPushConstants(commands, voxels.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, DIMENSION_PUSH_BYTES, &dimension);
+        LayoutPush layoutPush = LayoutPush(layout.dimension, layout.cellRatio);
+        vkCmdPushConstants(commands, voxels.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, LayoutPush.sizeof, &layoutPush);
         uint drawn = 0;
         while (drawn < meshes.drawableCount) {
             uint batch = drawBatch(meshes.drawableCount - drawn, core.maxDrawIndirectCount);
@@ -316,7 +318,7 @@ struct Renderer {
             drawn += batch;
         }
         if (target.isFound) {
-            highlight.draw(commands, target.mvp, target.voxel, cast(float) dimension);
+            highlight.draw(commands, target.mvp, target.low, target.high);
         }
         vkCmdNextSubpass(commands, VK_SUBPASS_CONTENTS_INLINE);
         fog.draw(commands, voxels.commonSet);

@@ -1,54 +1,91 @@
 module common.worldgen.generation;
 
 import core.bitop : rol;
-import core.stdc.math : cosf, floorf, logf, powf, sqrtf;
+import core.stdc.math : asinhf, atanf, cosf, coshf, floorf, logf, powf, sinhf, sqrtf, tanf;
 import core.stdc.stdlib : abs;
-import common.dodeca : Side, Vertex, canonicalSides, chunkGridCenterRadius, chunkToNode, isAdjacentTo;
+import common.coords : CELL_NEIGHBOR_OFFSETS;
+import common.dodeca : Side, Vertex, canonicalSides, chunkGridCenterRadius, isAdjacentTo;
 import common.graph : Graph, NO_SLOT, NodeId, ParentList;
 import common.material : Material;
-import common.math : MVector, Matrix4, PI, clamped;
-import common.node : Occupancy, VoxelData;
+import common.math : PI, clamped;
+import common.node : ChunkLayout, GridSpacing, Occupancy, VoxelData;
+import common.settings : CharacterConfig, SimConfig, SimMeters;
+import common.worldgen.building : Building, StairLimits;
 import common.worldgen.plane : Plane;
 import common.worldgen.terraingen : TERRAIN_SURFACE_THICKNESS, materialTable, nearestLatticePoint, sqr, terraingenVoronoi;
-import common.worldgen.tower : NodeStructure, TowerShape;
+import common.worldgen.tower : NodeStructure, firstSideAmong, ringFaces;
 
 enum WorldgenKind : ubyte {
     terrain,
-    flat,
+    plane,
     structure,
 }
 
-immutable string[WorldgenKind.max + 1] WORLDGEN_NAMES = [
-    "terrain",
-    "flat",
-    "structure",
-];
+enum StructureKind : ubyte {
+    tower,
+}
 
-struct WorldgenSettings {
-    NodeId showcaseBase;
-    uint seed;
+struct PlaneWorld {
+    float tiltRadians;
+}
+
+struct StructureWorld {
+    NodeId base;
+    StructureKind kind;
+}
+
+struct Worldgen {
+    union {
+        PlaneWorld plane;
+        StructureWorld structure;
+    }
     WorldgenKind kind;
+    GridSpacing spacing;
 
-    bool isFlat() const {
+    static Worldgen makeTerrain() {
+        return Worldgen.init;
+    }
+
+    static Worldgen fromPlane(PlaneWorld plane) {
+        Worldgen worldgen;
+        worldgen.plane = plane;
+        worldgen.kind = WorldgenKind.plane;
+        return worldgen;
+    }
+
+    static Worldgen fromStructure(StructureWorld structure) {
+        Worldgen worldgen;
+        worldgen.structure = structure;
+        worldgen.kind = WorldgenKind.structure;
+        return worldgen;
+    }
+
+    bool hasPlaneGround() const {
         return kind != WorldgenKind.terrain;
+    }
+
+    float groundTiltRadians() const {
+        float tilt = 0;
+        final switch (kind) {
+            case WorldgenKind.terrain:
+            case WorldgenKind.structure:
+                break;
+            case WorldgenKind.plane:
+                tilt = plane.tiltRadians;
+                break;
+        }
+        return tilt;
     }
 }
 
-struct WorldgenLookup {
-    WorldgenKind kind;
-    bool isFound;
+StairLimits stairLimits() {
+    SimMeters meters;
+    CharacterConfig character = SimConfig.fromMeters(meters).character;
+    return StairLimits(character.stepHeight, 2 * (character.characterHalfHeight + character.contactSkin));
+}
 
-    static WorldgenLookup fromName(const(char)[] name) {
-        uint index = 0;
-        while (index < WORLDGEN_NAMES.length && WORLDGEN_NAMES[index] != name) {
-            index += 1;
-        }
-        if (index < WORLDGEN_NAMES.length) {
-            return WorldgenLookup(cast(WorldgenKind) index, true);
-        } else {
-            return WorldgenLookup(WorldgenKind.init, false);
-        }
-    }
+float degreesToRadians(float degrees) {
+    return degrees * PI / DEGREES_PER_HALF_TURN;
 }
 
 enum TreeKind : ubyte {
@@ -109,8 +146,8 @@ enum int CANOPY_ABOVE_TRUNK = 1;
 enum int SPRUCE_LOWEST_LEAVES = 2;
 enum float SPRUCE_TEMPERATURE = -2.0f;
 enum ulong BIRCH_ODDS = 3;
+enum float DEGREES_PER_HALF_TURN = 180.0f;
 enum uint TRUSS_CRITERIA = 2;
-enum int NO_GROUND_DIRECTION = -1;
 enum ulong SPLITMIX_INCREMENT = 0x9e3779b97f4a7c15;
 enum ulong SPLITMIX_MULTIPLIER_1 = 0xbf58476d1ce4e5b9;
 enum ulong SPLITMIX_MULTIPLIER_2 = 0x94d049bb133111eb;
@@ -120,15 +157,6 @@ enum ulong CHUNK_HASH_MULTIPLIER = 0x517c_c1b7_2722_0a95;
 enum uint RANDOM_FRACTION_SHIFT = 40;
 enum float RANDOM_24_BIT_RANGE = 2.0f ^^ 24;
 enum float RANDOM_24_BIT_RANGE_PLUS_2 = 2.0f ^^ 24 + 2;
-
-immutable int[3][6] TREE_NEIGHBOR_OFFSETS = [
-    [-1, 0, 0],
-    [1, 0, 0],
-    [0, -1, 0],
-    [0, 1, 0],
-    [0, 0, -1],
-    [0, 0, 1],
-];
 
 struct SplitMix {
     ulong state;
@@ -174,18 +202,19 @@ struct EnviroFactors {
 struct NodeState {
     EnviroFactors enviro;
     Plane surface;
+    Plane reference;
     NodeStateKind kind;
     NodeStateRoad road;
 
     static NodeState fromParents(ref Graph graph, uint slot) {
         ParentList parents = graph.parents(slot);
         if (parents.count == 0) {
-            return NodeState(EnviroFactors.init, Plane.fromSide(Side.a), NodeStateKind.land, NodeStateRoad.west);
+            return NodeState(EnviroFactors.init, Plane.fromSide(Side.a), Plane.fromSide(firstSideAmong(ringFaces(Side.a))), NodeStateKind.land, NodeStateRoad.west);
         } else {
             NodeState first = graph.nodeAt(parents.links[0].slot).state;
             Side firstSide = parents.links[0].side;
             NodeStateKind kind = first.kind.child(firstSide);
-            return NodeState(graph.inheritedEnviro(slot, parents), kind.surface(first.surface, firstSide), kind, first.road.child(firstSide));
+            return NodeState(graph.inheritedEnviro(slot, parents), kind.surface(first.surface, firstSide), first.reference.reflectAcross(firstSide), kind, first.road.child(firstSide));
         }
     }
 }
@@ -305,12 +334,16 @@ struct ChunkParams {
     ulong nodeSpice;
     ChunkIncidentEnviroFactors env;
     Plane surface;
+    Plane reference;
+    float slopeTangent;
+    float slopeSecant;
+    StairLimits stairs;
     NodeStructure structure;
-    ubyte dimension;
+    ChunkLayout layout;
     Vertex chunk;
     bool isRoad;
     bool isRoadSupport;
-    bool isFlat;
+    bool hasPlaneGround;
     bool isResolvingMaterials;
 
     static ChunkParams make(ref Graph graph, uint slot, Vertex vertex) {
@@ -320,14 +353,22 @@ struct ChunkParams {
             graph.idAt(slot).spice(),
             ChunkIncidentEnviroFactors.make(graph, slot, vertex),
             state.surface,
+            state.reference,
+            tanf(graph.worldgen.groundTiltRadians()),
+            1.0f / cosf(graph.worldgen.groundTiltRadians()),
+            stairLimits(),
             graph.ensureStructureAt(slot),
-            graph.layout.dimension,
+            graph.layout,
             vertex,
             state.kind == NodeStateKind.sky && isOnRoadLine,
             (state.kind == NodeStateKind.land || state.kind == NodeStateKind.deepLand) && isOnRoadLine,
-            graph.worldgen.isFlat(),
+            graph.worldgen.hasPlaneGround(),
             false,
         );
+    }
+
+    ubyte dimension() const {
+        return layout.dimension;
     }
 
     ValueRange altitudes() const {
@@ -335,8 +376,24 @@ struct ChunkParams {
         return ValueRange(center - chunkGridCenterRadius(), center + chunkGridCenterRadius());
     }
 
+    float groundLevelAt(float[3] coord) const {
+        float height = surface.distanceToChunk(chunk, coord);
+        if (slopeTangent == 0) {
+            return height;
+        } else {
+            float across = asinhf(sinhf(reference.distanceToChunk(chunk, coord)) / coshf(height));
+            return atanf(sinhf(height)) + slopeTangent * across;
+        }
+    }
+
+    ValueRange groundRange() const {
+        float center = groundLevelAt([0.5f, 0.5f, 0.5f]);
+        float radius = chunkGridCenterRadius() * slopeSecant;
+        return ValueRange(center - radius, center + radius);
+    }
+
     float terrainCeiling() const {
-        if (isFlat) {
+        if (hasPlaneGround) {
             return 0;
         } else {
             return (ValueRange.fromValues(env.maxElevations).high + terrainElevationSlack()) / TERRAIN_SMOOTHNESS;
@@ -344,15 +401,15 @@ struct ChunkParams {
     }
 
     bool isProvenClear() const {
-        return isProvenClearAt(altitudes().low);
+        return isProvenClearAt(groundRange().low);
     }
 
     bool isProvenClearAt(float lowest) const {
         if (structure.isPresent()) {
             return false;
-        } else if (!isFlat && isRoad) {
+        } else if (!hasPlaneGround && isRoad) {
             return lowest > terrainCeiling() && lowest > ROAD_THICKNESS;
-        } else if (!isFlat && isRoadSupport) {
+        } else if (!hasPlaneGround && isRoadSupport) {
             return false;
         } else {
             return lowest > terrainCeiling();
@@ -364,14 +421,14 @@ struct ChunkParams {
     }
 
     Occupancy predictOccupancy() const {
-        ValueRange range = altitudes();
+        ValueRange range = groundRange();
         if (structure.isPresent()) {
             return Occupancy.unknown;
         } else if (isProvenClearAt(range.low)) {
             return Occupancy.empty;
-        } else if (isFlat && range.high < 0) {
+        } else if (hasPlaneGround && range.high < 0) {
             return Occupancy.full;
-        } else if (!isFlat && !isRoad && isProvenBelowTerrain(range.high)) {
+        } else if (!hasPlaneGround && !isRoad && isProvenBelowTerrain(range.high)) {
             return Occupancy.full;
         } else {
             return Occupancy.unknown;
@@ -401,7 +458,7 @@ struct ChunkParams {
 
     GeneratedVoxels generateVoxels() const {
         TerrainGenerator generator = TerrainGenerator(VoxelData.fromMaterial(Material.none), this, SplitMix(hash(nodeSpice, chunk)), false);
-        if (isFlat) {
+        if (hasPlaneGround) {
             generator.generateFlat();
         } else {
             generator.generateTerrain();
@@ -445,7 +502,7 @@ struct TerrainGenerator {
             foreach (x; 0 .. dimension) {
                 foreach (y; 0 .. dimension) {
                     foreach (z; 0 .. dimension) {
-                        generateTerrainVoxel(voxelCenter(dimension, x, y, z), voxelIndex(dimension, x, y, z));
+                        generateTerrainVoxel(params.layout.cellCenter([x, y, z]), voxelIndex(dimension, x, y, z));
                     }
                 }
             }
@@ -454,14 +511,14 @@ struct TerrainGenerator {
 
     void generateFlat() {
         ubyte dimension = params.dimension;
-        ValueRange altitudes = params.altitudes();
-        if (altitudes.high < 0) {
+        ValueRange ground = params.groundRange();
+        if (ground.high < 0) {
             voxels = VoxelData.fromMaterial(Material.dirt);
-        } else if (altitudes.low <= 0) {
+        } else if (ground.low <= 0) {
             foreach (x; 0 .. dimension) {
                 foreach (y; 0 .. dimension) {
                     foreach (z; 0 .. dimension) {
-                        if (params.surface.distanceToChunk(params.chunk, voxelCenter(dimension, x, y, z)) < 0) {
+                        if (params.groundLevelAt(params.layout.cellCenter([x, y, z])) < 0) {
                             voxels.toDense(dimension)[voxelIndex(dimension, x, y, z)] = Material.dirt;
                         }
                     }
@@ -473,21 +530,20 @@ struct TerrainGenerator {
     void generateStructure() {
         if (params.structure.isPresent()) {
             ubyte dimension = params.dimension;
-            TowerShape shape = TowerShape.fromStructure(params.structure);
-            Matrix4!float toNode = params.chunk.chunkToNode;
+            Building building = Building.make(params.structure, params.surface, params.layout, params.stairs);
             foreach (x; 0 .. dimension) {
                 foreach (y; 0 .. dimension) {
                     foreach (z; 0 .. dimension) {
-                        float[3] center = voxelCenter(dimension, x, y, z);
                         size_t index = voxelIndex(dimension, x, y, z);
                         Material existing = voxels.get(index);
-                        Material material = shape.materialAt((toNode * MVector!float([center[0], center[1], center[2], 1.0f])).normalizedPoint(), existing);
+                        Material material = building.materialAt(params.chunk, [x, y, z], existing);
                         if (material != existing) {
                             voxels.toDense(dimension)[index] = material;
                         }
                     }
                 }
             }
+            building.release();
         }
     }
 
@@ -520,7 +576,7 @@ struct TerrainGenerator {
         foreach (x; 0 .. dimension) {
             foreach (y; 0 .. dimension) {
                 foreach (z; 0 .. dimension) {
-                    float[3] center = voxelCenter(dimension, x, y, z);
+                    float[3] center = params.layout.cellCenter([x, y, z]);
                     float horizontalDistance = plane.distanceToChunk(params.chunk, center);
                     float elevation = params.surface.distanceToChunk(params.chunk, center);
                     if (!(horizontalDistance > ROAD_HALF_WIDTH || elevation > ROAD_CLEARANCE)) {
@@ -538,7 +594,7 @@ struct TerrainGenerator {
             foreach (y; 0 .. dimension) {
                 foreach (z; 0 .. dimension) {
                     size_t index = voxelIndex(dimension, x, y, z);
-                    if (voxels.get(index) == Material.none && isTrussAt(dimension, x, y, z) && !(plane.distanceToChunk(params.chunk, voxelCenter(dimension, x, y, z)) > ROAD_HALF_WIDTH)) {
+                    if (voxels.get(index) == Material.none && isTrussAt(dimension, x, y, z) && !(plane.distanceToChunk(params.chunk, params.layout.cellCenter([x, y, z])) > ROAD_HALF_WIDTH)) {
                         voxels.toDense(dimension)[index] = Material.woodPlanks;
                     }
                 }
@@ -565,24 +621,16 @@ struct TerrainGenerator {
 
     void placeTree(int[3] base, TreeKind kind) {
         ubyte dimension = params.dimension;
-        if (voxels.get(voxelIndex(dimension, base[0], base[1], base[2])) == Material.none) {
-            int voidNeighbors = 0;
-            int groundDirection = NO_GROUND_DIRECTION;
-            foreach (direction; 0 .. 6) {
-                Material neighbor = voxels.get(voxelIndex(dimension, base[0] + TREE_NEIGHBOR_OFFSETS[direction][0], base[1] + TREE_NEIGHBOR_OFFSETS[direction][1], base[2] + TREE_NEIGHBOR_OFFSETS[direction][2]));
-                if (neighbor == Material.none) {
-                    voidNeighbors += 1;
-                } else if (isGroundMaterial(neighbor)) {
-                    groundDirection = direction;
-                }
-            }
-            if (voidNeighbors == 5 && groundDirection != NO_GROUND_DIRECTION) {
-                TreeSpecies species = TREE_SPECIES[kind];
-                ulong roll = rng.next();
-                TreeFrame frame = TreeFrame.fromGround(base, groundDirection, cast(int)(species.minTrunk + roll % species.trunkChoices));
-                if (frame.fitsWithin(dimension)) {
-                    growTree(frame, kind);
-                }
+        int upDirection = params.surface.risingNeighbor(params.chunk, params.layout, base);
+        int[3] up = CELL_NEIGHBOR_OFFSETS[upDirection];
+        bool isBaseEmpty = voxels.get(voxelIndex(dimension, base[0], base[1], base[2])) == Material.none;
+        bool isAboveEmpty = voxels.get(voxelIndex(dimension, base[0] + up[0], base[1] + up[1], base[2] + up[2])) == Material.none;
+        if (isBaseEmpty && isAboveEmpty && isGroundMaterial(voxels.get(voxelIndex(dimension, base[0] - up[0], base[1] - up[1], base[2] - up[2])))) {
+            TreeSpecies species = TREE_SPECIES[kind];
+            ulong roll = rng.next();
+            TreeFrame frame = TreeFrame.fromUp(base, upDirection, cast(int)(species.minTrunk + roll % species.trunkChoices));
+            if (frame.fitsWithin(dimension)) {
+                growTree(frame, kind);
             }
         }
     }
@@ -619,10 +667,9 @@ struct TreeFrame {
     int trunk;
     int top;
 
-    static TreeFrame fromGround(int[3] base, int groundDirection, int trunk) {
-        int[3] up = [-TREE_NEIGHBOR_OFFSETS[groundDirection][0], -TREE_NEIGHBOR_OFFSETS[groundDirection][1], -TREE_NEIGHBOR_OFFSETS[groundDirection][2]];
-        size_t axis = groundDirection / 2;
-        return TreeFrame(base, up, (axis + 1) % 3, (axis + 2) % 3, trunk, trunk + CANOPY_ABOVE_TRUNK);
+    static TreeFrame fromUp(int[3] base, int upDirection, int trunk) {
+        size_t axis = upDirection / 2;
+        return TreeFrame(base, CELL_NEIGHBOR_OFFSETS[upDirection], (axis + 1) % 3, (axis + 2) % 3, trunk, trunk + CANOPY_ABOVE_TRUNK);
     }
 
     int[3] cell(int level, int i, int j) const {
@@ -776,16 +823,6 @@ float terracingDiff(float elevationRaw, float blockiness, float scale, float str
     float elevationFloor = floorf(elevationRaw / scale);
     float elevationRemainder = elevationRaw / scale - elevationFloor;
     return scale * elevationFloor + serp(0.0f, scale, elevationRemainder, threshold) - elevationRaw;
-}
-
-float[3] voxelCenter(ubyte dimension, int x, int y, int z) {
-    float d = cast(float) dimension;
-    float[3] result = [
-        (cast(float) x + 0.5f) / d,
-        (cast(float) y + 0.5f) / d,
-        (cast(float) z + 0.5f) / d,
-    ];
-    return result;
 }
 
 size_t voxelIndex(ubyte dimension, int x, int y, int z) {

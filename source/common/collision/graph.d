@@ -2,13 +2,16 @@ module common.collision.graph;
 
 import core.stdc.math : atanhf, coshf, fminf;
 import common.collision.chunk : ChunkCollisionHit, MAX_FEATURE_SURFACES, SweptShape, chunkShapeCast, isCapsuleIntersectingVoxel;
-import common.coords : Coords;
+import common.coords : CELL_NEIGHBOR_OFFSETS, Coords;
 import common.dodeca : BOUNDING_SPHERE_RADIUS, CHUNK_BOUNDING_SPHERE_RADIUS, SIDE_COUNT, Side, VERTEX_COUNT, Vertex, chunkBoundingSphereCenter, nodeToDual, reflection;
 import common.graph : Graph, NO_SLOT;
+import common.margins : CoordsWithMargins;
+import common.material : Material;
 import common.math : MIsometry, MPoint, MVector, isNan;
 import common.node : Chunk, ChunkId, ChunkSlot, ChunkState;
 import common.position : Position;
 import common.ray : MAX_TANH_DISTANCE, Ray;
+import common.worldgen.plane : Plane;
 
 enum uint REGION_MAX_NODES = 64;
 enum uint SHAPE_CAST_MAX_NODES = 128;
@@ -26,24 +29,38 @@ struct Capsule {
 }
 
 struct GraphCollisionHit {
-    ChunkId chunk;
     MVector!float normal;
     MVector!float[MAX_FEATURE_SURFACES] surfaces;
     float stopDistance = float.nan;
     float gap;
     uint surfaceCount;
+    ChunkSlot chunk;
+    ubyte[3] cell;
     bool isLowestSection;
 
-    static GraphCollisionHit fromChunkHit(ChunkCollisionHit chunkHit, MIsometry!float dualToLocal, ChunkId chunk) {
+    static GraphCollisionHit fromChunkHit(ChunkCollisionHit chunkHit, MIsometry!float dualToLocal, ChunkSlot chunk) {
         MVector!float[MAX_FEATURE_SURFACES] surfaces;
         foreach (i; 0 .. chunkHit.surfaceCount) {
             surfaces[i] = dualToLocal * chunkHit.surfaces[i];
         }
-        return GraphCollisionHit(chunk, dualToLocal * chunkHit.normal, surfaces, chunkHit.stopDistance, chunkHit.gap, chunkHit.surfaceCount, chunkHit.isLowestSection);
+        return GraphCollisionHit(dualToLocal * chunkHit.normal, surfaces, chunkHit.stopDistance, chunkHit.gap, chunkHit.surfaceCount, chunk, chunkHit.cell, chunkHit.isLowestSection);
     }
 
     bool isHit() const {
         return !isNan(stopDistance);
+    }
+}
+
+float stepBlockHeight(ref const Graph graph, ChunkSlot chunk, ubyte[3] cell) {
+    Plane surface = graph.nodeAt(chunk.slot).state.surface;
+    int[3] base = [cell[0], cell[1], cell[2]];
+    int[3] offset = CELL_NEIGHBOR_OFFSETS[surface.risingNeighbor(chunk.vertex, graph.layout, base)];
+    int[3] above = [base[0] + offset[0], base[1] + offset[1], base[2] + offset[2]];
+    CoordsWithMargins aboveCell = CoordsWithMargins([cast(ubyte)(above[0] + 1), cast(ubyte)(above[1] + 1), cast(ubyte)(above[2] + 1)]);
+    if (graph.chunkAt(chunk).voxels.get(aboveCell.toIndex(graph.layout.dimension)) == Material.none) {
+        return surface.distanceToCell(chunk.vertex, graph.layout, above) - surface.distanceToCell(chunk.vertex, graph.layout, base);
+    } else {
+        return 0;
     }
 }
 
@@ -168,7 +185,7 @@ GraphCollisionHit shapeCast(ref const Graph graph, Capsule capsule, Position pos
                 MIsometry!float localToDual = vertex.nodeToDual * visit.inverse * position.local;
                 ChunkCollisionHit chunkHit = chunkShapeCast(capsule.swept(localToDual), chunk.voxels, graph.layout, localRay.transformedBy(vertex.nodeToDual), tanhDistance);
                 if (chunkHit.isHit() && (!hit.isHit() || chunkHit.stopDistance < hit.stopDistance)) {
-                    hit = GraphCollisionHit.fromChunkHit(chunkHit, localToDual.inverse(), ChunkId(graph.idAt(visit.slot), vertex));
+                    hit = GraphCollisionHit.fromChunkHit(chunkHit, localToDual.inverse(), ChunkSlot(visit.slot, vertex));
                 }
             }
         }

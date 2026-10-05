@@ -4,7 +4,7 @@ local STRAIGHT_DOWN_DEGREES = 89
 local AHEAD_DEGREES = 30
 
 return function(world)
-  world:worldgen("flat")
+  world:worldgen("plane")
   walk.spawn(world)
 
   world:look(0, STRAIGHT_DOWN_DEGREES)

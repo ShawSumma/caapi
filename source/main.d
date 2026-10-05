@@ -1,22 +1,25 @@
 module main;
 
 import core.stdc.stdio : FILE, fclose, fopen, fprintf, snprintf;
-import core.stdc.stdlib : free, malloc, strtof, strtoul;
-import core.stdc.string : strcmp, strlen;
+import core.stdc.stdlib : free, malloc;
+import core.stdc.string : strcmp;
 import core.sys.posix.time : nanosleep, timespec;
-import bindings.platform : Atom, Button1, Button3, ButtonPress, ClientMessage, CurrentTime, Cursor, Display, False, FocusOut, GenericEvent, GrabModeAsync, GrabSuccess, KeyPress, KeyRelease, KeySym, Pixmap, Success, True, UnmapNotify, VkExtent2D, Window, XBlackPixel, XCloseDisplay, XColor, XCreateBitmapFromData, XCreatePixmapCursor, XCreateSimpleWindow, XDefaultScreen, XDestroyWindow, XDisplayHeight, XDisplayWidth, XEvent, XFlush, XFreeCursor, XFreeEventData, XFreePixmap, XGenericEventCookie, XGetEventData, XGrabPointer, XIAllMasterDevices, XIDeviceInfo, XIEventMask, XIFreeDeviceInfo, XIModeAbsolute, XIQueryDevice, XIQueryVersion, XIRawEvent, XISelectEvents, XIValuatorClass, XIValuatorClassInfo, XI_DeviceChanged, XI_RawMotion, XInternAtom, XK_1, XK_9, XK_Escape, XK_Down, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_n, XK_s, XK_space, XK_v, XK_w, XLookupKeysym, XMapWindow, XNextEvent, XOpenDisplay, XPending, XQueryExtension, XRootWindow, XSelectInput, XSetWMProtocols, XStoreName, XUngrabPointer, XkbSetDetectableAutoRepeat;
+import bindings.platform : Atom, Button1, Button3, ButtonPress, ClientMessage, CurrentTime, Cursor, Display, False, FocusOut, GenericEvent, GrabModeAsync, GrabSuccess, KeyPress, KeyRelease, KeySym, Pixmap, Success, True, UnmapNotify, VkExtent2D, Window, XBlackPixel, XCloseDisplay, XColor, XCreateBitmapFromData, XCreatePixmapCursor, XCreateSimpleWindow, XDefaultScreen, XDestroyWindow, XDisplayHeight, XDisplayWidth, XEvent, XFlush, XFreeCursor, XFreeEventData, XFreePixmap, XGenericEventCookie, XGetEventData, XGrabPointer, XIAllMasterDevices, XIDeviceInfo, XIEventMask, XIFreeDeviceInfo, XIModeAbsolute, XIQueryDevice, XIQueryVersion, XIRawEvent, XISelectEvents, XIValuatorClass, XIValuatorClassInfo, XI_DeviceChanged, XI_RawMotion, XInternAtom, XK_1, XK_9, XK_Escape, XK_Down, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_g, XK_n, XK_s, XK_space, XK_u, XK_v, XK_w, XLookupKeysym, XMapWindow, XNextEvent, XOpenDisplay, XPending, XQueryExtension, XRootWindow, XSelectInput, XSetWMProtocols, XStoreName, XUngrabPointer, XkbSetDetectableAutoRepeat;
+import client.arguments : StartupError, FlagValue, NumberArgument, WorldgenArgument;
 import client.config : ClientConfig;
 import client.game : FrameInput, Game, KEY_COUNT, Key, MATERIAL_PALETTE, axisValue;
 import client.graphics.renderer : FrameTimes, Renderer;
 import client.png : writePng;
 import client.script : ScriptHost, ScriptRecorder;
 import common.character.controller : MovementMode;
+import common.character.frame : UpMode;
 import common.clock : MILLISECONDS_PER_SECOND, NANOSECONDS_PER_SECOND, nowSeconds;
 import common.dodeca : VERTEX_COUNT;
+import common.names : ENUM_NAMES;
+import common.node : GridSpacing;
 import common.settings : SimMeters;
-import common.worldgen.generation : WorldgenLookup, WorldgenSettings;
+import common.worldgen.generation : Worldgen;
 
-enum int DECIMAL = 10;
 enum uint WINDOW_WIDTH = 1280;
 enum uint WINDOW_HEIGHT = 720;
 enum uint SCREENSHOT_WIDTH = 640;
@@ -29,6 +32,7 @@ enum uint KEYCODE_COUNT = 256;
 enum uint CURSOR_BITMAP_SIZE = 8;
 enum int EXIT_OK = 0;
 enum int EXIT_FAILED = 1;
+enum int EXIT_USAGE = 2;
 enum long KEY_PRESS_MASK = 1L << 0;
 enum long KEY_RELEASE_MASK = 1L << 1;
 enum long BUTTON_PRESS_MASK = 1L << 2;
@@ -44,62 +48,108 @@ enum uint BITS_PER_BYTE = 8;
 enum int NO_DEVICE = -1;
 
 struct Arguments {
+    StartupError error;
+    const(char)* program;
     const(char)* configPath = "mined.cfg";
     const(char)* recordPath;
     const(char)* screenshotPath;
     const(char)* reportPath;
     const(char)* scriptPath;
-    WorldgenSettings worldgen;
+    Worldgen worldgen;
     float sensitivity = 0;
     bool hasSensitivity;
     bool isYInverted;
     bool isBenchLoad;
-    bool isValid = true;
 
     static Arguments fromArgv(int argc, char** argv) {
-        Arguments arguments;
+        Arguments arguments = Arguments(StartupError.init, argv[0]);
         int index = 1;
-        while (index < argc) {
-            const(char)* argument = argv[index];
-            bool hasValue = index + 1 < argc;
-            if (strcmp(argument, "--config") == 0 && hasValue) {
-                arguments.configPath = argv[index + 1];
-                index += 1;
-            } else if (strcmp(argument, "--record") == 0 && hasValue) {
-                arguments.recordPath = argv[index + 1];
-                index += 1;
-            } else if (strcmp(argument, "--sensitivity") == 0 && hasValue) {
-                arguments.sensitivity = strtof(argv[index + 1], null);
-                arguments.hasSensitivity = true;
-                index += 1;
-            } else if (strcmp(argument, "--invert-y") == 0) {
-                arguments.isYInverted = true;
-            } else if (strcmp(argument, "--worldgen") == 0 && hasValue) {
-                WorldgenLookup lookup = WorldgenLookup.fromName(argv[index + 1][0 .. strlen(argv[index + 1])]);
-                arguments.worldgen.kind = lookup.kind;
-                arguments.isValid = arguments.isValid && lookup.isFound;
-                index += 1;
-            } else if (strcmp(argument, "--seed") == 0 && hasValue) {
-                arguments.worldgen.seed = cast(uint) strtoul(argv[index + 1], null, DECIMAL);
-                index += 1;
-            } else if (strcmp(argument, "--screenshot") == 0 && hasValue) {
-                arguments.screenshotPath = argv[index + 1];
-                index += 1;
-            } else if (strcmp(argument, "--bench-load") == 0) {
-                arguments.isBenchLoad = true;
-            } else if (strcmp(argument, "--out") == 0 && hasValue) {
-                arguments.reportPath = argv[index + 1];
-                index += 1;
-            } else if (argument[0] != '-') {
-                arguments.scriptPath = argument;
-            }
-            index += 1;
+        while (index < argc && !arguments.error.isPresent()) {
+            index = arguments.parseAt(argc, argv, index);
+        }
+        if (!arguments.error.isPresent()) {
+            arguments.error = arguments.usageError();
         }
         return arguments;
     }
 
-    bool isOffscreenRunnable() const {
-        return reportPath !is null && scriptPath !is null;
+    int parseAt(int argc, char** argv, int index) {
+        const(char)* argument = argv[index];
+        FlagValue value = FlagValue.fromArgv(argc, argv, index);
+        if (strcmp(argument, "--config") == 0) {
+            configPath = value.text;
+            error = value.error;
+            return index + 2;
+        } else if (strcmp(argument, "--record") == 0) {
+            recordPath = value.text;
+            error = value.error;
+            return index + 2;
+        } else if (strcmp(argument, "--sensitivity") == 0) {
+            parseSensitivity(value);
+            return index + 2;
+        } else if (strcmp(argument, "--invert-y") == 0) {
+            isYInverted = true;
+            return index + 1;
+        } else if (strcmp(argument, "--worldgen") == 0) {
+            WorldgenArgument parsed = WorldgenArgument.fromArgv(argc, argv, index);
+            worldgen = parsed.worldgen;
+            error = parsed.error;
+            return index + parsed.consumed;
+        } else if (strcmp(argument, "--screenshot") == 0) {
+            screenshotPath = value.text;
+            error = value.error;
+            return index + 2;
+        } else if (strcmp(argument, "--bench-load") == 0) {
+            isBenchLoad = true;
+            return index + 1;
+        } else if (strcmp(argument, "--out") == 0) {
+            reportPath = value.text;
+            error = value.error;
+            return index + 2;
+        } else if (argument[0] == '-') {
+            error = StartupError(null, "unknown option", argument);
+            return index + 1;
+        } else if (scriptPath !is null) {
+            error = StartupError(null, "only one script is run, unexpected", argument);
+            return index + 1;
+        } else {
+            scriptPath = argument;
+            return index + 1;
+        }
+    }
+
+    void parseSensitivity(FlagValue value) {
+        if (value.error.isPresent()) {
+            error = value.error;
+        } else {
+            NumberArgument number = NumberArgument.fromText(value.text);
+            if (number.isPresent) {
+                sensitivity = number.value;
+                hasSensitivity = true;
+            } else {
+                error = StartupError(null, "sensitivity is not a number", value.text);
+            }
+        }
+    }
+
+    StartupError usageError() const {
+        if (isBenchLoad && reportPath is null) {
+            return StartupError(null, "needs --out", "--bench-load");
+        } else if (screenshotPath !is null && (reportPath is null || scriptPath is null)) {
+            return StartupError(null, "needs --out and a script", "--screenshot");
+        } else if (screenshotPath is null && !isBenchLoad && (reportPath !is null || scriptPath !is null)) {
+            return StartupError(null, "--out and a script are only for --screenshot, unexpected", firstOf(reportPath, scriptPath));
+        } else {
+            return StartupError.init;
+        }
+    }
+}
+
+const(char)* firstOf(const(char)* first, const(char)* second) {
+    if (first !is null) {
+        return first;
+    } else {
+        return second;
     }
 }
 
@@ -173,28 +223,30 @@ struct Session {
 
     int run(Arguments arguments) {
         if (arguments.recordPath is null) {
-            return runWindow(arguments.worldgen);
+            return runWindow(arguments);
         } else {
             immutable bool isOpened = recorder.open(arguments.recordPath);
             if (!isOpened) {
+                StartupError(null, "cannot open the recording file", arguments.recordPath).report(arguments.program);
                 return EXIT_FAILED;
             } else {
                 isRecording = true;
-                int status = runWindow(arguments.worldgen);
+                int status = runWindow(arguments);
                 recorder.close();
                 return status;
             }
         }
     }
 
-    int runWindow(WorldgenSettings worldgen) {
+    int runWindow(Arguments arguments) {
         immutable bool isWindowOpen = openWindow();
         if (!isWindowOpen) {
+            StartupError(null, "cannot open a window: needs an X display with XInput 2.1", null).report(arguments.program);
             return EXIT_FAILED;
         } else {
             SimMeters meters;
             renderer.setup(display, window, meters.chunkSize);
-            game = Game.make(worldgen, config.reachMeters);
+            game = Game.make(arguments.worldgen, config.reachMeters);
             runLoop();
             game.release();
             renderer.cleanup();
@@ -333,16 +385,16 @@ struct Session {
         }
     }
 
-    void recordEvent(const(char)* call) {
+    void recordCall(const(char)* call) {
         if (isRecording) {
-            recorder.recordEvent(call);
+            recorder.recordCall(call);
         }
     }
 
     void recordModeChange() {
-        char[TEXT_CAPACITY] call;
-        snprintf(call.ptr, call.length, "world:mode(\"%s\")", game.modeName());
-        recordEvent(call.ptr);
+        if (isRecording) {
+            recorder.recordMode(game.mode);
+        }
         isTitleDirty = true;
     }
 
@@ -369,6 +421,12 @@ struct Session {
         } else if (symbol == XK_n && !isRepeat) {
             game.toggleMode(MovementMode.noclip);
             recordModeChange();
+        } else if (symbol == XK_g && !isRepeat) {
+            game.cycleSpacing();
+            isTitleDirty = true;
+        } else if (symbol == XK_u && !isRepeat) {
+            game.cycleUpMode();
+            isTitleDirty = true;
         } else if (symbol >= XK_1 && symbol <= XK_9) {
             selectMaterial(cast(uint)(symbol - XK_1));
         } else {
@@ -379,9 +437,9 @@ struct Session {
     void selectMaterial(uint index) {
         if (index < MATERIAL_PALETTE.length && index != game.materialIndex) {
             game.materialIndex = index;
-            char[TEXT_CAPACITY] call;
-            snprintf(call.ptr, call.length, "world:material(%u)", index + 1);
-            recordEvent(call.ptr);
+            if (isRecording) {
+                recorder.recordMaterial(index + 1);
+            }
             isTitleDirty = true;
         }
     }
@@ -391,10 +449,10 @@ struct Session {
             capturePointer();
         } else if (button == Button1) {
             game.breakBlock();
-            recordEvent("world:break_block()");
+            recordCall("break_block");
         } else if (button == Button3) {
             game.placeBlock();
-            recordEvent("world:place_block()");
+            recordCall("place_block");
         }
     }
 
@@ -422,10 +480,15 @@ struct Session {
 
     void updateWindowTitle() {
         char[TEXT_CAPACITY] title;
+        string mode = ENUM_NAMES!MovementMode[game.mode];
+        string spacing = ENUM_NAMES!GridSpacing[game.world.graph.layout.spacing];
+        string up = ENUM_NAMES!UpMode[game.upMode];
+        char[TEXT_CAPACITY] modes;
+        snprintf(modes.ptr, modes.length, "%.*s (V) - %.*s grid (G) - %.*s up (U)", cast(int) mode.length, mode.ptr, cast(int) spacing.length, spacing.ptr, cast(int) up.length, up.ptr);
         if (isCaptured) {
-            snprintf(title.ptr, title.length, "mined - %s (V) - [%u] - Esc to release mouse - FPS %.0f", game.modeName(), game.materialIndex + 1, cast(double) fps);
+            snprintf(title.ptr, title.length, "mined - %s - [%u] - Esc to release mouse - FPS %.0f", modes.ptr, game.materialIndex + 1, cast(double) fps);
         } else {
-            snprintf(title.ptr, title.length, "mined - %s (V) - click to capture mouse - FPS %.0f", game.modeName(), cast(double) fps);
+            snprintf(title.ptr, title.length, "mined - %s - click to capture mouse - FPS %.0f", modes.ptr, cast(double) fps);
         }
         XStoreName(display, window, title.ptr);
         isTitleDirty = false;
@@ -515,6 +578,7 @@ immutable(char)* writtenText(bool isWritten) {
 bool renderScreenshot(Arguments arguments) {
     FILE* report = fopen(arguments.reportPath, "w");
     if (report is null) {
+        StartupError(null, "cannot open the report file", arguments.reportPath).report(arguments.program);
         return false;
     } else {
         SimMeters meters;
@@ -590,6 +654,7 @@ struct RenderBreakdown {
 bool benchLoad(Arguments arguments) {
     FILE* report = fopen(arguments.reportPath, "w");
     if (report is null) {
+        StartupError(null, "cannot open the report file", arguments.reportPath).report(arguments.program);
         return false;
     } else {
         SimMeters meters;
@@ -705,14 +770,13 @@ int runWindowed(Arguments arguments) {
 
 extern (C) int main(int argc, char** argv) {
     Arguments arguments = Arguments.fromArgv(argc, argv);
-    if (!arguments.isValid) {
-        return EXIT_FAILED;
-    } else if (arguments.isBenchLoad && arguments.reportPath !is null) {
+    if (arguments.error.isPresent()) {
+        arguments.error.report(argv[0]);
+        return EXIT_USAGE;
+    } else if (arguments.isBenchLoad) {
         return exitStatus(benchLoad(arguments));
-    } else if (arguments.screenshotPath !is null && arguments.isOffscreenRunnable()) {
+    } else if (arguments.screenshotPath !is null) {
         return exitStatus(renderScreenshot(arguments));
-    } else if (arguments.isBenchLoad || arguments.screenshotPath !is null) {
-        return EXIT_FAILED;
     } else {
         return runWindowed(arguments);
     }

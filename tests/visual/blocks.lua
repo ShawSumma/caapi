@@ -3,7 +3,7 @@ local YAW_STEP_DEGREES = 15
 local MATERIALS = 9
 
 return function(world)
-  world:worldgen("flat")
+  world:worldgen("plane")
   world:step()
   world:look(0, AIM_DOWN_DEGREES)
   world:look(-YAW_STEP_DEGREES * (MATERIALS - 1) / 2, 0)

@@ -5,12 +5,12 @@ import common.array : Array;
 import common.character.controller : relativeUp;
 import common.collision.graph : NodeVisit, isVisited;
 import common.dodeca : BOUNDING_SPHERE_RADIUS, CHUNK_BOUNDING_SPHERE_RADIUS, SIDE_COUNT, Side, VERTEX_COUNT, Vertex, chunkBoundingSphereCenter, reflection;
-import common.graph : Graph, NodeId, ROOT_NODE;
+import common.graph : Graph, ROOT_NODE;
 import common.math : MIsometry, MPoint, MVector;
 import common.node : ChunkSlot;
 import common.position : Position;
 import common.vector3 : scaled;
-import common.worldgen.generation : ChunkParams, WorldgenKind, WorldgenSettings;
+import common.worldgen.generation : ChunkParams, PlaneWorld, Worldgen;
 
 enum float TEST_BODY_REACH = 0.1f;
 enum float TEST_ALTITUDE_TOLERANCE = 1e-4f;
@@ -91,7 +91,7 @@ Position positionAtRise(ref Graph graph, float[3] up, float rise) {
 }
 
 unittest {
-    Graph graph = Graph.make(TEST_DIMENSION, WorldgenSettings(NodeId.init, 0, WorldgenKind.flat));
+    Graph graph = Graph.make(TEST_DIMENSION, Worldgen.fromPlane(PlaneWorld(0)));
     Position spawn = graph.clearSpawnPosition(TEST_BODY_REACH);
     float altitude = graph.nodeState(spawn.node).surface.distanceTo(spawn.local * MPoint!float.origin());
     assert(altitude > TEST_BODY_REACH - TEST_ALTITUDE_TOLERANCE);

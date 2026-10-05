@@ -30,6 +30,15 @@ ubyte boundaryCoord(ubyte chunkSize, CoordSign sign) {
     }
 }
 
+immutable int[3][6] CELL_NEIGHBOR_OFFSETS = [
+    [-1, 0, 0],
+    [1, 0, 0],
+    [0, -1, 0],
+    [0, 1, 0],
+    [0, 0, -1],
+    [0, 0, 1],
+];
+
 struct ChunkDirection {
     CoordAxis axis;
     CoordSign sign;

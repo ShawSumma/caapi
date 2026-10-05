@@ -11,7 +11,7 @@ local STOP_SECONDS = 0.5
 local WALK_TOLERANCE = 0.02
 local MIN_WALKED_FRACTION = 0.95
 local MIN_STAIR_RISE = 0.5
-local STEP_HEIGHT = 1.1
+local STEP_HEIGHT = 1.4
 
 local function walk_from_rest(world, dt)
   local start = world:traveled()
@@ -24,7 +24,7 @@ local function walk_from_rest(world, dt)
 end
 
 return function(world)
-  world:worldgen("flat")
+  world:worldgen("plane")
   walk.spawn(world)
   walk.check_standing(world, "before the drop")
 

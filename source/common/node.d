@@ -1,14 +1,22 @@
 module common.node;
 
-import core.stdc.math : floorf;
+import core.stdc.math : coshf, fabsf, floorf, logf, powf;
 import core.stdc.stdlib : free, malloc;
 import common.coords : CHUNK_DIRECTIONS, ChunkDirection, Coords;
-import common.dodeca : VERTEX_COUNT, Vertex, vertexDualToChunkFactor;
+import common.dodeca : BOUNDING_SPHERE_RADIUS, NODE_VOLUME, VERTEX_COUNT, Vertex, vertexDualToChunkFactor;
 import common.graph : NodeId;
 import common.margins : CoordsWithMargins, MarginFace, boundaryCoordWithMargins, clampToInterior, marginCoord;
 import common.material : Material;
+import common.math : higherOf, lowerOf;
 
 enum int OUTSIDE_GRID = -1;
+enum float DENSITY_EXPONENT = -4.0f / 3.0f;
+enum ubyte VOLUME_TEST_DIMENSION = 12;
+enum float MAX_VOLUME_SPREAD = 2.0f;
+enum float GRID_TOLERANCE = 1e-3f;
+enum float VOLUME_TOLERANCE = 1e-3f;
+immutable float[3] GAUSS_POINTS = [-0.7745967f, 0.0f, 0.7745967f];
+immutable float[3] GAUSS_WEIGHTS = [5.0f / 9.0f, 8.0f / 9.0f, 5.0f / 9.0f];
 enum ubyte TEST_DIMENSION = 4;
 
 struct ChunkId {
@@ -25,26 +33,125 @@ struct ChunkSlot {
     }
 }
 
+enum GridSpacing : ubyte {
+    volume,
+    uniform,
+}
+
 struct ChunkLayout {
-    float dualToGridFactor;
+    float dualToChunkFactor;
+    float cellRatio;
+    float chunkSpan;
+    GridSpacing spacing;
     ubyte dimension;
 
-    static ChunkLayout fromDimension(ubyte dimension) {
-        return ChunkLayout(vertexDualToChunkFactor() * dimension, dimension);
+    static ChunkLayout make(ubyte dimension, GridSpacing spacing) {
+        float cellRatio = 1;
+        final switch (spacing) {
+            case GridSpacing.volume:
+                cellRatio = powf(coshf(BOUNDING_SPHERE_RADIUS), DENSITY_EXPONENT / dimension);
+                break;
+            case GridSpacing.uniform:
+                break;
+        }
+        return ChunkLayout(vertexDualToChunkFactor(), cellRatio, 1.0f - powf(cellRatio, dimension), spacing, dimension);
+    }
+
+    float gridToChunk(float gridCoord) const {
+        float chunkCoord = gridCoord / dimension;
+        final switch (spacing) {
+            case GridSpacing.volume:
+                chunkCoord = (1.0f - powf(cellRatio, gridCoord)) / chunkSpan;
+                break;
+            case GridSpacing.uniform:
+                break;
+        }
+        return chunkCoord;
+    }
+
+    float chunkToGrid(float chunkCoord) const {
+        float gridCoord = chunkCoord * dimension;
+        final switch (spacing) {
+            case GridSpacing.volume:
+                gridCoord = geometricGrid(chunkCoord);
+                break;
+            case GridSpacing.uniform:
+                break;
+        }
+        return gridCoord;
+    }
+
+    float geometricGrid(float chunkCoord) const {
+        float remaining = 1.0f - chunkCoord * chunkSpan;
+        if (remaining > 0) {
+            return logf(remaining) / logf(cellRatio);
+        } else {
+            return float.infinity;
+        }
+    }
+
+    float gridToDual(float gridCoord) const {
+        return gridToChunk(gridCoord) / dualToChunkFactor;
+    }
+
+    float dualToGrid(float dualCoord) const {
+        return chunkToGrid(dualCoord * dualToChunkFactor);
+    }
+
+    float[3] cellCenter(int[3] cell) const {
+        return [cellCenterCoord(cell[0]), cellCenterCoord(cell[1]), cellCenterCoord(cell[2])];
+    }
+
+    float cellCenterCoord(int cell) const {
+        return gridToChunk(cell + 0.5f);
     }
 
     int dualToVoxel(float dualCoord) const {
-        float floorGridCoord = floorf(dualCoord * dualToGridFactor);
+        float floorGridCoord = floorf(dualToGrid(dualCoord));
         if (floorGridCoord >= 0.0f && floorGridCoord < cast(float) dimension) {
             return cast(int) floorGridCoord;
         } else {
             return OUTSIDE_GRID;
         }
     }
+}
 
-    float gridToDual(ubyte gridCoord) const {
-        return cast(float) gridCoord / dualToGridFactor;
+float kleinBoxVolume(float[3] low, float[3] high) {
+    float[3] middle = [(low[0] + high[0]) / 2, (low[1] + high[1]) / 2, (low[2] + high[2]) / 2];
+    float[3] half = [(high[0] - low[0]) / 2, (high[1] - low[1]) / 2, (high[2] - low[2]) / 2];
+    float total = 0;
+    foreach (i; 0 .. GAUSS_POINTS.length) {
+        foreach (j; 0 .. GAUSS_POINTS.length) {
+            foreach (k; 0 .. GAUSS_POINTS.length) {
+                float x = middle[0] + half[0] * GAUSS_POINTS[i];
+                float y = middle[1] + half[1] * GAUSS_POINTS[j];
+                float z = middle[2] + half[2] * GAUSS_POINTS[k];
+                float inside = 1.0f - x * x - y * y - z * z;
+                total += GAUSS_WEIGHTS[i] * GAUSS_WEIGHTS[j] * GAUSS_WEIGHTS[k] / (inside * inside);
+            }
+        }
     }
+    return total * half[0] * half[1] * half[2];
+}
+
+unittest {
+    ChunkLayout layout = ChunkLayout.make(VOLUME_TEST_DIMENSION, GridSpacing.volume);
+    float smallest = float.infinity;
+    float largest = 0;
+    float total = 0;
+    foreach (x; 0 .. VOLUME_TEST_DIMENSION) {
+        foreach (y; 0 .. VOLUME_TEST_DIMENSION) {
+            foreach (z; 0 .. VOLUME_TEST_DIMENSION) {
+                assert(fabsf(layout.chunkToGrid(layout.gridToChunk(x)) - x) < GRID_TOLERANCE);
+                float volume = kleinBoxVolume([layout.gridToDual(x), layout.gridToDual(y), layout.gridToDual(z)], [layout.gridToDual(x + 1), layout.gridToDual(y + 1), layout.gridToDual(z + 1)]);
+                smallest = lowerOf(smallest, volume);
+                largest = higherOf(largest, volume);
+                total += volume;
+            }
+        }
+    }
+    assert(largest / smallest < MAX_VOLUME_SPREAD);
+    assert(fabsf(total * VERTEX_COUNT / NODE_VOLUME - 1) < VOLUME_TOLERANCE);
 }
 
 enum VoxelKind : ubyte {
