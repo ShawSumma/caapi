@@ -48,10 +48,11 @@ shared simulation code in `source/common`. Two entry points: `source/main.d`
     `position.d`, `material.d`, `settings.d` (chunk dimension and
     `CharacterConfig`).
   - worldgen: `worldgen/generation.d` (Worldgen kinds, node state, chunk
-    params, proofs, voxels, trees), `tower.d` (the box tower: membership,
-    frame, column coordinates, stories, door, stair route), `building.d`
-    (a node's tower voxels: walls, floors, stairs, door, windows,
-    merlons), `terraingen.d`, `plane.d`, `spawn.d`.
+    params, proofs, voxels, trees), `tower.d` (structure plans: tower
+    and bridge lines, membership, frames, column coordinates, stories,
+    door, spawn, route), `building.d` (a node's structure voxels per
+    line: tower walls, floors, stairs, windows, merlons, the crown's hall,
+    balconies and arch decks), `terraingen.d`, `plane.d`, `spawn.d`.
   - character (see Character controller): `character/features.d`
     (the exposed faces, edges and corners of solid cells around a body,
     in its local Klein frame; cell visitors for overlap checks and
@@ -68,7 +69,7 @@ shared simulation code in `source/common`. Two entry points: `source/main.d`
   `tests/slope/` (tilted plane world), `tests/structure/` (structure
   world), `tests/api.lua`; `tests/lib/` shared Lua (`walk.lua` builds
   walls, steps and corners layer by layer, one material per layer;
-  `climb.lua` follows the stair route up the tower); `tests/visual/`
+  `climb.lua` follows a structure's route waypoints); `tests/visual/`
   screenshot scenes.
   Physics is tested only in plane and structure worlds, never in terrain.
 - `tools/gridvolume.py` - measures block-volume spread and block edge
@@ -154,7 +155,7 @@ Headless verification:
   structure <name>` (both clients; `world:worldgen(kind[, tilt or name])`
   in a script). A kind takes a fixed number of arguments, parsed per kind
   with a `final switch`; structure names come from `StructureKind`
-  (`tower`). `plane 0` fills exactly below the base surface plane. The base plane is
+  (`tower`, `crown`). `plane 0` fills exactly below the base surface plane. The base plane is
   lattice-aligned, so this is a genuinely flat floor with gravity
   perpendicular to it. Use it to isolate physics from terrain. A nonzero
   tilt gives a constant grade relative to gravity (gd(altitude) +
@@ -163,9 +164,9 @@ Headless verification:
   of its base line. The player spawns facing uphill. `structure` is the
   flat ground with exactly one structure; the player spawns on the
   ground `SPAWN_DISTANCE` (1) out from its door, facing it.
-- `--dump-structure` (needs `--worldgen structure <name>`) - segments,
-  stories and edge length, then each tower node in reach: altitude and
-  how many voxels it fills.
+- `--dump-structure` (needs `--worldgen structure <name>`) - towers,
+  lines, stories and edge length, then each structure node in reach:
+  altitude and how many voxels it fills.
 - `--dump-world [radius]` - deterministic world hash dump; byte-diff two
   runs' reports to prove worldgen unchanged. Deferred materials are
   resolved first; each chunk line carries a materials hash and an
@@ -216,13 +217,15 @@ their receiver, so `world.wait(1)` is an error - always call with `:`.
   `material([1..9])`, `break_block()`,
   `place_block()` (both return whether they changed a voxel),
   `enter_structure(h)` (structure world only: puts the player on the
-  tower's axis h above the ground), `enter_stairs()` (stands the player
-  on the ground floor inside the door, where the route starts) and
-  `stair_waypoint(k)` (the k-th stop of the route up; per story: the
+  first tower's axis h above the ground), `enter_route()` (stands the
+  player on the first tower's ground floor, where the route starts) and
+  `route_waypoint(k)` (the k-th stop of the route; per story: the
   middle lane, the flight's lane, its three treads, the landing, and the
-  middle lane again: yaw and horizontal distance from the body to the
-  center of that stop's floor, and the floor's rise above the feet; nil
-  at the roof or when the body is not in a tower node).
+  middle lane again; the crown's route leaves through the bridge door,
+  crosses the arch and climbs the neighbor tower: yaw and horizontal
+  distance from the body to the center of that stop's floor, and the
+  floor's rise above the feet; nil past the end or outside a structure
+  world).
 - Observation: `target_material()` (snake_case name of the voxel in reach
   under the crosshair, or nil), `traveled()` (path length),
   `is_on_ground()`, `altitude()` (the body center's distance to the
@@ -514,39 +517,61 @@ plane, then the crease of two, else stop), and repeats up to
   needs ground below and empty cells at and above its base, and is
   placed only if its whole box fits inside its chunk: chunks are
   generated independently, so nothing may cross a chunk.
-- Towers (`worldgen/tower.d`) are boxes built around one honeycomb
-  edge line. The base node's down face `Side.a` lies on the surface
-  plane, so the edge leaving its vertex on that face is a geodesic
-  perpendicular to the ground, and the edges continuing it stay on that
-  line. Around the line every chunk has one grid axis along it and two
-  across it, so the tower is counted in whole cells: `ColumnChunk` maps
-  a cell to column coordinates (across, along, height), height counted
-  from the ground and 2 * dimension cells per edge (vertex to edge
-  midpoint to the next vertex). Cell layers are geodesic planes
-  perpendicular to the line: floors are exactly flat, and relative to
+- Structures (`worldgen/tower.d`) are built around honeycomb edge
+  lines. A `StructurePlan` lists the lines, each with a placement in the
+  base node (y along the line). Around a line every chunk has one grid
+  axis along it and two across it, so everything is counted in whole
+  cells: `ColumnChunk` maps a cell to column coordinates (across, along,
+  height), height counted from the line's first vertex and
+  `edgeCells` (2 * dimension) cells per edge (vertex to edge midpoint to
+  the next vertex). A node belongs to the structure when one of its
+  vertices is on a line within the line's length. `NodeStructure.frame`
+  maps base node coordinates into the node; it composes the reflections
+  from the base to the node through their common ancestor, in double,
+  because accumulating from the root drifted by a third of a cell at the
+  top. A chunk whose vertex is on several lines is stamped by each in
+  plan order, first non-empty stamp winning.
+- The base node's down face `Side.a` lies on the surface plane, so the
+  edge leaving each vertex of that face is a geodesic perpendicular to
+  the ground: a truly vertical line. Tower cell layers are geodesic
+  planes perpendicular to it: floors are exactly flat, and relative to
   gravity a floor at altitude h rises toward its walls (sinh(altitude)
-  = sinh(h) cosh(distance from the line)). Walls are grid planes, so
-  the box is widest at each edge's midpoint. A node belongs to the
-  tower when one of its vertices is on the line between the ground and
-  the top (`isOnTowerLine`). `NodeStructure.frame` maps tower
-  coordinates (origin at the line's foot, y up the line, the door
-  toward -x) into the node; it composes the reflections from the base
-  to the node through their common ancestor, in double, because
-  accumulating from the root drifted by a third of a cell at the top.
-- Buildings (`worldgen/building.d`) stamp each cell of a tower node's
-  column chunks from its column coordinates, so they are watertight
-  across chunks and nodes by construction. The box is
-  2 * `BOX_HALF_CELLS` cells square, `TOWER_SEGMENTS` edges tall, on a
-  `FOUNDATION_CELLS` foundation. Its outer ring is the wall: trim at the
-  corners and on every floor layer, a 2x3 door in the middle of the -x
-  face, 1x1 windows (shorter than the body) in every other column at
-  layer 2 of each story (layer 0 is the floor), merlons above the top. Inside, a floor
-  every `STORY_CELLS` layers and one straight flight per story: three
-  one-block treads in a two-cell lane, the lane alternating sides story
-  by story, under a stairwell hole in the next floor that also spans the
-  cell before the first tread. Without that cell the 3-cell headroom
-  (cells shrink with height) left no room to step or jump onto the
-  first tread under the ceiling. `stairSpot` is the route up.
+  = sinh(h) cosh(distance from the line)). Walls are grid planes, so a
+  box is widest at each edge's midpoint.
+- `tower` is one box on the first such line: 2 * `BOX_HALF_CELLS` cells
+  square, `BOX_TOWER_SEGMENTS` edges tall, on a `FOUNDATION_CELLS`
+  foundation. Its outer ring is the wall: trim at the corners and on
+  every floor layer, a 2x3 door in the middle of the -x face, 2-wide
+  1-tall windows (shorter than the body) one cell in from each corner
+  pillar at layer 2 of each story (layer 0 is the floor), merlons above
+  the top. Inside, a floor every `STORY_CELLS` layers and one straight
+  flight per story: three one-block treads in a two-cell lane, the lane
+  alternating sides story by story, under a stairwell hole in the next
+  floor that also spans the cell before the first tread. Without that
+  cell the 3-cell headroom (cells shrink with height) left no room to
+  step or jump onto the first tread under the ceiling.
+- `crown` uses all five vertical lines of the base node: its floor plan
+  is that face, a right-angled pentagon. A two-story hall fills the base
+  node's five corner chunks (a corner chunk is the inside quadrant,
+  across and along both >= 0, of its corner's column) with a roof
+  terrace and a 2-cell parapet at `HALL_ROOF`, windows, and a door in
+  the middle of one side, which the spawn faces. On each corner a box tower
+  (stairs as in `tower`, `CROWN_SEGMENTS` edges tall) rises; its inside
+  quadrant is open to the hall below the roof, a door leads out onto the
+  terrace, and balconies (`FIRST_BALCONY_STORY` up, alternating outer
+  faces) stand on its outer faces. Vertical geodesics diverge, so the
+  five towers fan apart as they rise. One edge up, each tower's top
+  vertex has two horizontal edges along the hall's sides; each pair
+  that shares a side meets at the side's fifth vertex at a right angle
+  (the side is a right-angled pentagon too), and a bridge line on each
+  carries a 2-wide deck with 2-cell rails (a 1-cell rail would be
+  stepped onto). Each deck is level at its tower, but a geodesic rises
+  away from the equidistant surfaces, so the two decks form an arch:
+  relative to gravity a deck at distance d along an edge from a
+  vertical line at altitude h tilts by acos(cosh h / sqrt(1 + cosh^2 d
+  sinh^2 h)), 45 degrees at the apex. A unit test checks that the two
+  decks of an arch share their apex cell. `routeStop` is the route
+  scripts follow.
 - A node's building is memoized per node. In the client the streamer
   computes it on a worker (`Streamer.scheduleBuilding`) and holds that
   node's chunks back until it is integrated; headless and

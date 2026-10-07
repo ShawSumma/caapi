@@ -16,7 +16,7 @@ import common.node : Chunk, ChunkSlot, ChunkState, VoxelData;
 import common.position : Position;
 import common.traversal : NearbyNode, NearbyScratch;
 import common.worldgen.generation : ChunkParams, GeneratedVoxels, StructureWorld, Worldgen;
-import common.worldgen.tower : STORY_CELLS, TOWER_SEGMENTS, altitude, edgeLength, towerTop;
+import common.worldgen.tower : STORY_CELLS, StructurePlan, altitude, edgeLength;
 
 enum uint DRIVE_NEARBY_VERSION = 1;
 enum uint DRIVE_IDLE_ITERATIONS = 200;
@@ -218,7 +218,8 @@ size_t filledVoxels(ref Graph graph, uint slot) {
 
 void dumpStructure(FILE* output, ubyte dimension, StructureWorld world) {
     Graph graph = Graph.make(dimension, Worldgen.fromStructure(world));
-    fprintf(output, "segments=%d stories=%d edge=%.4f\n", TOWER_SEGMENTS, towerTop(dimension) / STORY_CELLS, cast(double) edgeLength(graph.layout).value);
+    StructurePlan plan = StructurePlan.fromKind(world.kind, graph.layout);
+    fprintf(output, "towers=%u lines=%u stories=%d edge=%.4f\n", plan.towerCount, plan.count, plan.top / STORY_CELLS, cast(double) edgeLength(graph.layout).value);
     NearbyScratch scratch;
     NearbyNode[] nearby = scratch.collectAll(graph, Position(graph.worldgen.structure.base, MIsometry!float.identity()), STRUCTURE_DUMP_RADIUS);
     foreach (node; nearby) {

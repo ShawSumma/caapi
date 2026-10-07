@@ -282,8 +282,9 @@ Typed now:
   `regionReach`, `Stepped.traveled`, `Mover.settle`, the step rise.
 - `common/character/features.d`: the reach of `collect` and
   `visitCells`; `BlockProbe`.
-- `common/worldgen/tower.d`: the edge length, the on-line tolerance and
-  the spawn distance (its dimensions are cell counts).
+- `common/worldgen/tower.d`: the edge length, structure line lengths,
+  the on-line tolerance and the spawn distance (its dimensions are cell
+  counts).
 - `client/config.d`: `ClientConfig`.
 - `client/game.d`: time, traveled distance, altitude, camera vertical
   motion, stair waypoints, look input, spawn and placement lifts.

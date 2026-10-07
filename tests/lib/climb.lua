@@ -5,14 +5,13 @@ local climb = {}
 local REACHED_DISTANCE = 0.02
 local REACHED_RISE = 0.02
 local MAX_STEPS_PER_WAYPOINT = 400
-local MIN_CLIMB = 2.5
 
-local function follow(world)
+function climb.follow(world, last)
   local index = 1
   local steps = 0
   world:hold("fwd")
-  while world:stair_waypoint(index) do
-    local yaw, horizontal, rise = world:stair_waypoint(index)
+  while index <= last and world:route_waypoint(index) do
+    local yaw, horizontal, rise = world:route_waypoint(index)
     if world:is_on_ground() and horizontal < REACHED_DISTANCE and math.abs(rise) < REACHED_RISE then
       index = index + 1
       steps = 0
@@ -31,16 +30,16 @@ local function follow(world)
   return index - 1
 end
 
-function climb.stairs(world)
-  world:enter_stairs()
+function climb.route(world, min_climb)
+  world:enter_route()
   world:wait(walk.SETTLE_SECONDS)
-  assert(world:is_on_ground(), "standing at the foot of the stairs")
+  assert(world:is_on_ground(), "standing at the start of the route")
   local start = world:altitude()
   local motion = walk.track_motion(world)
-  local reached = follow(world)
+  local reached = climb.follow(world, math.huge)
   world:wait(walk.SETTLE_SECONDS)
   assert(world:is_on_ground(), string.format("standing after %d waypoints", reached))
-  assert(world:altitude() - start >= MIN_CLIMB, string.format("climbed only %.3f over %d waypoints", world:altitude() - start, reached))
+  assert(world:altitude() - start >= min_climb, string.format("climbed only %.3f over %d waypoints", world:altitude() - start, reached))
   walk.check_speed_limit(motion)
 end
 

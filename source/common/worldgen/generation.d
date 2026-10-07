@@ -22,6 +22,7 @@ enum WorldgenKind : ubyte {
 
 enum StructureKind : ubyte {
     tower,
+    crown,
 }
 
 struct PlaneWorld {

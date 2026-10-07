@@ -4,7 +4,7 @@ import core.stdc.math : floor;
 import core.stdc.stdio : FILE, fclose, fopen, fprintf;
 import core.stdc.string : strlen;
 import bindings.lua : luaL_checkinteger, luaL_checklstring, luaL_checknumber, luaL_checktype, luaL_error, luaL_loadfilex, luaL_newstate, luaL_openselectedlibs, luaL_optnumber, luaL_ref, luaL_traceback, luaL_unref, lua_CFunction, lua_Integer, lua_State, lua_callk, lua_close, lua_createtable, lua_getglobal, lua_gettop, lua_pcallk, lua_pushboolean, lua_pushcclosure, lua_pushinteger, lua_pushlightuserdata, lua_pushlstring, lua_pushnil, lua_pushnumber, lua_pushstring, lua_pushvalue, lua_rawgeti, lua_setfield, lua_setglobal, lua_settop, lua_tolstring, lua_touserdata, lua_type;
-import client.game : FrameInput, Game, KEY_COUNT, Key, MATERIAL_PALETTE, StairWaypoint;
+import client.game : FrameInput, Game, KEY_COUNT, Key, MATERIAL_PALETTE, RouteWaypoint;
 import client.world : TargetMaterial;
 import common.array : Array;
 import common.character.controller : MovementMode;
@@ -204,8 +204,8 @@ struct ScriptHost {
         registerMethod("place_block", &luaPlaceBlock);
         registerMethod("target_material", &luaTargetMaterial);
         registerMethod("enter_structure", &luaEnterStructure);
-        registerMethod("enter_stairs", &luaEnterStairs);
-        registerMethod("stair_waypoint", &luaStairWaypoint);
+        registerMethod("enter_route", &luaEnterRoute);
+        registerMethod("route_waypoint", &luaRouteWaypoint);
         registerMethod("traveled", &luaTraveled);
         registerMethod("is_on_ground", &luaIsOnGround);
         registerMethod("altitude", &luaAltitude);
@@ -375,22 +375,22 @@ extern (C) int luaEnterStructure(lua_State* lua) {
     return 0;
 }
 
-extern (C) int luaEnterStairs(lua_State* lua) {
+extern (C) int luaEnterRoute(lua_State* lua) {
     ScriptHost* host = methodHost(lua);
     if (host.game.world.graph.worldgen.kind != WorldgenKind.structure) {
-        luaL_error(lua, "enter_stairs needs the structure worldgen");
+        luaL_error(lua, "enter_route needs the structure worldgen");
     } else {
-        host.game.enterStairs();
+        host.game.enterRoute();
     }
     return 0;
 }
 
-extern (C) int luaStairWaypoint(lua_State* lua) {
+extern (C) int luaRouteWaypoint(lua_State* lua) {
     ScriptHost* host = methodHost(lua);
     lua_Integer number = luaL_checkinteger(lua, SELF + 1);
-    StairWaypoint waypoint;
+    RouteWaypoint waypoint;
     if (number >= 1) {
-        waypoint = host.game.stairWaypoint(cast(size_t)(number - 1));
+        waypoint = host.game.routeWaypoint(cast(size_t)(number - 1));
     }
     if (waypoint.isFound) {
         lua_pushnumber(lua, -degreesOf(waypoint.yaw));

@@ -8,7 +8,7 @@ import common.array : Array;
 import common.character.controller : CharacterInput, CharacterState, MovementMode, Mover, Slide, Stepped, movedBy, regionReach;
 import common.character.features : CellOverlap, Features, RequiredChunks, visitCells;
 import common.character.sweep : Capsule, sectionCenters;
-import common.graph : Node, NodeId;
+import common.graph : NodeId;
 import common.material : Material;
 import common.math : MIsometry, MPoint, MVector;
 import common.node : ChunkSlot;
@@ -19,7 +19,7 @@ import common.units : Acceleration, Angle, Length, Speed, Time;
 import common.vector3 : ZERO_VECTOR, cross, dot, magnitude, negated, plus, rejectAlong, scaled;
 import common.worldgen.generation : NodeState, Worldgen, WorldgenKind;
 import common.worldgen.spawn : clearSpawnPosition, collectChunksNear;
-import common.worldgen.tower : ColumnSpot, columnPoint, doorSpot, doorwaySpawn, stairSpot;
+import common.worldgen.tower : NodeStructure, RouteStop, StructurePlan, columnPoint, routeStop;
 
 enum float STRUCTURE_SEARCH_RADIUS = 4.0f;
 enum uint MAX_BODY_SECTIONS = 64;
@@ -65,7 +65,7 @@ float axisValue(bool isHeld) {
     }
 }
 
-struct StairWaypoint {
+struct RouteWaypoint {
     Angle yaw;
     Length horizontal;
     Length rise;
@@ -133,7 +133,7 @@ struct Game {
 
     void placeAtSpawn() {
         if (world.graph.worldgen.kind == WorldgenKind.structure) {
-            placeAt(towerPosition(doorwaySpawn()), bodyExtent() + character.skin);
+            placeAt(linePosition(0, structurePlan().spawnPoint(world.graph.layout)), bodyExtent() + character.skin);
         } else {
             Position spawn = world.graph.clearSpawnPosition(bodyReach().value);
             characterState = CharacterState(spawn, ZERO_VECTOR, [0, 1, 0], world.graph.upAt(spawn), false);
@@ -194,9 +194,14 @@ struct Game {
         return transform;
     }
 
+    StructurePlan structurePlan() const {
+        return StructurePlan.fromKind(world.graph.worldgen.structure.kind, world.graph.layout);
+    }
+
     float[3] directionToDoor() {
         NodeId base = world.graph.worldgen.structure.base;
-        MPoint!float door = world.graph.ensureStructureAt(world.graph.slotOf(base)).frame * columnPoint(world.graph.layout, doorSpot());
+        StructurePlan plan = structurePlan();
+        MPoint!float door = world.graph.ensureStructureAt(world.graph.slotOf(base)).lineToNode(plan, 0) * columnPoint(world.graph.layout, plan.doorSpot(world.graph.layout.dimension));
         return (characterState.position.local.inverse() * nodeTransform(base, STRUCTURE_SEARCH_RADIUS) * door).vec.xyz();
     }
 
@@ -212,32 +217,44 @@ struct Game {
     }
 
     void enterStructure(Length height) {
-        placeAt(towerPosition(MPoint!float(MVector!float([0, sinhf(height.value), 0, coshf(height.value)]))), Length(0));
+        placeAt(linePosition(0, MPoint!float(MVector!float([0, sinhf(height.value), 0, coshf(height.value)]))), Length(0));
     }
 
-    Position towerPosition(MPoint!float inTower) {
+    Position linePosition(uint line, MPoint!float inLine) {
         uint slot = world.graph.slotOf(world.graph.worldgen.structure.base);
-        MPoint!float point = world.graph.ensureStructureAt(slot).frame * inTower;
+        StructurePlan plan = structurePlan();
+        MPoint!float point = world.graph.ensureStructureAt(slot).lineToNode(plan, line) * inLine;
         return world.graph.ensureNormalized(Position(world.graph.idAt(slot), MIsometry!float.fromTranslation(MPoint!float.origin(), point)));
     }
 
-    void enterStairs() {
-        placeAt(towerPosition(columnPoint(world.graph.layout, stairSpot(0, world.graph.layout.dimension))), bodyExtent() + character.skin);
+    void enterRoute() {
+        StructurePlan plan = structurePlan();
+        RouteStop stop = routeStop(plan, 0, world.graph.layout.dimension);
+        placeAt(linePosition(stop.line, columnPoint(world.graph.layout, stop.spot)), bodyExtent() + character.skin);
     }
 
-    StairWaypoint stairWaypoint(size_t index) const {
-        ColumnSpot spot = stairSpot(index, world.graph.layout.dimension);
-        const(Node)* node = world.graph.nodeAt(world.graph.slotOf(characterState.position.node));
-        if (spot.isFound && node.hasStructure && node.structure.isPresent()) {
-            MVector!float local = (characterState.position.local.inverse() * node.structure.frame * columnPoint(world.graph.layout, spot)).vec;
-            float[3] direction = local.xyz();
-            float length = direction.magnitude;
-            float[3] toFloor = direction.scaled(acoshf(local.data[3]) / length);
-            float[3] fromFeet = toFloor.plus(characterState.up.scaled(bodyExtent().value));
-            return StairWaypoint(yawToward(toFloor), Length(fromFeet.rejectAlong(characterState.up).magnitude), Length(fromFeet.dot(characterState.up)), true);
+    RouteWaypoint routeWaypoint(size_t index) {
+        if (world.graph.worldgen.kind != WorldgenKind.structure) {
+            return RouteWaypoint.init;
         } else {
-            return StairWaypoint.init;
+            StructurePlan plan = structurePlan();
+            RouteStop stop = routeStop(plan, index, world.graph.layout.dimension);
+            if (stop.spot.isFound) {
+                NodeStructure structure = world.graph.ensureStructureAt(world.graph.slotOf(characterState.position.node));
+                return waypointAt(structure.lineToNode(plan, stop.line) * columnPoint(world.graph.layout, stop.spot));
+            } else {
+                return RouteWaypoint.init;
+            }
         }
+    }
+
+    RouteWaypoint waypointAt(MPoint!float floor) const {
+        MVector!float local = (characterState.position.local.inverse() * floor).vec;
+        float[3] direction = local.xyz();
+        float length = direction.magnitude;
+        float[3] toFloor = direction.scaled(acoshf(local.data[3]) / length);
+        float[3] fromFeet = toFloor.plus(characterState.up.scaled(bodyExtent().value));
+        return RouteWaypoint(yawToward(toFloor), Length(fromFeet.rejectAlong(characterState.up).magnitude), Length(fromFeet.dot(characterState.up)), true);
     }
 
     void placeAt(Position target, Length lift) {
