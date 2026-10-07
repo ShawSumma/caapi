@@ -6,9 +6,8 @@ import core.stdc.stdlib : free, malloc;
 import client.meshing : Mesher;
 import client.streaming : Streamer, populateChunk, resolveMaterials;
 import common.clock : nowMilliseconds;
-import common.array : Array;
 import common.coords : Coords;
-import common.dodeca : CHUNK_BOUNDING_SPHERE_RADIUS, SIDE_COUNT, Side, VERTEX_COUNT, Vertex, chunkBoundingSphereCenter;
+import common.dodeca : CHUNK_BOUNDING_SPHERE_RADIUS, VERTEX_COUNT, Vertex, chunkBoundingSphereCenter;
 import common.graph : Graph, NodeId;
 import common.material : Material;
 import common.math : MIsometry, MPoint;
@@ -16,13 +15,13 @@ import common.murmur : murmurHash3;
 import common.node : Chunk, ChunkSlot, ChunkState, VoxelData;
 import common.position : Position;
 import common.traversal : NearbyNode, NearbyScratch;
-import common.worldgen.building : Building;
 import common.worldgen.generation : ChunkParams, GeneratedVoxels, StructureWorld, Worldgen;
-import common.worldgen.tower : NodeStructure, altitude, faceBit;
+import common.worldgen.tower : STORY_CELLS, TOWER_SEGMENTS, altitude, edgeLength, towerTop;
 
 enum uint DRIVE_NEARBY_VERSION = 1;
 enum uint DRIVE_IDLE_ITERATIONS = 200;
 enum size_t HASH_HEADER_BYTES = 2;
+enum float STRUCTURE_DUMP_RADIUS = 4.5f;
 
 struct ContentHashes {
     ulong[2] materials;
@@ -219,27 +218,16 @@ size_t filledVoxels(ref Graph graph, uint slot) {
 
 void dumpStructure(FILE* output, ubyte dimension, StructureWorld world) {
     Graph graph = Graph.make(dimension, Worldgen.fromStructure(world));
-    Array!uint nodes;
-    Array!uint depths;
-    nodes.append(graph.slotOf(graph.worldgen.structure.base));
-    depths.append(0);
-    size_t front = 0;
-    while (front < nodes.length) {
-        uint slot = nodes.ptr[front];
-        NodeStructure structure = graph.ensureStructureAt(slot);
-        Building building = Building.make(structure, graph.nodeAt(slot).state.surface, graph.layout);
-        fprintf(output, "depth=%u symbol=%u down=%u remaining=%u forks=%u altitude=%.3f incoming=%03x outgoing=%03x connected=%03x reached=%u route=%zu flips=%u edge=%u filled=%zu\n", depths.ptr[front], cast(uint) structure.part.symbol, cast(uint) structure.part.down, cast(uint) structure.part.remaining, cast(uint) structure.part.forks, cast(double) graph.nodeAt(slot).state.altitude(), cast(uint) structure.incoming, cast(uint) structure.outgoing, cast(uint) building.connected, building.reached, building.route.length, building.flips, building.edgeDistance, graph.filledVoxels(slot));
-        building.release();
-        foreach (index; 0 .. SIDE_COUNT) {
-            if ((structure.outgoing & faceBit(cast(Side) index)) != 0) {
-                nodes.append(graph.ensureNeighborSlot(slot, cast(Side) index));
-                depths.append(depths.ptr[front] + 1);
-            }
+    fprintf(output, "segments=%d stories=%d edge=%.4f\n", TOWER_SEGMENTS, towerTop(dimension) / STORY_CELLS, cast(double) edgeLength(graph.layout).value);
+    NearbyScratch scratch;
+    NearbyNode[] nearby = scratch.collectAll(graph, Position(graph.worldgen.structure.base, MIsometry!float.identity()), STRUCTURE_DUMP_RADIUS);
+    foreach (node; nearby) {
+        if (graph.ensureStructureAt(node.slot).isPresent()) {
+            graph.ensureNodeStateAt(node.slot);
+            fprintf(output, "altitude=%.3f filled=%zu\n", cast(double) graph.nodeAt(node.slot).state.altitude(), graph.filledVoxels(node.slot));
         }
-        front += 1;
     }
-    nodes.release();
-    depths.release();
+    scratch.release();
     graph.release();
 }
 

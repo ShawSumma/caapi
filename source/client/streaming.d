@@ -8,16 +8,19 @@ import common.array : Array;
 import common.clock : nowMilliseconds;
 import common.coords : CHUNK_DIRECTIONS, ChunkDirection, CoordSign;
 import common.dodeca : CHUNK_BOUNDING_SPHERE_RADIUS, VERTEX_COUNT, Vertex, adjacentVertices, canonicalSides, chunkBoundingSphereCenter;
-import common.graph : Graph, NO_SLOT;
+import common.graph : Graph, NO_SLOT, Node;
 import common.math : MIsometry, MPoint;
 import common.neighbors : chunkNeighborSlot, isPredictionContradicted, touchChunksAround;
-import common.node : Chunk, ChunkId, ChunkSlot, ChunkState, Occupancy;
+import common.node : Chunk, ChunkId, ChunkLayout, ChunkSlot, ChunkState, Occupancy;
 import common.traversal : NO_DEADLINE, NearbyNode;
+import common.worldgen.building : Building;
 import common.worldgen.generation : ChunkParams, GeneratedVoxels;
+import common.worldgen.tower : NodeStructure;
 
 enum uint RESERVED_CORES = 2;
 enum uint MAIN_WORKER = 0;
 enum uint DONE_FOREVER = uint.max;
+enum uint RESCAN = DONE_FOREVER - 1;
 enum uint MAX_SCAN_NODES_PER_FRAME = 4096;
 enum uint IN_FLIGHT_PER_WORKER = 256;
 enum double WORLDGEN_BUDGET_MILLISECONDS = 6.0;
@@ -30,6 +33,17 @@ struct GenRequest {
 struct GenResult {
     GeneratedVoxels generated;
     ChunkSlot chunk;
+}
+
+struct BuildingRequest {
+    NodeStructure structure;
+    ChunkLayout layout;
+    uint slot;
+}
+
+struct BuildingResult {
+    Building building;
+    uint slot;
 }
 
 struct ParallelJob {
@@ -48,16 +62,27 @@ struct GenQueue {
     pthread_cond_t jobFinished;
     Array!GenRequest pending;
     Array!GenResult done;
+    Array!BuildingRequest pendingBuildings;
+    Array!BuildingResult doneBuildings;
     ParallelJob* job;
     size_t pendingHead;
+    size_t pendingBuildingHead;
     bool isStopping;
 
     bool isJobOpen() const {
         return job !is null && job.claimed < job.count;
     }
 
+    bool hasPendingBuilding() const {
+        return pendingBuildingHead < pendingBuildings.length;
+    }
+
     bool hasWork() const {
-        return isJobOpen() || pendingHead < pending.length;
+        return isJobOpen() || hasPendingBuilding() || pendingHead < pending.length;
+    }
+
+    bool hasResults() const {
+        return done.length > 0 || doneBuildings.length > 0;
     }
 
     void waitForWork() {
@@ -71,6 +96,8 @@ struct GenQueue {
         while (hasWork()) {
             if (isJobOpen()) {
                 runClaimed(worker);
+            } else if (hasPendingBuilding()) {
+                buildNext();
             } else {
                 generateNext();
             }
@@ -108,6 +135,20 @@ struct GenQueue {
         done.append(GenResult(generated, request.chunk));
         pthread_cond_signal(&resultsReady);
     }
+
+    void buildNext() {
+        BuildingRequest request = pendingBuildings.ptr[pendingBuildingHead];
+        pendingBuildingHead += 1;
+        if (pendingBuildingHead >= pendingBuildings.length) {
+            pendingBuildings.clear();
+            pendingBuildingHead = 0;
+        }
+        pthread_mutex_unlock(&mutex);
+        Building building = Building.make(request.structure, request.layout);
+        pthread_mutex_lock(&mutex);
+        doneBuildings.append(BuildingResult(building, request.slot));
+        pthread_cond_signal(&resultsReady);
+    }
 }
 
 struct WorkerStart {
@@ -125,6 +166,7 @@ extern (C) void* workerMain(void* argument) {
 
 struct ScanOutcome {
     uint freshOutOfRange;
+    bool isWaitingOnBuilding;
     bool isInterrupted;
 }
 
@@ -133,11 +175,13 @@ struct Streamer {
     Array!WorkerStart starts;
     Array!GenRequest requests;
     Array!GenResult results;
+    Array!BuildingRequest buildingRequests;
     Array!uint doneVersion;
     GenQueue* queue;
     size_t resultsHead;
     uint workerCount;
     uint inFlight;
+    uint buildingsInFlight;
     uint scanCursor;
     uint scanVersion;
 
@@ -175,11 +219,12 @@ struct Streamer {
 
     void drive(ref Graph graph, const(NearbyNode)[] nearby, MIsometry!float cameraLocal, float distance, uint nearbyVersion, bool isUnbudgeted) {
         double deadline = budgetDeadline(isUnbudgeted);
-        integrate(graph, false, deadline);
-        requests.clear();
         if (doneVersion.length < graph.nodeCount) {
             doneVersion.resize(graph.nodeCount);
         }
+        integrate(graph, false, deadline);
+        requests.clear();
+        buildingRequests.clear();
         if (scanVersion != nearbyVersion) {
             scanVersion = nearbyVersion;
             scanCursor = 0;
@@ -212,6 +257,8 @@ struct Streamer {
                 immutable ScanOutcome outcome = scanNode(graph, nearbyNode, startPoint, threshold, budget, deadline);
                 if (outcome.isInterrupted) {
                     break;
+                } else if (outcome.isWaitingOnBuilding) {
+                    doneVersion.ptr[nearbyNode.slot] = RESCAN;
                 } else {
                     doneVersion.ptr[nearbyNode.slot] = doneMark(outcome.freshOutOfRange);
                 }
@@ -239,6 +286,7 @@ struct Streamer {
 
     ScanOutcome scanNode(ref Graph graph, NearbyNode nearbyNode, MPoint!float startPoint, float threshold, uint budget, double deadline) {
         uint freshOutOfRange = 0;
+        bool isWaitingOnBuilding = false;
         uint vertexIndex = 0;
         while (vertexIndex < VERTEX_COUNT && !isRequestBlocked(graph, nearbyNode, cast(Vertex) vertexIndex, startPoint, threshold, budget, deadline)) {
             Vertex vertex = cast(Vertex) vertexIndex;
@@ -246,13 +294,23 @@ struct Streamer {
             if (graph.chunkAt(slot).state == ChunkState.fresh) {
                 if (isOutOfRange(nearbyNode, vertex, startPoint, threshold)) {
                     freshOutOfRange += 1;
+                } else if (!isBuildingReady(graph, nearbyNode.slot)) {
+                    scheduleBuilding(graph, nearbyNode.slot);
+                    isWaitingOnBuilding = true;
                 } else {
                     request(graph, slot);
                 }
             }
             vertexIndex += 1;
         }
-        return ScanOutcome(freshOutOfRange, vertexIndex < VERTEX_COUNT);
+        return ScanOutcome(freshOutOfRange, isWaitingOnBuilding, vertexIndex < VERTEX_COUNT);
+    }
+
+    void scheduleBuilding(ref Graph graph, uint slot) {
+        if (!graph.nodeAt(slot).hasBuilding && !graph.nodeAt(slot).isBuildingQueued) {
+            graph.nodeAt(slot).isBuildingQueued = true;
+            buildingRequests.append(BuildingRequest(graph.ensureStructureAt(slot), graph.layout, slot));
+        }
     }
 
     void request(ref Graph graph, ChunkSlot slot) {
@@ -268,28 +326,38 @@ struct Streamer {
     }
 
     void submitRequests() {
-        if (requests.length > 0) {
+        if (requests.length > 0 || buildingRequests.length > 0) {
             inFlight += cast(uint) requests.length;
+            buildingsInFlight += cast(uint) buildingRequests.length;
             pthread_mutex_lock(&queue.mutex);
             queue.pending.appendAll(requests.slice());
+            queue.pendingBuildings.appendAll(buildingRequests.slice());
             pthread_cond_broadcast(&queue.workAvailable);
             pthread_mutex_unlock(&queue.mutex);
         }
     }
 
+    bool isIdle() const {
+        return inFlight == 0 && buildingsInFlight == 0;
+    }
+
     void settle(ref Graph graph) {
-        while (inFlight > 0) {
+        while (!isIdle()) {
             integrate(graph, true, 0);
         }
     }
 
     void integrate(ref Graph graph, bool isWaiting, double deadline) {
         pthread_mutex_lock(&queue.mutex);
-        while (isWaiting && queue.done.length == 0 && resultsHead == results.length) {
+        while (isWaiting && !queue.hasResults() && resultsHead == results.length) {
             pthread_cond_wait(&queue.resultsReady, &queue.mutex);
         }
         results.appendAll(queue.done.slice());
         queue.done.clear();
+        foreach (built; queue.doneBuildings.slice()) {
+            integrateBuilding(graph, built);
+        }
+        queue.doneBuildings.clear();
         pthread_mutex_unlock(&queue.mutex);
         while (resultsHead < results.length && (isWaiting || nowMilliseconds() < deadline)) {
             GenResult result = results.ptr[resultsHead];
@@ -301,6 +369,22 @@ struct Streamer {
             results.clear();
             resultsHead = 0;
         }
+    }
+
+    void integrateBuilding(ref Graph graph, BuildingResult built) {
+        Node* node = graph.nodeAt(built.slot);
+        buildingsInFlight -= 1;
+        node.isBuildingQueued = false;
+        if (node.hasBuilding) {
+            built.building.release();
+        } else {
+            node.building = built.building;
+            node.hasBuilding = true;
+        }
+        if (built.slot < doneVersion.length) {
+            doneVersion.ptr[built.slot] = RESCAN;
+        }
+        scanCursor = 0;
     }
 
     void release() {
@@ -317,6 +401,12 @@ struct Streamer {
         foreach (result; queue.done.slice()) {
             result.generated.voxels.release();
         }
+        foreach (built; queue.doneBuildings.slice()) {
+            built.building.release();
+        }
+        queue.pendingBuildings.release();
+        queue.doneBuildings.release();
+        buildingRequests.release();
         foreach (result; results.slice()[resultsHead .. $]) {
             result.generated.voxels.release();
         }
@@ -332,6 +422,10 @@ struct Streamer {
         results.release();
         doneVersion.release();
     }
+}
+
+bool isBuildingReady(ref Graph graph, uint slot) {
+    return !graph.ensureStructureAt(slot).isPresent() || graph.nodeAt(slot).hasBuilding;
 }
 
 uint workerThreadCount(long cores) {

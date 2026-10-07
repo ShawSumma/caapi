@@ -1,6 +1,6 @@
 module client.graphics.renderer;
 
-import core.stdc.math : coshf, logf, powf, sinhf;
+import core.stdc.math : logf, powf, sinhf;
 import bindings.platform : Display, VK_ACCESS_HOST_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_ERROR_OUT_OF_DATE_KHR, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_BIND_POINT_GRAPHICS, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_QUERY_RESULT_64_BIT, VK_QUERY_TYPE_TIMESTAMP, VK_SHADER_STAGE_VERTEX_BIT, VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, VK_STRUCTURE_TYPE_MEMORY_BARRIER, VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, VK_STRUCTURE_TYPE_SUBMIT_INFO, VK_SUBOPTIMAL_KHR, VK_SUBPASS_CONTENTS_INLINE, VK_SUCCESS, VkBufferImageCopy, VkClearValue, VkCommandBuffer, VkCommandBufferBeginInfo, VkDescriptorSet, VkDevice, VkDeviceSize, VkDrawIndirectCommand, VkExtent2D, VkExtent3D, VkImageSubresourceLayers, VkMemoryBarrier, VkPhysicalDevice, VkPhysicalDeviceProperties, VkPipelineStageFlags, VkPresentInfoKHR, VkQueryPool, VkQueryPoolCreateInfo, VkRect2D, VkRenderPassBeginInfo, VkResult, VkSubmitInfo, VkViewport, Window, vkAcquireNextImageKHR, vkBeginCommandBuffer, vkCmdBeginRenderPass, vkCmdBindDescriptorSets, vkCmdBindPipeline, vkCmdCopyImageToBuffer, vkCmdDrawIndirect, vkCmdEndRenderPass, vkCmdNextSubpass, vkCmdPipelineBarrier, vkCmdPushConstants, vkCmdResetQueryPool, vkCmdSetScissor, vkCmdSetViewport, vkCmdWriteTimestamp, vkCreateQueryPool, vkDestroyQueryPool, vkDeviceWaitIdle, vkEndCommandBuffer, vkGetPhysicalDeviceProperties, vkGetQueryPoolResults, vkQueuePresentKHR, vkQueueSubmit, vkResetCommandBuffer, vkResetFences, vkWaitForFences;
 import client.graphics.base : SwapchainState;
 import client.graphics.core : VulkanCore;
@@ -21,8 +21,9 @@ import common.math : MDirection, PI;
 import common.node : ChunkLayout;
 import common.raycast.graph : GraphCastHit;
 import common.traversal : NOT_COLLECTED;
+import common.units : Angle;
 
-enum float VERTICAL_HALF_FOV_RADIANS = 45.0f * (PI / 180.0f);
+enum Angle HALF_VERTICAL_FOV = Angle(45.0f * (PI / 180.0f));
 enum float NEAR_PLANE = 1.0e-4f;
 enum float FOG_VISIBILITY_THRESHOLD = 1e-3f;
 enum float FOG_EXPONENT = 5.0f;
@@ -184,7 +185,7 @@ struct Renderer {
 
     CommonUniforms commonUniforms(ref const LocalWorld world) const {
         VkExtent2D extent = swapchain.extent;
-        Frustum frustum = Frustum.fromVerticalFov(VERTICAL_HALF_FOV_RADIANS, cast(float) extent.width / cast(float) extent.height);
+        Frustum frustum = Frustum.fromHalfFov(HALF_VERTICAL_FOV, cast(float) extent.width / cast(float) extent.height);
         float[MATRIX_FLOATS] cameraInverse = flatten(world.cameraInNearbyFrame().inverse().mat);
         float[MATRIX_FLOATS] projection = frustum.projection(NEAR_PLANE);
         MDirection!float[FRUSTUM_PLANE_COUNT] planes = frustum.planes();
@@ -196,19 +197,14 @@ struct Renderer {
             projection,
             matrixInverse(projection),
             cameraInverse,
-            warpMatrix(world.viewWarp),
             frustumPlanes,
             skyLinear,
             powf(logf(1.0f / FOG_VISIBILITY_THRESHOLD), 1.0f / FOG_EXPONENT) / world.renderRadius,
             FOG_EXPONENT,
             parityOf(determinant(matrixMultiply(projection, cameraInverse))),
             sinhf(CHUNK_BOUNDING_SPHERE_RADIUS),
-            world.warpInner,
-            world.warpOuter,
-            coshf(world.warpOuter + CHUNK_BOUNDING_SPHERE_RADIUS),
         );
     }
-
 
     void renderFrame(ref LocalWorld world) {
         layout = world.graph.layout;
@@ -418,17 +414,6 @@ uint drawBatch(uint remaining, uint limit) {
     } else {
         return remaining;
     }
-}
-
-float[MATRIX_FLOATS] warpMatrix(float[3][3] warp) {
-    float[MATRIX_FLOATS] result = 0;
-    foreach (column; 0 .. 3) {
-        foreach (row; 0 .. 3) {
-            result[column * 4 + row] = warp[row][column];
-        }
-    }
-    result[15] = 1;
-    return result;
 }
 
 float parityOf(float value) {

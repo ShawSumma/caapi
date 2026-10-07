@@ -3,13 +3,14 @@ module client.config;
 import core.stdc.stdio : FILE, fclose, fgets, fopen;
 import core.stdc.stdlib : strtof;
 import core.stdc.string : strlen;
+import common.units : Angle, AngularSpeed, Length;
 
 enum size_t CONFIG_LINE_CAPACITY = 256;
 
 struct ClientConfig {
-    float mouseRadiansPerCount = 0.001f;
-    float turnSpeed = 1.5f;
-    float reachMeters = 10.0f;
+    Angle mouseTurnPerCount = Angle(0.001f);
+    AngularSpeed keyTurnRate = AngularSpeed(1.5f);
+    Length reach = Length(0.5f);
     bool isYInverted;
 
     static ClientConfig fromFile(const(char)* path) {
@@ -29,11 +30,11 @@ struct ClientConfig {
 
     void apply(ConfigEntry entry) {
         if (entry.key == "mouse_sensitivity") {
-            mouseRadiansPerCount = strtof(entry.value.ptr, null);
+            mouseTurnPerCount = Angle(strtof(entry.value.ptr, null));
         } else if (entry.key == "turn_speed") {
-            turnSpeed = strtof(entry.value.ptr, null);
+            keyTurnRate = AngularSpeed(strtof(entry.value.ptr, null));
         } else if (entry.key == "reach") {
-            reachMeters = strtof(entry.value.ptr, null);
+            reach = Length(strtof(entry.value.ptr, null));
         } else if (entry.key == "invert_y") {
             isYInverted = entry.value == "1" || entry.value == "true" || entry.value == "yes" || entry.value == "on";
         }

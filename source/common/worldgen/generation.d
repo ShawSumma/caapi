@@ -8,7 +8,7 @@ import common.dodeca : Side, Vertex, canonicalSides, chunkGridCenterRadius, isAd
 import common.graph : Graph, NO_SLOT, NodeId, ParentList;
 import common.material : Material;
 import common.math : PI, clamped;
-import common.node : ChunkLayout, GridSpacing, Occupancy, VoxelData;
+import common.node : ChunkLayout, Occupancy, VoxelData;
 import common.worldgen.building : Building;
 import common.worldgen.plane : Plane;
 import common.worldgen.terraingen : TERRAIN_SURFACE_THICKNESS, materialTable, nearestLatticePoint, sqr, terraingenVoronoi;
@@ -39,7 +39,6 @@ struct Worldgen {
         StructureWorld structure;
     }
     WorldgenKind kind;
-    GridSpacing spacing;
 
     static Worldgen makeTerrain() {
         return Worldgen.init;
@@ -315,6 +314,14 @@ struct ChunkIncidentEnviroFactors {
     }
 }
 
+const(Building)* buildingIfPresent(ref Graph graph, uint slot) {
+    if (graph.ensureStructureAt(slot).isPresent()) {
+        return graph.ensureBuildingAt(slot);
+    } else {
+        return null;
+    }
+}
+
 uint crossedIf(ref Graph graph, uint slot, Side side, bool isCrossed) {
     if (isCrossed) {
         return graph.ensureNeighborSlot(slot, side);
@@ -324,6 +331,7 @@ uint crossedIf(ref Graph graph, uint slot, Side side, bool isCrossed) {
 }
 
 struct ChunkParams {
+    const(Building)* building;
     ulong nodeSpice;
     ChunkIncidentEnviroFactors env;
     Plane surface;
@@ -342,6 +350,7 @@ struct ChunkParams {
         NodeState state = *graph.ensureNodeStateAt(slot);
         bool isOnRoadLine = state.road == NodeStateRoad.east || state.road == NodeStateRoad.west;
         return ChunkParams(
+            graph.buildingIfPresent(slot),
             graph.idAt(slot).spice(),
             ChunkIncidentEnviroFactors.make(graph, slot, vertex),
             state.surface,
@@ -521,20 +530,18 @@ struct TerrainGenerator {
     void generateStructure() {
         if (params.structure.isPresent()) {
             ubyte dimension = params.dimension;
-            Building building = Building.make(params.structure, params.surface, params.layout);
             foreach (x; 0 .. dimension) {
                 foreach (y; 0 .. dimension) {
                     foreach (z; 0 .. dimension) {
                         size_t index = voxelIndex(dimension, x, y, z);
                         Material existing = voxels.get(index);
-                        Material material = building.materialAt(params.chunk, [x, y, z], existing);
+                        Material material = params.building.materialAt(params.chunk, [x, y, z], existing);
                         if (material != existing) {
                             voxels.toDense(dimension)[index] = material;
                         }
                     }
                 }
             }
-            building.release();
         }
     }
 

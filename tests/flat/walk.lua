@@ -15,7 +15,7 @@ return function(world)
     world:wait(0.5)
     local walked = world:traveled() - start
     local free = walk.SPEED * LEG_SECONDS
-    assert(walked >= MIN_WALKED_FRACTION * free, string.format("heading %d: walked %.2f m of %.1f m", heading, walked, free))
+    assert(walked >= MIN_WALKED_FRACTION * free, string.format("heading %d: walked %.4f of %.4f", heading, walked, free))
     walk.check_standing(world, string.format("heading %d", heading))
     world:turn(90, 0, 0.5)
   end

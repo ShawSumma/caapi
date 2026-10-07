@@ -282,6 +282,10 @@ MIsometry!float nodeToDual(Vertex v) {
     return DODECA_TABLES.nodeToDual[v];
 }
 
+MIsometry!float dualToNode(Vertex v) {
+    return DODECA_TABLES.dualToNode[v];
+}
+
 float vertexDualToChunkFactor() {
     return DODECA_TABLES.dualToChunkFactor;
 }

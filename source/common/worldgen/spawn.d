@@ -2,7 +2,6 @@ module common.worldgen.spawn;
 
 import core.stdc.math : coshf;
 import common.array : Array;
-import common.character.place : relativeUp;
 import common.dodeca : BOUNDING_SPHERE_RADIUS, CHUNK_BOUNDING_SPHERE_RADIUS, SIDE_COUNT, Side, VERTEX_COUNT, Vertex, chunkBoundingSphereCenter, reflection;
 import common.graph : Graph, ROOT_NODE;
 import common.math : MIsometry, MPoint, MVector;
@@ -69,7 +68,7 @@ bool isRegionProvenClear(ref Graph graph, Position position, float distance) {
 
 Position clearSpawnPosition(ref Graph graph, float bodyReach) {
     graph.ensureNodeState(ROOT_NODE);
-    float[3] up = graph.relativeUp(Position.origin());
+    float[3] up = graph.upAt(Position.origin());
     float rootAltitude = graph.nodeState(ROOT_NODE).surface.distanceTo(MPoint!float.origin());
     return graph.clearPositionFrom(up, rootAltitude, bodyReach, bodyReach);
 }

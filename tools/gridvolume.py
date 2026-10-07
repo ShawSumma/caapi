@@ -87,11 +87,10 @@ def klein_distance(p: list[float], q: list[float]) -> float:
     return math.acosh((1 - dot) / math.sqrt((1 - pp) * (1 - qq)))
 
 
-def edge_meters(knots: Knots) -> tuple[float, float, float]:
+def edge_lengths(knots: Knots) -> tuple[float, float, float]:
     scale = corner_coordinate()
     planes = [scale * k for k in knots]
     cells = len(knots) - 1
-    meter = (sum(volumes(uniform(cells))) / cells**3) ** (1 / 3)
     shortest = math.inf
     longest = 0.0
     worst_aspect = 1.0
@@ -107,7 +106,7 @@ def edge_meters(knots: Knots) -> tuple[float, float, float]:
                     b = list(center)
                     a[axis] = low[axis]
                     b[axis] = high[axis]
-                    edges.append(klein_distance(a, b) / meter)
+                    edges.append(klein_distance(a, b))
                 shortest = min(shortest, min(edges))
                 longest = max(longest, max(edges))
                 worst_aspect = max(worst_aspect, max(edges) / min(edges))
@@ -125,12 +124,12 @@ def main() -> None:
     rounds = int(sys.argv[2])
     print(f"chunk volume {sum(volumes(uniform(cells))):.9f}")
     print(f"uniform spread {spread(uniform(cells)):.3f}")
-    shortest, longest, aspect = edge_meters(uniform(cells))
-    print(f"uniform edges {shortest:.2f}..{longest:.2f} m, aspect up to {aspect:.2f}")
+    shortest, longest, aspect = edge_lengths(uniform(cells))
+    print(f"uniform edges {shortest:.4f}..{longest:.4f}, aspect up to {aspect:.2f}")
     ratio, knots = best_geometric(cells, 40)
     print(f"geometric ratio {ratio:.4f} spread {spread(knots):.3f}")
-    shortest, longest, aspect = edge_meters(knots)
-    print(f"geometric edges {shortest:.2f}..{longest:.2f} m, aspect up to {aspect:.2f}")
+    shortest, longest, aspect = edge_lengths(knots)
+    print(f"geometric edges {shortest:.4f}..{longest:.4f}, aspect up to {aspect:.2f}")
     knots = optimized(knots, rounds)
     print(f"optimized spread {spread(knots):.3f}")
     print("knots " + " ".join(f"{k:.5f}" for k in knots))

@@ -1,8 +1,8 @@
 module common.worldgen.plane;
 
-import core.stdc.math : asinhf, copysignf, expf, fabsf, logf;
-import common.coords : CELL_NEIGHBOR_OFFSETS;
-import common.dodeca : Side, Vertex, chunkToNode, normal, reflection;
+import core.stdc.math : asinhf, copysignf, expf, fabsf, logf, sqrtf;
+import common.character.chart : applied, gridJacobian;
+import common.dodeca : Side, Vertex, chunkToNode, nodeToDual, normal, reflection;
 import common.math : MIsometry, MPoint, MVector;
 import common.node : ChunkLayout;
 
@@ -53,19 +53,28 @@ struct Plane {
         return distanceTo(transformed.normalizedPoint());
     }
 
-    float distanceToCell(Vertex chunk, ref const ChunkLayout layout, int[3] cell) const {
-        return distanceToChunk(chunk, layout.cellCenter(cell));
+    float[3] upAt(MIsometry!float local) const {
+        float[3] gradient = (local.inverse() * scaledNormal).xyz();
+        float length = sqrtf(gradient[0] * gradient[0] + gradient[1] * gradient[1] + gradient[2] * gradient[2]);
+        return [gradient[0] / length, gradient[1] / length, gradient[2] / length];
+    }
+
+    float[3] gridUpAt(Vertex chunk, ref const ChunkLayout layout, float[3] grid) const {
+        MPoint!float point = (chunk.chunkToNode * MVector!float([layout.gridToChunk(grid[0]), layout.gridToChunk(grid[1]), layout.gridToChunk(grid[2]), 1.0f])).normalizedPoint();
+        MIsometry!float local = MIsometry!float.fromTranslation(MPoint!float.origin(), point);
+        float[3] up = applied(gridJacobian(layout, chunk.nodeToDual * local), upAt(local));
+        float length = sqrtf(up[0] * up[0] + up[1] * up[1] + up[2] * up[2]);
+        return [up[0] / length, up[1] / length, up[2] / length];
     }
 
     int risingNeighbor(Vertex chunk, ref const ChunkLayout layout, int[3] cell) const {
+        float[3] up = gridUpAt(chunk, layout, [cell[0] + 0.5f, cell[1] + 0.5f, cell[2] + 0.5f]);
         int rising = 0;
-        float highest = -float.infinity;
-        foreach (direction; 0 .. CELL_NEIGHBOR_OFFSETS.length) {
-            int[3] offset = CELL_NEIGHBOR_OFFSETS[direction];
-            float distance = distanceToCell(chunk, layout, [cell[0] + offset[0], cell[1] + offset[1], cell[2] + offset[2]]);
-            if (distance > highest) {
-                highest = distance;
-                rising = cast(int) direction;
+        float steepest = -float.infinity;
+        foreach (axis; 0 .. 3) {
+            if (fabsf(up[axis]) > steepest) {
+                steepest = fabsf(up[axis]);
+                rising = cast(int)(2 * axis) + (up[axis] > 0);
             }
         }
         return rising;

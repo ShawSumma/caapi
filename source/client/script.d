@@ -10,7 +10,7 @@ import common.array : Array;
 import common.character.controller : MovementMode;
 import common.graph : NodeId;
 import common.names : ENUM_NAMES;
-import common.node : GridSpacing;
+import common.units : Angle, AngularSpeed, Length, Time;
 import common.vector3 : dot, magnitude, rejectAlong;
 import common.worldgen.generation : PlaneWorld, StructureKind, StructureWorld, Worldgen, WorldgenKind;
 
@@ -35,7 +35,8 @@ enum int SELF = 1;
 enum int TRACEBACK_INDEX = 1;
 enum int CHUNK_RESULTS = 1;
 enum int SCRIPT_ARGUMENTS = 1;
-enum float DEFAULT_TIMESTEP_SECONDS = 0.016f;
+enum Time DEFAULT_TIMESTEP = Time(0.016f);
+enum Time ONE_SECOND = Time(1.0f);
 enum double RADIANS_PER_DEGREE = 0.017453292519943295;
 enum string MODULE_PATTERN = "?.lua";
 enum size_t LUA_NAME_CAPACITY = 32;
@@ -101,9 +102,9 @@ struct ScriptHost {
     lua_State* lua;
     Game* game;
     FILE* report;
-    float timestepSeconds = DEFAULT_TIMESTEP_SECONDS;
-    float yawRadiansPerSecond = 0;
-    float pitchRadiansPerSecond = 0;
+    Time timestep = DEFAULT_TIMESTEP;
+    AngularSpeed yawRate;
+    AngularSpeed pitchRate;
     uint steps;
     int stepHook = LUA_NO_REF;
     int worldRef = LUA_NO_REF;
@@ -189,7 +190,6 @@ struct ScriptHost {
         registerMethod("timestep", &luaTimestep);
         registerMethod("time", &luaTime);
         registerMethod("worldgen", &luaWorldgen);
-        registerMethod("grid", &luaGrid);
         registerMethod("on_step", &luaOnStep);
         registerMethod("hold", &luaHold);
         registerMethod("release", &luaRelease);
@@ -222,13 +222,13 @@ struct ScriptHost {
         lua_setfield(lua, LUA_BELOW_TOP, name);
     }
 
-    void step(float dt) {
-        if (!(dt > 0)) {
+    void step(Time dt) {
+        if (!(dt.value > 0)) {
             luaL_error(lua, "the timestep must be positive");
         } else if (isStepping) {
             luaL_error(lua, "a step hook cannot advance time");
         } else {
-            game.step(FrameInput(yawRadiansPerSecond * dt, pitchRadiansPerSecond * dt, isHeld), dt);
+            game.step(FrameInput(yawRate * dt, pitchRate * dt, isHeld), dt);
             steps += 1;
             runStepHook();
         }
@@ -243,13 +243,13 @@ struct ScriptHost {
         }
     }
 
-    void wait(double seconds, float dt) {
+    void wait(double seconds, Time dt) {
         if (!(seconds >= 0)) {
             luaL_error(lua, "cannot wait a negative time");
-        } else if (!(dt > 0)) {
+        } else if (!(dt.value > 0)) {
             luaL_error(lua, "the timestep must be positive");
         } else {
-            foreach (_; 0 .. cast(ulong) floor(seconds / dt + 0.5)) {
+            foreach (_; 0 .. cast(ulong) floor(seconds / dt.value + 0.5)) {
                 step(dt);
             }
         }
@@ -277,12 +277,16 @@ bool isNoneOrNil(lua_State* lua, int index) {
     return lua_type(lua, index) <= 0;
 }
 
-float degreesArgument(lua_State* lua, int index) {
-    return cast(float)(luaL_checknumber(lua, index) * RADIANS_PER_DEGREE);
+Angle degreesArgument(lua_State* lua, int index) {
+    return Angle(cast(float)(luaL_checknumber(lua, index) * RADIANS_PER_DEGREE));
 }
 
-float timestepArgument(lua_State* lua, int index, float fallback) {
-    return cast(float) luaL_optnumber(lua, index, fallback);
+Time timestepArgument(lua_State* lua, int index, Time fallback) {
+    return Time(cast(float) luaL_optnumber(lua, index, fallback.value));
+}
+
+double degreesOf(Angle angle) {
+    return angle.value / RADIANS_PER_DEGREE;
 }
 
 extern (C) int luaTraceback(lua_State* lua) {
@@ -292,32 +296,32 @@ extern (C) int luaTraceback(lua_State* lua) {
 
 extern (C) int luaWait(lua_State* lua) {
     ScriptHost* host = methodHost(lua);
-    host.wait(luaL_checknumber(lua, SELF + 1), timestepArgument(lua, SELF + 2, host.timestepSeconds));
+    host.wait(luaL_checknumber(lua, SELF + 1), timestepArgument(lua, SELF + 2, host.timestep));
     return 0;
 }
 
 extern (C) int luaStep(lua_State* lua) {
     ScriptHost* host = methodHost(lua);
-    host.step(timestepArgument(lua, SELF + 1, host.timestepSeconds));
+    host.step(timestepArgument(lua, SELF + 1, host.timestep));
     return 0;
 }
 
 extern (C) int luaTimestep(lua_State* lua) {
     ScriptHost* host = methodHost(lua);
     if (!isNoneOrNil(lua, SELF + 1)) {
-        float seconds = cast(float) luaL_checknumber(lua, SELF + 1);
-        if (!(seconds > 0)) {
+        Time chosen = Time(cast(float) luaL_checknumber(lua, SELF + 1));
+        if (!(chosen.value > 0)) {
             luaL_error(lua, "the timestep must be positive");
         } else {
-            host.timestepSeconds = seconds;
+            host.timestep = chosen;
         }
     }
-    lua_pushnumber(lua, host.timestepSeconds);
+    lua_pushnumber(lua, host.timestep.value);
     return 1;
 }
 
 extern (C) int luaTime(lua_State* lua) {
-    lua_pushnumber(lua, methodHost(lua).game.simTime);
+    lua_pushnumber(lua, methodHost(lua).game.time.value);
     return 1;
 }
 
@@ -330,30 +334,9 @@ extern (C) int luaWorldgen(lua_State* lua) {
     } else if (!lookup.isFound) {
         luaL_error(lua, "unknown worldgen '%s'", name);
     } else {
-        Worldgen worldgen = worldgenOfKind(lua, lookup.value);
-        worldgen.spacing = host.game.world.graph.worldgen.spacing;
-        host.game.setWorldgen(worldgen);
+        host.game.setWorldgen(worldgenOfKind(lua, lookup.value));
     }
     return 0;
-}
-
-extern (C) int luaGrid(lua_State* lua) {
-    ScriptHost* host = methodHost(lua);
-    if (!isNoneOrNil(lua, SELF + 1)) {
-        const(char)* name = luaL_checklstring(lua, SELF + 1, null);
-        LuaLookup!GridSpacing lookup = LuaLookup!GridSpacing.fromName(name[0 .. strlen(name)]);
-        if (!lookup.isFound) {
-            luaL_error(lua, "unknown grid '%s'", name);
-        } else if (host.steps > 0) {
-            host.game.setSpacing(lookup.value);
-        } else {
-            Worldgen worldgen = host.game.world.graph.worldgen;
-            worldgen.spacing = lookup.value;
-            host.game.setWorldgen(worldgen);
-        }
-    }
-    pushLuaName(lua, host.game.world.graph.layout.spacing);
-    return 1;
 }
 
 Worldgen worldgenOfKind(lua_State* lua, WorldgenKind kind) {
@@ -383,11 +366,11 @@ StructureKind structureArgument(lua_State* lua) {
 
 extern (C) int luaEnterStructure(lua_State* lua) {
     ScriptHost* host = methodHost(lua);
-    float meters = cast(float) luaL_checknumber(lua, SELF + 1);
+    Length height = Length(cast(float) luaL_checknumber(lua, SELF + 1));
     if (host.game.world.graph.worldgen.kind != WorldgenKind.structure) {
         luaL_error(lua, "enter_structure needs the structure worldgen");
     } else {
-        host.game.enterStructure(meters);
+        host.game.enterStructure(height);
     }
     return 0;
 }
@@ -397,10 +380,7 @@ extern (C) int luaEnterStairs(lua_State* lua) {
     if (host.game.world.graph.worldgen.kind != WorldgenKind.structure) {
         luaL_error(lua, "enter_stairs needs the structure worldgen");
     } else {
-        immutable bool isEntered = host.game.enterStairs();
-        if (!isEntered) {
-            luaL_error(lua, "the structure's base has no stair route");
-        }
+        host.game.enterStairs();
     }
     return 0;
 }
@@ -413,9 +393,9 @@ extern (C) int luaStairWaypoint(lua_State* lua) {
         waypoint = host.game.stairWaypoint(cast(size_t)(number - 1));
     }
     if (waypoint.isFound) {
-        lua_pushnumber(lua, -waypoint.yawRadians / RADIANS_PER_DEGREE);
-        lua_pushnumber(lua, waypoint.horizontal);
-        lua_pushnumber(lua, waypoint.rise);
+        lua_pushnumber(lua, -degreesOf(waypoint.yaw));
+        lua_pushnumber(lua, waypoint.horizontal.value);
+        lua_pushnumber(lua, waypoint.rise.value);
         return 3;
     } else {
         lua_pushnil(lua);
@@ -466,7 +446,7 @@ extern (C) int luaPress(lua_State* lua) {
     ScriptHost* host = methodHost(lua);
     double seconds = luaL_checknumber(lua, SELF + 1);
     host.setKeys(SELF + 2, true);
-    host.wait(seconds, host.timestepSeconds);
+    host.wait(seconds, host.timestep);
     host.setKeys(SELF + 2, false);
     return 0;
 }
@@ -480,27 +460,28 @@ extern (C) int luaLook(lua_State* lua) {
 extern (C) int luaTurnRate(lua_State* lua) {
     ScriptHost* host = methodHost(lua);
     if (!isNoneOrNil(lua, SELF + 1)) {
-        host.yawRadiansPerSecond = degreesArgument(lua, SELF + 1);
-        host.pitchRadiansPerSecond = 0;
+        host.yawRate = degreesArgument(lua, SELF + 1) / ONE_SECOND;
+        host.pitchRate = AngularSpeed(0);
         if (!isNoneOrNil(lua, SELF + 2)) {
-            host.pitchRadiansPerSecond = degreesArgument(lua, SELF + 2);
+            host.pitchRate = degreesArgument(lua, SELF + 2) / ONE_SECOND;
         }
     }
-    lua_pushnumber(lua, host.yawRadiansPerSecond / RADIANS_PER_DEGREE);
-    lua_pushnumber(lua, host.pitchRadiansPerSecond / RADIANS_PER_DEGREE);
+    lua_pushnumber(lua, degreesOf(host.yawRate * ONE_SECOND));
+    lua_pushnumber(lua, degreesOf(host.pitchRate * ONE_SECOND));
     return 2;
 }
 
 extern (C) int luaTurn(lua_State* lua) {
     ScriptHost* host = methodHost(lua);
     double seconds = luaL_checknumber(lua, SELF + 3);
-    float restingYaw = host.yawRadiansPerSecond;
-    float restingPitch = host.pitchRadiansPerSecond;
-    host.yawRadiansPerSecond = cast(float)(luaL_checknumber(lua, SELF + 1) / seconds * RADIANS_PER_DEGREE);
-    host.pitchRadiansPerSecond = cast(float)(luaL_checknumber(lua, SELF + 2) / seconds * RADIANS_PER_DEGREE);
-    host.wait(seconds, host.timestepSeconds);
-    host.yawRadiansPerSecond = restingYaw;
-    host.pitchRadiansPerSecond = restingPitch;
+    Time duration = Time(cast(float) seconds);
+    AngularSpeed restingYaw = host.yawRate;
+    AngularSpeed restingPitch = host.pitchRate;
+    host.yawRate = degreesArgument(lua, SELF + 1) / duration;
+    host.pitchRate = degreesArgument(lua, SELF + 2) / duration;
+    host.wait(seconds, host.timestep);
+    host.yawRate = restingYaw;
+    host.pitchRate = restingPitch;
     return 0;
 }
 
@@ -544,7 +525,7 @@ extern (C) int luaPlaceBlock(lua_State* lua) {
 }
 
 extern (C) int luaTraveled(lua_State* lua) {
-    lua_pushnumber(lua, methodHost(lua).game.traveled);
+    lua_pushnumber(lua, methodHost(lua).game.traveled.value);
     return 1;
 }
 
@@ -554,7 +535,7 @@ extern (C) int luaIsOnGround(lua_State* lua) {
 }
 
 extern (C) int luaAltitude(lua_State* lua) {
-    lua_pushnumber(lua, methodHost(lua).game.altitude);
+    lua_pushnumber(lua, methodHost(lua).game.altitude.value);
     return 1;
 }
 
@@ -576,13 +557,13 @@ extern (C) int luaVerticalSpeed(lua_State* lua) {
 }
 
 extern (C) int luaCameraVerticalAcceleration(lua_State* lua) {
-    lua_pushnumber(lua, methodHost(lua).game.cameraVerticalAcceleration);
+    lua_pushnumber(lua, methodHost(lua).game.cameraVerticalAcceleration.value);
     return 1;
 }
 
 struct ScriptRecorder {
     FILE* file;
-    float pendingDt = 0;
+    Time pendingDt;
     uint pendingSteps;
     bool[KEY_COUNT] isHeld;
 
@@ -596,7 +577,7 @@ struct ScriptRecorder {
         }
     }
 
-    void recordFrame(FrameInput input, float dt) {
+    void recordFrame(FrameInput input, Time dt) {
         foreach (i; 0 .. KEY_COUNT) {
             if (input.isHeld[i] != isHeld[i]) {
                 flush();
@@ -605,11 +586,11 @@ struct ScriptRecorder {
             }
         }
         isHeld = input.isHeld;
-        if (input.yaw != 0 || input.pitch != 0) {
+        if (input.yaw.value != 0 || input.pitch.value != 0) {
             flush();
-            fprintf(file, "  world:look(%.9g, %.9g)\n", input.yaw / RADIANS_PER_DEGREE, input.pitch / RADIANS_PER_DEGREE);
+            fprintf(file, "  world:look(%.9g, %.9g)\n", degreesOf(input.yaw), degreesOf(input.pitch));
         }
-        if (dt != pendingDt) {
+        if (dt.value != pendingDt.value) {
             flush();
             pendingDt = dt;
         }
@@ -634,7 +615,7 @@ struct ScriptRecorder {
 
     void flush() {
         if (pendingSteps > 0) {
-            fprintf(file, "  world:wait(%.9g, %.9g)\n", pendingSteps * cast(double) pendingDt, cast(double) pendingDt);
+            fprintf(file, "  world:wait(%.9g, %.9g)\n", pendingSteps * cast(double) pendingDt.value, cast(double) pendingDt.value);
         }
         pendingSteps = 0;
     }

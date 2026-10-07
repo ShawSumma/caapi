@@ -1,36 +1,28 @@
 module client.game;
 
-import core.stdc.math : atan2f, ceilf, fabsf, tanhf;
+import core.stdc.math : acoshf, atan2f, atanhf, coshf, fabsf, sinhf, tanhf;
 import client.camera : Camera;
 import client.streaming : generateNow;
 import client.world : LocalWorld, Placement;
 import common.array : Array;
-import common.character.controller : CharacterInput, CharacterState, MovementMode, Mover, Slide, Stepped;
-import common.character.place : ChartCell, Place, Relocated, coordsOf, dominantAxis, gravityUp, initialUp, nearestChartCell, relocated;
-import common.coords : Coords;
-import common.character.sweep : Capsule, isCapsuleBlocked, isCapsuleOverlappingCell;
-import common.character.warp : IDENTITY_WARP, applied, inverted, multiplied, smoothGridDirection, smoothWarp, transposed;
-import common.dodeca : Side, faceDirection, faceDistance;
-import common.graph : NodeId;
+import common.character.controller : CharacterInput, CharacterState, MovementMode, Mover, Slide, Stepped, movedBy, regionReach;
+import common.character.features : CellOverlap, Features, RequiredChunks, visitCells;
+import common.character.sweep : Capsule, sectionCenters;
+import common.graph : Node, NodeId;
 import common.material : Material;
-import common.math : MIsometry, MPoint;
-import common.node : ChunkSlot, GridSpacing;
+import common.math : MIsometry, MPoint, MVector;
+import common.node : ChunkSlot;
 import common.position : Position;
-import common.settings : CharacterConfig, SimConfig, SimMeters, longestVoxelEdge;
+import common.settings : CHUNK_DIMENSION, CharacterConfig;
 import common.traversal : NearbyNode, NearbyScratch;
-import common.vector3 : ZERO_VECTOR, cross, dot, magnitude, minus, negated, plus, rejectAlong, scaled;
-import common.worldgen.building : Building;
+import common.units : Acceleration, Angle, Length, Speed, Time;
+import common.vector3 : ZERO_VECTOR, cross, dot, magnitude, negated, plus, rejectAlong, scaled;
 import common.worldgen.generation : NodeState, Worldgen, WorldgenKind;
 import common.worldgen.spawn : clearSpawnPosition, collectChunksNear;
+import common.worldgen.tower : ColumnSpot, columnPoint, doorSpot, doorwaySpawn, stairSpot;
 
 enum float STRUCTURE_SEARCH_RADIUS = 4.0f;
-enum float STAIR_SEARCH_RADIUS = 2.0f;
-enum float WARP_INNER_METERS = 4.0f;
-enum float WARP_OUTER_METERS = 16.0f;
-enum float CELL_CENTER_HEIGHT_METERS = 0.5f;
-enum float GENERATION_REACH_FACTOR = 2.0f;
-enum float SPAWN_EDGE_MARGIN_METERS = 1.5f;
-enum int STAIR_CHART_RADIUS = 5;
+enum uint MAX_BODY_SECTIONS = 64;
 
 immutable Material[9] MATERIAL_PALETTE = [
     Material.woodPlanks,
@@ -60,8 +52,8 @@ enum Key : ubyte {
 enum uint KEY_COUNT = Key.max + 1;
 
 struct FrameInput {
-    float yaw = 0;
-    float pitch = 0;
+    Angle yaw;
+    Angle pitch;
     bool[KEY_COUNT] isHeld;
 }
 
@@ -73,120 +65,109 @@ float axisValue(bool isHeld) {
     }
 }
 
-float[3] unit(float[3] v) {
-    return v.scaled(1.0f / v.magnitude);
-}
-
 struct StairWaypoint {
-    float yawRadians = 0;
-    float horizontal = 0;
-    float rise = 0;
+    Angle yaw;
+    Length horizontal;
+    Length rise;
     bool isFound;
-}
-
-struct StairCell {
-    MPoint!float point;
-    ChunkSlot chunk;
-    Coords coords;
 }
 
 struct Game {
     LocalWorld world;
-    Array!StairCell stairRoute;
     Camera camera;
-    Position bodyView;
     CharacterState characterState;
-    SimConfig simConfig;
-    float simTime = 0;
-    float traveled = 0;
-    float altitude = 0;
-    float cameraVerticalAcceleration = 0;
-    float cameraAltitude = 0;
-    float cameraVerticalVelocity = 0;
-    float[3][3] bodyViewWarp = IDENTITY_WARP;
+    CharacterConfig character;
+    Time time;
+    Length traveled;
+    Length altitude;
+    Acceleration cameraVerticalAcceleration;
+    Length cameraAltitude;
+    Speed cameraVerticalVelocity;
     uint materialIndex;
     MovementMode mode = MovementMode.walk;
-    bool isSettlingWorldgenEachFrame;
+    bool isGeneratingOnDemand;
     bool hasCameraVerticalVelocity;
+    bool wasJumpHeld;
 
-    static Game make(Worldgen worldgen, float reachMeters) {
-        SimMeters meters;
-        SimConfig simConfig = SimConfig.fromMeters(meters);
+    static Game make(Worldgen worldgen, Length reach) {
         Game game;
-        game.simConfig = simConfig;
-        game.world = LocalWorld.make(meters.chunkSize, worldgen, tanhf(reachMeters * simConfig.metersToAbsolute));
-        game.setWarpRadii();
-        game.camera = Camera.make(simConfig.character.eyeOffset);
+        game.world = LocalWorld.make(CHUNK_DIMENSION, worldgen, tanhf(reach.value));
+        game.camera = Camera.make(game.character.eyeOffset);
         game.placeAtSpawn();
         return game;
     }
 
-    float bodyReach() const {
-        CharacterConfig cfg = simConfig.character;
-        return cfg.characterHalfHeight + cfg.characterRadius + cfg.contactSkin;
+    Length bodyExtent() const {
+        return character.halfHeight + character.skin;
     }
 
-    float metricBodyReach() const {
-        return bodyReach() * longestVoxelEdge(world.graph.layout.dimension, world.graph.layout.spacing);
+    Length bodyReach() const {
+        return bodyExtent() + character.radius;
     }
 
     Capsule bodyCapsule() const {
-        CharacterConfig cfg = simConfig.character;
-        return Capsule(characterState.up, cfg.characterRadius, cfg.characterHalfHeight, cfg.contactSkin);
+        return Capsule(characterState.up, character.radius.value, character.halfHeight.value, character.skin.value);
     }
 
-    Position centerPosition(Place place) const {
-        return Position(world.graph.idAt(place.chunk.slot), MIsometry!float.fromTranslation(MPoint!float.origin(), place.pointInNode(world.graph.layout)));
-    }
-
-    void generateAround(Place place, float metricReach) {
-        Array!ChunkSlot chunks = world.graph.collectChunksNear(centerPosition(place), GENERATION_REACH_FACTOR * metricReach);
-        foreach (chunk; chunks.slice()) {
+    void generateAround(Position position, Length reach) {
+        Array!ChunkSlot picked = world.graph.collectChunksNear(position, atanhf(world.tanhReach));
+        foreach (chunk; picked.slice()) {
             world.graph.generateNow(chunk);
         }
-        chunks.release();
+        picked.release();
+        RequiredChunks required;
+        bool isComplete = false;
+        while (!isComplete) {
+            required.clear();
+            visitCells(world.graph, position, reach, required);
+            foreach (missing; required.missing.slice()) {
+                world.graph.ensureNeighborSlot(missing.slot, missing.side);
+            }
+            foreach (chunk; required.chunks.slice()) {
+                world.graph.generateNow(chunk);
+            }
+            isComplete = required.missing.length == 0;
+        }
+        required.release();
     }
 
     void placeAtSpawn() {
-        float metricReach = metricBodyReach();
-        Position spawn = world.graph.clearSpawnPosition(metricReach);
-        Place place = Place.fromPosition(world.graph, spawn);
-        float[3] up = world.graph.initialUp(place);
-        place = offSingularEdges(place, up);
-        Slide drop;
-        while (!drop.hasLanded) {
-            generateAround(place, metricReach);
-            drop = Mover.make(simConfig.character, world.graph, up).settle(place, bodyReach());
-            place = world.graph.relocated(drop.position).place;
-            world.graph.ensureNodeStateAt(place.chunk.slot);
-            up = world.graph.gravityUp(place, up, 0);
+        if (world.graph.worldgen.kind == WorldgenKind.structure) {
+            placeAt(towerPosition(doorwaySpawn()), bodyExtent() + character.skin);
+        } else {
+            Position spawn = world.graph.clearSpawnPosition(bodyReach().value);
+            characterState = CharacterState(spawn, ZERO_VECTOR, [0, 1, 0], world.graph.upAt(spawn), false);
         }
-        characterState = CharacterState(place, ZERO_VECTOR, drop.groundNormal, up, true);
+        settleToGround();
         resetView();
         if (world.graph.worldgen.kind == WorldgenKind.structure) {
-            camera.turn(yawToward(directionToNode(world.graph.worldgen.structure.base)), 0);
+            camera.turn(yawToward(directionToDoor()), Angle(0));
         } else if (world.graph.worldgen.groundTiltRadians() != 0) {
-            camera.turn(yawToward(uphillDirection()), 0);
+            camera.turn(yawToward(uphillDirection()), Angle(0));
         }
         updateView();
     }
 
-    Place offSingularEdges(Place place, float[3] up) const {
-        size_t upAxis = dominantAxis(place.frame.toGrid(up));
-        float highest = world.graph.layout.dimension - SPAWN_EDGE_MARGIN_METERS;
-        Place result = place;
-        foreach (axis; 0 .. 3) {
-            if (axis != upAxis && result.grid[axis] > highest) {
-                result.grid[axis] = highest;
-            }
+    void settleToGround() {
+        Length reach = regionReach(character) + bodyReach();
+        Features features;
+        Slide drop;
+        while (!drop.hasLanded) {
+            generateAround(characterState.position, reach);
+            world.graph.ensureNodeState(characterState.position.node);
+            characterState.up = world.graph.upAt(characterState.position);
+            features.collect(world.graph, characterState.position, reach);
+            drop = Mover.make(character, features, characterState.up, Length(0)).settle(ZERO_VECTOR, bodyReach());
+            characterState.position = world.graph.movedBy(characterState.position, drop.position);
         }
-        return result;
+        features.release();
+        characterState.groundNormal = drop.groundNormal;
+        characterState.isOnGround = true;
     }
 
     void resetView() {
-        bodyView = centerPosition(characterState.position);
-        camera = Camera.make(simConfig.character.eyeOffset);
-        altitude = metricAltitude(characterState.position.moved(characterState.up.scaled(-bodyReach() + simConfig.character.characterRadius))) + bodyReach() - simConfig.character.characterRadius;
+        camera = Camera.make(character.eyeOffset);
+        altitude = currentAltitude();
         followBody();
         camera.level();
         updateView();
@@ -194,15 +175,15 @@ struct Game {
         hasCameraVerticalVelocity = false;
     }
 
-    float metricAltitude(Place place) {
-        Place at = world.graph.relocated(place).place;
-        world.graph.ensureNodeStateAt(at.chunk.slot);
-        return world.graph.nodeAt(at.chunk.slot).state.surface.distanceTo(at.pointInNode(world.graph.layout));
+    Length currentAltitude() {
+        Position position = characterState.position;
+        world.graph.ensureNodeState(position.node);
+        return Length(world.graph.nodeState(position.node).surface.distanceTo(position.local * MPoint!float.origin()));
     }
 
     MIsometry!float nodeTransform(NodeId node, float radius) {
         NearbyScratch scratch;
-        NearbyNode[] nearby = scratch.collectAll(world.graph, bodyView, radius);
+        NearbyNode[] nearby = scratch.collectAll(world.graph, characterState.position, radius);
         size_t index = 0;
         while (index < nearby.length && nearby[index].id != node) {
             index += 1;
@@ -213,110 +194,59 @@ struct Game {
         return transform;
     }
 
-    float[3] directionToNode(NodeId node) {
-        return (bodyView.local.inverse() * nodeTransform(node, STRUCTURE_SEARCH_RADIUS) * MPoint!float.origin()).vec.xyz();
+    float[3] directionToDoor() {
+        NodeId base = world.graph.worldgen.structure.base;
+        MPoint!float door = world.graph.ensureStructureAt(world.graph.slotOf(base)).frame * columnPoint(world.graph.layout, doorSpot());
+        return (characterState.position.local.inverse() * nodeTransform(base, STRUCTURE_SEARCH_RADIUS) * door).vec.xyz();
     }
 
     float[3] uphillDirection() const {
-        const(NodeState)* state = world.graph.nodeState(bodyView.node);
-        return (bodyView.local.inverse() * state.reference.scaledNormal).xyz().negated;
+        const(NodeState)* state = world.graph.nodeState(characterState.position.node);
+        return (characterState.position.local.inverse() * state.reference.scaledNormal).xyz().negated;
     }
 
-    float yawToward(float[3] direction) const {
+    Angle yawToward(float[3] direction) const {
         float[3] forward = camera.forward().rejectAlong(camera.viewUp);
-        float[3] level = applied(bodyViewWarp, direction).rejectAlong(camera.viewUp);
-        return atan2f(camera.viewUp.dot(forward.cross(level)), forward.dot(level));
+        float[3] level = direction.rejectAlong(camera.viewUp);
+        return Angle(atan2f(camera.viewUp.dot(forward.cross(level)), forward.dot(level)));
     }
 
-    void enterStructure(float metersUp) {
-        float[3] up = Side.a.faceDirection.negated;
-        float rise = metersUp * simConfig.metersToAbsolute - faceDistance();
-        uint stepCount = cast(uint) ceilf(fabsf(rise) / faceDistance());
-        Position target = Position(world.graph.worldgen.structure.base, MIsometry!float.identity());
-        foreach (_; 0 .. stepCount) {
-            target = world.graph.ensureNormalized(Position(target.node, (target.local * MIsometry!float.fromDisplacement(up.scaled(rise / stepCount))).renormalized()));
-        }
-        placeAt(target, 0);
+    void enterStructure(Length height) {
+        placeAt(towerPosition(MPoint!float(MVector!float([0, sinhf(height.value), 0, coshf(height.value)]))), Length(0));
     }
 
-    bool enterStairs() {
-        uint base = world.graph.slotOf(world.graph.worldgen.structure.base);
-        Building building = Building.make(world.graph.ensureStructureAt(base), world.graph.nodeAt(base).state.surface, world.graph.layout);
-        stairRoute.clear();
-        foreach (cell; building.route.slice()) {
-            stairRoute.append(StairCell(building.shape.cellCenter(cell), ChunkSlot(base, building.shape.vertexOf(cell)), coordsOf(building.shape.cellOf(cell))));
-        }
-        if (building.route.length > 0) {
-            MPoint!float start = building.shape.cellCenter(building.route.ptr[0]);
-            Position center = world.graph.ensureNormalized(Position(world.graph.worldgen.structure.base, MIsometry!float.fromTranslation(MPoint!float.origin(), start)));
-            placeAt(center, bodyReach() - simConfig.character.characterRadius - CELL_CENTER_HEIGHT_METERS);
-        }
-        building.release();
-        return stairRoute.length > 0;
+    Position towerPosition(MPoint!float inTower) {
+        uint slot = world.graph.slotOf(world.graph.worldgen.structure.base);
+        MPoint!float point = world.graph.ensureStructureAt(slot).frame * inTower;
+        return world.graph.ensureNormalized(Position(world.graph.idAt(slot), MIsometry!float.fromTranslation(MPoint!float.origin(), point)));
     }
 
-    StairWaypoint stairWaypoint(size_t index) {
-        if (index < stairRoute.length) {
-            Place place = characterState.position;
-            float[3][3] jacobian = place.jacobian(world.graph.layout, bodyView.local);
-            StairCell cell = stairRoute.ptr[index];
-            ChartCell charted = world.graph.nearestChartCell(place, cell.chunk, cell.coords, STAIR_CHART_RADIUS);
-            float[3] grid;
-            if (charted.isFound) {
-                grid = charted.center.minus(place.grid);
-            } else {
-                MIsometry!float toBase = nodeTransform(world.graph.worldgen.structure.base, STAIR_SEARCH_RADIUS);
-                grid = applied(jacobian, (bodyView.local.inverse() * toBase * cell.point).vec.xyz());
-            }
-            float[3] meters = place.frame.toBody(grid);
-            return StairWaypoint(yawToward(applied(inverted(jacobian), grid)), meters.rejectAlong(characterState.up).magnitude, meters.dot(characterState.up), true);
+    void enterStairs() {
+        placeAt(towerPosition(columnPoint(world.graph.layout, stairSpot(0, world.graph.layout.dimension))), bodyExtent() + character.skin);
+    }
+
+    StairWaypoint stairWaypoint(size_t index) const {
+        ColumnSpot spot = stairSpot(index, world.graph.layout.dimension);
+        const(Node)* node = world.graph.nodeAt(world.graph.slotOf(characterState.position.node));
+        if (spot.isFound && node.hasStructure && node.structure.isPresent()) {
+            MVector!float local = (characterState.position.local.inverse() * node.structure.frame * columnPoint(world.graph.layout, spot)).vec;
+            float[3] direction = local.xyz();
+            float length = direction.magnitude;
+            float[3] toFloor = direction.scaled(acoshf(local.data[3]) / length);
+            float[3] fromFeet = toFloor.plus(characterState.up.scaled(bodyExtent().value));
+            return StairWaypoint(yawToward(toFloor), Length(fromFeet.rejectAlong(characterState.up).magnitude), Length(fromFeet.dot(characterState.up)), true);
         } else {
             return StairWaypoint.init;
         }
     }
 
-    void placeAt(Position target, float lift) {
+    void placeAt(Position target, Length lift) {
         world.graph.ensureNodeState(target.node);
-        Place place = Place.fromPosition(world.graph, target);
-        float[3] up = world.graph.initialUp(place);
-        characterState = CharacterState(world.graph.relocated(place.moved(up.scaled(lift))).place, ZERO_VECTOR, characterState.groundNormal, up, false);
-        world.graph.ensureNodeStateAt(characterState.position.chunk.slot);
+        float[3] up = world.graph.upAt(target);
+        Position lifted = world.graph.ensureNormalized(Position(target.node, (target.local * MIsometry!float.fromDisplacement(up.scaled(lift.value))).renormalized()));
+        world.graph.ensureNodeState(lifted.node);
+        characterState = CharacterState(lifted, ZERO_VECTOR, characterState.groundNormal, world.graph.upAt(lifted), false);
         resetView();
-    }
-
-    void cycleSpacing() {
-        setSpacing(cast(GridSpacing)((world.graph.worldgen.spacing + 1) % (GridSpacing.max + 1)));
-    }
-
-    void setSpacing(GridSpacing spacing) {
-        Worldgen worldgen = world.graph.worldgen;
-        worldgen.spacing = spacing;
-        Array!Side path = world.graph.sidesToRoot(bodyView.node);
-        MPoint!float center = bodyView.local * MPoint!float.origin();
-        rebuildWorld(worldgen);
-        NodeId node = world.graph.ensureFromRoot(path.slice());
-        path.release();
-        world.graph.ensureNodeState(node);
-        characterState.position.chunk.slot = world.graph.slotOf(node);
-        MPoint!float moved = characterState.position.pointInNode(world.graph.layout);
-        bodyView = Position(node, (MIsometry!float.fromTranslation(center, moved) * bodyView.local).renormalized());
-        liftClear();
-        followBody();
-        updateView();
-    }
-
-    void liftClear() {
-        float metricReach = metricBodyReach();
-        Relocated lifted = Relocated(characterState.position, MIsometry!float.identity());
-        generateAround(lifted.place, metricReach);
-        while (world.graph.isCapsuleBlocked(bodyCapsule(), lifted.place)) {
-            Relocated next = world.graph.relocated(lifted.place.moved(characterState.up));
-            lifted = Relocated(next.place, next.toNode * lifted.toNode);
-            altitude += 1;
-            generateAround(lifted.place, metricReach);
-        }
-        characterState.position = lifted.place;
-        moveView(lifted.toNode);
     }
 
     void setWorldgen(Worldgen worldgen) {
@@ -326,22 +256,14 @@ struct Game {
 
     void rebuildWorld(Worldgen worldgen) {
         ubyte dimension = world.graph.layout.dimension;
-        float reach = world.reach;
+        float tanhReach = world.tanhReach;
         uint epoch = world.epoch;
         world.release();
-        stairRoute.clear();
-        world = LocalWorld.make(dimension, worldgen, reach);
+        world = LocalWorld.make(dimension, worldgen, tanhReach);
         world.epoch = epoch + 1;
-        setWarpRadii();
-    }
-
-    void setWarpRadii() {
-        world.warpInner = WARP_INNER_METERS * simConfig.metersToAbsolute;
-        world.warpOuter = WARP_OUTER_METERS * simConfig.metersToAbsolute;
     }
 
     void release() {
-        stairRoute.release();
         world.release();
     }
 
@@ -351,121 +273,98 @@ struct Game {
 
     bool placeBlock() {
         Placement placement = world.placementTarget();
-        if (placement.isFound && !world.graph.isCapsuleOverlappingCell(bodyCapsule(), characterState.position, ChunkSlot(world.graph.slotOf(placement.chunk.node), placement.chunk.vertex), placement.coords)) {
+        if (placement.isFound && !isBodyOverlapping(ChunkSlot(world.graph.slotOf(placement.chunk.node), placement.chunk.vertex), placement)) {
             return world.setVoxel(placement.chunk, placement.coords, MATERIAL_PALETTE[materialIndex]);
         } else {
             return false;
         }
     }
 
-    void look(float yaw, float pitch) {
+    bool isBodyOverlapping(ChunkSlot slot, Placement placement) const {
+        float[3][MAX_BODY_SECTIONS] storage;
+        CellOverlap overlap = CellOverlap(sectionCenters(bodyCapsule(), ZERO_VECTOR, storage[]), slot, placement.coords, character.radius.value);
+        visitCells(world.graph, characterState.position, regionReach(character), overlap);
+        return overlap.isOverlapping;
+    }
+
+    void look(Angle yaw, Angle pitch) {
         camera.turn(-yaw, -pitch);
         updateView();
     }
 
-    MPoint!float pointInView(Place place) const {
-        Relocated at = world.graph.relocated(place);
-        return bodyView.local.inverse() * (at.toNode.inverse() * at.place.pointInNode(world.graph.layout));
-    }
-
     void followBody() {
-        Place place = characterState.position;
-        bodyViewWarp = world.graph.smoothWarp(bodyView, simConfig.metersToAbsolute);
-        float[3] up = world.graph.smoothGridDirection(bodyView, place.jacobian(world.graph.layout, bodyView.local), place.frame.toGrid(characterState.up));
-        MPoint!float eye = pointInView(place.moved(characterState.up.scaled(camera.eyeHeight())));
-        camera.follow(bodyView, MIsometry!float.fromTranslation(MPoint!float.origin(), eye), unit(applied(bodyViewWarp, up)));
+        MIsometry!float eye = MIsometry!float.fromDisplacement(characterState.up.scaled(camera.eyeOffset.value));
+        camera.follow(characterState.position, eye, characterState.up);
         camera.levelRoll();
-    }
-
-    void moveView(MIsometry!float toNode) {
-        MIsometry!float shifted = toNode * bodyView.local;
-        MPoint!float center = characterState.position.pointInNode(world.graph.layout);
-        bodyView = Position(world.graph.idAt(characterState.position.chunk.slot), (MIsometry!float.fromTranslation(shifted * MPoint!float.origin(), center) * shifted).renormalized());
-        world.graph.ensureNodeState(bodyView.node);
+        camera.holdPitch();
     }
 
     void updateView() {
         world.cameraPosition = camera.orientedPosition();
-        float[3][3] rotation = cameraRotation();
-        world.viewWarp = multiplied(transposed(rotation), multiplied(bodyViewWarp, rotation));
     }
 
-    float[3][3] cameraRotation() const {
-        float[3][3] rotation;
-        foreach (column; 0 .. 3) {
-            float[3] axis = [0, 0, 0];
-            axis[column] = 1;
-            float[3] rotated = camera.orientation.rotate(axis);
-            foreach (row; 0 .. 3) {
-                rotation[row][column] = rotated[row];
-            }
-        }
-        return rotation;
-    }
-
-    void step(FrameInput input, float dt) {
+    void step(FrameInput input, Time dt) {
         look(input.yaw, input.pitch);
         float moveX = axisValue(input.isHeld[Key.right]) - axisValue(input.isHeld[Key.left]);
         float moveY = axisValue(input.isHeld[Key.up]) - axisValue(input.isHeld[Key.down]);
         float moveZ = axisValue(input.isHeld[Key.back]) - axisValue(input.isHeld[Key.fwd]);
-        bool wasOnGround = characterState.isOnGround;
-        Stepped stepped = characterState.runStep(simConfig.character, world.graph, characterInput(moveX, moveY, moveZ, input.isHeld[Key.up], input.isHeld[Key.down]), dt);
-        traveled += stepped.traveled;
-        altitude += stepped.rise;
-        moveView(stepped.toNode);
-        camera.smoothEyeVertical(groundedRise(wasOnGround, stepped.rise), simConfig.character.stepHeight, dt);
+        bool isJumping = input.isHeld[Key.up] && !wasJumpHeld;
+        wasJumpHeld = input.isHeld[Key.up];
+        Stepped stepped = runCharacter(characterInput(moveX, moveY, moveZ, isJumping), dt);
+        traveled = traveled + stepped.traveled;
+        altitude = currentAltitude();
         followBody();
         updateView();
-        trackCameraAcceleration(altitude + camera.eyeHeight(), dt);
-        world.update(isSettlingWorldgenEachFrame);
-        if (isSettlingWorldgenEachFrame) {
-            world.streamer.settle(world.graph);
+        trackCameraAcceleration(altitude + camera.eyeOffset, dt);
+        if (!isGeneratingOnDemand) {
+            world.update(false);
         }
-        simTime += dt;
+        time = time + dt;
     }
 
-    float[3] viewToBody(float[3] view) const {
-        float length = view.magnitude;
-        if (length > 0) {
-            Place place = characterState.position;
-            float[3] grid = applied(place.jacobian(world.graph.layout, bodyView.local), applied(inverted(bodyViewWarp), view));
-            float[3] body = place.frame.toBody(grid);
-            return body.scaled(length / body.magnitude);
+    Stepped runCharacter(CharacterInput input, Time dt) {
+        if (isGeneratingOnDemand) {
+            return runGenerating(input, dt);
         } else {
-            return view;
+            return characterState.runStep(character, world.graph, input, dt);
         }
     }
 
-    CharacterInput characterInput(float moveX, float moveY, float moveZ, bool isUpHeld, bool isDownHeld) const {
+    Stepped runGenerating(CharacterInput input, Time dt) {
+        generateAround(characterState.position, regionReach(character));
+        CharacterState trial = characterState;
+        Stepped stepped = trial.runStep(character, world.graph, input, dt);
+        while (stepped.isStalled) {
+            generateAround(trial.position, regionReach(character));
+            trial = characterState;
+            stepped = trial.runStep(character, world.graph, input, dt);
+        }
+        characterState = trial;
+        return stepped;
+    }
+
+    CharacterInput characterInput(float moveX, float moveY, float moveZ, bool isJumping) const {
         if (mode == MovementMode.noclip) {
-            return CharacterInput(viewToBody(camera.orientation.rotate([moveX, moveY, moveZ])), mode, false, false);
+            return CharacterInput(camera.orientation.rotate([moveX, moveY, moveZ]), mode, false);
         } else if (mode == MovementMode.fly) {
-            return CharacterInput(levelMove(moveX, moveZ).plus(characterState.up.scaled(moveY)), mode, false, false);
+            return CharacterInput(levelMove(moveX, moveZ).plus(characterState.up.scaled(moveY)), mode, false);
         } else {
-            return CharacterInput(levelMove(moveX, moveZ), mode, isUpHeld, isDownHeld);
+            return CharacterInput(levelMove(moveX, moveZ), mode, isJumping);
         }
     }
 
     float[3] levelMove(float moveX, float moveZ) const {
-        float[3] right = viewToBody(camera.orientation.rotate([1, 0, 0])).rejectAlong(characterState.up);
-        float[3] back = viewToBody(camera.orientation.rotate([0, 0, 1])).rejectAlong(characterState.up);
+        float[3] right = camera.orientation.rotate([1, 0, 0]).rejectAlong(characterState.up);
+        float[3] back = camera.orientation.rotate([0, 0, 1]).rejectAlong(characterState.up);
         return right.scaled(moveX / right.magnitude).plus(back.scaled(moveZ / back.magnitude));
     }
 
-    float groundedRise(bool wasOnGround, float rise) const {
-        if (wasOnGround && characterState.isOnGround) {
-            return rise;
-        } else {
-            return 0;
-        }
-    }
-
-    void trackCameraAcceleration(float newCameraAltitude, float dt) {
-        float verticalVelocity = (newCameraAltitude - cameraAltitude) / dt;
+    void trackCameraAcceleration(Length newCameraAltitude, Time dt) {
+        Speed verticalVelocity = (newCameraAltitude - cameraAltitude) / dt;
         if (hasCameraVerticalVelocity) {
-            cameraVerticalAcceleration = fabsf((verticalVelocity - cameraVerticalVelocity) / dt);
+            cameraVerticalAcceleration = Acceleration(fabsf(((verticalVelocity - cameraVerticalVelocity) / dt).value));
         } else {
-            cameraVerticalAcceleration = 0;
+            cameraVerticalAcceleration = Acceleration(0);
         }
         cameraAltitude = newCameraAltitude;
         cameraVerticalVelocity = verticalVelocity;

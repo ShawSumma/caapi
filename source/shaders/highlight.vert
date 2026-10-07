@@ -24,5 +24,5 @@ const float OUTLINE_SCALE = 1.01;
 
 void main() {
     vec3 c = VOXEL_CENTER + (corners[edges[gl_VertexIndex]] - VOXEL_CENTER) * OUTLINE_SCALE;
-    gl_Position = warped_clip(camera_inverse * model * vec4(mix(low.xyz, high.xyz, c), 1.0));
+    gl_Position = projection * camera_inverse * model * vec4(mix(low.xyz, high.xyz, c), 1.0);
 }

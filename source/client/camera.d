@@ -1,16 +1,16 @@
 module client.camera;
 
 import core.math : cos, sin, sqrt;
-import core.stdc.math : asinf, atan2f, expf, fabsf;
+import core.stdc.math : asinf, atan2f, fabsf;
 import common.math : MIsometry, Matrix4, PI, clamped;
 import common.position : Position;
+import common.units : Angle, Length;
 
-enum float EYE_LAG_DECAY_PER_SECOND = 12.0f;
-enum float PITCH_LIMIT_RADIANS = PI / 2.0f - 1e-3f;
+enum Angle PITCH_LIMIT = Angle(PI / 2.0f - 1e-3f);
 enum float OPPOSITE_DOT_LIMIT = -0.999999f;
 enum float PERPENDICULAR_AXIS_LIMIT = 0.9f;
 enum float MIN_QUATERNION_LENGTH = 1e-10f;
-enum float TEST_ANGLE_TOLERANCE = 1e-3f;
+enum Angle TEST_ANGLE_TOLERANCE = Angle(1e-3f);
 
 immutable float[3] CAMERA_FORWARD = [0, 0, -1];
 
@@ -116,19 +116,11 @@ struct Camera {
     MIsometry!float eye;
     Quaternion orientation;
     float[3] viewUp = [0, 1, 0];
-    float eyeOffset = 0;
-    float eyeLag = 0;
+    Length eyeOffset;
+    Angle pitch;
 
-    static Camera make(float eyeOffset) {
-        return Camera(Position.origin(), MIsometry!float.identity(), Quaternion.identity(), [0, 1, 0], eyeOffset, 0);
-    }
-
-    void smoothEyeVertical(float groundedRise, float limit, float dt) {
-        eyeLag = clamped((eyeLag + groundedRise) * expf(-EYE_LAG_DECAY_PER_SECOND * dt), -limit, limit);
-    }
-
-    float eyeHeight() const {
-        return eyeOffset - eyeLag;
+    static Camera make(Length eyeOffset) {
+        return Camera(Position.origin(), MIsometry!float.identity(), Quaternion.identity(), [0, 1, 0], eyeOffset, Angle(0));
     }
 
     Position orientedPosition() const {
@@ -139,9 +131,9 @@ struct Camera {
         return orientation.rotate(CAMERA_FORWARD);
     }
 
-    float elevation() const {
+    Angle elevation() const {
         float[3] ahead = forward();
-        return asinf(clamped(ahead[0] * viewUp[0] + ahead[1] * viewUp[1] + ahead[2] * viewUp[2], -1.0f, 1.0f));
+        return Angle(asinf(clamped(ahead[0] * viewUp[0] + ahead[1] * viewUp[1] + ahead[2] * viewUp[2], -1.0f, 1.0f)));
     }
 
     void follow(Position bodyPosition, MIsometry!float eyeFromBody, float[3] visibleUp) {
@@ -150,18 +142,22 @@ struct Camera {
         viewUp = visibleUp;
     }
 
-    void turn(float deltaYaw, float deltaPitch) {
-        orientation = (Quaternion.fromAxisAngle(viewUp, deltaYaw) * orientation).normalized();
-        float current = elevation();
-        float target = clamped(current + deltaPitch, -PITCH_LIMIT_RADIANS, PITCH_LIMIT_RADIANS);
-        orientation = (orientation * Quaternion.fromAxisAngle([1, 0, 0], target - current)).normalized();
+    void turn(Angle deltaYaw, Angle deltaPitch) {
+        orientation = (Quaternion.fromAxisAngle(viewUp, deltaYaw.value) * orientation).normalized();
+        pitch = Angle(clamped((pitch + deltaPitch).value, -PITCH_LIMIT.value, PITCH_LIMIT.value));
+        holdPitch();
+    }
+
+    void holdPitch() {
+        orientation = (orientation * Quaternion.fromAxisAngle([1, 0, 0], (pitch - elevation()).value)).normalized();
     }
 
     void level() {
         orientation = (orientation * Quaternion.fromVectors([0.0f, 1.0f, 0.0f], orientation.inverseRotate(viewUp))).normalized();
+        pitch = Angle(0);
     }
 
-    float roll() const {
+    Angle roll() const {
         float[3] ahead = forward();
         float[3] cameraUp = orientation.rotate([0, 1, 0]);
         float along = viewUp[0] * ahead[0] + viewUp[1] * ahead[1] + viewUp[2] * ahead[2];
@@ -169,27 +165,27 @@ struct Camera {
         float[3] turned = [cameraUp[1] * level[2] - cameraUp[2] * level[1], cameraUp[2] * level[0] - cameraUp[0] * level[2], cameraUp[0] * level[1] - cameraUp[1] * level[0]];
         float sine = turned[0] * ahead[0] + turned[1] * ahead[1] + turned[2] * ahead[2];
         float cosine = cameraUp[0] * level[0] + cameraUp[1] * level[1] + cameraUp[2] * level[2];
-        return atan2f(sine, cosine);
+        return Angle(atan2f(sine, cosine));
     }
 
     void levelRoll() {
-        orientation = (Quaternion.fromAxisAngle(forward(), roll()) * orientation).normalized();
+        orientation = (Quaternion.fromAxisAngle(forward(), roll().value) * orientation).normalized();
     }
 }
 
 unittest {
-    Camera camera = Camera.make(0);
-    camera.turn(0, PI);
-    assert(camera.elevation() <= PITCH_LIMIT_RADIANS + TEST_ANGLE_TOLERANCE);
-    camera.turn(0, -2 * PI);
-    assert(camera.elevation() >= -PITCH_LIMIT_RADIANS - TEST_ANGLE_TOLERANCE);
-    float before = camera.elevation();
-    camera.turn(PI / 2, 0);
-    assert(fabsf(camera.elevation() - before) < TEST_ANGLE_TOLERANCE);
+    Camera camera = Camera.make(Length(0));
+    camera.turn(Angle(0), Angle(PI));
+    assert(camera.elevation() <= PITCH_LIMIT + TEST_ANGLE_TOLERANCE);
+    camera.turn(Angle(0), Angle(-2 * PI));
+    assert(camera.elevation() >= -PITCH_LIMIT - TEST_ANGLE_TOLERANCE);
+    Angle before = camera.elevation();
+    camera.turn(Angle(PI / 2), Angle(0));
+    assert(fabsf((camera.elevation() - before).value) < TEST_ANGLE_TOLERANCE.value);
 }
 
 unittest {
-    Camera camera = Camera.make(0);
+    Camera camera = Camera.make(Length(0));
     float[3] before = camera.forward();
     camera.follow(camera.position, MIsometry!float.identity(), [1, 0, 0]);
     float[3] after = camera.forward();
@@ -197,11 +193,11 @@ unittest {
 }
 
 unittest {
-    Camera camera = Camera.make(0);
+    Camera camera = Camera.make(Length(0));
     camera.follow(camera.position, MIsometry!float.identity(), [0.6f, 0.8f, 0]);
     float[3] before = camera.forward();
     camera.levelRoll();
     float[3] after = camera.forward();
-    assert(fabsf(camera.roll()) < TEST_ANGLE_TOLERANCE);
-    assert(fabsf(before[0] - after[0]) + fabsf(before[1] - after[1]) + fabsf(before[2] - after[2]) < TEST_ANGLE_TOLERANCE);
+    assert(fabsf(camera.roll().value) < TEST_ANGLE_TOLERANCE.value);
+    assert(fabsf(before[0] - after[0]) + fabsf(before[1] - after[1]) + fabsf(before[2] - after[2]) < TEST_ANGLE_TOLERANCE.value);
 }

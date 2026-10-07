@@ -2,6 +2,7 @@ module client.graphics.frustum;
 
 import core.stdc.math : atanf, cosf, sinf, tanf;
 import common.math : MDirection, MVector;
+import common.units : Angle;
 
 enum uint FRUSTUM_PLANE_COUNT = 5;
 enum float KLEIN_FAR_PLANE = 1.0f;
@@ -12,9 +13,9 @@ struct Frustum {
     float down;
     float up;
 
-    static Frustum fromVerticalFov(float verticalFov, float aspectRatio) {
-        float horizontalFov = atanf(aspectRatio * tanf(verticalFov));
-        return Frustum(-horizontalFov, horizontalFov, -verticalFov, verticalFov);
+    static Frustum fromHalfFov(Angle halfVertical, float aspectRatio) {
+        float halfHorizontal = atanf(aspectRatio * tanf(halfVertical.value));
+        return Frustum(-halfHorizontal, halfHorizontal, -halfVertical.value, halfVertical.value);
     }
 
     MDirection!float[FRUSTUM_PLANE_COUNT] planes() const {

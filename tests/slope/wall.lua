@@ -6,7 +6,7 @@ local WALL_BLOCKS = 3
 local APPROACH_SECONDS = 0.5
 local PUSH_SECONDS = 2.5
 local CONTACT_SPEED_FRACTION = 0.8
-local MAX_RISE_SPEED = 2
+local MAX_RISE_SPEED = 0.1
 
 return function(world)
   walk.on_slope(world, TILT_DEGREES, 0)
@@ -24,21 +24,15 @@ return function(world)
     local slowest = math.huge
     world:on_step(function()
       slowest = math.min(slowest, world:horizontal_speed())
-      motion.speed = math.max(motion.speed, world:horizontal_speed())
-      motion.rise = math.max(motion.rise, world:vertical_speed())
-      motion.fall = math.max(motion.fall, -world:vertical_speed())
-      if not world:is_on_ground() then
-        motion.airborne = motion.airborne + 1
-      end
+      walk.observe(world, motion)
     end)
     world:wait(PUSH_SECONDS)
     world:release("fwd")
     world:wait(walk.SETTLE_SECONDS)
     world:on_step(nil)
 
-    assert(slowest <= CONTACT_SPEED_FRACTION * walk.SPEED, string.format("heading %d: never slowed below %.2f m/s, so the wall was not reached", heading, slowest))
-    assert(motion.rise <= MAX_RISE_SPEED, string.format("heading %d: rose at %.2f m/s against the wall", heading, motion.rise))
-    assert(motion.airborne == 0, string.format("heading %d: left the ground for %d steps against the wall", heading, motion.airborne))
+    assert(slowest <= CONTACT_SPEED_FRACTION * walk.SPEED, string.format("heading %d: never slowed below %.4f, so the wall was not reached", heading, slowest))
+    assert(motion.rise <= MAX_RISE_SPEED, string.format("heading %d: rose at %.4f against the wall", heading, motion.rise))
     walk.check_speed_limit(motion)
     assert(world:is_on_ground(), string.format("heading %d: on ground against the wall", heading))
     world:press(walk.WALL_DISTANCE / walk.SPEED, "back")

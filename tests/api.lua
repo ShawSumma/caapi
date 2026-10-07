@@ -1,7 +1,7 @@
 local DEFAULT_TIMESTEP = 0.016
 local CHOSEN_TIMESTEP = 0.02
 local CLOCK_TOLERANCE = 1e-4
-local REST_TOLERANCE = 1e-3
+local REST_TOLERANCE = 5e-5
 
 return function(world)
   local is_unbound_call_accepted, unbound_message = pcall(world.wait, 1)

@@ -1,25 +1,27 @@
 local walk = {}
 
-walk.SPEED = 4.5
-walk.SPRINT_SPEED = 6.5
-walk.SPEED_TOLERANCE = 0.05
-walk.HALF_HEIGHT = 0.9
-walk.CONTACT_SKIN = 0.01
+walk.SPEED = 0.225
+walk.SPEED_TOLERANCE = 0.0025
+walk.BLOCKED_SPEED = walk.SPEED / 2
+walk.HALF_HEIGHT = 0.045
+walk.CONTACT_SKIN = 0.0005
 walk.STANDING_ALTITUDE = walk.HALF_HEIGHT + walk.CONTACT_SKIN
-walk.ALTITUDE_TOLERANCE = 0.002
-walk.MAX_FALL_SPEED = 15
-walk.FLY_SPEED = 8
+walk.ALTITUDE_TOLERANCE = 0.0001
+walk.FLY_SPEED = 0.4
 walk.STRAIGHT_DOWN_DEGREES = 89
-walk.WALL_HOVER_PER_BLOCK = 2
-walk.WALL_DISTANCE = 3
-walk.WALL_HALF_WIDTH = 1.5
-walk.ROW_STEP_METERS = 0.25
+walk.WALL_HOVER_PER_BLOCK = 0.1
+walk.WALL_DISTANCE = 0.15
+walk.WALL_HALF_WIDTH = 0.075
+walk.ROW_STEP = 0.0125
+walk.STEP_DEPTH = 0.075
 walk.GROUND = "dirt"
 walk.LAYER_SLOTS = { 1, 4, 5 }
 walk.LAYER_MATERIALS = { "wood_planks", "grey_brick", "white_brick" }
 walk.TURN_SECONDS = 0.96
 walk.SETTLE_SECONDS = 0.48
 walk.LANDING_SECONDS = 2
+walk.MIN_BLOCK_EDGE = 0.035
+walk.MAX_BLOCK_EDGE = 0.077
 
 function walk.spawn(world)
   assert(world:mode() == "walk", "spawned walking")
@@ -40,54 +42,88 @@ function walk.forward(world, seconds, min_fraction)
   world:press(seconds, "fwd")
   local walked = world:traveled() - start
   local free = walk.SPEED * seconds
-  assert(walked >= min_fraction * free, string.format("walked %.1f m of an unobstructed %.1f m, facing %s", walked, free, tostring(world:target_material())))
+  assert(walked >= min_fraction * free, string.format("walked %.4f of an unobstructed %.4f, facing %s", walked, free, tostring(world:target_material())))
   return walked
 end
 
+function walk.climb_forward(world, seconds, dt, stop_rise)
+  local step = dt or world:timestep()
+  local deadline = world:time() + seconds
+  local stop_altitude = world:altitude() + (stop_rise or math.huge)
+  world:hold("fwd")
+  world:step(step)
+  while world:time() < deadline and not (world:is_on_ground() and world:altitude() >= stop_altitude) do
+    walk.jump_if_blocked(world)
+    world:step(step)
+  end
+  world:release("fwd", "up")
+end
+
+function walk.jump_if_blocked(world)
+  world:release("up")
+  if world:is_on_ground() and world:horizontal_speed() < walk.BLOCKED_SPEED then
+    world:hold("up")
+  end
+end
+
 function walk.track_motion(world)
-  local motion = { speed = 0, at = 0, fall = 0, rise = 0, airborne = 0, lowest = world:altitude(), highest = world:altitude() }
+  local motion = { excess = 0, excess_at = 0, cap = walk.SPEED, was_on_ground = world:is_on_ground(), rise = 0, off_ground = 0, lowest = world:altitude(), highest = world:altitude() }
   world:on_step(function()
-    local speed = world:horizontal_speed()
-    local vertical = world:vertical_speed()
-    local altitude = world:altitude()
-    if speed > motion.speed then
-      motion.speed = speed
-      motion.at = world:time()
-      motion.vertical_at = vertical
-      motion.grounded_at = world:is_on_ground()
-    end
-    motion.fall = math.max(motion.fall, -vertical)
-    motion.rise = math.max(motion.rise, vertical)
-    motion.lowest = math.min(motion.lowest, altitude)
-    motion.highest = math.max(motion.highest, altitude)
-    if not world:is_on_ground() then
-      motion.airborne = motion.airborne + 1
-    end
+    walk.observe(world, motion)
   end)
   return motion
 end
 
-function walk.check_speed_limit(motion, limit)
-  local cap = (limit or walk.SPEED) + walk.SPEED_TOLERANCE
-  assert(motion.speed <= cap, string.format("horizontal speed reached %.2f m/s at t=%.2f (limit %.2f), vertical %.2f m/s, %s", motion.speed, motion.at, cap, motion.vertical_at, motion.grounded_at and "on ground" or "airborne"))
-  assert(motion.fall <= walk.MAX_FALL_SPEED, string.format("fell at %.1f m/s (limit %.1f), through the ground or off a cliff", motion.fall, walk.MAX_FALL_SPEED))
+function walk.observe(world, motion)
+  local speed = world:horizontal_speed()
+  local altitude = world:altitude()
+  if world:is_on_ground() then
+    if not motion.was_on_ground then
+      motion.cap = math.max(walk.SPEED, speed)
+    end
+    if speed - motion.cap > motion.excess then
+      motion.excess = speed - motion.cap
+      motion.excess_at = world:time()
+    end
+    motion.cap = math.max(walk.SPEED, math.min(motion.cap, speed))
+  else
+    motion.off_ground = motion.off_ground + 1
+  end
+  motion.was_on_ground = world:is_on_ground()
+  motion.rise = math.max(motion.rise, world:vertical_speed())
+  motion.lowest = math.min(motion.lowest, altitude)
+  motion.highest = math.max(motion.highest, altitude)
+end
+
+function walk.check_speed_limit(motion)
+  assert(motion.excess <= walk.SPEED_TOLERANCE, string.format("walking sped up %.4f past the walk speed or the landing speed at t=%.2f", motion.excess, motion.excess_at))
+end
+
+function walk.check_on_step(world, standing, what)
+  assert(world:is_on_ground(), what .. ": on ground")
+  local rise = world:altitude() - standing
+  assert(rise > walk.MIN_BLOCK_EDGE / 2, string.format("%s: rose %.4f", what, rise))
+  world:look(0, walk.STRAIGHT_DOWN_DEGREES)
+  local below = world:target_material()
+  world:look(0, -walk.STRAIGHT_DOWN_DEGREES)
+  assert(below == walk.LAYER_MATERIALS[1], string.format("%s: standing on %s", what, tostring(below)))
 end
 
 function walk.check_standing(world, what)
   local altitude = world:altitude()
   assert(world:is_on_ground(), what .. ": on ground")
-  assert(math.abs(altitude - walk.STANDING_ALTITUDE) <= walk.ALTITUDE_TOLERANCE, string.format("%s: standing at altitude %.3f m (expected %.2f)", what, altitude, walk.STANDING_ALTITUDE))
+  assert(math.abs(altitude - walk.STANDING_ALTITUDE) <= walk.ALTITUDE_TOLERANCE, string.format("%s: standing at altitude %.5f (expected %.5f)", what, altitude, walk.STANDING_ALTITUDE))
 end
 
-local function fly(world, meters, key)
-  world:press(meters / walk.FLY_SPEED, key)
+local function fly(world, distance, key)
+  world:press(distance / walk.FLY_SPEED, key)
 end
 
-local function strafe(world, meters)
-  if meters > 0 then
-    fly(world, meters, "right")
-  elseif meters < 0 then
-    fly(world, -meters, "left")
+local function strafe(world, distance)
+  if distance > 0 then
+    fly(world, distance, "right")
+  elseif distance < 0 then
+    fly(world, -distance, "left")
   end
 end
 
@@ -101,20 +137,20 @@ local function build_layer(world, below, key, steps)
     end
     world:look(0, -walk.STRAIGHT_DOWN_DEGREES)
     if step < steps then
-      fly(world, walk.ROW_STEP_METERS, key)
+      fly(world, walk.ROW_STEP, key)
     end
   end
 end
 
-function walk.build_row(world, blocks, key, meters)
-  local steps = math.ceil(meters / walk.ROW_STEP_METERS)
+function walk.build_row(world, blocks, key, length)
+  local steps = math.ceil(length / walk.ROW_STEP)
   local below = walk.GROUND
   for layer = 1, blocks do
     world:material(walk.LAYER_SLOTS[layer])
     build_layer(world, below, key, steps)
     below = walk.LAYER_MATERIALS[layer]
     if layer < blocks then
-      fly(world, steps * walk.ROW_STEP_METERS, OPPOSITE_KEYS[key])
+      fly(world, steps * walk.ROW_STEP, OPPOSITE_KEYS[key])
     end
   end
   world:material(walk.LAYER_SLOTS[1])
@@ -142,7 +178,25 @@ function walk.build_wall(world, blocks)
 end
 
 function walk.build_step(world)
-  walk.build_wall(world, 1)
+  walk.hover(world, 1)
+  fly(world, walk.WALL_DISTANCE, "fwd")
+  strafe(world, -walk.WALL_HALF_WIDTH)
+  local key = "right"
+  local rows = math.ceil(walk.STEP_DEPTH / walk.ROW_STEP)
+  for row = 0, rows do
+    walk.build_row(world, 1, key, 2 * walk.WALL_HALF_WIDTH)
+    key = OPPOSITE_KEYS[key]
+    if row < rows then
+      fly(world, walk.ROW_STEP, "fwd")
+    end
+  end
+  if key == "right" then
+    strafe(world, walk.WALL_HALF_WIDTH)
+  else
+    strafe(world, -walk.WALL_HALF_WIDTH)
+  end
+  fly(world, walk.WALL_DISTANCE + rows * walk.ROW_STEP, "back")
+  walk.land(world)
 end
 
 function walk.build_corner(world, blocks)
@@ -160,8 +214,12 @@ function walk.across_slope(degrees, heading, seconds, min_fraction)
     walk.on_slope(world, degrees, heading)
     local motion = walk.track_motion(world)
     local start = world:altitude()
-    local walked = walk.forward(world, seconds, min_fraction)
-    world:wait(walk.SETTLE_SECONDS)
+    local before = world:traveled()
+    walk.climb_forward(world, seconds)
+    local walked = world:traveled() - before
+    local free = walk.SPEED * seconds
+    assert(walked >= min_fraction * free, string.format("walked %.4f of an unobstructed %.4f, facing %s", walked, free, tostring(world:target_material())))
+    world:wait(walk.LANDING_SECONDS)
     walk.check_speed_limit(motion)
     assert(world:is_on_ground(), "on ground at the end")
     return walked, world:altitude() - start

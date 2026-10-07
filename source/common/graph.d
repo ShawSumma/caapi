@@ -8,6 +8,7 @@ import common.murmur : murmurHash3;
 import common.node : Chunk, ChunkLayout, ChunkSlot;
 import common.position : Position;
 import common.slab : Slab;
+import common.worldgen.building : Building;
 import common.worldgen.generation : NodeState, Worldgen, WorldgenKind;
 import common.worldgen.tower : NodeStructure, structureBaseSlot;
 
@@ -36,6 +37,7 @@ enum uint NO_SLOT = uint.max;
 enum uint MAX_PARENTS = 3;
 
 struct Node {
+    Building building;
     NodeId id;
     NodeState state;
     uint[SIDE_COUNT] neighbors;
@@ -43,6 +45,8 @@ struct Node {
     NodeStructure structure;
     bool hasState;
     bool hasStructure;
+    bool hasBuilding;
+    bool isBuildingQueued;
 }
 
 struct ParentEntry {
@@ -94,7 +98,7 @@ struct Graph {
 
     static Graph make(ubyte dimension, Worldgen worldgen) {
         Graph graph;
-        graph.layout = ChunkLayout.make(dimension, worldgen.spacing);
+        graph.layout = ChunkLayout.make(dimension);
         graph.worldgen = worldgen;
         graph.addNode(ROOT_NODE, 0);
         if (worldgen.kind == WorldgenKind.structure) {
@@ -285,12 +289,24 @@ struct Graph {
         return nodeAt(slot).structure;
     }
 
+    const(Building)* ensureBuildingAt(uint slot) {
+        if (!nodeAt(slot).hasBuilding) {
+            nodeAt(slot).building = Building.make(ensureStructureAt(slot), layout);
+            nodeAt(slot).hasBuilding = true;
+        }
+        return &nodeAt(slot).building;
+    }
+
     void ensureNodeState(NodeId nodeId) {
         ensureNodeStateAt(slotOf(nodeId));
     }
 
     const(NodeState)* nodeState(NodeId nodeId) const {
         return &nodeAt(slotOf(nodeId)).state;
+    }
+
+    float[3] upAt(Position position) const {
+        return nodeState(position.node).surface.upAt(position.local);
     }
 
     bool isLinkedFacing(SlotPosition position, MPoint!float location, Side side) const {
@@ -329,6 +345,11 @@ struct Graph {
     void release() {
         foreach (index; 0 .. cast(size_t) nodeCount * VERTEX_COUNT) {
             chunks.at(index).voxels.release();
+        }
+        foreach (slot; 0 .. nodeCount) {
+            if (nodeAt(slot).hasBuilding) {
+                nodeAt(slot).building.release();
+            }
         }
         nodes.release();
         chunks.release();

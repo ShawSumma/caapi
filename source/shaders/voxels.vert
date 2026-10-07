@@ -70,5 +70,5 @@ void main() {
     if (cell_ratio != 1.0) {
         chunk_coords = (1.0 - pow(vec3(cell_ratio), grid_coords)) / (1.0 - pow(cell_ratio, float(dimension)));
     }
-    gl_Position = warped_clip(camera_inverse * draw.transform * vec4(chunk_coords, 1));
+    gl_Position = projection * camera_inverse * draw.transform * vec4(chunk_coords, 1);
 }

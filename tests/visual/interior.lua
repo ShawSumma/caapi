@@ -1,16 +1,12 @@
-local AXIS_METERS = 2.5
-local LOOK_DOWN_DEGREES = 25
-local TURN_DEGREES = 110
-local TURN_SECONDS = 0.016
-local NOCLIP_SPEED = 12
-local BACK_METERS = 2
+local SETTLE_SECONDS = 0.5
+local AHEAD_WAYPOINT = 6
+local LOOK_UP_DEGREES = -10
 
 return function(world)
   world:worldgen("structure", "tower")
-  world:mode("noclip")
-  world:enter_structure(AXIS_METERS)
-  world:turn(TURN_DEGREES, 0, TURN_SECONDS)
-  world:press(BACK_METERS / NOCLIP_SPEED, "back")
-  world:look(0, LOOK_DOWN_DEGREES)
+  world:enter_stairs()
+  world:wait(SETTLE_SECONDS)
+  local yaw = world:stair_waypoint(AHEAD_WAYPOINT)
+  world:look(yaw, LOOK_UP_DEGREES)
   world:step()
 end

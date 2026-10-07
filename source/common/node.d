@@ -33,55 +33,22 @@ struct ChunkSlot {
     }
 }
 
-enum GridSpacing : ubyte {
-    volume,
-    uniform,
-}
-
 struct ChunkLayout {
     float dualToChunkFactor;
     float cellRatio;
     float chunkSpan;
-    GridSpacing spacing;
     ubyte dimension;
 
-    static ChunkLayout make(ubyte dimension, GridSpacing spacing) {
-        float cellRatio = 1;
-        final switch (spacing) {
-            case GridSpacing.volume:
-                cellRatio = powf(coshf(BOUNDING_SPHERE_RADIUS), DENSITY_EXPONENT / dimension);
-                break;
-            case GridSpacing.uniform:
-                break;
-        }
-        return ChunkLayout(vertexDualToChunkFactor(), cellRatio, 1.0f - powf(cellRatio, dimension), spacing, dimension);
+    static ChunkLayout make(ubyte dimension) {
+        float cellRatio = powf(coshf(BOUNDING_SPHERE_RADIUS), DENSITY_EXPONENT / dimension);
+        return ChunkLayout(vertexDualToChunkFactor(), cellRatio, 1.0f - powf(cellRatio, dimension), dimension);
     }
 
     float gridToChunk(float gridCoord) const {
-        float chunkCoord = gridCoord / dimension;
-        final switch (spacing) {
-            case GridSpacing.volume:
-                chunkCoord = (1.0f - powf(cellRatio, gridCoord)) / chunkSpan;
-                break;
-            case GridSpacing.uniform:
-                break;
-        }
-        return chunkCoord;
+        return (1.0f - powf(cellRatio, gridCoord)) / chunkSpan;
     }
 
     float chunkToGrid(float chunkCoord) const {
-        float gridCoord = chunkCoord * dimension;
-        final switch (spacing) {
-            case GridSpacing.volume:
-                gridCoord = geometricGrid(chunkCoord);
-                break;
-            case GridSpacing.uniform:
-                break;
-        }
-        return gridCoord;
-    }
-
-    float geometricGrid(float chunkCoord) const {
         float remaining = 1.0f - chunkCoord * chunkSpan;
         if (remaining > 0) {
             return logf(remaining) / logf(cellRatio);
@@ -135,7 +102,7 @@ float kleinBoxVolume(float[3] low, float[3] high) {
 }
 
 unittest {
-    ChunkLayout layout = ChunkLayout.make(VOLUME_TEST_DIMENSION, GridSpacing.volume);
+    ChunkLayout layout = ChunkLayout.make(VOLUME_TEST_DIMENSION);
     float smallest = float.infinity;
     float largest = 0;
     float total = 0;
@@ -303,11 +270,11 @@ unittest {
     buried.initializeMargins(TEST_DIMENSION);
     stone.fixMargins(buried, TEST_DIMENSION, Vertex.a, CHUNK_DIRECTIONS[3]);
     assert(stone.isSolid());
-    VoxelData air = VoxelData.fromMaterial(Material.none);
-    stone.fixMargins(air, TEST_DIMENSION, Vertex.a, CHUNK_DIRECTIONS[4]);
-    assert(!stone.isSolid() && !air.isSolid());
+    VoxelData empty = VoxelData.fromMaterial(Material.none);
+    stone.fixMargins(empty, TEST_DIMENSION, Vertex.a, CHUNK_DIRECTIONS[4]);
+    assert(!stone.isSolid() && !empty.isSolid());
     stone.release();
-    air.release();
+    empty.release();
     buried.release();
 }
 

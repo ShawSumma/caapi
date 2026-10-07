@@ -1,15 +1,14 @@
 module client.world;
 
-import core.stdc.math : atanhf, coshf, sqrtf, tanhf;
+import core.stdc.math : coshf;
 import client.camera : CAMERA_FORWARD;
 import client.streaming : Streamer, chunkNeighborId, hasPopulatedNeighbor, resolveIfExposed, resolveMaterials;
-import common.character.warp : IDENTITY_WARP, applied, inverted;
 import common.clock : nowMilliseconds;
 import common.coords : CHUNK_DIRECTIONS, ChunkDirection, Coords, boundaryCoord;
 import common.graph : Graph, NO_NODE;
 import common.margins : CoordsWithMargins, neighborAxisPermutation;
 import common.material : Material;
-import common.math : MIsometry, MPoint, MVector, clamped;
+import common.math : MIsometry, MPoint, MVector;
 import common.neighbors : chunkNeighborSlot, touchChunksReading;
 import common.node : Chunk, ChunkId, ChunkSlot, ChunkState;
 import common.position : Position;
@@ -21,7 +20,6 @@ import common.worldgen.generation : Worldgen;
 enum float NEARBY_PADDING = 0.05f;
 enum float RENDER_RADIUS = 4.5f;
 enum double NEARBY_BUDGET_MILLISECONDS = 2.0;
-enum uint PICK_SEGMENTS = 8;
 
 struct Placement {
     ChunkId chunk;
@@ -43,22 +41,19 @@ struct LocalWorld {
     MPoint!float pendingPoint;
     NearbyNode[] cachedNodes;
     float renderRadius;
-    float reach;
-    float[3][3] viewWarp = IDENTITY_WARP;
-    float warpInner = 0;
-    float warpOuter = 0;
+    float tanhReach;
     uint published;
     uint nearbyVersion;
     uint epoch;
     bool hasNearby;
 
-    static LocalWorld make(ubyte dimension, Worldgen worldgen, float reach) {
+    static LocalWorld make(ubyte dimension, Worldgen worldgen, float tanhReach) {
         LocalWorld world;
         world.graph = Graph.make(dimension, worldgen);
         world.streamer = Streamer.make();
         world.cameraPosition = Position.origin();
         world.renderRadius = RENDER_RADIUS;
-        world.reach = reach;
+        world.tanhReach = tanhReach;
         return world;
     }
 
@@ -132,42 +127,12 @@ struct LocalWorld {
     }
 
     bool isWorldgenSettled() const {
-        return hasNearby && streamer.inFlight == 0 && streamer.scanCursor >= cachedNodes.length;
+        return hasNearby && streamer.isIdle() && streamer.scanCursor >= cachedNodes.length;
     }
 
     GraphCastHit castCenterRay() const {
-        float distance = atanhf(reach);
-        GraphCastHit hit;
-        uint segment = 0;
-        while (segment < PICK_SEGMENTS && !hit.isHit()) {
-            float[3] start = centerPathPoint(distance * segment / PICK_SEGMENTS);
-            float[3] end = centerPathPoint(distance * (segment + 1) / PICK_SEGMENTS);
-            float[3] along = [end[0] - start[0], end[1] - start[1], end[2] - start[2]];
-            float length = sqrtf(along[0] * along[0] + along[1] * along[1] + along[2] * along[2]);
-            Position from = graph.normalized(Position(cameraPosition.node, cameraPosition.local * MIsometry!float.fromDisplacement(start)));
-            Ray ray = Ray(MPoint!float.origin(), MVector!float([along[0], along[1], along[2], 0]).normalizedDirection());
-            hit = graph.rayCast(from, ray, tanhf(length));
-            segment += 1;
-        }
-        return hit;
-    }
-
-    float[3] centerPathPoint(float distance) const {
-        float strength = warpStrength(distance);
-        float[3][3] partial;
-        foreach (row; 0 .. 3) {
-            foreach (column; 0 .. 3) {
-                partial[row][column] = IDENTITY_WARP[row][column] + strength * (viewWarp[row][column] - IDENTITY_WARP[row][column]);
-            }
-        }
-        float[3] direction = applied(inverted(partial), CAMERA_FORWARD);
-        float length = sqrtf(direction[0] * direction[0] + direction[1] * direction[1] + direction[2] * direction[2]);
-        return [direction[0] * distance / length, direction[1] * distance / length, direction[2] * distance / length];
-    }
-
-    float warpStrength(float distance) const {
-        float t = clamped((distance - warpInner) / (warpOuter - warpInner), 0.0f, 1.0f);
-        return 1.0f - t * t * (3.0f - 2.0f * t);
+        Ray ray = Ray(MPoint!float.origin(), MVector!float([CAMERA_FORWARD[0], CAMERA_FORWARD[1], CAMERA_FORWARD[2], 0]).normalizedDirection());
+        return graph.rayCast(cameraPosition, ray, tanhReach);
     }
 
     TargetMaterial targetMaterial() const {

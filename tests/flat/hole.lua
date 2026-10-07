@@ -3,8 +3,11 @@ local walk = require("lib.walk")
 local WALL_BLOCKS = 2
 local LOWER_BLOCK_DEGREES = 18
 local MAX_BREAKS = 4
-local WALK_SECONDS = 2
-local MIN_PAST_WALL_METERS = 1
+local APPROACH_SECONDS = 1
+local SEARCH_SECONDS = 0.5
+local THROUGH_SECONDS = 2
+local FREE_SECONDS = 1
+local MIN_FREE_FRACTION = 0.8
 
 local function is_wall(material)
   return material == walk.LAYER_MATERIALS[1] or material == walk.LAYER_MATERIALS[2]
@@ -30,9 +33,12 @@ return function(world)
   clear_ahead(world, 0, "upper half")
   clear_ahead(world, LOWER_BLOCK_DEGREES, "lower half")
 
-  local start = world:traveled()
-  world:press(WALK_SECONDS, "fwd")
-  local walked = world:traveled() - start
-  assert(walked >= walk.WALL_DISTANCE + MIN_PAST_WALL_METERS, string.format("walked %.2f m, so the body did not pass the 1x2 hole", walked))
-  walk.check_standing(world, "past the hole")
+  world:hold("fwd")
+  world:wait(APPROACH_SECONDS)
+  world:press(SEARCH_SECONDS, "left")
+  world:press(2 * SEARCH_SECONDS, "right")
+  world:wait(THROUGH_SECONDS)
+  world:release("fwd")
+  walk.check_standing(world, "after squeezing through the hole")
+  walk.forward(world, FREE_SECONDS, MIN_FREE_FRACTION)
 end

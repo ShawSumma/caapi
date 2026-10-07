@@ -4,7 +4,7 @@ import core.stdc.stdio : FILE, fclose, fopen, fprintf, snprintf;
 import core.stdc.stdlib : free, malloc;
 import core.stdc.string : strcmp;
 import core.sys.posix.time : nanosleep, timespec;
-import bindings.platform : Atom, Button1, Button3, ButtonPress, ClientMessage, CurrentTime, Cursor, Display, False, FocusOut, GenericEvent, GrabModeAsync, GrabSuccess, KeyPress, KeyRelease, KeySym, Pixmap, Success, True, UnmapNotify, VkExtent2D, Window, XBlackPixel, XCloseDisplay, XColor, XCreateBitmapFromData, XCreatePixmapCursor, XCreateSimpleWindow, XDefaultScreen, XDestroyWindow, XDisplayHeight, XDisplayWidth, XEvent, XFlush, XFreeCursor, XFreeEventData, XFreePixmap, XGenericEventCookie, XGetEventData, XGrabPointer, XIAllMasterDevices, XIDeviceInfo, XIEventMask, XIFreeDeviceInfo, XIModeAbsolute, XIQueryDevice, XIQueryVersion, XIRawEvent, XISelectEvents, XIValuatorClass, XIValuatorClassInfo, XI_DeviceChanged, XI_RawMotion, XInternAtom, XK_1, XK_9, XK_Escape, XK_Down, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_g, XK_n, XK_s, XK_space, XK_v, XK_w, XLookupKeysym, XMapWindow, XNextEvent, XOpenDisplay, XPending, XQueryExtension, XRootWindow, XSelectInput, XSetWMProtocols, XStoreName, XUngrabPointer, XkbSetDetectableAutoRepeat;
+import bindings.platform : Atom, Button1, Button3, ButtonPress, ClientMessage, CurrentTime, Cursor, Display, False, FocusOut, GenericEvent, GrabModeAsync, GrabSuccess, KeyPress, KeyRelease, KeySym, Pixmap, Success, True, UnmapNotify, VkExtent2D, Window, XBlackPixel, XCloseDisplay, XColor, XCreateBitmapFromData, XCreatePixmapCursor, XCreateSimpleWindow, XDefaultScreen, XDestroyWindow, XDisplayHeight, XDisplayWidth, XEvent, XFlush, XFreeCursor, XFreeEventData, XFreePixmap, XGenericEventCookie, XGetEventData, XGrabPointer, XIAllMasterDevices, XIDeviceInfo, XIEventMask, XIFreeDeviceInfo, XIModeAbsolute, XIQueryDevice, XIQueryVersion, XIRawEvent, XISelectEvents, XIValuatorClass, XIValuatorClassInfo, XI_DeviceChanged, XI_RawMotion, XInternAtom, XK_1, XK_9, XK_Escape, XK_Down, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_n, XK_s, XK_space, XK_v, XK_w, XLookupKeysym, XMapWindow, XNextEvent, XOpenDisplay, XPending, XQueryExtension, XRootWindow, XSelectInput, XSetWMProtocols, XStoreName, XUngrabPointer, XkbSetDetectableAutoRepeat;
 import client.arguments : StartupError, FlagValue, NumberArgument, WorldgenArgument;
 import client.config : ClientConfig;
 import client.game : FrameInput, Game, KEY_COUNT, Key, MATERIAL_PALETTE, axisValue;
@@ -15,8 +15,8 @@ import common.character.controller : MovementMode;
 import common.clock : MILLISECONDS_PER_SECOND, NANOSECONDS_PER_SECOND, nowSeconds;
 import common.dodeca : VERTEX_COUNT;
 import common.names : ENUM_NAMES;
-import common.node : GridSpacing;
-import common.settings : SimMeters;
+import common.settings : CHUNK_DIMENSION;
+import common.units : Angle, AngularSpeed, Time;
 import common.worldgen.generation : Worldgen;
 
 enum uint WINDOW_WIDTH = 1280;
@@ -243,9 +243,8 @@ struct Session {
             StartupError(null, "cannot open a window: needs an X display with XInput 2.1", null).report(arguments.program);
             return EXIT_FAILED;
         } else {
-            SimMeters meters;
-            renderer.setup(display, window, meters.chunkSize);
-            game = Game.make(arguments.worldgen, config.reachMeters);
+            renderer.setup(display, window, CHUNK_DIMENSION);
+            game = Game.make(arguments.worldgen, config.reach);
             runLoop();
             game.release();
             renderer.cleanup();
@@ -420,9 +419,6 @@ struct Session {
         } else if (symbol == XK_n && !isRepeat) {
             game.toggleMode(MovementMode.noclip);
             recordModeChange();
-        } else if (symbol == XK_g && !isRepeat) {
-            game.cycleSpacing();
-            isTitleDirty = true;
         } else if (symbol >= XK_1 && symbol <= XK_9) {
             selectMaterial(cast(uint)(symbol - XK_1));
         } else {
@@ -477,9 +473,8 @@ struct Session {
     void updateWindowTitle() {
         char[TEXT_CAPACITY] title;
         string mode = ENUM_NAMES!MovementMode[game.mode];
-        string spacing = ENUM_NAMES!GridSpacing[game.world.graph.layout.spacing];
         char[TEXT_CAPACITY] modes;
-        snprintf(modes.ptr, modes.length, "%.*s (V) - %.*s grid (G)", cast(int) mode.length, mode.ptr, cast(int) spacing.length, spacing.ptr);
+        snprintf(modes.ptr, modes.length, "%.*s (V)", cast(int) mode.length, mode.ptr);
         if (isCaptured) {
             snprintf(title.ptr, title.length, "mined - %s - [%u] - Esc to release mouse - FPS %.0f", modes.ptr, game.materialIndex + 1, cast(double) fps);
         } else {
@@ -489,11 +484,11 @@ struct Session {
         isTitleDirty = false;
     }
 
-    FrameInput buildFrameInput(float dt) {
-        float yawRate = (axisValue(isHeld[Key.yawRight]) - axisValue(isHeld[Key.yawLeft])) * config.turnSpeed;
-        float pitchRate = (axisValue(isHeld[Key.pitchDown]) - axisValue(isHeld[Key.pitchUp])) * config.turnSpeed;
-        float yaw = yawRate * dt + cast(float)(mouseDx * config.mouseRadiansPerCount);
-        float pitch = pitchRate * dt + cast(float)(mouseDy * config.mouseRadiansPerCount) * pitchSign(config.isYInverted);
+    FrameInput buildFrameInput(Time dt) {
+        AngularSpeed yawRate = config.keyTurnRate * (axisValue(isHeld[Key.yawRight]) - axisValue(isHeld[Key.yawLeft]));
+        AngularSpeed pitchRate = config.keyTurnRate * (axisValue(isHeld[Key.pitchDown]) - axisValue(isHeld[Key.pitchUp]));
+        Angle yaw = yawRate * dt + config.mouseTurnPerCount * cast(float) mouseDx;
+        Angle pitch = pitchRate * dt + config.mouseTurnPerCount * cast(float) mouseDy * pitchSign(config.isYInverted);
         return FrameInput(yaw, pitch, isHeld);
     }
 
@@ -503,7 +498,7 @@ struct Session {
         uint framesSinceTitle = 0;
         while (isRunning) {
             double now = nowSeconds();
-            float dt = cast(float)(now - lastTime);
+            Time dt = Time(cast(float)(now - lastTime));
             lastTime = now;
             mouseDx = 0;
             mouseDy = 0;
@@ -576,13 +571,12 @@ bool renderScreenshot(Arguments arguments) {
         StartupError(null, "cannot open the report file", arguments.reportPath).report(arguments.program);
         return false;
     } else {
-        SimMeters meters;
         ClientConfig config;
         Renderer* renderer = cast(Renderer*) malloc(Renderer.sizeof);
         *renderer = Renderer.init;
-        renderer.setupOffscreen(VkExtent2D(SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT), meters.chunkSize);
-        Game game = Game.make(arguments.worldgen, config.reachMeters);
-        game.isSettlingWorldgenEachFrame = true;
+        renderer.setupOffscreen(VkExtent2D(SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT), CHUNK_DIMENSION);
+        Game game = Game.make(arguments.worldgen, config.reach);
+        game.isGeneratingOnDemand = true;
         bool isWritten = captureScreenshot(arguments, report, *renderer, game);
         renderer.cleanup();
         free(renderer);
@@ -652,12 +646,11 @@ bool benchLoad(Arguments arguments) {
         StartupError(null, "cannot open the report file", arguments.reportPath).report(arguments.program);
         return false;
     } else {
-        SimMeters meters;
         ClientConfig config;
         Renderer* renderer = cast(Renderer*) malloc(Renderer.sizeof);
         *renderer = Renderer.init;
-        renderer.setupOffscreen(VkExtent2D(SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT), meters.chunkSize);
-        Game game = Game.make(arguments.worldgen, config.reachMeters);
+        renderer.setupOffscreen(VkExtent2D(SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT), CHUNK_DIMENSION);
+        Game game = Game.make(arguments.worldgen, config.reach);
         measureLoad(report, *renderer, game);
         measureFlight(report, *renderer, game);
         renderer.cleanup();
@@ -679,7 +672,7 @@ void measureLoad(FILE* report, ref Renderer renderer, ref Game game) {
     double start = nowSeconds();
     do {
         double frameStart = nowSeconds();
-        game.step(FrameInput.init, cast(float) BENCH_FRAME_SECONDS);
+        game.step(FrameInput.init, Time(cast(float) BENCH_FRAME_SECONDS));
         double stepped = nowSeconds();
         renderer.render(game.world);
         double rendered = nowSeconds();
@@ -722,7 +715,7 @@ void measureFlight(FILE* report, ref Renderer renderer, ref Game game) {
     forward.isHeld[Key.fwd] = true;
     foreach (_; 0 .. BENCH_MOVE_FRAMES) {
         double frameStart = nowSeconds();
-        game.step(forward, cast(float) BENCH_FRAME_SECONDS);
+        game.step(forward, Time(cast(float) BENCH_FRAME_SECONDS));
         double stepped = nowSeconds();
         renderer.render(game.world);
         double rendered = nowSeconds();
@@ -753,7 +746,7 @@ int runWindowed(Arguments arguments) {
     *session = Session.init;
     session.config = ClientConfig.fromFile(arguments.configPath);
     if (arguments.hasSensitivity) {
-        session.config.mouseRadiansPerCount = arguments.sensitivity;
+        session.config.mouseTurnPerCount = Angle(arguments.sensitivity);
     }
     if (arguments.isYInverted) {
         session.config.isYInverted = true;
