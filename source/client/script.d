@@ -3,100 +3,23 @@ module client.script;
 import core.stdc.math : floor;
 import core.stdc.stdio : FILE, fclose, fopen, fprintf;
 import core.stdc.string : strlen;
-import bindings.lua : luaL_checkinteger, luaL_checklstring, luaL_checknumber, luaL_checktype, luaL_error, luaL_loadfilex, luaL_newstate, luaL_openselectedlibs, luaL_optnumber, luaL_ref, luaL_traceback, luaL_unref, lua_CFunction, lua_Integer, lua_State, lua_callk, lua_close, lua_createtable, lua_getglobal, lua_gettop, lua_pcallk, lua_pushboolean, lua_pushcclosure, lua_pushinteger, lua_pushlightuserdata, lua_pushlstring, lua_pushnil, lua_pushnumber, lua_pushstring, lua_pushvalue, lua_rawgeti, lua_setfield, lua_setglobal, lua_settop, lua_tolstring, lua_touserdata, lua_type;
+import bindings.lua : luaL_checkinteger, luaL_checklstring, luaL_checknumber, luaL_checktype, luaL_error, luaL_loadfilex, luaL_optnumber, luaL_ref, luaL_unref, lua_CFunction, lua_Integer, lua_State, lua_callk, lua_close, lua_createtable, lua_gettop, lua_pcallk, lua_pushboolean, lua_pushcclosure, lua_pushinteger, lua_pushnil, lua_pushnumber, lua_pushvalue, lua_rawgeti, lua_tolstring, lua_touserdata, lua_type;
+import client.arguments : StructureName;
 import client.game : FrameInput, Game, KEY_COUNT, Key, MATERIAL_PALETTE, RouteWaypoint;
+import client.lua : LUA_FIRST_UPVALUE, LUA_NO_REF, LUA_REGISTRY, LUA_STATUS_OK, LUA_TOP, LUA_TYPE_FUNCTION, LUA_TYPE_TABLE, LuaLookup, LuaName, SELF, TRACEBACK_INDEX, isNoneOrNil, luaTraceback, newSafeState, pushLuaName, registerMethod, setPackagePath;
+import client.structures : StructureProblem, restartGame;
 import client.world : TargetMaterial;
-import common.array : Array;
 import common.character.controller : MovementMode;
-import common.graph : NodeId;
 import common.names : ENUM_NAMES;
 import common.units : Angle, AngularSpeed, Length, Time;
 import common.vector3 : dot, magnitude, rejectAlong;
-import common.worldgen.generation : PlaneWorld, StructureKind, StructureWorld, Worldgen, WorldgenKind;
+import common.worldgen.generation : PlaneWorld, StructureWorld, Worldgen, WorldgenKind;
 
-enum int LUA_REGISTRY = -(int.max / 2 + 1000);
-enum int LUA_FIRST_UPVALUE = LUA_REGISTRY - 1;
-enum int LUA_NO_REF = -2;
-enum int LUA_TOP = -1;
-enum int LUA_BELOW_TOP = -2;
-enum int LUA_TRACEBACK_LEVEL = 1;
-enum int LUA_STATUS_OK = 0;
-enum int LUA_TYPE_TABLE = 5;
-enum int LUA_TYPE_FUNCTION = 6;
-enum int LUA_LIBRARY_BASE = 1 << 0;
-enum int LUA_LIBRARY_PACKAGE = 1 << 1;
-enum int LUA_LIBRARY_COROUTINE = 1 << 2;
-enum int LUA_LIBRARY_MATH = 1 << 5;
-enum int LUA_LIBRARY_STRING = 1 << 7;
-enum int LUA_LIBRARY_TABLE = 1 << 8;
-enum int LUA_LIBRARY_UTF8 = 1 << 9;
-enum int LUA_SAFE_LIBRARIES = LUA_LIBRARY_BASE | LUA_LIBRARY_PACKAGE | LUA_LIBRARY_COROUTINE | LUA_LIBRARY_MATH | LUA_LIBRARY_STRING | LUA_LIBRARY_TABLE | LUA_LIBRARY_UTF8;
-enum int SELF = 1;
-enum int TRACEBACK_INDEX = 1;
 enum int CHUNK_RESULTS = 1;
 enum int SCRIPT_ARGUMENTS = 1;
 enum Time DEFAULT_TIMESTEP = Time(0.016f);
 enum Time ONE_SECOND = Time(1.0f);
 enum double RADIANS_PER_DEGREE = 0.017453292519943295;
-enum string MODULE_PATTERN = "?.lua";
-enum size_t LUA_NAME_CAPACITY = 32;
-enum char LUA_NAME_SEPARATOR = '_';
-
-alias LuaFunction = extern (C) int function(lua_State*);
-
-struct LuaName {
-    char[LUA_NAME_CAPACITY] text;
-    size_t length;
-
-    static LuaName fromMember(string member) {
-        LuaName name;
-        foreach (c; member) {
-            if (isUpperCase(c)) {
-                name.text[name.length] = LUA_NAME_SEPARATOR;
-                name.text[name.length + 1] = lowerCase(c);
-                name.length += 2;
-            } else {
-                name.text[name.length] = c;
-                name.length += 1;
-            }
-        }
-        return name;
-    }
-
-    const(char)[] slice() const return {
-        return text[0 .. length];
-    }
-}
-
-struct LuaLookup(E) {
-    E value;
-    bool isFound;
-
-    static LuaLookup fromName(const(char)[] name) {
-        uint index = 0;
-        while (index < ENUM_NAMES!E.length && LuaName.fromMember(ENUM_NAMES!E[index]).slice() != name) {
-            index += 1;
-        }
-        if (index < ENUM_NAMES!E.length) {
-            return LuaLookup(cast(E) index, true);
-        } else {
-            return LuaLookup(E.init, false);
-        }
-    }
-}
-
-bool isUpperCase(char c) {
-    return c >= 'A' && c <= 'Z';
-}
-
-char lowerCase(char c) {
-    return cast(char)(c - 'A' + 'a');
-}
-
-void pushLuaName(E)(lua_State* lua, E value) {
-    LuaName name = LuaName.fromMember(ENUM_NAMES!E[value]);
-    lua_pushlstring(lua, name.text.ptr, name.length);
-}
 
 struct ScriptHost {
     lua_State* lua;
@@ -116,13 +39,8 @@ struct ScriptHost {
     }
 
     bool run(const(char)* path) {
-        lua = luaL_newstate();
-        luaL_openselectedlibs(lua, LUA_SAFE_LIBRARIES, 0);
-        lua_pushnil(lua);
-        lua_setglobal(lua, "print");
-        lua_pushnil(lua);
-        lua_setglobal(lua, "warn");
-        setPackagePath(path[0 .. strlen(path)]);
+        lua = newSafeState();
+        lua.setPackagePath(path[0 .. strlen(path)]);
         createWorld();
         lua_pushcclosure(lua, cast(lua_CFunction) &luaTraceback, 0);
         immutable int status = luaL_loadfilex(lua, path, null);
@@ -167,59 +85,37 @@ struct ScriptHost {
         fprintf(report, "script error: %s\n", lua_tolstring(lua, LUA_TOP, null));
     }
 
-    void setPackagePath(const(char)[] scriptPath) {
-        Array!char searchPath;
-        foreach_reverse (i, c; scriptPath) {
-            if (c == '/') {
-                searchPath.appendAll(scriptPath[0 .. i + 1]);
-                searchPath.appendAll(MODULE_PATTERN ~ ";");
-            }
-        }
-        searchPath.appendAll(MODULE_PATTERN);
-        lua_getglobal(lua, "package");
-        lua_pushlstring(lua, searchPath.ptr, searchPath.length);
-        lua_setfield(lua, LUA_BELOW_TOP, "path");
-        lua_settop(lua, LUA_BELOW_TOP);
-        searchPath.release();
-    }
-
     void createWorld() {
         lua_createtable(lua, 0, 0);
-        registerMethod("wait", &luaWait);
-        registerMethod("step", &luaStep);
-        registerMethod("timestep", &luaTimestep);
-        registerMethod("time", &luaTime);
-        registerMethod("worldgen", &luaWorldgen);
-        registerMethod("on_step", &luaOnStep);
-        registerMethod("hold", &luaHold);
-        registerMethod("release", &luaRelease);
-        registerMethod("release_all", &luaReleaseAll);
-        registerMethod("press", &luaPress);
-        registerMethod("look", &luaLook);
-        registerMethod("turn_rate", &luaTurnRate);
-        registerMethod("turn", &luaTurn);
-        registerMethod("mode", &luaMode);
-        registerMethod("material", &luaMaterial);
-        registerMethod("break_block", &luaBreakBlock);
-        registerMethod("place_block", &luaPlaceBlock);
-        registerMethod("target_material", &luaTargetMaterial);
-        registerMethod("enter_structure", &luaEnterStructure);
-        registerMethod("enter_route", &luaEnterRoute);
-        registerMethod("route_waypoint", &luaRouteWaypoint);
-        registerMethod("traveled", &luaTraveled);
-        registerMethod("is_on_ground", &luaIsOnGround);
-        registerMethod("altitude", &luaAltitude);
-        registerMethod("speed", &luaSpeed);
-        registerMethod("horizontal_speed", &luaHorizontalSpeed);
-        registerMethod("vertical_speed", &luaVerticalSpeed);
-        registerMethod("camera_vertical_acceleration", &luaCameraVerticalAcceleration);
+        lua.registerMethod(&this, "wait", &luaWait);
+        lua.registerMethod(&this, "step", &luaStep);
+        lua.registerMethod(&this, "timestep", &luaTimestep);
+        lua.registerMethod(&this, "time", &luaTime);
+        lua.registerMethod(&this, "worldgen", &luaWorldgen);
+        lua.registerMethod(&this, "on_step", &luaOnStep);
+        lua.registerMethod(&this, "hold", &luaHold);
+        lua.registerMethod(&this, "release", &luaRelease);
+        lua.registerMethod(&this, "release_all", &luaReleaseAll);
+        lua.registerMethod(&this, "press", &luaPress);
+        lua.registerMethod(&this, "look", &luaLook);
+        lua.registerMethod(&this, "turn_rate", &luaTurnRate);
+        lua.registerMethod(&this, "turn", &luaTurn);
+        lua.registerMethod(&this, "mode", &luaMode);
+        lua.registerMethod(&this, "material", &luaMaterial);
+        lua.registerMethod(&this, "break_block", &luaBreakBlock);
+        lua.registerMethod(&this, "place_block", &luaPlaceBlock);
+        lua.registerMethod(&this, "target_material", &luaTargetMaterial);
+        lua.registerMethod(&this, "enter_structure", &luaEnterStructure);
+        lua.registerMethod(&this, "enter_route", &luaEnterRoute);
+        lua.registerMethod(&this, "route_waypoint", &luaRouteWaypoint);
+        lua.registerMethod(&this, "traveled", &luaTraveled);
+        lua.registerMethod(&this, "is_on_ground", &luaIsOnGround);
+        lua.registerMethod(&this, "altitude", &luaAltitude);
+        lua.registerMethod(&this, "speed", &luaSpeed);
+        lua.registerMethod(&this, "horizontal_speed", &luaHorizontalSpeed);
+        lua.registerMethod(&this, "vertical_speed", &luaVerticalSpeed);
+        lua.registerMethod(&this, "camera_vertical_acceleration", &luaCameraVerticalAcceleration);
         worldRef = luaL_ref(lua, LUA_REGISTRY);
-    }
-
-    void registerMethod(const(char)* name, LuaFunction fn) {
-        lua_pushlightuserdata(lua, &this);
-        lua_pushcclosure(lua, cast(lua_CFunction) fn, 1);
-        lua_setfield(lua, LUA_BELOW_TOP, name);
     }
 
     void step(Time dt) {
@@ -273,10 +169,6 @@ ScriptHost* methodHost(lua_State* lua) {
     return cast(ScriptHost*) lua_touserdata(lua, LUA_FIRST_UPVALUE);
 }
 
-bool isNoneOrNil(lua_State* lua, int index) {
-    return lua_type(lua, index) <= 0;
-}
-
 Angle degreesArgument(lua_State* lua, int index) {
     return Angle(cast(float)(luaL_checknumber(lua, index) * RADIANS_PER_DEGREE));
 }
@@ -287,11 +179,6 @@ Time timestepArgument(lua_State* lua, int index, Time fallback) {
 
 double degreesOf(Angle angle) {
     return angle.value / RADIANS_PER_DEGREE;
-}
-
-extern (C) int luaTraceback(lua_State* lua) {
-    luaL_traceback(lua, lua, lua_tolstring(lua, 1, null), LUA_TRACEBACK_LEVEL);
-    return 1;
 }
 
 extern (C) int luaWait(lua_State* lua) {
@@ -334,13 +221,16 @@ extern (C) int luaWorldgen(lua_State* lua) {
     } else if (!lookup.isFound) {
         luaL_error(lua, "unknown worldgen '%s'", name);
     } else {
-        host.game.setWorldgen(worldgenOfKind(lua, lookup.value));
+        StructureProblem problem = restartGame(*host.game, worldgenOfKind(lua, lookup.value));
+        if (problem.isPresent) {
+            luaL_error(lua, "%s", problem.text.ptr);
+        }
     }
     return 0;
 }
 
 Worldgen worldgenOfKind(lua_State* lua, WorldgenKind kind) {
-    Worldgen worldgen;
+    Worldgen worldgen = void;
     final switch (kind) {
         case WorldgenKind.terrain:
             worldgen = Worldgen.makeTerrain();
@@ -349,19 +239,19 @@ Worldgen worldgenOfKind(lua_State* lua, WorldgenKind kind) {
             worldgen = Worldgen.fromPlane(PlaneWorld(cast(float)(luaL_optnumber(lua, SELF + 2, 0) * RADIANS_PER_DEGREE)));
             break;
         case WorldgenKind.structure:
-            worldgen = Worldgen.fromStructure(StructureWorld(NodeId.init, structureArgument(lua)));
+            worldgen = Worldgen.fromStructure(structureArgument(lua));
             break;
     }
     return worldgen;
 }
 
-StructureKind structureArgument(lua_State* lua) {
-    const(char)* name = luaL_checklstring(lua, SELF + 2, null);
-    LuaLookup!StructureKind lookup = LuaLookup!StructureKind.fromName(name[0 .. strlen(name)]);
-    if (!lookup.isFound) {
-        luaL_error(lua, "unknown structure '%s'", name);
+StructureWorld structureArgument(lua_State* lua) {
+    const(char)* text = luaL_checklstring(lua, SELF + 2, null);
+    StructureName name = StructureName.fromText(text[0 .. strlen(text)]);
+    if (name.problem !is null) {
+        luaL_error(lua, "%s '%s'", name.problem, text);
     }
-    return lookup.value;
+    return name.world;
 }
 
 extern (C) int luaEnterStructure(lua_State* lua) {
@@ -377,8 +267,8 @@ extern (C) int luaEnterStructure(lua_State* lua) {
 
 extern (C) int luaEnterRoute(lua_State* lua) {
     ScriptHost* host = methodHost(lua);
-    if (host.game.world.graph.worldgen.kind != WorldgenKind.structure) {
-        luaL_error(lua, "enter_route needs the structure worldgen");
+    if (host.game.world.graph.blueprint.route.length == 0) {
+        luaL_error(lua, "enter_route needs a structure with a route");
     } else {
         host.game.enterRoute();
     }

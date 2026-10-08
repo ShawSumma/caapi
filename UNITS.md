@@ -262,13 +262,13 @@ typed path, and it shows the pattern:
   the honest version.
 - The chart kernels (sweep, clipping) receive `.value` of `radius`,
   `halfHeight` and `skin` once, when the `Capsule` and `Mover` are made.
-- The tower (`worldgen/tower.d`) is the other side of the rule. It is
-  built of whole blocks, so its dimensions (`BOX_HALF_CELLS`,
-  `STORY_CELLS`, `FOUNDATION_CELLS`) are cell counts and stay integers.
-  Column coordinates are a chart like grid coordinates, and
+- Structures (`worldgen/structure.d`, `blueprint.d`) are the other side
+  of the rule. They are built of whole blocks, so blueprint brushes,
+  line levels and the structure scripts' dimensions (`box.HALF`,
+  `box.STORY`, the road's `HALF`) are cell or edge counts and stay
+  integers. Column coordinates are a chart like grid coordinates, and
   `columnPoint` is the one conversion from them to a point. The few true
-  distances (`edgeLength`, `ON_LINE_TOLERANCE`, `SPAWN_DISTANCE`) are
-  `Length`s.
+  distances (`edgeLength`, `SPAWN_DISTANCE`) are `Length`s.
 
 ## Status
 
@@ -282,12 +282,11 @@ Typed now:
   `regionReach`, `Stepped.traveled`, `Mover.settle`, the step rise.
 - `common/character/features.d`: the reach of `collect` and
   `visitCells`; `BlockProbe`.
-- `common/worldgen/tower.d`: the edge length, structure line lengths,
-  the on-line tolerance and the spawn distance (its dimensions are cell
-  counts).
+- `common/worldgen/structure.d`: the edge length and the spawn distance
+  (structures are counted in cells and edges).
 - `client/config.d`: `ClientConfig`.
 - `client/game.d`: time, traveled distance, altitude, camera vertical
-  motion, stair waypoints, look input, spawn and placement lifts.
+  motion, route waypoints, look input, spawn and placement lifts.
 - `client/camera.d`: eye offset, pitch, turns.
 - `client/script.d` and `main.d`: timesteps, turn rates, look deltas.
 - `client/graphics/frustum.d` and `renderer.d`: the field of view.
@@ -303,9 +302,8 @@ Not typed yet, in the order to do them:
 2. Radii and heights as `Length`: `BOUNDING_SPHERE_RADIUS` and
    `CHUNK_BOUNDING_SPHERE_RADIUS` (`dodeca.d`), `RENDER_RADIUS` and
    `NEARBY_PADDING` (`world.d`), `STRUCTURE_SEARCH_RADIUS` (`game.d`),
-   the default radii in `headless.d`, `faceDistance` (`dodeca.d`), the
-   `ROAD_*` constants (`generation.d`), `Plane.distanceTo` and node
-   altitudes.
+   the default radii in `headless.d`, `faceDistance` (`dodeca.d`),
+   `Plane.distanceTo` and node altitudes.
 3. `Area` and `Volume`: `NODE_VOLUME`, `kleinBoxVolume`, the
    block-volume test in `node.d`, with `Volume.ofBall` for nearby-set
    estimates.

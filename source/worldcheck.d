@@ -5,6 +5,7 @@ import core.stdc.stdio : FILE, fprintf;
 import core.stdc.stdlib : free, malloc;
 import client.meshing : Mesher;
 import client.streaming : Streamer, populateChunk, resolveMaterials;
+import client.structures : StructureProblem, placeWorldStructure;
 import common.clock : nowMilliseconds;
 import common.coords : Coords;
 import common.dodeca : CHUNK_BOUNDING_SPHERE_RADIUS, VERTEX_COUNT, Vertex, chunkBoundingSphereCenter;
@@ -15,8 +16,8 @@ import common.murmur : murmurHash3;
 import common.node : Chunk, ChunkSlot, ChunkState, VoxelData;
 import common.position : Position;
 import common.traversal : NearbyNode, NearbyScratch;
-import common.worldgen.generation : ChunkParams, GeneratedVoxels, StructureWorld, Worldgen;
-import common.worldgen.tower : STORY_CELLS, StructurePlan, altitude, edgeLength;
+import common.worldgen.generation : ChunkParams, GeneratedVoxels, Worldgen;
+import common.worldgen.structure : altitude, edgeLength;
 
 enum uint DRIVE_NEARBY_VERSION = 1;
 enum uint DRIVE_IDLE_ITERATIONS = 200;
@@ -177,7 +178,7 @@ void printChunkLine(FILE* output, NodeId node, Vertex vertex, ContentHashes hash
 }
 
 void dumpWorld(FILE* output, float radius, ubyte dimension) {
-    Graph graph = Graph.make(dimension, Worldgen.makeTerrain());
+    Graph graph = terrainGraph(dimension);
     graph.generateWorld(radius);
     foreach (index; 0 .. cast(size_t) graph.nodeCount * VERTEX_COUNT) {
         ChunkSlot slot = ChunkSlot.fromIndex(index);
@@ -191,7 +192,7 @@ void dumpWorld(FILE* output, float radius, ubyte dimension) {
 }
 
 void printWorldDigest(FILE* output, float radius, ubyte dimension) {
-    Graph graph = Graph.make(dimension, Worldgen.makeTerrain());
+    Graph graph = terrainGraph(dimension);
     graph.generateWorld(radius);
     WorldDigest.fromGraph(graph).print(output);
     graph.release();
@@ -216,20 +217,32 @@ size_t filledVoxels(ref Graph graph, uint slot) {
     return filled;
 }
 
-void dumpStructure(FILE* output, ubyte dimension, StructureWorld world) {
-    Graph graph = Graph.make(dimension, Worldgen.fromStructure(world));
-    StructurePlan plan = StructurePlan.fromKind(world.kind, graph.layout);
-    fprintf(output, "towers=%u lines=%u stories=%d edge=%.4f\n", plan.towerCount, plan.count, plan.top / STORY_CELLS, cast(double) edgeLength(graph.layout).value);
-    NearbyScratch scratch;
-    NearbyNode[] nearby = scratch.collectAll(graph, Position(graph.worldgen.structure.base, MIsometry!float.identity()), STRUCTURE_DUMP_RADIUS);
-    foreach (node; nearby) {
-        if (graph.ensureStructureAt(node.slot).isPresent()) {
-            graph.ensureNodeStateAt(node.slot);
-            fprintf(output, "altitude=%.3f filled=%zu\n", cast(double) graph.nodeAt(node.slot).state.altitude(), graph.filledVoxels(node.slot));
+bool dumpStructure(FILE* output, ubyte dimension, Worldgen worldgen) {
+    Graph graph = Graph.make(dimension, worldgen);
+    StructureProblem problem = graph.placeWorldStructure();
+    if (problem.isPresent) {
+        fprintf(output, "%s\n", problem.text.ptr);
+    } else {
+        fprintf(output, "lines=%zu brushes=%zu stops=%zu edge=%.4f\n", graph.blueprint.lines.length, graph.blueprint.brushes.length, graph.blueprint.route.length, cast(double) edgeLength(graph.layout).value);
+        NearbyScratch scratch;
+        NearbyNode[] nearby = scratch.collectAll(graph, Position(graph.idAt(graph.anchorSlot), MIsometry!float.identity()), STRUCTURE_DUMP_RADIUS);
+        foreach (node; nearby) {
+            if (graph.ensureStructureAt(node.slot).isPresent) {
+                graph.ensureNodeStateAt(node.slot);
+                fprintf(output, "altitude=%.3f filled=%zu\n", cast(double) graph.nodeAt(node.slot).state.altitude(), graph.filledVoxels(node.slot));
+            }
         }
+        scratch.release();
     }
-    scratch.release();
     graph.release();
+    return !problem.isPresent;
+}
+
+Graph terrainGraph(ubyte dimension) {
+    Graph graph = Graph.make(dimension, Worldgen.makeTerrain());
+    StructureProblem problem = graph.placeWorldStructure();
+    assert(!problem.isPresent);
+    return graph;
 }
 
 double averageOf(double total, size_t count) {
@@ -241,7 +254,7 @@ double averageOf(double total, size_t count) {
 }
 
 void benchGen(FILE* output, float radius, ubyte dimension) {
-    Graph graph = Graph.make(dimension, Worldgen.makeTerrain());
+    Graph graph = terrainGraph(dimension);
     NearbyScratch scratch;
     NearbyNode[] nearby = scratch.collectAll(graph, Position.origin(), radius);
     ChunkPass pass;
@@ -256,7 +269,7 @@ void benchGen(FILE* output, float radius, ubyte dimension) {
 }
 
 void benchMesh(FILE* output, float radius, ubyte dimension) {
-    Graph graph = Graph.make(dimension, Worldgen.makeTerrain());
+    Graph graph = terrainGraph(dimension);
     graph.generateWorld(radius);
     Mesher mesher;
     mesher.setup(dimension);
@@ -288,7 +301,7 @@ void benchMesh(FILE* output, float radius, ubyte dimension) {
 }
 
 void benchDrive(FILE* output, float radius, ubyte dimension) {
-    Graph graph = Graph.make(dimension, Worldgen.makeTerrain());
+    Graph graph = terrainGraph(dimension);
     NearbyScratch scratch;
     NearbyNode[] nearby = scratch.collectAll(graph, Position.origin(), radius);
     Streamer streamer = Streamer.make();
@@ -324,7 +337,7 @@ void benchDrive(FILE* output, float radius, ubyte dimension) {
 }
 
 void benchNearby(FILE* output, float radius, uint iterations, ubyte dimension) {
-    Graph graph = Graph.make(dimension, Worldgen.makeTerrain());
+    Graph graph = terrainGraph(dimension);
     NearbyScratch scratch;
     size_t nodeCount = scratch.collectAll(graph, Position.origin(), radius).length;
     double start = nowMilliseconds();

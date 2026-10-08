@@ -11,11 +11,12 @@ import common.dodeca : CHUNK_BOUNDING_SPHERE_RADIUS, VERTEX_COUNT, Vertex, adjac
 import common.graph : Graph, NO_SLOT, Node;
 import common.math : MIsometry, MPoint;
 import common.neighbors : chunkNeighborSlot, isPredictionContradicted, touchChunksAround;
-import common.node : Chunk, ChunkId, ChunkLayout, ChunkSlot, ChunkState, Occupancy;
+import common.node : Chunk, ChunkId, ChunkSlot, ChunkState, Occupancy;
 import common.traversal : NO_DEADLINE, NearbyNode;
+import common.worldgen.blueprint : Blueprint;
 import common.worldgen.building : Building;
 import common.worldgen.generation : ChunkParams, GeneratedVoxels;
-import common.worldgen.tower : NodeStructure;
+import common.worldgen.structure : NodeStructure;
 
 enum uint RESERVED_CORES = 2;
 enum uint MAIN_WORKER = 0;
@@ -36,8 +37,8 @@ struct GenResult {
 }
 
 struct BuildingRequest {
+    const(Blueprint)* blueprint;
     NodeStructure structure;
-    ChunkLayout layout;
     uint slot;
 }
 
@@ -144,7 +145,7 @@ struct GenQueue {
             pendingBuildingHead = 0;
         }
         pthread_mutex_unlock(&mutex);
-        Building building = Building.make(request.structure, request.layout);
+        Building building = Building.make(request.structure, *request.blueprint);
         pthread_mutex_lock(&mutex);
         doneBuildings.append(BuildingResult(building, request.slot));
         pthread_cond_signal(&resultsReady);
@@ -309,7 +310,7 @@ struct Streamer {
     void scheduleBuilding(ref Graph graph, uint slot) {
         if (!graph.nodeAt(slot).hasBuilding && !graph.nodeAt(slot).isBuildingQueued) {
             graph.nodeAt(slot).isBuildingQueued = true;
-            buildingRequests.append(BuildingRequest(graph.ensureStructureAt(slot), graph.layout, slot));
+            buildingRequests.append(BuildingRequest(&graph.blueprint, graph.ensureStructureAt(slot), slot));
         }
     }
 
@@ -425,7 +426,7 @@ struct Streamer {
 }
 
 bool isBuildingReady(ref Graph graph, uint slot) {
-    return !graph.ensureStructureAt(slot).isPresent() || graph.nodeAt(slot).hasBuilding;
+    return !graph.ensureStructureAt(slot).isPresent || graph.nodeAt(slot).hasBuilding;
 }
 
 uint workerThreadCount(long cores) {

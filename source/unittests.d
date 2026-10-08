@@ -35,12 +35,14 @@ import commonSlab = common.slab;
 import commonTraversal = common.traversal;
 import commonUnits = common.units;
 import commonVector3 = common.vector3;
+import worldgenBlueprint = common.worldgen.blueprint;
 import worldgenBuilding = common.worldgen.building;
+import worldgenEmbedded = common.worldgen.embedded;
 import worldgenGeneration = common.worldgen.generation;
 import worldgenPlane = common.worldgen.plane;
 import worldgenSpawn = common.worldgen.spawn;
+import worldgenStructure = common.worldgen.structure;
 import worldgenTerraingen = common.worldgen.terraingen;
-import worldgenTower = common.worldgen.tower;
 
 alias TESTED_MODULES = __traits(allMembers, unittests);
 

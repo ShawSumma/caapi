@@ -9,10 +9,11 @@ import client.arguments : StartupError, FlagValue, NumberArgument, WorldgenArgum
 import client.config : ClientConfig;
 import client.game : Game;
 import client.script : ScriptHost;
+import client.structures : StructureProblem, placeStructure;
 import common.array : Array;
 import common.settings : CHUNK_DIMENSION;
-import common.names : ENUM_NAMES;
-import common.worldgen.generation : StructureKind, Worldgen, WorldgenKind;
+import common.worldgen.embedded : EMBEDDED_STRUCTURE_NAMES, isLuaPath;
+import common.worldgen.generation : Worldgen, WorldgenKind;
 import worldcheck : benchDrive, benchGen, benchMesh, benchNearby, dumpStructure, dumpWorld, printWorldDigest;
 
 enum int EXIT_PASSED = 0;
@@ -22,7 +23,6 @@ enum float DEFAULT_DUMP_RADIUS = 3.0f;
 enum float DEFAULT_GEN_RADIUS = 2.5f;
 enum float DEFAULT_NEARBY_RADIUS = 4.5f;
 enum uint DEFAULT_NEARBY_ITERATIONS = 50;
-enum string LUA_SUFFIX = ".lua";
 
 immutable string[2] SKIPPED_NAMES = ["lib", "visual"];
 
@@ -116,7 +116,7 @@ struct HeadlessArguments {
             Array!(char*) entries = directoryEntries(path);
             foreach (entry; entries.slice()) {
                 ownedPaths.append(entry);
-                if (isDirectory(entry) || isLuaFile(entry)) {
+                if (isDirectory(entry) || isLuaPath(entry[0 .. strlen(entry)])) {
                     appendScripts(entry);
                 }
             }
@@ -142,7 +142,7 @@ struct HeadlessArguments {
         } else if (command != Command.scripts && scripts.length > 0) {
             return StartupError(null, "scripts and a command do not mix, unexpected", scripts.ptr[0]);
         } else if (command == Command.dumpStructure && worldgen.kind != WorldgenKind.structure) {
-            return StartupError(ENUM_NAMES!StructureKind[], "needs --worldgen structure <name>", "--dump-structure");
+            return StartupError(EMBEDDED_STRUCTURE_NAMES[], "needs --worldgen structure <name or file.lua>", "--dump-structure");
         } else {
             return StartupError.init;
         }
@@ -174,11 +174,17 @@ bool runScriptFile(const(char)* path, Worldgen worldgen, FILE* report) {
     ClientConfig config;
     Game game = Game.make(worldgen, config.reach);
     game.isGeneratingOnDemand = true;
-    ScriptHost host = ScriptHost.make(&game, report);
     fprintf(report, "== %s\n", path);
-    immutable bool isCompleted = host.run(path);
-    host.close();
-    fprintf(report, "session: steps=%u time=%.2f traveled=%.2f%s\n", host.steps, cast(double) game.time.value, cast(double) game.traveled.value, sessionSuffix(isCompleted));
+    StructureProblem problem = game.placeStructure();
+    bool isCompleted = false;
+    if (problem.isPresent) {
+        fprintf(report, "%s\n", problem.text.ptr);
+    } else {
+        ScriptHost host = ScriptHost.make(&game, report);
+        isCompleted = host.run(path);
+        host.close();
+        fprintf(report, "session: steps=%u time=%.2f traveled=%.2f%s\n", host.steps, cast(double) game.time.value, cast(double) game.traveled.value, sessionSuffix(isCompleted));
+    }
     game.release();
     return isCompleted;
 }
@@ -207,14 +213,21 @@ int runScripts(ref const HeadlessArguments arguments, FILE* report) {
     }
 }
 
-void runWorldCommand(ref const HeadlessArguments arguments, FILE* output) {
+bool runWorldCommand(ref const HeadlessArguments arguments, FILE* output) {
+    if (arguments.command == Command.dumpStructure) {
+        return dumpStructure(output, CHUNK_DIMENSION, arguments.worldgen);
+    } else {
+        runMeasurement(arguments, output);
+        return true;
+    }
+}
+
+void runMeasurement(ref const HeadlessArguments arguments, FILE* output) {
     float radius = arguments.commandRadius();
     if (arguments.command == Command.dumpWorld) {
         dumpWorld(output, radius, CHUNK_DIMENSION);
     } else if (arguments.command == Command.worldDigest) {
         printWorldDigest(output, radius, CHUNK_DIMENSION);
-    } else if (arguments.command == Command.dumpStructure) {
-        dumpStructure(output, CHUNK_DIMENSION, arguments.worldgen.structure);
     } else if (arguments.command == Command.benchGen) {
         benchGen(output, radius, CHUNK_DIMENSION);
     } else if (arguments.command == Command.benchDrive) {
@@ -230,8 +243,12 @@ int runCommand(ref const HeadlessArguments arguments, FILE* output) {
     if (arguments.command == Command.scripts) {
         return runScripts(arguments, output);
     } else {
-        runWorldCommand(arguments, output);
-        return EXIT_PASSED;
+        immutable bool isSucceeded = runWorldCommand(arguments, output);
+        if (isSucceeded) {
+            return EXIT_PASSED;
+        } else {
+            return EXIT_FAILED;
+        }
     }
 }
 
@@ -267,11 +284,6 @@ bool isDirectory(const(char)* path) {
     stat_t status;
     immutable int result = stat(path, &status);
     return result == 0 && (status.st_mode & S_IFMT) == S_IFDIR;
-}
-
-bool isLuaFile(const(char)* path) {
-    size_t length = strlen(path);
-    return length > LUA_SUFFIX.length && strcmp(path + length - LUA_SUFFIX.length, LUA_SUFFIX.ptr) == 0;
 }
 
 bool isSkippedName(const(char)* name) {

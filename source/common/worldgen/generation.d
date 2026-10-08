@@ -3,16 +3,17 @@ module common.worldgen.generation;
 import core.bitop : rol;
 import core.stdc.math : asinhf, atanf, cosf, coshf, floorf, logf, powf, sinhf, sqrtf, tanf;
 import core.stdc.stdlib : abs;
+import core.stdc.string : memcpy;
 import common.coords : CELL_NEIGHBOR_OFFSETS;
 import common.dodeca : Side, Vertex, canonicalSides, chunkGridCenterRadius, isAdjacentTo;
-import common.graph : Graph, NO_SLOT, NodeId, ParentList;
+import common.graph : Graph, NO_SLOT, ParentList;
 import common.material : Material;
 import common.math : PI, clamped;
 import common.node : ChunkLayout, Occupancy, VoxelData;
 import common.worldgen.building : Building;
 import common.worldgen.plane : Plane;
+import common.worldgen.structure : firstSideAmong, ringFaces;
 import common.worldgen.terraingen : TERRAIN_SURFACE_THICKNESS, materialTable, nearestLatticePoint, sqr, terraingenVoronoi;
-import common.worldgen.tower : NodeStructure, firstSideAmong, ringFaces;
 
 enum WorldgenKind : ubyte {
     terrain,
@@ -20,18 +21,27 @@ enum WorldgenKind : ubyte {
     structure,
 }
 
-enum StructureKind : ubyte {
-    tower,
-    crown,
-}
+enum size_t STRUCTURE_NAME_CAPACITY = 256;
+enum string TERRAIN_STRUCTURE = "road";
 
 struct PlaneWorld {
     float tiltRadians;
 }
 
 struct StructureWorld {
-    NodeId base;
-    StructureKind kind;
+    char[STRUCTURE_NAME_CAPACITY] text;
+    size_t length;
+
+    static StructureWorld fromName(const(char)[] name) {
+        assert(name.length <= STRUCTURE_NAME_CAPACITY);
+        StructureWorld world = StructureWorld(' ', name.length);
+        memcpy(world.text.ptr, name.ptr, name.length);
+        return world;
+    }
+
+    const(char)[] name() const return {
+        return text[0 .. length];
+    }
 }
 
 struct Worldgen {
@@ -61,6 +71,18 @@ struct Worldgen {
 
     bool hasPlaneGround() const {
         return kind != WorldgenKind.terrain;
+    }
+
+    bool hasStructure() const {
+        return kind != WorldgenKind.plane;
+    }
+
+    const(char)[] structureName() const return {
+        if (kind == WorldgenKind.structure) {
+            return structure.name();
+        } else {
+            return TERRAIN_STRUCTURE;
+        }
     }
 
     float groundTiltRadians() const {
@@ -107,13 +129,6 @@ enum NodeStateKind : ubyte {
     deepLand,
 }
 
-enum NodeStateRoad : ubyte {
-    east,
-    deepEast,
-    west,
-    deepWest,
-}
-
 enum Material DEFERRED_STAND_IN_MATERIAL = Material.dirt;
 enum float TERRAIN_SMOOTHNESS = 10.0f;
 enum float ELEVATION_VARIATION = 4.0f;
@@ -125,10 +140,6 @@ enum float SMALL_TERRACE_LIMITER = 2.0f;
 enum float BIG_TERRACE_LIMITER = -1.0f;
 enum float SMALL_TERRACE_WEIGHT = 0.6f;
 enum float BIG_TERRACE_WEIGHT = 0.4f;
-enum float ROAD_HALF_WIDTH = 0.3f;
-enum float ROAD_CENTER_HALF_WIDTH = 0.15f;
-enum float ROAD_CLEARANCE = 0.9f;
-enum float ROAD_THICKNESS = 0.075f;
 enum float BASE_TREE_DENSITY = 0.05f;
 enum float RAINFALL_PER_TREE_DENSITY = 40.0f;
 enum float MAX_TREE_DENSITY = 0.3f;
@@ -140,7 +151,6 @@ enum int SPRUCE_LOWEST_LEAVES = 2;
 enum float SPRUCE_TEMPERATURE = -2.0f;
 enum ulong BIRCH_ODDS = 3;
 enum float DEGREES_PER_HALF_TURN = 180.0f;
-enum uint TRUSS_CRITERIA = 2;
 enum ulong SPLITMIX_INCREMENT = 0x9e3779b97f4a7c15;
 enum ulong SPLITMIX_MULTIPLIER_1 = 0xbf58476d1ce4e5b9;
 enum ulong SPLITMIX_MULTIPLIER_2 = 0x94d049bb133111eb;
@@ -197,17 +207,16 @@ struct NodeState {
     Plane surface;
     Plane reference;
     NodeStateKind kind;
-    NodeStateRoad road;
 
     static NodeState fromParents(ref Graph graph, uint slot) {
         ParentList parents = graph.parents(slot);
         if (parents.count == 0) {
-            return NodeState(EnviroFactors.init, Plane.fromSide(Side.a), Plane.fromSide(firstSideAmong(ringFaces(Side.a))), NodeStateKind.land, NodeStateRoad.west);
+            return NodeState(EnviroFactors.init, Plane.fromSide(Side.a), Plane.fromSide(firstSideAmong(ringFaces(Side.a))), NodeStateKind.land);
         } else {
             NodeState first = graph.nodeAt(parents.links[0].slot).state;
             Side firstSide = parents.links[0].side;
             NodeStateKind kind = first.kind.child(firstSide);
-            return NodeState(graph.inheritedEnviro(slot, parents), kind.surface(first.surface, firstSide), first.reference.reflectAcross(firstSide), kind, first.road.child(firstSide));
+            return NodeState(graph.inheritedEnviro(slot, parents), kind.surface(first.surface, firstSide), first.reference.reflectAcross(firstSide), kind);
         }
     }
 }
@@ -252,20 +261,6 @@ Plane surface(NodeStateKind kind, Plane parentSurface, Side parentSide) {
         return -Plane.fromSide(Side.a);
     } else {
         return parentSurface.reflectAcross(parentSide);
-    }
-}
-
-NodeStateRoad child(NodeStateRoad self, Side side) {
-    if (self == NodeStateRoad.east && side == Side.b) {
-        return NodeStateRoad.west;
-    } else if (self == NodeStateRoad.west && side == Side.b) {
-        return NodeStateRoad.east;
-    } else if (self == NodeStateRoad.east && !side.isAdjacentTo(Side.b)) {
-        return NodeStateRoad.deepEast;
-    } else if (self == NodeStateRoad.west && !side.isAdjacentTo(Side.b)) {
-        return NodeStateRoad.deepWest;
-    } else {
-        return self;
     }
 }
 
@@ -316,7 +311,7 @@ struct ChunkIncidentEnviroFactors {
 }
 
 const(Building)* buildingIfPresent(ref Graph graph, uint slot) {
-    if (graph.ensureStructureAt(slot).isPresent()) {
+    if (graph.ensureStructureAt(slot).isPresent) {
         return graph.ensureBuildingAt(slot);
     } else {
         return null;
@@ -339,17 +334,14 @@ struct ChunkParams {
     Plane reference;
     float slopeTangent;
     float slopeSecant;
-    NodeStructure structure;
     ChunkLayout layout;
     Vertex chunk;
-    bool isRoad;
-    bool isRoadSupport;
+    bool hasStructure;
     bool hasPlaneGround;
     bool isResolvingMaterials;
 
     static ChunkParams make(ref Graph graph, uint slot, Vertex vertex) {
         NodeState state = *graph.ensureNodeStateAt(slot);
-        bool isOnRoadLine = state.road == NodeStateRoad.east || state.road == NodeStateRoad.west;
         return ChunkParams(
             graph.buildingIfPresent(slot),
             graph.idAt(slot).spice(),
@@ -358,11 +350,9 @@ struct ChunkParams {
             state.reference,
             tanf(graph.worldgen.groundTiltRadians()),
             1.0f / cosf(graph.worldgen.groundTiltRadians()),
-            graph.ensureStructureAt(slot),
             graph.layout,
             vertex,
-            state.kind == NodeStateKind.sky && isOnRoadLine,
-            (state.kind == NodeStateKind.land || state.kind == NodeStateKind.deepLand) && isOnRoadLine,
+            graph.ensureStructureAt(slot).isPresent,
             graph.worldgen.hasPlaneGround(),
             false,
         );
@@ -406,15 +396,7 @@ struct ChunkParams {
     }
 
     bool isProvenClearAt(float lowest) const {
-        if (structure.isPresent()) {
-            return false;
-        } else if (!hasPlaneGround && isRoad) {
-            return lowest > terrainCeiling() && lowest > ROAD_THICKNESS;
-        } else if (!hasPlaneGround && isRoadSupport) {
-            return false;
-        } else {
-            return lowest > terrainCeiling();
-        }
+        return !hasStructure && lowest > terrainCeiling();
     }
 
     bool isProvenBelowTerrain(float highest) const {
@@ -423,13 +405,13 @@ struct ChunkParams {
 
     Occupancy predictOccupancy() const {
         ValueRange range = groundRange();
-        if (structure.isPresent()) {
+        if (hasStructure) {
             return Occupancy.unknown;
         } else if (isProvenClearAt(range.low)) {
             return Occupancy.empty;
         } else if (hasPlaneGround && range.high < 0) {
             return Occupancy.full;
-        } else if (!hasPlaneGround && !isRoad && isProvenBelowTerrain(range.high)) {
+        } else if (!hasPlaneGround && isProvenBelowTerrain(range.high)) {
             return Occupancy.full;
         } else {
             return Occupancy.unknown;
@@ -463,11 +445,6 @@ struct ChunkParams {
             generator.generateFlat();
         } else {
             generator.generateTerrain();
-            if (isRoad && !(generator.voxels.isSolidVoid() && altitudes().low > ROAD_THICKNESS)) {
-                generator.generateRoad();
-            } else if (isRoadSupport && !(generator.voxels.isSolid() && !generator.voxels.isSolidVoid())) {
-                generator.generateRoadSupport();
-            }
             generator.generateTrees();
         }
         generator.generateStructure();
@@ -496,7 +473,7 @@ struct TerrainGenerator {
             voxels = VoxelData.fromMaterial(Material.none);
         } else if (uniform.isProven) {
             voxels = VoxelData.fromMaterial(uniform.material);
-        } else if (!params.isResolvingMaterials && !params.isRoad && !params.structure.isPresent() && params.isProvenBelowTerrain(altitudes.high)) {
+        } else if (!params.isResolvingMaterials && !params.hasStructure && params.isProvenBelowTerrain(altitudes.high)) {
             voxels = VoxelData.fromMaterial(DEFERRED_STAND_IN_MATERIAL);
             hasDeferredMaterials = true;
         } else {
@@ -529,7 +506,7 @@ struct TerrainGenerator {
     }
 
     void generateStructure() {
-        if (params.structure.isPresent()) {
+        if (params.hasStructure) {
             ubyte dimension = params.dimension;
             foreach (x; 0 .. dimension) {
                 foreach (y; 0 .. dimension) {
@@ -566,38 +543,6 @@ struct TerrainGenerator {
         float distance = surfaceDistance(distancePreNoise, elevation / TERRAIN_SMOOTHNESS - voxelElevation);
         if (distance >= 0.0f) {
             voxels.toDense(params.dimension)[index] = terraingenVoronoi(elevation, rain, temperature, distance);
-        }
-    }
-
-    void generateRoad() {
-        Plane plane = -Plane.fromSide(Side.b);
-        ubyte dimension = params.dimension;
-        foreach (x; 0 .. dimension) {
-            foreach (y; 0 .. dimension) {
-                foreach (z; 0 .. dimension) {
-                    float[3] center = params.layout.cellCenter([x, y, z]);
-                    float horizontalDistance = plane.distanceToChunk(params.chunk, center);
-                    float elevation = params.surface.distanceToChunk(params.chunk, center);
-                    if (!(horizontalDistance > ROAD_HALF_WIDTH || elevation > ROAD_CLEARANCE)) {
-                        voxels.toDense(dimension)[voxelIndex(dimension, x, y, z)] = roadMaterial(elevation, horizontalDistance);
-                    }
-                }
-            }
-        }
-    }
-
-    void generateRoadSupport() {
-        Plane plane = -Plane.fromSide(Side.b);
-        ubyte dimension = params.dimension;
-        foreach (x; 0 .. dimension) {
-            foreach (y; 0 .. dimension) {
-                foreach (z; 0 .. dimension) {
-                    size_t index = voxelIndex(dimension, x, y, z);
-                    if (voxels.get(index) == Material.none && isTrussAt(dimension, x, y, z) && !(plane.distanceToChunk(params.chunk, params.layout.cellCenter([x, y, z])) > ROAD_HALF_WIDTH)) {
-                        voxels.toDense(dimension)[index] = Material.woodPlanks;
-                    }
-                }
-            }
         }
     }
 
@@ -756,16 +701,6 @@ float surfaceDistance(float distancePreNoise, float distanceWithNoise) {
     }
 }
 
-Material roadMaterial(float elevation, float horizontalDistance) {
-    if (elevation < ROAD_THICKNESS && horizontalDistance < ROAD_CENTER_HALF_WIDTH) {
-        return Material.whiteBrick;
-    } else if (elevation < ROAD_THICKNESS) {
-        return Material.greyBrick;
-    } else {
-        return Material.none;
-    }
-}
-
 float terrainElevationSlack() {
     return terraceElevationBound() + TERRAIN_SMOOTHNESS * noiseBound();
 }
@@ -776,30 +711,6 @@ float terraceElevationBound() {
 
 float noiseBound() {
     return NOISE_STDDEV * sqrtf(2.0f * logf(RANDOM_24_BIT_RANGE_PLUS_2));
-}
-
-bool isTrussAt(ubyte dimension, int x, int y, int z) {
-    int offset = dimension / 3;
-    uint criteriaMet = 0;
-    if (x == offset) {
-        criteriaMet += 1;
-    }
-    if (y == offset) {
-        criteriaMet += 1;
-    }
-    if (z == offset) {
-        criteriaMet += 1;
-    }
-    if (x == y) {
-        criteriaMet += 1;
-    }
-    if (y == z) {
-        criteriaMet += 1;
-    }
-    if (x == z) {
-        criteriaMet += 1;
-    }
-    return criteriaMet >= TRUSS_CRITERIA;
 }
 
 bool isGroundMaterial(Material material) {

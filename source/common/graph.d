@@ -8,9 +8,10 @@ import common.murmur : murmurHash3;
 import common.node : Chunk, ChunkLayout, ChunkSlot;
 import common.position : Position;
 import common.slab : Slab;
+import common.worldgen.blueprint : Blueprint;
 import common.worldgen.building : Building;
-import common.worldgen.generation : NodeState, Worldgen, WorldgenKind;
-import common.worldgen.tower : NodeStructure, structureBaseSlot;
+import common.worldgen.generation : NodeState, Worldgen;
+import common.worldgen.structure : LineSeed, NodeStructure, anchorSlotOf, seedLines;
 
 enum ulong NODE_HASH_MULTIPLIER = 0x9E3779B97F4A7C15;
 enum size_t NODE_ID_BYTES = 16;
@@ -91,20 +92,29 @@ struct Graph {
     Slab!Chunk chunks;
     HashMap!(NodeId, uint) slots;
     Array!ChunkSlot changedChunks;
+    Array!LineSeed seeds;
+    Blueprint blueprint;
     size_t changedHead;
     Worldgen worldgen;
     ChunkLayout layout;
     uint nodeCount;
+    uint anchorSlot;
 
-    static Graph make(ubyte dimension, Worldgen worldgen) {
+    static Graph make(ubyte dimension, Worldgen chosen) {
         Graph graph;
         graph.layout = ChunkLayout.make(dimension);
-        graph.worldgen = worldgen;
+        graph.worldgen = chosen;
         graph.addNode(ROOT_NODE, 0);
-        if (worldgen.kind == WorldgenKind.structure) {
-            graph.worldgen.structure.base = graph.idAt(graph.structureBaseSlot());
+        graph.anchorSlot = graph.slotOf(ROOT_NODE);
+        if (chosen.hasStructure()) {
+            graph.anchorSlot = graph.anchorSlotOf();
         }
         return graph;
+    }
+
+    void place(Blueprint placed) {
+        blueprint = placed;
+        seeds = seedLines(blueprint);
     }
 
     void markChanged(ChunkSlot chunk) {
@@ -280,10 +290,15 @@ struct Graph {
         return &nodeAt(slot).state;
     }
 
-    NodeStructure ensureStructureAt(uint slot) {
+    ref const(NodeStructure) ensureStructureAt(uint slot) return {
         if (!nodeAt(slot).hasStructure) {
-            NodeStructure structure = NodeStructure.fromNode(this, slot);
-            nodeAt(slot).structure = structure;
+            if (blueprint.lines.length > 0) {
+                ParentList parentList = parents(slot);
+                foreach (link; parentList.links[0 .. parentList.count]) {
+                    ensureStructureAt(link.slot);
+                }
+                nodeAt(slot).structure = NodeStructure.fromParents(this, slot);
+            }
             nodeAt(slot).hasStructure = true;
         }
         return nodeAt(slot).structure;
@@ -291,7 +306,7 @@ struct Graph {
 
     const(Building)* ensureBuildingAt(uint slot) {
         if (!nodeAt(slot).hasBuilding) {
-            nodeAt(slot).building = Building.make(ensureStructureAt(slot), layout);
+            nodeAt(slot).building = Building.make(ensureStructureAt(slot), blueprint);
             nodeAt(slot).hasBuilding = true;
         }
         return &nodeAt(slot).building;
@@ -355,6 +370,8 @@ struct Graph {
         chunks.release();
         slots.release();
         changedChunks.release();
+        seeds.release();
+        blueprint.release();
         nodeCount = 0;
     }
 }

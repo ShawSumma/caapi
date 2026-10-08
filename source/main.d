@@ -11,6 +11,7 @@ import client.game : FrameInput, Game, KEY_COUNT, Key, MATERIAL_PALETTE, axisVal
 import client.graphics.renderer : FrameTimes, Renderer;
 import client.png : writePng;
 import client.script : ScriptHost, ScriptRecorder;
+import client.structures : StructureProblem, placeStructure;
 import common.character.controller : MovementMode;
 import common.clock : MILLISECONDS_PER_SECOND, NANOSECONDS_PER_SECOND, nowSeconds;
 import common.dodeca : VERTEX_COUNT;
@@ -245,11 +246,14 @@ struct Session {
         } else {
             renderer.setup(display, window, CHUNK_DIMENSION);
             game = Game.make(arguments.worldgen, config.reach);
-            runLoop();
+            immutable bool isPlaced = isStructurePlaced(game, arguments);
+            if (isPlaced) {
+                runLoop();
+            }
             game.release();
             renderer.cleanup();
             closeWindow();
-            return EXIT_OK;
+            return exitStatus(isPlaced);
         }
     }
 
@@ -577,7 +581,8 @@ bool renderScreenshot(Arguments arguments) {
         renderer.setupOffscreen(VkExtent2D(SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT), CHUNK_DIMENSION);
         Game game = Game.make(arguments.worldgen, config.reach);
         game.isGeneratingOnDemand = true;
-        bool isWritten = captureScreenshot(arguments, report, *renderer, game);
+        immutable bool isPlaced = isStructurePlaced(game, arguments);
+        bool isWritten = isPlaced && captureScreenshot(arguments, report, *renderer, game);
         renderer.cleanup();
         free(renderer);
         game.release();
@@ -651,14 +656,25 @@ bool benchLoad(Arguments arguments) {
         *renderer = Renderer.init;
         renderer.setupOffscreen(VkExtent2D(SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT), CHUNK_DIMENSION);
         Game game = Game.make(arguments.worldgen, config.reach);
-        measureLoad(report, *renderer, game);
-        measureFlight(report, *renderer, game);
+        immutable bool isPlaced = isStructurePlaced(game, arguments);
+        if (isPlaced) {
+            measureLoad(report, *renderer, game);
+            measureFlight(report, *renderer, game);
+        }
         renderer.cleanup();
         free(renderer);
         game.release();
         fclose(report);
-        return true;
+        return isPlaced;
     }
+}
+
+bool isStructurePlaced(ref Game game, Arguments arguments) {
+    StructureProblem problem = game.placeStructure();
+    if (problem.isPresent) {
+        StartupError(null, problem.text.ptr, null).report(arguments.program);
+    }
+    return !problem.isPresent;
 }
 
 void measureLoad(FILE* report, ref Renderer renderer, ref Game game) {

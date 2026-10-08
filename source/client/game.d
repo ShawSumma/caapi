@@ -17,9 +17,10 @@ import common.settings : CHUNK_DIMENSION, CharacterConfig;
 import common.traversal : NearbyNode, NearbyScratch;
 import common.units : Acceleration, Angle, Length, Speed, Time;
 import common.vector3 : ZERO_VECTOR, cross, dot, magnitude, negated, plus, rejectAlong, scaled;
-import common.worldgen.generation : NodeState, Worldgen, WorldgenKind;
+import common.worldgen.blueprint : RouteStop;
+import common.worldgen.generation : NodeState, Worldgen;
 import common.worldgen.spawn : clearSpawnPosition, collectChunksNear;
-import common.worldgen.tower : NodeStructure, RouteStop, StructurePlan, columnPoint, routeStop;
+import common.worldgen.structure : SiteFrame, columnPoint, rootSite, siteToNode, sitePlacement, spawnBefore;
 
 enum float STRUCTURE_SEARCH_RADIUS = 4.0f;
 enum uint MAX_BODY_SECTIONS = 64;
@@ -93,7 +94,6 @@ struct Game {
         Game game;
         game.world = LocalWorld.make(CHUNK_DIMENSION, worldgen, tanhf(reach.value));
         game.camera = Camera.make(game.character.eyeOffset);
-        game.placeAtSpawn();
         return game;
     }
 
@@ -132,15 +132,16 @@ struct Game {
     }
 
     void placeAtSpawn() {
-        if (world.graph.worldgen.kind == WorldgenKind.structure) {
-            placeAt(linePosition(0, structurePlan().spawnPoint(world.graph.layout)), bodyExtent() + character.skin);
+        if (world.graph.blueprint.hasEntrance) {
+            RouteStop entrance = world.graph.blueprint.entrance;
+            placeAt(sitePosition(entrance.site, spawnBefore(world.graph.layout, entrance.spot)), bodyExtent() + character.skin);
         } else {
             Position spawn = world.graph.clearSpawnPosition(bodyReach().value);
             characterState = CharacterState(spawn, ZERO_VECTOR, [0, 1, 0], world.graph.upAt(spawn), false);
         }
         settleToGround();
         resetView();
-        if (world.graph.worldgen.kind == WorldgenKind.structure) {
+        if (world.graph.blueprint.hasEntrance) {
             camera.turn(yawToward(directionToDoor()), Angle(0));
         } else if (world.graph.worldgen.groundTiltRadians() != 0) {
             camera.turn(yawToward(uphillDirection()), Angle(0));
@@ -194,15 +195,11 @@ struct Game {
         return transform;
     }
 
-    StructurePlan structurePlan() const {
-        return StructurePlan.fromKind(world.graph.worldgen.structure.kind, world.graph.layout);
-    }
-
     float[3] directionToDoor() {
-        NodeId base = world.graph.worldgen.structure.base;
-        StructurePlan plan = structurePlan();
-        MPoint!float door = world.graph.ensureStructureAt(world.graph.slotOf(base)).lineToNode(plan, 0) * columnPoint(world.graph.layout, plan.doorSpot(world.graph.layout.dimension));
-        return (characterState.position.local.inverse() * nodeTransform(base, STRUCTURE_SEARCH_RADIUS) * door).vec.xyz();
+        RouteStop entrance = world.graph.blueprint.entrance;
+        MPoint!float door = sitePlacement(entrance.site, world.graph.layout) * columnPoint(world.graph.layout, entrance.spot);
+        MIsometry!float siteToBody = characterState.position.local.inverse() * nodeTransform(world.graph.idAt(entrance.site.node), STRUCTURE_SEARCH_RADIUS);
+        return (siteToBody * door).vec.xyz();
     }
 
     float[3] uphillDirection() const {
@@ -217,34 +214,26 @@ struct Game {
     }
 
     void enterStructure(Length height) {
-        placeAt(linePosition(0, MPoint!float(MVector!float([0, sinhf(height.value), 0, coshf(height.value)]))), Length(0));
+        placeAt(sitePosition(rootSite(world.graph.anchorSlot), MPoint!float(MVector!float([0, sinhf(height.value), 0, coshf(height.value)]))), Length(0));
     }
 
-    Position linePosition(uint line, MPoint!float inLine) {
-        uint slot = world.graph.slotOf(world.graph.worldgen.structure.base);
-        StructurePlan plan = structurePlan();
-        MPoint!float point = world.graph.ensureStructureAt(slot).lineToNode(plan, line) * inLine;
-        return world.graph.ensureNormalized(Position(world.graph.idAt(slot), MIsometry!float.fromTranslation(MPoint!float.origin(), point)));
+    Position sitePosition(SiteFrame site, MPoint!float inSite) {
+        MPoint!float point = sitePlacement(site, world.graph.layout) * inSite;
+        return world.graph.ensureNormalized(Position(world.graph.idAt(site.node), MIsometry!float.fromTranslation(MPoint!float.origin(), point)));
     }
 
     void enterRoute() {
-        StructurePlan plan = structurePlan();
-        RouteStop stop = routeStop(plan, 0, world.graph.layout.dimension);
-        placeAt(linePosition(stop.line, columnPoint(world.graph.layout, stop.spot)), bodyExtent() + character.skin);
+        RouteStop stop = world.graph.blueprint.route.ptr[0];
+        placeAt(sitePosition(stop.site, columnPoint(world.graph.layout, stop.spot)), bodyExtent() + character.skin);
     }
 
-    RouteWaypoint routeWaypoint(size_t index) {
-        if (world.graph.worldgen.kind != WorldgenKind.structure) {
+    RouteWaypoint routeWaypoint(size_t index) const {
+        if (index >= world.graph.blueprint.route.length) {
             return RouteWaypoint.init;
         } else {
-            StructurePlan plan = structurePlan();
-            RouteStop stop = routeStop(plan, index, world.graph.layout.dimension);
-            if (stop.spot.isFound) {
-                NodeStructure structure = world.graph.ensureStructureAt(world.graph.slotOf(characterState.position.node));
-                return waypointAt(structure.lineToNode(plan, stop.line) * columnPoint(world.graph.layout, stop.spot));
-            } else {
-                return RouteWaypoint.init;
-            }
+            RouteStop stop = world.graph.blueprint.route.ptr[index];
+            MIsometry!float siteToBody = world.graph.siteToNode(stop.site, world.graph.slotOf(characterState.position.node));
+            return waypointAt(siteToBody * columnPoint(world.graph.layout, stop.spot));
         }
     }
 
@@ -264,11 +253,6 @@ struct Game {
         world.graph.ensureNodeState(lifted.node);
         characterState = CharacterState(lifted, ZERO_VECTOR, characterState.groundNormal, world.graph.upAt(lifted), false);
         resetView();
-    }
-
-    void setWorldgen(Worldgen worldgen) {
-        rebuildWorld(worldgen);
-        placeAtSpawn();
     }
 
     void rebuildWorld(Worldgen worldgen) {

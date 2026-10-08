@@ -24,6 +24,11 @@ shared simulation code in `source/common`. Two entry points: `source/main.d`
   - `meshing.d` - chunk surface extraction with ambient occlusion.
   - `camera.d` - Camera: orientation quaternion with a stored pitch,
     roll leveled to the view up every frame.
+  - `lua.d` - Lua plumbing shared by both hosts (constants, safe state,
+    snake_case enum names, methods, package path, traceback).
+  - `structures.d` - the structure Lua API (StructureHost): runs a
+    structure script into a blueprint and places it on the graph;
+    `placeStructure`/`restartGame` start a game on it.
   - `script.d` - Lua API (ScriptHost) and the recorder; `config.d` - client
     config; `arguments.d` - command-line pieces shared by both entry
     points (flag values, `--worldgen`, StartupError); `png.d` - PNG writer
@@ -48,11 +53,16 @@ shared simulation code in `source/common`. Two entry points: `source/main.d`
     `position.d`, `material.d`, `settings.d` (chunk dimension and
     `CharacterConfig`).
   - worldgen: `worldgen/generation.d` (Worldgen kinds, node state, chunk
-    params, proofs, voxels, trees), `tower.d` (structure plans: tower
-    and bridge lines, membership, frames, column coordinates, stories,
-    door, spawn, route), `building.d` (a node's structure voxels per
-    line: tower walls, floors, stairs, windows, merlons, the crown's hall,
-    balconies and arch decks), `terraingen.d`, `plane.d`, `spawn.d`.
+    params, proofs, voxels, trees); structures (see Worldgen):
+    `structure.d` (sites and their moves; the canonical line of a
+    site; which lines touch a node, propagated from its parents; column
+    coordinates and frames), `blueprint.d` (canonical lines, brushes,
+    materials, route and entrance; `BlueprintBuilder` maps what a site
+    draws onto its canonical line; level ranges from the brushes),
+    `embedded.d`
+    (the built-in structure scripts and modules, compiled in with
+    `import()`), `building.d` (stamps a node's voxels from the
+    blueprint); `terraingen.d`, `plane.d`, `spawn.d`.
   - character (see Character controller): `character/features.d`
     (the exposed faces, edges and corners of solid cells around a body,
     in its local Klein frame; cell visitors for overlap checks and
@@ -62,6 +72,9 @@ shared simulation code in `source/common`. Two entry points: `source/main.d`
     coordinates); ray picks in `raycast/chunk.d`, `raycast/graph.d`.
   - containers and utilities: `array.d`, `hashmap.d`, `slab.d`,
     `allocator.d` (range allocator), `murmur.d`, `clock.d`.
+- `structures/` - structure scripts (see Structure scripts): the
+  built-in `tower.lua`, `crown.lua` and `road.lua`, and `box.lua`, the
+  module of box tower parts (`require("box")`).
 - `source/shaders/` - GLSL, compiled to `spv/` by the pre-build step;
   `common.h` (common UBO), `draw.h` (structs shared by `cull.comp` and
   `voxels.vert`), `face.h` (packed face layout, matches `client/meshing.d`).
@@ -69,8 +82,10 @@ shared simulation code in `source/common`. Two entry points: `source/main.d`
   `tests/slope/` (tilted plane world), `tests/structure/` (structure
   world), `tests/api.lua`; `tests/lib/` shared Lua (`walk.lua` builds
   walls, steps and corners layer by layer, one material per layer;
-  `climb.lua` follows a structure's route waypoints); `tests/visual/`
-  screenshot scenes.
+  `climb.lua` follows a structure's route waypoints; structure files:
+  `hut.lua`, `hamlet.lua` (a hut on every corner of a face), and the
+  refused `broken.lua` and `wide.lua`);
+  `tests/visual/` screenshot scenes.
   Physics is tested only in plane and structure worlds, never in terrain.
 - `tools/gridvolume.py` - measures block-volume spread and block edge
   lengths for candidate chunk grid spacings, and the chunk volume.
@@ -101,14 +116,17 @@ exceptions, no classes, no associative arrays. Memory is `malloc`/`free`
 - Unit tests: `dub test --compiler=ldc2`. The `unittest` configuration uses
   `source/unittests.d` as a betterC runner (`__traits(getUnitTests)` over
   every imported module) and leaves out Lua, whose headers ImportC rejects
-  under `-unittest`.
+  under `-unittest`, so `client/lua.d`, `script.d` and `structures.d`
+  are not built there and worldgen unit tests write their blueprints in
+  D. `structures/` is a string import path in every configuration.
 - Behavior tests: `./mined-headless --out <report> tests` - a directory
   argument runs every `.lua` under it in sorted order, skipping `lib/`
   (required modules) and `visual/` (screenshot scenes); single scripts
   work too. Exit status 1 on any script error or failed assert; the
   report file holds the details.
 - Nothing writes to stdout, and stderr carries only startup errors: a bad
-  argument, a file or window that cannot be opened. Each is one line
+  argument, a file or window that cannot be opened, a structure script
+  that fails (its Lua message and traceback). Each is one line
   naming what was wrong, with exit status 2 for usage. Never fail
   silently. Headless output goes only to the `--out` file;
   `--dump-world`, `--world-digest` and `--bench-*` require it. Pass/fail
@@ -154,19 +172,21 @@ Headless verification:
 - `--worldgen terrain`, `--worldgen plane <tilt degrees>`, `--worldgen
   structure <name>` (both clients; `world:worldgen(kind[, tilt or name])`
   in a script). A kind takes a fixed number of arguments, parsed per kind
-  with a `final switch`; structure names come from `StructureKind`
-  (`tower`, `crown`). `plane 0` fills exactly below the base surface plane. The base plane is
+  with a `final switch`. A structure is a built-in name (`tower`,
+  `crown`, `road`, from `EMBEDDED_STRUCTURES`) or a path ending in `.lua`,
+  relative to the working directory. `plane 0` fills exactly below the base surface plane. The base plane is
   lattice-aligned, so this is a genuinely flat floor with gravity
   perpendicular to it. Use it to isolate physics from terrain. A nonzero
   tilt gives a constant grade relative to gravity (gd(altitude) +
   tan(tilt) * horizontal distance = 0), not a tilted geodesic plane:
   in H^3 a geodesic plane tilted by t turns vertical within atanh(cos t)
   of its base line. The player spawns facing uphill. `structure` is the
-  flat ground with exactly one structure; the player spawns on the
-  ground `SPAWN_DISTANCE` (1) out from its door, facing it.
-- `--dump-structure` (needs `--worldgen structure <name>`) - towers,
-  lines, stories and edge length, then each structure node in reach:
-  altitude and how many voxels it fills.
+  flat ground with exactly one structure; when the structure has an
+  entrance the player spawns on the ground `SPAWN_DISTANCE` (1) out
+  from its door, facing it. `terrain` carries the `road` structure.
+- `--dump-structure` (needs `--worldgen structure <name>`) - the
+  blueprint's lines, brushes and route stops and the edge length, then
+  each structure node in reach: altitude and how many voxels it fills.
 - `--dump-world [radius]` - deterministic world hash dump; byte-diff two
   runs' reports to prove worldgen unchanged. Deferred materials are
   resolved first; each chunk line carries a materials hash and an
@@ -202,8 +222,9 @@ their receiver, so `world.wait(1)` is an error - always call with `:`.
   sense).
 - Time: `wait(s[, dt])` (steps of dt, default the timestep), `step([dt])`
   (one step), `timestep([s])` (default 0.016), `time()`,
-  `worldgen("terrain"|"plane"|"structure"[, tilt or name])` (before the
-  first step; it creates a fresh world and respawns), `on_step(fn|nil)`
+  `worldgen("terrain"|"plane"|"structure"[, tilt or name or path])`
+  (before the first step; it creates a fresh world and respawns; a
+  structure script that fails raises its message), `on_step(fn|nil)`
   (runs fn after each step to observe; it cannot advance time).
 - Input: `hold(key...)`, `release(key...)`, `release_all()`,
   `press(s, key...)`, `look(yaw, pitch)` (immediate), `turn_rate([yaw/s,
@@ -217,15 +238,15 @@ their receiver, so `world.wait(1)` is an error - always call with `:`.
   `material([1..9])`, `break_block()`,
   `place_block()` (both return whether they changed a voxel),
   `enter_structure(h)` (structure world only: puts the player on the
-  first tower's axis h above the ground), `enter_route()` (stands the
-  player on the first tower's ground floor, where the route starts) and
-  `route_waypoint(k)` (the k-th stop of the route; per story: the
-  middle lane, the flight's lane, its three treads, the landing, and the
-  middle lane again; the crown's route leaves through the bridge door,
-  crosses the arch and climbs the neighbor tower: yaw and horizontal
+  blueprint's first line h along it), `enter_route()` (stands the
+  player at the first stop of the world's structure route) and
+  `route_waypoint(k)` (the k-th stop of the route: yaw and horizontal
   distance from the body to the center of that stop's floor, and the
-  floor's rise above the feet; nil past the end or outside a structure
-  world).
+  floor's rise above the feet; nil past the end. A tower's route stops
+  seven times per story: the middle lane, the flight's lane, its three
+  treads, the landing, and the middle lane again; the crown's leaves
+  through the bridge door, crosses the arch and climbs the neighbor
+  tower; the road's runs along its deck).
 - Observation: `target_material()` (snake_case name of the voxel in reach
   under the crosshair, or nil), `traveled()` (path length),
   `is_on_ground()`, `altitude()` (the body center's distance to the
@@ -241,6 +262,72 @@ their receiver, so `world.wait(1)` is an error - always call with `:`.
   are ALL_CAPS. Enum names (keys, modes, worldgen kinds, materials) come
   from the D members by reflection (`ENUM_NAMES`, `LuaName`), never from
   hand-written name tables.
+
+## Structure scripts (Lua)
+
+A structure is a Lua function of a site, and a file holding one returns
+it. A site is an oriented honeycomb line: everything a structure does
+is relative to the site it was given, so placing one structure inside
+another is calling it with another site:
+
+    local hut = require("hut")
+
+    return function(site)
+      for _, corner in ipairs(site:face()) do
+        hut(corner)
+      end
+    end
+
+The engine runs the world's structure once, when the world is made,
+with the anchor's first ground corner as the site (see Worldgen for the
+rest). The built-ins (`structures/*.lua`) are compiled into both
+binaries with `import()` (`common/worldgen/embedded.d`); any other `.lua`
+path is loaded from disk. `require` finds the built-in modules and
+structures (`box`, `tower`, `crown`, `road`) first, then files next to
+the structure. Adding a built-in is a file in `structures/` plus a line
+in `EMBEDDED_STRUCTURES` (`EMBEDDED_MODULES` for a module). The same
+safe libraries as test scripts are open; errors carry a traceback.
+
+- Coordinates are cells `(across, along, height)` in a site's column:
+  height runs along its line, counted from the site's origin vertex
+  (one edge is `site:edge_cells()` cells), across and along run
+  perpendicular to it. The column is the chunks around the line,
+  `site:column()` (low, high: -dimension .. dimension - 1) cells either
+  way; a box that leaves it is an error. Anything wider is built from
+  more sites.
+- Moving and turning give new sites; nothing changes the old one.
+  `site:up(edges)` moves the origin along the line (negative is down),
+  `site:turn(quarters)` rotates a quarter turn from across toward along
+  each, `site:branch("across" | "along")` is the line through the
+  origin running along that axis, with the old across or along as its
+  height and the old height as its along (so a bridge off a tower is
+  `tower:up(1):branch("along")`, level with the floor one edge up).
+  `site:face()` is the five corner sites of the face spanned by the
+  origin's +across and +along edges, the first being the site itself:
+  each corner's along runs to the next corner and its across back to
+  the previous, both into the face, with the same height. The world's
+  site is the anchor's first ground corner, its height straight up.
+- Drawing, applied in order, later over earlier: `site:paint(material,
+  box[, rhythm])` and `site:fill(...)` (only into air, never over
+  terrain). Materials are snake_case names, `"air"` carves. A box is
+  `{ across = { low, high }, along = { low, high }, height = { low, high
+  } }`, inclusive; a missing across or along is the whole column, a
+  missing height the whole line. A rhythm `{ every = n, from = phase,
+  span = s }` keeps only heights h with (h - phase) mod n < s (`span`
+  defaults to 1, `from` to 0).
+- `site:stop(across, along, height)` appends a route stop for
+  `route_waypoint` (a spot on a floor: height is the floor's top) in the
+  order structures add them; `site:entrance(across, along, height)` is
+  the door the player spawns facing, `SPAWN_DISTANCE` out along -across
+  (the first entrance wins). `site:pick(n)` is a deterministic choice
+  1..n from the anchor.
+- `box.lua` holds box tower parts, each a function of a site:
+  `box.tower` (`shell`, `floors`, `windows`, `stairs`, `merlons`),
+  `box.door`, `box.stair_route`, `box.palette`, `box.top`, and the
+  constants (`HALF`, `STORY`, `DOOR`, ...). `tower.lua` is the box tower
+  with a door and route, `crown.lua` builds its hall, five towers and
+  arches on `site:face()`, `road.lua` is `site:branch("along")` painted
+  along its whole length.
 
 ## Units
 
@@ -495,9 +582,9 @@ plane, then the crease of two, else stop), and repeats up to
   zeroes the velocity and marks the step stalled (`Stepped.isStalled`);
   `RequiredChunks` lists what generation must provide.
 - Spawn: `clearSpawnPosition` finds a point above the surface whose
-  surroundings are proven void (the structure world stands the body in
-  front of the door instead), then the body generates around itself and
-  settles straight down until it lands.
+  surroundings are proven void (a structure with an entrance stands the
+  body in front of its door instead), then the body generates around
+  itself and settles straight down until it lands.
 
 ## Worldgen
 
@@ -517,61 +604,108 @@ plane, then the crease of two, else stop), and repeats up to
   needs ground below and empty cells at and above its base, and is
   placed only if its whole box fits inside its chunk: chunks are
   generated independently, so nothing may cross a chunk.
-- Structures (`worldgen/tower.d`) are built around honeycomb edge
-  lines. A `StructurePlan` lists the lines, each with a placement in the
-  base node (y along the line). Around a line every chunk has one grid
-  axis along it and two across it, so everything is counted in whole
-  cells: `ColumnChunk` maps a cell to column coordinates (across, along,
-  height), height counted from the line's first vertex and
-  `edgeCells` (2 * dimension) cells per edge (vertex to edge midpoint to
-  the next vertex). A node belongs to the structure when one of its
-  vertices is on a line within the line's length. `NodeStructure.frame`
-  maps base node coordinates into the node; it composes the reflections
-  from the base to the node through their common ancestor, in double,
-  because accumulating from the root drifted by a third of a cell at the
-  top. A chunk whose vertex is on several lines is stamped by each in
-  plan order, first non-empty stamp winning.
-- The base node's down face `Side.a` lies on the surface plane, so the
-  edge leaving each vertex of that face is a geodesic perpendicular to
-  the ground: a truly vertical line. Tower cell layers are geodesic
-  planes perpendicular to it: floors are exactly flat, and relative to
-  gravity a floor at altitude h rises toward its walls (sinh(altitude)
-  = sinh(h) cosh(distance from the line)). Walls are grid planes, so a
+- A world has at most one structure (`Worldgen.structureName`: the
+  chosen one in a structure world, `road` in terrain), relative to the
+  anchor node (`anchorSlotOf`, a node standing on the surface plane
+  with its down face `Side.a` on it). `Graph.make` only creates the
+  anchor; `placeWorldStructure` (`client/structures.d`) runs the
+  structure's Lua script (see Structure scripts) into a `Blueprint` and
+  `Graph.place`s it, before the player spawns. A blueprint is data:
+  canonical lines, an ordered list of brushes, the materials they use,
+  a route and an optional entrance. Nothing in the engine knows a
+  structure by name.
+- Structures are built on honeycomb edge lines. Every line is where
+  two honeycomb planes meet, and a plane carries one side label
+  everywhere. A `SiteFrame` (the D side of a Lua site) is a node, a
+  vertex of it on the line, which planes are across and along, the
+  signs of the three axes against the node's inward normals, and the
+  local level of that vertex. Its moves are exact: stepping along the
+  line goes to the next vertex in the node or crosses the face
+  perpendicular to the line, branching and turning permute the signed
+  axes, `faceCorners` walks a pentagon, all creating nodes as needed.
+- The nodes on a line form a coset of a special subgroup of the
+  reflection group, which is convex, so every one of them but the
+  closest to the root has a parent on the line. `canonicalOf` descends
+  from a site to that closest node; the line there, with its planes in
+  side order, inward signs and level 0 at the lower vertex index, is
+  the canonical `LineSpec`, and a `LineTransform` (signed swap of across
+  and along, height sign and level offset) maps the site's cells onto
+  it. `BlueprintBuilder` stores each brush in canonical cells, so sites
+  placed differently on one line share it. `Blueprint.finish` sets each
+  line's levels from its brush heights (a vertex's chunks reach
+  `dimension` cells either way); an unbounded brush makes the line
+  unbounded (`int.min`/`int.max`).
+- Every node touching a line holds exactly one edge of it, the edge
+  between those two planes, so `NodeStructure` stores per line a
+  `LineTouch`: the level of that edge's lower vertex and which side of
+  each plane the node is on. Touches propagate from a node's parents
+  (`crossed`: crossing a plane flips its sign, crossing the side at
+  either end of the edge moves one level along), starting from each
+  line's canonical node (`seedLines`). No frames or float tolerances
+  are involved, so a line can run forever. Unit tests check touches,
+  site moves and the canonical mapping against geometric frames.
+- Around a line every chunk has one grid axis along it and two across
+  it, so everything is counted in whole cells: `ColumnChunk.fromTouch`
+  maps a cell to column coordinates (across, along, height), height
+  counted from the line's level 0 and `edgeCells` (2 * dimension)
+  cells per edge (vertex to edge midpoint to the next vertex). A
+  `Brush` paints a `CellBox` in one line's column coordinates with a
+  material (none carves), optionally only at heights in a `Rhythm`
+  (period, phase, span along the line), and optionally only into air.
+  `Building` applies the brushes of the lines at each chunk in
+  blueprint order, later brushes painting over earlier ones. Frames are
+  only for scripts and spawning: `siteToNode` composes the reflections
+  from the site's node to the target node through their common
+  ancestor, in double, because accumulating from the root drifted by a
+  third of a cell at the top of a tower.
+- The anchor's down face lies on the surface plane, so the edge leaving
+  each vertex of that face is a geodesic perpendicular to the ground:
+  a truly vertical line. Tower cell layers are geodesic planes
+  perpendicular to it: floors are exactly flat, and relative to gravity
+  a floor at altitude h rises toward its walls (sinh(altitude) =
+  sinh(h) cosh(distance from the line)). Walls are grid planes, so a
   box is widest at each edge's midpoint.
-- `tower` is one box on the first such line: 2 * `BOX_HALF_CELLS` cells
-  square, `BOX_TOWER_SEGMENTS` edges tall, on a `FOUNDATION_CELLS`
-  foundation. Its outer ring is the wall: trim at the corners and on
+- `tower` is one box on the first such line: 2 * `box.HALF` cells
+  square, `EDGES` edges tall, on a `box.FOUNDATION` foundation. Its
+  outer ring is the wall: trim at the corners and on
   every floor layer, a 2x3 door in the middle of the -x face, 2-wide
   1-tall windows (shorter than the body) one cell in from each corner
   pillar at layer 2 of each story (layer 0 is the floor), merlons above
-  the top. Inside, a floor every `STORY_CELLS` layers and one straight
+  the top. Inside, a floor every `box.STORY` layers and one straight
   flight per story: three one-block treads in a two-cell lane, the lane
   alternating sides story by story, under a stairwell hole in the next
   floor that also spans the cell before the first tread. Without that
   cell the 3-cell headroom (cells shrink with height) left no room to
   step or jump onto the first tread under the ceiling.
-- `crown` uses all five vertical lines of the base node: its floor plan
-  is that face, a right-angled pentagon. A two-story hall fills the base
-  node's five corner chunks (a corner chunk is the inside quadrant,
-  across and along both >= 0, of its corner's column) with a roof
-  terrace and a 2-cell parapet at `HALL_ROOF`, windows, and a door in
-  the middle of one side, which the spawn faces. On each corner a box tower
-  (stairs as in `tower`, `CROWN_SEGMENTS` edges tall) rises; its inside
-  quadrant is open to the hall below the roof, a door leads out onto the
-  terrace, and balconies (`FIRST_BALCONY_STORY` up, alternating outer
-  faces) stand on its outer faces. Vertical geodesics diverge, so the
+- `crown` uses the five corners of the anchor's ground face
+  (`site:face()`): its floor plan is that face, a right-angled pentagon.
+  A two-story hall fills the anchor's five corner chunks (a corner's
+  inside quadrant, across and along both >= 0) with an open roof
+  terrace at `HALL_ROOF`, windows, and a door in the middle of one
+  side, which the spawn faces. On each corner a box tower (stairs as in
+  `tower`, `EDGES` edges tall) rises; its inside quadrant is open to the
+  hall below the roof, a door leads out onto the terrace, and bare
+  balcony slabs (`FIRST_BALCONY_STORY` up, alternating outer faces)
+  stand on its outer faces. Nothing has guardrails: falling off is
+  allowed. Vertical geodesics diverge, so the
   five towers fan apart as they rise. One edge up, each tower's top
   vertex has two horizontal edges along the hall's sides; each pair
   that shares a side meets at the side's fifth vertex at a right angle
   (the side is a right-angled pentagon too), and a bridge line on each
-  carries a 2-wide deck with 2-cell rails (a 1-cell rail would be
-  stepped onto). Each deck is level at its tower, but a geodesic rises
-  away from the equidistant surfaces, so the two decks form an arch:
-  relative to gravity a deck at distance d along an edge from a
-  vertical line at altitude h tilts by acos(cosh h / sqrt(1 + cosh^2 d
-  sinh^2 h)), 45 degrees at the apex. A unit test checks that the two
-  decks of an arch share their apex cell. `routeStop` is the route
-  scripts follow.
+  carries a bare 2-wide deck. Each deck is level at its tower, but a
+  geodesic rises away from the equidistant surfaces, so the two decks
+  form an arch: relative to gravity a deck at distance d along an edge
+  from a vertical line at altitude h tilts by acos(cosh h / sqrt(1 +
+  cosh^2 d sinh^2 h)), 45 degrees at the apex. A unit test checks that
+  the two decks of an arch share their apex cell.
+- `road` is the terrain world's road: one unbounded line, the first
+  corner's `branch("along")`, which is the edge of the anchor between
+  `Side.a` (the ground) and `Side.b`, so it runs straight along the
+  ground plane forever. A brick deck two cells
+  thick sits on the ground with a white center stripe, air is carved
+  above it to the chunk's reach (cutting through hills), and wooden
+  posts and cross beams every `SUPPORT_SPACING` cells fill only air
+  below it, so over valleys it is a trestle bridge.
 - A node's building is memoized per node. In the client the streamer
   computes it on a worker (`Streamer.scheduleBuilding`) and holds that
   node's chunks back until it is integrated; headless and

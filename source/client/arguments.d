@@ -1,11 +1,11 @@
 module client.arguments;
 
-import core.stdc.stdio : fprintf, stderr;
+import core.stdc.stdio : FILE, fclose, fopen, fprintf, stderr;
 import core.stdc.stdlib : strtof;
-import core.stdc.string : strlen;
+import core.stdc.string : memcpy, strlen;
 import common.names : ENUM_NAMES, NameLookup;
-import common.graph : NodeId;
-import common.worldgen.generation : PlaneWorld, StructureKind, StructureWorld, Worldgen, WorldgenKind, degreesToRadians;
+import common.worldgen.embedded : EMBEDDED_STRUCTURES, EMBEDDED_STRUCTURE_NAMES, embeddedIndex, isLuaPath;
+import common.worldgen.generation : PlaneWorld, STRUCTURE_NAME_CAPACITY, StructureWorld, Worldgen, WorldgenKind, degreesToRadians;
 
 struct StartupError {
     const(string)[] choices;
@@ -80,7 +80,7 @@ struct WorldgenArgument {
     }
 
     static WorldgenArgument ofKind(int argc, char** argv, int kindIndex, WorldgenKind kind) {
-        WorldgenArgument parsed;
+        WorldgenArgument parsed = void;
         final switch (kind) {
             case WorldgenKind.terrain:
                 parsed = WorldgenArgument(StartupError.init, Worldgen.makeTerrain(), 2);
@@ -114,12 +114,50 @@ struct WorldgenArgument {
         if (text.error.isPresent()) {
             return WorldgenArgument(text.error, Worldgen.init, 2);
         } else {
-            NameLookup!StructureKind kind = NameLookup!StructureKind.fromName(text.text[0 .. strlen(text.text)]);
-            if (!kind.isFound) {
-                return WorldgenArgument(StartupError(ENUM_NAMES!StructureKind[], "unknown structure", text.text), Worldgen.init, 3);
+            StructureName name = StructureName.fromText(text.text[0 .. strlen(text.text)]);
+            if (name.problem !is null) {
+                return WorldgenArgument(StartupError(name.choices, name.problem, text.text), Worldgen.init, 3);
             } else {
-                return WorldgenArgument(StartupError.init, Worldgen.fromStructure(StructureWorld(NodeId.init, kind.value)), 3);
+                return WorldgenArgument(StartupError.init, Worldgen.fromStructure(name.world), 3);
             }
         }
+    }
+}
+
+struct StructureName {
+    StructureWorld world;
+    const(string)[] choices;
+    const(char)* problem;
+
+    static StructureName fromText(const(char)[] text) {
+        if (text.length > STRUCTURE_NAME_CAPACITY) {
+            return StructureName(StructureWorld.init, null, "structure name is too long");
+        } else if (!isLuaPath(text)) {
+            return StructureName.fromEmbedded(text);
+        } else if (!isReadable(text)) {
+            return StructureName(StructureWorld.init, null, "cannot open the structure file");
+        } else {
+            return StructureName(StructureWorld.fromName(text), null, null);
+        }
+    }
+
+    static StructureName fromEmbedded(const(char)[] text) {
+        if (embeddedIndex(text) == EMBEDDED_STRUCTURES.length) {
+            return StructureName(StructureWorld.init, EMBEDDED_STRUCTURE_NAMES[], "unknown structure (or a path ending in .lua)");
+        } else {
+            return StructureName(StructureWorld.fromName(text), null, null);
+        }
+    }
+}
+
+bool isReadable(const(char)[] path) {
+    char[STRUCTURE_NAME_CAPACITY + 1] terminated = 0;
+    memcpy(terminated.ptr, path.ptr, path.length);
+    FILE* file = fopen(terminated.ptr, "r");
+    if (file is null) {
+        return false;
+    } else {
+        fclose(file);
+        return true;
     }
 }
