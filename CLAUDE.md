@@ -21,7 +21,8 @@ shared simulation code in `source/common`. Two entry points: `source/main.d`
   - `streaming.d` - Streamer: worker pool (generation requests, building
     requests and fork-join `runParallel` jobs), request scan, budgeted
     integration, chunk population and margin connection.
-  - `meshing.d` - chunk surface extraction with ambient occlusion.
+  - `meshing.d` - chunk surface extraction with ambient occlusion and
+    see-through glass.
   - `camera.d` - Camera: orientation quaternion with a stored pitch,
     roll leveled to the view up every frame.
   - `lua.d` - Lua plumbing shared by both hosts (constants, safe state,
@@ -30,7 +31,8 @@ shared simulation code in `source/common`. Two entry points: `source/main.d`
     world's structure script into the graph's blueprint, then keeps its
     Lua state as the graph's `Grower` while placed structures wait in
     its depth-ordered queue; `placeStructure`/`restartGame` start a game
-    on it, `growthProblem` reports a placement that failed later.
+    on it, `growthProblem` reports a placement that failed later; it
+    also runs the ground tiles (`site:tile`) as the graph needs them.
   - `script.d` - Lua API (ScriptHost) and the recorder; `config.d` - client
     config; `arguments.d` - command-line pieces shared by both entry
     points (flag values, `--worldgen`, StartupError); `png.d` - PNG writer
@@ -58,7 +60,8 @@ shared simulation code in `source/common`. Two entry points: `source/main.d`
   - worldgen: `worldgen/generation.d` (Worldgen kinds, node state, chunk
     params, proofs, voxels, trees); structures (see Worldgen):
     `structure.d` (sites and their turtle moves; the canonical line of
-    a site; the vertex a site stands on; which lines touch a node,
+    a site; the vertex and face a site stands on and their hashes; the
+    ground face below a node and its ring; which lines touch a node,
     written ahead for bounded lines and propagated from its parents for
     endless ones; column coordinates and frames), `blueprint.d`
     (canonical lines with their brushes, materials, route, entrance and
@@ -78,8 +81,13 @@ shared simulation code in `source/common`. Two entry points: `source/main.d`
   - containers and utilities: `array.d`, `hashmap.d`, `slab.d`,
     `allocator.d` (range allocator), `murmur.d`, `clock.d`.
 - `structures/` - structure scripts (see Structure scripts): the
-  built-in `tower.lua`, `crown.lua`, `road.lua` and `trail.lua`, and
-  `box.lua`, the module of box tower parts (`require("box")`).
+  built-in `tower.lua`, `crown.lua`, `road.lua`, `trail.lua` and
+  `city.lua`, and the module `box.lua` (box tower parts,
+  `require("box")`). `structures/buildings/` holds the city's
+  buildings, one module per type (`brownstone.lua`, `tenement.lua`,
+  `deco.lua`, `glass.lua`: palettes, story range and design) on the
+  shared `kit.lua` (lots, tiers, facades, roofs, crowns, stairs, doors,
+  routes), required as `buildings.<name>`.
 - `source/shaders/` - GLSL, compiled to `spv/` by the pre-build step;
   `common.h` (common UBO), `draw.h` (structs shared by `cull.comp` and
   `voxels.vert`), `face.h` (packed face layout, matches `client/meshing.d`).
@@ -141,7 +149,7 @@ exceptions, no classes, no associative arrays. Memory is `malloc`/`free`
   a file.
 - Dependencies live in `deps/`. C comes in through ImportC only - no cc, no
   make, no cmake, no build output outside dub's cache. Lua's individual
-  `.c` files are `sourceFiles`. `deps/lua` carries small ImportC patches:
+  `.c` files are `sourceFiles`. `lua` carries small ImportC patches:
   `dummynode_` uses a designated initializer, `lua_longjmp` and `BlockCnt`
   are defined in the headers that declared them, `lua_ident` is not
   declared in `lua.h`, and the VM uses switch dispatch
@@ -180,7 +188,7 @@ Headless verification:
   structure <name>` (both clients; `world:worldgen(kind[, tilt or name])`
   in a script). A kind takes a fixed number of arguments, parsed per kind
   with a `final switch`. A structure is a built-in name (`tower`,
-  `crown`, `road`, `trail`, from `EMBEDDED_STRUCTURES`) or a path ending in `.lua`,
+  `crown`, `road`, `trail`, `city`, from `EMBEDDED_STRUCTURES`) or a path ending in `.lua`,
   relative to the working directory. `plane 0` fills exactly below the base surface plane. The base plane is
   lattice-aligned, so this is a genuinely flat floor with gravity
   perpendicular to it. Use it to isolate physics from terrain. A nonzero
@@ -257,7 +265,7 @@ their receiver, so `world.wait(1)` is an error - always call with `:`.
   treads, the landing, and the middle lane again; the crown's leaves
   through the bridge door, crosses the arch and climbs the neighbor
   tower; the road's runs along its deck, the trail's stops once per
-  segment).
+  segment, the city's walks in from the street and up the stairs).
 - Observation: `target_material()` (snake_case name of the voxel in reach
   under the crosshair, or nil), `traveled()` (path length),
   `is_on_ground()`, `altitude()` (the body center's distance to the
@@ -298,7 +306,8 @@ rest); structures it places run later, as the world grows toward them.
 The built-ins (`structures/*.lua`) are compiled into both binaries with
 `import()` (`common/worldgen/embedded.d`); any other `.lua` path is
 loaded from disk. `require` finds the built-in modules and structures
-(`box`, `tower`, `crown`, `road`, `trail`) first, then files next to
+(`box`, `buildings.kit` and the building types, `tower`, `crown`,
+`road`, `trail`, `city`) first, then files next to
 the structure. Adding a built-in is a file in `structures/` plus a line
 in `EMBEDDED_STRUCTURES` (`EMBEDDED_MODULES` for a module). The same
 safe libraries as test scripts are open; errors carry a traceback.
@@ -339,10 +348,27 @@ safe libraries as test scripts are open; errors carry a traceback.
   nothing) when the site is more than `PLACE_SLACK` node levels behind
   the structure placing it; a placed structure may place more, so a
   structure can repeat or wander forever. Claims make rules that adapt:
-  `site:claim()` claims the site's vertex and returns whether it was
-  free, `site:is_claimed()` asks. A placed structure paints only near
+  `site:claim([part])` claims the site's vertex (`"vertex"`, the
+  default) or the face spanned by its forward and right edges
+  (`"face"`: a ground turtle's city block) and returns whether it was
+  free, `site:is_claimed([part])` asks. A placed structure paints only near
   its site (bounded z, and no node more than `PAINT_REACH` levels
   behind it); anything else is an error.
+- The queue runs everything up to the deepest built node, which for
+  anything that fills the ground is a whole disc around the root, so
+  area-filling structures tile instead: `site:tile(fn, ...)` (the
+  world's structure only, once) runs `fn(face, ...)` for every face of
+  the ground plane, with the face's canonical site (`rootSite` of the
+  sky node above it), just before any node it could paint is built:
+  before a node gets its structure, the tiles of the eleven faces
+  sharing a vertex with the face below it (`groundNodeOf`,
+  `groundRing`) run. Tiles run in exploration order, so a tile cannot
+  place or claim, and neighbors agree through `site:hash([part])`, a
+  deterministic 64-bit hash of the site's vertex, face or edge from
+  node ids (the same from every site on it); each tile's `pick` stream
+  is seeded by its face. Where two tiles paint the same cells they must
+  paint the same thing. A tile that paints an already built node is an
+  error.
 - `box.lua` holds box tower parts, each a function of an upright site
   (z up): `box.tower` (`shell`, `floors`, `windows`, `stairs`,
   `merlons`), `box.door`, `box.stair_route`, `box.palette`, `box.top`,
@@ -355,6 +381,48 @@ safe libraries as test scripts are open; errors carry a traceback.
   is unclaimed and that is not behind), claiming that vertex, so the
   trail never crosses itself and ends only where all three are taken;
   every third segment places a hut on an unclaimed vertex beside it.
+- `city.lua` is an endless city tiled over the ground plane. Every edge
+  of the {5,4} tiling is a street unless its hash drops it
+  (`DROPPED_STREET`); where that would leave a vertex with no street,
+  its highest-hashing edge stays as a dead end, so every lot fronts a
+  street. Blocks are irregular unions of pentagons and streets cross
+  at right angles. Each street is painted once, by the face with the
+  larger hash: a 4-cell basalt road, crosswalks, 2-cell raised concrete
+  sidewalks on both sides that run through a vertex when no street
+  crosses there, and street trees on some. Each vertex's lots are
+  painted once, by its highest-hashing face: the four quadrants around
+  it, cut into runs by its street edges, give a corner lot (one
+  quadrant, 8 x 8 cells), a slab (two, 8 x 24), a wide L (three) or a
+  lot wrapped around a dead end (four); a lot becomes a building
+  (`KINDS` pick the types and cap the stories), a park, a plaza or a
+  parking lot. A rare island face (`ISLAND`) keeps all its streets and
+  carries one tower across its five quadrants. The root vertex keeps
+  all its streets; its quadrant on the anchor face is the route
+  building, a tenement whose route walks in from the street and
+  climbs two stories, and the spawn stands on the street beside it.
+- `buildings/kit.lua` builds a lot from its parts, a spec (type,
+  stories, palette, front inset, alley gap, `route_stories`) and the
+  type's design (setbacks, facade, storefront, roof material, a cap on
+  every part, a crown on the largest). A part is a quadrant site whose
+  four sides are each a street (sidewalk margin and wall), joined (no
+  wall) or a lot boundary (wall, alley gap): the low sides lie on the
+  vertex's edges, so joined low sides are in the same vertical column
+  and stay one room all the way up. High sides join only across a
+  pentagon (the island): below `dimension` cells the corner chunks of
+  a face touch, above it the parts are in different nodes and a wedge
+  of other chunks opens between them, so the island splits into five
+  towers leaning apart as the vertical lines diverge. All parts of a
+  building share one tier plan, every setback leaves a roofed terrace
+  behind a parapet, and the top gets a roof and parapet. Every building
+  with a front gets a door on that street and a stair core behind it
+  (two lanes of three treads with a walkway between, stairwells cut
+  through each floor, up to the top floor); setbacks never squeeze the
+  core out. Types: `brownstone` (masonry, slate roof), `tenement`
+  (storefront, tar roof, water tower), `deco` (masonry, two setbacks,
+  spire), `glass` (curtain wall, spandrels, one setback, penthouse and
+  antenna). Windows are glass, which is see-through.
+  `tests/lib/showcase.lua` puts one of each type around an
+  intersection for close inspection (`tests/visual/showcase*.lua`).
 
 ## Units
 
@@ -462,7 +530,13 @@ coordinates (0..1, what `chunkToNode` takes) and dual coordinates
   Ambient occlusion reads cells beyond the face margins by hopping
   through slot-based chunk neighbors (`common/neighbors.d`), so a
   change to a chunk re-queues every chunk sharing a face, edge or corner
-  with it.
+  with it. Glass is see-through (`isShownAgainst`): a solid cell's face
+  is drawn against air or glass, never between two glass cells, and the
+  glass texture is a clear pane with a one-texel frame that
+  `voxels.frag` cuts out below half alpha; the frame's alpha is below
+  one, which tells the shader to draw it on outward faces only, so a
+  one-cell pane shows a single frame. Physics and picks still
+  treat glass as solid.
 - `Side.init == Side.a`. It isn't a free sentinel, so check for "no side"
   some other way. The invalid `Vertex` is 255.
 
@@ -651,8 +725,9 @@ plane, then the crease of two, else stop), and repeats up to
   the node or crosses the face perpendicular to the line, and a turn
   permutes the signed axes at the origin vertex, all creating nodes as
   needed. `rootedVertex` names a vertex by the node closest to the
-  root among the 8 around it, which is what claims key on and whose
-  depth orders placement.
+  root among the 8 around it, which is what vertex claims key on and
+  whose depth orders placement; `siteFace` names a face by the
+  shallower of its two nodes and its side.
 - The nodes on a line form a coset of a special subgroup of the
   reflection group, which is convex, so every one of them but the
   closest to the root has a parent on the line. `canonicalOf` descends

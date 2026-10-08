@@ -49,12 +49,14 @@ struct Node {
     bool hasState;
     bool hasStructure;
     bool isInStructure;
+    bool isTiled;
     bool hasBuilding;
     bool isBuildingQueued;
 }
 
 struct Grower {
     void function(void* context, ref Graph graph, int through) grow;
+    void function(void* context, ref Graph graph, uint slot) cover;
     void function(void* context) release;
     void* context;
 }
@@ -308,6 +310,9 @@ struct Graph {
                 ensureStructureAt(link.slot);
             }
             growBefore(nodeAt(slot).depth);
+            if (grower.cover !is null) {
+                grower.cover(grower.context, this, slot);
+            }
             this.finalizeStructure(slot);
             nodeAt(slot).hasStructure = true;
         }

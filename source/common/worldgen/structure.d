@@ -1,7 +1,7 @@
 module common.worldgen.structure;
 
 import core.math : sqrt;
-import core.stdc.math : atanhf, coshf, floorf;
+import core.stdc.math : atanhf, coshf, fabsf, floorf;
 import common.array : Array;
 import common.dodeca : SIDE_COUNT, Side, VERTEX_COUNT, Vertex, adjacentVertices, canonicalSides, chunkToNode, dualToNode, isAdjacentTo, reflection;
 import common.graph : Graph, Node, ParentList, ROOT_NODE;
@@ -11,10 +11,13 @@ import common.node : ChunkLayout;
 import common.position : Position;
 import common.traversal : NearbyNode, NearbyScratch;
 import common.units : Length;
-import common.worldgen.blueprint : BlueprintBuilder, CellBox, EVERY_HEIGHT, LineSpec, PaintResult, canonicalBox;
-import common.worldgen.generation : NodeState, SplitMix, StructureWorld, Worldgen;
+import common.worldgen.blueprint : BlueprintBuilder, CellBox, EVERY_HEIGHT, LineSpec, PaintResult, canonicalBox, floorDivision;
+import common.worldgen.generation : NodeState, NodeStateKind, SplitMix, StructureWorld, Worldgen;
 
 enum int PAINT_REACH = 6;
+enum uint GROUND_RING = 11;
+enum ulong HASH_MULTIPLIER = 0x9E3779B97F4A7C15;
+enum ulong LEVEL_MULTIPLIER = 0xBF58476D1CE4E5B9;
 enum int PLACE_SLACK = 2;
 enum Length SPAWN_DISTANCE = Length(1.0f);
 enum uint FACE_CORNERS = 5;
@@ -24,6 +27,7 @@ enum float TEST_RADIUS = 3.0f;
 enum Length TEST_TOLERANCE = Length(0.01f);
 enum Length TEST_ON_LINE = Length(1e-3f);
 enum int TEST_BEHIND_EDGES = 10;
+enum int TEST_RISE_EDGES = 3;
 immutable int[3][4] TEST_CELLS = [
     [0, 0, 0],
     [3, 1, 2],
@@ -127,17 +131,24 @@ struct CanonicalSite {
     LineTransform transform;
 }
 
-struct VertexKey {
+enum SitePart : ubyte {
+    vertex,
+    face,
+    edge,
+}
+
+struct ClaimKey {
     uint slot;
-    Vertex vertex;
+    ubyte feature;
+    SitePart part;
 
     size_t toHash() const {
-        return cast(size_t) slot * VERTEX_COUNT + vertex;
+        return (cast(size_t) slot * VERTEX_COUNT + feature) * (SitePart.max + 1) + part;
     }
 }
 
 struct RootedVertex {
-    VertexKey key;
+    ClaimKey key;
     uint depth;
 }
 
@@ -337,12 +348,116 @@ RootedVertex rootedVertex(ref const Graph graph, uint node, Vertex vertex) {
             slot = parents.links[index].slot;
         }
     }
-    return RootedVertex(VertexKey(slot, vertex), graph.nodeAt(slot).depth);
+    return RootedVertex(ClaimKey(slot, vertex, SitePart.vertex), graph.nodeAt(slot).depth);
 }
 
 RootedVertex siteOrigin(ref Graph graph, SiteFrame site) {
     SiteFrame origin = graph.atLevel(site, 0);
     return graph.rootedVertex(origin.node, origin.vertex);
+}
+
+ClaimKey siteFace(ref Graph graph, SiteFrame site) {
+    SiteFrame at = graph.atLevel(site, 0);
+    uint node = at.node;
+    if (at.xSign < 0) {
+        node = graph.ensureNeighborSlot(node, at.xSide);
+    }
+    if (at.zSign < 0) {
+        node = graph.ensureNeighborSlot(node, at.zSide());
+    }
+    uint across = graph.ensureNeighborSlot(node, at.ySide);
+    if (graph.nodeAt(across).depth < graph.nodeAt(node).depth) {
+        node = across;
+    }
+    return ClaimKey(node, at.ySide, SitePart.face);
+}
+
+ClaimKey claimKeyOf(ref Graph graph, SiteFrame site, SitePart part) {
+    assert(part != SitePart.edge);
+    if (part == SitePart.vertex) {
+        return graph.siteOrigin(site).key;
+    } else {
+        return graph.siteFace(site);
+    }
+}
+
+ulong siteHash(ref Graph graph, SiteFrame site, SitePart part) {
+    ulong seed = void;
+    final switch (part) {
+        case SitePart.vertex:
+        case SitePart.face:
+            ClaimKey key = graph.claimKeyOf(site, part);
+            seed = mixedSeed(graph.idAt(key.slot).spice(), key.feature, part);
+            break;
+        case SitePart.edge:
+            seed = graph.edgeSeed(site);
+            break;
+    }
+    return SplitMix(seed).next();
+}
+
+ulong mixedSeed(ulong spice, uint feature, SitePart part) {
+    return spice ^ ((cast(ulong) feature * (SitePart.max + 1) + part + 1) * HASH_MULTIPLIER);
+}
+
+ulong edgeSeed(ref Graph graph, SiteFrame site) {
+    CanonicalSite canonical = graph.canonicalOf(site);
+    ubyte dimension = graph.layout.dimension;
+    int cells = edgeCells(dimension);
+    CellBox edge = canonicalBox(CellBox.make(0, 0, 0, 0, 0, cells - 1), canonical.transform, dimension);
+    ulong level = cast(uint) floorDivision(edge.low[2], cells);
+    LineSpec line = canonical.line;
+    uint feature = (line.lower * SIDE_COUNT + line.xSide) * SIDE_COUNT + line.ySide;
+    return mixedSeed(graph.idAt(line.node).spice() ^ (level * LEVEL_MULTIPLIER), feature, SitePart.edge);
+}
+
+uint groundNodeOf(ref Graph graph, uint slot) {
+    uint current = slot;
+    NodeStateKind kind = graph.ensureNodeStateAt(current).kind;
+    while (kind == NodeStateKind.deepSky || kind == NodeStateKind.deepLand) {
+        uint lowest = current;
+        float least = fabsf(altitude(*graph.ensureNodeStateAt(current)));
+        foreach (index; 0 .. SIDE_COUNT) {
+            uint neighbor = graph.ensureNeighborSlot(current, cast(Side) index);
+            float height = fabsf(altitude(*graph.ensureNodeStateAt(neighbor)));
+            if (height < least) {
+                least = height;
+                lowest = neighbor;
+            }
+        }
+        assert(lowest != current);
+        current = lowest;
+        kind = graph.ensureNodeStateAt(current).kind;
+    }
+    if (kind == NodeStateKind.land) {
+        current = graph.ensureNeighborSlot(current, Side.a);
+    }
+    return current;
+}
+
+uint[GROUND_RING] groundRing(ref Graph graph, uint sky) {
+    uint[GROUND_RING] ring = void;
+    uint count = 0;
+    ring[count] = sky;
+    count += 1;
+    ushort faces = ringFaces(Side.a);
+    foreach (index; 0 .. SIDE_COUNT) {
+        Side side = cast(Side) index;
+        if ((faces & faceBit(side)) != 0) {
+            uint beside = graph.ensureNeighborSlot(sky, side);
+            ring[count] = beside;
+            count += 1;
+            foreach (otherIndex; index + 1 .. SIDE_COUNT) {
+                Side other = cast(Side) otherIndex;
+                if ((faces & faceBit(other)) != 0 && side.isAdjacentTo(other)) {
+                    ring[count] = graph.ensureNeighborSlot(beside, other);
+                    count += 1;
+                }
+            }
+        }
+    }
+    assert(count == GROUND_RING);
+    return ring;
 }
 
 FrameCrossing crossedFrame(SiteFrame site, Side side, uint node) {
@@ -713,6 +828,21 @@ unittest {
     assert(!isSamePoint(graph.siteToNode(corners[2], start.node) * origin, graph.siteToNode(start, start.node) * origin));
     assert(graph.siteOrigin(closed).key == graph.siteOrigin(start).key);
     assert(graph.siteOrigin(corners[2]).key != graph.siteOrigin(start).key);
+    ClaimKey block = graph.siteFace(start);
+    foreach (corner; corners) {
+        assert(graph.siteFace(corner) == block);
+    }
+    SiteFrame across = graph.turned(corners[1], Turn.right);
+    assert(graph.siteFace(across) != block);
+    assert(graph.siteFace(graph.faceWalk(across)[3]) == graph.siteFace(across));
+    SiteFrame back = graph.turned(graph.turned(forwarded(start, 1), Turn.right), Turn.right);
+    ulong edge = graph.siteHash(start, SitePart.edge);
+    assert(graph.siteHash(back, SitePart.edge) == edge);
+    assert(graph.siteHash(graph.turned(start, Turn.rollLeft), SitePart.edge) == edge);
+    assert(graph.siteHash(corners[1], SitePart.edge) != edge);
+    assert(graph.siteHash(closed, SitePart.vertex) == graph.siteHash(start, SitePart.vertex));
+    assert(graph.siteHash(corners[3], SitePart.face) == graph.siteHash(start, SitePart.face));
+    assert(graph.siteHash(start, SitePart.face) != graph.siteHash(start, SitePart.vertex));
     SiteFrame first = graph.turned(forwarded(graph.turned(corners[0], Turn.pitchUp), 1), Turn.pitchDown);
     SiteFrame last = graph.turned(graph.turned(forwarded(graph.turned(corners[1], Turn.pitchUp), 1), Turn.pitchDown), Turn.right);
     MPoint!float apex = columnPoint(graph.layout, ColumnSpot(-0.5f, 0.5f, edgeCells(TEST_DIMENSION) + 0.5f));
@@ -725,6 +855,25 @@ unittest {
         }
         assert(spun == start);
     }
+    graph.release();
+}
+
+unittest {
+    Graph graph = testGraph();
+    uint[GROUND_RING] ring = graph.groundRing(graph.anchorSlot);
+    foreach (index, slot; ring) {
+        assert(graph.ensureNodeStateAt(slot).kind == NodeStateKind.sky);
+        foreach (other; ring[index + 1 .. $]) {
+            assert(other != slot);
+        }
+    }
+    SiteFrame high = graph.atLevel(forwarded(graph.turned(rootSite(graph.anchorSlot), Turn.pitchUp), TEST_RISE_EDGES), 0);
+    uint below = graph.groundNodeOf(high.node);
+    uint index = 0;
+    while (index < GROUND_RING && ring[index] != below) {
+        index += 1;
+    }
+    assert(index < GROUND_RING);
     graph.release();
 }
 

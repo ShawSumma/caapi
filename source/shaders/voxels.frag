@@ -6,6 +6,12 @@ layout(location = 0) out vec4 color;
 
 layout(set = 1, binding = 1) uniform sampler2DArray textures;
 
+const float CLEAR_ALPHA = 0.5;
+
 void main() {
-    color = texture(textures, texcoords) * occlusion;
+    vec4 texel = texture(textures, texcoords);
+    if (texel.a < CLEAR_ALPHA) {
+        discard;
+    }
+    color = vec4(texel.rgb * occlusion, 1.0);
 }

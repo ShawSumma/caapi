@@ -7,15 +7,21 @@ struct EmbeddedLua {
     string source;
 }
 
-immutable EmbeddedLua[4] EMBEDDED_STRUCTURES = [
+immutable EmbeddedLua[5] EMBEDDED_STRUCTURES = [
     EmbeddedLua("tower", import("tower.lua")),
     EmbeddedLua("crown", import("crown.lua")),
     EmbeddedLua("road", import("road.lua")),
     EmbeddedLua("trail", import("trail.lua")),
+    EmbeddedLua("city", import("city.lua")),
 ];
 
-immutable EmbeddedLua[1] EMBEDDED_MODULES = [
+immutable EmbeddedLua[6] EMBEDDED_MODULES = [
     EmbeddedLua("box", import("box.lua")),
+    EmbeddedLua("buildings.kit", import("buildings/kit.lua")),
+    EmbeddedLua("buildings.brownstone", import("buildings/brownstone.lua")),
+    EmbeddedLua("buildings.tenement", import("buildings/tenement.lua")),
+    EmbeddedLua("buildings.deco", import("buildings/deco.lua")),
+    EmbeddedLua("buildings.glass", import("buildings/glass.lua")),
 ];
 
 immutable string[EMBEDDED_STRUCTURES.length] EMBEDDED_STRUCTURE_NAMES = namesOf(EMBEDDED_STRUCTURES);

@@ -5,7 +5,7 @@ import common.dodeca : SIDE_COUNT, Side, VERTEX_COUNT, Vertex;
 import common.graph : Graph;
 import common.hashmap : HashMap;
 import common.material : Material;
-import common.worldgen.structure : CanonicalSite, ColumnSpot, LineTransform, PAINT_REACH, SiteFrame, SlotTouch, VertexKey, addPendingTouch, aroundEdge, canonicalOf, edgeCells, isEndless, seedTouch, walkedTouch;
+import common.worldgen.structure : CanonicalSite, ClaimKey, ColumnSpot, LineTransform, PAINT_REACH, SiteFrame, SlotTouch, addPendingTouch, aroundEdge, canonicalOf, edgeCells, isEndless, seedTouch, walkedTouch;
 
 enum size_t MAX_MATERIALS = ubyte.max;
 enum ulong LINE_HASH_MULTIPLIER = 0x9E3779B97F4A7C15;
@@ -120,7 +120,7 @@ struct Blueprint {
     Array!Material materials;
     HashMap!(LineKey, uint) lineIndex;
     HashMap!(LineEdge, bool) touchedEdges;
-    HashMap!(VertexKey, bool) claims;
+    HashMap!(ClaimKey, bool) claims;
     RouteStop entrance;
     uint brushCount;
     uint claimCount;
@@ -128,7 +128,7 @@ struct Blueprint {
     bool hasEntrance;
 
     static Blueprint make(ubyte chunkDimension) {
-        return Blueprint(Array!LineSpec.init, Array!(Array!Brush).init, Array!RouteStop.init, Array!Material.init, HashMap!(LineKey, uint).init, HashMap!(LineEdge, bool).init, HashMap!(VertexKey, bool).init, RouteStop.init, 0, 0, chunkDimension, false);
+        return Blueprint(Array!LineSpec.init, Array!(Array!Brush).init, Array!RouteStop.init, Array!Material.init, HashMap!(LineKey, uint).init, HashMap!(LineEdge, bool).init, HashMap!(ClaimKey, bool).init, RouteStop.init, 0, 0, chunkDimension, false);
     }
 
     uint lineOf(LineSpec spec) {
@@ -157,11 +157,11 @@ struct Blueprint {
         return cast(ubyte)(index + 1);
     }
 
-    bool isClaimed(VertexKey key) const {
+    bool isClaimed(ClaimKey key) const {
         return claims.find(key) !is null;
     }
 
-    bool claim(VertexKey key) {
+    bool claim(ClaimKey key) {
         if (isClaimed(key)) {
             return false;
         } else {
@@ -190,15 +190,31 @@ struct BlueprintBuilder {
     Graph* graph;
     int paintLimit;
     bool isGrowing;
+    bool isTiling;
 
     static BlueprintBuilder make(ref Graph target) {
-        return BlueprintBuilder(Array!SiteLine.init, &target, 0, false);
+        return BlueprintBuilder(Array!SiteLine.init, &target, 0, false, false);
     }
 
     void growFrom(uint key) {
         known.clear();
         paintLimit = cast(int) key - PAINT_REACH;
         isGrowing = true;
+        isTiling = false;
+    }
+
+    void tile() {
+        known.clear();
+        isGrowing = true;
+        isTiling = true;
+    }
+
+    bool isOpen(uint slot) const {
+        if (isTiling) {
+            return !graph.nodeAt(slot).hasStructure;
+        } else {
+            return cast(int) graph.nodeAt(slot).depth >= paintLimit;
+        }
     }
 
     SiteLine lineOf(SiteFrame site) {
@@ -241,7 +257,7 @@ struct BlueprintBuilder {
         while (isClear && level <= highEdge) {
             edge = (*graph).walkedTouch(edge, spec, level);
             foreach (around; (*graph).aroundEdge(edge, spec)) {
-                isClear = isClear && cast(int) graph.nodeAt(around.slot).depth >= paintLimit;
+                isClear = isClear && isOpen(around.slot);
             }
             level += 1;
         }

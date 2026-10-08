@@ -5,7 +5,7 @@ import core.stdc.stdlib : free, malloc;
 import core.stdc.string : memcpy, strlen;
 import bindings.lua : luaL_checkinteger, luaL_checklstring, luaL_checknumber, luaL_checktype, luaL_error, luaL_loadbufferx, luaL_loadfilex, luaL_newmetatable, luaL_ref, luaL_setmetatable, luaL_unref, lua_CFunction, lua_Integer, lua_State, lua_close, lua_createtable, lua_getfield, lua_getglobal, lua_gettop, lua_pcallk, lua_pushboolean, lua_pushcclosure, lua_pushinteger, lua_pushlightuserdata, lua_pushvalue, lua_rawgeti, lua_rawseti, lua_setfield, lua_settop, lua_tointegerx, lua_tolstring, lua_touserdata, lua_type;
 import client.game : Game;
-import client.lua : LUA_BELOW_TOP, LUA_FIRST_UPVALUE, LUA_REGISTRY, LUA_SECOND_UPVALUE, LUA_STATUS_OK, LUA_TOP, LUA_TYPE_FUNCTION, LUA_TYPE_TABLE, LuaLookup, LuaName, SELF, TRACEBACK_INDEX, isNoneOrNil, luaTraceback, newSafeState, registerMethod, setPackagePath;
+import client.lua : LUA_BELOW_TOP, LUA_FIRST_UPVALUE, LUA_NO_REF, LUA_REGISTRY, LUA_SECOND_UPVALUE, LUA_STATUS_OK, LUA_TOP, LUA_TYPE_FUNCTION, LUA_TYPE_TABLE, LuaLookup, LuaName, SELF, TRACEBACK_INDEX, isNoneOrNil, luaTraceback, newSafeState, registerMethod, setPackagePath;
 import common.array : Array;
 import common.dodeca : SIDE_COUNT, Side, VERTEX_COUNT, Vertex;
 import common.graph : Graph, Grower;
@@ -14,7 +14,7 @@ import common.names : ENUM_NAMES;
 import common.worldgen.blueprint : BlueprintBuilder, CellBox, EVERY_HEIGHT, PaintResult, Rhythm;
 import common.worldgen.embedded : EMBEDDED_MODULES, EMBEDDED_STRUCTURES, EmbeddedLua, embeddedIndex, isLuaPath;
 import common.worldgen.generation : STRUCTURE_NAME_CAPACITY, SplitMix, StructureWorld, Worldgen;
-import common.worldgen.structure : ColumnSpot, PLACE_SLACK, RootedVertex, SiteFrame, Turn, anchorBits, edgeCells, forwarded, rootSite, sideAxis, siteOrigin, turned;
+import common.worldgen.structure : ClaimKey, ColumnSpot, GROUND_RING, PLACE_SLACK, RootedVertex, SiteFrame, SitePart, Turn, anchorBits, claimKeyOf, edgeCells, forwarded, groundNodeOf, groundRing, rootSite, sideAxis, siteHash, siteOrigin, turned;
 
 enum size_t MESSAGE_CAPACITY = 1024;
 enum int CHUNK_RESULTS = 1;
@@ -53,10 +53,16 @@ struct StructureHost {
     StructureWorld name;
     uint key;
     uint nextKey;
+    int tileReference;
+    int tileArgumentCount;
     StructureProblem problem;
 
     static StructureHost make(ref Graph graph) {
-        return StructureHost(BlueprintBuilder.make(graph), Array!(Array!QueuedStructure).init, SplitMix(graph.anchorBits(graph.anchorSlot)), null, StructureWorld.fromName(graph.worldgen.structureName()), 0, 0, StructureProblem.init);
+        return StructureHost(BlueprintBuilder.make(graph), Array!(Array!QueuedStructure).init, SplitMix(graph.anchorBits(graph.anchorSlot)), null, StructureWorld.fromName(graph.worldgen.structureName()), 0, 0, LUA_NO_REF, 0, StructureProblem.init);
+    }
+
+    bool hasTile() const {
+        return tileReference != LUA_NO_REF;
     }
 
     void build(SiteFrame root) {
@@ -110,19 +116,38 @@ struct StructureHost {
     void run(QueuedStructure queued) {
         key = queued.key;
         builder.growFrom(queued.key);
-        lua_rawgeti(lua, LUA_REGISTRY, queued.reference);
+        call(queued.reference, queued.argumentCount, queued.site);
+        luaL_unref(lua, LUA_REGISTRY, queued.reference);
+    }
+
+    void call(int reference, int argumentCount, SiteFrame site) {
+        lua_rawgeti(lua, LUA_REGISTRY, reference);
         int placed = lua_gettop(lua);
         lua_rawgeti(lua, placed, PLACED_FUNCTION);
-        lua.pushSite(queued.site);
-        foreach (index; 0 .. queued.argumentCount) {
+        lua.pushSite(site);
+        foreach (index; 0 .. argumentCount) {
             lua_rawgeti(lua, placed, PLACED_FUNCTION + 1 + index);
         }
-        immutable int status = lua_pcallk(lua, STRUCTURE_ARGUMENTS + queued.argumentCount, 0, TRACEBACK_INDEX, 0, null);
+        immutable int status = lua_pcallk(lua, STRUCTURE_ARGUMENTS + argumentCount, 0, TRACEBACK_INDEX, 0, null);
         if (status != LUA_STATUS_OK) {
             fail();
         }
         lua_settop(lua, TRACEBACK_INDEX);
-        luaL_unref(lua, LUA_REGISTRY, queued.reference);
+    }
+
+    void cover(ref Graph graph, uint slot) {
+        builder.graph = &graph;
+        if (hasTile() && !problem.isPresent) {
+            uint[GROUND_RING] ring = graph.groundRing(graph.groundNodeOf(slot));
+            foreach (sky; ring) {
+                if (!problem.isPresent && !graph.nodeAt(sky).isTiled) {
+                    graph.nodeAt(sky).isTiled = true;
+                    builder.tile();
+                    random = SplitMix(graph.idAt(sky).spice());
+                    call(tileReference, tileArgumentCount, rootSite(sky));
+                }
+            }
+        }
     }
 
     void enqueue(QueuedStructure queued) {
@@ -151,6 +176,8 @@ struct StructureHost {
         lua.registerMethod(&this, "place", &luaSitePlace);
         lua.registerMethod(&this, "claim", &luaSiteClaim);
         lua.registerMethod(&this, "is_claimed", &luaSiteIsClaimed);
+        lua.registerMethod(&this, "tile", &luaSiteTile);
+        lua.registerMethod(&this, "hash", &luaSiteHash);
         lua_setfield(lua, LUA_BELOW_TOP, "__index");
         lua_settop(lua, LUA_BELOW_TOP);
     }
@@ -190,10 +217,10 @@ StructureProblem placeWorldStructure(ref Graph graph) {
         *host = StructureHost.make(graph);
         host.build(rootSite(graph.anchorSlot));
         StructureProblem problem = host.problem;
-        if (problem.isPresent || !host.hasQueued()) {
+        if (problem.isPresent || !(host.hasQueued() || host.hasTile())) {
             releaseStructureHost(host);
         } else {
-            graph.grower = Grower(&growStructures, &releaseStructureHost, host);
+            graph.grower = Grower(&growStructures, &coverStructures, &releaseStructureHost, host);
         }
         return problem;
     }
@@ -201,6 +228,10 @@ StructureProblem placeWorldStructure(ref Graph graph) {
 
 void growStructures(void* context, ref Graph graph, int through) {
     (cast(StructureHost*) context).grow(graph, through);
+}
+
+void coverStructures(void* context, ref Graph graph, uint slot) {
+    (cast(StructureHost*) context).cover(graph, slot);
 }
 
 void releaseStructureHost(void* context) {
@@ -455,6 +486,8 @@ int paintWith(lua_State* lua, bool isIntoAirOnly) {
     PaintResult result = host.builder.paint(site, box, rhythmArgument(lua, SELF + 3), material, isIntoAirOnly);
     if (result == PaintResult.endless) {
         luaL_error(lua, "a placed structure paints bounded heights: give the box a z range");
+    } else if (result == PaintResult.behind && host.builder.isTiling) {
+        luaL_error(lua, "paints ground that is already built: a tile paints only near its face");
     } else if (result == PaintResult.behind) {
         luaL_error(lua, "paints too far behind its site: a placed structure stays near where it was placed");
     }
@@ -473,40 +506,94 @@ extern (C) int luaSiteEntrance(lua_State* lua) {
     return 0;
 }
 
+int packedCall(lua_State* lua) {
+    int count = lua_gettop(lua) - SELF;
+    lua_createtable(lua, count, 0);
+    foreach (index; 0 .. count) {
+        lua_pushvalue(lua, SELF + 1 + index);
+        lua_rawseti(lua, LUA_BELOW_TOP, PLACED_FUNCTION + index);
+    }
+    return luaL_ref(lua, LUA_REGISTRY);
+}
+
+void refuseInTile(lua_State* lua, StructureHost* host, const(char)* what) {
+    if (host.builder.isTiling) {
+        luaL_error(lua, "a tile cannot %s: tiles run in any order, so decide from site:hash", what);
+    }
+}
+
 extern (C) int luaSitePlace(lua_State* lua) {
     StructureHost* host = structureHost(lua);
     SiteFrame site = siteArgument(lua, SELF, *host.builder.graph);
     luaL_checktype(lua, SELF + 1, LUA_TYPE_FUNCTION);
+    refuseInTile(lua, host, "place");
     RootedVertex origin = (*host.builder.graph).siteOrigin(site);
     bool isAhead = cast(int) origin.depth + PLACE_SLACK >= cast(int) host.key;
     if (isAhead) {
         int count = lua_gettop(lua) - SELF;
-        lua_createtable(lua, count, 0);
-        foreach (index; 0 .. count) {
-            lua_pushvalue(lua, SELF + 1 + index);
-            lua_rawseti(lua, LUA_BELOW_TOP, PLACED_FUNCTION + index);
-        }
         uint queuedKey = host.key;
         if (origin.depth > queuedKey) {
             queuedKey = origin.depth;
         }
-        host.enqueue(QueuedStructure(site, queuedKey, luaL_ref(lua, LUA_REGISTRY), count - PLACED_FUNCTION));
+        host.enqueue(QueuedStructure(site, queuedKey, packedCall(lua), count - PLACED_FUNCTION));
     }
     lua_pushboolean(lua, isAhead);
     return 1;
 }
 
+extern (C) int luaSiteTile(lua_State* lua) {
+    StructureHost* host = structureHost(lua);
+    siteArgument(lua, SELF, *host.builder.graph);
+    luaL_checktype(lua, SELF + 1, LUA_TYPE_FUNCTION);
+    if (host.builder.isGrowing || host.hasTile()) {
+        luaL_error(lua, "only the world's own structure tiles the ground, and only once");
+    }
+    host.tileArgumentCount = lua_gettop(lua) - SELF - PLACED_FUNCTION;
+    host.tileReference = packedCall(lua);
+    return 0;
+}
+
 extern (C) int luaSiteClaim(lua_State* lua) {
     StructureHost* host = structureHost(lua);
-    SiteFrame site = siteArgument(lua, SELF, *host.builder.graph);
-    immutable bool isNewlyClaimed = host.builder.graph.blueprint.claim((*host.builder.graph).siteOrigin(site).key);
+    refuseInTile(lua, host, "claim");
+    ClaimKey key = claimArgument(lua, *host.builder.graph);
+    immutable bool isNewlyClaimed = host.builder.graph.blueprint.claim(key);
     lua_pushboolean(lua, isNewlyClaimed);
     return 1;
 }
 
 extern (C) int luaSiteIsClaimed(lua_State* lua) {
     StructureHost* host = structureHost(lua);
-    SiteFrame site = siteArgument(lua, SELF, *host.builder.graph);
-    lua_pushboolean(lua, host.builder.graph.blueprint.isClaimed((*host.builder.graph).siteOrigin(site).key));
+    refuseInTile(lua, host, "read claims");
+    lua_pushboolean(lua, host.builder.graph.blueprint.isClaimed(claimArgument(lua, *host.builder.graph)));
     return 1;
+}
+
+extern (C) int luaSiteHash(lua_State* lua) {
+    StructureHost* host = structureHost(lua);
+    SiteFrame site = siteArgument(lua, SELF, *host.builder.graph);
+    lua_pushinteger(lua, cast(lua_Integer)(*host.builder.graph).siteHash(site, partArgument(lua, SELF + 1)));
+    return 1;
+}
+
+SitePart partArgument(lua_State* lua, int index) {
+    if (isNoneOrNil(lua, index)) {
+        return SitePart.vertex;
+    } else {
+        const(char)* text = luaL_checklstring(lua, index, null);
+        LuaLookup!SitePart lookup = LuaLookup!SitePart.fromName(text[0 .. strlen(text)]);
+        if (!lookup.isFound) {
+            luaL_error(lua, "a site part is a vertex, face or edge, not '%s'", text);
+        }
+        return lookup.value;
+    }
+}
+
+ClaimKey claimArgument(lua_State* lua, ref Graph graph) {
+    SiteFrame site = siteArgument(lua, SELF, graph);
+    SitePart part = partArgument(lua, SELF + 1);
+    if (part == SitePart.edge) {
+        luaL_error(lua, "a site claims its vertex or face, not its edge");
+    }
+    return graph.claimKeyOf(site, part);
 }

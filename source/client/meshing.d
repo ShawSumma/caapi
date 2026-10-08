@@ -86,16 +86,16 @@ struct ChunkCells {
                     size_t rowStart = (b + MARGIN_CELLS) * strides[bAxis] + (c + MARGIN_CELLS) * strides[cAxis] + MARGIN_CELLS * step;
                     foreach (a; 0 .. dimension + 1) {
                         size_t index = rowStart + a * step;
-                        bool isSelfVoid = padded[index] == Material.none;
-                        bool isOtherVoid = padded[index - step] == Material.none;
-                        if (isSelfVoid != isOtherVoid && !(isSelfVoid && a == dimension) && !(isOtherVoid && a == 0)) {
+                        bool isSelfShown = isShownAgainst(padded[index], padded[index - step]);
+                        bool isOtherShown = isShownAgainst(padded[index - step], padded[index]);
+                        if ((isSelfShown && a > 0) || (isOtherShown && a < dimension)) {
                             int[3] voxel;
                             voxel[axis] = cast(int) a;
                             voxel[bAxis] = cast(int) b;
                             voxel[cAxis] = cast(int) c;
                             int[3] base = voxel;
-                            base[axis] -= solidSideStep(isSelfVoid);
-                            faces[count] = Face.fromVoxel(voxel, axis, isSelfVoid, solidMaterial(index, step, isSelfVoid), faceOcclusion(base, axis));
+                            base[axis] -= solidSideStep(isOtherShown);
+                            faces[count] = Face.fromVoxel(voxel, axis, isOtherShown, solidMaterial(index, step, isOtherShown), faceOcclusion(base, axis));
                             count += 1;
                         }
                     }
@@ -165,12 +165,20 @@ uint flippedOffset(uint[CORNERS_PER_FACE] occlusion) {
     }
 }
 
-int solidSideStep(bool isSelfVoid) {
-    if (isSelfVoid) {
+int solidSideStep(bool isOtherShown) {
+    if (isOtherShown) {
         return 0;
     } else {
         return 1;
     }
+}
+
+bool isSeeThrough(Material material) {
+    return material == Material.none || material == Material.glass;
+}
+
+bool isShownAgainst(Material material, Material beside) {
+    return material != Material.none && isSeeThrough(beside) && !(material == Material.glass && beside == Material.glass);
 }
 
 unittest {
@@ -188,6 +196,16 @@ unittest {
     foreach (face; faces[0 .. count]) {
         assert(face.occlusionMaterial == Face.fromVoxel(center, 0, false, Material.granite, unoccluded).occlusionMaterial);
     }
+    padded[(TEST_CELL - 1 + MARGIN_CELLS) + (TEST_CELL + MARGIN_CELLS) * stride + (TEST_CELL + MARGIN_CELLS) * stride * stride] = Material.glass;
+    uint glassCount = cells.extractFaces(faces);
+    uint glassFaces = 0;
+    foreach (face; faces[0 .. glassCount]) {
+        if ((face.occlusionMaterial & ((1u << OCCLUSION_SHIFT) - 1)) == Material.glass) {
+            glassFaces += 1;
+        }
+    }
+    assert(glassCount == 2 * AXIS_COUNT + 2 * AXIS_COUNT - 1);
+    assert(glassFaces == 2 * AXIS_COUNT - 1);
     free(faces);
     free(padded.ptr);
 }

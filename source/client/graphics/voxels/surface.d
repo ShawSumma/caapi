@@ -11,6 +11,9 @@ enum string VOXELS_VERT_SPV = import("voxels.vert.spv");
 enum string VOXELS_FRAG_SPV = import("voxels.frag.spv");
 enum uint TEXTURE_SIZE = 16;
 enum ubyte TEXTURE_OPAQUE = 255;
+enum ubyte TEXTURE_CLEAR = 0;
+enum uint GLASS_LAYER = Material.glass - 1;
+enum uint GLASS_FRAME_TEXELS = 1;
 enum uint TEXTURE_LAYERS = Material.max;
 enum uint TEXEL_BYTES = 4;
 enum uint COLOR_CHANNELS = 3;
@@ -68,6 +71,17 @@ enum uint TEXTURE_BINDING = 1;
 enum uint TRANSFORMS_BINDING = 2;
 enum uint COMMON_UBO_BINDING = 0;
 enum uint DEPTH_INPUT_BINDING = 1;
+
+ubyte texelAlpha(uint layer, uint texel) {
+    uint u = texel % TEXTURE_SIZE;
+    uint v = texel / TEXTURE_SIZE;
+    bool isFrame = u < GLASS_FRAME_TEXELS || v < GLASS_FRAME_TEXELS || u >= TEXTURE_SIZE - GLASS_FRAME_TEXELS || v >= TEXTURE_SIZE - GLASS_FRAME_TEXELS;
+    if (layer == GLASS_LAYER && !isFrame) {
+        return TEXTURE_CLEAR;
+    } else {
+        return TEXTURE_OPAQUE;
+    }
+}
 
 struct LayoutPush {
     uint dimension;
@@ -199,7 +213,7 @@ struct SurfacePipeline {
         ubyte* pixels = cast(ubyte*) malloc(totalBytes);
         foreach (texel; 0 .. layerTexels * TEXTURE_LAYERS) {
             pixels[texel * TEXEL_BYTES .. texel * TEXEL_BYTES + COLOR_CHANNELS] = MATERIAL_SRGB[texel / layerTexels][];
-            pixels[texel * TEXEL_BYTES + COLOR_CHANNELS] = TEXTURE_OPAQUE;
+            pixels[texel * TEXEL_BYTES + COLOR_CHANNELS] = texelAlpha(cast(uint)(texel / layerTexels), cast(uint)(texel % layerTexels));
         }
         GpuBuffer staging = GpuBuffer.makeFilled(physicalDevice, device, pixels[0 .. totalBytes], VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
         free(pixels);
