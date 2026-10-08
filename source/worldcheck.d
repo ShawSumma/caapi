@@ -5,7 +5,7 @@ import core.stdc.stdio : FILE, fprintf;
 import core.stdc.stdlib : free, malloc;
 import client.meshing : Mesher;
 import client.streaming : Streamer, populateChunk, resolveMaterials;
-import client.structures : StructureProblem, placeWorldStructure;
+import client.structures : StructureProblem, growthProblem, placeWorldStructure;
 import common.clock : nowMilliseconds;
 import common.coords : Coords;
 import common.dodeca : CHUNK_BOUNDING_SPHERE_RADIUS, VERTEX_COUNT, Vertex, chunkBoundingSphereCenter;
@@ -220,19 +220,21 @@ size_t filledVoxels(ref Graph graph, uint slot) {
 bool dumpStructure(FILE* output, ubyte dimension, Worldgen worldgen) {
     Graph graph = Graph.make(dimension, worldgen);
     StructureProblem problem = graph.placeWorldStructure();
-    if (problem.isPresent) {
-        fprintf(output, "%s\n", problem.text.ptr);
-    } else {
-        fprintf(output, "lines=%zu brushes=%zu stops=%zu edge=%.4f\n", graph.blueprint.lines.length, graph.blueprint.brushes.length, graph.blueprint.route.length, cast(double) edgeLength(graph.layout).value);
+    if (!problem.isPresent) {
         NearbyScratch scratch;
         NearbyNode[] nearby = scratch.collectAll(graph, Position(graph.idAt(graph.anchorSlot), MIsometry!float.identity()), STRUCTURE_DUMP_RADIUS);
         foreach (node; nearby) {
-            if (graph.ensureStructureAt(node.slot).isPresent) {
+            if (graph.ensureStructureAt(node.slot)) {
                 graph.ensureNodeStateAt(node.slot);
                 fprintf(output, "altitude=%.3f filled=%zu\n", cast(double) graph.nodeAt(node.slot).state.altitude(), graph.filledVoxels(node.slot));
             }
         }
         scratch.release();
+        fprintf(output, "lines=%zu brushes=%u stops=%zu claims=%u edge=%.4f\n", graph.blueprint.lines.length, graph.blueprint.brushCount, graph.blueprint.route.length, graph.blueprint.claimCount,cast(double) edgeLength(graph.layout).value);
+        problem = growthProblem(graph);
+    }
+    if (problem.isPresent) {
+        fprintf(output, "%s\n", problem.text.ptr);
     }
     graph.release();
     return !problem.isPresent;

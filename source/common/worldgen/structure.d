@@ -1,27 +1,29 @@
 module common.worldgen.structure;
 
 import core.math : sqrt;
-import core.stdc.math : asinhf, atanhf, coshf, floorf, sinhf;
+import core.stdc.math : atanhf, coshf, floorf;
 import common.array : Array;
 import common.dodeca : SIDE_COUNT, Side, VERTEX_COUNT, Vertex, adjacentVertices, canonicalSides, chunkToNode, dualToNode, isAdjacentTo, reflection;
-import common.graph : Graph, ParentList, ROOT_NODE;
+import common.graph : Graph, Node, ParentList, ROOT_NODE;
 import common.material : Material;
 import common.math : MIsometry, MPoint, MVector, Matrix4;
 import common.node : ChunkLayout;
 import common.position : Position;
 import common.traversal : NearbyNode, NearbyScratch;
 import common.units : Length;
-import common.worldgen.blueprint : Blueprint, BlueprintBuilder, CellBox, EVERY_HEIGHT, LineSpec, canonicalBox;
+import common.worldgen.blueprint : BlueprintBuilder, CellBox, EVERY_HEIGHT, LineSpec, PaintResult, canonicalBox;
 import common.worldgen.generation : NodeState, SplitMix, StructureWorld, Worldgen;
 
-enum uint MAX_LINE_TOUCHES = 16;
-enum uint FACE_CORNERS = 5;
-enum uint QUARTER_TURNS = 4;
+enum int PAINT_REACH = 6;
+enum int PLACE_SLACK = 2;
 enum Length SPAWN_DISTANCE = Length(1.0f);
+enum uint FACE_CORNERS = 5;
+enum uint EDGE_NODES = 4;
 enum ubyte TEST_DIMENSION = 12;
 enum float TEST_RADIUS = 3.0f;
 enum Length TEST_TOLERANCE = Length(0.01f);
 enum Length TEST_ON_LINE = Length(1e-3f);
+enum int TEST_BEHIND_EDGES = 10;
 immutable int[3][4] TEST_CELLS = [
     [0, 0, 0],
     [3, 1, 2],
@@ -29,17 +31,26 @@ immutable int[3][4] TEST_CELLS = [
     [2, 11, 9],
 ];
 
-struct LineTouch {
-    int level;
-    ubyte line;
-    Vertex lower;
-    byte acrossSign;
-    byte alongSign;
+enum Turn : ubyte {
+    left,
+    right,
+    pitchUp,
+    pitchDown,
+    rollLeft,
+    rollRight,
 }
 
-struct LineSeed {
+struct LineTouch {
+    int level;
+    uint line;
+    Vertex lower;
+    byte xSign;
+    byte ySign;
+}
+
+struct PendingTouch {
     LineTouch touch;
-    uint slot;
+    uint next;
 }
 
 struct TouchCrossing {
@@ -47,22 +58,54 @@ struct TouchCrossing {
     bool isKept;
 }
 
+struct SlotTouch {
+    LineTouch touch;
+    uint slot;
+}
+
+struct Axis {
+    Side side;
+    byte sign;
+
+    Axis opUnary(string op)() const if (op == "-") {
+        return Axis(side, cast(byte) -sign);
+    }
+}
+
 struct SiteFrame {
     int level;
     uint node;
     Vertex vertex;
-    Side acrossSide;
-    Side alongSide;
-    byte acrossSign;
-    byte alongSign;
-    byte heightSign;
+    Side xSide;
+    Side ySide;
+    byte xSign;
+    byte ySign;
+    byte zSign;
 
-    Side heightSide() const {
-        return vertex.canonicalSides[3 - sideAxis(vertex, acrossSide) - sideAxis(vertex, alongSide)];
+    static SiteFrame fromAxes(int level, uint node, Vertex vertex, Axis x, Axis y, Axis z) {
+        SiteFrame site = SiteFrame(level, node, vertex, x.side, y.side, x.sign, y.sign, z.sign);
+        assert(site.zSide() == z.side);
+        return site;
+    }
+
+    Side zSide() const {
+        return vertex.canonicalSides[3 - sideAxis(vertex, xSide) - sideAxis(vertex, ySide)];
+    }
+
+    Axis x() const {
+        return Axis(xSide, xSign);
+    }
+
+    Axis y() const {
+        return Axis(ySide, ySign);
+    }
+
+    Axis z() const {
+        return Axis(zSide(), zSign);
     }
 
     Vertex nextVertex() const {
-        return vertex.adjacentVertices[sideAxis(vertex, heightSide())];
+        return vertex.adjacentVertices[sideAxis(vertex, zSide())];
     }
 }
 
@@ -73,9 +116,9 @@ struct FrameCrossing {
 
 struct LineTransform {
     int offsetLevels;
-    byte acrossSign;
-    byte alongSign;
-    byte heightSign;
+    byte xSign;
+    byte ySign;
+    byte zSign;
     bool isSwapped;
 }
 
@@ -84,74 +127,46 @@ struct CanonicalSite {
     LineTransform transform;
 }
 
-struct NodeStructure {
-    LineTouch[MAX_LINE_TOUCHES] touches;
-    uint count;
-    bool isPresent;
+struct VertexKey {
+    uint slot;
+    Vertex vertex;
 
-    static NodeStructure fromParents(ref const Graph graph, uint slot) {
-        NodeStructure result;
-        foreach (seed; graph.seeds.slice()) {
-            if (seed.slot == slot) {
-                result.add(seed.touch);
-            }
-        }
-        ParentList parents = graph.parents(slot);
-        foreach (link; parents.links[0 .. parents.count]) {
-            const(NodeStructure)* above = &graph.nodeAt(link.slot).structure;
-            foreach (touch; above.touches[0 .. above.count]) {
-                TouchCrossing crossing = crossed(touch, graph.blueprint.lines.ptr[touch.line], link.side);
-                if (crossing.isKept) {
-                    result.add(crossing.touch);
-                }
-            }
-        }
-        result.isPresent = result.isBuiltOn(graph.blueprint);
-        return result;
-    }
-
-    void add(LineTouch touch) {
-        uint index = 0;
-        while (index < count && touches[index].line < touch.line) {
-            index += 1;
-        }
-        if (index == count || touches[index].line != touch.line) {
-            assert(count < MAX_LINE_TOUCHES);
-            foreach_reverse (moved; index .. count) {
-                touches[moved + 1] = touches[moved];
-            }
-            touches[index] = touch;
-            count += 1;
-        }
-    }
-
-    bool isBuiltOn(ref const Blueprint blueprint) const {
-        uint index = 0;
-        while (index < count && !isTouchInRange(touches[index], blueprint.lines.ptr[touches[index].line])) {
-            index += 1;
-        }
-        return index < count;
+    size_t toHash() const {
+        return cast(size_t) slot * VERTEX_COUNT + vertex;
     }
 }
 
+struct RootedVertex {
+    VertexKey key;
+    uint depth;
+}
+
+bool isEndless(ref const LineSpec spec) {
+    return spec.lowest == int.min || spec.highest == int.max;
+}
+
 bool isTouchInRange(ref const LineTouch touch, ref const LineSpec spec) {
-    return isLevelInRange(spec, touch.level) || isLevelInRange(spec, touch.level + 1);
+    return isLevelInRange(spec, touch.level);
 }
 
 bool isLevelInRange(ref const LineSpec spec, int level) {
     return level >= spec.lowest && level <= spec.highest;
 }
 
+bool isOnTouch(ref const LineTouch touch, ref const LineSpec spec, Vertex vertex) {
+    return (vertex == touch.lower || vertex == upperOf(touch.lower, spec)) && isTouchInRange(touch, spec);
+}
+
 TouchCrossing crossed(LineTouch touch, ref const LineSpec spec, Side side) {
     Vertex upper = upperOf(touch.lower, spec);
-    if (side == spec.acrossSide) {
-        return TouchCrossing(LineTouch(touch.level, touch.line, touch.lower, cast(byte) -touch.acrossSign, touch.alongSign), true);
-    } else if (side == spec.alongSide) {
-        return TouchCrossing(LineTouch(touch.level, touch.line, touch.lower, touch.acrossSign, cast(byte) -touch.alongSign), true);
+    if (side == spec.xSide) {
+        return TouchCrossing(LineTouch(touch.level, touch.line, touch.lower, cast(byte) -touch.xSign, touch.ySign), true);
+    } else if (side == spec.ySide) {
+        return TouchCrossing(LineTouch(touch.level, touch.line, touch.lower, touch.xSign, cast(byte) -touch.ySign), true);
     } else if (side == crossingSide(touch.lower, spec)) {
-        return TouchCrossing(LineTouch(touch.level - 1, touch.line, upper, touch.acrossSign, touch.alongSign), true);
+        return TouchCrossing(LineTouch(touch.level - 1, touch.line, upper, touch.xSign, touch.ySign), true);
     } else if (side == crossingSide(upper, spec)) {
-        return TouchCrossing(LineTouch(touch.level + 1, touch.line, upper, touch.acrossSign, touch.alongSign), true);
+        return TouchCrossing(LineTouch(touch.level + 1, touch.line, upper, touch.xSign, touch.ySign), true);
     } else {
         return TouchCrossing(touch, false);
     }
@@ -162,38 +177,99 @@ Vertex upperOf(Vertex lower, ref const LineSpec spec) {
 }
 
 size_t crossingAxis(Vertex vertex, ref const LineSpec spec) {
-    return 3 - sideAxis(vertex, spec.acrossSide) - sideAxis(vertex, spec.alongSide);
+    return 3 - sideAxis(vertex, spec.xSide) - sideAxis(vertex, spec.ySide);
 }
 
 Side crossingSide(Vertex vertex, ref const LineSpec spec) {
     return vertex.canonicalSides[crossingAxis(vertex, spec)];
 }
 
-Array!LineSeed seedLines(ref const Blueprint blueprint) {
-    Array!LineSeed seeds;
-    foreach (line, spec; blueprint.lines.slice()) {
-        seeds.append(LineSeed(LineTouch(0, cast(ubyte) line, spec.lower, 1, 1), spec.node));
+void finalizeStructure(ref Graph graph, uint slot) {
+    graph.touchScratch.clear();
+    uint pending = graph.nodeAt(slot).pendingHead;
+    while (pending != 0) {
+        PendingTouch record = *graph.pendingTouches.at(pending - 1);
+        graph.touchScratch.addUnique(record.touch);
+        pending = record.next;
     }
-    return seeds;
+    ParentList parents = graph.parents(slot);
+    foreach (link; parents.links[0 .. parents.count]) {
+        foreach (touch; graph.touchesAt(link.slot)) {
+            LineSpec spec = graph.blueprint.lines.ptr[touch.line];
+            if (spec.isEndless()) {
+                TouchCrossing crossing = crossed(touch, spec, link.side);
+                if (crossing.isKept) {
+                    graph.touchScratch.addUnique(crossing.touch);
+                }
+            }
+        }
+    }
+    uint start = graph.reserveTouches(cast(uint) graph.touchScratch.length);
+    bool isInStructure = false;
+    foreach (index, touch; graph.touchScratch.slice()) {
+        *graph.touches.at(start + index) = touch;
+        isInStructure = isInStructure || isTouchInRange(touch, graph.blueprint.lines.ptr[touch.line]);
+    }
+    Node* node = graph.nodeAt(slot);
+    node.touchStart = start;
+    node.touchLength = cast(uint) graph.touchScratch.length;
+    node.isInStructure = isInStructure;
+}
+
+void addUnique(ref Array!LineTouch touches, LineTouch touch) {
+    uint index = 0;
+    while (index < touches.length && touches.ptr[index].line < touch.line) {
+        index += 1;
+    }
+    if (index == touches.length || touches.ptr[index].line != touch.line) {
+        touches.append(touch);
+        foreach_reverse (moved; index .. touches.length - 1) {
+            touches.ptr[moved + 1] = touches.ptr[moved];
+        }
+        touches.ptr[index] = touch;
+    }
+}
+
+void addPendingTouch(ref Graph graph, uint slot, LineTouch touch) {
+    assert(!graph.nodeAt(slot).hasStructure);
+    uint index = graph.pendingCount;
+    graph.pendingTouches.ensure(index + 1);
+    *graph.pendingTouches.at(index) = PendingTouch(touch, graph.nodeAt(slot).pendingHead);
+    graph.nodeAt(slot).pendingHead = index + 1;
+    graph.pendingCount += 1;
+}
+
+SlotTouch seedTouch(ref const LineSpec spec, uint line) {
+    return SlotTouch(LineTouch(0, line, spec.lower, 1, 1), spec.node);
+}
+
+SlotTouch walkedTouch(ref Graph graph, SlotTouch from, ref const LineSpec spec, int edge) {
+    SlotTouch current = from;
+    while (current.touch.level != edge) {
+        Side side = crossingSide(current.touch.lower, spec);
+        if (edge > current.touch.level) {
+            side = crossingSide(upperOf(current.touch.lower, spec), spec);
+        }
+        current = SlotTouch(crossed(current.touch, spec, side).touch, graph.ensureNeighborSlot(current.slot, side));
+    }
+    return current;
+}
+
+SlotTouch[EDGE_NODES] aroundEdge(ref Graph graph, SlotTouch edge, ref const LineSpec spec) {
+    SlotTouch x = SlotTouch(crossed(edge.touch, spec, spec.xSide).touch, graph.ensureNeighborSlot(edge.slot, spec.xSide));
+    SlotTouch y = SlotTouch(crossed(edge.touch, spec, spec.ySide).touch, graph.ensureNeighborSlot(edge.slot, spec.ySide));
+    SlotTouch both = SlotTouch(crossed(y.touch, spec, spec.xSide).touch, graph.ensureNeighborSlot(y.slot, spec.xSide));
+    return [edge, x, y, both];
 }
 
 SiteFrame rootSite(uint anchor) {
     Vertex vertex = firstVertexOn(Side.a);
     size_t up = sideAxis(vertex, Side.a);
-    Side[3] sides = vertex.canonicalSides;
-    return SiteFrame(0, anchor, vertex, sides[(up + 1) % 3], sides[(up + 2) % 3], 1, 1, 1);
+    return SiteFrame(0, anchor, vertex, vertex.canonicalSides[(up + 1) % 3], Side.a, 1, 1, 1);
 }
 
-SiteFrame turned(SiteFrame site, int quarters) {
-    SiteFrame result = site;
-    foreach (_; 0 .. ((quarters % QUARTER_TURNS) + QUARTER_TURNS) % QUARTER_TURNS) {
-        result = SiteFrame(result.level, result.node, result.vertex, result.alongSide, result.acrossSide, result.alongSign, cast(byte) -result.acrossSign, result.heightSign);
-    }
-    return result;
-}
-
-SiteFrame shifted(SiteFrame site, int edges) {
-    return SiteFrame(site.level - edges, site.node, site.vertex, site.acrossSide, site.alongSide, site.acrossSign, site.alongSign, site.heightSign);
+SiteFrame forwarded(SiteFrame site, int edges) {
+    return SiteFrame(site.level - edges, site.node, site.vertex, site.xSide, site.ySide, site.xSign, site.ySign, site.zSign);
 }
 
 SiteFrame atLevel(ref Graph graph, SiteFrame site, int level) {
@@ -205,59 +281,81 @@ SiteFrame atLevel(ref Graph graph, SiteFrame site, int level) {
 }
 
 SiteFrame stepped(ref Graph graph, SiteFrame site, bool isUp) {
-    bool isInside = (site.heightSign > 0) == isUp;
+    bool isInside = (site.zSign > 0) == isUp;
     if (isInside) {
         int rise = -1;
         if (isUp) {
             rise = 1;
         }
-        Vertex next = site.nextVertex();
-        return SiteFrame(site.level + rise, site.node, next, site.acrossSide, site.alongSide, site.acrossSign, site.alongSign, cast(byte) -site.heightSign);
+        return SiteFrame(site.level + rise, site.node, site.nextVertex(), site.xSide, site.ySide, site.xSign, site.ySign, cast(byte) -site.zSign);
     } else {
-        uint across = graph.ensureNeighborSlot(site.node, site.heightSide());
-        return SiteFrame(site.level, across, site.vertex, site.acrossSide, site.alongSide, site.acrossSign, site.alongSign, cast(byte) -site.heightSign);
+        uint across = graph.ensureNeighborSlot(site.node, site.zSide());
+        return SiteFrame(site.level, across, site.vertex, site.xSide, site.ySide, site.xSign, site.ySign, cast(byte) -site.zSign);
     }
 }
 
-SiteFrame branched(ref Graph graph, SiteFrame site, int level, bool isAlong) {
-    SiteFrame at = graph.atLevel(site, level);
-    if (isAlong) {
-        return SiteFrame(0, at.node, at.vertex, at.acrossSide, at.heightSide(), at.acrossSign, at.heightSign, at.alongSign);
-    } else {
-        return SiteFrame(0, at.node, at.vertex, at.alongSide, at.heightSide(), at.alongSign, at.heightSign, at.acrossSign);
+SiteFrame turned(ref Graph graph, SiteFrame site, Turn turn) {
+    SiteFrame at = graph.atLevel(site, 0);
+    Axis x = at.x();
+    Axis y = at.y();
+    Axis z = at.z();
+    Axis[3] axes = void;
+    final switch (turn) {
+        case Turn.left:
+            axes = [z, y, -x];
+            break;
+        case Turn.right:
+            axes = [-z, y, x];
+            break;
+        case Turn.pitchUp:
+            axes = [x, -z, y];
+            break;
+        case Turn.pitchDown:
+            axes = [x, z, -y];
+            break;
+        case Turn.rollLeft:
+            axes = [y, -x, z];
+            break;
+        case Turn.rollRight:
+            axes = [-y, x, z];
+            break;
     }
+    return SiteFrame.fromAxes(0, at.node, at.vertex, axes[0], axes[1], axes[2]);
 }
 
-SiteFrame[FACE_CORNERS] faceCorners(ref Graph graph, SiteFrame site) {
-    SiteFrame[FACE_CORNERS] corners = void;
-    corners[0] = graph.atLevel(site, 0);
-    foreach (index; 1 .. FACE_CORNERS) {
-        corners[index] = graph.nextCorner(corners[index - 1]);
+RootedVertex rootedVertex(ref const Graph graph, uint node, Vertex vertex) {
+    uint slot = node;
+    bool isLowest = false;
+    while (!isLowest) {
+        ParentList parents = graph.parents(slot);
+        uint index = 0;
+        while (index < parents.count && sideAxis(vertex, parents.links[index].side) == 3) {
+            index += 1;
+        }
+        isLowest = index == parents.count;
+        if (!isLowest) {
+            slot = parents.links[index].slot;
+        }
     }
-    return corners;
+    return RootedVertex(VertexKey(slot, vertex), graph.nodeAt(slot).depth);
 }
 
-SiteFrame nextCorner(ref Graph graph, SiteFrame corner) {
-    SiteFrame inward = corner;
-    if (corner.alongSign < 0) {
-        inward = SiteFrame(0, graph.ensureNeighborSlot(corner.node, corner.alongSide), corner.vertex, corner.acrossSide, corner.alongSide, corner.acrossSign, 1, corner.heightSign);
-    }
-    Vertex next = inward.vertex.adjacentVertices[sideAxis(inward.vertex, inward.alongSide)];
-    Side back = next.canonicalSides[3 - sideAxis(next, inward.acrossSide) - sideAxis(next, inward.heightSide())];
-    return SiteFrame(0, inward.node, next, back, inward.acrossSide, 1, inward.acrossSign, inward.heightSign);
+RootedVertex siteOrigin(ref Graph graph, SiteFrame site) {
+    SiteFrame origin = graph.atLevel(site, 0);
+    return graph.rootedVertex(origin.node, origin.vertex);
 }
 
 FrameCrossing crossedFrame(SiteFrame site, Side side, uint node) {
     Vertex next = site.nextVertex();
-    Side far = next.canonicalSides[3 - sideAxis(next, site.acrossSide) - sideAxis(next, site.alongSide)];
-    if (side == site.acrossSide) {
-        return FrameCrossing(SiteFrame(site.level, node, site.vertex, site.acrossSide, site.alongSide, cast(byte) -site.acrossSign, site.alongSign, site.heightSign), true);
-    } else if (side == site.alongSide) {
-        return FrameCrossing(SiteFrame(site.level, node, site.vertex, site.acrossSide, site.alongSide, site.acrossSign, cast(byte) -site.alongSign, site.heightSign), true);
-    } else if (side == site.heightSide()) {
-        return FrameCrossing(SiteFrame(site.level, node, site.vertex, site.acrossSide, site.alongSide, site.acrossSign, site.alongSign, cast(byte) -site.heightSign), true);
+    Side far = next.canonicalSides[3 - sideAxis(next, site.xSide) - sideAxis(next, site.ySide)];
+    if (side == site.xSide) {
+        return FrameCrossing(SiteFrame(site.level, node, site.vertex, site.xSide, site.ySide, cast(byte) -site.xSign, site.ySign, site.zSign), true);
+    } else if (side == site.ySide) {
+        return FrameCrossing(SiteFrame(site.level, node, site.vertex, site.xSide, site.ySide, site.xSign, cast(byte) -site.ySign, site.zSign), true);
+    } else if (side == site.zSide()) {
+        return FrameCrossing(SiteFrame(site.level, node, site.vertex, site.xSide, site.ySide, site.xSign, site.ySign, cast(byte) -site.zSign), true);
     } else if (side == far) {
-        return FrameCrossing(SiteFrame(site.level + site.heightSign, node, next, site.acrossSide, site.alongSide, site.acrossSign, site.alongSign, site.heightSign), true);
+        return FrameCrossing(SiteFrame(site.level + site.zSign, node, next, site.xSide, site.ySide, site.xSign, site.ySign, site.zSign), true);
     } else {
         return FrameCrossing(site, false);
     }
@@ -289,65 +387,58 @@ CanonicalSite canonicalOf(ref const Graph graph, SiteFrame site) {
     if (next < lower) {
         lower = next;
     }
-    Side first = entry.acrossSide;
-    Side second = entry.alongSide;
+    Side first = entry.xSide;
+    Side second = entry.ySide;
     if (second < first) {
-        first = entry.alongSide;
-        second = entry.acrossSide;
+        first = entry.ySide;
+        second = entry.xSide;
     }
     bool isAtLower = entry.vertex == lower;
-    byte heightSign = entry.heightSign;
+    byte zSign = entry.zSign;
     int vertexLevel = 0;
     if (!isAtLower) {
-        heightSign = cast(byte) -entry.heightSign;
+        zSign = cast(byte) -entry.zSign;
         vertexLevel = 1;
     }
     LineSpec line = LineSpec(int.max, int.min, entry.node, lower, first, second);
-    return CanonicalSite(line, LineTransform(vertexLevel - heightSign * entry.level, entry.acrossSign, entry.alongSign, heightSign, entry.acrossSide != first));
+    return CanonicalSite(line, LineTransform(vertexLevel - zSign * entry.level, entry.xSign, entry.ySign, zSign, entry.xSide != first));
 }
 
 struct ColumnChunk {
-    size_t vertical;
-    size_t across;
-    size_t along;
-    int acrossSign;
-    int alongSign;
+    size_t zAxis;
+    size_t xAxis;
+    size_t yAxis;
+    int xSign;
+    int ySign;
     int bottom;
-    uint line;
     bool isUpward;
 
     static ColumnChunk fromTouch(ref const LineTouch touch, ref const LineSpec spec, Vertex vertex, ubyte dimension) {
-        size_t acrossAxis = sideAxis(vertex, spec.acrossSide);
-        size_t alongAxis = sideAxis(vertex, spec.alongSide);
+        size_t xAxis = sideAxis(vertex, spec.xSide);
+        size_t yAxis = sideAxis(vertex, spec.ySide);
         bool isLower = vertex == touch.lower;
         int level = touch.level + 1;
         if (isLower) {
             level = touch.level;
         }
-        return ColumnChunk(3 - acrossAxis - alongAxis, acrossAxis, alongAxis, touch.acrossSign, touch.alongSign, level * edgeCells(dimension), touch.line, isLower);
+        return ColumnChunk(3 - xAxis - yAxis, xAxis, yAxis, touch.xSign, touch.ySign, level * edgeCells(dimension), isLower);
     }
 
     int[3] columnOf(int[3] cell) const {
-        int height = void;
+        int z = void;
         if (isUpward) {
-            height = bottom + cell[vertical];
+            z = bottom + cell[zAxis];
         } else {
-            height = bottom - 1 - cell[vertical];
+            z = bottom - 1 - cell[zAxis];
         }
-        return [signedIndex(cell[across], acrossSign), signedIndex(cell[along], alongSign), height];
+        return [signedIndex(cell[xAxis], xSign), signedIndex(cell[yAxis], ySign), z];
     }
 }
 
-bool isOnTouch(ref const LineTouch touch, ref const LineSpec spec, Vertex vertex) {
-    bool isLowerInRange = vertex == touch.lower && isLevelInRange(spec, touch.level);
-    bool isUpperInRange = vertex == upperOf(touch.lower, spec) && isLevelInRange(spec, touch.level + 1);
-    return isLowerInRange || isUpperInRange;
-}
-
 struct ColumnSpot {
-    float across = 0;
-    float along = 0;
-    float height = 0;
+    float x = 0;
+    float y = 0;
+    float z = 0;
 }
 
 int signedIndex(int cell, int sign) {
@@ -376,37 +467,36 @@ int edgeCells(ubyte dimension) {
 
 MPoint!float columnPoint(ref const ChunkLayout layout, ColumnSpot spot) {
     float segmentCells = edgeCells(layout.dimension);
-    float segment = floorf(spot.height / segmentCells);
-    float local = spot.height - segment * segmentCells;
+    float segment = floorf(spot.z / segmentCells);
+    float local = spot.z - segment * segmentCells;
     float rise = layout.gridToDual(local);
     float level = segment;
     if (local > layout.dimension) {
         rise = -layout.gridToDual(segmentCells - local);
         level = segment + 1;
     }
-    MPoint!float inVertexFrame = MVector!float([signedDual(layout, spot.across), rise, signedDual(layout, spot.along), 1.0f]).normalizedPoint();
-    float[3] lift = [0, level * edgeLength(layout).value, 0];
+    MPoint!float inVertexFrame = MVector!float([signedDual(layout, spot.x), signedDual(layout, spot.y), rise, 1.0f]).normalizedPoint();
+    float[3] lift = [0, 0, level * edgeLength(layout).value];
     return MIsometry!float.fromDisplacement(lift) * inVertexFrame;
 }
 
 MPoint!float spawnBefore(ref const ChunkLayout layout, ColumnSpot door) {
-    float beside = atanhf(signedDual(layout, door.along));
-    float away = SPAWN_DISTANCE.value;
-    return MPoint!float(MVector!float([-sinhf(away), 0, coshf(away) * sinhf(beside), coshf(away) * coshf(beside)]));
+    float[3] away = [-SPAWN_DISTANCE.value, 0, 0];
+    return MIsometry!float.fromTranslation(MPoint!float.origin(), columnPoint(layout, door)) * MIsometry!float.fromDisplacement(away) * MPoint!float.origin();
 }
 
 MIsometry!float sitePlacement(ref const SiteFrame site, ref const ChunkLayout layout) {
     Matrix4!float axes;
-    axes.data[0][sideAxis(site.vertex, site.acrossSide)] = site.acrossSign;
-    axes.data[1][sideAxis(site.vertex, site.heightSide())] = site.heightSign;
-    axes.data[2][sideAxis(site.vertex, site.alongSide)] = site.alongSign;
+    axes.data[0][sideAxis(site.vertex, site.xSide)] = site.xSign;
+    axes.data[1][sideAxis(site.vertex, site.ySide)] = site.ySign;
+    axes.data[2][sideAxis(site.vertex, site.zSide())] = site.zSign;
     axes.data[3][3] = 1;
-    float[3] toOrigin = [0, -site.level * edgeLength(layout).value, 0];
+    float[3] toOrigin = [0, 0, -site.level * edgeLength(layout).value];
     return site.vertex.dualToNode * MIsometry!float(axes) * MIsometry!float.fromDisplacement(toOrigin);
 }
 
 SiteFrame lineSite(ref const LineSpec spec) {
-    return SiteFrame(0, spec.node, spec.lower, spec.acrossSide, spec.alongSide, 1, 1, 1);
+    return SiteFrame(0, spec.node, spec.lower, spec.xSide, spec.ySide, 1, 1, 1);
 }
 
 MIsometry!float siteToNode(ref const Graph graph, ref const SiteFrame site, uint slot) {
@@ -491,27 +581,30 @@ float altitude(ref const NodeState state) {
     return state.surface.distanceTo(MPoint!float.origin());
 }
 
-bool isOnLineInFrame(ref const LineSpec spec, MPoint!float point, ref const ChunkLayout layout) {
-    MVector!float q = point.vec;
-    int level = cast(int) floorf(asinhf(q.data[1]) / edgeLength(layout).value + 0.5f);
-    return Length(sqrt(q.data[0] * q.data[0] + q.data[2] * q.data[2])) < TEST_ON_LINE && isLevelInRange(spec, level);
+bool isOnLineInFrame(ref const LineSpec spec, MPoint!float vertex, MPoint!float center, ref const ChunkLayout layout) {
+    MVector!float q = vertex.vec;
+    MVector!float c = center.vec;
+    int level = cast(int) floorf(atanhf(c.data[2] / c.data[3]) / edgeLength(layout).value);
+    return Length(sqrt(q.data[0] * q.data[0] + q.data[1] * q.data[1])) < TEST_ON_LINE && isLevelInRange(spec, level);
 }
 
-bool hasTouchAt(ref const NodeStructure structure, ref const LineSpec spec, uint line, Vertex vertex) {
+bool hasTouchAt(ref const Graph graph, uint slot, uint line, Vertex vertex) {
+    const(LineTouch)[] touches = graph.touchesAt(slot);
     uint index = 0;
-    while (index < structure.count && !(structure.touches[index].line == line && isOnTouch(structure.touches[index], spec, vertex))) {
+    while (index < touches.length && !(touches[index].line == line && isOnTouch(touches[index], graph.blueprint.lines.ptr[line], vertex))) {
         index += 1;
     }
-    return index < structure.count;
+    return index < touches.length;
 }
 
-LineTouch touchOf(ref const NodeStructure structure, uint line) {
+LineTouch touchOf(ref const Graph graph, uint slot, uint line) {
+    const(LineTouch)[] touches = graph.touchesAt(slot);
     uint index = 0;
-    while (index < structure.count && structure.touches[index].line != line) {
+    while (index < touches.length && touches[index].line != line) {
         index += 1;
     }
-    assert(index < structure.count);
-    return structure.touches[index];
+    assert(index < touches.length);
+    return touches[index];
 }
 
 bool isSamePoint(MPoint!float a, MPoint!float b) {
@@ -522,19 +615,29 @@ Graph testGraph() {
     return Graph.make(TEST_DIMENSION, Worldgen.fromStructure(StructureWorld.fromName("test")));
 }
 
+SiteFrame[FACE_CORNERS] faceWalk(ref Graph graph, SiteFrame start) {
+    SiteFrame[FACE_CORNERS] corners = void;
+    corners[0] = start;
+    foreach (index; 1 .. FACE_CORNERS) {
+        corners[index] = graph.turned(forwarded(corners[index - 1], 1), Turn.right);
+    }
+    return corners;
+}
+
 SiteFrame[8] testSites(ref Graph graph) {
-    SiteFrame root = rootSite(graph.anchorSlot);
-    SiteFrame[FACE_CORNERS] corners = graph.faceCorners(root);
-    SiteFrame bridge = graph.branched(root, 1, true);
+    SiteFrame ground = rootSite(graph.anchorSlot);
+    SiteFrame tower = graph.turned(ground, Turn.pitchUp);
+    SiteFrame bridge = graph.turned(forwarded(tower, 1), Turn.pitchDown);
+    SiteFrame corner = graph.faceWalk(ground)[2];
     return [
-        root,
+        tower,
         bridge,
-        graph.branched(root, 1, false),
-        graph.branched(bridge, 1, true),
-        graph.branched(root, 0, true),
-        turned(corners[2], 1),
-        shifted(graph.branched(corners[3], 2, false), -1),
-        graph.branched(turned(corners[4], 3), -2, true),
+        graph.turned(bridge, Turn.right),
+        graph.turned(forwarded(bridge, 1), Turn.pitchDown),
+        ground,
+        graph.turned(corner, Turn.rollLeft),
+        forwarded(graph.turned(forwarded(corner, 2), Turn.pitchUp), -1),
+        graph.turned(forwarded(graph.turned(corner, Turn.left), -2), Turn.pitchUp),
     ];
 }
 
@@ -544,32 +647,32 @@ unittest {
     SiteFrame[8] sites = graph.testSites();
     CellBox pillar = CellBox.make(-2, 1, -3, 0, -12, 30);
     foreach (site; sites[0 .. 4]) {
-        builder.paint(site, pillar, EVERY_HEIGHT, Material.granite, false);
+        assert(builder.paint(site, pillar, EVERY_HEIGHT, Material.granite, false) == PaintResult.painted);
     }
-    builder.paint(sites[4], CellBox.make(-6, 5, 0, 1, int.min, int.max), EVERY_HEIGHT, Material.granite, false);
+    assert(builder.paint(sites[4], CellBox.make(-6, 5, 0, 1, int.min, int.max), EVERY_HEIGHT, Material.granite, false) == PaintResult.painted);
     foreach (site; sites[5 .. $]) {
-        builder.paint(site, pillar, EVERY_HEIGHT, Material.granite, false);
+        assert(builder.paint(site, pillar, EVERY_HEIGHT, Material.granite, false) == PaintResult.painted);
     }
-    graph.place(builder.finish());
     NearbyScratch scratch;
     NearbyNode[] nearby = scratch.collectAll(graph, Position(graph.idAt(graph.anchorSlot), MIsometry!float.identity()), TEST_RADIUS);
     uint touchedChunks = 0;
     foreach (node; nearby) {
-        NodeStructure structure = graph.ensureStructureAt(node.slot);
+        graph.ensureStructureAt(node.slot);
         foreach (line, spec; graph.blueprint.lines.slice()) {
             MIsometry!float lineFromNode = graph.lineToNode(cast(uint) line, node.slot).inverse();
+            MPoint!float center = lineFromNode * MPoint!float.origin();
             foreach (index; 0 .. VERTEX_COUNT) {
                 Vertex vertex = cast(Vertex) index;
-                bool isOnLine = isOnLineInFrame(spec, lineFromNode * vertex.dualToNode * MPoint!float.origin(), graph.layout);
-                assert(isOnLine == hasTouchAt(structure, spec, cast(uint) line, vertex));
+                bool isOnLine = isOnLineInFrame(spec, lineFromNode * vertex.dualToNode * MPoint!float.origin(), center, graph.layout);
+                assert(isOnLine == graph.hasTouchAt(node.slot, cast(uint) line, vertex));
                 if (isOnLine) {
                     touchedChunks += 1;
-                    LineTouch touch = touchOf(structure, cast(uint) line);
+                    LineTouch touch = graph.touchOf(node.slot, cast(uint) line);
                     ColumnChunk chunk = ColumnChunk.fromTouch(touch, spec, vertex, TEST_DIMENSION);
                     foreach (cell; TEST_CELLS) {
                         int[3] column = chunk.columnOf(cell);
-                        float[3] center = graph.layout.cellCenter(cell);
-                        MPoint!float actual = MPoint!float(vertex.chunkToNode * MVector!float([center[0], center[1], center[2], 1.0f]));
+                        float[3] cellCenter = graph.layout.cellCenter(cell);
+                        MPoint!float actual = MPoint!float(vertex.chunkToNode * MVector!float([cellCenter[0], cellCenter[1], cellCenter[2], 1.0f]));
                         MPoint!float expected = lineFromNode.inverse() * columnPoint(graph.layout, ColumnSpot(column[0] + 0.5f, column[1] + 0.5f, column[2] + 0.5f));
                         assert(isSamePoint(actual, expected));
                     }
@@ -578,6 +681,7 @@ unittest {
         }
     }
     assert(touchedChunks >= 8 * graph.blueprint.lines.length);
+    builder.release();
     scratch.release();
     graph.release();
 }
@@ -601,12 +705,38 @@ unittest {
 
 unittest {
     Graph graph = testGraph();
-    SiteFrame[FACE_CORNERS] corners = graph.faceCorners(rootSite(graph.anchorSlot));
-    SiteFrame closing = graph.nextCorner(corners[FACE_CORNERS - 1]);
-    assert(isSamePoint(graph.siteToNode(closing, corners[0].node) * MPoint!float.origin(), graph.siteToNode(corners[0], corners[0].node) * MPoint!float.origin()));
-    SiteFrame first = graph.branched(corners[0], 1, true);
-    SiteFrame last = graph.branched(corners[1], 1, false);
+    SiteFrame start = rootSite(graph.anchorSlot);
+    SiteFrame[FACE_CORNERS] corners = graph.faceWalk(start);
+    SiteFrame closed = graph.turned(forwarded(corners[FACE_CORNERS - 1], 1), Turn.right);
+    MPoint!float origin = MPoint!float.origin();
+    assert(isSamePoint(graph.siteToNode(closed, start.node) * origin, graph.siteToNode(start, start.node) * origin));
+    assert(!isSamePoint(graph.siteToNode(corners[2], start.node) * origin, graph.siteToNode(start, start.node) * origin));
+    assert(graph.siteOrigin(closed).key == graph.siteOrigin(start).key);
+    assert(graph.siteOrigin(corners[2]).key != graph.siteOrigin(start).key);
+    SiteFrame first = graph.turned(forwarded(graph.turned(corners[0], Turn.pitchUp), 1), Turn.pitchDown);
+    SiteFrame last = graph.turned(graph.turned(forwarded(graph.turned(corners[1], Turn.pitchUp), 1), Turn.pitchDown), Turn.right);
     MPoint!float apex = columnPoint(graph.layout, ColumnSpot(-0.5f, 0.5f, edgeCells(TEST_DIMENSION) + 0.5f));
-    assert(isSamePoint(graph.siteToNode(first, graph.anchorSlot) * apex, graph.siteToNode(last, graph.anchorSlot) * apex));
+    MPoint!float mirroredApex = columnPoint(graph.layout, ColumnSpot(0.5f, 0.5f, edgeCells(TEST_DIMENSION) + 0.5f));
+    assert(isSamePoint(graph.siteToNode(first, graph.anchorSlot) * apex, graph.siteToNode(last, graph.anchorSlot) * mirroredApex));
+    foreach (turn; [Turn.left, Turn.pitchUp, Turn.rollRight]) {
+        SiteFrame spun = start;
+        foreach (_; 0 .. 4) {
+            spun = graph.turned(spun, turn);
+        }
+        assert(spun == start);
+    }
+    graph.release();
+}
+
+unittest {
+    Graph graph = testGraph();
+    BlueprintBuilder builder = BlueprintBuilder.make(graph);
+    SiteFrame tower = graph.turned(rootSite(graph.anchorSlot), Turn.pitchUp);
+    SiteFrame high = forwarded(tower, TEST_BEHIND_EDGES);
+    builder.growFrom(graph.siteOrigin(high).depth);
+    assert(builder.paint(tower, CellBox.make(0, 0, 0, 0, 0, 1), EVERY_HEIGHT, Material.granite, false) == PaintResult.behind);
+    assert(builder.paint(high, CellBox.make(0, 0, 0, 0, int.min, 1), EVERY_HEIGHT, Material.granite, false) == PaintResult.endless);
+    assert(builder.paint(high, CellBox.make(0, 0, 0, 0, 0, 1), EVERY_HEIGHT, Material.granite, false) == PaintResult.painted);
+    builder.release();
     graph.release();
 }

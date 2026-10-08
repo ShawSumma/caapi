@@ -1,12 +1,14 @@
 module common.worldgen.blueprint;
 
 import common.array : Array;
-import common.dodeca : Side, Vertex;
+import common.dodeca : SIDE_COUNT, Side, VERTEX_COUNT, Vertex;
 import common.graph : Graph;
+import common.hashmap : HashMap;
 import common.material : Material;
-import common.worldgen.structure : CanonicalSite, ColumnSpot, LineTransform, SiteFrame, canonicalOf, edgeCells;
+import common.worldgen.structure : CanonicalSite, ColumnSpot, LineTransform, PAINT_REACH, SiteFrame, SlotTouch, VertexKey, addPendingTouch, aroundEdge, canonicalOf, edgeCells, isEndless, seedTouch, walkedTouch;
 
 enum size_t MAX_MATERIALS = ubyte.max;
+enum ulong LINE_HASH_MULTIPLIER = 0x9E3779B97F4A7C15;
 
 struct Paint {
     ubyte material;
@@ -17,8 +19,8 @@ struct CellBox {
     int[3] low;
     int[3] high;
 
-    static CellBox make(int acrossLow, int acrossHigh, int alongLow, int alongHigh, int heightLow, int heightHigh) {
-        return CellBox([acrossLow, alongLow, heightLow], [acrossHigh, alongHigh, heightHigh]);
+    static CellBox make(int xLow, int xHigh, int yLow, int yHigh, int zLow, int zHigh) {
+        return CellBox([xLow, yLow, zLow], [xHigh, yHigh, zHigh]);
     }
 
     bool contains(int[3] cell) const {
@@ -53,7 +55,7 @@ enum Rhythm EVERY_HEIGHT = Rhythm(0, 0, 0);
 struct Brush {
     CellBox box;
     Rhythm rhythm;
-    uint line;
+    uint order;
     Paint paint;
 
     bool covers(int[3] column) const {
@@ -66,8 +68,32 @@ struct LineSpec {
     int highest;
     uint node;
     Vertex lower;
-    Side acrossSide;
-    Side alongSide;
+    Side xSide;
+    Side ySide;
+}
+
+struct LineKey {
+    uint node;
+    Vertex lower;
+    Side xSide;
+    Side ySide;
+
+    static LineKey fromSpec(ref const LineSpec spec) {
+        return LineKey(spec.node, spec.lower, spec.xSide, spec.ySide);
+    }
+
+    size_t toHash() const {
+        return ((cast(size_t) node * VERTEX_COUNT + lower) * SIDE_COUNT + xSide) * SIDE_COUNT + ySide;
+    }
+}
+
+struct LineEdge {
+    uint line;
+    int level;
+
+    size_t toHash() const {
+        return cast(size_t)(line * LINE_HASH_MULTIPLIER) ^ cast(uint) level;
+    }
 }
 
 struct RouteStop {
@@ -81,28 +107,42 @@ struct SiteLine {
     uint line;
 }
 
+enum PaintResult : ubyte {
+    painted,
+    endless,
+    behind,
+}
+
 struct Blueprint {
     Array!LineSpec lines;
-    Array!Brush brushes;
+    Array!(Array!Brush) brushes;
     Array!RouteStop route;
     Array!Material materials;
+    HashMap!(LineKey, uint) lineIndex;
+    HashMap!(LineEdge, bool) touchedEdges;
+    HashMap!(VertexKey, bool) claims;
     RouteStop entrance;
+    uint brushCount;
+    uint claimCount;
     ubyte dimension;
     bool hasEntrance;
 
     static Blueprint make(ubyte chunkDimension) {
-        return Blueprint(Array!LineSpec.init, Array!Brush.init, Array!RouteStop.init, Array!Material.init, RouteStop.init, chunkDimension, false);
+        return Blueprint(Array!LineSpec.init, Array!(Array!Brush).init, Array!RouteStop.init, Array!Material.init, HashMap!(LineKey, uint).init, HashMap!(LineEdge, bool).init, HashMap!(VertexKey, bool).init, RouteStop.init, 0, 0, chunkDimension, false);
     }
 
     uint lineOf(LineSpec spec) {
-        uint index = 0;
-        while (index < lines.length && !isSameLine(lines.ptr[index], spec)) {
-            index += 1;
-        }
-        if (index == lines.length) {
+        LineKey key = LineKey.fromSpec(spec);
+        const(uint)* found = lineIndex.find(key);
+        if (found is null) {
+            uint index = cast(uint) lines.length;
             lines.append(spec);
+            brushes.append(Array!Brush.init);
+            lineIndex.insert(key, index);
+            return index;
+        } else {
+            return *found;
         }
-        return index;
     }
 
     ubyte paintOf(Material material) {
@@ -117,33 +157,48 @@ struct Blueprint {
         return cast(ubyte)(index + 1);
     }
 
-    void finish() {
-        foreach (ref spec; lines.slice()) {
-            spec.lowest = int.max;
-            spec.highest = int.min;
-        }
-        foreach (brush; brushes.slice()) {
-            LineSpec* spec = &lines.ptr[brush.line];
-            spec.lowest = lowerOf(spec.lowest, lowestLevel(brush.box.low[2], dimension));
-            spec.highest = higherOf(spec.highest, highestLevel(brush.box.high[2], dimension));
+    bool isClaimed(VertexKey key) const {
+        return claims.find(key) !is null;
+    }
+
+    bool claim(VertexKey key) {
+        if (isClaimed(key)) {
+            return false;
+        } else {
+            claims.insert(key, true);
+            claimCount += 1;
+            return true;
         }
     }
 
     void release() {
+        foreach (ref painted; brushes.slice()) {
+            painted.release();
+        }
         lines.release();
         brushes.release();
         route.release();
         materials.release();
+        lineIndex.release();
+        touchedEdges.release();
+        claims.release();
     }
 }
 
 struct BlueprintBuilder {
-    Blueprint blueprint;
     Array!SiteLine known;
     Graph* graph;
+    int paintLimit;
+    bool isGrowing;
 
     static BlueprintBuilder make(ref Graph target) {
-        return BlueprintBuilder(Blueprint.make(target.layout.dimension), Array!SiteLine.init, &target);
+        return BlueprintBuilder(Array!SiteLine.init, &target, 0, false);
+    }
+
+    void growFrom(uint key) {
+        known.clear();
+        paintLimit = cast(int) key - PAINT_REACH;
+        isGrowing = true;
     }
 
     SiteLine lineOf(SiteFrame site) {
@@ -153,48 +208,97 @@ struct BlueprintBuilder {
         }
         if (index == known.length) {
             CanonicalSite canonical = (*graph).canonicalOf(site);
-            known.append(SiteLine(site, canonical.transform, blueprint.lineOf(canonical.line)));
+            known.append(SiteLine(site, canonical.transform, graph.blueprint.lineOf(canonical.line)));
         }
         return known.ptr[index];
     }
 
-    void paint(SiteFrame site, CellBox box, Rhythm rhythm, Material material, bool isIntoAirOnly) {
+    PaintResult paint(SiteFrame site, CellBox box, Rhythm rhythm, Material material, bool isIntoAirOnly) {
         SiteLine found = lineOf(site);
-        Brush brush = Brush(canonicalBox(box, found.transform, blueprint.dimension), canonicalRhythm(rhythm, found.transform, blueprint.dimension), found.line, Paint(blueprint.paintOf(material), isIntoAirOnly));
-        blueprint.brushes.append(brush);
-    }
-
-    void stop(SiteFrame site, ColumnSpot spot) {
-        blueprint.route.append(RouteStop(site, spot));
-    }
-
-    void enter(SiteFrame site, ColumnSpot spot) {
-        if (!blueprint.hasEntrance) {
-            blueprint.entrance = RouteStop(site, spot);
-            blueprint.hasEntrance = true;
+        ubyte dimension = graph.layout.dimension;
+        CellBox canonical = canonicalBox(box, found.transform, dimension);
+        int lowEdge = edgeOf(canonical.low[2], dimension);
+        int highEdge = edgeOf(canonical.high[2], dimension);
+        bool isUnbounded = lowEdge == int.min || highEdge == int.max;
+        if (isGrowing && isUnbounded) {
+            return PaintResult.endless;
+        } else if (isGrowing && !isAhead(found.line, lowEdge, highEdge)) {
+            return PaintResult.behind;
+        } else {
+            record(found.line, lowEdge, highEdge, isUnbounded);
+            Brush brush = Brush(canonical, canonicalRhythm(rhythm, found.transform, dimension), graph.blueprint.brushCount, Paint(graph.blueprint.paintOf(material), isIntoAirOnly));
+            graph.blueprint.brushes.ptr[found.line].append(brush);
+            graph.blueprint.brushCount += 1;
+            return PaintResult.painted;
         }
     }
 
-    Blueprint finish() {
-        known.release();
-        blueprint.finish();
-        return blueprint;
+    bool isAhead(uint line, int lowEdge, int highEdge) {
+        LineSpec spec = graph.blueprint.lines.ptr[line];
+        SlotTouch edge = seedTouch(spec, line);
+        bool isClear = true;
+        int level = lowEdge;
+        while (isClear && level <= highEdge) {
+            edge = (*graph).walkedTouch(edge, spec, level);
+            foreach (around; (*graph).aroundEdge(edge, spec)) {
+                isClear = isClear && cast(int) graph.nodeAt(around.slot).depth >= paintLimit;
+            }
+            level += 1;
+        }
+        return isClear;
+    }
+
+    void record(uint line, int lowEdge, int highEdge, bool isUnbounded) {
+        LineSpec spec = graph.blueprint.lines.ptr[line];
+        if (isUnbounded && !spec.isEndless()) {
+            SlotTouch seed = seedTouch(spec, line);
+            (*graph).addPendingTouch(seed.slot, seed.touch);
+        } else if (!isUnbounded && !spec.isEndless()) {
+            touchEdges(line, spec, lowEdge, highEdge);
+        }
+        LineSpec* stored = &graph.blueprint.lines.ptr[line];
+        stored.lowest = lowerOf(spec.lowest, lowEdge);
+        stored.highest = higherOf(spec.highest, highEdge);
+    }
+
+    void touchEdges(uint line, ref const LineSpec spec, int lowEdge, int highEdge) {
+        SlotTouch edge = seedTouch(spec, line);
+        foreach (level; lowEdge .. highEdge + 1) {
+            LineEdge key = LineEdge(line, level);
+            if (graph.blueprint.touchedEdges.find(key) is null) {
+                graph.blueprint.touchedEdges.insert(key, true);
+                edge = (*graph).walkedTouch(edge, spec, level);
+                foreach (around; (*graph).aroundEdge(edge, spec)) {
+                    (*graph).addPendingTouch(around.slot, around.touch);
+                }
+            }
+        }
+    }
+
+    void stop(SiteFrame site, ColumnSpot spot) {
+        graph.blueprint.route.append(RouteStop(site, spot));
+    }
+
+    void enter(SiteFrame site, ColumnSpot spot) {
+        if (!graph.blueprint.hasEntrance) {
+            graph.blueprint.entrance = RouteStop(site, spot);
+            graph.blueprint.hasEntrance = true;
+        }
     }
 
     void release() {
         known.release();
-        blueprint.release();
     }
 }
 
 CellBox canonicalBox(CellBox local, LineTransform transform, ubyte dimension) {
-    int[2] across = signedRange(local.low[0], local.high[0], transform.acrossSign);
-    int[2] along = signedRange(local.low[1], local.high[1], transform.alongSign);
-    int[2] height = heightRange(local.low[2], local.high[2], transform, dimension);
+    int[2] x = signedRange(local.low[0], local.high[0], transform.xSign);
+    int[2] y = signedRange(local.low[1], local.high[1], transform.ySign);
+    int[2] z = heightRange(local.low[2], local.high[2], transform, dimension);
     if (transform.isSwapped) {
-        return CellBox.make(along[0], along[1], across[0], across[1], height[0], height[1]);
+        return CellBox.make(y[0], y[1], x[0], x[1], z[0], z[1]);
     } else {
-        return CellBox.make(across[0], across[1], along[0], along[1], height[0], height[1]);
+        return CellBox.make(x[0], x[1], y[0], y[1], z[0], z[1]);
     }
 }
 
@@ -208,7 +312,7 @@ int[2] signedRange(int low, int high, int sign) {
 
 int[2] heightRange(int low, int high, LineTransform transform, ubyte dimension) {
     int offset = transform.offsetLevels * edgeCells(dimension);
-    if (transform.heightSign > 0) {
+    if (transform.zSign > 0) {
         return [movedHeight(low, offset), movedHeight(high, offset)];
     } else {
         return [mirroredHeight(high, offset), mirroredHeight(low, offset)];
@@ -237,30 +341,18 @@ Rhythm canonicalRhythm(Rhythm local, LineTransform transform, ubyte dimension) {
     int offset = transform.offsetLevels * edgeCells(dimension);
     if (local.period == 0) {
         return local;
-    } else if (transform.heightSign > 0) {
+    } else if (transform.zSign > 0) {
         return Rhythm(local.period, local.phase + offset, local.span);
     } else {
         return Rhythm(local.period, offset - local.phase - local.span, local.span);
     }
 }
 
-bool isSameLine(ref const LineSpec a, ref const LineSpec b) {
-    return a.node == b.node && a.lower == b.lower && a.acrossSide == b.acrossSide && a.alongSide == b.alongSide;
-}
-
-int lowestLevel(int height, ubyte dimension) {
-    if (height == int.min) {
-        return int.min;
+int edgeOf(int height, ubyte dimension) {
+    if (height == int.min || height == int.max) {
+        return height;
     } else {
-        return ceilingDivision(height - dimension + 1, edgeCells(dimension));
-    }
-}
-
-int highestLevel(int height, ubyte dimension) {
-    if (height == int.max) {
-        return int.max;
-    } else {
-        return floorDivision(height + dimension, edgeCells(dimension));
+        return floorDivision(height, edgeCells(dimension));
     }
 }
 
@@ -270,10 +362,6 @@ int floorDivision(int value, int divisor) {
         quotient -= 1;
     }
     return quotient;
-}
-
-int ceilingDivision(int value, int divisor) {
-    return -floorDivision(-value, divisor);
 }
 
 int lowerOf(int a, int b) {
@@ -293,10 +381,10 @@ int higherOf(int a, int b) {
 }
 
 unittest {
-    assert(lowestLevel(-3, 12) == 0 && highestLevel(73, 12) == 3);
-    assert(lowestLevel(-12, 12) == 0 && lowestLevel(-13, 12) == -1);
-    assert(highestLevel(11, 12) == 0 && highestLevel(12, 12) == 1);
-    assert(lowestLevel(int.min, 12) == int.min && highestLevel(int.max, 12) == int.max);
+    assert(edgeOf(-3, 12) == -1 && edgeOf(0, 12) == 0);
+    assert(edgeOf(23, 12) == 0 && edgeOf(24, 12) == 1);
+    assert(edgeOf(-24, 12) == -1 && edgeOf(-25, 12) == -2);
+    assert(edgeOf(int.min, 12) == int.min && edgeOf(int.max, 12) == int.max);
     LineTransform mirrored = LineTransform(2, 1, 1, -1, false);
     Rhythm local = Rhythm(8, 1, 3);
     Rhythm moved = canonicalRhythm(local, mirrored, 12);

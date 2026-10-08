@@ -264,8 +264,9 @@ typed path, and it shows the pattern:
   `halfHeight` and `skin` once, when the `Capsule` and `Mover` are made.
 - Structures (`worldgen/structure.d`, `blueprint.d`) are the other side
   of the rule. They are built of whole blocks, so blueprint brushes,
-  line levels and the structure scripts' dimensions (`box.HALF`,
-  `box.STORY`, the road's `HALF`) are cell or edge counts and stay
+  line edge ranges and the structure scripts' dimensions (`box.HALF`,
+  `box.STORY`, the road's `HALF`) are cell or edge counts, and
+  `PAINT_REACH` and `PLACE_SLACK` count node levels; all stay
   integers. Column coordinates are a chart like grid coordinates, and
   `columnPoint` is the one conversion from them to a point. The few true
   distances (`edgeLength`, `SPAWN_DISTANCE`) are `Length`s.

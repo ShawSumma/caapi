@@ -11,7 +11,7 @@ import client.game : FrameInput, Game, KEY_COUNT, Key, MATERIAL_PALETTE, axisVal
 import client.graphics.renderer : FrameTimes, Renderer;
 import client.png : writePng;
 import client.script : ScriptHost, ScriptRecorder;
-import client.structures : StructureProblem, placeStructure;
+import client.structures : StructureProblem, growthProblem, placeStructure;
 import common.character.controller : MovementMode;
 import common.clock : MILLISECONDS_PER_SECOND, NANOSECONDS_PER_SECOND, nowSeconds;
 import common.dodeca : VERTEX_COUNT;
@@ -250,10 +250,11 @@ struct Session {
             if (isPlaced) {
                 runLoop();
             }
+            immutable bool isGrown = isPlaced && isStructureGrown(game, arguments);
             game.release();
             renderer.cleanup();
             closeWindow();
-            return exitStatus(isPlaced);
+            return exitStatus(isGrown);
         }
     }
 
@@ -603,6 +604,10 @@ bool captureScreenshot(Arguments arguments, FILE* report, ref Renderer renderer,
             game.world.update(true);
             game.world.streamer.settle(game.world.graph);
         }
+        StructureProblem grown = growthProblem(game.world.graph);
+        if (grown.isPresent) {
+            fprintf(report, "%s\n", grown.text.ptr);
+        }
         uint frames = 0;
         do {
             renderer.render(game.world);
@@ -610,7 +615,7 @@ bool captureScreenshot(Arguments arguments, FILE* report, ref Renderer renderer,
         } while (renderer.meshBacklog() > 0);
         bool isWritten = writePng(arguments.screenshotPath, SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT, renderer.capture());
         fprintf(report, "screenshot: %s after %u frames (%u chunks meshed, %u faces)\n", writtenText(isWritten), frames, renderer.meshes.meshedChunks, renderer.meshes.allocator.used());
-        return isWritten;
+        return isWritten && !grown.isPresent;
     }
 }
 
@@ -661,16 +666,25 @@ bool benchLoad(Arguments arguments) {
             measureLoad(report, *renderer, game);
             measureFlight(report, *renderer, game);
         }
+        immutable bool isGrown = isPlaced && isStructureGrown(game, arguments);
         renderer.cleanup();
         free(renderer);
         game.release();
         fclose(report);
-        return isPlaced;
+        return isGrown;
     }
 }
 
 bool isStructurePlaced(ref Game game, Arguments arguments) {
     StructureProblem problem = game.placeStructure();
+    if (problem.isPresent) {
+        StartupError(null, problem.text.ptr, null).report(arguments.program);
+    }
+    return !problem.isPresent;
+}
+
+bool isStructureGrown(ref const Game game, Arguments arguments) {
+    StructureProblem problem = growthProblem(game.world.graph);
     if (problem.isPresent) {
         StartupError(null, problem.text.ptr, null).report(arguments.program);
     }

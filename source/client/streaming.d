@@ -13,10 +13,8 @@ import common.math : MIsometry, MPoint;
 import common.neighbors : chunkNeighborSlot, isPredictionContradicted, touchChunksAround;
 import common.node : Chunk, ChunkId, ChunkSlot, ChunkState, Occupancy;
 import common.traversal : NO_DEADLINE, NearbyNode;
-import common.worldgen.blueprint : Blueprint;
-import common.worldgen.building : Building;
+import common.worldgen.building : Building, BuildingPlan;
 import common.worldgen.generation : ChunkParams, GeneratedVoxels;
-import common.worldgen.structure : NodeStructure;
 
 enum uint RESERVED_CORES = 2;
 enum uint MAIN_WORKER = 0;
@@ -37,8 +35,7 @@ struct GenResult {
 }
 
 struct BuildingRequest {
-    const(Blueprint)* blueprint;
-    NodeStructure structure;
+    BuildingPlan plan;
     uint slot;
 }
 
@@ -145,7 +142,8 @@ struct GenQueue {
             pendingBuildingHead = 0;
         }
         pthread_mutex_unlock(&mutex);
-        Building building = Building.make(request.structure, *request.blueprint);
+        Building building = Building.make(request.plan);
+        request.plan.release();
         pthread_mutex_lock(&mutex);
         doneBuildings.append(BuildingResult(building, request.slot));
         pthread_cond_signal(&resultsReady);
@@ -310,7 +308,7 @@ struct Streamer {
     void scheduleBuilding(ref Graph graph, uint slot) {
         if (!graph.nodeAt(slot).hasBuilding && !graph.nodeAt(slot).isBuildingQueued) {
             graph.nodeAt(slot).isBuildingQueued = true;
-            buildingRequests.append(BuildingRequest(&graph.blueprint, graph.ensureStructureAt(slot), slot));
+            buildingRequests.append(BuildingRequest(BuildingPlan.make(graph, slot), slot));
         }
     }
 
@@ -405,6 +403,9 @@ struct Streamer {
         foreach (built; queue.doneBuildings.slice()) {
             built.building.release();
         }
+        foreach (request; queue.pendingBuildings.slice()[queue.pendingBuildingHead .. $]) {
+            request.plan.release();
+        }
         queue.pendingBuildings.release();
         queue.doneBuildings.release();
         buildingRequests.release();
@@ -426,7 +427,7 @@ struct Streamer {
 }
 
 bool isBuildingReady(ref Graph graph, uint slot) {
-    return !graph.ensureStructureAt(slot).isPresent || graph.nodeAt(slot).hasBuilding;
+    return !graph.ensureStructureAt(slot) || graph.nodeAt(slot).hasBuilding;
 }
 
 uint workerThreadCount(long cores) {

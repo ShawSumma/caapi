@@ -7,11 +7,11 @@ import common.math : MIsometry, MPoint;
 import common.murmur : murmurHash3;
 import common.node : Chunk, ChunkLayout, ChunkSlot;
 import common.position : Position;
-import common.slab : Slab;
+import common.slab : SLAB_SHIFT, Slab;
 import common.worldgen.blueprint : Blueprint;
-import common.worldgen.building : Building;
+import common.worldgen.building : Building, BuildingPlan;
 import common.worldgen.generation : NodeState, Worldgen;
-import common.worldgen.structure : LineSeed, NodeStructure, anchorSlotOf, seedLines;
+import common.worldgen.structure : LineTouch, PAINT_REACH, PendingTouch, anchorSlotOf, finalizeStructure;
 
 enum ulong NODE_HASH_MULTIPLIER = 0x9E3779B97F4A7C15;
 enum size_t NODE_ID_BYTES = 16;
@@ -43,11 +43,20 @@ struct Node {
     NodeState state;
     uint[SIDE_COUNT] neighbors;
     uint depth;
-    NodeStructure structure;
+    uint touchStart;
+    uint touchLength;
+    uint pendingHead;
     bool hasState;
     bool hasStructure;
+    bool isInStructure;
     bool hasBuilding;
     bool isBuildingQueued;
+}
+
+struct Grower {
+    void function(void* context, ref Graph graph, int through) grow;
+    void function(void* context) release;
+    void* context;
 }
 
 struct ParentEntry {
@@ -92,29 +101,31 @@ struct Graph {
     Slab!Chunk chunks;
     HashMap!(NodeId, uint) slots;
     Array!ChunkSlot changedChunks;
-    Array!LineSeed seeds;
+    Slab!LineTouch touches;
+    Slab!PendingTouch pendingTouches;
+    Array!LineTouch touchScratch;
     Blueprint blueprint;
+    Grower grower;
     size_t changedHead;
     Worldgen worldgen;
     ChunkLayout layout;
     uint nodeCount;
     uint anchorSlot;
+    uint touchCount;
+    uint pendingCount;
+    int grownThrough = -1;
 
     static Graph make(ubyte dimension, Worldgen chosen) {
         Graph graph;
         graph.layout = ChunkLayout.make(dimension);
         graph.worldgen = chosen;
+        graph.blueprint = Blueprint.make(dimension);
         graph.addNode(ROOT_NODE, 0);
         graph.anchorSlot = graph.slotOf(ROOT_NODE);
         if (chosen.hasStructure()) {
             graph.anchorSlot = graph.anchorSlotOf();
         }
         return graph;
-    }
-
-    void place(Blueprint placed) {
-        blueprint = placed;
-        seeds = seedLines(blueprint);
     }
 
     void markChanged(ChunkSlot chunk) {
@@ -290,23 +301,52 @@ struct Graph {
         return &nodeAt(slot).state;
     }
 
-    ref const(NodeStructure) ensureStructureAt(uint slot) return {
+    bool ensureStructureAt(uint slot) {
         if (!nodeAt(slot).hasStructure) {
-            if (blueprint.lines.length > 0) {
-                ParentList parentList = parents(slot);
-                foreach (link; parentList.links[0 .. parentList.count]) {
-                    ensureStructureAt(link.slot);
-                }
-                nodeAt(slot).structure = NodeStructure.fromParents(this, slot);
+            ParentList parentList = parents(slot);
+            foreach (link; parentList.links[0 .. parentList.count]) {
+                ensureStructureAt(link.slot);
             }
+            growBefore(nodeAt(slot).depth);
+            this.finalizeStructure(slot);
             nodeAt(slot).hasStructure = true;
         }
-        return nodeAt(slot).structure;
+        return nodeAt(slot).isInStructure;
+    }
+
+    void growBefore(uint depth) {
+        int through = cast(int) depth + PAINT_REACH;
+        if (grower.grow !is null && through > grownThrough) {
+            grownThrough = through;
+            grower.grow(grower.context, this, through);
+        }
+    }
+
+    const(LineTouch)[] touchesAt(uint slot) const {
+        const(Node)* node = nodeAt(slot);
+        if (node.touchLength == 0) {
+            return null;
+        } else {
+            return touches.at(node.touchStart)[0 .. node.touchLength];
+        }
+    }
+
+    uint reserveTouches(uint length) {
+        uint start = touchCount;
+        if (length > 0 && start >> SLAB_SHIFT != (start + length - 1) >> SLAB_SHIFT) {
+            start = ((start >> SLAB_SHIFT) + 1) << SLAB_SHIFT;
+        }
+        touches.ensure(start + length);
+        touchCount = start + length;
+        return start;
     }
 
     const(Building)* ensureBuildingAt(uint slot) {
         if (!nodeAt(slot).hasBuilding) {
-            nodeAt(slot).building = Building.make(ensureStructureAt(slot), blueprint);
+            ensureStructureAt(slot);
+            BuildingPlan plan = BuildingPlan.make(this, slot);
+            nodeAt(slot).building = Building.make(plan);
+            plan.release();
             nodeAt(slot).hasBuilding = true;
         }
         return &nodeAt(slot).building;
@@ -358,6 +398,10 @@ struct Graph {
     }
 
     void release() {
+        if (grower.release !is null) {
+            grower.release(grower.context);
+        }
+        grower = Grower.init;
         foreach (index; 0 .. cast(size_t) nodeCount * VERTEX_COUNT) {
             chunks.at(index).voxels.release();
         }
@@ -370,8 +414,12 @@ struct Graph {
         chunks.release();
         slots.release();
         changedChunks.release();
-        seeds.release();
+        touches.release();
+        pendingTouches.release();
+        touchScratch.release();
         blueprint.release();
         nodeCount = 0;
+        touchCount = 0;
+        pendingCount = 0;
     }
 }

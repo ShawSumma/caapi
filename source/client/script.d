@@ -7,7 +7,7 @@ import bindings.lua : luaL_checkinteger, luaL_checklstring, luaL_checknumber, lu
 import client.arguments : StructureName;
 import client.game : FrameInput, Game, KEY_COUNT, Key, MATERIAL_PALETTE, RouteWaypoint;
 import client.lua : LUA_FIRST_UPVALUE, LUA_NO_REF, LUA_REGISTRY, LUA_STATUS_OK, LUA_TOP, LUA_TYPE_FUNCTION, LUA_TYPE_TABLE, LuaLookup, LuaName, SELF, TRACEBACK_INDEX, isNoneOrNil, luaTraceback, newSafeState, pushLuaName, registerMethod, setPackagePath;
-import client.structures : StructureProblem, restartGame;
+import client.structures : StructureProblem, growthProblem, restartGame;
 import client.world : TargetMaterial;
 import common.character.controller : MovementMode;
 import common.names : ENUM_NAMES;
@@ -126,6 +126,10 @@ struct ScriptHost {
         } else {
             game.step(FrameInput(yawRate * dt, pitchRate * dt, isHeld), dt);
             steps += 1;
+            StructureProblem grown = growthProblem(game.world.graph);
+            if (grown.isPresent) {
+                luaL_error(lua, "%s", grown.text.ptr);
+            }
             runStepHook();
         }
     }

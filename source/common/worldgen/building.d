@@ -2,9 +2,10 @@ module common.worldgen.building;
 
 import common.array : Array;
 import common.dodeca : VERTEX_COUNT, Vertex;
+import common.graph : Graph;
 import common.material : Material;
-import common.worldgen.blueprint : Blueprint, CellBox, Paint, higherOf, lowerOf;
-import common.worldgen.structure : ColumnChunk, NodeStructure, isOnTouch;
+import common.worldgen.blueprint : Brush, CellBox, LineSpec, Paint, higherOf, lowerOf;
+import common.worldgen.structure : ColumnChunk, LineTouch, isOnTouch, isTouchInRange;
 
 enum uint MAX_LINES_AT_VERTEX = 3;
 
@@ -24,19 +25,55 @@ struct NodeCells {
     }
 }
 
+struct PlanLine {
+    LineSpec spec;
+    LineTouch touch;
+    uint first;
+    uint count;
+}
+
+struct BuildingPlan {
+    Array!PlanLine lines;
+    Array!Brush brushes;
+    Array!Material materials;
+    ubyte dimension;
+
+    static BuildingPlan make(ref const Graph graph, uint slot) {
+        BuildingPlan plan = BuildingPlan(Array!PlanLine.init, Array!Brush.init, Array!Material.init, graph.layout.dimension);
+        foreach (touch; graph.touchesAt(slot)) {
+            LineSpec spec = graph.blueprint.lines.ptr[touch.line];
+            if (isTouchInRange(touch, spec)) {
+                const(Brush)[] painted = graph.blueprint.brushes.ptr[touch.line].slice();
+                plan.lines.append(PlanLine(spec, touch, cast(uint) plan.brushes.length, cast(uint) painted.length));
+                plan.brushes.appendAll(painted);
+            }
+        }
+        plan.materials.appendAll(graph.blueprint.materials.slice());
+        return plan;
+    }
+
+    void release() {
+        lines.release();
+        brushes.release();
+        materials.release();
+    }
+}
+
 struct ChunkLines {
     ColumnChunk[MAX_LINES_AT_VERTEX] columns;
     CellBox[MAX_LINES_AT_VERTEX] bounds;
+    uint[MAX_LINES_AT_VERTEX] lines;
     uint count;
 
-    static ChunkLines make(ref const NodeStructure structure, ref const Blueprint blueprint, Vertex vertex) {
+    static ChunkLines make(ref const BuildingPlan plan, Vertex vertex) {
         ChunkLines found;
-        foreach (touch; structure.touches[0 .. structure.count]) {
-            if (isOnTouch(touch, blueprint.lines.ptr[touch.line], vertex)) {
+        foreach (index, line; plan.lines.slice()) {
+            if (isOnTouch(line.touch, line.spec, vertex)) {
                 assert(found.count < MAX_LINES_AT_VERTEX);
-                ColumnChunk column = ColumnChunk.fromTouch(touch, blueprint.lines.ptr[touch.line], vertex, blueprint.dimension);
+                ColumnChunk column = ColumnChunk.fromTouch(line.touch, line.spec, vertex, plan.dimension);
                 found.columns[found.count] = column;
-                found.bounds[found.count] = boundsOf(column, blueprint.dimension);
+                found.bounds[found.count] = boundsOf(column, plan.dimension);
+                found.lines[found.count] = cast(uint) index;
                 found.count += 1;
             }
         }
@@ -51,39 +88,40 @@ struct BrushUse {
 
 struct Building {
     Array!Paint paints;
-    const(Material)* materials;
+    Array!Material materials;
     NodeCells cells;
 
-    static Building make(ref const NodeStructure structure, ref const Blueprint blueprint) {
-        Building building = Building(Array!Paint.init, blueprint.materials.ptr, NodeCells(blueprint.dimension));
-        if (structure.isPresent) {
-            building.stamp(structure, blueprint);
-        }
+    static Building make(ref const BuildingPlan plan) {
+        Building building = Building(Array!Paint.init, Array!Material.init, NodeCells(plan.dimension));
+        building.materials.appendAll(plan.materials.slice());
+        building.stamp(plan);
         return building;
     }
 
-    void stamp(ref const NodeStructure structure, ref const Blueprint blueprint) {
+    void stamp(ref const BuildingPlan plan) {
         paints.resize(cells.cellCount());
         Array!BrushUse uses;
         foreach (index; 0 .. VERTEX_COUNT) {
             Vertex vertex = cast(Vertex) index;
-            ChunkLines found = ChunkLines.make(structure, blueprint, vertex);
+            ChunkLines found = ChunkLines.make(plan, vertex);
             uses.clear();
-            foreach (brush, painting; blueprint.brushes.slice()) {
-                foreach (chunk; 0 .. found.count) {
-                    if (found.columns[chunk].line == painting.line && painting.box.overlaps(found.bounds[chunk])) {
-                        uses.append(BrushUse(cast(uint) brush, chunk));
+            foreach (chunk; 0 .. found.count) {
+                PlanLine line = plan.lines.ptr[found.lines[chunk]];
+                foreach (brush; line.first .. line.first + line.count) {
+                    if (plan.brushes.ptr[brush].box.overlaps(found.bounds[chunk])) {
+                        uses.append(BrushUse(brush, chunk));
                     }
                 }
             }
             if (uses.length > 0) {
-                stampChunk(vertex, found, uses.slice(), blueprint);
+                sortByOrder(uses.slice(), plan.brushes.slice());
+                stampChunk(vertex, found, uses.slice(), plan.brushes.slice());
             }
         }
         uses.release();
     }
 
-    void stampChunk(Vertex vertex, ref const ChunkLines found, const(BrushUse)[] uses, ref const Blueprint blueprint) {
+    void stampChunk(Vertex vertex, ref const ChunkLines found, const(BrushUse)[] uses, const(Brush)[] brushes) {
         int[3][MAX_LINES_AT_VERTEX] columns = void;
         foreach (x; 0 .. cells.dimension) {
             foreach (y; 0 .. cells.dimension) {
@@ -94,8 +132,8 @@ struct Building {
                     }
                     Paint paint = Paint.init;
                     foreach (use; uses) {
-                        if (blueprint.brushes.ptr[use.brush].covers(columns[use.chunk])) {
-                            paint = blueprint.brushes.ptr[use.brush].paint;
+                        if (brushes[use.brush].covers(columns[use.chunk])) {
+                            paint = brushes[use.brush].paint;
                         }
                     }
                     paints.ptr[cells.cellIndex(vertex, cell)] = paint;
@@ -106,6 +144,7 @@ struct Building {
 
     void release() {
         paints.release();
+        materials.release();
     }
 
     Material materialAt(Vertex vertex, int[3] cell, Material existing) const {
@@ -116,8 +155,20 @@ struct Building {
         if (paint.material == 0 || (paint.isIntoAirOnly && existing != Material.none)) {
             return existing;
         } else {
-            return materials[paint.material - 1];
+            return materials.ptr[paint.material - 1];
         }
+    }
+}
+
+void sortByOrder(BrushUse[] uses, const(Brush)[] brushes) {
+    foreach (index; 1 .. uses.length) {
+        BrushUse held = uses[index];
+        size_t slot = index;
+        while (slot > 0 && brushes[uses[slot - 1].brush].order > brushes[held.brush].order) {
+            uses[slot] = uses[slot - 1];
+            slot -= 1;
+        }
+        uses[slot] = held;
     }
 }
 

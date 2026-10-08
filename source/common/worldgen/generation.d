@@ -311,7 +311,7 @@ struct ChunkIncidentEnviroFactors {
 }
 
 const(Building)* buildingIfPresent(ref Graph graph, uint slot) {
-    if (graph.ensureStructureAt(slot).isPresent) {
+    if (graph.ensureStructureAt(slot)) {
         return graph.ensureBuildingAt(slot);
     } else {
         return null;
@@ -352,7 +352,7 @@ struct ChunkParams {
             1.0f / cosf(graph.worldgen.groundTiltRadians()),
             graph.layout,
             vertex,
-            graph.ensureStructureAt(slot).isPresent,
+            graph.ensureStructureAt(slot),
             graph.worldgen.hasPlaneGround(),
             false,
         );

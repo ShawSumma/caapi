@@ -1,17 +1,20 @@
 module client.structures;
 
 import core.stdc.stdio : snprintf;
+import core.stdc.stdlib : free, malloc;
 import core.stdc.string : memcpy, strlen;
-import bindings.lua : luaL_checkinteger, luaL_checklstring, luaL_checknumber, luaL_checktype, luaL_error, luaL_loadbufferx, luaL_loadfilex, luaL_newmetatable, luaL_setmetatable, lua_CFunction, lua_Integer, lua_State, lua_close, lua_createtable, lua_getfield, lua_getglobal, lua_gettop, lua_pcallk, lua_pushcclosure, lua_pushinteger, lua_rawgeti, lua_rawseti, lua_setfield, lua_settop, lua_tointegerx, lua_tolstring, lua_touserdata, lua_type;
+import bindings.lua : luaL_checkinteger, luaL_checklstring, luaL_checknumber, luaL_checktype, luaL_error, luaL_loadbufferx, luaL_loadfilex, luaL_newmetatable, luaL_ref, luaL_setmetatable, luaL_unref, lua_CFunction, lua_Integer, lua_State, lua_close, lua_createtable, lua_getfield, lua_getglobal, lua_gettop, lua_pcallk, lua_pushboolean, lua_pushcclosure, lua_pushinteger, lua_pushlightuserdata, lua_pushvalue, lua_rawgeti, lua_rawseti, lua_setfield, lua_settop, lua_tointegerx, lua_tolstring, lua_touserdata, lua_type;
 import client.game : Game;
-import client.lua : LUA_BELOW_TOP, LUA_FIRST_UPVALUE, LUA_STATUS_OK, LUA_TOP, LUA_TYPE_FUNCTION, LUA_TYPE_TABLE, LuaLookup, SELF, TRACEBACK_INDEX, isNoneOrNil, luaTraceback, newSafeState, registerMethod, setPackagePath;
+import client.lua : LUA_BELOW_TOP, LUA_FIRST_UPVALUE, LUA_REGISTRY, LUA_SECOND_UPVALUE, LUA_STATUS_OK, LUA_TOP, LUA_TYPE_FUNCTION, LUA_TYPE_TABLE, LuaLookup, LuaName, SELF, TRACEBACK_INDEX, isNoneOrNil, luaTraceback, newSafeState, registerMethod, setPackagePath;
+import common.array : Array;
 import common.dodeca : SIDE_COUNT, Side, VERTEX_COUNT, Vertex;
-import common.graph : Graph;
+import common.graph : Graph, Grower;
 import common.material : Material;
-import common.worldgen.blueprint : BlueprintBuilder, CellBox, EVERY_HEIGHT, Rhythm;
+import common.names : ENUM_NAMES;
+import common.worldgen.blueprint : BlueprintBuilder, CellBox, EVERY_HEIGHT, PaintResult, Rhythm;
 import common.worldgen.embedded : EMBEDDED_MODULES, EMBEDDED_STRUCTURES, EmbeddedLua, embeddedIndex, isLuaPath;
-import common.worldgen.generation : STRUCTURE_NAME_CAPACITY, SplitMix, Worldgen;
-import common.worldgen.structure : ColumnSpot, FACE_CORNERS, SiteFrame, anchorBits, branched, edgeCells, faceCorners, rootSite, shifted, sideAxis, turned;
+import common.worldgen.generation : STRUCTURE_NAME_CAPACITY, SplitMix, StructureWorld, Worldgen;
+import common.worldgen.structure : ColumnSpot, PLACE_SLACK, RootedVertex, SiteFrame, Turn, anchorBits, edgeCells, forwarded, rootSite, sideAxis, siteOrigin, turned;
 
 enum size_t MESSAGE_CAPACITY = 1024;
 enum int CHUNK_RESULTS = 1;
@@ -19,13 +22,10 @@ enum int STRUCTURE_ARGUMENTS = 1;
 enum int SITE_FIELDS = 8;
 enum int DEFAULT_SPAN = 1;
 enum int COLUMN_RESULTS = 2;
+enum int TURN_UPVALUES = 2;
+enum int PLACED_FUNCTION = 1;
 enum string SITE_TYPE = "mined.site";
 enum string AIR = "air";
-
-enum BranchAxis : ubyte {
-    across,
-    along,
-}
 
 struct StructureProblem {
     char[MESSAGE_CAPACITY] text;
@@ -38,50 +38,109 @@ struct StructureProblem {
     }
 }
 
+struct QueuedStructure {
+    SiteFrame site;
+    uint key;
+    int reference;
+    int argumentCount;
+}
+
 struct StructureHost {
     BlueprintBuilder builder;
+    Array!(Array!QueuedStructure) queue;
     SplitMix random;
+    lua_State* lua;
+    StructureWorld name;
+    uint key;
+    uint nextKey;
+    StructureProblem problem;
 
-    StructureProblem build(const(char)[] name, SiteFrame root) {
-        lua_State* lua = newSafeState();
-        registerModules(lua);
-        registerSiteType(lua);
-        lua_pushcclosure(lua, cast(lua_CFunction) &luaTraceback, 0);
-        immutable int status = loadStructureChunk(lua, name);
-        StructureProblem problem = void;
-        if (status != LUA_STATUS_OK) {
-            problem = StructureProblem.fromMessage(name, lua_tolstring(lua, LUA_TOP, null));
-        } else {
-            problem = runChunk(lua, name, root);
-        }
-        lua_close(lua);
-        return problem;
+    static StructureHost make(ref Graph graph) {
+        return StructureHost(BlueprintBuilder.make(graph), Array!(Array!QueuedStructure).init, SplitMix(graph.anchorBits(graph.anchorSlot)), null, StructureWorld.fromName(graph.worldgen.structureName()), 0, 0, StructureProblem.init);
     }
 
-    StructureProblem runChunk(lua_State* lua, const(char)[] name, SiteFrame root) {
+    void build(SiteFrame root) {
+        lua = newSafeState();
+        registerModules(lua);
+        registerSiteType();
+        lua_pushcclosure(lua, cast(lua_CFunction) &luaTraceback, 0);
+        immutable int status = loadStructureChunk(lua, name.name());
+        if (status != LUA_STATUS_OK) {
+            fail();
+        } else {
+            runChunk(root);
+        }
+        lua_settop(lua, TRACEBACK_INDEX);
+    }
+
+    void runChunk(SiteFrame root) {
         immutable int status = lua_pcallk(lua, 0, CHUNK_RESULTS, TRACEBACK_INDEX, 0, null);
         if (status != LUA_STATUS_OK) {
-            return StructureProblem.fromMessage(name, lua_tolstring(lua, LUA_TOP, null));
+            fail();
         } else if (lua_type(lua, LUA_TOP) != LUA_TYPE_FUNCTION) {
-            return StructureProblem.fromMessage(name, "does not return a function of a site");
+            problem = StructureProblem.fromMessage(name.name(), "does not return a function of a site");
         } else {
             lua.pushSite(root);
             immutable int built = lua_pcallk(lua, STRUCTURE_ARGUMENTS, 0, TRACEBACK_INDEX, 0, null);
             if (built != LUA_STATUS_OK) {
-                return StructureProblem.fromMessage(name, lua_tolstring(lua, LUA_TOP, null));
-            } else {
-                return StructureProblem.init;
+                fail();
             }
         }
     }
 
-    void registerSiteType(lua_State* lua) {
+    void fail() {
+        problem = StructureProblem.fromMessage(name.name(), lua_tolstring(lua, LUA_TOP, null));
+    }
+
+    void grow(ref Graph graph, int through) {
+        builder.graph = &graph;
+        while (!problem.isPresent && hasQueued() && cast(int) nextKey <= through) {
+            size_t index = 0;
+            while (!problem.isPresent && index < queue.ptr[nextKey].length) {
+                run(queue.ptr[nextKey].ptr[index]);
+                index += 1;
+            }
+            if (!problem.isPresent) {
+                queue.ptr[nextKey].release();
+                nextKey += 1;
+            }
+        }
+    }
+
+    void run(QueuedStructure queued) {
+        key = queued.key;
+        builder.growFrom(queued.key);
+        lua_rawgeti(lua, LUA_REGISTRY, queued.reference);
+        int placed = lua_gettop(lua);
+        lua_rawgeti(lua, placed, PLACED_FUNCTION);
+        lua.pushSite(queued.site);
+        foreach (index; 0 .. queued.argumentCount) {
+            lua_rawgeti(lua, placed, PLACED_FUNCTION + 1 + index);
+        }
+        immutable int status = lua_pcallk(lua, STRUCTURE_ARGUMENTS + queued.argumentCount, 0, TRACEBACK_INDEX, 0, null);
+        if (status != LUA_STATUS_OK) {
+            fail();
+        }
+        lua_settop(lua, TRACEBACK_INDEX);
+        luaL_unref(lua, LUA_REGISTRY, queued.reference);
+    }
+
+    void enqueue(QueuedStructure queued) {
+        while (queue.length <= queued.key) {
+            queue.append(Array!QueuedStructure.init);
+        }
+        queue.ptr[queued.key].append(queued);
+    }
+
+    bool hasQueued() const {
+        return nextKey < queue.length;
+    }
+
+    void registerSiteType() {
         luaL_newmetatable(lua, SITE_TYPE.ptr);
         lua_createtable(lua, 0, 0);
-        lua.registerMethod(&this, "up", &luaSiteUp);
-        lua.registerMethod(&this, "turn", &luaSiteTurn);
-        lua.registerMethod(&this, "branch", &luaSiteBranch);
-        lua.registerMethod(&this, "face", &luaSiteFace);
+        lua.registerMethod(&this, "forward", &luaSiteForward);
+        registerTurns();
         lua.registerMethod(&this, "column", &luaSiteColumn);
         lua.registerMethod(&this, "edge_cells", &luaSiteEdgeCells);
         lua.registerMethod(&this, "pick", &luaSitePick);
@@ -89,12 +148,37 @@ struct StructureHost {
         lua.registerMethod(&this, "fill", &luaSiteFill);
         lua.registerMethod(&this, "stop", &luaSiteStop);
         lua.registerMethod(&this, "entrance", &luaSiteEntrance);
+        lua.registerMethod(&this, "place", &luaSitePlace);
+        lua.registerMethod(&this, "claim", &luaSiteClaim);
+        lua.registerMethod(&this, "is_claimed", &luaSiteIsClaimed);
         lua_setfield(lua, LUA_BELOW_TOP, "__index");
         lua_settop(lua, LUA_BELOW_TOP);
     }
 
+    void registerTurns() {
+        foreach (index, member; ENUM_NAMES!Turn) {
+            LuaName turnName = LuaName.fromMember(member);
+            turnName.text[turnName.length] = 0;
+            lua_pushlightuserdata(lua, &this);
+            lua_pushinteger(lua, cast(lua_Integer) index);
+            lua_pushcclosure(lua, cast(lua_CFunction) &luaSiteTurn, TURN_UPVALUES);
+            lua_setfield(lua, LUA_BELOW_TOP, turnName.text.ptr);
+        }
+    }
+
     ubyte dimension() const {
-        return builder.blueprint.dimension;
+        return builder.graph.layout.dimension;
+    }
+
+    void release() {
+        if (lua !is null) {
+            lua_close(lua);
+        }
+        foreach (ref bucket; queue.slice()) {
+            bucket.release();
+        }
+        queue.release();
+        builder.release();
     }
 }
 
@@ -102,21 +186,45 @@ StructureProblem placeWorldStructure(ref Graph graph) {
     if (!graph.worldgen.hasStructure()) {
         return StructureProblem.init;
     } else {
-        StructureHost host = StructureHost(BlueprintBuilder.make(graph), SplitMix(graph.anchorBits(graph.anchorSlot)));
-        StructureProblem problem = host.build(graph.worldgen.structureName(), rootSite(graph.anchorSlot));
-        if (problem.isPresent) {
-            host.builder.release();
+        StructureHost* host = cast(StructureHost*) malloc(StructureHost.sizeof);
+        *host = StructureHost.make(graph);
+        host.build(rootSite(graph.anchorSlot));
+        StructureProblem problem = host.problem;
+        if (problem.isPresent || !host.hasQueued()) {
+            releaseStructureHost(host);
         } else {
-            graph.place(host.builder.finish());
+            graph.grower = Grower(&growStructures, &releaseStructureHost, host);
         }
         return problem;
     }
 }
 
+void growStructures(void* context, ref Graph graph, int through) {
+    (cast(StructureHost*) context).grow(graph, through);
+}
+
+void releaseStructureHost(void* context) {
+    StructureHost* host = cast(StructureHost*) context;
+    host.release();
+    free(host);
+}
+
+StructureProblem growthProblem(ref const Graph graph) {
+    if (graph.grower.context is null) {
+        return StructureProblem.init;
+    } else {
+        return (cast(const(StructureHost)*) graph.grower.context).problem;
+    }
+}
+
 StructureProblem placeStructure(ref Game game) {
     StructureProblem problem = placeWorldStructure(game.world.graph);
-    game.placeAtSpawn();
-    return problem;
+    if (problem.isPresent) {
+        return problem;
+    } else {
+        game.placeAtSpawn();
+        return growthProblem(game.world.graph);
+    }
 }
 
 StructureProblem restartGame(ref Game game, Worldgen worldgen) {
@@ -215,10 +323,10 @@ int[2] columnOf(ubyte dimension) {
 
 CellBox boxArgument(lua_State* lua, int index, ubyte dimension) {
     luaL_checktype(lua, index, LUA_TYPE_TABLE);
-    int[2] across = rangeField(lua, index, "across", columnOf(dimension));
-    int[2] along = rangeField(lua, index, "along", columnOf(dimension));
-    int[2] height = rangeField(lua, index, "height", [int.min, int.max]);
-    return CellBox.make(across[0], across[1], along[0], along[1], height[0], height[1]);
+    int[2] x = rangeField(lua, index, "x", columnOf(dimension));
+    int[2] y = rangeField(lua, index, "y", columnOf(dimension));
+    int[2] z = rangeField(lua, index, "z", [int.min, int.max]);
+    return CellBox.make(x[0], x[1], y[0], y[1], z[0], z[1]);
 }
 
 Rhythm rhythmArgument(lua_State* lua, int index) {
@@ -256,16 +364,16 @@ void pushSite(lua_State* lua, SiteFrame site) {
     lua_setfield(lua, LUA_BELOW_TOP, "node");
     lua_pushinteger(lua, site.vertex);
     lua_setfield(lua, LUA_BELOW_TOP, "vertex");
-    lua_pushinteger(lua, site.acrossSide);
-    lua_setfield(lua, LUA_BELOW_TOP, "across_side");
-    lua_pushinteger(lua, site.alongSide);
-    lua_setfield(lua, LUA_BELOW_TOP, "along_side");
-    lua_pushinteger(lua, site.acrossSign);
-    lua_setfield(lua, LUA_BELOW_TOP, "across_sign");
-    lua_pushinteger(lua, site.alongSign);
-    lua_setfield(lua, LUA_BELOW_TOP, "along_sign");
-    lua_pushinteger(lua, site.heightSign);
-    lua_setfield(lua, LUA_BELOW_TOP, "height_sign");
+    lua_pushinteger(lua, site.xSide);
+    lua_setfield(lua, LUA_BELOW_TOP, "x_side");
+    lua_pushinteger(lua, site.ySide);
+    lua_setfield(lua, LUA_BELOW_TOP, "y_side");
+    lua_pushinteger(lua, site.xSign);
+    lua_setfield(lua, LUA_BELOW_TOP, "x_sign");
+    lua_pushinteger(lua, site.ySign);
+    lua_setfield(lua, LUA_BELOW_TOP, "y_sign");
+    lua_pushinteger(lua, site.zSign);
+    lua_setfield(lua, LUA_BELOW_TOP, "z_sign");
     luaL_setmetatable(lua, SITE_TYPE.ptr);
 }
 
@@ -273,17 +381,17 @@ SiteFrame siteArgument(lua_State* lua, int index, ref const Graph graph) {
     luaL_checktype(lua, index, LUA_TYPE_TABLE);
     int node = requiredField(lua, index, "node");
     int vertex = requiredField(lua, index, "vertex");
-    int across = requiredField(lua, index, "across_side");
-    int along = requiredField(lua, index, "along_side");
-    int acrossSign = requiredField(lua, index, "across_sign");
-    int alongSign = requiredField(lua, index, "along_sign");
-    int heightSign = requiredField(lua, index, "height_sign");
-    bool isInTables = node >= 0 && node < graph.nodeCount && vertex >= 0 && vertex < VERTEX_COUNT && across >= 0 && across < SIDE_COUNT && along >= 0 && along < SIDE_COUNT;
-    bool isOnVertex = isInTables && across != along && sideAxis(cast(Vertex) vertex, cast(Side) across) < 3 && sideAxis(cast(Vertex) vertex, cast(Side) along) < 3;
-    if (!isOnVertex || !isSign(acrossSign) || !isSign(alongSign) || !isSign(heightSign)) {
+    int xSide = requiredField(lua, index, "x_side");
+    int ySide = requiredField(lua, index, "y_side");
+    int xSign = requiredField(lua, index, "x_sign");
+    int ySign = requiredField(lua, index, "y_sign");
+    int zSign = requiredField(lua, index, "z_sign");
+    bool isInTables = node >= 0 && node < graph.nodeCount && vertex >= 0 && vertex < VERTEX_COUNT && xSide >= 0 && xSide < SIDE_COUNT && ySide >= 0 && ySide < SIDE_COUNT;
+    bool isOnVertex = isInTables && xSide != ySide && sideAxis(cast(Vertex) vertex, cast(Side) xSide) < 3 && sideAxis(cast(Vertex) vertex, cast(Side) ySide) < 3;
+    if (!isOnVertex || !isSign(xSign) || !isSign(ySign) || !isSign(zSign)) {
         luaL_error(lua, "not a site: sites come from a structure's argument and the site methods");
     }
-    return SiteFrame(requiredField(lua, index, "level"), cast(uint) node, cast(Vertex) vertex, cast(Side) across, cast(Side) along, cast(byte) acrossSign, cast(byte) alongSign, cast(byte) heightSign);
+    return SiteFrame(requiredField(lua, index, "level"), cast(uint) node, cast(Vertex) vertex, cast(Side) xSide, cast(Side) ySide, cast(byte) xSign, cast(byte) ySign, cast(byte) zSign);
 }
 
 bool isSign(int value) {
@@ -294,41 +402,18 @@ ColumnSpot spotArgument(lua_State* lua, int first) {
     return ColumnSpot(cast(float) luaL_checknumber(lua, first), cast(float) luaL_checknumber(lua, first + 1), cast(float) luaL_checknumber(lua, first + 2));
 }
 
-extern (C) int luaSiteUp(lua_State* lua) {
+extern (C) int luaSiteForward(lua_State* lua) {
     StructureHost* host = structureHost(lua);
     SiteFrame site = siteArgument(lua, SELF, *host.builder.graph);
-    lua.pushSite(shifted(site, cast(int) luaL_checkinteger(lua, SELF + 1)));
+    lua.pushSite(forwarded(site, cast(int) luaL_checkinteger(lua, SELF + 1)));
     return 1;
 }
 
 extern (C) int luaSiteTurn(lua_State* lua) {
     StructureHost* host = structureHost(lua);
     SiteFrame site = siteArgument(lua, SELF, *host.builder.graph);
-    lua.pushSite(turned(site, cast(int) luaL_checkinteger(lua, SELF + 1)));
-    return 1;
-}
-
-extern (C) int luaSiteBranch(lua_State* lua) {
-    StructureHost* host = structureHost(lua);
-    SiteFrame site = siteArgument(lua, SELF, *host.builder.graph);
-    const(char)* axis = luaL_checklstring(lua, SELF + 1, null);
-    LuaLookup!BranchAxis lookup = LuaLookup!BranchAxis.fromName(axis[0 .. strlen(axis)]);
-    if (!lookup.isFound) {
-        luaL_error(lua, "a site branches across or along, not '%s'", axis);
-    }
-    lua.pushSite((*host.builder.graph).branched(site, 0, lookup.value == BranchAxis.along));
-    return 1;
-}
-
-extern (C) int luaSiteFace(lua_State* lua) {
-    StructureHost* host = structureHost(lua);
-    SiteFrame site = siteArgument(lua, SELF, *host.builder.graph);
-    SiteFrame[FACE_CORNERS] corners = (*host.builder.graph).faceCorners(site);
-    lua_createtable(lua, FACE_CORNERS, 0);
-    foreach (index, corner; corners) {
-        lua.pushSite(corner);
-        lua_rawseti(lua, LUA_BELOW_TOP, cast(lua_Integer)(index + 1));
-    }
+    Turn turn = cast(Turn) lua_tointegerx(lua, LUA_SECOND_UPVALUE, null);
+    lua.pushSite((*host.builder.graph).turned(site, turn));
     return 1;
 }
 
@@ -367,7 +452,12 @@ int paintWith(lua_State* lua, bool isIntoAirOnly) {
     SiteFrame site = siteArgument(lua, SELF, *host.builder.graph);
     Material material = materialArgument(lua, SELF + 1);
     CellBox box = boxArgument(lua, SELF + 2, host.dimension());
-    host.builder.paint(site, box, rhythmArgument(lua, SELF + 3), material, isIntoAirOnly);
+    PaintResult result = host.builder.paint(site, box, rhythmArgument(lua, SELF + 3), material, isIntoAirOnly);
+    if (result == PaintResult.endless) {
+        luaL_error(lua, "a placed structure paints bounded heights: give the box a z range");
+    } else if (result == PaintResult.behind) {
+        luaL_error(lua, "paints too far behind its site: a placed structure stays near where it was placed");
+    }
     return 0;
 }
 
@@ -381,4 +471,42 @@ extern (C) int luaSiteEntrance(lua_State* lua) {
     StructureHost* host = structureHost(lua);
     host.builder.enter(siteArgument(lua, SELF, *host.builder.graph), spotArgument(lua, SELF + 1));
     return 0;
+}
+
+extern (C) int luaSitePlace(lua_State* lua) {
+    StructureHost* host = structureHost(lua);
+    SiteFrame site = siteArgument(lua, SELF, *host.builder.graph);
+    luaL_checktype(lua, SELF + 1, LUA_TYPE_FUNCTION);
+    RootedVertex origin = (*host.builder.graph).siteOrigin(site);
+    bool isAhead = cast(int) origin.depth + PLACE_SLACK >= cast(int) host.key;
+    if (isAhead) {
+        int count = lua_gettop(lua) - SELF;
+        lua_createtable(lua, count, 0);
+        foreach (index; 0 .. count) {
+            lua_pushvalue(lua, SELF + 1 + index);
+            lua_rawseti(lua, LUA_BELOW_TOP, PLACED_FUNCTION + index);
+        }
+        uint queuedKey = host.key;
+        if (origin.depth > queuedKey) {
+            queuedKey = origin.depth;
+        }
+        host.enqueue(QueuedStructure(site, queuedKey, luaL_ref(lua, LUA_REGISTRY), count - PLACED_FUNCTION));
+    }
+    lua_pushboolean(lua, isAhead);
+    return 1;
+}
+
+extern (C) int luaSiteClaim(lua_State* lua) {
+    StructureHost* host = structureHost(lua);
+    SiteFrame site = siteArgument(lua, SELF, *host.builder.graph);
+    immutable bool isNewlyClaimed = host.builder.graph.blueprint.claim((*host.builder.graph).siteOrigin(site).key);
+    lua_pushboolean(lua, isNewlyClaimed);
+    return 1;
+}
+
+extern (C) int luaSiteIsClaimed(lua_State* lua) {
+    StructureHost* host = structureHost(lua);
+    SiteFrame site = siteArgument(lua, SELF, *host.builder.graph);
+    lua_pushboolean(lua, host.builder.graph.blueprint.isClaimed((*host.builder.graph).siteOrigin(site).key));
+    return 1;
 }
