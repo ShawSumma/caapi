@@ -38,7 +38,9 @@ return function(world)
 
   walk.build_step(world)
   local standing = world:altitude()
-  walk.climb_forward(world, CLIMB_SECONDS, CLIMB_STEP_SECONDS, walk.MIN_BLOCK_EDGE / 2)
+  walk.climb_forward(world, CLIMB_SECONDS, CLIMB_STEP_SECONDS, function()
+    return walk.is_on_step(world, standing)
+  end)
   world:wait(walk.SETTLE_SECONDS)
   walk.check_on_step(world, standing, string.format("after jumping onto the step in %.2f s steps", CLIMB_STEP_SECONDS))
 end

@@ -12,6 +12,7 @@ import common.math : PI, clamped;
 import common.node : ChunkLayout, Occupancy, VoxelData;
 import common.worldgen.building : Building;
 import common.worldgen.plane : Plane;
+import common.worldgen.sky : PLANET, enteredRealm, hasPlaneGroundAt;
 import common.worldgen.structure : firstSideAmong, ringFaces;
 import common.worldgen.terraingen : TERRAIN_SURFACE_THICKNESS, materialTable, nearestLatticePoint, sqr, terraingenVoronoi;
 
@@ -22,7 +23,7 @@ enum WorldgenKind : ubyte {
 }
 
 enum size_t STRUCTURE_NAME_CAPACITY = 256;
-enum string TERRAIN_STRUCTURE = "road";
+enum string TERRAIN_STRUCTURE = "planet";
 
 struct PlaneWorld {
     float tiltRadians;
@@ -206,17 +207,24 @@ struct NodeState {
     EnviroFactors enviro;
     Plane surface;
     Plane reference;
+    uint realm;
     NodeStateKind kind;
 
     static NodeState fromParents(ref Graph graph, uint slot) {
         ParentList parents = graph.parents(slot);
         if (parents.count == 0) {
-            return NodeState(EnviroFactors.init, Plane.fromSide(Side.a), Plane.fromSide(firstSideAmong(ringFaces(Side.a))), NodeStateKind.land);
+            return NodeState(EnviroFactors.init, Plane.fromSide(Side.a), Plane.fromSide(firstSideAmong(ringFaces(Side.a))), PLANET, NodeStateKind.land);
         } else {
             NodeState first = graph.nodeAt(parents.links[0].slot).state;
             Side firstSide = parents.links[0].side;
-            NodeStateKind kind = first.kind.child(firstSide);
-            return NodeState(graph.inheritedEnviro(slot, parents), kind.surface(first.surface, firstSide), first.reference.reflectAcross(firstSide), kind);
+            EnviroFactors enviro = graph.inheritedEnviro(slot, parents);
+            uint entered = graph.enteredRealm(parents.links[0].slot, firstSide);
+            if (entered != PLANET) {
+                return NodeState(enviro, first.surface, first.reference, entered, first.kind);
+            } else {
+                NodeStateKind kind = first.kind.child(firstSide);
+                return NodeState(enviro, kind.surface(first.surface, firstSide), first.reference.reflectAcross(firstSide), first.realm, kind);
+            }
         }
     }
 }
@@ -353,7 +361,7 @@ struct ChunkParams {
             graph.layout,
             vertex,
             graph.ensureStructureAt(slot),
-            graph.worldgen.hasPlaneGround(),
+            graph.hasPlaneGroundAt(state),
             false,
         );
     }

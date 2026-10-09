@@ -32,7 +32,8 @@ shared simulation code in `source/common`. Two entry points: `source/main.d`
     Lua state as the graph's `Grower` while placed structures wait in
     its depth-ordered queue; `placeStructure`/`restartGame` start a game
     on it, `growthProblem` reports a placement that failed later; it
-    also runs the ground tiles (`site:tile`) as the graph needs them.
+    also runs the ground tiles (`site:tile`) and the sky tiles
+    (`site:sky`) as the graph needs them.
   - `script.d` - Lua API (ScriptHost) and the recorder; `config.d` - client
     config; `arguments.d` - command-line pieces shared by both entry
     points (flag values, `--worldgen`, StartupError); `png.d` - PNG writer
@@ -57,8 +58,11 @@ shared simulation code in `source/common`. Two entry points: `source/main.d`
     (cross-chunk cell resolution), `traversal.d` (nearby BFS),
     `position.d`, `material.d`, `settings.d` (chunk dimension and
     `CharacterConfig`).
-  - worldgen: `worldgen/generation.d` (Worldgen kinds, node state, chunk
-    params, proofs, voxels, trees); structures (see Worldgen):
+  - worldgen: `worldgen/generation.d` (Worldgen kinds, node state and
+    its realm, chunk params, proofs, voxels, trees); `worldgen/sky.d`
+    (sky planes, see Worldgen: their kinds, which ground vertices open
+    one, the realms and how a node enters one, a realm's foot);
+    structures (see Worldgen):
     `structure.d` (sites and their turtle moves; the canonical line of
     a site; the vertex and face a site stands on and their hashes; the
     ground face below a node and its ring; which lines touch a node,
@@ -81,9 +85,12 @@ shared simulation code in `source/common`. Two entry points: `source/main.d`
   - containers and utilities: `array.d`, `hashmap.d`, `slab.d`,
     `allocator.d` (range allocator), `murmur.d`, `clock.d`.
 - `structures/` - structure scripts (see Structure scripts): the
-  built-in `tower.lua`, `crown.lua`, `road.lua`, `trail.lua` and
-  `city.lua`, and the module `box.lua` (box tower parts,
-  `require("box")`). `structures/buildings/` holds the city's
+  built-in `tower.lua`, `crown.lua`, `road.lua`, `trail.lua`,
+  `city.lua` and `planet.lua` (the terrain world: the road and its
+  skies), and the modules `box.lua` (box tower parts and the
+  connector between a sky and the planet, `require("box")`),
+  `town.lua` (the city's tiling) and `sky.lua` (the sky kinds'
+  tiles). `structures/buildings/` holds the city's
   buildings, one module per type (`brownstone.lua`, `tenement.lua`,
   `deco.lua`, `glass.lua`: palettes, story range and design) on the
   shared `kit.lua` (lots, tiers, facades, roofs, crowns, stairs, doors,
@@ -96,8 +103,9 @@ shared simulation code in `source/common`. Two entry points: `source/main.d`
   world), `tests/api.lua`; `tests/lib/` shared Lua (`walk.lua` builds
   walls, steps and corners layer by layer, one material per layer;
   `climb.lua` follows a structure's route waypoints; structure files:
-  `hut.lua`, `hamlet.lua` (a hut on every corner of a face), and the
-  refused `broken.lua` and `wide.lua`);
+  `hut.lua`, `hamlet.lua` (a hut on every corner of a face),
+  `skies.lua` (a city sky opened over the world's site, with the
+  crossing route), and the refused `broken.lua` and `wide.lua`);
   `tests/visual/` screenshot scenes.
   Physics is tested only in plane and structure worlds, never in terrain.
 - `tools/gridvolume.py` - measures block-volume spread and block edge
@@ -188,7 +196,7 @@ Headless verification:
   structure <name>` (both clients; `world:worldgen(kind[, tilt or name])`
   in a script). A kind takes a fixed number of arguments, parsed per kind
   with a `final switch`. A structure is a built-in name (`tower`,
-  `crown`, `road`, `trail`, `city`, from `EMBEDDED_STRUCTURES`) or a path ending in `.lua`,
+  `crown`, `road`, `trail`, `city`, `planet`, from `EMBEDDED_STRUCTURES`) or a path ending in `.lua`,
   relative to the working directory. `plane 0` fills exactly below the base surface plane. The base plane is
   lattice-aligned, so this is a genuinely flat floor with gravity
   perpendicular to it. Use it to isolate physics from terrain. A nonzero
@@ -198,7 +206,8 @@ Headless verification:
   of its base line. The player spawns facing uphill. `structure` is the
   flat ground with exactly one structure; when the structure has an
   entrance the player spawns on the ground `SPAWN_DISTANCE` (1) out
-  from its door, facing it. `terrain` carries the `road` structure.
+  from its door, facing it. `terrain` carries the `planet` structure
+  (the road and the skies).
 - `--dump-structure` (needs `--worldgen structure <name>`) - each
   structure node in reach of the anchor (which grows placed structures
   that far): altitude and how many voxels it fills; then the
@@ -265,7 +274,9 @@ their receiver, so `world.wait(1)` is an error - always call with `:`.
   treads, the landing, and the middle lane again; the crown's leaves
   through the bridge door, crosses the arch and climbs the neighbor
   tower; the road's runs along its deck, the trail's stops once per
-  segment, the city's walks in from the street and up the stairs).
+  segment, the city's walks in from the street and up the stairs, a
+  sky connector's climbs the planet half, crosses at the flip and walks
+  down the sky half to its door).
 - Observation: `target_material()` (snake_case name of the voxel in reach
   under the crosshair, or nil), `traveled()` (path length),
   `is_on_ground()`, `altitude()` (the body center's distance to the
@@ -306,8 +317,8 @@ rest); structures it places run later, as the world grows toward them.
 The built-ins (`structures/*.lua`) are compiled into both binaries with
 `import()` (`common/worldgen/embedded.d`); any other `.lua` path is
 loaded from disk. `require` finds the built-in modules and structures
-(`box`, `buildings.kit` and the building types, `tower`, `crown`,
-`road`, `trail`, `city`) first, then files next to
+(`box`, `town`, `sky`, `buildings.kit` and the building types,
+`tower`, `crown`, `road`, `trail`, `city`, `planet`) first, then files next to
 the structure. Adding a built-in is a file in `structures/` plus a line
 in `EMBEDDED_STRUCTURES` (`EMBEDDED_MODULES` for a module). The same
 safe libraries as test scripts are open; errors carry a traceback.
@@ -369,19 +380,52 @@ safe libraries as test scripts are open; errors carry a traceback.
   is seeded by its face. Where two tiles paint the same cells they must
   paint the same thing. A tile that paints an already built node is an
   error.
+- Skies (see Worldgen): `site:sky(odds, ground, fn, ...)` (the world's
+  structure only) adds a kind of sky plane and returns its number:
+  each ground vertex opens one of this kind with chance `odds` (all
+  kinds together at most 1), its ground is `"terrain"` (the terrain
+  generator relative to the sky plane) or `"flat"`, and `fn(face,
+  foot, ...)` tiles it as `site:tile` tiles the ground, where `foot` is
+  a site standing on the sky plane at its foot vertex (where the
+  vertical line from the ground vertex meets it), y up toward the
+  planet. `site:open_sky(kind)` opens one at the site's vertex
+  outright (refused next to another). A sky's four tiles at its foot
+  also run before any planet node around that vertical line is built,
+  so they may paint down into the planet.
+- `box.connector(foot, options)` is the way between a sky and the
+  planet: a box tower standing on each plane, `box.SKY_EDGES` (2)
+  edges apart along that vertical line, meeting roof to roof at the
+  halfway plane. Each half's top flight climbs to the halfway plane, so
+  stepping onto its top tread puts the body's center across, gravity
+  flips, and the body falls through the other half's stairwell onto
+  its stairs. The planet half stands on a stepped approach (one-block
+  steps filled into air below the door's level, a stepped crater
+  carved out of hills above it) and a pier; `options.terrain` gives
+  the sky half the same; `options.route` adds the crossing route from
+  the planet door up, across and down to the sky door. `town.lua`
+  holds the city's tiling (`town.tile(face, root)`, `town.root(site)`,
+  face and quadrant helpers); given `root.foot`, the root vertex has
+  no streets and is a granite plaza around the connector. `sky.lua`
+  holds the kinds' tiles: `sky.wild` (the connector only), `sky.city`
+  (the city, rooted at the foot), `sky.towers` (a grass meadow with box
+  towers up to `TOWER_EDGES` edges tall on some vertices).
+  `planet.lua`, the terrain world's structure, is the road plus a
+  wild, a city and a towers sky.
 - `box.lua` holds box tower parts, each a function of an upright site
   (z up): `box.tower` (`shell`, `floors`, `windows`, `stairs`,
   `merlons`), `box.door`, `box.stair_route`, `box.palette`, `box.top`,
   and the constants (`HALF`, `STORY`, `DOOR`, ...). `tower.lua` is the
   box tower with a door and route, `crown.lua` builds its hall, five
   towers and arches around the face, `road.lua` paints the world's
-  site along its whole length, and `trail.lua` is a winding gravel
+  site along its whole length and places a chain of viaduct piers
+  under it, and `trail.lua` is a winding gravel
   trail: each segment paves one edge, then places the next segment
   straight, left or right (a random order, the first whose far vertex
   is unclaimed and that is not behind), claiming that vertex, so the
   trail never crosses itself and ends only where all three are taken;
   every third segment places a hut on an unclaimed vertex beside it.
-- `city.lua` is an endless city tiled over the ground plane. Every edge
+- `city.lua` is an endless city tiled over the ground plane by
+  `town.lua`. Every edge
   of the {5,4} tiling is a street unless its hash drops it
   (`DROPPED_STREET`); where that would leave a vertex with no street,
   its highest-hashing edge stays as a dead end, so every lot fronts a
@@ -668,7 +712,10 @@ plane, then the crease of two, else stop), and repeats up to
 - Gravity: `gravity` (1.6, Minecraft's 32 blocks/s^2) along minus up.
   Every substep up is the surface plane's up at the body (`Graph.upAt`),
   which is smooth; the capsule pivots about its lowest sphere when it
-  turns. Velocity is carried along the geodesic (`local * step`
+  turns. The one exception is a sky's halfway plane, where up flips:
+  the capsule is symmetric, so it keeps its center and leaves the
+  ground, and the camera negates its stored pitch so it keeps looking
+  the same way (`Game.followBody`). Velocity is carried along the geodesic (`local * step`
   parallel-transports it) while up is recomputed, so unsupported motion
   follows geodesics, which rise away from the surface plane: at speed s
   and altitude h a body falls s^2 tanh(h) slower than from rest
@@ -706,7 +753,7 @@ plane, then the crease of two, else stop), and repeats up to
   placed only if its whole box fits inside its chunk: chunks are
   generated independently, so nothing may cross a chunk.
 - A world has at most one structure (`Worldgen.structureName`: the
-  chosen one in a structure world, `road` in terrain), relative to the
+  chosen one in a structure world, `planet` in terrain), relative to the
   anchor node (`anchorSlotOf`, a node standing on the surface plane
   with its down face `Side.a` on it). `Graph.make` only creates the
   anchor and an empty `Blueprint`; `placeWorldStructure`
@@ -825,10 +872,57 @@ plane, then the crease of two, else stop), and repeats up to
   site's own, which is the edge of the anchor between `Side.a` (the
   ground) and `Side.b`, so it runs straight along the ground plane
   forever. A brick deck two cells
-  thick sits on the ground with a white center stripe, air is carved
-  above it to the chunk's reach (cutting through hills), and wooden
-  posts and cross beams every `SUPPORT_SPACING` cells fill only air
-  below it, so over valleys it is a trestle bridge.
+  thick sits on the ground, surfaced in basalt with a dashed white
+  center line between concrete parapets, and air is carved above it
+  to the chunk's reach (cutting through hills). Below it, filling
+  only air, a viaduct: a stone pier at every vertex runs down the
+  vertical honeycomb line there (`PIER_EDGES` edges deep, so it
+  reaches valley floors far below the road's own column), and each
+  edge between two piers carries an arch with a limestone ring that
+  springs from the piers near the column's bottom. Each pier places
+  the next one along the road, in both directions from the world's
+  site, and asserts that it could. The route stops lie on the road's
+  line itself (x = 0): a stop off the line is on an equidistant
+  curve, and aiming from one stop past another drifts off the road
+  like cosh of the distance flown.
+- Skies are worlds of their own on planes in the sky, opened by the
+  world's structure (`site:sky`, `Graph.skies`). A ground vertex v
+  opens one with the chance its kinds' odds add up to, unless a
+  neighbor along a ground edge outranks it (a candidate with a higher
+  vertex hash, or a vertex opened outright), so skies never sit on
+  adjacent vertices. Its sky plane is the honeycomb plane perpendicular
+  to v's vertical line two edges up. The plane one edge up, the
+  halfway plane, is made of node faces and is exactly equidistant from
+  both, because reflecting across it is a symmetry of the honeycomb
+  that swaps the ground plane with the sky plane. Every node beyond
+  it belongs to the sky (`NodeState.realm`): a node whose first
+  parent is on the planet enters across that plane by copying the
+  parent's ground plane, reference and kind unreflected (by the
+  symmetry, the parent's ground in the parent's frame is the sky plane
+  in the child's), and children inherit the realm, so in a sky the sky
+  plane is the ground: gravity, terrain or flat ground (`SkyGround`,
+  `hasPlaneGroundAt`), `groundNodeOf`, tiles and altitude all work
+  unchanged relative to it, and its faces carry `Side.a`. Entering is
+  checked only where the parent is above the ground and the crossed
+  face's plane is one edge from it (`mayBeHalfway`, a float filter
+  that lets everything through where the plane's coefficients lose
+  precision); the exact test compares that plane's canonical face
+  (`planeKey`: the node closest to the root touching it, found by
+  descending through parents across sides perpendicular to it) with
+  the halfway planes of the open vertices of the ground ring below.
+  Realms are registered as they are found (`Skies.realms`).
+  `groundNodeOf` walks by the node's own ground plane alone, reflecting
+  it across sides, so it never needs another node's state.
+  The halfway plane's shadow on the ground is a disc of radius 0.72
+  around v (sinh r sinh(edge) = 1) and non-adjacent ground vertices
+  are at least 1.62 apart, so skies never meet; likewise only lines
+  perpendicular to the sky plane within 0.72 of its foot cross the
+  halfway plane, so only the foot vertex's buildings can reach the
+  planet, and everything else in a sky stays in it however tall. From
+  directly below, the whole infinite sky plane fits within
+  Pi(2 edges) = 14 degrees of the zenith (Pi(d) = 2 atan e^-d); a sky
+  over a vertex a few units away collapses toward that vertex's
+  horizon and into the fog.
 - A node's building is memoized per node. In the client the streamer
   computes it on a worker (`Streamer.scheduleBuilding`) and holds that
   node's chunks back until it is integrated; headless and

@@ -51,7 +51,12 @@ struct CharacterState {
         Features features;
         foreach (_; 0 .. substeps) {
             float[3] upHere = upAt(graph);
-            float[3] pivot = upHere.minus(up).scaled((character.halfHeight - character.radius).value);
+            float[3] pivot = ZERO_VECTOR;
+            if (upHere.dot(up) < 0) {
+                isOnGround = false;
+            } else {
+                pivot = upHere.minus(up).scaled((character.halfHeight - character.radius).value);
+            }
             up = upHere;
             float[3] offset = ZERO_VECTOR;
             if (input.mode == MovementMode.noclip) {
@@ -155,14 +160,18 @@ struct CharacterState {
         PlaneSet ground;
         ground.add(ContactPlane(groundNormal, 0));
         Slide moved = mover.steppedOver(at, displacement, reached, mover.slide(at, displacement, reached, false, ground));
-        Slide probe = mover.settle(moved.position, mover.character.skin);
         velocity = moved.velocity;
-        isOnGround = probe.hasLanded;
-        if (probe.hasLanded) {
-            groundNormal = probe.groundNormal;
-            return probe.position;
-        } else {
+        if (moved.isClimbing) {
             return moved.position;
+        } else {
+            Slide probe = mover.settle(moved.position, mover.character.skin);
+            isOnGround = probe.hasLanded;
+            if (probe.hasLanded) {
+                groundNormal = probe.groundNormal;
+                return probe.position;
+            } else {
+                return moved.position;
+            }
         }
     }
 
@@ -211,19 +220,28 @@ struct Mover {
 
     Slide steppedOver(float[3] start, float[3] displacement, float[3] velocity, Slide walked) const {
         float length = displacement.magnitude;
-        if (!walked.isObstructed || stepRise.value == 0 || length == 0) {
+        if (!walked.isObstructed || stepRise.value == 0 || length == 0 || !isStepClear(start, displacement, walked)) {
             return walked;
         } else {
-            Slide raised = slide(start, up.scaled(stepRise.value), ZERO_VECTOR, false, PlaneSet.init);
-            Slide across = slide(raised.position, displacement.scaled(higherOf(length, (character.radius + character.skin).value) / length), velocity, false, PlaneSet.init);
+            Slide raised = slide(start, up.scaled(length), ZERO_VECTOR, false, PlaneSet.init);
+            Slide across = slide(raised.position, displacement, velocity, false, PlaneSet.init);
             Slide lowered = settle(across.position, Length(raised.position.minus(start).dot(up)) + character.skin);
-            bool hasRisen = lowered.position.minus(walked.position).dot(up) > character.skin.value;
-            if (lowered.hasLanded && hasRisen && lowered.position.minus(start).dot(displacement) > walked.position.minus(start).dot(displacement)) {
-                return Slide(lowered.position, across.velocity, lowered.groundNormal, true, false);
+            if (lowered.hasLanded && lowered.position.minus(walked.position).dot(up) > character.skin.value) {
+                return Slide(lowered.position, across.velocity, lowered.groundNormal, true, false, false);
             } else {
-                return walked;
+                return Slide(across.position, velocity, ZERO_VECTOR, false, false, true);
             }
         }
+    }
+
+    bool isStepClear(float[3] start, float[3] displacement, ref const Slide walked) const {
+        float length = displacement.magnitude;
+        float[3] reach = displacement.scaled(higherOf(length, (character.radius + character.skin).value) / length);
+        Slide raised = slide(start, up.scaled(stepRise.value), ZERO_VECTOR, false, PlaneSet.init);
+        Slide across = slide(raised.position, reach, ZERO_VECTOR, false, PlaneSet.init);
+        Slide lowered = settle(across.position, Length(raised.position.minus(start).dot(up)) + character.skin);
+        bool hasRisen = lowered.position.minus(walked.position).dot(up) > character.skin.value;
+        return lowered.hasLanded && hasRisen && lowered.position.minus(start).dot(reach) > walked.position.minus(start).dot(reach);
     }
 
     Slide slide(float[3] start, float[3] displacement, float[3] velocity, bool isSettling, PlaneSet planes) const {
@@ -311,6 +329,7 @@ struct Slide {
     float[3] groundNormal = [0, 0, 0];
     bool hasLanded;
     bool isObstructed;
+    bool isClimbing;
 }
 
 uint atLeastOne(uint count) {

@@ -11,6 +11,7 @@ import common.slab : SLAB_SHIFT, Slab;
 import common.worldgen.blueprint : Blueprint;
 import common.worldgen.building : Building, BuildingPlan;
 import common.worldgen.generation : NodeState, Worldgen;
+import common.worldgen.sky : Skies;
 import common.worldgen.structure : LineTouch, PAINT_REACH, PendingTouch, anchorSlotOf, finalizeStructure;
 
 enum ulong NODE_HASH_MULTIPLIER = 0x9E3779B97F4A7C15;
@@ -107,6 +108,7 @@ struct Graph {
     Slab!PendingTouch pendingTouches;
     Array!LineTouch touchScratch;
     Blueprint blueprint;
+    Skies skies;
     Grower grower;
     size_t changedHead;
     Worldgen worldgen;
@@ -423,6 +425,7 @@ struct Graph {
         pendingTouches.release();
         touchScratch.release();
         blueprint.release();
+        skies.release();
         nodeCount = 0;
         touchCount = 0;
         pendingCount = 0;

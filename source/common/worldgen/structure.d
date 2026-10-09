@@ -3,7 +3,7 @@ module common.worldgen.structure;
 import core.math : sqrt;
 import core.stdc.math : atanhf, coshf, fabsf, floorf;
 import common.array : Array;
-import common.dodeca : SIDE_COUNT, Side, VERTEX_COUNT, Vertex, adjacentVertices, canonicalSides, chunkToNode, dualToNode, isAdjacentTo, reflection;
+import common.dodeca : SIDE_COUNT, Side, VERTEX_COUNT, Vertex, adjacentVertices, canonicalSides, chunkToNode, dualToNode, faceDistance, isAdjacentTo, reflection;
 import common.graph : Graph, Node, ParentList, ROOT_NODE;
 import common.material : Material;
 import common.math : MIsometry, MPoint, MVector, Matrix4;
@@ -13,12 +13,14 @@ import common.traversal : NearbyNode, NearbyScratch;
 import common.units : Length;
 import common.worldgen.blueprint : BlueprintBuilder, CellBox, EVERY_HEIGHT, LineSpec, PaintResult, canonicalBox, floorDivision;
 import common.worldgen.generation : NodeState, NodeStateKind, SplitMix, StructureWorld, Worldgen;
+import common.worldgen.plane : Plane;
 
 enum int PAINT_REACH = 6;
 enum uint GROUND_RING = 11;
 enum ulong HASH_MULTIPLIER = 0x9E3779B97F4A7C15;
 enum ulong LEVEL_MULTIPLIER = 0xBF58476D1CE4E5B9;
 enum int PLACE_SLACK = 2;
+enum float TOUCHING_FACTOR = 1.5f;
 enum Length SPAWN_DISTANCE = Length(1.0f);
 enum uint FACE_CORNERS = 5;
 enum uint EDGE_NODES = 4;
@@ -274,9 +276,12 @@ SlotTouch[EDGE_NODES] aroundEdge(ref Graph graph, SlotTouch edge, ref const Line
 }
 
 SiteFrame rootSite(uint anchor) {
-    Vertex vertex = firstVertexOn(Side.a);
+    return groundSite(anchor, firstVertexOn(Side.a));
+}
+
+SiteFrame groundSite(uint node, Vertex vertex) {
     size_t up = sideAxis(vertex, Side.a);
-    return SiteFrame(0, anchor, vertex, vertex.canonicalSides[(up + 1) % 3], Side.a, 1, 1, 1);
+    return SiteFrame(0, node, vertex, vertex.canonicalSides[(up + 1) % 3], Side.a, 1, 1, 1);
 }
 
 SiteFrame forwarded(SiteFrame site, int edges) {
@@ -413,23 +418,25 @@ ulong edgeSeed(ref Graph graph, SiteFrame site) {
 
 uint groundNodeOf(ref Graph graph, uint slot) {
     uint current = slot;
-    NodeStateKind kind = graph.ensureNodeStateAt(current).kind;
-    while (kind == NodeStateKind.deepSky || kind == NodeStateKind.deepLand) {
-        uint lowest = current;
-        float least = fabsf(altitude(*graph.ensureNodeStateAt(current)));
+    Plane ground = graph.ensureNodeStateAt(slot).surface;
+    float height = ground.distanceTo(MPoint!float.origin());
+    float touching = TOUCHING_FACTOR * faceDistance();
+    while (fabsf(height) >= touching) {
+        uint lowest = SIDE_COUNT;
+        float least = fabsf(height);
         foreach (index; 0 .. SIDE_COUNT) {
-            uint neighbor = graph.ensureNeighborSlot(current, cast(Side) index);
-            float height = fabsf(altitude(*graph.ensureNodeStateAt(neighbor)));
-            if (height < least) {
-                least = height;
-                lowest = neighbor;
+            float across = fabsf(ground.reflectAcross(cast(Side) index).distanceTo(MPoint!float.origin()));
+            if (across < least) {
+                least = across;
+                lowest = index;
             }
         }
-        assert(lowest != current);
-        current = lowest;
-        kind = graph.ensureNodeStateAt(current).kind;
+        assert(lowest < SIDE_COUNT);
+        current = graph.ensureNeighborSlot(current, cast(Side) lowest);
+        ground = ground.reflectAcross(cast(Side) lowest);
+        height = ground.distanceTo(MPoint!float.origin());
     }
-    if (kind == NodeStateKind.land) {
+    if (height < 0) {
         current = graph.ensureNeighborSlot(current, Side.a);
     }
     return current;
@@ -855,6 +862,19 @@ unittest {
         }
         assert(spun == start);
     }
+    graph.release();
+}
+
+unittest {
+    Graph graph = testGraph();
+    NearbyScratch scratch;
+    NearbyNode[] nearby = scratch.collectAll(graph, Position(graph.idAt(graph.anchorSlot), MIsometry!float.identity()), TEST_RADIUS);
+    foreach (node; nearby) {
+        NodeState state = *graph.ensureNodeStateAt(node.slot);
+        bool isDeep = state.kind == NodeStateKind.deepSky || state.kind == NodeStateKind.deepLand;
+        assert(isDeep == (fabsf(altitude(state)) >= TOUCHING_FACTOR * faceDistance()));
+    }
+    scratch.release();
     graph.release();
 }
 

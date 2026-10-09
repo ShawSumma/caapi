@@ -46,13 +46,19 @@ function walk.forward(world, seconds, min_fraction)
   return walked
 end
 
-function walk.climb_forward(world, seconds, dt, stop_rise)
+function walk.is_on_step(world, standing)
+  world:look(0, walk.STRAIGHT_DOWN_DEGREES)
+  local below = world:target_material()
+  world:look(0, -walk.STRAIGHT_DOWN_DEGREES)
+  return world:is_on_ground() and world:altitude() - standing > walk.MIN_BLOCK_EDGE / 2 and below == walk.LAYER_MATERIALS[1]
+end
+
+function walk.climb_forward(world, seconds, dt, is_done)
   local step = dt or world:timestep()
   local deadline = world:time() + seconds
-  local stop_altitude = world:altitude() + (stop_rise or math.huge)
   world:hold("fwd")
   world:step(step)
-  while world:time() < deadline and not (world:is_on_ground() and world:altitude() >= stop_altitude) do
+  while world:time() < deadline and not (is_done and is_done()) do
     walk.jump_if_blocked(world)
     world:step(step)
   end

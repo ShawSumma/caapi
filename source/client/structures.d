@@ -14,6 +14,7 @@ import common.names : ENUM_NAMES;
 import common.worldgen.blueprint : BlueprintBuilder, CellBox, EVERY_HEIGHT, PaintResult, Rhythm;
 import common.worldgen.embedded : EMBEDDED_MODULES, EMBEDDED_STRUCTURES, EmbeddedLua, embeddedIndex, isLuaPath;
 import common.worldgen.generation : STRUCTURE_NAME_CAPACITY, SplitMix, StructureWorld, Worldgen;
+import common.worldgen.sky : FOOT_NODES, PLANET, Realm, SkyGround, SkyKind, Skies, footNodes, footSite, isOnFace, openSky, realmAt, realmOver;
 import common.worldgen.structure : ClaimKey, ColumnSpot, GROUND_RING, PLACE_SLACK, RootedVertex, SiteFrame, SitePart, Turn, anchorBits, claimKeyOf, edgeCells, forwarded, groundNodeOf, groundRing, rootSite, sideAxis, siteHash, siteOrigin, turned;
 
 enum size_t MESSAGE_CAPACITY = 1024;
@@ -24,6 +25,7 @@ enum int DEFAULT_SPAN = 1;
 enum int COLUMN_RESULTS = 2;
 enum int TURN_UPVALUES = 2;
 enum int PLACED_FUNCTION = 1;
+enum int SKY_TILE = SELF + 3;
 enum string SITE_TYPE = "mined.site";
 enum string AIR = "air";
 
@@ -45,9 +47,15 @@ struct QueuedStructure {
     int argumentCount;
 }
 
+struct TileCall {
+    int reference;
+    int argumentCount;
+}
+
 struct StructureHost {
     BlueprintBuilder builder;
     Array!(Array!QueuedStructure) queue;
+    Array!TileCall skyTiles;
     SplitMix random;
     lua_State* lua;
     StructureWorld name;
@@ -58,11 +66,15 @@ struct StructureHost {
     StructureProblem problem;
 
     static StructureHost make(ref Graph graph) {
-        return StructureHost(BlueprintBuilder.make(graph), Array!(Array!QueuedStructure).init, SplitMix(graph.anchorBits(graph.anchorSlot)), null, StructureWorld.fromName(graph.worldgen.structureName()), 0, 0, LUA_NO_REF, 0, StructureProblem.init);
+        return StructureHost(BlueprintBuilder.make(graph), Array!(Array!QueuedStructure).init, Array!TileCall.init, SplitMix(graph.anchorBits(graph.anchorSlot)), null, StructureWorld.fromName(graph.worldgen.structureName()), 0, 0, LUA_NO_REF, 0, StructureProblem.init);
     }
 
     bool hasTile() const {
         return tileReference != LUA_NO_REF;
+    }
+
+    bool hasCover() const {
+        return hasTile() || skyTiles.length > 0;
     }
 
     void build(SiteFrame root) {
@@ -116,19 +128,22 @@ struct StructureHost {
     void run(QueuedStructure queued) {
         key = queued.key;
         builder.growFrom(queued.key);
-        call(queued.reference, queued.argumentCount, queued.site);
+        SiteFrame[1] sites = [queued.site];
+        call(queued.reference, queued.argumentCount, sites[]);
         luaL_unref(lua, LUA_REGISTRY, queued.reference);
     }
 
-    void call(int reference, int argumentCount, SiteFrame site) {
+    void call(int reference, int argumentCount, const(SiteFrame)[] sites) {
         lua_rawgeti(lua, LUA_REGISTRY, reference);
         int placed = lua_gettop(lua);
         lua_rawgeti(lua, placed, PLACED_FUNCTION);
-        lua.pushSite(site);
+        foreach (site; sites) {
+            lua.pushSite(site);
+        }
         foreach (index; 0 .. argumentCount) {
             lua_rawgeti(lua, placed, PLACED_FUNCTION + 1 + index);
         }
-        immutable int status = lua_pcallk(lua, STRUCTURE_ARGUMENTS + argumentCount, 0, TRACEBACK_INDEX, 0, null);
+        immutable int status = lua_pcallk(lua, cast(int) sites.length + argumentCount, 0, TRACEBACK_INDEX, 0, null);
         if (status != LUA_STATUS_OK) {
             fail();
         }
@@ -137,15 +152,54 @@ struct StructureHost {
 
     void cover(ref Graph graph, uint slot) {
         builder.graph = &graph;
-        if (hasTile() && !problem.isPresent) {
-            uint[GROUND_RING] ring = graph.groundRing(graph.groundNodeOf(slot));
-            foreach (sky; ring) {
-                if (!problem.isPresent && !graph.nodeAt(sky).isTiled) {
-                    graph.nodeAt(sky).isTiled = true;
-                    builder.tile();
-                    random = SplitMix(graph.idAt(sky).spice());
-                    call(tileReference, tileArgumentCount, rootSite(sky));
+        if (!problem.isPresent && hasCover()) {
+            uint realm = graph.ensureNodeStateAt(slot).realm;
+            if (realm == PLANET) {
+                coverPlanet(graph, slot);
+            } else {
+                uint[GROUND_RING] ring = graph.groundRing(graph.groundNodeOf(slot));
+                tileSky(graph, ring[], realm);
+            }
+        }
+    }
+
+    void coverPlanet(ref Graph graph, uint slot) {
+        uint ground = graph.groundNodeOf(slot);
+        if (hasTile()) {
+            uint[GROUND_RING] ring = graph.groundRing(ground);
+            tileFaces(graph, ring[], TileCall(tileReference, tileArgumentCount), SiteFrame.init, false);
+        }
+        if (graph.skies.isOpen()) {
+            foreach (index; 0 .. VERTEX_COUNT) {
+                Vertex vertex = cast(Vertex) index;
+                if (vertex.isOnFace(Side.a)) {
+                    uint realm = graph.realmOver(ground, vertex);
+                    if (realm != PLANET) {
+                        uint[FOOT_NODES] foot = graph.footNodes(graph.realmAt(realm));
+                        tileSky(graph, foot[], realm);
+                    }
                 }
+            }
+        }
+    }
+
+    void tileSky(ref Graph graph, const(uint)[] faces, uint realm) {
+        Realm sky = graph.realmAt(realm);
+        tileFaces(graph, faces, skyTiles.ptr[sky.kind], footSite(sky), true);
+    }
+
+    void tileFaces(ref Graph graph, const(uint)[] faces, TileCall tile, SiteFrame foot, bool isSky) {
+        foreach (face; faces) {
+            if (!problem.isPresent && !graph.nodeAt(face).isTiled) {
+                graph.nodeAt(face).isTiled = true;
+                builder.tile();
+                random = SplitMix(graph.idAt(face).spice());
+                SiteFrame[2] sites = [rootSite(face), foot];
+                uint count = 1;
+                if (isSky) {
+                    count = 2;
+                }
+                call(tile.reference, tile.argumentCount, sites[0 .. count]);
             }
         }
     }
@@ -177,6 +231,8 @@ struct StructureHost {
         lua.registerMethod(&this, "claim", &luaSiteClaim);
         lua.registerMethod(&this, "is_claimed", &luaSiteIsClaimed);
         lua.registerMethod(&this, "tile", &luaSiteTile);
+        lua.registerMethod(&this, "sky", &luaSiteSky);
+        lua.registerMethod(&this, "open_sky", &luaSiteOpenSky);
         lua.registerMethod(&this, "hash", &luaSiteHash);
         lua_setfield(lua, LUA_BELOW_TOP, "__index");
         lua_settop(lua, LUA_BELOW_TOP);
@@ -205,6 +261,7 @@ struct StructureHost {
             bucket.release();
         }
         queue.release();
+        skyTiles.release();
         builder.release();
     }
 }
@@ -217,7 +274,7 @@ StructureProblem placeWorldStructure(ref Graph graph) {
         *host = StructureHost.make(graph);
         host.build(rootSite(graph.anchorSlot));
         StructureProblem problem = host.problem;
-        if (problem.isPresent || !(host.hasQueued() || host.hasTile())) {
+        if (problem.isPresent || !(host.hasQueued() || host.hasCover())) {
             releaseStructureHost(host);
         } else {
             graph.grower = Grower(&growStructures, &coverStructures, &releaseStructureHost, host);
@@ -506,11 +563,11 @@ extern (C) int luaSiteEntrance(lua_State* lua) {
     return 0;
 }
 
-int packedCall(lua_State* lua) {
-    int count = lua_gettop(lua) - SELF;
+int packedCall(lua_State* lua, int first) {
+    int count = lua_gettop(lua) - first + 1;
     lua_createtable(lua, count, 0);
     foreach (index; 0 .. count) {
-        lua_pushvalue(lua, SELF + 1 + index);
+        lua_pushvalue(lua, first + index);
         lua_rawseti(lua, LUA_BELOW_TOP, PLACED_FUNCTION + index);
     }
     return luaL_ref(lua, LUA_REGISTRY);
@@ -535,7 +592,7 @@ extern (C) int luaSitePlace(lua_State* lua) {
         if (origin.depth > queuedKey) {
             queuedKey = origin.depth;
         }
-        host.enqueue(QueuedStructure(site, queuedKey, packedCall(lua), count - PLACED_FUNCTION));
+        host.enqueue(QueuedStructure(site, queuedKey, packedCall(lua, SELF + 1), count - PLACED_FUNCTION));
     }
     lua_pushboolean(lua, isAhead);
     return 1;
@@ -549,7 +606,45 @@ extern (C) int luaSiteTile(lua_State* lua) {
         luaL_error(lua, "only the world's own structure tiles the ground, and only once");
     }
     host.tileArgumentCount = lua_gettop(lua) - SELF - PLACED_FUNCTION;
-    host.tileReference = packedCall(lua);
+    host.tileReference = packedCall(lua, SELF + 1);
+    return 0;
+}
+
+extern (C) int luaSiteSky(lua_State* lua) {
+    StructureHost* host = structureHost(lua);
+    siteArgument(lua, SELF, *host.builder.graph);
+    double odds = luaL_checknumber(lua, SELF + 1);
+    const(char)* ground = luaL_checklstring(lua, SELF + 2, null);
+    LuaLookup!SkyGround lookup = LuaLookup!SkyGround.fromName(ground[0 .. strlen(ground)]);
+    luaL_checktype(lua, SKY_TILE, LUA_TYPE_FUNCTION);
+    Skies* skies = &host.builder.graph.skies;
+    if (host.builder.isGrowing) {
+        luaL_error(lua, "only the world's own structure opens skies");
+    } else if (!lookup.isFound) {
+        luaL_error(lua, "a sky's ground is terrain or flat, not '%s'", ground);
+    } else if (!(odds >= 0) || skies.totalOdds() + odds > 1) {
+        luaL_error(lua, "sky odds are chances per ground vertex, and all kinds together add up to at most 1");
+    }
+    skies.kinds.append(SkyKind(odds, lookup.value));
+    host.skyTiles.append(TileCall(packedCall(lua, SKY_TILE), lua_gettop(lua) - SKY_TILE));
+    lua_pushinteger(lua, cast(lua_Integer) skies.kinds.length);
+    return 1;
+}
+
+extern (C) int luaSiteOpenSky(lua_State* lua) {
+    StructureHost* host = structureHost(lua);
+    SiteFrame site = siteArgument(lua, SELF, *host.builder.graph);
+    lua_Integer kind = luaL_checkinteger(lua, SELF + 1);
+    if (host.builder.isGrowing) {
+        luaL_error(lua, "only the world's own structure opens skies");
+    } else if (kind < 1 || kind > cast(lua_Integer) host.builder.graph.skies.kinds.length) {
+        luaL_error(lua, "unknown sky kind %d", cast(int) kind);
+    } else {
+        immutable bool isOpened = (*host.builder.graph).openSky(site, cast(ubyte) kind);
+        if (!isOpened) {
+            luaL_error(lua, "a sky beside another sky would cross it");
+        }
+    }
     return 0;
 }
 

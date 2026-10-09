@@ -2,7 +2,7 @@ local climb = require("lib.climb")
 local walk = require("lib.walk")
 
 local ROAD_MATERIALS = {
-  grey_brick = true,
+  basalt = true,
   white_brick = true,
 }
 

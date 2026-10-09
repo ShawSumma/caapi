@@ -40,6 +40,7 @@ import worldgenBuilding = common.worldgen.building;
 import worldgenEmbedded = common.worldgen.embedded;
 import worldgenGeneration = common.worldgen.generation;
 import worldgenPlane = common.worldgen.plane;
+import worldgenSky = common.worldgen.sky;
 import worldgenSpawn = common.worldgen.spawn;
 import worldgenStructure = common.worldgen.structure;
 import worldgenTerraingen = common.worldgen.terraingen;

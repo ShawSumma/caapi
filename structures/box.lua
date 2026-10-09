@@ -19,10 +19,18 @@ box.PALETTES = {
   { wall = "grey_brick", floor = "concrete", trim = "marble" },
 }
 
+box.SKY_EDGES = 2
+
 local LOW = -box.HALF
 local HIGH = box.HALF - 1
 local SQUARE = { LOW, HIGH }
 local INSIDE = { LOW + 1, HIGH - 1 }
+local APPROACH_X = box.STAIR_START - 0.5
+local LANDING_X = box.STAIR_START + box.STORY - 0.5
+local OUTSIDE_X = LOW - 0.5
+local APPROACH_STEPS = 7
+local PIER_EDGES = 4
+local CONNECTOR = box.PALETTES[2]
 
 function box.palette(site)
   return box.PALETTES[site:pick(#box.PALETTES)]
@@ -104,17 +112,82 @@ function box.door(tower)
 end
 
 function box.stair_route(tower, first_floor, top)
-  local approach = box.STAIR_START - 0.5
-  local landing = box.STAIR_START + box.STORY - 0.5
   for floor = first_floor, top - 1, box.STORY do
     local lane = box.lane(floor // box.STORY) + 1
-    tower:stop(approach, box.MIDDLE_LANE, floor + 1)
-    tower:stop(approach, lane, floor + 1)
+    tower:stop(APPROACH_X, box.MIDDLE_LANE, floor + 1)
+    tower:stop(APPROACH_X, lane, floor + 1)
     for tread = 0, box.STORY - 2 do
       tower:stop(box.STAIR_START + tread + 0.5, lane, floor + tread + 2)
     end
-    tower:stop(landing, lane, floor + box.STORY + 1)
-    tower:stop(landing, box.MIDDLE_LANE, floor + box.STORY + 1)
+    tower:stop(LANDING_X, lane, floor + box.STORY + 1)
+    tower:stop(LANDING_X, box.MIDDLE_LANE, floor + box.STORY + 1)
+  end
+end
+
+local function approach(tower, palette)
+  local depth = PIER_EDGES * tower:edge_cells()
+  tower:fill(palette.wall, { x = SQUARE, y = SQUARE, z = { -depth, -1 } })
+  for step = 1, APPROACH_STEPS do
+    local reach = box.HALF + step
+    tower:fill(palette.floor, { x = { -reach, reach - 1 }, y = { -reach, reach - 1 }, z = { -step, -step } })
+  end
+  for rise = 0, APPROACH_STEPS - 1 do
+    local reach = box.HALF + 1 + rise
+    tower:paint("air", { x = { -reach, reach - 1 }, y = { -reach, reach - 1 }, z = { rise, rise } })
+  end
+end
+
+local function half(tower, palette)
+  local halfway = tower:edge_cells()
+  box.shell(tower, halfway - 1, palette)
+  box.floors(tower, halfway - 1, palette)
+  box.windows(tower, halfway - 1)
+  box.stairs(tower, halfway, palette)
+  box.door(tower)
+end
+
+local function descend(tower, story, has_landing)
+  local floor = story * box.STORY
+  local lane = box.lane(story) + 1
+  if has_landing then
+    tower:stop(LANDING_X, box.MIDDLE_LANE, floor + box.STORY + 1)
+    tower:stop(LANDING_X, lane, floor + box.STORY + 1)
+  end
+  for tread = box.STORY - 2, 0, -1 do
+    tower:stop(box.STAIR_START + tread + 0.5, lane, floor + tread + 2)
+  end
+  tower:stop(APPROACH_X, lane, floor + 1)
+  tower:stop(APPROACH_X, box.MIDDLE_LANE, floor + 1)
+end
+
+local function crossing_route(planet, sky)
+  local top_story = sky:edge_cells() // box.STORY - 1
+  local floor = top_story * box.STORY
+  local lane = box.lane(top_story) + 1
+  planet:stop(OUTSIDE_X, box.MIDDLE_LANE, 0)
+  box.stair_route(planet, 0, floor)
+  planet:stop(APPROACH_X, box.MIDDLE_LANE, floor + 1)
+  planet:stop(APPROACH_X, lane, floor + 1)
+  for tread = 0, box.STORY - 3 do
+    planet:stop(box.STAIR_START + tread + 0.5, lane, floor + tread + 2)
+  end
+  for story = top_story - 1, 0, -1 do
+    descend(sky, story, story < top_story - 1)
+  end
+  sky:stop(OUTSIDE_X, box.MIDDLE_LANE, 0)
+end
+
+function box.connector(foot, options)
+  local sky = foot:pitch_up()
+  local planet = sky:forward(box.SKY_EDGES):pitch_up():pitch_up()
+  approach(planet, CONNECTOR)
+  if options.terrain then
+    approach(sky, CONNECTOR)
+  end
+  half(sky, CONNECTOR)
+  half(planet, CONNECTOR)
+  if options.route then
+    crossing_route(planet, sky)
   end
 end
 

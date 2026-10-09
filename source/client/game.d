@@ -294,6 +294,9 @@ struct Game {
     }
 
     void followBody() {
+        if (camera.viewUp.dot(characterState.up) < 0) {
+            camera.pitch = -camera.pitch;
+        }
         MIsometry!float eye = MIsometry!float.fromDisplacement(characterState.up.scaled(camera.eyeOffset.value));
         camera.follow(characterState.position, eye, characterState.up);
         camera.levelRoll();
