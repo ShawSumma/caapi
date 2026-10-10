@@ -1,4 +1,4 @@
-local box = require("box")
+local connector = require("connector")
 local kit = require("buildings.kit")
 
 local town = {}
@@ -57,6 +57,8 @@ local CROSSING = 1
 local TREE_SPACING = 8
 local CURB = SIDEWALK[1]
 local PARKING_SPACING = 3
+local CITY_GROUND = 1
+local CROWN_ROOM = 10
 
 local function roll(site, part)
   math.randomseed(site:hash(part))
@@ -104,10 +106,6 @@ local function is_root_vertex(site, root)
   return site:hash("vertex") == root.vertex
 end
 
-local function touches_root(edge, root)
-  return is_root_vertex(edge, root) or is_root_vertex(edge:forward(1), root)
-end
-
 local function is_island(face, root)
   if roll(face, "face") >= ISLAND then
     return false
@@ -122,8 +120,8 @@ local function is_island(face, root)
 end
 
 local function is_planned_street(edge, root)
-  if touches_root(edge, root) then
-    return not root.foot
+  if is_root_vertex(edge, root) or is_root_vertex(edge:forward(1), root) then
+    return true
   elseif is_island(edge, root) or is_island(edge:left(), root) then
     return true
   else
@@ -143,9 +141,7 @@ local function is_kept_for_access(edge, root)
 end
 
 local function is_street(edge, root)
-  if root.foot and touches_root(edge, root) then
-    return false
-  elseif is_planned_street(edge, root) then
+  if is_planned_street(edge, root) then
     return true
   else
     return is_kept_for_access(edge, root) or is_kept_for_access(edge:forward(1):right():right(), root)
@@ -275,6 +271,18 @@ local function spec_of(site, kind, types)
   return { type = name, stories = stories, palette = choose(site, building.PALETTES), front = front, gap = gap }
 end
 
+function town.fit(site, stories)
+  local room = CROWN_ROOM + 1
+  return math.min(stories, (site:balance(stories * kit.STORY + room) - room) // kit.STORY)
+end
+
+local function fitted(spec, site, root)
+  if root.sky then
+    spec.stories = town.fit(site, spec.stories)
+  end
+  return spec
+end
+
 local function route_spec()
   local spec = { front = FRONT, palette = TYPES[ROUTE_SPEC.type].PALETTES[1] }
   for key, value in pairs(ROUTE_SPEC) do
@@ -288,10 +296,13 @@ local function build(parts, spec)
   TYPES[spec.type].build(parts, spec)
 end
 
-local function lot(parts, is_route)
+local function lot(parts, is_route, is_root, root)
   local site = parts[1].site
   local kind = KINDS[#parts]
-  if is_route then
+  if is_root and root.sky then
+    pave(parts, "granite")
+    plant(parts)
+  elseif is_route then
     build(parts, route_spec())
   elseif chance(site, PARK_PERCENT) then
     pave(parts, "grass")
@@ -302,7 +313,13 @@ local function lot(parts, is_route)
   elseif chance(site, PARKING_PERCENT) then
     parking(parts)
   else
-    build(parts, spec_of(site, kind, kind.types))
+    local spec = fitted(spec_of(site, kind, kind.types), site, root)
+    if spec.stories >= 1 then
+      build(parts, spec)
+    else
+      pave(parts, "granite")
+      plant(parts)
+    end
   end
 end
 
@@ -322,7 +339,7 @@ local function part_of(quarter, is_street_before, is_street_after, is_first)
   return { site = quarter, x_low = x_low, y_low = y_low, x_high = BOUNDARY, y_high = BOUNDARY, front = front }
 end
 
-local function lots_around(quarters, root)
+local function lots_at(quarters, root)
   local streets = {}
   local islands = {}
   local any = false
@@ -332,6 +349,9 @@ local function lots_around(quarters, root)
     any = any or streets[index]
   end
   local is_root = is_root_vertex(quarters[1], root)
+  if is_root and root.sky then
+    connector.build(quarters[1], root.sky, CITY_GROUND, root.is_routed)
+  end
   local start = 1
   while start <= AROUND and not streets[start] do
     start = start + 1
@@ -350,7 +370,7 @@ local function lots_around(quarters, root)
     end
     if streets[after] or step == AROUND - 1 then
       if #run > 0 then
-        lot(run, is_route)
+        lot(run, is_route, is_root, root)
       end
       run = {}
       is_route = false
@@ -358,30 +378,19 @@ local function lots_around(quarters, root)
   end
 end
 
-local function foot_plaza(quarters, root)
-  for _, quarter in ipairs(quarters) do
-    local ground = upright(quarter)
-    local _, far = ground:column()
-    ground:paint("granite", { x = { 0, far }, y = { 0, far }, z = { -1, -1 } })
-  end
-  box.connector(root.foot, root.connector)
-end
-
-local function lots_at(quarters, root)
-  if root.foot and is_root_vertex(quarters[1], root) then
-    foot_plaza(quarters, root)
-  else
-    lots_around(quarters, root)
-  end
-end
-
-local function island(corners)
+local function island(corners, root)
   local parts = {}
   for index = 1, SIDES do
     parts[index] = { site = corners[index], x_low = STREET, y_low = STREET, x_high = JOINED, y_high = JOINED }
   end
   parts[1].front = "y_low"
-  build(parts, spec_of(corners[1], KINDS[#KINDS], ISLAND_TYPES))
+  local spec = fitted(spec_of(corners[1], KINDS[#KINDS], ISLAND_TYPES), corners[1], root)
+  if spec.stories >= 1 then
+    build(parts, spec)
+  else
+    pave(parts, "granite")
+    plant(parts)
+  end
 end
 
 function town.root(site)
@@ -403,7 +412,7 @@ function town.tile(face, root)
     end
   end
   if is_island(face, root) then
-    island(corners)
+    island(corners, root)
   end
 end
 

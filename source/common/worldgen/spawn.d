@@ -10,6 +10,7 @@ import common.position : Position;
 import common.traversal : NodeVisit, isVisited;
 import common.vector3 : scaled;
 import common.worldgen.generation : ChunkParams, PlaneWorld, Worldgen;
+import common.worldgen.sky : gravityAt;
 
 enum float TEST_BODY_REACH = 0.1f;
 enum float TEST_ALTITUDE_TOLERANCE = 1e-4f;
@@ -68,7 +69,7 @@ bool isRegionProvenClear(ref Graph graph, Position position, float distance) {
 
 Position clearSpawnPosition(ref Graph graph, float bodyReach) {
     graph.ensureNodeState(ROOT_NODE);
-    float[3] up = graph.upAt(Position.origin());
+    float[3] up = graph.gravityAt(Position.origin()).up;
     float rootAltitude = graph.nodeState(ROOT_NODE).surface.distanceTo(MPoint!float.origin());
     return graph.clearPositionFrom(up, rootAltitude, bodyReach, bodyReach);
 }

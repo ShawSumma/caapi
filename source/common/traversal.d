@@ -7,6 +7,7 @@ import common.dodeca : BOUNDING_SPHERE_RADIUS, SIDE_COUNT, Side, reflection;
 import common.graph : Graph, NO_SLOT, NodeId;
 import common.math : MIsometry, MPoint, MVector;
 import common.position : Position;
+import common.worldgen.sky : mayHoldContent;
 
 enum uint NODES_PER_CLOCK_CHECK = 64;
 enum double NO_DEADLINE = double.infinity;
@@ -79,6 +80,7 @@ struct NearbyScratch {
     MPoint!float startPoint;
     size_t front;
     float coshThreshold = 0;
+    float coshInner = 0;
     uint generation;
 
     void release() {
@@ -99,8 +101,9 @@ struct NearbyScratch {
         return front < nodes.length;
     }
 
-    void begin(ref Graph graph, Position start, float distance) {
+    void begin(ref Graph graph, Position start, float distance, float inner) {
         coshThreshold = coshf(distance + BOUNDING_SPHERE_RADIUS);
+        coshInner = coshf(inner);
         nodes.clear();
         front = 0;
         generation += 1;
@@ -137,7 +140,17 @@ struct NearbyScratch {
         return !(-startPoint.mip(current.transform * reflectedOrigin) > coshThreshold);
     }
 
+    bool isInner(NearbyNode current) const {
+        return !(-startPoint.mip(current.transform * MVector!float.origin()) > coshInner);
+    }
+
     void expand(ref Graph graph, NearbyNode current) {
+        if (isInner(current) || graph.mayHoldContent(current.slot)) {
+            expandAll(graph, current);
+        }
+    }
+
+    void expandAll(ref Graph graph, NearbyNode current) {
         foreach (sideIndex; 0 .. SIDE_COUNT) {
             Side side = cast(Side) sideIndex;
             uint existing = graph.neighborSlot(current.slot, side);
@@ -151,7 +164,7 @@ struct NearbyScratch {
     }
 
     NearbyNode[] collectAll(ref Graph graph, Position start, float distance) {
-        begin(graph, start, distance);
+        begin(graph, start, distance, distance + BOUNDING_SPHERE_RADIUS);
         advance(graph, NO_DEADLINE);
         return nodes.slice();
     }

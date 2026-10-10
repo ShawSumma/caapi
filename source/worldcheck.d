@@ -6,6 +6,7 @@ import core.stdc.stdlib : free, malloc;
 import client.meshing : Mesher;
 import client.streaming : Streamer, populateChunk, resolveMaterials;
 import client.structures : StructureProblem, growthProblem, placeWorldStructure;
+import client.world : FULL_RADIUS;
 import common.clock : nowMilliseconds;
 import common.coords : Coords;
 import common.dodeca : CHUNK_BOUNDING_SPHERE_RADIUS, VERTEX_COUNT, Vertex, chunkBoundingSphereCenter;
@@ -15,7 +16,7 @@ import common.math : MIsometry, MPoint;
 import common.murmur : murmurHash3;
 import common.node : Chunk, ChunkSlot, ChunkState, VoxelData;
 import common.position : Position;
-import common.traversal : NearbyNode, NearbyScratch;
+import common.traversal : NO_DEADLINE, NearbyNode, NearbyScratch;
 import common.worldgen.generation : ChunkParams, GeneratedVoxels, Worldgen;
 import common.worldgen.structure : altitude, edgeLength;
 
@@ -341,12 +342,19 @@ void benchDrive(FILE* output, float radius, ubyte dimension) {
 void benchNearby(FILE* output, float radius, uint iterations, ubyte dimension) {
     Graph graph = terrainGraph(dimension);
     NearbyScratch scratch;
-    size_t nodeCount = scratch.collectAll(graph, Position.origin(), radius).length;
+    double coldStart = nowMilliseconds();
+    size_t nodeCount = scratch.collectPruned(graph, radius).length;
+    double coldMs = nowMilliseconds() - coldStart;
     double start = nowMilliseconds();
     foreach (_; 0 .. iterations) {
-        scratch.collectAll(graph, Position.origin(), radius);
+        scratch.collectPruned(graph, radius);
     }
-    fprintf(output, "bench-nearby dim=%u radius=%.1f nodes=%zu iterations=%u collect=%.3fms\n", cast(uint) dimension, cast(double) radius, nodeCount, iterations, (nowMilliseconds() - start) / iterations);
-    scratch.release();
+    fprintf(output, "bench-nearby dim=%u radius=%.1f nodes=%zu graph=%u iterations=%u cold=%.1fms collect=%.3fms\n", cast(uint) dimension, cast(double) radius, nodeCount, graph.nodeCount, iterations, coldMs, (nowMilliseconds() - start) / iterations);    scratch.release();
     graph.release();
+}
+
+NearbyNode[] collectPruned(ref NearbyScratch scratch, ref Graph graph, float radius) {
+    scratch.begin(graph, Position.origin(), radius, FULL_RADIUS);
+    scratch.advance(graph, NO_DEADLINE);
+    return scratch.nodes.slice();
 }

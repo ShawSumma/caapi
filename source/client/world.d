@@ -18,7 +18,8 @@ import common.traversal : NOT_COLLECTED, NO_DEADLINE, NearbyNode, NearbyScratch;
 import common.worldgen.generation : Worldgen;
 
 enum float NEARBY_PADDING = 0.05f;
-enum float RENDER_RADIUS = 4.5f;
+enum float RENDER_RADIUS = 6.5f;
+enum float FULL_RADIUS = 4.5f;
 enum double NEARBY_BUDGET_MILLISECONDS = 2.0;
 
 struct Placement {
@@ -88,7 +89,7 @@ struct LocalWorld {
     void buildInitialNearby(float distance, double deadline) {
         NearbyScratch* current = &nearby[published];
         if (!current.isBuilding() || cameraNearbyIndex() == NOT_COLLECTED) {
-            current.begin(graph, cameraPosition, distance);
+            current.begin(graph, cameraPosition, distance, FULL_RADIUS);
             publishedPoint = cameraPosition.local * MPoint!float.origin();
             nearbyVersion += 1;
         }
@@ -99,7 +100,7 @@ struct LocalWorld {
 
     void rebuildNearbyNow(float distance) {
         NearbyScratch* next = &nearby[1 - published];
-        next.begin(graph, cameraPosition, distance);
+        next.begin(graph, cameraPosition, distance, FULL_RADIUS);
         next.advance(graph, NO_DEADLINE);
         publish(cameraPosition.local * MPoint!float.origin());
     }
@@ -108,7 +109,7 @@ struct LocalWorld {
         NearbyScratch* next = &nearby[1 - published];
         MPoint!float camera = cameraInNearbyFrame() * MPoint!float.origin();
         if (!next.isBuilding() && -publishedPoint.mip(camera.vec) > coshf(NEARBY_PADDING / 2)) {
-            next.begin(graph, cameraPosition, distance);
+            next.begin(graph, cameraPosition, distance, FULL_RADIUS);
             pendingPoint = cameraPosition.local * MPoint!float.origin();
         }
         if (next.isBuilding()) {

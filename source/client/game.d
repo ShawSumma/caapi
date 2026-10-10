@@ -19,6 +19,7 @@ import common.units : Acceleration, Angle, Length, Speed, Time;
 import common.vector3 : ZERO_VECTOR, cross, dot, magnitude, negated, plus, rejectAlong, scaled;
 import common.worldgen.blueprint : RouteStop;
 import common.worldgen.generation : NodeState, Worldgen;
+import common.worldgen.sky : ensureWorldsAt, gravityAt;
 import common.worldgen.spawn : clearSpawnPosition, collectChunksNear;
 import common.worldgen.structure : SiteFrame, columnPoint, rootSite, siteToNode, sitePlacement, spawnBefore;
 
@@ -137,7 +138,8 @@ struct Game {
             placeAt(sitePosition(entrance.site, spawnBefore(world.graph.layout, entrance.spot)), bodyExtent() + character.skin);
         } else {
             Position spawn = world.graph.clearSpawnPosition(bodyReach().value);
-            characterState = CharacterState(spawn, ZERO_VECTOR, [0, 1, 0], world.graph.upAt(spawn), false);
+            float[3] up = world.graph.gravityAt(spawn).up;
+            characterState = CharacterState(spawn, ZERO_VECTOR, [0, 1, 0], up, up, false);
         }
         settleToGround();
         resetView();
@@ -156,7 +158,8 @@ struct Game {
         while (!drop.hasLanded) {
             generateAround(characterState.position, reach);
             world.graph.ensureNodeState(characterState.position.node);
-            characterState.up = world.graph.upAt(characterState.position);
+            characterState.up = world.graph.gravityAt(characterState.position).up;
+            characterState.pull = characterState.up;
             features.collect(world.graph, characterState.position, reach);
             drop = Mover.make(character, features, characterState.up, Length(0)).settle(ZERO_VECTOR, bodyReach());
             characterState.position = world.graph.movedBy(characterState.position, drop.position);
@@ -248,10 +251,13 @@ struct Game {
 
     void placeAt(Position target, Length lift) {
         world.graph.ensureNodeState(target.node);
-        float[3] up = world.graph.upAt(target);
+        world.graph.ensureWorldsAt(world.graph.slotOf(target.node));
+        float[3] up = world.graph.gravityAt(target).up;
         Position lifted = world.graph.ensureNormalized(Position(target.node, (target.local * MIsometry!float.fromDisplacement(up.scaled(lift.value))).renormalized()));
         world.graph.ensureNodeState(lifted.node);
-        characterState = CharacterState(lifted, ZERO_VECTOR, characterState.groundNormal, world.graph.upAt(lifted), false);
+        world.graph.ensureWorldsAt(world.graph.slotOf(lifted.node));
+        float[3] liftedUp = world.graph.gravityAt(lifted).up;
+        characterState = CharacterState(lifted, ZERO_VECTOR, characterState.groundNormal, liftedUp, liftedUp, false);
         resetView();
     }
 
@@ -294,9 +300,6 @@ struct Game {
     }
 
     void followBody() {
-        if (camera.viewUp.dot(characterState.up) < 0) {
-            camera.pitch = -camera.pitch;
-        }
         MIsometry!float eye = MIsometry!float.fromDisplacement(characterState.up.scaled(camera.eyeOffset.value));
         camera.follow(characterState.position, eye, characterState.up);
         camera.levelRoll();

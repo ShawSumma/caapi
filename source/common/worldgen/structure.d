@@ -13,7 +13,6 @@ import common.traversal : NearbyNode, NearbyScratch;
 import common.units : Length;
 import common.worldgen.blueprint : BlueprintBuilder, CellBox, EVERY_HEIGHT, LineSpec, PaintResult, canonicalBox, floorDivision;
 import common.worldgen.generation : NodeState, NodeStateKind, SplitMix, StructureWorld, Worldgen;
-import common.worldgen.plane : Plane;
 
 enum int PAINT_REACH = 6;
 enum uint GROUND_RING = 11;
@@ -276,12 +275,16 @@ SlotTouch[EDGE_NODES] aroundEdge(ref Graph graph, SlotTouch edge, ref const Line
 }
 
 SiteFrame rootSite(uint anchor) {
-    return groundSite(anchor, firstVertexOn(Side.a));
+    return faceSite(anchor, Side.a);
 }
 
-SiteFrame groundSite(uint node, Vertex vertex) {
-    size_t up = sideAxis(vertex, Side.a);
-    return SiteFrame(0, node, vertex, vertex.canonicalSides[(up + 1) % 3], Side.a, 1, 1, 1);
+SiteFrame faceSite(uint node, Side label) {
+    return groundSite(node, firstVertexOn(label), label);
+}
+
+SiteFrame groundSite(uint node, Vertex vertex, Side label) {
+    size_t up = sideAxis(vertex, label);
+    return SiteFrame(0, node, vertex, vertex.canonicalSides[(up + 1) % 3], label, 1, 1, 1);
 }
 
 SiteFrame forwarded(SiteFrame site, int edges) {
@@ -416,38 +419,12 @@ ulong edgeSeed(ref Graph graph, SiteFrame site) {
     return mixedSeed(graph.idAt(line.node).spice() ^ (level * LEVEL_MULTIPLIER), feature, SitePart.edge);
 }
 
-uint groundNodeOf(ref Graph graph, uint slot) {
-    uint current = slot;
-    Plane ground = graph.ensureNodeStateAt(slot).surface;
-    float height = ground.distanceTo(MPoint!float.origin());
-    float touching = TOUCHING_FACTOR * faceDistance();
-    while (fabsf(height) >= touching) {
-        uint lowest = SIDE_COUNT;
-        float least = fabsf(height);
-        foreach (index; 0 .. SIDE_COUNT) {
-            float across = fabsf(ground.reflectAcross(cast(Side) index).distanceTo(MPoint!float.origin()));
-            if (across < least) {
-                least = across;
-                lowest = index;
-            }
-        }
-        assert(lowest < SIDE_COUNT);
-        current = graph.ensureNeighborSlot(current, cast(Side) lowest);
-        ground = ground.reflectAcross(cast(Side) lowest);
-        height = ground.distanceTo(MPoint!float.origin());
-    }
-    if (height < 0) {
-        current = graph.ensureNeighborSlot(current, Side.a);
-    }
-    return current;
-}
-
-uint[GROUND_RING] groundRing(ref Graph graph, uint sky) {
+uint[GROUND_RING] groundRing(ref Graph graph, uint sky, Side label) {
     uint[GROUND_RING] ring = void;
     uint count = 0;
     ring[count] = sky;
     count += 1;
-    ushort faces = ringFaces(Side.a);
+    ushort faces = ringFaces(label);
     foreach (index; 0 .. SIDE_COUNT) {
         Side side = cast(Side) index;
         if ((faces & faceBit(side)) != 0) {
@@ -808,19 +785,45 @@ unittest {
     graph.release();
 }
 
+bool isCanonicalMatch(ref Graph graph, SiteFrame site) {
+    CanonicalSite canonical = graph.canonicalOf(site);
+    SiteFrame line = lineSite(canonical.line);
+    bool isMatch = true;
+    foreach (cell; TEST_CELLS) {
+        int[3] local = [cell[0] - 6, cell[1] - 6, cell[2] - 20];
+        CellBox moved = canonicalBox(CellBox(local, local), canonical.transform, TEST_DIMENSION);
+        ColumnSpot fromSite = ColumnSpot(local[0] + 0.5f, local[1] + 0.5f, local[2] + 0.5f);
+        ColumnSpot fromLine = ColumnSpot(moved.low[0] + 0.5f, moved.low[1] + 0.5f, moved.low[2] + 0.5f);
+        isMatch = isMatch && isSamePoint(graph.siteToNode(site, site.node) * columnPoint(graph.layout, fromSite), graph.siteToNode(line, site.node) * columnPoint(graph.layout, fromLine));
+    }
+    return isMatch;
+}
+
 unittest {
     Graph graph = testGraph();
     SiteFrame[8] sites = graph.testSites();
     foreach (site; sites) {
-        CanonicalSite canonical = graph.canonicalOf(site);
-        SiteFrame line = lineSite(canonical.line);
-        foreach (cell; TEST_CELLS) {
-            int[3] local = [cell[0] - 6, cell[1] - 6, cell[2] - 20];
-            CellBox moved = canonicalBox(CellBox(local, local), canonical.transform, TEST_DIMENSION);
-            ColumnSpot fromSite = ColumnSpot(local[0] + 0.5f, local[1] + 0.5f, local[2] + 0.5f);
-            ColumnSpot fromLine = ColumnSpot(moved.low[0] + 0.5f, moved.low[1] + 0.5f, moved.low[2] + 0.5f);
-            assert(isSamePoint(graph.siteToNode(site, site.node) * columnPoint(graph.layout, fromSite), graph.siteToNode(line, site.node) * columnPoint(graph.layout, fromLine)));
-        }
+        assert(graph.isCanonicalMatch(site));
+    }
+    graph.release();
+}
+
+unittest {
+    Graph graph = testGraph();
+    SiteFrame tower = graph.turned(rootSite(graph.anchorSlot), Turn.pitchUp);
+    SiteFrame down = graph.turned(graph.turned(forwarded(tower, TEST_RISE_EDGES), Turn.pitchUp), Turn.pitchUp);
+    SiteFrame top = graph.atLevel(forwarded(tower, TEST_RISE_EDGES), 0);
+    SiteFrame ground = groundSite(top.node, top.vertex, top.zSide());
+    SiteFrame quarter = graph.turned(ground, Turn.right);
+    SiteFrame[5] sites = [
+        down,
+        graph.turned(down, Turn.rollRight),
+        graph.turned(graph.turned(ground, Turn.pitchUp), Turn.rollRight),
+        graph.turned(graph.turned(quarter, Turn.pitchUp), Turn.rollRight),
+        forwarded(graph.turned(graph.turned(quarter, Turn.pitchUp), Turn.rollRight), TEST_RISE_EDGES),
+    ];
+    foreach (site; sites) {
+        assert(graph.isCanonicalMatch(site));
     }
     graph.release();
 }
@@ -880,20 +883,13 @@ unittest {
 
 unittest {
     Graph graph = testGraph();
-    uint[GROUND_RING] ring = graph.groundRing(graph.anchorSlot);
+    uint[GROUND_RING] ring = graph.groundRing(graph.anchorSlot, Side.a);
     foreach (index, slot; ring) {
         assert(graph.ensureNodeStateAt(slot).kind == NodeStateKind.sky);
         foreach (other; ring[index + 1 .. $]) {
             assert(other != slot);
         }
     }
-    SiteFrame high = graph.atLevel(forwarded(graph.turned(rootSite(graph.anchorSlot), Turn.pitchUp), TEST_RISE_EDGES), 0);
-    uint below = graph.groundNodeOf(high.node);
-    uint index = 0;
-    while (index < GROUND_RING && ring[index] != below) {
-        index += 1;
-    }
-    assert(index < GROUND_RING);
     graph.release();
 }
 

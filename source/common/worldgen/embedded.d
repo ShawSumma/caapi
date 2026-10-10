@@ -16,9 +16,10 @@ immutable EmbeddedLua[6] EMBEDDED_STRUCTURES = [
     EmbeddedLua("planet", import("planet.lua")),
 ];
 
-immutable EmbeddedLua[8] EMBEDDED_MODULES = [
+immutable EmbeddedLua[9] EMBEDDED_MODULES = [
     EmbeddedLua("box", import("box.lua")),
     EmbeddedLua("town", import("town.lua")),
+    EmbeddedLua("connector", import("connector.lua")),
     EmbeddedLua("sky", import("sky.lua")),
     EmbeddedLua("buildings.kit", import("buildings/kit.lua")),
     EmbeddedLua("buildings.brownstone", import("buildings/brownstone.lua")),

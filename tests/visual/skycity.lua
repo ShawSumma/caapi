@@ -2,7 +2,7 @@ local climb = require("lib.climb")
 local walk = require("lib.walk")
 
 local SKIES = "tests/lib/skies.lua"
-local LOOK_UP_DEGREES = -75
+local LOOK_UP_DEGREES = -20
 
 return function(world)
   world:worldgen("structure", SKIES)

@@ -1,7 +1,7 @@
 module common.settings;
 
 import core.stdc.math : sqrtf;
-import common.units : Acceleration, Blocks, Length, Rate, Ratio, Speed;
+import common.units : Acceleration, AngularSpeed, Blocks, Length, Rate, Ratio, Speed;
 
 enum ubyte CHUNK_DIMENSION = 12;
 
@@ -12,6 +12,8 @@ struct CharacterConfig {
     Rate walkResponse = Rate(12.1f);
     Acceleration steering = Acceleration(0.4f);
     Acceleration gravity = Acceleration(1.6f);
+    AngularSpeed upTurnRate = AngularSpeed(4.0f);
+    Ratio leastTurningGravity = Ratio(0.1f);
     Length jumpHeight = Length(0.085f);
     Blocks stepHeight = Blocks(1);
     Ratio footFriction = Ratio(1.75f);

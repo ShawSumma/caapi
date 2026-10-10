@@ -1,10 +1,11 @@
 module common.character.controller;
 
-import core.stdc.math : atanhf, ceilf, expf;
+import core.stdc.math : acosf, atanhf, ceilf, cosf, expf, fabsf, sinf;
 import common.character.features : BlockProbe, Features, visitCells;
 import common.character.sweep : Capsule, ContactPlane, MIN_CREASE_SINE, Sweep, isSameDirection;
 import common.graph : Graph;
-import common.math : MIsometry, higherOf;
+import common.math : MIsometry, clamped, higherOf;
+import common.worldgen.sky : Gravity, gravityAt;
 import common.position : Position;
 import common.settings : CharacterConfig;
 import common.units : Length, Ratio, Speed, Time;
@@ -41,6 +42,7 @@ struct CharacterState {
     float[3] velocity = [0, 0, 0];
     float[3] groundNormal = [0, 1, 0];
     float[3] up = [0, 1, 0];
+    float[3] pull = [0, 1, 0];
     bool isOnGround;
 
     Stepped runStep(ref const CharacterConfig character, ref const Graph graph, CharacterInput input, Time step) {
@@ -50,14 +52,20 @@ struct CharacterState {
         Stepped stepped;
         Features features;
         foreach (_; 0 .. substeps) {
-            float[3] upHere = upAt(graph);
-            float[3] pivot = ZERO_VECTOR;
-            if (upHere.dot(up) < 0) {
-                isOnGround = false;
-            } else {
-                pivot = upHere.minus(up).scaled((character.halfHeight - character.radius).value);
+            Gravity gravity = Gravity(up, 0);
+            if (graph.nodeAt(graph.slotOf(position.node)).hasState) {
+                gravity = graph.gravityAt(position);
             }
-            up = upHere;
+            float[3] turned = up;
+            if (gravity.strength >= character.leastTurningGravity.value) {
+                turned = turnedToward(up, gravity.up, (character.upTurnRate * dt).value);
+            }
+            float[3] pivot = turned.minus(up).scaled((character.halfHeight - character.radius).value);
+            if (up.dot(gravity.up) < 0) {
+                pivot = pivot.negated;
+            }
+            up = turned;
+            pull = gravity.up.scaled(gravity.strength);
             float[3] offset = ZERO_VECTOR;
             if (input.mode == MovementMode.noclip) {
                 offset = noclipStep(character, input, dt);
@@ -98,14 +106,6 @@ struct CharacterState {
             } else {
                 return Length(0);
             }
-        }
-    }
-
-    float[3] upAt(ref const Graph graph) const {
-        if (graph.nodeAt(graph.slotOf(position.node)).hasState) {
-            return graph.nodeState(position.node).surface.upAt(position.local);
-        } else {
-            return up;
         }
     }
 
@@ -177,7 +177,7 @@ struct CharacterState {
 
     float[3] unsupportedMove(ref const Mover mover, float[3] at, float[3] wish, Time dt) {
         velocity = steered(mover, wish, dt);
-        float[3] fallen = velocity.minus(mover.up.scaled((mover.character.gravity * dt).value));
+        float[3] fallen = velocity.minus(pull.scaled((mover.character.gravity * dt).value));
         float[3] displacement = velocity.plus(fallen).scaled(0.5f * dt.value);
         Slide moved = mover.slide(at, displacement, fallen, false, PlaneSet.init);
         velocity = moved.velocity;
@@ -196,6 +196,31 @@ Position movedBy(ref const Graph graph, Position start, float[3] klein) {
     } else {
         MIsometry!float step = MIsometry!float.fromDisplacement(klein.scaled(atanhf(length) / length));
         return graph.normalized(Position(start.node, (start.local * step).renormalized()));
+    }
+}
+
+float[3] turnedToward(float[3] from, float[3] to, float most) {
+    float angle = acosf(clamped(from.dot(to), -1.0f, 1.0f));
+    if (angle <= most) {
+        return to;
+    } else {
+        float[3] axis = from.cross(to);
+        if (axis.magnitude == 0) {
+            axis = from.cross(perpendicularTo(from));
+        }
+        float[3] side = axis.scaled(1.0f / axis.magnitude).cross(from);
+        float[3] rotated = from.scaled(cosf(most)).plus(side.scaled(sinf(most)));
+        return rotated.scaled(1.0f / rotated.magnitude);
+    }
+}
+
+float[3] perpendicularTo(float[3] direction) {
+    float[3] xAxis = [1, 0, 0];
+    float[3] yAxis = [0, 1, 0];
+    if (fabsf(direction[0]) < fabsf(direction[1])) {
+        return xAxis;
+    } else {
+        return yAxis;
     }
 }
 

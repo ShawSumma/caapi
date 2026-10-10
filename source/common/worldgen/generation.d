@@ -12,7 +12,7 @@ import common.math : PI, clamped;
 import common.node : ChunkLayout, Occupancy, VoxelData;
 import common.worldgen.building : Building;
 import common.worldgen.plane : Plane;
-import common.worldgen.sky : PLANET, enteredRealm, hasPlaneGroundAt;
+import common.worldgen.sky : Ground, Grounds, PLANET, groundsAt;
 import common.worldgen.structure : firstSideAmong, ringFaces;
 import common.worldgen.terraingen : TERRAIN_SURFACE_THICKNESS, materialTable, nearestLatticePoint, sqr, terraingenVoronoi;
 
@@ -207,24 +207,17 @@ struct NodeState {
     EnviroFactors enviro;
     Plane surface;
     Plane reference;
-    uint realm;
     NodeStateKind kind;
 
     static NodeState fromParents(ref Graph graph, uint slot) {
         ParentList parents = graph.parents(slot);
         if (parents.count == 0) {
-            return NodeState(EnviroFactors.init, Plane.fromSide(Side.a), Plane.fromSide(firstSideAmong(ringFaces(Side.a))), PLANET, NodeStateKind.land);
+            return NodeState(EnviroFactors.init, Plane.fromSide(Side.a), Plane.fromSide(firstSideAmong(ringFaces(Side.a))), NodeStateKind.land);
         } else {
             NodeState first = graph.nodeAt(parents.links[0].slot).state;
             Side firstSide = parents.links[0].side;
-            EnviroFactors enviro = graph.inheritedEnviro(slot, parents);
-            uint entered = graph.enteredRealm(parents.links[0].slot, firstSide);
-            if (entered != PLANET) {
-                return NodeState(enviro, first.surface, first.reference, entered, first.kind);
-            } else {
-                NodeStateKind kind = first.kind.child(firstSide);
-                return NodeState(enviro, kind.surface(first.surface, firstSide), first.reference.reflectAcross(firstSide), first.realm, kind);
-            }
+            NodeStateKind kind = first.kind.child(firstSide);
+            return NodeState(graph.inheritedEnviro(slot, parents), kind.surface(first.surface, firstSide), first.reference.reflectAcross(firstSide), kind);
         }
     }
 }
@@ -337,15 +330,14 @@ uint crossedIf(ref Graph graph, uint slot, Side side, bool isCrossed) {
 struct ChunkParams {
     const(Building)* building;
     ulong nodeSpice;
+    Grounds grounds;
     ChunkIncidentEnviroFactors env;
-    Plane surface;
     Plane reference;
     float slopeTangent;
     float slopeSecant;
     ChunkLayout layout;
     Vertex chunk;
     bool hasStructure;
-    bool hasPlaneGround;
     bool isResolvingMaterials;
 
     static ChunkParams make(ref Graph graph, uint slot, Vertex vertex) {
@@ -353,15 +345,14 @@ struct ChunkParams {
         return ChunkParams(
             graph.buildingIfPresent(slot),
             graph.idAt(slot).spice(),
+            graph.groundsAt(slot),
             ChunkIncidentEnviroFactors.make(graph, slot, vertex),
-            state.surface,
             state.reference,
             tanf(graph.worldgen.groundTiltRadians()),
             1.0f / cosf(graph.worldgen.groundTiltRadians()),
             graph.layout,
             vertex,
             graph.ensureStructureAt(slot),
-            graph.hasPlaneGroundAt(state),
             false,
         );
     }
@@ -370,14 +361,22 @@ struct ChunkParams {
         return layout.dimension;
     }
 
-    ValueRange altitudes() const {
-        float center = surface.distanceToChunk(chunk, [0.5f, 0.5f, 0.5f]);
+    ref const(Ground) ground(uint index) const return {
+        return grounds.items[index];
+    }
+
+    ValueRange altitudes(uint index) const {
+        float center = ground(index).surface.distanceToChunk(chunk, [0.5f, 0.5f, 0.5f]);
         return ValueRange(center - chunkGridCenterRadius(), center + chunkGridCenterRadius());
     }
 
-    float groundLevelAt(float[3] coord) const {
-        float height = surface.distanceToChunk(chunk, coord);
-        if (slopeTangent == 0) {
+    bool isTilted(uint index) const {
+        return index == PLANET && slopeTangent != 0;
+    }
+
+    float groundLevelAt(uint index, float[3] coord) const {
+        float height = ground(index).surface.distanceToChunk(chunk, coord);
+        if (!isTilted(index)) {
             return height;
         } else {
             float across = asinhf(sinhf(reference.distanceToChunk(chunk, coord)) / coshf(height));
@@ -385,26 +384,54 @@ struct ChunkParams {
         }
     }
 
-    ValueRange groundRange() const {
-        float center = groundLevelAt([0.5f, 0.5f, 0.5f]);
-        float radius = chunkGridCenterRadius() * slopeSecant;
+    ValueRange groundRange(uint index) const {
+        float center = groundLevelAt(index, [0.5f, 0.5f, 0.5f]);
+        float radius = chunkGridCenterRadius();
+        if (isTilted(index)) {
+            radius = radius * slopeSecant;
+        }
         return ValueRange(center - radius, center + radius);
     }
 
-    float terrainCeiling() const {
-        if (hasPlaneGround) {
+    float terrainCeiling(uint index) const {
+        if (ground(index).isFlat) {
             return 0;
         } else {
             return (ValueRange.fromValues(env.maxElevations).high + terrainElevationSlack()) / TERRAIN_SMOOTHNESS;
         }
     }
 
-    bool isProvenClear() const {
-        return isProvenClearAt(groundRange().low);
+    bool isClearOf(uint index) const {
+        return groundRange(index).low > terrainCeiling(index);
     }
 
-    bool isProvenClearAt(float lowest) const {
-        return !hasStructure && lowest > terrainCeiling();
+    bool isFullOf(uint index) const {
+        float highest = groundRange(index).high;
+        if (ground(index).isFlat) {
+            return highest < 0;
+        } else {
+            return isProvenBelowTerrain(highest);
+        }
+    }
+
+    bool isClearOfAll() const {
+        uint index = 0;
+        while (index < grounds.count && isClearOf(index)) {
+            index += 1;
+        }
+        return index == grounds.count;
+    }
+
+    bool isFullOfAny() const {
+        uint index = 0;
+        while (index < grounds.count && !isFullOf(index)) {
+            index += 1;
+        }
+        return index < grounds.count;
+    }
+
+    bool isProvenClear() const {
+        return !hasStructure && isClearOfAll();
     }
 
     bool isProvenBelowTerrain(float highest) const {
@@ -412,14 +439,11 @@ struct ChunkParams {
     }
 
     Occupancy predictOccupancy() const {
-        ValueRange range = groundRange();
         if (hasStructure) {
             return Occupancy.unknown;
-        } else if (isProvenClearAt(range.low)) {
+        } else if (isClearOfAll()) {
             return Occupancy.empty;
-        } else if (hasPlaneGround && range.high < 0) {
-            return Occupancy.full;
-        } else if (!hasPlaneGround && isProvenBelowTerrain(range.high)) {
+        } else if (isFullOfAny()) {
             return Occupancy.full;
         } else {
             return Occupancy.unknown;
@@ -449,11 +473,13 @@ struct ChunkParams {
 
     GeneratedVoxels generateVoxels() const {
         TerrainGenerator generator = TerrainGenerator(VoxelData.fromMaterial(Material.none), this, SplitMix(hash(nodeSpice, chunk)), false);
-        if (hasPlaneGround) {
-            generator.generateFlat();
-        } else {
-            generator.generateTerrain();
-            generator.generateTrees();
+        foreach (index; 0 .. grounds.count) {
+            if (ground(index).isFlat) {
+                generator.generateFlat(index);
+            } else {
+                generator.generateTerrain(index);
+                generator.generateTrees(index);
+            }
         }
         generator.generateStructure();
         generator.voxels.compressUniform(dimension);
@@ -473,39 +499,54 @@ struct TerrainGenerator {
     SplitMix rng;
     bool hasDeferredMaterials;
 
-    void generateTerrain() {
+    void generateTerrain(uint ground) {
         ubyte dimension = params.dimension;
-        ValueRange altitudes = params.altitudes();
+        ValueRange altitudes = params.altitudes(ground);
         UniformChunk uniform = params.provenUniformMaterial(altitudes.high);
-        if (altitudes.low > params.terrainCeiling()) {
-            voxels = VoxelData.fromMaterial(Material.none);
-        } else if (uniform.isProven) {
-            voxels = VoxelData.fromMaterial(uniform.material);
-        } else if (!params.isResolvingMaterials && !params.hasStructure && params.isProvenBelowTerrain(altitudes.high)) {
-            voxels = VoxelData.fromMaterial(DEFERRED_STAND_IN_MATERIAL);
-            hasDeferredMaterials = true;
-        } else {
-            foreach (x; 0 .. dimension) {
-                foreach (y; 0 .. dimension) {
-                    foreach (z; 0 .. dimension) {
-                        generateTerrainVoxel(params.layout.cellCenter([x, y, z]), voxelIndex(dimension, x, y, z));
+        if (altitudes.low <= params.terrainCeiling(ground)) {
+            if (uniform.isProven) {
+                fillEmpty(uniform.material);
+            } else if (!params.isResolvingMaterials && !params.hasStructure && params.grounds.count == 1 && params.isProvenBelowTerrain(altitudes.high)) {
+                voxels = VoxelData.fromMaterial(DEFERRED_STAND_IN_MATERIAL);
+                hasDeferredMaterials = true;
+            } else {
+                foreach (x; 0 .. dimension) {
+                    foreach (y; 0 .. dimension) {
+                        foreach (z; 0 .. dimension) {
+                            generateTerrainVoxel(ground, params.layout.cellCenter([x, y, z]), voxelIndex(dimension, x, y, z));
+                        }
                     }
                 }
             }
         }
     }
 
-    void generateFlat() {
-        ubyte dimension = params.dimension;
-        ValueRange ground = params.groundRange();
-        if (ground.high < 0) {
-            voxels = VoxelData.fromMaterial(Material.dirt);
-        } else if (ground.low <= 0) {
+    void fillEmpty(Material material) {
+        if (voxels.isSolidVoid()) {
+            voxels = VoxelData.fromMaterial(material);
+        } else if (!voxels.isSolid()) {
+            ubyte dimension = params.dimension;
             foreach (x; 0 .. dimension) {
                 foreach (y; 0 .. dimension) {
                     foreach (z; 0 .. dimension) {
-                        if (params.groundLevelAt(params.layout.cellCenter([x, y, z])) < 0) {
-                            voxels.toDense(dimension)[voxelIndex(dimension, x, y, z)] = Material.dirt;
+                        setIfEmpty([x, y, z], material);
+                    }
+                }
+            }
+        }
+    }
+
+    void generateFlat(uint ground) {
+        ubyte dimension = params.dimension;
+        ValueRange range = params.groundRange(ground);
+        if (range.high < 0) {
+            fillEmpty(Material.dirt);
+        } else if (range.low <= 0) {
+            foreach (x; 0 .. dimension) {
+                foreach (y; 0 .. dimension) {
+                    foreach (z; 0 .. dimension) {
+                        if (params.groundLevelAt(ground, params.layout.cellCenter([x, y, z])) < 0) {
+                            setIfEmpty([x, y, z], Material.dirt);
                         }
                     }
                 }
@@ -531,30 +572,21 @@ struct TerrainGenerator {
         }
     }
 
-    void generateTerrainVoxel(float[3] center, size_t index) {
-        float[3] trilerpCoords = [
-            (1.0f - center[0]) * 0.5f,
-            (1.0f - center[1]) * 0.5f,
-            (1.0f - center[2]) * 0.5f,
-        ];
+    void generateTerrainVoxel(uint ground, float[3] center, size_t index) {
+        float[3] trilerpCoords = trilerpCoordsOf(center);
         float rain = trilerp(params.env.rainfalls, trilerpCoords) + rng.normal() * NOISE_STDDEV;
         float temperature = trilerp(params.env.temperatures, trilerpCoords) + rng.normal() * NOISE_STDDEV;
-        float elevationPreTerracing = trilerp(params.env.maxElevations, trilerpCoords);
-        float blockiness = trilerp(params.env.blockinesses, trilerpCoords);
-        float voxelElevation = params.surface.distanceToChunk(params.chunk, center);
-        float strength = TERRACE_STRENGTH / (1.0f + sqr(voxelElevation));
-        float terracingSmall = terracingDiff(elevationPreTerracing, blockiness, SMALL_TERRACE_SCALE, strength, SMALL_TERRACE_LIMITER);
-        float terracingBig = terracingDiff(elevationPreTerracing, blockiness, BIG_TERRACE_SCALE, strength, BIG_TERRACE_LIMITER);
-        float elevationPreNoise = elevationPreTerracing + SMALL_TERRACE_WEIGHT * terracingSmall + BIG_TERRACE_WEIGHT * terracingBig;
+        float voxelElevation = params.ground(ground).surface.distanceToChunk(params.chunk, center);
+        float elevationPreNoise = terrainElevation(params.env, center, voxelElevation);
         float distancePreNoise = elevationPreNoise / TERRAIN_SMOOTHNESS - voxelElevation;
         float elevation = elevationPreNoise + TERRAIN_SMOOTHNESS * (rng.normal() * NOISE_STDDEV);
         float distance = surfaceDistance(distancePreNoise, elevation / TERRAIN_SMOOTHNESS - voxelElevation);
-        if (distance >= 0.0f) {
+        if (distance >= 0.0f && voxels.get(index) == Material.none) {
             voxels.toDense(params.dimension)[index] = terraingenVoronoi(elevation, rain, temperature, distance);
         }
     }
 
-    void generateTrees() {
+    void generateTrees(uint ground) {
         ubyte dimension = params.dimension;
         if (!voxels.isSolid() && dimension > MIN_TREE_DIMENSION) {
             float density = clamped(BASE_TREE_DENSITY + params.env.rainfalls[0] / RAINFALL_PER_TREE_DENSITY, 0.0f, MAX_TREE_DENSITY);
@@ -566,14 +598,14 @@ struct TerrainGenerator {
                 int y = cast(int)(1 + (rng.next() % interior));
                 int z = cast(int)(1 + (rng.next() % interior));
                 ulong roll = rng.next();
-                placeTree([x, y, z], treeKind(temperature, roll));
+                placeTree(ground, [x, y, z], treeKind(temperature, roll));
             }
         }
     }
 
-    void placeTree(int[3] base, TreeKind kind) {
+    void placeTree(uint ground, int[3] base, TreeKind kind) {
         ubyte dimension = params.dimension;
-        int upDirection = params.surface.risingNeighbor(params.chunk, params.layout, base);
+        int upDirection = params.ground(ground).surface.risingNeighbor(params.chunk, params.layout, base);
         int[3] up = CELL_NEIGHBOR_OFFSETS[upDirection];
         bool isBaseEmpty = voxels.get(voxelIndex(dimension, base[0], base[1], base[2])) == Material.none;
         bool isAboveEmpty = voxels.get(voxelIndex(dimension, base[0] + up[0], base[1] + up[1], base[2] + up[2])) == Material.none;
@@ -754,6 +786,20 @@ float lerp(float v0, float v1, float s) {
 
 float bilerp(float v00, float v01, float v10, float v11, float tx, float ty) {
     return lerp(lerp(v00, v01, tx), lerp(v10, v11, tx), ty);
+}
+
+float[3] trilerpCoordsOf(float[3] center) {
+    return [(1.0f - center[0]) * 0.5f, (1.0f - center[1]) * 0.5f, (1.0f - center[2]) * 0.5f];
+}
+
+float terrainElevation(ref const ChunkIncidentEnviroFactors env, float[3] center, float voxelElevation) {
+    float[3] coords = trilerpCoordsOf(center);
+    float elevationPreTerracing = trilerp(env.maxElevations, coords);
+    float blockiness = trilerp(env.blockinesses, coords);
+    float strength = TERRACE_STRENGTH / (1.0f + sqr(voxelElevation));
+    float terracingSmall = terracingDiff(elevationPreTerracing, blockiness, SMALL_TERRACE_SCALE, strength, SMALL_TERRACE_LIMITER);
+    float terracingBig = terracingDiff(elevationPreTerracing, blockiness, BIG_TERRACE_SCALE, strength, BIG_TERRACE_LIMITER);
+    return elevationPreTerracing + SMALL_TERRACE_WEIGHT * terracingSmall + BIG_TERRACE_WEIGHT * terracingBig;
 }
 
 float trilerp(float[8] values, float[3] t) {

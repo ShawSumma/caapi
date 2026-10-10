@@ -11,6 +11,7 @@ local JOINED = kit.JOINED
 local FLOORS = { every = STORY, from = 0, span = 1 }
 local ROOMS = { every = STORY, from = 1, span = STORY - 1 }
 local WINDOW_ROWS = { every = STORY, from = 1, span = 2 }
+local SPANDRELS = { every = STORY, from = STORY - 1, span = 1 }
 local DOOR_TOP = STORY - 1
 local DOOR_WIDTH = 2
 local PIER_SPACING = 3
@@ -209,6 +210,7 @@ end
 
 function kit.curtain(part, palette, box, is_below_split)
   for _, face in ipairs(walls(part, box, is_below_split)) do
+    part.tower:paint(palette.band, face, SPANDRELS)
     for _, mullion in ipairs(strips(face, MULLION_SPACING)) do
       part.tower:paint(palette.trim, mullion)
     end

@@ -1,32 +1,45 @@
-local box = require("box")
+local connector = require("connector")
+local kit = require("buildings.kit")
 local town = require("town")
 
 local sky = {}
 
-local TOWER_PERCENT = 35
-local TOWER_EDGES = 6
+local SPIRE_PERCENT = 30
+local SPIRE_TYPES = {
+  require("buildings.deco"),
+  require("buildings.glass"),
+}
+local LOT_FRONT = 4
+local MEADOW_GROUND = 0
 local NO_OPTIONS = {}
 
 local function settings_of(options)
   return options or NO_OPTIONS
 end
 
-local function is_foot(corner, foot)
-  return corner:hash("vertex") == foot:hash("vertex")
+local function is_foot(corner, info)
+  return corner:hash("vertex") == info.foot:hash("vertex")
 end
 
-function sky.wild(face, foot, options)
-  local settings = settings_of(options)
+local function corner_lot(site)
+  return { site = site, x_low = kit.STREET, y_low = kit.STREET, x_high = kit.LOT, y_high = kit.LOT, front = "y_low" }
+end
+
+local function connect(face, info, ground, settings)
   for _, corner in ipairs(town.corners_of(face)) do
-    if is_foot(corner, foot) and town.is_owner(town.quarters_of(corner)) then
-      box.connector(foot, { terrain = true, route = settings.route })
+    if is_foot(corner, info) and town.is_owner(town.quarters_of(corner)) then
+      connector.build(info.foot, info, ground, settings.route)
     end
   end
 end
 
-function sky.city(face, foot, options)
+function sky.wild(face, info, options)
+  connect(face, info, info.ground, settings_of(options))
+end
+
+function sky.city(face, info, options)
   local settings = settings_of(options)
-  town.tile(face, { vertex = foot:hash("vertex"), face = foot:hash("face"), foot = foot, connector = { route = settings.route } })
+  town.tile(face, { vertex = info.foot:hash("vertex"), face = info.foot:hash("face"), sky = info, is_routed = settings.route })
 end
 
 local function meadow(quarters)
@@ -38,20 +51,26 @@ local function meadow(quarters)
 end
 
 local function spire(corner)
-  local tower = corner:pitch_up()
-  box.tower(tower, box.top(tower, corner:pick(TOWER_EDGES)), box.palette(tower))
-  box.door(tower)
+  local tower = town.upright(corner)
+  local _, far = tower:column()
+  tower:paint("concrete", { x = { 0, far }, y = { 0, far }, z = { -1, 0 } })
+  local type = SPIRE_TYPES[corner:pick(#SPIRE_TYPES)]
+  local stories = town.fit(corner, type.STORIES[1] + corner:pick(type.STORIES[2] - type.STORIES[1] + 1) - 1)
+  local palette = type.PALETTES[corner:pick(#type.PALETTES)]
+  if stories >= 1 then
+    type.build({ corner_lot(corner) }, { stories = stories, palette = palette, front = LOT_FRONT, gap = 0 })
+  end
 end
 
-function sky.towers(face, foot, options)
+function sky.spires(face, info, options)
   local settings = settings_of(options)
   for _, corner in ipairs(town.corners_of(face)) do
     local quarters = town.quarters_of(corner)
     if town.is_owner(quarters) then
       meadow(quarters)
-      if is_foot(corner, foot) then
-        box.connector(foot, { route = settings.route })
-      elseif corner:pick(100) <= TOWER_PERCENT then
+      if is_foot(corner, info) then
+        connector.build(info.foot, info, MEADOW_GROUND, settings.route)
+      elseif corner:pick(100) <= SPIRE_PERCENT then
         spire(corner)
       end
     end

@@ -11,7 +11,7 @@ import common.slab : SLAB_SHIFT, Slab;
 import common.worldgen.blueprint : Blueprint;
 import common.worldgen.building : Building, BuildingPlan;
 import common.worldgen.generation : NodeState, Worldgen;
-import common.worldgen.sky : Skies;
+import common.worldgen.sky : Skies, WorldRef;
 import common.worldgen.structure : LineTouch, PAINT_REACH, PendingTouch, anchorSlotOf, finalizeStructure;
 
 enum ulong NODE_HASH_MULTIPLIER = 0x9E3779B97F4A7C15;
@@ -47,7 +47,10 @@ struct Node {
     uint touchStart;
     uint touchLength;
     uint pendingHead;
+    uint worldStart;
+    uint worldCount;
     bool hasState;
+    bool hasWorlds;
     bool hasStructure;
     bool isInStructure;
     bool isTiled;
@@ -106,6 +109,7 @@ struct Graph {
     Array!ChunkSlot changedChunks;
     Slab!LineTouch touches;
     Slab!PendingTouch pendingTouches;
+    Slab!WorldRef worldRefs;
     Array!LineTouch touchScratch;
     Blueprint blueprint;
     Skies skies;
@@ -117,6 +121,7 @@ struct Graph {
     uint anchorSlot;
     uint touchCount;
     uint pendingCount;
+    uint worldRefCount;
     int grownThrough = -1;
 
     static Graph make(ubyte dimension, Worldgen chosen) {
@@ -339,12 +344,16 @@ struct Graph {
     }
 
     uint reserveTouches(uint length) {
-        uint start = touchCount;
-        if (length > 0 && start >> SLAB_SHIFT != (start + length - 1) >> SLAB_SHIFT) {
-            start = ((start >> SLAB_SHIFT) + 1) << SLAB_SHIFT;
-        }
+        uint start = slabRun(touchCount, length);
         touches.ensure(start + length);
         touchCount = start + length;
+        return start;
+    }
+
+    uint reserveWorlds(uint length) {
+        uint start = slabRun(worldRefCount, length);
+        worldRefs.ensure(start + length);
+        worldRefCount = start + length;
         return start;
     }
 
@@ -365,10 +374,6 @@ struct Graph {
 
     const(NodeState)* nodeState(NodeId nodeId) const {
         return &nodeAt(slotOf(nodeId)).state;
-    }
-
-    float[3] upAt(Position position) const {
-        return nodeState(position.node).surface.upAt(position.local);
     }
 
     bool isLinkedFacing(SlotPosition position, MPoint!float location, Side side) const {
@@ -423,11 +428,21 @@ struct Graph {
         changedChunks.release();
         touches.release();
         pendingTouches.release();
+        worldRefs.release();
         touchScratch.release();
         blueprint.release();
         skies.release();
         nodeCount = 0;
         touchCount = 0;
         pendingCount = 0;
+        worldRefCount = 0;
+    }
+}
+
+uint slabRun(uint count, uint length) {
+    if (length > 0 && count >> SLAB_SHIFT != (count + length - 1) >> SLAB_SHIFT) {
+        return ((count >> SLAB_SHIFT) + 1) << SLAB_SHIFT;
+    } else {
+        return count;
     }
 }
