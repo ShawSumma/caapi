@@ -296,4 +296,5 @@ struct Chunk {
     Occupancy predicted;
     bool hasDeferredMaterials;
     bool isQueued;
+    bool isEdited;
 }

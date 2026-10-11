@@ -243,6 +243,8 @@ struct Renderer {
             worldEpoch = world.epoch;
         }
         meshes.beginFrame();
+        meshes.forget(world.unloaded.slice());
+        world.unloaded.clear();
         meshes.list(world.nearby[world.published], world.nearbyVersion);
         meshChanged(world);
         if (meshes.hasReplacedFaces || meshes.hasReplacedDrawBuffers) {

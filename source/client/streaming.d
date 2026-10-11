@@ -319,6 +319,7 @@ struct Streamer {
         if (chunk.predicted == Occupancy.unknown) {
             requests.append(GenRequest(params, slot));
             chunk.state = ChunkState.generating;
+            graph.nodeAt(slot.slot).hasChunks = true;
         } else {
             graph.populateChunk(slot, params.generateVoxels());
         }
@@ -333,6 +334,14 @@ struct Streamer {
             queue.pendingBuildings.appendAll(buildingRequests.slice());
             pthread_cond_broadcast(&queue.workAvailable);
             pthread_mutex_unlock(&queue.mutex);
+        }
+    }
+
+    void forget(const(uint)[] slots) {
+        foreach (slot; slots) {
+            if (slot < doneVersion.length) {
+                doneVersion.ptr[slot] = RESCAN;
+            }
         }
     }
 
@@ -466,6 +475,7 @@ void populateChunk(ref Graph graph, ChunkSlot chunk, GeneratedVoxels generated) 
     bool isContradicted = (*target).isPredictionContradicted();
     graph.connectMargins(chunk);
     target.state = ChunkState.populated;
+    graph.nodeAt(chunk.slot).hasChunks = true;
     if (isContradicted) {
         graph.touchChunksAround(chunk);
     }

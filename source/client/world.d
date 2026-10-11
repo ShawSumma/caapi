@@ -4,7 +4,9 @@ import core.stdc.math : coshf;
 import client.camera : CAMERA_FORWARD;
 import client.streaming : Streamer, chunkNeighborId, hasPopulatedNeighbor, resolveIfExposed, resolveMaterials;
 import common.clock : nowMilliseconds;
+import common.array : Array;
 import common.coords : CHUNK_DIRECTIONS, ChunkDirection, Coords, boundaryCoord;
+import common.eviction : evictOutside;
 import common.graph : Graph, NO_NODE;
 import common.margins : CoordsWithMargins, neighborAxisPermutation;
 import common.material : Material;
@@ -21,6 +23,8 @@ enum float NEARBY_PADDING = 0.05f;
 enum float RENDER_RADIUS = 6.5f;
 enum float FULL_RADIUS = 4.5f;
 enum double NEARBY_BUDGET_MILLISECONDS = 2.0;
+enum uint EVICTION_FLOOR = 1 << 18;
+enum uint EVICTION_GROWTH = 2;
 
 struct Placement {
     ChunkId chunk;
@@ -41,11 +45,15 @@ struct LocalWorld {
     MPoint!float publishedPoint;
     MPoint!float pendingPoint;
     NearbyNode[] cachedNodes;
+    Array!uint unloaded;
     float renderRadius;
     float tanhReach;
     uint published;
     uint nearbyVersion;
     uint epoch;
+    uint evictAbove = EVICTION_FLOOR;
+    uint evictions;
+    double worstEviction = 0;
     bool hasNearby;
 
     static LocalWorld make(ubyte dimension, Worldgen worldgen, float tanhReach) {
@@ -62,6 +70,7 @@ struct LocalWorld {
         streamer.release();
         nearby[0].release();
         nearby[1].release();
+        unloaded.release();
         graph.release();
     }
 
@@ -84,6 +93,30 @@ struct LocalWorld {
             refreshNearby(distance, deadline);
         }
         streamer.drive(graph, cachedNodes, cameraInNearbyFrame(), renderRadius, nearbyVersion, isUnbudgeted);
+        if (graph.liveCount > evictAbove) {
+            evict();
+        }
+    }
+
+    void evict() {
+        size_t first = unloaded.length;
+        NearbyScratch* next = &nearby[1 - published];
+        NearbyNode[] building = null;
+        if (next.isBuilding()) {
+            building = next.nodes.slice();
+        }
+        double t0 = nowMilliseconds();
+        graph.evictOutside(cachedNodes, building, unloaded);
+        double spent = nowMilliseconds() - t0;
+        evictions += 1;
+        if (spent > worstEviction) {
+            worstEviction = spent;
+        }
+        streamer.forget(unloaded.slice()[first .. $]);
+        evictAbove = EVICTION_FLOOR;
+        if (graph.liveCount * EVICTION_GROWTH > evictAbove) {
+            evictAbove = graph.liveCount * EVICTION_GROWTH;
+        }
     }
 
     void buildInitialNearby(float distance, double deadline) {
@@ -192,6 +225,7 @@ struct LocalWorld {
                 graph.resolveMaterials(slot);
             }
             chunk.voxels.toDense(dimension)[coords.toIndex(dimension)] = material;
+            chunk.isEdited = true;
             graph.markChanged(slot);
             foreach (direction; CHUNK_DIRECTIONS) {
                 if (coords.data[direction.axis] == boundaryCoord(dimension, direction.sign) && graph.hasPopulatedNeighbor(slot, direction)) {

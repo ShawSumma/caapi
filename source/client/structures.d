@@ -191,11 +191,47 @@ struct StructureHost {
         foreach (face; faces) {
             if (!problem.isPresent && !graph.nodeAt(face).isTiled) {
                 graph.nodeAt(face).isTiled = true;
+                if (sky != PLANET) {
+                    graph.skies.worlds.ptr[sky - 1].isTiled = true;
+                }
                 builder.tile();
                 random = SplitMix(graph.idAt(face).spice());
                 call(tile.reference, tile.argumentCount, faceSite(face, label), sky);
             }
         }
+    }
+
+    void hold(ref Array!uint held) {
+        foreach (bucket; queue.slice()[nextKey .. $]) {
+            foreach (queued; bucket.slice()) {
+                held.append(queued.site.node);
+                holdArguments(queued.reference, queued.argumentCount, held);
+            }
+        }
+        if (hasTile()) {
+            holdArguments(tileReference, tileArgumentCount, held);
+        }
+        foreach (tile; skyTiles.slice()) {
+            holdArguments(tile.reference, tile.argumentCount, held);
+        }
+    }
+
+    void holdArguments(int reference, int argumentCount, ref Array!uint held) {
+        lua_rawgeti(lua, LUA_REGISTRY, reference);
+        int placed = lua_gettop(lua);
+        foreach (index; 0 .. argumentCount) {
+            lua_rawgeti(lua, placed, PLACED_FUNCTION + 1 + index);
+            if (lua_type(lua, LUA_TOP) == LUA_TYPE_TABLE) {
+                lua_getfield(lua, LUA_TOP, "node");
+                int isNumber = 0;
+                lua_Integer node = lua_tointegerx(lua, LUA_TOP, &isNumber);
+                if (isNumber != 0 && node >= 0 && node < builder.graph.nodeCount) {
+                    held.append(cast(uint) node);
+                }
+            }
+            lua_settop(lua, placed);
+        }
+        lua_settop(lua, placed - 1);
     }
 
     void enqueue(QueuedStructure queued) {
@@ -227,7 +263,6 @@ struct StructureHost {
         lua.registerMethod(&this, "tile", &luaSiteTile);
         lua.registerMethod(&this, "sky", &luaSiteSky);
         lua.registerMethod(&this, "open_sky", &luaSiteOpenSky);
-        lua.registerMethod(&this, "sky_above", &luaSiteSkyAbove);
         lua.registerMethod(&this, "balance", &luaSiteBalance);
         lua.registerMethod(&this, "hash", &luaSiteHash);
         lua_setfield(lua, LUA_BELOW_TOP, "__index");
@@ -273,7 +308,7 @@ StructureProblem placeWorldStructure(ref Graph graph) {
         if (problem.isPresent || !(host.hasQueued() || host.hasCover())) {
             releaseStructureHost(host);
         } else {
-            graph.grower = Grower(&growStructures, &coverStructures, &releaseStructureHost, host);
+            graph.grower = Grower(&growStructures, &coverStructures, &holdStructures, &releaseStructureHost, host);
         }
         return problem;
     }
@@ -285,6 +320,10 @@ void growStructures(void* context, ref Graph graph, int through) {
 
 void coverStructures(void* context, ref Graph graph, uint slot) {
     (cast(StructureHost*) context).cover(graph, slot);
+}
+
+void holdStructures(void* context, ref Array!uint held) {
+    (cast(StructureHost*) context).hold(held);
 }
 
 void releaseStructureHost(void* context) {
@@ -647,23 +686,6 @@ extern (C) int luaSiteOpenSky(lua_State* lua) {
             luaL_error(lua, "a sky beside another sky would cross it");
         }
     }
-    return 0;
-}
-
-extern (C) int luaSiteSkyAbove(lua_State* lua) {
-    StructureHost* host = structureHost(lua);
-    siteArgument(lua, SELF, *host.builder.graph);
-    lua_Integer kind = luaL_checkinteger(lua, SELF + 1);
-    lua_Integer above = luaL_checkinteger(lua, SELF + 2);
-    Skies* skies = &host.builder.graph.skies;
-    if (host.builder.isGrowing) {
-        luaL_error(lua, "only the world's own structure opens skies");
-    } else if (kind < 1 || kind > cast(lua_Integer) skies.kinds.length || above < 1 || above > cast(lua_Integer) skies.kinds.length) {
-        luaL_error(lua, "unknown sky kind");
-    } else if (skies.kinds.ptr[kind - 1].ground != SkyGround.terrain) {
-        luaL_error(lua, "only a sky with terrain ground has skies of its own");
-    }
-    skies.kinds.ptr[kind - 1].above = cast(ubyte) above;
     return 0;
 }
 

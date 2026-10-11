@@ -1,6 +1,7 @@
 module common.worldgen.sky;
 
-import core.stdc.math : acoshf, coshf, expf, fabsf, floorf, logf, sinhf, sqrtf;
+import core.math : sqrt;
+import core.stdc.math : acoshf, cosh, coshf, expf, fabsf, floorf, logf, sinh, sinhf, sqrtf;
 import common.array : Array;
 import common.dodeca : BOUNDING_SPHERE_RADIUS, SIDE_COUNT, Side, VERTEX_COUNT, Vertex, adjacentVertices, canonicalSides, dualToNode, faceDistance, nodeToDual, vertexDualToChunkFactor;
 import common.graph : Graph, NO_SLOT, Node, ParentList;
@@ -12,7 +13,7 @@ import common.traversal : NearbyNode, NearbyScratch;
 import common.worldgen.blueprint : BlueprintBuilder, CellBox, EVERY_HEIGHT, PaintResult, lowerOf;
 import common.worldgen.generation : ChunkIncidentEnviroFactors, ChunkParams, EnviroFactors, GeneratedVoxels, NodeState, StructureWorld, TERRAIN_SMOOTHNESS, Worldgen, terrainElevation, terrainElevationSlack;
 import common.worldgen.plane : Plane;
-import common.worldgen.structure : ClaimKey, ColumnSpot, GROUND_RING, SiteFrame, SitePart, TOUCHING_FACTOR, Turn, atLevel, columnPoint, edgeCells, edgeLength, forwarded, groundRing, groundSite, isCanonicalMatch, isSamePoint, nodeToNode, rootSite, rootedVertex, sideAxis, siteHash, siteOrigin, sitePlacement, siteToNode, turned;
+import common.worldgen.structure : ClaimKey, ColumnSpot, GROUND_RING, SiteFrame, SitePart, Turn, atLevel, columnPoint, edgeCells, edgeLength, forwarded, groundRing, groundSite, isCanonicalMatch, isSamePoint, nodeToNode, rootSite, rootedVertex, sideAxis, siteHash, siteOrigin, sitePlacement, siteToNode, turned;
 
 enum uint PLANET = 0;
 enum ubyte NO_SKY = 0;
@@ -25,19 +26,17 @@ enum double ROLL_SCALE = 1.0 / (1UL << 53);
 enum ubyte LOWEST_SKY_EDGES = 2;
 enum ubyte SKY_EDGE_CHOICES = 3;
 enum float CLEARANCE_EDGES = 2.0f;
-enum int NESTED_SKY_EDGES = 2;
-enum int NESTED_SKY_REACH = 12;
 enum float GRAVITY_FALLOFF = 0.15f;
 enum float CHUNK_COORD_SLACK = 1e-3f;
 enum float ELEVATION_SPREAD = 8.0f;
 enum float SKY_SIDE_MARGIN = 2.0f * BOUNDING_SPHERE_RADIUS + ELEVATION_SPREAD / TERRAIN_SMOOTHNESS;
 enum float LINE_TOLERANCE = 0.05f;
+enum float GROUND_LIFT_FACTOR = 0.1f;
 enum ubyte TEST_DIMENSION = 12;
 enum float TEST_RADIUS = 3.0f;
 enum float TEST_PLANE_TOLERANCE = 1e-2f;
 enum int TEST_FAR_EDGES = 3;
 enum int TEST_RISE_EDGES = 3;
-enum ubyte TEST_WILD_EDGES = 3;
 immutable int[3][3] TEST_PAINTED_CELLS = [
     [5, 6, 19],
     [8, 5, 3],
@@ -52,7 +51,6 @@ enum SkyGround : ubyte {
 struct SkyKind {
     double odds;
     SkyGround ground;
-    ubyte above;
 }
 
 struct SkyChoice {
@@ -73,11 +71,8 @@ struct World {
     ubyte kind;
     ubyte edges;
     bool isMeasured;
-}
-
-struct NestedSite {
-    SiteFrame site;
-    bool isFound;
+    bool isKnown;
+    bool isTiled;
 }
 
 struct WorldRef {
@@ -116,6 +111,7 @@ struct ChunkPoint {
 struct Skies {
     Array!SkyKind kinds;
     Array!World worlds;
+    Array!uint freeWorlds;
     HashMap!(ClaimKey, SkyChoice) forced;
     HashMap!(ClaimKey, SkyChoice) choices;
     HashMap!(ClaimKey, uint) worldOf;
@@ -150,6 +146,7 @@ struct Skies {
     void release() {
         kinds.release();
         worlds.release();
+        freeWorlds.release();
         forced.release();
         choices.release();
         worldOf.release();
@@ -230,24 +227,14 @@ void discoverWorlds(ref Graph graph, uint slot, ref Array!WorldRef found) {
 }
 
 uint worldGroundNodeOf(ref Graph graph, uint slot, uint world) {
-    uint current = slot;
-    float height = graph.planeOfWorldIn(world, current).distanceTo(MPoint!float.origin());
-    float touching = TOUCHING_FACTOR * faceDistance();
-    while (fabsf(height) >= touching) {
-        Plane plane = graph.planeOfWorldIn(world, current);
-        uint closest = 0;
-        foreach (index; 1 .. SIDE_COUNT) {
-            if (fabsf(plane.reflectAcross(cast(Side) index).distanceTo(MPoint!float.origin())) < fabsf(plane.reflectAcross(cast(Side) closest).distanceTo(MPoint!float.origin()))) {
-                closest = index;
-            }
-        }
-        current = graph.ensureNeighborSlot(current, cast(Side) closest);
-        height = graph.planeOfWorldIn(world, current).distanceTo(MPoint!float.origin());
-    }
-    if (height < 0) {
-        current = graph.ensureNeighborSlot(current, graph.labelOf(world));
-    }
-    return current;
+    MVector!double normal = graph.planeOfWorldIn(world, slot).scaledNormal.toType!double();
+    normal = normal * (1.0 / sqrt(normal.mip(normal)));
+    double along = MVector!double.origin().mip(normal);
+    MVector!double foot = (MVector!double.origin() - normal * along) * (1.0 / sqrt(1.0 + along * along));
+    float lift = GROUND_LIFT_FACTOR * faceDistance();
+    MVector!double above = foot * cosh(lift) + normal * sinh(lift);
+    MIsometry!float toAbove = MIsometry!float.fromTranslation(MPoint!float.origin(), MPoint!float(above.toType!float()));
+    return graph.slotOf(graph.ensureNormalized(Position(graph.idAt(slot), toAbove)).node);
 }
 
 bool isWithinSkyReach(Plane plane) {
@@ -401,35 +388,18 @@ uint ensureWorld(ref Graph graph, ClaimKey key, uint face, Vertex vertex, uint p
         if (plane.distanceTo(MPoint!float.origin()) < 0) {
             plane = -plane;
         }
-        SiteFrame footSite = groundSite(foot, top.vertex, label);
-        graph.skies.worlds.append(World(plane, footSite, key, parent, foot, 0, 0, 0, label, cast(ubyte)(choice.kind - 1), choice.edges, false));
-        uint world = cast(uint) graph.skies.worlds.length;
+        World made = World(plane, groundSite(foot, top.vertex, label), key, parent, foot, 0, 0, 0, label, cast(ubyte)(choice.kind - 1), choice.edges, false, true, false);
+        uint world = void;
+        if (graph.skies.freeWorlds.length > 0) {
+            world = graph.skies.freeWorlds.ptr[graph.skies.freeWorlds.length - 1];
+            graph.skies.freeWorlds.length -= 1;
+            graph.skies.worlds.ptr[world - 1] = made;
+        } else {
+            graph.skies.worlds.append(made);
+            world = cast(uint) graph.skies.worlds.length;
+        }
         graph.skies.worldOf.insert(key, world);
-        ubyte above = graph.skies.kinds.ptr[choice.kind - 1].above;
-        if (above != NO_SKY) {
-            graph.forceNestedSky(footSite, world, above);
-        }
         return world;
-    }
-}
-
-NestedSite nestedSkySite(ref Graph graph, SiteFrame foot, uint world) {
-    int edges = NESTED_SKY_EDGES;
-    SiteFrame site = graph.atLevel(forwarded(foot, edges), 0);
-    while (edges < NESTED_SKY_REACH && !graph.isClearOfAncestors(site.node, site.vertex, world, LOWEST_SKY_EDGES)) {
-        edges += 1;
-        site = graph.atLevel(forwarded(foot, edges), 0);
-    }
-    return NestedSite(site, edges < NESTED_SKY_REACH);
-}
-
-void forceNestedSky(ref Graph graph, SiteFrame foot, uint world, ubyte kind) {
-    NestedSite nested = graph.nestedSkySite(foot, world);
-    if (nested.isFound) {
-        ClaimKey key = graph.siteOrigin(nested.site).key;
-        if (graph.skies.forced.find(key) is null) {
-            graph.skies.forced.insert(key, SkyChoice(kind, LOWEST_SKY_EDGES));
-        }
     }
 }
 
@@ -721,6 +691,13 @@ unittest {
     }
     assert(index < GROUND_RING);
     assert(graph.worldGroundNodeOf(graph.worldAt(sky).footNode, sky) == graph.worldAt(sky).footNode);
+    foreach (node; nearby) {
+        uint[2] worlds = [PLANET, sky];
+        foreach (over; worlds) {
+            float ground = graph.planeOfWorldIn(over, graph.worldGroundNodeOf(node.slot, over)).distanceTo(MPoint!float.origin());
+            assert(fabsf(ground - faceDistance()) < TEST_PLANE_TOLERANCE);
+        }
+    }
     assert(graph.isOnFootLine(graph.worldAt(sky).footNode, sky));
     assert(!graph.isOnFootLine(graph.atLevel(forwarded(graph.worldAt(sky).foot, TEST_FAR_EDGES), 0).node, sky));
     SiteFrame quarter = graph.worldAt(sky).foot;
@@ -769,23 +746,8 @@ unittest {
 }
 
 unittest {
-    Graph graph = Graph.make(TEST_DIMENSION, Worldgen.fromStructure(StructureWorld.fromName("test")));
-    graph.skies.kinds.append(SkyKind(0, SkyGround.flat, NO_SKY));
-    graph.skies.kinds.append(SkyKind(0, SkyGround.terrain, 1));
-    SiteFrame root = rootSite(graph.anchorSlot);
-    assert(graph.openSky(root, SkyChoice(2, TEST_WILD_EDGES)));
-    uint wild = graph.skyOver(graph.anchorSlot, root.vertex, PLANET);
-    assert(wild != PLANET);
-    SiteFrame foot = graph.worldAt(wild).foot;
-    NestedSite nested = graph.nestedSkySite(foot, wild);
-    assert(nested.isFound);
-    assert(graph.skies.forced.find(graph.siteOrigin(nested.site).key) !is null);
-    graph.release();
-}
-
-unittest {
     Graph graph = Graph.make(TEST_DIMENSION, Worldgen.makeTerrain());
-    graph.skies.kinds.append(SkyKind(0, SkyGround.flat, NO_SKY));
+    graph.skies.kinds.append(SkyKind(0, SkyGround.flat));
     SiteFrame root = rootSite(graph.anchorSlot);
     assert(graph.openSky(root, SkyChoice(1, LOWEST_SKY_EDGES)));
     uint sky = graph.skyOver(graph.anchorSlot, root.vertex, PLANET);

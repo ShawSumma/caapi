@@ -1,8 +1,10 @@
 module main;
 
-import core.stdc.stdio : FILE, fclose, fopen, fprintf, snprintf;
+import core.stdc.stdio : FILE, fclose, fflush, fopen, fprintf, fscanf, snprintf;
+import core.sys.posix.unistd : _SC_PAGESIZE, sysconf;
 import core.stdc.stdlib : free, malloc;
 import core.stdc.string : strcmp;
+import core.sys.posix.sys.resource : RUSAGE_SELF, getrusage, rusage;
 import core.sys.posix.time : nanosleep, timespec;
 import bindings.platform : Atom, Button1, Button3, ButtonPress, ClientMessage, CurrentTime, Cursor, Display, False, FocusOut, GenericEvent, GrabModeAsync, GrabSuccess, KeyPress, KeyRelease, KeySym, Pixmap, Success, True, UnmapNotify, VkExtent2D, Window, XBlackPixel, XCloseDisplay, XColor, XCreateBitmapFromData, XCreatePixmapCursor, XCreateSimpleWindow, XDefaultScreen, XDestroyWindow, XDisplayHeight, XDisplayWidth, XEvent, XFlush, XFreeCursor, XFreeEventData, XFreePixmap, XGenericEventCookie, XGetEventData, XGrabPointer, XIAllMasterDevices, XIDeviceInfo, XIEventMask, XIFreeDeviceInfo, XIModeAbsolute, XIQueryDevice, XIQueryVersion, XIRawEvent, XISelectEvents, XIValuatorClass, XIValuatorClassInfo, XI_DeviceChanged, XI_RawMotion, XInternAtom, XK_1, XK_9, XK_Escape, XK_Down, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_n, XK_s, XK_space, XK_v, XK_w, XLookupKeysym, XMapWindow, XNextEvent, XOpenDisplay, XPending, XQueryExtension, XRootWindow, XSelectInput, XSetWMProtocols, XStoreName, XUngrabPointer, XkbSetDetectableAutoRepeat;
 import client.arguments : StartupError, FlagValue, NumberArgument, WorldgenArgument;
@@ -12,12 +14,17 @@ import client.graphics.renderer : FrameTimes, Renderer;
 import client.png : writePng;
 import client.script : ScriptHost, ScriptRecorder;
 import client.structures : StructureProblem, growthProblem, placeStructure;
+import client.world : RENDER_RADIUS;
 import common.character.controller : MovementMode;
 import common.clock : MILLISECONDS_PER_SECOND, NANOSECONDS_PER_SECOND, nowSeconds;
 import common.dodeca : VERTEX_COUNT;
+import common.graph : Graph, Node;
+import common.material : Material;
 import common.names : ENUM_NAMES;
+import common.node : Chunk, ChunkState;
 import common.settings : CHUNK_DIMENSION;
 import common.units : Angle, AngularSpeed, Time;
+import common.worldgen.blueprint : Paint;
 import common.worldgen.generation : Worldgen;
 
 enum uint WINDOW_WIDTH = 1280;
@@ -26,6 +33,7 @@ enum uint SCREENSHOT_WIDTH = 640;
 enum uint SCREENSHOT_HEIGHT = 360;
 enum double BENCH_FRAME_SECONDS = 1.0 / 60.0;
 enum uint BENCH_MOVE_FRAMES = 300;
+enum uint BENCH_FLIGHT_LEGS = 6;
 enum double TITLE_INTERVAL_SECONDS = 1.0;
 enum size_t TEXT_CAPACITY = 256;
 enum uint KEYCODE_COUNT = 256;
@@ -46,6 +54,8 @@ enum size_t XI_MASK_BYTES = (XI_RawMotion >> 3) + 1;
 enum uint POINTER_AXES = 2;
 enum uint BITS_PER_BYTE = 8;
 enum int NO_DEVICE = -1;
+enum long KILOBYTES_PER_MEGABYTE = 1024;
+enum size_t BYTES_PER_MEGABYTE = 1024 * 1024;
 
 struct Arguments {
     StartupError error;
@@ -57,6 +67,7 @@ struct Arguments {
     const(char)* scriptPath;
     Worldgen worldgen;
     float sensitivity = 0;
+    float renderRadius = RENDER_RADIUS;
     bool hasSensitivity;
     bool isYInverted;
     bool isBenchLoad;
@@ -86,6 +97,9 @@ struct Arguments {
             return index + 2;
         } else if (strcmp(argument, "--sensitivity") == 0) {
             parseSensitivity(value);
+            return index + 2;
+        } else if (strcmp(argument, "--render-radius") == 0) {
+            parseRenderRadius(value);
             return index + 2;
         } else if (strcmp(argument, "--invert-y") == 0) {
             isYInverted = true;
@@ -128,6 +142,19 @@ struct Arguments {
                 hasSensitivity = true;
             } else {
                 error = StartupError(null, "sensitivity is not a number", value.text);
+            }
+        }
+    }
+
+    void parseRenderRadius(FlagValue value) {
+        if (value.error.isPresent()) {
+            error = value.error;
+        } else {
+            NumberArgument number = NumberArgument.fromText(value.text);
+            if (number.isPresent && number.value > 0) {
+                renderRadius = number.value;
+            } else {
+                error = StartupError(null, "render radius is not a positive number", value.text);
             }
         }
     }
@@ -246,6 +273,7 @@ struct Session {
         } else {
             renderer.setup(display, window, CHUNK_DIMENSION);
             game = Game.make(arguments.worldgen, config.reach);
+            game.world.renderRadius = arguments.renderRadius;
             immutable bool isPlaced = isStructurePlaced(game, arguments);
             if (isPlaced) {
                 runLoop();
@@ -661,9 +689,11 @@ bool benchLoad(Arguments arguments) {
         *renderer = Renderer.init;
         renderer.setupOffscreen(VkExtent2D(SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT), CHUNK_DIMENSION);
         Game game = Game.make(arguments.worldgen, config.reach);
+        game.world.renderRadius = arguments.renderRadius;
         immutable bool isPlaced = isStructurePlaced(game, arguments);
         if (isPlaced) {
             measureLoad(report, *renderer, game);
+            fflush(report);
             measureFlight(report, *renderer, game);
         }
         immutable bool isGrown = isPlaced && isStructureGrown(game, arguments);
@@ -728,6 +758,8 @@ void measureLoad(FILE* report, ref Renderer renderer, ref Game game) {
     }
     fprintf(report, "bench-load frames=%u wall=%.2fs nodes=%u dense_chunks=%u meshed=%u faces=%u\n", frames, elapsed, game.world.graph.nodeCount, dense, renderer.meshes.meshedChunks, renderer.meshes.allocator.used());
     fprintf(report, "nearby set complete at frame %u, worldgen settled at frame %u, meshing done at frame %u\n", nearbyFrame, generatedFrame, frames);
+    printMemory(report, game.world.graph);
+    fprintf(report, "evictions=%u worst=%.1fms, next above %u nodes\n", game.world.evictions, game.world.worstEviction, game.world.evictAbove);
     fprintf(report, "frame avg=%.2fms worst=%.2fms\n", frame.totalMs / frames, frame.worstMs);
     fprintf(report, "step avg=%.2fms worst=%.2fms\n", step.totalMs / frames, step.worstMs);
     fprintf(report, "render avg=%.2fms worst=%.2fms\n", render.totalMs / frames, render.worstMs);
@@ -735,12 +767,20 @@ void measureLoad(FILE* report, ref Renderer renderer, ref Game game) {
 }
 
 void measureFlight(FILE* report, ref Renderer renderer, ref Game game) {
+    game.mode = MovementMode.noclip;
+    foreach (leg; 0 .. BENCH_FLIGHT_LEGS) {
+        fprintf(report, "flight leg %u from depth %u:\n", leg + 1, game.world.graph.nodeAt(game.world.graph.slotOf(game.characterState.position.node)).depth);
+        measureLeg(report, renderer, game);
+        fflush(report);
+    }
+}
+
+void measureLeg(FILE* report, ref Renderer renderer, ref Game game) {
     PhaseTimes moving;
     PhaseTimes movingStep;
     PhaseTimes movingRender;
     RenderBreakdown breakdown;
     uint backloggedFrames = 0;
-    game.mode = MovementMode.noclip;
     FrameInput forward;
     forward.isHeld[Key.fwd] = true;
     foreach (_; 0 .. BENCH_MOVE_FRAMES) {
@@ -761,6 +801,53 @@ void measureFlight(FILE* report, ref Renderer renderer, ref Game game) {
     fprintf(report, "moving noclip: frame avg=%.2fms worst=%.2fms, %u of %u frames with loading pending\n", moving.totalMs / BENCH_MOVE_FRAMES, moving.worstMs, backloggedFrames, BENCH_MOVE_FRAMES);
     fprintf(report, "moving step avg=%.2fms worst=%.2fms, render avg=%.2fms worst=%.2fms\n", movingStep.totalMs / BENCH_MOVE_FRAMES, movingStep.worstMs, movingRender.totalMs / BENCH_MOVE_FRAMES, movingRender.worstMs);
     breakdown.print(report, BENCH_MOVE_FRAMES);
+    printMemory(report, game.world.graph);
+    fprintf(report, "evictions=%u worst=%.1fms, next above %u nodes\n", game.world.evictions, game.world.worstEviction, game.world.evictAbove);
+}
+
+void printMemory(FILE* report, ref const Graph graph) {
+    size_t buildings = 0;
+    size_t buildingBytes = 0;
+    foreach (slot; 0 .. graph.nodeCount) {
+        if (graph.nodeAt(slot).hasBuilding) {
+            buildings += 1;
+            buildingBytes += graph.nodeAt(slot).building.paints.length * Paint.sizeof;
+        }
+    }
+    size_t denseBytes = 0;
+    size_t holding = 0;
+    size_t stated = 0;
+    foreach (slot; 0 .. graph.nodeCount) {
+        uint generated = 0;
+        foreach (vertex; 0 .. VERTEX_COUNT) {
+            const(Chunk)* chunk = graph.chunks.at(cast(size_t) slot * VERTEX_COUNT + vertex);
+            denseBytes += chunk.voxels.denseData.length * Material.sizeof;
+            if (chunk.state != ChunkState.fresh) {
+                generated += 1;
+            }
+        }
+        if (generated > 0) {
+            holding += 1;
+        }
+        if (graph.nodeAt(slot).hasState) {
+            stated += 1;
+        }
+    }
+    fprintf(report, "nodes holding chunks=%zu with state=%zu\n", holding, stated);
+    rusage usage;
+    getrusage(RUSAGE_SELF, &usage);
+    fprintf(report, "memory: rss now=%zuMB peak=%ldMB nodes=%u of %u slots (%zuMB) buildings=%zu (%zuMB) dense voxels %zuMB\n", residentBytes() / BYTES_PER_MEGABYTE, usage.ru_maxrss / KILOBYTES_PER_MEGABYTE, graph.liveCount, graph.nodeCount, cast(size_t) graph.nodeCount * (Node.sizeof + VERTEX_COUNT * Chunk.sizeof) / BYTES_PER_MEGABYTE, buildings, buildingBytes / BYTES_PER_MEGABYTE, denseBytes / BYTES_PER_MEGABYTE);
+}
+
+size_t residentBytes() {
+    FILE* statm = fopen("/proc/self/statm", "r");
+    size_t total = 0;
+    size_t resident = 0;
+    if (statm !is null) {
+        fscanf(statm, "%zu %zu", &total, &resident);
+        fclose(statm);
+    }
+    return resident * sysconf(_SC_PAGESIZE);
 }
 
 int exitStatus(bool isSucceeded) {

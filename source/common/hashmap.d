@@ -127,6 +127,40 @@ struct HashMap(K, V) {
     }
 }
 
+void keepWhere(alias isKept, K, V, C)(ref HashMap!(K, V) map, ref C context) {
+    size_t capacity = INITIAL_HASH_MAP_CAPACITY;
+    while (capacity < (map.current.count + map.previous.count) * 2) {
+        capacity *= 2;
+    }
+    HashMap!(K, V) kept;
+    kept.current.allocate(capacity);
+    insertKept!isKept(kept.current, map.current, context);
+    insertKept!isKept(kept.current, map.previous, context);
+    map.release();
+    map = kept;
+}
+
+void insertKept(alias isKept, K, V, C)(ref HashTable!(K, V) kept, ref const HashTable!(K, V) table, ref C context) {
+    foreach (entry; table.entries[0 .. table.capacity]) {
+        if (entry.isUsed && isKept(context, entry.key, entry.value)) {
+            kept.assignIfMissing(entry.key, entry.value);
+        }
+    }
+}
+
+void visitEntries(alias visit, K, V, C)(ref const HashMap!(K, V) map, ref C context) {
+    foreach (entry; map.current.entries[0 .. map.current.capacity]) {
+        if (entry.isUsed) {
+            visit(context, entry.key, entry.value);
+        }
+    }
+    foreach (entry; map.previous.entries[0 .. map.previous.capacity]) {
+        if (entry.isUsed && map.current.find(entry.key) is null) {
+            visit(context, entry.key, entry.value);
+        }
+    }
+}
+
 struct TestKey {
     size_t value;
 
@@ -147,5 +181,14 @@ unittest {
     assert(map.find(TestKey(TEST_KEYS)) is null);
     map.insert(TestKey(3), 7);
     assert(*map.find(TestKey(3)) == 7);
+    size_t divisor = 3;
+    keepWhere!((ref size_t every, TestKey key, size_t value) => key.value % every == 0)(map, divisor);
+    foreach (i; 0 .. TEST_KEYS) {
+        assert((map.find(TestKey(i)) !is null) == (i % divisor == 0));
+    }
+    assert(*map.find(TestKey(3)) == 7);
+    size_t visited = 0;
+    visitEntries!((ref size_t count, TestKey key, size_t value) { count += 1; })(map, visited);
+    assert(visited == (TEST_KEYS + divisor - 1) / divisor);
     map.release();
 }

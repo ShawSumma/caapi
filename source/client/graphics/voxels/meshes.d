@@ -254,6 +254,20 @@ struct ChunkMeshes {
         }
     }
 
+    void forget(const(uint)[] slots) {
+        foreach (slot; slots) {
+            foreach (vertex; 0 .. VERTEX_COUNT) {
+                uint chunkIndex = slot * VERTEX_COUNT + vertex;
+                RenderChunk* entry = chunks.touch(chunkIndex);
+                if (entry.faceCount > 0) {
+                    allocator.release(entry.faceOffset, entry.faceCount);
+                }
+                removeDrawable(chunkIndex);
+                *entry = RenderChunk.init;
+            }
+        }
+    }
+
     uint allocateFaces(uint count) {
         immutable Allocation allocation = allocator.allocate(count);
         if (allocation.isFound) {

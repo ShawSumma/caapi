@@ -56,11 +56,13 @@ struct Node {
     bool isTiled;
     bool hasBuilding;
     bool isBuildingQueued;
+    bool hasChunks;
 }
 
 struct Grower {
     void function(void* context, ref Graph graph, int through) grow;
     void function(void* context, ref Graph graph, uint slot) cover;
+    void function(void* context, ref Array!uint held) hold;
     void function(void* context) release;
     void* context;
 }
@@ -111,6 +113,7 @@ struct Graph {
     Slab!PendingTouch pendingTouches;
     Slab!WorldRef worldRefs;
     Array!LineTouch touchScratch;
+    Array!uint freeSlots;
     Blueprint blueprint;
     Skies skies;
     Grower grower;
@@ -118,6 +121,7 @@ struct Graph {
     Worldgen worldgen;
     ChunkLayout layout;
     uint nodeCount;
+    uint liveCount;
     uint anchorSlot;
     uint touchCount;
     uint pendingCount;
@@ -170,17 +174,27 @@ struct Graph {
 
     uint addNode(NodeId id, uint depth) {
         uint slot = nodeCount;
-        nodes.ensure(slot + 1);
-        chunks.ensure(cast(size_t)(slot + 1) * VERTEX_COUNT);
+        if (freeSlots.length > 0) {
+            slot = freeSlots.ptr[freeSlots.length - 1];
+            freeSlots.length -= 1;
+        } else {
+            nodes.ensure(slot + 1);
+            chunks.ensure(cast(size_t)(slot + 1) * VERTEX_COUNT);
+            nodeCount += 1;
+        }
         Node* added = nodeAt(slot);
         added.id = id;
         added.depth = depth;
         foreach (side; 0 .. SIDE_COUNT) {
             added.neighbors[side] = NO_SLOT;
         }
-        nodeCount += 1;
+        liveCount += 1;
         slots.insert(id, slot);
         return slot;
+    }
+
+    bool isLive(uint slot) const {
+        return nodeAt(slot).id != NO_NODE;
     }
 
     uint slotOf(NodeId id) const {
@@ -430,9 +444,11 @@ struct Graph {
         pendingTouches.release();
         worldRefs.release();
         touchScratch.release();
+        freeSlots.release();
         blueprint.release();
         skies.release();
         nodeCount = 0;
+        liveCount = 0;
         touchCount = 0;
         pendingCount = 0;
         worldRefCount = 0;
