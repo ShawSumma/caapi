@@ -15,7 +15,7 @@ import client.structures : StructureProblem, placeStructure;
 import common.settings : CHUNK_DIMENSION;
 import common.worldgen.embedded : EMBEDDED_STRUCTURE_NAMES, isLuaPath;
 import common.worldgen.generation : Worldgen, WorldgenKind;
-import worldcheck : benchDrive, benchGen, benchMesh, benchNearby, checkRepaint, dumpStructure, dumpWorld, printWorldDigest;
+import worldcheck : benchDrive, benchGen, benchMesh, benchNearby, checkRepaint, dumpStructure, dumpWorld, printMaterialCensus, printWorldDigest;
 
 enum int EXIT_PASSED = 0;
 enum int EXIT_FAILED = 1;
@@ -31,6 +31,7 @@ enum Command : ubyte {
     scripts,
     dumpWorld,
     worldDigest,
+    materialCensus,
     dumpStructure,
     checkRepaint,
     benchGen,
@@ -79,6 +80,9 @@ struct HeadlessArguments {
             return index + 1;
         } else if (strcmp(argument, "--world-digest") == 0) {
             command = Command.worldDigest;
+            return index + 1;
+        } else if (strcmp(argument, "--material-census") == 0) {
+            command = Command.materialCensus;
             return index + 1;
         } else if (strcmp(argument, "--dump-structure") == 0) {
             command = Command.dumpStructure;
@@ -158,7 +162,7 @@ struct HeadlessArguments {
     float commandRadius() const {
         if (radius.isPresent) {
             return radius.value;
-        } else if (command == Command.dumpWorld || command == Command.worldDigest) {
+        } else if (command == Command.dumpWorld || command == Command.worldDigest || command == Command.materialCensus) {
             return DEFAULT_DUMP_RADIUS;
         } else if (command == Command.benchNearby) {
             return DEFAULT_NEARBY_RADIUS;
@@ -237,6 +241,8 @@ void runMeasurement(ref const HeadlessArguments arguments, FILE* output) {
         dumpWorld(output, radius, CHUNK_DIMENSION);
     } else if (arguments.command == Command.worldDigest) {
         printWorldDigest(output, radius, CHUNK_DIMENSION);
+    } else if (arguments.command == Command.materialCensus) {
+        printMaterialCensus(output, radius, CHUNK_DIMENSION);
     } else if (arguments.command == Command.benchGen) {
         benchGen(output, radius, CHUNK_DIMENSION);
     } else if (arguments.command == Command.benchDrive) {

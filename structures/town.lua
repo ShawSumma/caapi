@@ -8,6 +8,10 @@ local TYPES = {
   tenement = require("buildings.tenement"),
   deco = require("buildings.deco"),
   glass = require("buildings.glass"),
+  rowhouse = require("buildings.rowhouse"),
+  warehouse = require("buildings.warehouse"),
+  modern = require("buildings.modern"),
+  civic = require("buildings.civic"),
 }
 
 local STREET = kit.STREET
@@ -24,30 +28,31 @@ local PLAZA_PERCENT = 5
 local PARKING_PERCENT = 3
 local ALLEY_PERCENT = 20
 local MAX_INSET = 1
+local VARIANTS = 1024
 local KINDS = {
   {
     name = "corner",
-    types = { "tenement", "tenement", "deco", "glass" },
+    types = { "tenement", "tenement", "rowhouse", "rowhouse", "deco", "glass", "modern", "civic" },
     most = 22,
   },
   {
     name = "slab",
-    types = { "brownstone", "brownstone", "tenement", "deco", "glass" },
+    types = { "brownstone", "brownstone", "rowhouse", "tenement", "warehouse", "deco", "glass", "modern" },
     most = 30,
   },
   {
     name = "wide",
-    types = { "deco", "glass", "glass", "tenement" },
+    types = { "deco", "glass", "glass", "tenement", "modern", "warehouse", "civic" },
     most = 38,
   },
   {
     name = "around",
-    types = { "deco", "glass", "tenement" },
+    types = { "deco", "glass", "tenement", "modern", "civic" },
     most = 38,
   },
 }
-local ISLAND_TYPES = { "deco", "glass" }
-local ROUTE_SPEC = { type = "tenement", stories = 4, gap = 0, route_stories = 2 }
+local ISLAND_TYPES = { "deco", "glass", "modern", "civic" }
+local ROUTE_SPEC = { type = "tenement", stories = 4, gap = 0, route_stories = 2, variant = 0 }
 
 local ROAD = { -2, 1 }
 local SIDEWALK = { 2, 3 }
@@ -237,11 +242,19 @@ local function pave(parts, material)
   end
 end
 
+local function is_roomy(area)
+  return area.x[2] - area.x[1] >= 4 and area.y[2] - area.y[1] >= 4
+end
+
+local function centre(span)
+  return (span[1] + span[2] + 1) // 2
+end
+
 local function plant(parts)
   for _, part in ipairs(parts) do
     local tower, area = ground_of(part)
-    if area.x[2] - area.x[1] >= 4 and area.y[2] - area.y[1] >= 4 then
-      tree(tower, (area.x[1] + area.x[2] + 1) // 2, (area.y[1] + area.y[2] + 1) // 2)
+    if is_roomy(area) then
+      tree(tower, centre(area.x), centre(area.y))
     end
   end
 end
@@ -268,7 +281,7 @@ local function spec_of(site, kind, types)
   if kind.name ~= "corner" then
     front = FRONT + site:pick(MAX_INSET + 1) - 1
   end
-  return { type = name, stories = stories, palette = choose(site, building.PALETTES), front = front, gap = gap }
+  return { type = name, stories = stories, palette = choose(site, building.PALETTES), front = front, gap = gap, variant = site:pick(VARIANTS) }
 end
 
 function town.fit(site, stories)
@@ -336,7 +349,18 @@ local function part_of(quarter, is_street_before, is_street_after, is_first)
   if is_first and is_street_before then
     front = "y_low"
   end
-  return { site = quarter, x_low = x_low, y_low = y_low, x_high = BOUNDARY, y_high = BOUNDARY, front = front }
+  return { site = quarter, x_low = x_low, y_low = y_low, x_high = BOUNDARY, y_high = BOUNDARY, front = front, joins = {} }
+end
+
+-- Quarters next to each other in a run share the edge between them, the first's x_low side and the next's y_low.
+local function join(run)
+  for index, part in ipairs(run) do
+    if part.x_low == JOINED then
+      local next_index = index % #run + 1
+      part.joins.x_low = { lot = next_index, side = "y_low" }
+      run[next_index].joins.y_low = { lot = index, side = "x_low" }
+    end
+  end
 end
 
 local function lots_at(quarters, root)
@@ -370,6 +394,7 @@ local function lots_at(quarters, root)
     end
     if streets[after] or step == AROUND - 1 then
       if #run > 0 then
+        join(run)
         lot(run, is_route, is_root, root)
       end
       run = {}

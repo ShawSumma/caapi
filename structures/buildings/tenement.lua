@@ -8,14 +8,15 @@ tenement.PALETTES = {
   { wall = "white_brick", trim = "grey_brick", floor = "wood_planks" },
   { wall = "red_sandstone", trim = "white_brick", floor = "wood_planks" },
   { wall = "clay", trim = "limestone", floor = "wood_planks" },
+  { wall = "andesite", trim = "sandstone", floor = "wood_planks" },
 }
 
 local DESIGN = {
   setbacks = 0,
   facade = kit.masonry,
-  has_storefront = true,
+  ground = kit.storefront,
   roof = "basalt",
-  crown = kit.water_tower,
+  crowns = { kit.water_tower, kit.water_tower, kit.chimney },
 }
 
 function tenement.build(lots, spec)

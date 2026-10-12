@@ -8,14 +8,15 @@ deco.PALETTES = {
   { wall = "sandstone", trim = "marble", floor = "concrete" },
   { wall = "white_brick", trim = "steel", floor = "concrete" },
   { wall = "diorite", trim = "granite", floor = "concrete" },
+  { wall = "dolomite", trim = "slate", floor = "concrete" },
 }
 
 local DESIGN = {
   setbacks = 2,
   facade = kit.masonry,
-  has_storefront = true,
+  ground = kit.storefront,
   roof = "slate",
-  crown = kit.spire,
+  crowns = { kit.spire, kit.spire, kit.pyramid },
 }
 
 function deco.build(lots, spec)

@@ -13,7 +13,8 @@ import client.streaming : Streamer;
 import client.structures : StructureProblem, growthProblem, placeWorldStructure;
 import client.world : FULL_RADIUS;
 import common.graph : Graph, NodeId;
-import common.material : Material;
+import base.names : ENUM_NAMES;
+import common.material : MATERIAL_COUNT, Material;
 import common.neighbors : needsMesh;
 import common.node : Chunk, ChunkSlot, ChunkState, Voxels, cellIndex;
 import common.position : Position;
@@ -192,6 +193,27 @@ void dumpWorld(FILE* output, float radius, ubyte dimension) {
         }
     }
     WorldDigest.fromGraph(graph).print(output);
+    graph.release();
+}
+
+// How many cells each material fills in the terrain world around the origin, to see what worldgen makes.
+void printMaterialCensus(FILE* output, float radius, ubyte dimension) {
+    Graph graph = terrainGraph(dimension);
+    graph.generateWorld(radius);
+    size_t[MATERIAL_COUNT] counts;
+    foreach (index; 0 .. cast(size_t) graph.slotCount * CORNER_COUNT) {
+        const(Chunk)* chunk = graph.chunks.at(ChunkSlot.fromIndex(index));
+        if (chunk.state == ChunkState.populated) {
+            foreach (cell; 0 .. cast(size_t) dimension * dimension * dimension) {
+                counts[chunk.voxels.at(cell)] += 1;
+            }
+        }
+    }
+    foreach (material, count; counts) {
+        if (count > 0 && material != Material.none) {
+            fprintf(output, "%.*s %zu\n", cast(int) ENUM_NAMES!Material[material].length, ENUM_NAMES!Material[material].ptr, count);
+        }
+    }
     graph.release();
 }
 

@@ -8,17 +8,25 @@ kit.LOT = "lot"
 local STORY = kit.STORY
 local STREET = kit.STREET
 local JOINED = kit.JOINED
+local LOT = kit.LOT
 local FLOORS = { every = STORY, from = 0, span = 1 }
+local RAILS = { every = STORY, from = 1, span = 1 }
 local ROOMS = { every = STORY, from = 1, span = STORY - 1 }
 local WINDOW_ROWS = { every = STORY, from = 1, span = 2 }
+local HIGH_ROWS = { every = STORY, from = 2, span = 1 }
 local SPANDRELS = { every = STORY, from = STORY - 1, span = 1 }
 local DOOR_TOP = STORY - 1
 local DOOR_WIDTH = 2
 local PIER_SPACING = 3
+local NARROW_PIER_SPACING = 2
 local MULLION_SPACING = 3
 local SPIRE = 10
 local ANTENNA = 6
+local MAST_SPACING = 3
+local CHIMNEY = 3
 local LEAST_WIDTH = 3
+local LEAST_GARDEN = 5
+local LEAST_PAD = 5
 local PENTHOUSE_SETBACK = 2
 local CORE_LENGTH = STORY + 1
 local CORE_WIDTH = 5
@@ -59,6 +67,7 @@ local function part_of(lot, spec)
     x = { bound_low(lot.x_low, spec), bound_high(lot.x_high, spec, far) },
     y = { bound_low(lot.y_low, spec), bound_high(lot.y_high, spec, far) },
     kinds = { x_low = lot.x_low, y_low = lot.y_low, x_high = lot.x_high, y_high = lot.y_high },
+    joins = {},
     front = lot.front,
     split = far + 1,
   }
@@ -96,8 +105,16 @@ local function middle(span)
   return (span[1] + span[2]) // 2
 end
 
+local function width(span)
+  return span[2] - span[1] + 1
+end
+
 local function area(box)
-  return (box.x[2] - box.x[1] + 1) * (box.y[2] - box.y[1] + 1)
+  return width(box.x) * width(box.y)
+end
+
+local function is_empty(box)
+  return box.x[1] > box.x[2] or box.y[1] > box.y[2]
 end
 
 local function face_of(box, side)
@@ -112,11 +129,69 @@ local function face_of(box, side)
   end
 end
 
-local function walls(part, box, is_below_split)
+local function is_along_y(side)
+  return side == "x_low" or side == "x_high"
+end
+
+local function along(box, side)
+  if is_along_y(side) then
+    return box.y
+  else
+    return box.x
+  end
+end
+
+local function with_along(face, side, span)
+  local piece = { x = face.x, y = face.y, z = face.z }
+  if is_along_y(side) then
+    piece.y = span
+  else
+    piece.x = span
+  end
+  return piece
+end
+
+-- The face moved the given number of cells out of the box, or into it when negative.
+local function moved_out(face, side, cells)
+  local sign = cells
+  if side == "x_low" or side == "y_low" then
+    sign = -cells
+  end
+  if is_along_y(side) then
+    return { x = { face.x[1] + sign, face.x[2] + sign }, y = face.y, z = face.z }
+  else
+    return { x = face.x, y = { face.y[1] + sign, face.y[2] + sign }, z = face.z }
+  end
+end
+
+-- A joined side is left open for the part across it, but only where that part reaches: one may be set back from a
+-- street the other is not. These are the stretches it does not reach, at the same tier, which need walls of their own.
+local function uncovered(part, box, side, tier)
+  local join = part.joins[side]
+  local pieces = {}
+  if join then
+    local theirs = along(footprint(join.part, tier.shrink, tier.is_below_split, tier.low, tier.high), join.side)
+    local mine = along(box, side)
+    local face = face_of(box, side)
+    if mine[1] < theirs[1] then
+      pieces[#pieces + 1] = with_along(face, side, { mine[1], math.min(mine[2], theirs[1] - 1) })
+    end
+    if mine[2] > theirs[2] then
+      pieces[#pieces + 1] = with_along(face, side, { math.max(mine[1], theirs[2] + 1), mine[2] })
+    end
+  end
+  return pieces
+end
+
+local function walls(part, box, tier)
   local list = {}
   for _, side in ipairs(SIDES) do
-    if not is_open(part, side, is_below_split) then
+    if not is_open(part, side, tier.is_below_split) then
       list[#list + 1] = face_of(box, side)
+    else
+      for _, piece in ipairs(uncovered(part, box, side, tier)) do
+        list[#list + 1] = piece
+      end
     end
   end
   return list
@@ -147,8 +222,8 @@ local function strips(face, spacing)
 end
 
 local function narrowing(box, wanted, least)
-  local width = math.min(box.x[2] - box.x[1], box.y[2] - box.y[1]) + 1
-  return math.max(0, math.min(wanted, (width - least) // 2))
+  local narrowest = math.min(width(box.x), width(box.y))
+  return math.max(0, math.min(wanted, (narrowest - least) // 2))
 end
 
 local function setbacks_of(parts, wanted)
@@ -184,6 +259,16 @@ local function shell(part, palette, tier)
   end
   part.tower:paint(palette.floor, inside, FLOORS)
   part.tower:paint("air", inside, ROOMS)
+  for _, side in ipairs(SIDES) do
+    if is_open(part, side, tier.is_below_split) then
+      for _, piece in ipairs(uncovered(part, box, side, tier)) do
+        part.tower:paint(palette.wall, piece)
+        if palette.band then
+          part.tower:paint(palette.band, piece, FLOORS)
+        end
+      end
+    end
+  end
   return box
 end
 
@@ -194,22 +279,49 @@ local function roof(part, palette, material, tier, above)
   end
 end
 
-local function ring(part, palette, shrink, z)
-  part.tower:paint(palette.trim, footprint(part, shrink, false, z, z))
-  part.tower:paint("air", footprint(part, shrink + 1, false, z, z))
-end
-
-function kit.masonry(part, palette, box, is_below_split)
-  for _, face in ipairs(walls(part, box, is_below_split)) do
-    part.tower:paint("glass", face, WINDOW_ROWS)
-    for _, pier in ipairs(strips(face, PIER_SPACING)) do
-      part.tower:paint(palette.wall, pier)
+local function ring(part, palette, tier)
+  local z = tier.high + 1
+  local level = { low = z, high = z, shrink = tier.shrink, is_below_split = false }
+  local box = footprint(part, tier.shrink, false, z, z)
+  part.tower:paint(palette.trim, box)
+  part.tower:paint("air", footprint(part, tier.shrink + 1, false, z, z))
+  for _, side in ipairs(SIDES) do
+    if is_open(part, side, false) then
+      for _, piece in ipairs(uncovered(part, box, side, level)) do
+        part.tower:paint(palette.trim, piece)
+      end
     end
   end
 end
 
-function kit.curtain(part, palette, box, is_below_split)
-  for _, face in ipairs(walls(part, box, is_below_split)) do
+-- Facades take the shell's box and its tier and cut windows into its walls.
+
+local function punched(spacing)
+  return function(part, palette, box, tier)
+    for _, face in ipairs(walls(part, box, tier)) do
+      part.tower:paint("glass", face, WINDOW_ROWS)
+      for _, pier in ipairs(strips(face, spacing)) do
+        part.tower:paint(palette.wall, pier)
+      end
+    end
+  end
+end
+
+local function banded(rows)
+  return function(part, palette, box, tier)
+    for _, face in ipairs(walls(part, box, tier)) do
+      part.tower:paint("glass", face, rows)
+    end
+  end
+end
+
+kit.masonry = punched(PIER_SPACING)
+kit.grid = punched(NARROW_PIER_SPACING)
+kit.ribbon = banded(WINDOW_ROWS)
+kit.clerestory = banded(HIGH_ROWS)
+
+function kit.curtain(part, palette, box, tier)
+  for _, face in ipairs(walls(part, box, tier)) do
     part.tower:paint(palette.band, face, SPANDRELS)
     for _, mullion in ipairs(strips(face, MULLION_SPACING)) do
       part.tower:paint(palette.trim, mullion)
@@ -217,79 +329,222 @@ function kit.curtain(part, palette, box, is_below_split)
   end
 end
 
-function kit.penthouse(part, palette, tier)
-  local roof = footprint(part, tier.shrink, false, tier.high, tier.high)
-  local cap = { low = tier.high + 1, high = tier.high + STORY, shrink = tier.shrink + narrowing(roof, PENTHOUSE_SETBACK, LEAST_WIDTH), is_below_split = false }
-  shell(part, { wall = palette.band, floor = palette.floor }, cap)
+-- Ribbon windows with a balcony along every street side of every story above the ground.
+function kit.balconied(part, palette, box, tier)
+  kit.ribbon(part, palette, box, tier)
+  local low = math.max(tier.low, STORY)
+  if low < tier.high then
+    for _, side in ipairs(SIDES) do
+      if part.kinds[side] == STREET then
+        local slab = moved_out(face_of(box, side), side, 1)
+        local run = along(slab, side)
+        slab = with_along(slab, side, { run[1] + 1, run[2] - 1 })
+        slab.z = { low, tier.high - 1 }
+        part.tower:paint(palette.floor, slab, FLOORS)
+        part.tower:paint(palette.trim, slab, RAILS)
+      end
+    end
+  end
 end
 
+-- Ground floors take the part and its palette and open its street sides.
+
+function kit.storefront(part, palette)
+  local box = footprint(part, 0, true, 1, DOOR_TOP)
+  for _, side in ipairs(SIDES) do
+    if part.kinds[side] == STREET then
+      local face = face_of(box, side)
+      local run = along(face, side)
+      part.tower:paint("glass", with_along(face, side, { run[1] + 1, run[2] - 1 }))
+    end
+  end
+end
+
+-- A colonnade: the outer cells of the ground story are open between columns, with the shop windows a cell behind.
+function kit.arcade(part, palette)
+  local box = footprint(part, 0, true, 1, DOOR_TOP)
+  for _, side in ipairs(SIDES) do
+    if part.kinds[side] == STREET then
+      local face = face_of(box, side)
+      part.tower:paint("air", face)
+      for _, column in ipairs(strips(face, PIER_SPACING)) do
+        part.tower:paint(palette.trim, column)
+      end
+      local behind = moved_out(face, side, -1)
+      local run = along(behind, side)
+      part.tower:paint("glass", with_along(behind, side, { run[1] + 1, run[2] - 1 }))
+    end
+  end
+end
+
+-- Caps go on every part's highest tier and return the tier crowns stand on.
+
+-- A small closed box on the roof; neighbors each get their own rather than one that might not meet.
+function kit.penthouse(part, palette, tier)
+  local roof_box = footprint(part, tier.shrink, false, tier.high, tier.high)
+  local cap = { low = tier.high + 1, high = tier.high + STORY, shrink = tier.shrink + narrowing(roof_box, PENTHOUSE_SETBACK, LEAST_WIDTH), is_below_split = false }
+  local closed = { tower = part.tower, x = part.x, y = part.y, kinds = { x_low = LOT, y_low = LOT, x_high = LOT, y_high = LOT }, joins = {} }
+  shell(closed, { wall = palette.band, floor = palette.floor }, cap)
+  return cap
+end
+
+-- A hipped roof, one cell in and one cell up at a time; it runs on across joined sides, which never step in.
+function kit.hip_roof(part, palette, tier)
+  local rise = 1
+  local box = footprint(part, tier.shrink + rise, false, tier.high + rise, tier.high + rise)
+  while not is_empty(box) do
+    part.tower:paint(palette.roof, box)
+    rise = rise + 1
+    box = footprint(part, tier.shrink + rise, false, tier.high + rise, tier.high + rise)
+  end
+  return tier
+end
+
+-- Grass on the roof inside the parapet, with a tree in the middle when there is room.
+function kit.garden(part, palette, tier)
+  local lawn = footprint(part, tier.shrink + 1, false, tier.high, tier.high)
+  if not is_empty(lawn) then
+    part.tower:paint("grass", lawn)
+    if width(lawn.x) >= LEAST_GARDEN and width(lawn.y) >= LEAST_GARDEN then
+      local x, y, z = middle(lawn.x), middle(lawn.y), tier.high
+      part.tower:paint("oak_leaves", { x = { x - 1, x + 1 }, y = { y - 1, y + 1 }, z = { z + 3, z + 4 } })
+      part.tower:paint("oak_leaves", { x = { x, x }, y = { y, y }, z = { z + 5, z + 5 } })
+      part.tower:paint("oak_wood", { x = { x, x }, y = { y, y }, z = { z + 1, z + 3 } })
+    end
+  end
+  return tier
+end
+
+-- Crowns go once on the building's largest part.
+
 function kit.antenna(part, palette, tier)
-  local roof = footprint(part, tier.shrink, false, tier.high, tier.high)
-  local x, y = middle(roof.x), middle(roof.y)
-  part.tower:paint(palette.trim, { x = { x, x }, y = { y, y }, z = { tier.high + STORY + 1, tier.high + STORY + ANTENNA } })
+  local roof_box = footprint(part, tier.shrink, false, tier.high, tier.high)
+  local x, y = middle(roof_box.x), middle(roof_box.y)
+  part.tower:paint(palette.trim, { x = { x, x }, y = { y, y }, z = { tier.high + 1, tier.high + ANTENNA } })
+end
+
+-- A row of masts along the roof's longer side, each a little shorter than the last.
+function kit.masts(part, palette, tier)
+  local roof_box = footprint(part, tier.shrink + 1, false, tier.high, tier.high)
+  if not is_empty(roof_box) then
+    local x, y = middle(roof_box.x), middle(roof_box.y)
+    local is_along_x = width(roof_box.x) >= width(roof_box.y)
+    local run = roof_box.y
+    if is_along_x then
+      run = roof_box.x
+    end
+    local height = ANTENNA + STORY
+    for cell = run[1] + 1, run[2] - 1, MAST_SPACING do
+      local mast = { x = { x, x }, y = { cell, cell }, z = { tier.high + 1, tier.high + height } }
+      if is_along_x then
+        mast = { x = { cell, cell }, y = { y, y }, z = mast.z }
+      end
+      part.tower:paint(palette.trim, mast)
+      height = math.max(2, height - 2)
+    end
+  end
 end
 
 function kit.spire(part, palette, tier)
-  local roof = footprint(part, tier.shrink, false, tier.high, tier.high)
-  local x, y = middle(roof.x), middle(roof.y)
+  local roof_box = footprint(part, tier.shrink, false, tier.high, tier.high)
+  local x, y = middle(roof_box.x), middle(roof_box.y)
   part.tower:paint(palette.trim, { x = { x - 1, x + 1 }, y = { y - 1, y + 1 }, z = { tier.high + 1, tier.high + 2 } })
   part.tower:paint(palette.trim, { x = { x, x }, y = { y, y }, z = { tier.high + 3, tier.high + SPIRE } })
 end
 
+-- Squares narrowing by the profile, centered on the roof.
+local function stacked(part, material, tier, profile)
+  local roof_box = footprint(part, tier.shrink + 1, false, tier.high, tier.high)
+  local reach = (math.min(width(roof_box.x), width(roof_box.y)) - 1) // 2
+  local x, y = middle(roof_box.x), middle(roof_box.y)
+  for level, half in ipairs(profile(reach)) do
+    part.tower:paint(material, { x = { x - half, x + half }, y = { y - half, y + half }, z = { tier.high + level, tier.high + level } })
+  end
+end
+
+local function dome_profile(reach)
+  local halves = {}
+  for level = 0, reach do
+    halves[#halves + 1] = math.floor(math.sqrt(reach * reach - level * level) + 0.5)
+  end
+  return halves
+end
+
+local function pyramid_profile(reach)
+  local halves = {}
+  for half = reach, 0, -1 do
+    halves[#halves + 1] = half
+  end
+  return halves
+end
+
+function kit.dome(part, palette, tier)
+  stacked(part, palette.roof, tier, dome_profile)
+end
+
+function kit.pyramid(part, palette, tier)
+  stacked(part, palette.trim, tier, pyramid_profile)
+end
+
+-- A landing pad: a raised square of concrete marked with an H.
+function kit.helipad(part, palette, tier)
+  local roof_box = footprint(part, tier.shrink + 1, false, tier.high, tier.high)
+  if width(roof_box.x) >= LEAST_PAD and width(roof_box.y) >= LEAST_PAD then
+    local x, y, z = middle(roof_box.x), middle(roof_box.y), tier.high + 1
+    part.tower:paint("concrete", { x = { x - 2, x + 2 }, y = { y - 2, y + 2 }, z = { z, z } })
+    part.tower:paint("white_brick", { x = { x - 1, x - 1 }, y = { y - 1, y + 1 }, z = { z, z } })
+    part.tower:paint("white_brick", { x = { x + 1, x + 1 }, y = { y - 1, y + 1 }, z = { z, z } })
+    part.tower:paint("white_brick", { x = { x, x }, y = { y, y }, z = { z, z } })
+  end
+end
+
+function kit.chimney(part, palette, tier)
+  local roof_box = footprint(part, tier.shrink + 1, false, tier.high, tier.high)
+  if not is_empty(roof_box) then
+    local x, y = roof_box.x[2], roof_box.y[2]
+    part.tower:paint(palette.trim, { x = { x, x }, y = { y, y }, z = { tier.high + 1, tier.high + CHIMNEY } })
+  end
+end
+
 function kit.water_tower(part, palette, tier)
-  local roof = footprint(part, tier.shrink, false, tier.high, tier.high)
-  local x, y = roof.x[2] - 2, roof.y[2] - 2
+  local roof_box = footprint(part, tier.shrink, false, tier.high, tier.high)
+  local x, y = roof_box.x[2] - 2, roof_box.y[2] - 2
   part.tower:paint("steel", { x = { x, x }, y = { y, y }, z = { tier.high + 1, tier.high + 1 } })
   part.tower:paint("steel", { x = { x + 1, x + 1 }, y = { y + 1, y + 1 }, z = { tier.high + 1, tier.high + 1 } })
   part.tower:paint("wood_planks", { x = { x, x + 1 }, y = { y, y + 1 }, z = { tier.high + 2, tier.high + 4 } })
 end
 
-local function storefront(part)
-  local box = footprint(part, 0, true, 1, DOOR_TOP)
-  for _, side in ipairs(SIDES) do
-    if part.kinds[side] == STREET then
-      local face = face_of(box, side)
-      if face.x[1] == face.x[2] then
-        face.y = { face.y[1] + 1, face.y[2] - 1 }
-      else
-        face.x = { face.x[1] + 1, face.x[2] - 1 }
-      end
-      part.tower:paint("glass", face)
-    end
-  end
-end
-
 local function core_of(part, interior)
   local side = part.front
   local is_x = side == "x_low" or side == "x_high"
-  local along = interior.y
+  local along_span = interior.y
   local across = interior.x
   if is_x then
-    along = interior.x
+    along_span = interior.x
     across = interior.y
   end
   local sign = 1
-  local first = along[1]
+  local first = along_span[1]
   if side == "x_high" or side == "y_high" then
     sign = -1
-    first = along[2]
+    first = along_span[2]
   end
-  if along[2] - along[1] + 1 < CORE_LENGTH or across[2] - across[1] + 1 < CORE_WIDTH then
+  if width(along_span) < CORE_LENGTH or width(across) < CORE_WIDTH then
     return nil
   else
-    return { is_x = is_x, sign = sign, first = first, across = across[1] + (across[2] - across[1] + 1 - CORE_WIDTH) // 2 }
+    return { is_x = is_x, sign = sign, first = first, across = across[1] + (width(across) - CORE_WIDTH) // 2 }
   end
 end
 
 local function core_box(core, along_low, along_high, across_low, across_high, z)
   local a = core.first + core.sign * along_low
   local b = core.first + core.sign * along_high
-  local along = { math.min(a, b), math.max(a, b) }
+  local along_span = { math.min(a, b), math.max(a, b) }
   local across = { core.across + across_low, core.across + across_high }
   if core.is_x then
-    return { x = along, y = across, z = z }
+    return { x = along_span, y = across, z = z }
   else
-    return { x = across, y = along, z = z }
+    return { x = across, y = along_span, z = z }
   end
 end
 
@@ -306,24 +561,26 @@ local function stairs(part, core, top, material)
 end
 
 local function wall_along(core, ground)
-  local along = ground.y
+  local along_span = ground.y
   if core.is_x then
-    along = ground.x
+    along_span = ground.x
   end
   if core.sign > 0 then
-    return along[1]
+    return along_span[1]
   else
-    return along[2]
+    return along_span[2]
   end
 end
 
+-- The door goes through the wall and the cell behind it, which an arcade fills with shop windows.
 local function door(part, core, ground)
   local wall = wall_along(core, ground)
   local box = core_box(core, 0, 0, WALKWAY, WALKWAY + DOOR_WIDTH - 1, { 1, DOOR_TOP })
+  local through = { math.min(wall, wall + core.sign), math.max(wall, wall + core.sign) }
   if core.is_x then
-    box.x = { wall, wall }
+    box.x = through
   else
-    box.y = { wall, wall }
+    box.y = through
   end
   part.tower:paint("air", box)
 end
@@ -331,11 +588,11 @@ end
 local function route(part, core, ground, stories)
   local wall = wall_along(core, ground)
   local walkway = core.across + WALKWAY + 0.5
-  local function stop(along, across, z)
+  local function stop(along_at, across, z)
     if core.is_x then
-      part.tower:stop(along, across, z)
+      part.tower:stop(along_at, across, z)
     else
-      part.tower:stop(across, along, z)
+      part.tower:stop(across, along_at, z)
     end
   end
   local function cell(k)
@@ -393,37 +650,55 @@ local function main_part(parts, tops)
   return main
 end
 
+-- A design lists crowns to choose from by the spec's variant; false means none.
+local function crown_of(design, spec)
+  if design.crowns then
+    return design.crowns[spec.variant % #design.crowns + 1]
+  else
+    return false
+  end
+end
+
+-- Lots may name the lots joined to their sides in joins, by index, as { lot = index, side = side }. A joined side
+-- without one is taken to be met all along.
 function kit.build(lots, spec, design)
   local parts = {}
   for index, lot in ipairs(lots) do
     parts[index] = part_of(lot, spec)
   end
+  for index, lot in ipairs(lots) do
+    for side, join in pairs(lot.joins or {}) do
+      parts[index].joins[side] = { part = parts[join.lot], side = join.side }
+    end
+  end
   local top = spec.stories * STORY
   local setbacks = setbacks_of(parts, design.setbacks)
   local tops = {}
+  local stands = {}
   for _, part in ipairs(parts) do
     local tiers = tiers_of(top, part.split, setbacks)
     for index, tier in ipairs(tiers) do
-      design.facade(part, spec.palette, shell(part, spec.palette, tier), tier.is_below_split)
+      design.facade(part, spec.palette, shell(part, spec.palette, tier), tier)
       local above = tiers[index + 1]
       if not above or above.shrink > tier.shrink then
         roof(part, spec.palette, design.roof, tier, above)
-        ring(part, spec.palette, tier.shrink, tier.high + 1)
+        ring(part, spec.palette, tier)
       end
     end
-    if design.has_storefront then
-      storefront(part)
+    if design.ground then
+      design.ground(part, spec.palette)
     end
-    local highest = tiers[#tiers]
+    tops[part] = tiers[#tiers]
+    stands[part] = tops[part]
     if design.cap then
-      design.cap(part, spec.palette, highest)
+      stands[part] = design.cap(part, spec.palette, tops[part])
     end
-    tops[part] = highest
   end
   enter(parts, tops, spec)
-  if design.crown then
-    local main = main_part(parts, tops)
-    design.crown(main, spec.palette, tops[main])
+  local crown = crown_of(design, spec)
+  if crown then
+    local main = main_part(parts, stands)
+    crown(main, spec.palette, stands[main])
   end
 end
 

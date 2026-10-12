@@ -1,3 +1,4 @@
+local backrooms = require("backrooms")
 local connector = require("connector")
 local kit = require("buildings.kit")
 local town = require("town")
@@ -8,9 +9,12 @@ local SPIRE_PERCENT = 30
 local SPIRE_TYPES = {
   require("buildings.deco"),
   require("buildings.glass"),
+  require("buildings.modern"),
 }
+local VARIANTS = 1024
 local LOT_FRONT = 4
 local MEADOW_GROUND = 0
+local BACKROOMS_GROUND = 1
 local NO_OPTIONS = {}
 
 local function settings_of(options)
@@ -42,6 +46,11 @@ function sky.city(face, info, options)
   town.tile(face, { vertex = info.foot:hash("vertex"), face = info.foot:hash("face"), sky = info, is_routed = settings.route })
 end
 
+function sky.backrooms(face, info, options)
+  backrooms.tile(face, { foot = info.foot:hash("vertex") })
+  connect(face, info, BACKROOMS_GROUND, settings_of(options))
+end
+
 local function meadow(quarters)
   for _, quarter in ipairs(quarters) do
     local ground = town.upright(quarter)
@@ -58,7 +67,7 @@ local function spire(corner)
   local stories = town.fit(corner, type.STORIES[1] + corner:pick(type.STORIES[2] - type.STORIES[1] + 1) - 1)
   local palette = type.PALETTES[corner:pick(#type.PALETTES)]
   if stories >= 1 then
-    type.build({ corner_lot(corner) }, { stories = stories, palette = palette, front = LOT_FRONT, gap = 0 })
+    type.build({ corner_lot(corner) }, { stories = stories, palette = palette, front = LOT_FRONT, gap = 0, variant = corner:pick(VARIANTS) })
   end
 end
 

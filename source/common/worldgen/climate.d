@@ -20,20 +20,29 @@ struct Process {
 // Relief, in units of distance above the ground's plane, is the sum of a broad slow swell and a local roughness.
 immutable Process BROAD_RELIEF = Process(0.92f, 0.25f, 0x51ED2701);
 immutable Process LOCAL_RELIEF = Process(0.5f, 0.25f, 0x7A3D9C11);
-// Warmth and wetness stay between about -1 and 1.
-immutable Process HEAT = Process(0.97f, 0.2f, 0x2B992DD3);
-immutable Process WETNESS = Process(0.97f, 0.2f, 0x6C8E9CF5);
+// Warmth and wetness mostly stay between about -1 and 1, wandering far enough within a few nodes that climates change
+// over a short walk.
+immutable Process HEAT = Process(0.94f, 0.3f, 0x2B992DD3);
+immutable Process WETNESS = Process(0.94f, 0.3f, 0x6C8E9CF5);
 // Shifts the depths at which one kind of rock gives way to the next, so the layers undulate.
 immutable Process STRATA = Process(0.8f, 0.25f, 0x3C6EF372);
+// Where ruggedness climbs past its threshold, mountains rise in proportion to how far past it is.
+immutable Process RUGGEDNESS = Process(0.9f, 0.2f, 0x1F83D9AB);
+enum float RUGGED_THRESHOLD = 0.4f;
+enum float MOUNTAIN_HEIGHT = 2.5f;
 
 float boundOf(Process process) {
     return process.spread / (1 - process.keep);
 }
 
-enum float RELIEF_BOUND = boundOf(BROAD_RELIEF) + boundOf(LOCAL_RELIEF);
+float mountainOf(float ruggedness) {
+    return MOUNTAIN_HEIGHT * higherOf(0, ruggedness - RUGGED_THRESHOLD);
+}
+
+enum float RELIEF_BOUND = boundOf(BROAD_RELIEF) + boundOf(LOCAL_RELIEF) + MOUNTAIN_HEIGHT * (boundOf(RUGGEDNESS) - RUGGED_THRESHOLD);
 // Within a node, relief strays from its value at the center by no more than two steps of each process: every point is
-// a blend of nodes at most that far apart.
-enum float RELIEF_SLACK = 4 * (BROAD_RELIEF.spread + LOCAL_RELIEF.spread);
+// a blend of nodes at most that far apart. Mountains change by at most their height times ruggedness's change.
+enum float RELIEF_SLACK = 4 * (BROAD_RELIEF.spread + LOCAL_RELIEF.spread + MOUNTAIN_HEIGHT * RUGGEDNESS.spread);
 
 struct NodeClimate {
     float broad = 0;
@@ -41,6 +50,7 @@ struct NodeClimate {
     float heat = 0;
     float wetness = 0;
     float strata = 0;
+    float ruggedness = 0;
 
     static NodeClimate fromParents(const(NodeClimate)[] parents, ulong spice) {
         NodeClimate mean;
@@ -50,12 +60,13 @@ struct NodeClimate {
             mean.heat += parent.heat / parents.length;
             mean.wetness += parent.wetness / parents.length;
             mean.strata += parent.strata / parents.length;
+            mean.ruggedness += parent.ruggedness / parents.length;
         }
-        return NodeClimate(stepped(mean.broad, BROAD_RELIEF, spice), stepped(mean.local, LOCAL_RELIEF, spice), stepped(mean.heat, HEAT, spice), stepped(mean.wetness, WETNESS, spice), stepped(mean.strata, STRATA, spice));
+        return NodeClimate(stepped(mean.broad, BROAD_RELIEF, spice), stepped(mean.local, LOCAL_RELIEF, spice), stepped(mean.heat, HEAT, spice), stepped(mean.wetness, WETNESS, spice), stepped(mean.strata, STRATA, spice), stepped(mean.ruggedness, RUGGEDNESS, spice));
     }
 
     Climate climate() const {
-        return Climate(broad + local, heat, wetness, strata);
+        return Climate(broad + local + mountainOf(ruggedness), heat, wetness, strata);
     }
 }
 
@@ -163,14 +174,17 @@ struct CubeClimate {
 enum float LAPSE_RATE = 0.3f;
 enum float COVER_DEPTH = 0.06f;
 enum float SOIL_DEPTH = 0.4f;
+enum float SNOW_WARMTH = -0.45f;
+// Above this height, ground that is not snowed over is bare rock.
+enum float ROCKY_RELIEF = 2.2f;
 
-// What lies at a depth below the ground's surface.
+// What lies at a depth below the ground's surface, the surface being as high as the climate's relief.
 Material groundAt(float depth, Climate climate) {
     float warmth = climate.warmth();
     if (depth < COVER_DEPTH) {
-        return coverOf(warmth, climate.wetness);
+        return coverOf(warmth, climate.wetness, climate.relief);
     } else if (depth < SOIL_DEPTH) {
-        return soilOf(warmth, climate.wetness);
+        return soilOf(warmth, climate.wetness, climate.relief);
     } else {
         return ROCKS[rockBand(depth + climate.strata)][wetnessClass(climate.wetness)][warmthClass(warmth)];
     }
@@ -180,13 +194,21 @@ bool isDesert(float warmth, float wetness) {
     return warmth > 0.45f && wetness < -0.35f;
 }
 
-Material coverOf(float warmth, float wetness) {
-    if (warmth < -0.45f) {
+bool isRedDesert(float warmth, float wetness) {
+    return isDesert(warmth, wetness) && wetness < -0.65f;
+}
+
+Material coverOf(float warmth, float wetness, float relief) {
+    if (warmth < SNOW_WARMTH) {
         return Material.snow;
+    } else if (relief > ROCKY_RELIEF) {
+        return Material.andesite;
     } else if (warmth < -0.15f) {
         return wetness < -0.2f ? Material.gravel : Material.coarseGrass;
     } else if (isDesert(warmth, wetness)) {
-        return wetness < -0.65f ? Material.redSand : Material.sand;
+        return isRedDesert(warmth, wetness) ? Material.redSand : Material.sand;
+    } else if (wetness > 0.75f && warmth > 0.1f) {
+        return Material.mud;
     } else if (wetness > 0.45f) {
         return warmth > 0.1f ? Material.lushGrass : Material.mudGrass;
     } else if (warmth > 0.25f && wetness < -0.05f) {
@@ -196,8 +218,12 @@ Material coverOf(float warmth, float wetness) {
     }
 }
 
-Material soilOf(float warmth, float wetness) {
-    if (isDesert(warmth, wetness)) {
+Material soilOf(float warmth, float wetness, float relief) {
+    if (relief > ROCKY_RELIEF) {
+        return Material.andesite;
+    } else if (isRedDesert(warmth, wetness)) {
+        return Material.redSand;
+    } else if (isDesert(warmth, wetness)) {
         return Material.sand;
     } else if (wetness > 0.5f) {
         return Material.clay;

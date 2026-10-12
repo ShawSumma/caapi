@@ -8,6 +8,8 @@ A voxel engine on the hyperbolic {5,3,4} honeycomb, written in D (betterC, LDC) 
 - Unit tests: `dub test -q --compiler=ldc2`
 - Behavior tests: `dub run -q -b release --compiler=ldc2 -c headless -- --out /dev/stdout tests`
 - Repaint check: `dub run -q -b release --compiler=ldc2 -c headless -- --worldgen structure city --check-repaint --out /dev/stdout` (also `planet`)
+- Material census (cells of each material in the terrain world around the origin):
+  `dub run -q -b release --compiler=ldc2 -c headless -- --material-census 5 --out /dev/stdout`
 - Load and flight benchmark: `dub run -q -b release --compiler=ldc2 -- --bench-load [--profile] --out /dev/stdout`
 - Screenshot: `dub run -q -b release --compiler=ldc2 -- --screenshot screenshots/<new name>.png --out /dev/stdout tests/visual/<script>.lua`
 - Run through `dub run`, never the built binaries directly.
@@ -58,5 +60,7 @@ Layers depend only on the ones above them: `base` on nothing, `geometry` on `bas
   - `structures.d`: the Lua structure host on the main thread; `tiles.d`: tiles planned and painted on every thread.
   - `script.d`, `lua.d`: the test script API; `sampler.d`: the profiler; `meshing.d`, `graphics/`: rendering.
 - `source/shaders/`: GLSL, compiled into `spv/` by the windowed build.
-- `structures/`: embedded Lua structures. `tests/`: behavior tests (`lib/` helpers, `visual/` screenshot scripts,
+- `structures/`: embedded Lua structures. `planet.lua` is the terrain world's road and the skies it opens, whose
+  kinds are in `sky.lua`; `connector.lua` is the tower up to a sky. `town.lua` lays out city blocks, built by the
+  types in `buildings/` on `buildings/kit.lua`; `backrooms.lua` is the maze of rooms and halls. `tests/`: behavior tests (`lib/` helpers, `visual/` screenshot scripts,
   `live/` tests that load the world live).

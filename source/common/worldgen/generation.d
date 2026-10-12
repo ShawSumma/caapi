@@ -10,7 +10,7 @@ import common.material : Material;
 import common.node : ChunkLayout, Occupancy, Voxels, cellIndex;
 import common.view : GraphView;
 import common.worldgen.building : Building;
-import common.worldgen.climate : Climate, CubeClimate, NodeClimate, UniformRock, groundAt, uniformRock;
+import common.worldgen.climate : Climate, CubeClimate, NodeClimate, SNOW_WARMTH, UniformRock, groundAt, isDesert, uniformRock;
 import common.worldgen.plane : Plane;
 import common.worldgen.sky : Ground, Grounds, PLANET, groundsAt;
 import common.worldgen.structure : firstSideAmong, ringFaces;
@@ -109,32 +109,70 @@ enum TreeKind : ubyte {
     oak,
     birch,
     spruce,
+    bigOak,
+    cherry,
+    maple,
+    willow,
+    jungle,
+    acacia,
+    shrub,
+    snag,
+    cactus,
+}
+
+// How a tree's wood and leaves are laid out around its trunk.
+enum TreeShape : ubyte {
+    round,
+    cone,
+    broad,
+    weeping,
+    tall,
+    flat,
+    bush,
+    bare,
+    column,
 }
 
 struct TreeSpecies {
     Material wood;
     Material leaves;
+    TreeShape shape;
     ubyte minTrunk;
     ubyte trunkChoices;
+    ubyte reach;
 }
 
 immutable TreeSpecies[TreeKind.max + 1] TREE_SPECIES = [
-    TreeSpecies(Material.oakWood, Material.oakLeaves, 4, 2),
-    TreeSpecies(Material.birchWood, Material.birchLeaves, 5, 2),
-    TreeSpecies(Material.spruceWood, Material.spruceLeaves, 5, 3),
+    TreeKind.oak: TreeSpecies(Material.oakWood, Material.oakLeaves, TreeShape.round, 4, 2, 2),
+    TreeKind.birch: TreeSpecies(Material.birchWood, Material.birchLeaves, TreeShape.round, 5, 2, 2),
+    TreeKind.spruce: TreeSpecies(Material.spruceWood, Material.spruceLeaves, TreeShape.cone, 5, 3, 2),
+    TreeKind.bigOak: TreeSpecies(Material.oakWood, Material.oakLeaves, TreeShape.broad, 5, 2, 3),
+    TreeKind.cherry: TreeSpecies(Material.spruceWood, Material.cherryLeaves, TreeShape.round, 4, 2, 2),
+    TreeKind.maple: TreeSpecies(Material.oakWood, Material.mapleLeaves, TreeShape.round, 4, 3, 2),
+    TreeKind.willow: TreeSpecies(Material.oakWood, Material.willowLeaves, TreeShape.weeping, 5, 2, 2),
+    TreeKind.jungle: TreeSpecies(Material.jungleWood, Material.jungleLeaves, TreeShape.tall, 7, 3, 2),
+    TreeKind.acacia: TreeSpecies(Material.acaciaWood, Material.acaciaLeaves, TreeShape.flat, 3, 2, 3),
+    TreeKind.shrub: TreeSpecies(Material.oakWood, Material.oakLeaves, TreeShape.bush, 0, 1, 1),
+    TreeKind.snag: TreeSpecies(Material.spruceWood, Material.none, TreeShape.bare, 3, 3, 1),
+    TreeKind.cactus: TreeSpecies(Material.cactus, Material.none, TreeShape.column, 2, 3, 1),
 ];
 
 enum Material DEFERRED_STAND_IN_MATERIAL = Material.dirt;
 enum float BASE_TREE_DENSITY = 0.05f;
 enum float WETNESS_PER_TREE_DENSITY = 4.0f;
+enum float MIN_TREE_DENSITY = 0.01f;
 enum float MAX_TREE_DENSITY = 0.3f;
 enum ubyte MIN_TREE_DIMENSION = 4;
 enum int CANOPY_RADIUS = 2;
 enum int CANOPY_CORNER_SPAN = 3;
-enum int CANOPY_ABOVE_TRUNK = 1;
 enum int SPRUCE_LOWEST_LEAVES = 2;
 enum float SPRUCE_WARMTH = -0.2f;
-enum ulong BIRCH_ODDS = 3;
+enum float MAPLE_WARMTH = 0.05f;
+enum float TROPICAL_WARMTH = 0.25f;
+enum float WET = 0.45f;
+enum float DRY = -0.05f;
+enum ulong SHRUB_ODDS = 8;
+enum ulong CHOICE_SHIFT = 8;
 enum float DEGREES_PER_HALF_TURN = 180.0f;
 enum ulong SPLITMIX_INCREMENT = 0x9e3779b97f4a7c15;
 enum ulong SPLITMIX_MULTIPLIER_1 = 0xbf58476d1ce4e5b9;
@@ -186,7 +224,7 @@ struct ValueRange {
 bool isSameState(NodeState a, NodeState b) {
     bool isSame = isSamePlane(a.surface, b.surface) && isSamePlane(a.reference, b.reference);
     isSame = isSame && a.climate.broad == b.climate.broad && a.climate.local == b.climate.local && a.climate.heat == b.climate.heat;
-    return isSame && a.climate.wetness == b.climate.wetness && a.climate.strata == b.climate.strata;
+    return isSame && a.climate.wetness == b.climate.wetness && a.climate.strata == b.climate.strata && a.climate.ruggedness == b.climate.ruggedness;
 }
 
 bool isSamePlane(Plane a, Plane b) {
@@ -497,11 +535,12 @@ struct TerrainGenerator {
         }
     }
 
+    // Dry ground still gets a few trees, of the kinds that grow there.
     void generateTrees(uint ground) {
         ubyte dimension = params.dimension;
         if (!voxels.isUniform() && dimension > MIN_TREE_DIMENSION) {
             Climate mean = params.climate.mean();
-            float density = clamped(BASE_TREE_DENSITY + mean.wetness / WETNESS_PER_TREE_DENSITY, 0.0f, MAX_TREE_DENSITY);
+            float density = clamped(BASE_TREE_DENSITY + mean.wetness / WETNESS_PER_TREE_DENSITY, MIN_TREE_DENSITY, MAX_TREE_DENSITY);
             uint interior = dimension - 2;
             uint candidateCount = cast(uint)(cast(float)(interior * interior * interior) * density);
             foreach (_; 0 .. candidateCount) {
@@ -509,7 +548,7 @@ struct TerrainGenerator {
                 int y = cast(int)(1 + (rng.next() % interior));
                 int z = cast(int)(1 + (rng.next() % interior));
                 ulong roll = rng.next();
-                placeTree(ground, [x, y, z], treeKind(mean.warmth(), roll));
+                placeTree(ground, [x, y, z], treeKind(mean.warmth(), mean.wetness, roll));
             }
         }
     }
@@ -520,25 +559,31 @@ struct TerrainGenerator {
         int[3] up = CELL_STEPS[upDirection];
         bool isBaseEmpty = voxels.at(cellIndex(dimension, base[0], base[1], base[2])) == Material.none;
         bool isAboveEmpty = voxels.at(cellIndex(dimension, base[0] + up[0], base[1] + up[1], base[2] + up[2])) == Material.none;
-        if (isBaseEmpty && isAboveEmpty && isGroundMaterial(voxels.at(cellIndex(dimension, base[0] - up[0], base[1] - up[1], base[2] - up[2])))) {
+        if (isBaseEmpty && isAboveEmpty && isGroundFor(kind, voxels.at(cellIndex(dimension, base[0] - up[0], base[1] - up[1], base[2] - up[2])))) {
             TreeSpecies species = TREE_SPECIES[kind];
             ulong roll = rng.next();
-            TreeFrame frame = TreeFrame.fromUp(base, upDirection, cast(int)(species.minTrunk + roll % species.trunkChoices));
+            TreeFrame frame = TreeFrame.fromUp(base, upDirection, cast(int)(species.minTrunk + roll % species.trunkChoices), species.shape, species.reach);
             if (frame.fitsWithin(dimension)) {
-                growTree(frame, kind);
+                growTree(frame, species);
             }
         }
     }
 
-    void growTree(TreeFrame frame, TreeKind kind) {
-        TreeSpecies species = TREE_SPECIES[kind];
-        foreach (level; 0 .. frame.trunk) {
-            setIfEmpty(frame.cell(level, 0, 0), species.wood);
+    void growTree(TreeFrame frame, TreeSpecies species) {
+        int reach = frame.reach;
+        foreach (level; 0 .. frame.top + 1) {
+            foreach (i; -reach .. reach + 1) {
+                foreach (j; -reach .. reach + 1) {
+                    if (isWood(species.shape, frame.trunk, level, i, j)) {
+                        setIfEmpty(frame.cell(level, i, j), species.wood);
+                    }
+                }
+            }
         }
         foreach (level; 0 .. frame.top + 1) {
-            foreach (i; -CANOPY_RADIUS .. CANOPY_RADIUS + 1) {
-                foreach (j; -CANOPY_RADIUS .. CANOPY_RADIUS + 1) {
-                    if (isLeaf(kind, frame.trunk, level, i, j)) {
+            foreach (i; -reach .. reach + 1) {
+                foreach (j; -reach .. reach + 1) {
+                    if (species.leaves != Material.none && isLeaf(species.shape, frame.trunk, level, i, j)) {
                         setIfEmpty(frame.cell(level, i, j), species.leaves);
                     }
                 }
@@ -561,10 +606,11 @@ struct TreeFrame {
     size_t along;
     int trunk;
     int top;
+    int reach;
 
-    static TreeFrame fromUp(int[3] base, int upDirection, int trunk) {
+    static TreeFrame fromUp(int[3] base, int upDirection, int trunk, TreeShape shape, int reach) {
         size_t axis = upDirection / 2;
-        return TreeFrame(base, CELL_STEPS[upDirection], (axis + 1) % 3, (axis + 2) % 3, trunk, trunk + CANOPY_ABOVE_TRUNK);
+        return TreeFrame(base, CELL_STEPS[upDirection], (axis + 1) % 3, (axis + 2) % 3, trunk, trunk + aboveTrunk(shape), reach);
     }
 
     int[3] cell(int level, int i, int j) const {
@@ -575,7 +621,25 @@ struct TreeFrame {
     }
 
     bool fitsWithin(ubyte dimension) const {
-        return isInChunk(cell(0, -CANOPY_RADIUS, -CANOPY_RADIUS), dimension) && isInChunk(cell(top, CANOPY_RADIUS, CANOPY_RADIUS), dimension);
+        return isInChunk(cell(0, -reach, -reach), dimension) && isInChunk(cell(top, reach, reach), dimension);
+    }
+}
+
+// How many levels above the trunk's last a shape still has leaves or wood on.
+int aboveTrunk(TreeShape shape) {
+    final switch (shape) {
+        case TreeShape.round:
+        case TreeShape.broad:
+        case TreeShape.flat:
+        case TreeShape.bush:
+            return 1;
+        case TreeShape.cone:
+        case TreeShape.weeping:
+        case TreeShape.tall:
+        case TreeShape.bare:
+            return 0;
+        case TreeShape.column:
+            return -1;
     }
 }
 
@@ -583,23 +647,83 @@ bool isInChunk(int[3] cell, ubyte dimension) {
     return cell[0] >= 0 && cell[0] < dimension && cell[1] >= 0 && cell[1] < dimension && cell[2] >= 0 && cell[2] < dimension;
 }
 
-TreeKind treeKind(float warmth, ulong roll) {
-    if (warmth < SPRUCE_WARMTH) {
-        return TreeKind.spruce;
-    } else if (roll % BIRCH_ODDS == 0) {
-        return TreeKind.birch;
+// Cold ground grows conifers and dead snags, deserts cacti, warm wet ground jungle, warm dry ground acacias, wet
+// ground willows, cool ground maples among birches and oaks, and everywhere else a mix of broadleaves. Shrubs grow
+// wherever trees do.
+TreeKind treeKind(float warmth, float wetness, ulong roll) {
+    ulong choice = roll >> CHOICE_SHIFT;
+    if (isDesert(warmth, wetness)) {
+        return TreeKind.cactus;
+    } else if (warmth < SNOW_WARMTH) {
+        return choice % 3 == 0 ? TreeKind.snag : TreeKind.spruce;
+    } else if (warmth < SPRUCE_WARMTH) {
+        return choice % 6 == 0 ? TreeKind.birch : TreeKind.spruce;
+    } else if (roll % SHRUB_ODDS == 0) {
+        return TreeKind.shrub;
+    } else if (warmth > TROPICAL_WARMTH && wetness > WET) {
+        return choice % 3 == 0 ? TreeKind.bigOak : TreeKind.jungle;
+    } else if (warmth > TROPICAL_WARMTH && wetness < DRY) {
+        return TreeKind.acacia;
+    } else if (wetness > WET) {
+        immutable TreeKind[3] wet = [TreeKind.willow, TreeKind.bigOak, TreeKind.oak];
+        return wet[choice % wet.length];
+    } else if (warmth < MAPLE_WARMTH) {
+        immutable TreeKind[4] cool = [TreeKind.maple, TreeKind.maple, TreeKind.birch, TreeKind.oak];
+        return cool[choice % cool.length];
     } else {
-        return TreeKind.oak;
+        immutable TreeKind[6] mild = [TreeKind.oak, TreeKind.oak, TreeKind.birch, TreeKind.bigOak, TreeKind.cherry, TreeKind.maple];
+        return mild[choice % mild.length];
     }
 }
 
-bool isLeaf(TreeKind kind, int trunk, int level, int i, int j) {
+// Levels count up from the cell on the ground; i and j step across from the trunk.
+bool isWood(TreeShape shape, int trunk, int level, int i, int j) {
+    bool isTrunk = i == 0 && j == 0 && level < trunk;
+    final switch (shape) {
+        case TreeShape.round:
+        case TreeShape.cone:
+        case TreeShape.broad:
+        case TreeShape.weeping:
+        case TreeShape.tall:
+        case TreeShape.bush:
+            return isTrunk;
+        case TreeShape.flat:
+            return isTrunk || (level == trunk - 1 && i == 1 && j == 0) || (level == trunk && i == 1 && j == 1);
+        case TreeShape.bare:
+            return isTrunk || (level == trunk - 2 && i == 0 && j == 1) || (level == trunk - 1 && i == -1 && j == 0) || (level == trunk && i == 1 && j == 0);
+        case TreeShape.column:
+            return isTrunk || (i == 1 && j == 0 && level >= 1 && level <= 2 && level < trunk - 1) || (i == -1 && j == 0 && level >= 2 && level <= 3 && level < trunk - 1);
+    }
+}
+
+bool isLeaf(TreeShape shape, int trunk, int level, int i, int j) {
     int spread = chebyshevLength(i, j);
     int span = abs(i) + abs(j);
+    int squared = i * i + j * j;
     bool isWide = spread <= CANOPY_RADIUS && span <= CANOPY_CORNER_SPAN;
-    if (kind == TreeKind.spruce) {
-        return spruceLeaf(trunk, level, span, isWide);
-    } else if (level == trunk - 2 || level == trunk - 1) {
+    final switch (shape) {
+        case TreeShape.round:
+            return roundLeaf(trunk, level, spread, span, isWide);
+        case TreeShape.cone:
+            return spruceLeaf(trunk, level, span, isWide);
+        case TreeShape.broad:
+            return broadLeaf(trunk, level, squared);
+        case TreeShape.weeping:
+            return weepingLeaf(trunk, level, spread, squared, i + j);
+        case TreeShape.tall:
+            return tallLeaf(trunk, level, squared);
+        case TreeShape.flat:
+            return (level == trunk && squared <= 10) || (level == trunk + 1 && squared <= 4);
+        case TreeShape.bush:
+            return (level == 0 && span <= 1) || (level == 1 && squared <= 2);
+        case TreeShape.bare:
+        case TreeShape.column:
+            return false;
+    }
+}
+
+bool roundLeaf(int trunk, int level, int spread, int span, bool isWide) {
+    if (level == trunk - 2 || level == trunk - 1) {
         return isWide;
     } else if (level == trunk) {
         return spread <= 1;
@@ -607,6 +731,39 @@ bool isLeaf(TreeKind kind, int trunk, int level, int i, int j) {
         return span <= 1;
     } else {
         return false;
+    }
+}
+
+// A crown three cells across from the trunk at its widest.
+bool broadLeaf(int trunk, int level, int squared) {
+    if (level == trunk - 3 || level == trunk) {
+        return squared <= 5;
+    } else if (level == trunk - 2 || level == trunk - 1) {
+        return squared <= 10;
+    } else if (level == trunk + 1) {
+        return squared <= 2;
+    } else {
+        return false;
+    }
+}
+
+// A dome at the top with strands hanging from its rim nearly to the ground.
+bool weepingLeaf(int trunk, int level, int spread, int squared, int parity) {
+    if (level == trunk - 1 || level == trunk) {
+        return squared <= 5 - (level - trunk + 1) * 3;
+    } else {
+        return level >= 1 && level < trunk - 1 && spread == CANOPY_RADIUS && (parity & 1) == 0;
+    }
+}
+
+// A crown at the top of a long trunk and a tuft of leaves halfway up it.
+bool tallLeaf(int trunk, int level, int squared) {
+    if (level == trunk - 2 || level == trunk - 1) {
+        return squared <= 5;
+    } else if (level == trunk) {
+        return squared <= 2;
+    } else {
+        return level == trunk / 2 && squared == 1;
     }
 }
 
@@ -636,4 +793,17 @@ int chebyshevLength(int i, int j) {
 
 bool isGroundMaterial(Material material) {
     return material == Material.dirt || material == Material.grass || material == Material.mudGrass || material == Material.lushGrass || material == Material.tanGrass || material == Material.coarseGrass;
+}
+
+// Cacti root in sand, willows and shrubs in mud too, and snags on any ground cold enough for them.
+bool isGroundFor(TreeKind kind, Material material) {
+    if (kind == TreeKind.cactus) {
+        return material == Material.sand || material == Material.redSand;
+    } else if (kind == TreeKind.willow || kind == TreeKind.shrub) {
+        return isGroundMaterial(material) || material == Material.mud;
+    } else if (kind == TreeKind.snag) {
+        return isGroundMaterial(material) || material == Material.snow || material == Material.gravel;
+    } else {
+        return isGroundMaterial(material);
+    }
 }

@@ -16,9 +16,10 @@ immutable EmbeddedLua[6] EMBEDDED_STRUCTURES = [
     EmbeddedLua("planet", import("planet.lua")),
 ];
 
-immutable EmbeddedLua[9] EMBEDDED_MODULES = [
+immutable EmbeddedLua[14] EMBEDDED_MODULES = [
     EmbeddedLua("box", import("box.lua")),
     EmbeddedLua("town", import("town.lua")),
+    EmbeddedLua("backrooms", import("backrooms.lua")),
     EmbeddedLua("connector", import("connector.lua")),
     EmbeddedLua("sky", import("sky.lua")),
     EmbeddedLua("buildings.kit", import("buildings/kit.lua")),
@@ -26,6 +27,10 @@ immutable EmbeddedLua[9] EMBEDDED_MODULES = [
     EmbeddedLua("buildings.tenement", import("buildings/tenement.lua")),
     EmbeddedLua("buildings.deco", import("buildings/deco.lua")),
     EmbeddedLua("buildings.glass", import("buildings/glass.lua")),
+    EmbeddedLua("buildings.rowhouse", import("buildings/rowhouse.lua")),
+    EmbeddedLua("buildings.warehouse", import("buildings/warehouse.lua")),
+    EmbeddedLua("buildings.modern", import("buildings/modern.lua")),
+    EmbeddedLua("buildings.civic", import("buildings/civic.lua")),
 ];
 
 immutable string[EMBEDDED_STRUCTURES.length] EMBEDDED_STRUCTURE_NAMES = namesOf(EMBEDDED_STRUCTURES);
