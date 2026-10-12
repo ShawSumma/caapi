@@ -10,6 +10,7 @@ import common.math : MPoint;
 import common.neighbors : chunkNeighborSlot;
 import common.node : Chunk, ChunkSlot, ChunkState;
 import common.traversal : NOT_COLLECTED, NearbyNode, NearbyScratch;
+import common.worldgen.blueprint : TileRecord;
 import common.worldgen.sky : releaseIdleWorlds, worldsAt;
 import common.worldgen.structure : ClaimKey, SitePart;
 
@@ -19,15 +20,19 @@ enum double SWEEP_LEAST_MILLISECONDS = 1.0;
 enum double SWEEP_MOST_MILLISECONDS = 3.0;
 enum float KEEP_RADIUS = 3.0f;
 enum float DROP_RADIUS = 3.5f;
+enum double TILE_IDLE_TRAVEL = 3.0;
 
 struct Evictor {
     Array!uint stack;
     uint cursor;
+    uint tileCursor;
     uint evicted;
     uint dropped;
+    uint droppedTiles;
 
     void sweep(ref Graph graph, ref const NearbyScratch published, const(NearbyScratch)* building, MPoint!float camera, ref Array!Unloaded unloaded, double start) {
         Near near = Near(&published, building);
+        dropIdleTiles(graph, near);
         float dropThreshold = coshf(DROP_RADIUS + CHUNK_BOUNDING_SPHERE_RADIUS);
         uint wanted = graph.nodeCount / SWEEP_CYCLE_FRAMES;
         uint examined = 0;
@@ -78,6 +83,28 @@ struct Evictor {
                 if (!parent.isRecent && !near.contains(link.slot) && graph.isEvictable(link.slot)) {
                     stack.append(link.slot);
                 }
+            }
+        }
+    }
+
+    // A tile's brushes are only read when a building is planned, which paints dropped tiles again first, so tiles
+    // nothing has asked for since the camera moved on are dropped unless their face is still in view.
+    void dropIdleTiles(ref Graph graph, Near near) {
+        size_t count = graph.blueprint.tiles.length / SWEEP_CYCLE_FRAMES + 1;
+        foreach (_; 0 .. count) {
+            if (tileCursor >= graph.blueprint.tiles.length) {
+                tileCursor = 0;
+            }
+            if (tileCursor < graph.blueprint.tiles.length) {
+                const(TileRecord)* record = &graph.blueprint.tiles.ptr[tileCursor];
+                if (!record.isDropped && graph.blueprint.travel - record.lastUse > TILE_IDLE_TRAVEL) {
+                    uint face = graph.slotOf(record.face);
+                    if (face == NO_SLOT || !near.contains(face)) {
+                        graph.blueprint.dropTile(tileCursor);
+                        droppedTiles += 1;
+                    }
+                }
+                tileCursor += 1;
             }
         }
     }

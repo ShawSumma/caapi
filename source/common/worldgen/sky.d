@@ -256,7 +256,7 @@ void discoverWorlds(ref Graph graph, uint slot, ref Array!WorldRef found) {
 uint worldGroundNodeOf(ref Graph graph, uint slot, uint world) {
     uint current = slot;
     MVector!double center = MVector!double.origin();
-    Plane carried = graph.planeNear(world, current);
+    Plane carried = graph.planeOfWorldIn(world, current);
     float altitude = fabsf(carried.distanceTo(MPoint!float.origin()));
     bool isDescending = altitude > DESCENT_ALTITUDE;
     while (isDescending) {
@@ -278,7 +278,7 @@ uint worldGroundNodeOf(ref Graph graph, uint slot, uint world) {
             isDescending = altitude > DESCENT_ALTITUDE;
         }
     }
-    Plane plane = graph.planeNear(world, current);
+    Plane plane = graph.planeOfWorldIn(world, current);
     MVector!double normal = plane.scaledNormal.toType!double();
     normal = normal * (1.0 / sqrt(normal.mip(normal)));
     double along = center.mip(normal);
@@ -287,19 +287,6 @@ uint worldGroundNodeOf(ref Graph graph, uint slot, uint world) {
     MVector!double above = foot * cosh(lift) + normal * sinh(lift);
     MIsometry!float toAbove = MIsometry!float.fromTranslation(MPoint!float.origin(), MPoint!float(above.toType!float()));
     return graph.slotOf(graph.ensureNormalized(Position(graph.idAt(current), toAbove)).node);
-}
-
-Plane planeNear(ref Graph graph, uint world, uint slot) {
-    if (world == PLANET) {
-        return graph.ensureNodeStateAt(slot).surface;
-    } else {
-        foreach (near; graph.worldsAt(slot)) {
-            if (near.world == world) {
-                return near.plane;
-            }
-        }
-        return graph.planeOfWorldIn(world, slot);
-    }
 }
 
 bool isWithinSkyReach(Plane plane) {

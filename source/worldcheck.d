@@ -7,6 +7,7 @@ import client.meshing : Mesher;
 import client.streaming : Streamer, populateChunk, resolveMaterials;
 import client.structures : StructureProblem, growthProblem, placeWorldStructure;
 import client.world : FULL_RADIUS;
+import common.array : Array;
 import common.clock : nowMilliseconds;
 import common.coords : Coords;
 import common.dodeca : CHUNK_BOUNDING_SPHERE_RADIUS, VERTEX_COUNT, Vertex, chunkBoundingSphereCenter;
@@ -240,6 +241,58 @@ bool dumpStructure(FILE* output, ubyte dimension, Worldgen worldgen) {
     }
     graph.release();
     return !problem.isPresent;
+}
+
+bool checkRepaint(FILE* output, ubyte dimension, Worldgen worldgen) {
+    Graph graph = Graph.make(dimension, worldgen);
+    StructureProblem problem = graph.placeWorldStructure();
+    uint differing = 0;
+    if (!problem.isPresent) {
+        NearbyScratch scratch;
+        NearbyNode[] nearby = scratch.collectAll(graph, Position(graph.idAt(graph.anchorSlot), MIsometry!float.identity()), STRUCTURE_DUMP_RADIUS);
+        Array!ulong painted;
+        foreach (node; nearby) {
+            if (graph.ensureStructureAt(node.slot)) {
+                painted.append(graph.generatedHash(node.slot));
+            }
+        }
+        size_t tiles = graph.blueprint.tiles.length;
+        foreach (tile; 0 .. tiles) {
+            graph.blueprint.dropTile(cast(uint) tile);
+        }
+        foreach (slot; 0 .. graph.nodeCount) {
+            if (graph.nodeAt(slot).hasBuilding) {
+                graph.nodeAt(slot).building.release();
+                graph.nodeAt(slot).hasBuilding = false;
+            }
+        }
+        size_t index = 0;
+        foreach (node; nearby) {
+            if (graph.ensureStructureAt(node.slot)) {
+                differing += graph.generatedHash(node.slot) != painted.ptr[index];
+                index += 1;
+            }
+        }
+        fprintf(output, "repaint structured=%zu tiles=%zu painted_again=%u differing=%u\n", painted.length, tiles, graph.blueprint.restoredTiles, differing);
+        painted.release();
+        scratch.release();
+        problem = growthProblem(graph);
+    }
+    if (problem.isPresent) {
+        fprintf(output, "%s\n", problem.text.ptr);
+    }
+    graph.release();
+    return !problem.isPresent && differing == 0;
+}
+
+ulong generatedHash(ref Graph graph, uint slot) {
+    ulong hash = 0;
+    foreach (vertexIndex; 0 .. VERTEX_COUNT) {
+        GeneratedVoxels generated = ChunkParams.make(graph, slot, cast(Vertex) vertexIndex).generateVoxels();
+        hash += ContentHashes.fromVoxels(cast(Vertex) vertexIndex, generated.voxels, graph.layout.dimension).materials[0];
+        generated.voxels.release();
+    }
+    return hash;
 }
 
 Graph terrainGraph(ubyte dimension) {

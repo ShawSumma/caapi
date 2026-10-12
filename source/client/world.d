@@ -25,6 +25,7 @@ enum double TELEPORT_TRAVEL = 1.0e3;
 enum float RENDER_RADIUS = 8.0f;
 enum float FULL_RADIUS = 4.5f;
 enum double NEARBY_BUDGET_MILLISECONDS = 2.0;
+enum double STEP_BUDGET_MILLISECONDS = 10.0;
 enum double RECOVERY_BUDGET_MILLISECONDS = 8.0;
 
 struct Placement {
@@ -63,6 +64,7 @@ struct LocalWorld {
     uint epoch;
     Evictor evictor;
     double worstEviction = 0;
+    double streamerMilliseconds = 0;
     NearbyStats nearbyStats;
     bool hasNearby;
 
@@ -95,7 +97,7 @@ struct LocalWorld {
 
     void update(bool isUnbudgeted) {
         float distance = renderRadius + NEARBY_PADDING;
-        double deadline = nearbyDeadline(isUnbudgeted);
+        double deadline = nearbyDeadline(isUnbudgeted, streamerMilliseconds);
         if (!hasNearby) {
             buildInitialNearby(distance, deadline);
         } else if (cameraNearbyIndex() == NOT_COLLECTED) {
@@ -104,7 +106,9 @@ struct LocalWorld {
             refreshNearby(distance, deadline);
         }
         trackTravel();
+        double start = nowMilliseconds();
         streamer.drive(graph, cachedNodes, cameraInNearbyFrame(), renderRadius, nearbyVersion, isUnbudgeted);
+        streamerMilliseconds = nowMilliseconds() - start;
         evict();
     }
 
@@ -129,7 +133,9 @@ struct LocalWorld {
         if (trackedVersion == nearbyVersion) {
             float product = -trackedCamera.mip(camera.vec);
             if (product > 1) {
-                streamer.travel += acoshf(product);
+                float moved = acoshf(product);
+                streamer.travel += moved;
+                graph.blueprint.travel += moved;
             }
         } else {
             streamer.travel += NEARBY_PADDING;
@@ -197,7 +203,7 @@ struct LocalWorld {
     }
 
     bool isWorldgenSettled() const {
-        return hasNearby && !nearby[published].isBuilding() && streamer.isIdle() && streamer.scanCursor >= cachedNodes.length;
+        return hasNearby && !nearby[published].isBuilding() && streamer.isIdle() && streamer.waiting.length == 0 && streamer.scanCursor >= cachedNodes.length;
     }
 
     GraphCastHit castCenterRay() const {
@@ -277,9 +283,11 @@ struct LocalWorld {
     }
 }
 
-double nearbyDeadline(bool isUnbudgeted) {
+double nearbyDeadline(bool isUnbudgeted, double streamerMilliseconds) {
     if (isUnbudgeted) {
         return NO_DEADLINE;
+    } else if (STEP_BUDGET_MILLISECONDS - streamerMilliseconds > NEARBY_BUDGET_MILLISECONDS) {
+        return nowMilliseconds() + STEP_BUDGET_MILLISECONDS - streamerMilliseconds;
     } else {
         return nowMilliseconds() + NEARBY_BUDGET_MILLISECONDS;
     }

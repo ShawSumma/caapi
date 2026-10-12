@@ -25,6 +25,7 @@ import common.names : ENUM_NAMES;
 import common.node : Chunk, ChunkState;
 import common.settings : CHUNK_DIMENSION;
 import common.units : Angle, AngularSpeed, Time;
+import common.worldgen.blueprint : Brush;
 import common.worldgen.generation : Worldgen;
 
 enum uint WINDOW_WIDTH = 1280;
@@ -830,8 +831,7 @@ void measureLeg(FILE* report, ref Renderer renderer, ref Game game) {
 }
 
 void printWorldStats(FILE* report, ref const LocalWorld world) {
-    fprintf(report, "evicted %u nodes, dropped %u far chunks, worst sweep %.1fms\n", world.evictor.evicted, world.evictor.dropped, world.worstEviction);
-    fprintf(report, "nearby %zu nodes, %u published, %u recoveries (%.0fms), %.0fms sliced\n", world.cachedNodes.length, world.nearbyStats.publishes, world.nearbyStats.recoveries, world.nearbyStats.recoveryMilliseconds, world.nearbyStats.slicedMilliseconds);
+    fprintf(report, "evicted %u nodes, dropped %u far chunks and %u tiles, worst sweep %.1fms\n", world.evictor.evicted, world.evictor.dropped, world.evictor.droppedTiles, world.worstEviction);    fprintf(report, "nearby %zu nodes, %u published, %u recoveries (%.0fms), %.0fms sliced\n", world.cachedNodes.length, world.nearbyStats.publishes, world.nearbyStats.recoveries, world.nearbyStats.recoveryMilliseconds, world.nearbyStats.slicedMilliseconds);
 }
 
 void printMemory(FILE* report, ref const Graph graph) {
@@ -879,6 +879,15 @@ void printMemory(FILE* report, ref const Graph graph) {
     getrusage(RUSAGE_SELF, &usage);
     size_t slabBytes = cast(size_t) graph.nodeCount * Node.sizeof + cast(size_t) graph.blockCount * VERTEX_COUNT * Chunk.sizeof;
     fprintf(report, "memory: rss now=%zuMB peak=%ldMB nodes=%u of %u slots, %u chunk blocks (%zuMB) buildings=%zu (%zuMB) dense voxels %zuMB\n", residentBytes() / BYTES_PER_MEGABYTE, usage.ru_maxrss / KILOBYTES_PER_MEGABYTE, graph.liveCount, graph.nodeCount, graph.blockCount, slabBytes / BYTES_PER_MEGABYTE, buildings, buildingBytes / BYTES_PER_MEGABYTE, denseBytes / BYTES_PER_MEGABYTE);
+    size_t brushBytes = 0;
+    foreach (ref painted; graph.blueprint.brushes.slice()) {
+        brushBytes += painted.capacity * Brush.sizeof;
+    }
+    size_t brushes = 0;
+    foreach (ref painted; graph.blueprint.brushes.slice()) {
+        brushes += painted.length;
+    }
+    fprintf(report, "blueprint: %zu lines, %zu brushes (%zuMB), %zu tiles, %u painted again\n", graph.blueprint.lines.length, brushes, brushBytes / BYTES_PER_MEGABYTE, graph.blueprint.tiles.length, graph.blueprint.restoredTiles);
 }
 
 size_t residentBytes() {

@@ -12,7 +12,7 @@ import common.position : Position;
 import common.slab : SLAB_SHIFT, Slab;
 import common.worldgen.blueprint : Blueprint;
 import common.worldgen.building : Building, BuildingPlan;
-import common.worldgen.generation : NodeState, Worldgen;
+import common.worldgen.generation : CornerCache, NodeState, VirtualNode, Worldgen;
 import common.worldgen.sky : Skies, WorldRef;
 import common.worldgen.structure : LineTouch, PAINT_REACH, PendingTouch, anchorSlotOf, finalizeStructure;
 
@@ -124,7 +124,7 @@ struct Graph {
     Slab!Chunk chunks;
     HashMap!(NodeId, uint) slots;
     HashMap!(NodeId, uint) pendingHeads;
-    HashMap!(NodeId, bool) tiledFaces;
+    HashMap!(NodeId, uint) tiledFaces;
     Array!ChunkSlot changedChunks;
     Slab!LineTouch touches;
     Slab!PendingTouch pendingTouches;
@@ -133,6 +133,8 @@ struct Graph {
     Array!uint freeSlots;
     Array!uint freeBlocks;
     Array!ChunkSlot restores;
+    Array!VirtualNode virtuals;
+    CornerCache corners;
     Array!uint[FREE_RUN_LENGTHS] freeWorldRuns;
     Array!uint[FREE_RUN_LENGTHS] freeTouchRuns;
     Blueprint blueprint;
@@ -310,12 +312,7 @@ struct Graph {
             }
         }
 
-        NodeId primaryParent = idAt(parents[0].slot);
-        ubyte[NODE_ID_BYTES + 1] hashInput;
-        hashInput[0 .. NODE_ID_BYTES] = (cast(const(ubyte)*) primaryParent.value.ptr)[0 .. NODE_ID_BYTES];
-        hashInput[NODE_ID_BYTES] = parents[0].side;
-        NodeId id = NodeId(murmurHash3(hashInput[]));
-
+        NodeId id = childId(idAt(parents[0].slot), parents[0].side);
         uint newSlot = existingOrAdded(id, nodeAt(nodeSlot).depth + 1);
         foreach (i; 0 .. parentCount) {
             Node* parent = nodeAt(parents[i].slot);
@@ -367,9 +364,9 @@ struct Graph {
         return result;
     }
 
-    Array!Side sidesToRoot(NodeId node) const {
+    Array!Side sidesToRoot(uint start) const {
         Array!Side sides;
-        uint slot = slotOf(node);
+        uint slot = start;
         while (nodeAt(slot).depth > 0) {
             ParentEntry parent = parents(slot).links[0];
             sides.append(parent.side);
@@ -447,13 +444,16 @@ struct Graph {
         releaseRun(freeWorldRuns, start, length);
     }
 
-    bool isTiled(uint slot) const {
-        return tiledFaces.find(idAt(slot)) !is null;
+    void restoreBrushes(uint slot) {
+        if (grower.cover !is null) {
+            grower.cover(grower.context, this, slot);
+        }
     }
 
     const(Building)* ensureBuildingAt(uint slot) {
         if (!nodeAt(slot).hasBuilding) {
             ensureStructureAt(slot);
+            restoreBrushes(slot);
             BuildingPlan plan = BuildingPlan.make(this, slot);
             nodeAt(slot).building = Building.make(plan);
             plan.release();
@@ -529,6 +529,7 @@ struct Graph {
         freeSlots.release();
         freeBlocks.release();
         restores.release();
+        virtuals.release();
         foreach (ref runs; freeWorldRuns) {
             runs.release();
         }
@@ -568,6 +569,13 @@ void releaseRun(ref Array!uint[FREE_RUN_LENGTHS] free, uint start, uint length) 
 
 ushort sideBit(Side side) {
     return cast(ushort)(1u << side);
+}
+
+NodeId childId(NodeId primaryParent, Side side) {
+    ubyte[NODE_ID_BYTES + 1] hashInput;
+    hashInput[0 .. NODE_ID_BYTES] = (cast(const(ubyte)*) primaryParent.value.ptr)[0 .. NODE_ID_BYTES];
+    hashInput[NODE_ID_BYTES] = side;
+    return NodeId(murmurHash3(hashInput[]));
 }
 
 uint slabRun(uint count, uint length) {

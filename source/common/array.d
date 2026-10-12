@@ -3,9 +3,13 @@ module common.array;
 import core.stdc.stdlib : free, realloc;
 import core.stdc.string : memcpy, memset;
 
+enum size_t LEAST_CAPACITY = 8;
+
 size_t grownCapacity(size_t current, size_t needed) {
     if (current * 2 > needed) {
         return current * 2;
+    } else if (needed < LEAST_CAPACITY) {
+        return LEAST_CAPACITY;
     } else {
         return needed;
     }
@@ -45,6 +49,15 @@ struct Array(T) {
 
     void clear() {
         length = 0;
+    }
+
+    void shrink() {
+        if (length == 0) {
+            release();
+        } else if (length < capacity) {
+            capacity = length;
+            ptr = cast(T*) realloc(ptr, capacity * T.sizeof);
+        }
     }
 
     inout(T)[] slice() inout {

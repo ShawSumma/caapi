@@ -5,8 +5,8 @@ import core.stdc.math : asinhf, atanf, cosf, coshf, floorf, logf, powf, sinhf, s
 import core.stdc.stdlib : abs;
 import core.stdc.string : memcpy;
 import common.coords : CELL_NEIGHBOR_OFFSETS;
-import common.dodeca : Side, Vertex, canonicalSides, chunkGridCenterRadius, isAdjacentTo;
-import common.graph : Graph, NO_SLOT, ParentList;
+import common.dodeca : SIDE_COUNT, Side, VERTEX_COUNT, Vertex, canonicalSides, chunkGridCenterRadius, isAdjacentTo;
+import common.graph : Graph, MAX_PARENTS, NO_SLOT, NodeId, ParentList, childId, sideBit;
 import common.material : Material;
 import common.math : PI, clamped;
 import common.node : ChunkLayout, Occupancy, VoxelData;
@@ -161,6 +161,7 @@ enum ulong CHUNK_HASH_MULTIPLIER = 0x517c_c1b7_2722_0a95;
 enum uint RANDOM_FRACTION_SHIFT = 40;
 enum float RANDOM_24_BIT_RANGE = 2.0f ^^ 24;
 enum float RANDOM_24_BIT_RANGE_PLUS_2 = 2.0f ^^ 24 + 2;
+enum ubyte TEST_DIMENSION = 12;
 
 struct SplitMix {
     ulong state;
@@ -297,11 +298,22 @@ struct ChunkIncidentEnviroFactors {
     static ChunkIncidentEnviroFactors make(ref Graph graph, uint slot, Vertex vertex) {
         Side[3] sides = vertex.canonicalSides;
         ChunkIncidentEnviroFactors result;
+        graph.corners.focus(graph.idAt(slot));
+        graph.virtuals.clear();
         foreach (corner; 0 .. 8) {
-            uint first = graph.crossedIf(slot, sides[0], (corner & 4) != 0);
-            uint second = graph.crossedIf(first, sides[1], (corner & 2) != 0);
-            uint third = graph.crossedIf(second, sides[2], (corner & 1) != 0);
-            EnviroFactors enviro = graph.ensureNodeStateAt(third).enviro;
+            ushort crossed = 0;
+            foreach (axis; 0 .. 3) {
+                if ((corner & (4 >> axis)) != 0) {
+                    crossed |= sideBit(sides[axis]);
+                }
+            }
+            if (!graph.corners.has(crossed)) {
+                NodeRef first = graph.crossedIf(NodeRef(slot, 0), sides[0], (corner & 4) != 0);
+                NodeRef second = graph.crossedIf(first, sides[1], (corner & 2) != 0);
+                NodeRef third = graph.crossedIf(second, sides[2], (corner & 1) != 0);
+                graph.corners.store(crossed, graph.enviroOf(third));
+            }
+            EnviroFactors enviro = graph.corners.values[crossed];
             result.maxElevations[corner] = enviro.maxElevation;
             result.temperatures[corner] = enviro.temperature;
             result.rainfalls[corner] = enviro.rainfall;
@@ -311,19 +323,180 @@ struct ChunkIncidentEnviroFactors {
     }
 }
 
+// The enviro across a set of commuting sides depends only on the node it starts from, so it holds for as long as
+// requests keep coming from the same node, which they do for the twenty chunks of a node.
+struct CornerCache {
+    EnviroFactors[1 << SIDE_COUNT] values;
+    uint[1 << SIDE_COUNT] stamps;
+    NodeId base;
+    uint generation = 1;
+
+    void focus(NodeId node) {
+        if (node != base) {
+            base = node;
+            generation += 1;
+        }
+    }
+
+    bool has(ushort crossed) const {
+        return stamps[crossed] == generation;
+    }
+
+    void store(ushort crossed, EnviroFactors enviro) {
+        values[crossed] = enviro;
+        stamps[crossed] = generation;
+    }
+}
+
+// A node that does not exist yet, worked out the way Graph.insertChildSlot and NodeState.fromParents would create it,
+// so terrain can read the enviro of nodes past the loaded region without creating and later evicting them.
+struct VirtualNode {
+    NodeRef[MAX_PARENTS] parents;
+    Side[MAX_PARENTS] sides;
+    uint count;
+    ushort parentSides;
+    NodeId id;
+    EnviroFactors enviro;
+}
+
+struct NodeRef {
+    uint slot;
+    uint index;
+
+    bool isVirtual() const {
+        return slot == NO_SLOT;
+    }
+}
+
+NodeRef crossedIf(ref Graph graph, NodeRef node, Side side, bool isCrossed) {
+    if (isCrossed) {
+        return graph.neighborRef(node, side);
+    } else {
+        return node;
+    }
+}
+
+NodeRef neighborRef(ref Graph graph, NodeRef node, Side side) {
+    if (!node.isVirtual()) {
+        uint existing = graph.neighborSlot(node.slot, side);
+        if (existing != NO_SLOT) {
+            return NodeRef(existing, 0);
+        } else {
+            return graph.virtualChild(node, side);
+        }
+    } else if ((graph.virtuals.ptr[node.index].parentSides & sideBit(side)) != 0) {
+        return graph.virtualParent(node, side);
+    } else {
+        return graph.virtualChild(node, side);
+    }
+}
+
+NodeRef virtualParent(ref Graph graph, NodeRef node, Side side) {
+    const(VirtualNode)* virtual = &graph.virtuals.ptr[node.index];
+    uint index = 0;
+    while (virtual.sides[index] != side) {
+        index += 1;
+    }
+    return virtual.parents[index];
+}
+
+ushort parentSidesOf(ref const Graph graph, NodeRef node) {
+    if (node.isVirtual()) {
+        return graph.virtuals.ptr[node.index].parentSides;
+    } else {
+        return graph.nodeAt(node.slot).parentSides;
+    }
+}
+
+NodeId idOf(ref const Graph graph, NodeRef node) {
+    if (node.isVirtual()) {
+        return graph.virtuals.ptr[node.index].id;
+    } else {
+        return graph.idAt(node.slot);
+    }
+}
+
+EnviroFactors enviroOf(ref Graph graph, NodeRef node) {
+    if (node.isVirtual()) {
+        return graph.virtuals.ptr[node.index].enviro;
+    } else {
+        return graph.ensureNodeStateAt(node.slot).enviro;
+    }
+}
+
+NodeRef virtualChild(ref Graph graph, NodeRef parent, Side side) {
+    VirtualNode made;
+    foreach (candidateIndex; 0 .. SIDE_COUNT) {
+        Side candidate = cast(Side) candidateIndex;
+        if (candidate == side || (candidate.isAdjacentTo(side) && (graph.parentSidesOf(parent) & sideBit(candidate)) != 0)) {
+            if (candidate == side) {
+                made.parents[made.count] = parent;
+            } else {
+                made.parents[made.count] = graph.neighborRef(graph.neighborRef(parent, candidate), side);
+            }
+            made.sides[made.count] = candidate;
+            made.parentSides |= sideBit(candidate);
+            made.count += 1;
+        }
+    }
+    made.id = childId(graph.idOf(made.parents[0]), made.sides[0]);
+    EnviroFactors first = graph.enviroOf(made.parents[0]);
+    if (made.count > 1 && graph.isLinked(made.parents[0], made.sides[1])) {
+        made.enviro = first.continuedFrom(graph.enviroOf(made.parents[1]), graph.enviroOf(graph.neighborRef(made.parents[0], made.sides[1])));
+    } else {
+        made.enviro = first.variedBy(made.id.spice());
+    }
+    graph.virtuals.append(made);
+    return NodeRef(NO_SLOT, cast(uint)(graph.virtuals.length - 1));
+}
+
+unittest {
+    Graph graph = Graph.make(TEST_DIMENSION, Worldgen.makeTerrain());
+    foreach (side; 0 .. SIDE_COUNT) {
+        uint neighbor = graph.ensureNeighborSlot(graph.anchorSlot, cast(Side) side);
+        foreach (outer; 0 .. SIDE_COUNT) {
+            graph.ensureNeighborSlot(neighbor, cast(Side) outer);
+        }
+    }
+    uint virtualCorners = 0;
+    foreach (slot; 0 .. graph.nodeCount) {
+        foreach (vertexIndex; 0 .. VERTEX_COUNT) {
+            Vertex vertex = cast(Vertex) vertexIndex;
+            uint live = graph.liveCount;
+            ChunkIncidentEnviroFactors computed = ChunkIncidentEnviroFactors.make(graph, slot, vertex);
+            assert(graph.liveCount == live);
+            virtualCorners += cast(uint) graph.virtuals.length;
+            Side[3] sides = vertex.canonicalSides;
+            foreach (corner; 0 .. 8) {
+                uint at = slot;
+                foreach (axis; 0 .. 3) {
+                    if ((corner & (4 >> axis)) != 0) {
+                        at = graph.ensureNeighborSlot(at, sides[axis]);
+                    }
+                }
+                EnviroFactors created = graph.ensureNodeStateAt(at).enviro;
+                assert(computed.maxElevations[corner] == created.maxElevation && computed.temperatures[corner] == created.temperature);
+                assert(computed.rainfalls[corner] == created.rainfall && computed.blockinesses[corner] == created.blockiness);
+            }
+        }
+    }
+    assert(virtualCorners > 0);
+    graph.release();
+}
+
+bool isLinked(ref const Graph graph, NodeRef node, Side side) {
+    if (node.isVirtual()) {
+        return (graph.virtuals.ptr[node.index].parentSides & sideBit(side)) != 0;
+    } else {
+        return graph.neighborSlot(node.slot, side) != NO_SLOT;
+    }
+}
+
 const(Building)* buildingIfPresent(ref Graph graph, uint slot) {
     if (graph.ensureStructureAt(slot)) {
         return graph.ensureBuildingAt(slot);
     } else {
         return null;
-    }
-}
-
-uint crossedIf(ref Graph graph, uint slot, Side side, bool isCrossed) {
-    if (isCrossed) {
-        return graph.ensureNeighborSlot(slot, side);
-    } else {
-        return slot;
     }
 }
 

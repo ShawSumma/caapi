@@ -14,7 +14,7 @@ import common.array : Array;
 import common.settings : CHUNK_DIMENSION;
 import common.worldgen.embedded : EMBEDDED_STRUCTURE_NAMES, isLuaPath;
 import common.worldgen.generation : Worldgen, WorldgenKind;
-import worldcheck : benchDrive, benchGen, benchMesh, benchNearby, dumpStructure, dumpWorld, printWorldDigest;
+import worldcheck : benchDrive, benchGen, benchMesh, benchNearby, checkRepaint, dumpStructure, dumpWorld, printWorldDigest;
 
 enum int EXIT_PASSED = 0;
 enum int EXIT_FAILED = 1;
@@ -31,6 +31,7 @@ enum Command : ubyte {
     dumpWorld,
     worldDigest,
     dumpStructure,
+    checkRepaint,
     benchGen,
     benchDrive,
     benchNearby,
@@ -80,6 +81,9 @@ struct HeadlessArguments {
             return index + 1;
         } else if (strcmp(argument, "--dump-structure") == 0) {
             command = Command.dumpStructure;
+            return index + 1;
+        } else if (strcmp(argument, "--check-repaint") == 0) {
+            command = Command.checkRepaint;
             return index + 1;
         } else if (strcmp(argument, "--bench-gen") == 0) {
             command = Command.benchGen;
@@ -143,6 +147,8 @@ struct HeadlessArguments {
             return StartupError(null, "scripts and a command do not mix, unexpected", scripts.ptr[0]);
         } else if (command == Command.dumpStructure && worldgen.kind != WorldgenKind.structure) {
             return StartupError(EMBEDDED_STRUCTURE_NAMES[], "needs --worldgen structure <name or file.lua>", "--dump-structure");
+        } else if (command == Command.checkRepaint && worldgen.kind != WorldgenKind.structure) {
+            return StartupError(EMBEDDED_STRUCTURE_NAMES[], "needs --worldgen structure <name or file.lua>", "--check-repaint");
         } else {
             return StartupError.init;
         }
@@ -216,6 +222,8 @@ int runScripts(ref const HeadlessArguments arguments, FILE* report) {
 bool runWorldCommand(ref const HeadlessArguments arguments, FILE* output) {
     if (arguments.command == Command.dumpStructure) {
         return dumpStructure(output, CHUNK_DIMENSION, arguments.worldgen);
+    } else if (arguments.command == Command.checkRepaint) {
+        return checkRepaint(output, CHUNK_DIMENSION, arguments.worldgen);
     } else {
         runMeasurement(arguments, output);
         return true;

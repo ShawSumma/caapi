@@ -29,6 +29,8 @@ enum Length TEST_TOLERANCE = Length(0.01f);
 enum Length TEST_ON_LINE = Length(1e-3f);
 enum int TEST_BEHIND_EDGES = 10;
 enum int TEST_RISE_EDGES = 3;
+enum uint TEST_DEEP_STEPS = 40;
+enum uint TEST_SIDE_STRIDE = 5;
 immutable int[3][4] TEST_CELLS = [
     [0, 0, 0],
     [3, 1, 2],
@@ -611,24 +613,40 @@ MIsometry!float lineToNode(ref const Graph graph, uint line, uint slot) {
 }
 
 MIsometry!float nodeToNode(ref const Graph graph, uint from, uint to) {
-    Array!Side toPath = graph.sidesToRoot(graph.idAt(to));
-    Array!Side fromPath = graph.sidesToRoot(graph.idAt(from));
-    const(Side)[] toSides = toPath.slice();
-    const(Side)[] fromSides = fromPath.slice();
-    while (toSides.length > 0 && fromSides.length > 0 && toSides[$ - 1] == fromSides[$ - 1]) {
-        toSides = toSides[0 .. $ - 1];
-        fromSides = fromSides[0 .. $ - 1];
+    Array!Side toPath = graph.sidesToRoot(to);
+    Array!Side fromPath = graph.sidesToRoot(from);
+    Array!Side path;
+    foreach (side; toPath.slice()) {
+        path.appendReduced(side);
+    }
+    foreach_reverse (side; fromPath.slice()) {
+        path.appendReduced(side);
     }
     MIsometry!double transform = MIsometry!double.identity();
-    foreach (side; toSides) {
-        transform = transform * side.reflection.toType!double();
-    }
-    foreach_reverse (side; fromSides) {
+    foreach (side; path.slice()) {
         transform = transform * side.reflection.toType!double();
     }
     toPath.release();
     fromPath.release();
+    path.release();
     return transform.toType!float();
+}
+
+// Faces of the right-angled dodecahedron generate a right-angled Coxeter group: a reflection cancels against the
+// last copy of itself that only commuting (adjacent) faces separate, which keeps the path as short as the true distance.
+void appendReduced(ref Array!Side path, Side side) {
+    size_t index = path.length;
+    while (index > 0 && path.ptr[index - 1] != side && path.ptr[index - 1].isAdjacentTo(side)) {
+        index -= 1;
+    }
+    if (index > 0 && path.ptr[index - 1] == side) {
+        foreach (moved; index .. path.length) {
+            path.ptr[moved - 1] = path.ptr[moved];
+        }
+        path.length -= 1;
+    } else {
+        path.append(side);
+    }
 }
 
 size_t sideAxis(Vertex vertex, Side side) {
@@ -881,6 +899,28 @@ unittest {
         assert(isDeep == (fabsf(altitude(state)) >= TOUCHING_FACTOR * faceDistance()));
     }
     scratch.release();
+    graph.release();
+}
+
+unittest {
+    Graph graph = testGraph();
+    uint deep = graph.anchorSlot;
+    foreach (step; 0 .. TEST_DEEP_STEPS) {
+        uint index = step * TEST_SIDE_STRIDE;
+        while (graph.isParentSide(deep, cast(Side)(index % SIDE_COUNT))) {
+            index += 1;
+        }
+        deep = graph.ensureNeighborSlot(deep, cast(Side)(index % SIDE_COUNT));
+    }
+    assert(graph.nodeAt(deep).depth > TEST_DEEP_STEPS);
+    foreach (index; 0 .. SIDE_COUNT) {
+        Side side = cast(Side) index;
+        uint beside = graph.ensureNeighborSlot(deep, side);
+        assert(isSamePoint(graph.nodeToNode(beside, deep) * MPoint!float.origin(), side.reflection * MPoint!float.origin()));
+        Side turn = cast(Side)((index + TEST_SIDE_STRIDE) % SIDE_COUNT);
+        uint corner = graph.ensureNeighborSlot(beside, turn);
+        assert(isSamePoint(graph.nodeToNode(corner, deep) * MPoint!float.origin(), side.reflection * turn.reflection * MPoint!float.origin()));
+    }
     graph.release();
 }
 

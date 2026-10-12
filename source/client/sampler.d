@@ -16,6 +16,9 @@ enum uint SAMPLE_CAPACITY = 1 << 18;
 enum uint SIGNAL_FRAMES = 2;
 enum int SAMPLE_MICROSECONDS = 4000;
 enum uint LISTED_FUNCTIONS = 60;
+enum uint LISTED_CALLEES = 30;
+enum uint LISTED_CALLERS = 4;
+enum double SHARED_FRAME_PERCENT = 90.0;
 enum size_t NAME_CAPACITY = 160;
 enum size_t ADDRESS_HASH_MULTIPLIER = 0x9E3779B97F4A7C15;
 
@@ -59,6 +62,21 @@ struct FunctionCounts {
     uint lastSample;
 }
 
+struct CallKey {
+    uint callee;
+    uint caller;
+
+    size_t toHash() const {
+        return (cast(size_t) callee << 32 | caller) * ADDRESS_HASH_MULTIPLIER;
+    }
+}
+
+struct CallCounts {
+    CallKey key;
+    uint main;
+    uint lastSample;
+}
+
 struct Sampler {
     bool isRunning;
 
@@ -92,7 +110,9 @@ struct Sampler {
         uint count = taken < SAMPLE_CAPACITY ? taken : SAMPLE_CAPACITY;
         HashMap!(AddressKey, uint) byAddress;
         HashMap!(AddressKey, uint) byStart;
+        HashMap!(CallKey, uint) callIndex;
         Array!FunctionCounts functions;
+        Array!CallCounts calls;
         uint mainSamples = 0;
         uint workerSamples = 0;
         foreach (index; 0 .. count) {
@@ -102,18 +122,24 @@ struct Sampler {
             } else {
                 workerSamples += 1;
             }
+            uint callee = uint.max;
             foreach (depth; SIGNAL_FRAMES .. sample.depth) {
-                FunctionCounts* counts = &functions.ptr[functionOf(sample.frames[depth], byAddress, byStart, functions)];
+                uint current = functionOf(sample.frames[depth], byAddress, byStart, functions);
+                FunctionCounts* counts = &functions.ptr[current];
                 bool isSelf = depth == SIGNAL_FRAMES;
                 bool isFirst = counts.lastSample != index + 1;
                 counts.lastSample = index + 1;
                 if (sample.isMain) {
                     counts.selfMain += isSelf;
                     counts.totalMain += isFirst;
+                    if (callee != uint.max && callee != current) {
+                        countCall(CallKey(callee, current), index, callIndex, calls);
+                    }
                 } else {
                     counts.selfWorker += isSelf;
                     counts.totalWorker += isFirst;
                 }
+                callee = current;
             }
         }
         fprintf(output, "profile %s: %u samples of %dms cpu (%u dropped), main %u, workers %u\n", title, count, SAMPLE_MICROSECONDS / 1000, taken - count, mainSamples, workerSamples);
@@ -121,9 +147,12 @@ struct Sampler {
         listTop(output, "main by self", functions, mainSamples, Column.selfMain, Column.selfMain, Column.totalMain);
         listTop(output, "workers by total", functions, workerSamples, Column.totalWorker, Column.selfWorker, Column.totalWorker);
         listTop(output, "workers by self", functions, workerSamples, Column.selfWorker, Column.selfWorker, Column.totalWorker);
+        listCallers(output, functions, calls, mainSamples);
         byAddress.release();
         byStart.release();
+        callIndex.release();
         functions.release();
+        calls.release();
     }
 
     void release() {
@@ -198,6 +227,70 @@ void readableName(const(char)* symbol, size_t start, ref char[NAME_CAPACITY] nam
     } else {
         snprintf(name.ptr, NAME_CAPACITY, "%s", symbol);
     }
+}
+
+void countCall(CallKey key, uint sample, ref HashMap!(CallKey, uint) callIndex, ref Array!CallCounts calls) {
+    const(uint)* known = callIndex.find(key);
+    uint index = void;
+    if (known !is null) {
+        index = *known;
+    } else {
+        index = cast(uint) calls.length;
+        calls.append(CallCounts(key, 0, 0));
+        callIndex.insert(key, index);
+    }
+    CallCounts* counts = &calls.ptr[index];
+    if (counts.lastSample != sample + 1) {
+        counts.lastSample = sample + 1;
+        counts.main += 1;
+    }
+}
+
+void listCallers(FILE* output, ref Array!FunctionCounts functions, ref Array!CallCounts calls, uint samples) {
+    fprintf(output, "  main callers of the heaviest functions (total%%):\n");
+    Array!bool isListed;
+    isListed.resize(functions.length);
+    uint listed = 0;
+    bool isExhausted = samples == 0;
+    while (listed < LISTED_CALLEES && !isExhausted) {
+        size_t best = functions.length;
+        foreach (index, ref counts; functions.slice()) {
+            bool isShared = 100.0 * counts.totalMain / samples >= SHARED_FRAME_PERCENT;
+            if (!isListed.ptr[index] && !isShared && counts.totalMain > 0 && (best == functions.length || counts.totalMain > functions.ptr[best].totalMain)) {
+                best = index;
+            }
+        }
+        isExhausted = best == functions.length;
+        if (!isExhausted) {
+            isListed.ptr[best] = true;
+            fprintf(output, "    %5.1f  %s\n", 100.0 * functions.ptr[best].totalMain / samples, functions.ptr[best].name.ptr);
+            listCallersOf(output, functions, calls, cast(uint) best, samples);
+            listed += 1;
+        }
+    }
+    isListed.release();
+}
+
+void listCallersOf(FILE* output, ref Array!FunctionCounts functions, ref Array!CallCounts calls, uint callee, uint samples) {
+    Array!bool isListed;
+    isListed.resize(calls.length);
+    uint listed = 0;
+    bool isExhausted = false;
+    while (listed < LISTED_CALLERS && !isExhausted) {
+        size_t best = calls.length;
+        foreach (index, ref counts; calls.slice()) {
+            if (!isListed.ptr[index] && counts.key.callee == callee && (best == calls.length || counts.main > calls.ptr[best].main)) {
+                best = index;
+            }
+        }
+        isExhausted = best == calls.length;
+        if (!isExhausted) {
+            isListed.ptr[best] = true;
+            fprintf(output, "           %5.1f  from %s\n", 100.0 * calls.ptr[best].main / samples, functions.ptr[calls.ptr[best].key.caller].name.ptr);
+            listed += 1;
+        }
+    }
+    isListed.release();
 }
 
 bool isDigit(char text) {

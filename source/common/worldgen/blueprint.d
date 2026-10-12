@@ -2,7 +2,7 @@ module common.worldgen.blueprint;
 
 import common.array : Array;
 import common.dodeca : SIDE_COUNT, Side, VERTEX_COUNT, Vertex;
-import common.graph : Graph;
+import common.graph : Graph, NodeId;
 import common.hashmap : HashMap;
 import common.material : Material;
 import common.worldgen.structure : CanonicalSite, ClaimKey, ColumnSpot, LineTransform, PAINT_REACH, SiteFrame, SlotTouch, addPendingTouch, aroundEdge, canonicalOf, edgeCells, isEndless, seedTouch, walkedTouch;
@@ -73,17 +73,13 @@ struct LineSpec {
 }
 
 struct LineKey {
-    uint node;
+    NodeId node;
     Vertex lower;
     Side xSide;
     Side ySide;
 
-    static LineKey fromSpec(ref const LineSpec spec) {
-        return LineKey(spec.node, spec.lower, spec.xSide, spec.ySide);
-    }
-
     size_t toHash() const {
-        return ((cast(size_t) node * VERTEX_COUNT + lower) * SIDE_COUNT + xSide) * SIDE_COUNT + ySide;
+        return node.toHash() ^ ((cast(size_t) lower * SIDE_COUNT + xSide) * SIDE_COUNT + ySide);
     }
 }
 
@@ -101,10 +97,42 @@ struct RouteStop {
     ColumnSpot spot;
 }
 
+// One tile call's brushes carry consecutive orders, so a tile can be dropped from its lines and painted again later:
+// tiles decide everything from site hashes, and the touches they recorded stay.
+struct TileRecord {
+    Array!uint lines;
+    NodeId face;
+    double lastUse = 0;
+    uint firstOrder;
+    uint endOrder;
+    bool isDropped;
+}
+
 struct SiteLine {
     SiteFrame site;
     LineTransform transform;
     uint line;
+    LevelRange open;
+    LevelRange touched;
+}
+
+struct LevelRange {
+    int low = int.max;
+    int high = int.min;
+
+    bool contains(int first, int last) const {
+        return first >= low && last <= high;
+    }
+
+    void include(int first, int last) {
+        if (first <= high + 1L && last >= low - 1L) {
+            low = lowerOf(low, first);
+            high = higherOf(high, last);
+        } else {
+            low = first;
+            high = last;
+        }
+    }
 }
 
 enum PaintResult : ubyte {
@@ -118,21 +146,28 @@ struct Blueprint {
     Array!(Array!Brush) brushes;
     Array!RouteStop route;
     Array!Material materials;
+    Array!TileRecord tiles;
     HashMap!(LineKey, uint) lineIndex;
     HashMap!(LineEdge, bool) touchedEdges;
     HashMap!(ClaimKey, bool) claims;
     RouteStop entrance;
+    double travel = 0;
     uint brushCount;
     uint claimCount;
+    uint restoredTiles;
     ubyte dimension;
     bool hasEntrance;
 
     static Blueprint make(ubyte chunkDimension) {
-        return Blueprint(Array!LineSpec.init, Array!(Array!Brush).init, Array!RouteStop.init, Array!Material.init, HashMap!(LineKey, uint).init, HashMap!(LineEdge, bool).init, HashMap!(ClaimKey, bool).init, RouteStop.init, 0, 0, chunkDimension, false);
+        Blueprint blueprint;
+        blueprint.dimension = chunkDimension;
+        return blueprint;
     }
 
-    uint lineOf(LineSpec spec) {
-        LineKey key = LineKey.fromSpec(spec);
+    // The stored node is only read while painting, and painting finds the line's node again, so the slot is refreshed
+    // here instead of keeping the node alive for as long as the line exists.
+    uint lineOf(LineSpec spec, NodeId node) {
+        LineKey key = LineKey(node, spec.lower, spec.xSide, spec.ySide);
         const(uint)* found = lineIndex.find(key);
         if (found is null) {
             uint index = cast(uint) lines.length;
@@ -141,8 +176,32 @@ struct Blueprint {
             lineIndex.insert(key, index);
             return index;
         } else {
+            lines.ptr[*found].node = spec.node;
             return *found;
         }
+    }
+
+    uint addTile(NodeId face) {
+        tiles.append(TileRecord(Array!uint.init, face, travel, 0, 0, false));
+        return cast(uint)(tiles.length - 1);
+    }
+
+    void dropTile(uint tile) {
+        TileRecord* record = &tiles.ptr[tile];
+        foreach (line; record.lines.slice()) {
+            Array!Brush* painted = &brushes.ptr[line];
+            size_t kept = 0;
+            foreach (brush; painted.slice()) {
+                if (brush.order < record.firstOrder || brush.order >= record.endOrder) {
+                    painted.ptr[kept] = brush;
+                    kept += 1;
+                }
+            }
+            painted.length = kept;
+            painted.shrink();
+        }
+        record.lines.release();
+        record.isDropped = true;
     }
 
     ubyte paintOf(Material material) {
@@ -175,10 +234,14 @@ struct Blueprint {
         foreach (ref painted; brushes.slice()) {
             painted.release();
         }
+        foreach (ref tile; tiles.slice()) {
+            tile.lines.release();
+        }
         lines.release();
         brushes.release();
         route.release();
         materials.release();
+        tiles.release();
         lineIndex.release();
         touchedEdges.release();
         claims.release();
@@ -191,9 +254,10 @@ struct BlueprintBuilder {
     int paintLimit;
     bool isGrowing;
     bool isTiling;
+    bool isRestoring;
 
     static BlueprintBuilder make(ref Graph target) {
-        return BlueprintBuilder(Array!SiteLine.init, &target, 0, false, false);
+        return BlueprintBuilder(Array!SiteLine.init, &target, 0, false, false, false);
     }
 
     void growFrom(uint key) {
@@ -201,12 +265,32 @@ struct BlueprintBuilder {
         paintLimit = cast(int) key - PAINT_REACH;
         isGrowing = true;
         isTiling = false;
+        isRestoring = false;
     }
 
     void tile() {
         known.clear();
         isGrowing = true;
         isTiling = true;
+        isRestoring = false;
+    }
+
+    void restore() {
+        tile();
+        isRestoring = true;
+    }
+
+    void collectLines(ref Array!uint lines) {
+        lines.clear();
+        foreach (found; known.slice()) {
+            uint index = 0;
+            while (index < lines.length && lines.ptr[index] != found.line) {
+                index += 1;
+            }
+            if (index == lines.length) {
+                lines.append(found.line);
+            }
+        }
     }
 
     bool isOpen(uint slot) const {
@@ -217,24 +301,20 @@ struct BlueprintBuilder {
         }
     }
 
-    SiteLine lineOf(SiteFrame site) {
+    SiteLine* lineOf(SiteFrame site) {
         uint index = 0;
         while (index < known.length && known.ptr[index].site != site) {
             index += 1;
         }
         if (index == known.length) {
             CanonicalSite canonical = (*graph).canonicalOf(site);
-            size_t lines = graph.blueprint.lines.length;
-            known.append(SiteLine(site, canonical.transform, graph.blueprint.lineOf(canonical.line)));
-            if (graph.blueprint.lines.length > lines) {
-                graph.reference(canonical.line.node);
-            }
+            known.append(SiteLine(site, canonical.transform, graph.blueprint.lineOf(canonical.line, graph.idAt(canonical.line.node))));
         }
-        return known.ptr[index];
+        return &known.ptr[index];
     }
 
     PaintResult paint(SiteFrame site, CellBox box, Rhythm rhythm, Material material, bool isIntoAirOnly) {
-        SiteLine found = lineOf(site);
+        SiteLine* found = lineOf(site);
         ubyte dimension = graph.layout.dimension;
         CellBox canonical = canonicalBox(box, found.transform, dimension);
         int lowEdge = edgeOf(canonical.low[2], dimension);
@@ -242,10 +322,12 @@ struct BlueprintBuilder {
         bool isUnbounded = lowEdge == int.min || highEdge == int.max;
         if (isGrowing && isUnbounded) {
             return PaintResult.endless;
-        } else if (isGrowing && !isAhead(found.line, lowEdge, highEdge)) {
+        } else if (isGrowing && !isRestoring && !isAhead(*found, lowEdge, highEdge)) {
             return PaintResult.behind;
         } else {
-            record(found.line, lowEdge, highEdge, isUnbounded);
+            if (!isRestoring) {
+                record(*found, lowEdge, highEdge, isUnbounded);
+            }
             Brush brush = Brush(canonical, canonicalRhythm(rhythm, found.transform, dimension), graph.blueprint.brushCount, Paint(graph.blueprint.paintOf(material), isIntoAirOnly));
             graph.blueprint.brushes.ptr[found.line].append(brush);
             graph.blueprint.brushCount += 1;
@@ -253,28 +335,38 @@ struct BlueprintBuilder {
         }
     }
 
-    bool isAhead(uint line, int lowEdge, int highEdge) {
-        LineSpec spec = graph.blueprint.lines.ptr[line];
-        SlotTouch edge = seedTouch(spec, line);
-        bool isClear = true;
-        int level = lowEdge;
-        while (isClear && level <= highEdge) {
-            edge = (*graph).walkedTouch(edge, spec, level);
-            foreach (around; (*graph).aroundEdge(edge, spec)) {
-                isClear = isClear && isOpen(around.slot);
+    // Nodes only gain structure between calls, so levels found open stay open for the rest of a tile or growth step.
+    bool isAhead(ref SiteLine found, int lowEdge, int highEdge) {
+        if (found.open.contains(lowEdge, highEdge)) {
+            return true;
+        } else {
+            LineSpec spec = graph.blueprint.lines.ptr[found.line];
+            SlotTouch edge = seedTouch(spec, found.line);
+            bool isClear = true;
+            int level = lowEdge;
+            while (isClear && level <= highEdge) {
+                edge = (*graph).walkedTouch(edge, spec, level);
+                foreach (around; (*graph).aroundEdge(edge, spec)) {
+                    isClear = isClear && isOpen(around.slot);
+                }
+                level += 1;
             }
-            level += 1;
+            if (isClear) {
+                found.open.include(lowEdge, highEdge);
+            }
+            return isClear;
         }
-        return isClear;
     }
 
-    void record(uint line, int lowEdge, int highEdge, bool isUnbounded) {
+    void record(ref SiteLine found, int lowEdge, int highEdge, bool isUnbounded) {
+        uint line = found.line;
         LineSpec spec = graph.blueprint.lines.ptr[line];
         if (isUnbounded && !spec.isEndless()) {
             SlotTouch seed = seedTouch(spec, line);
             (*graph).addPendingTouch(seed.slot, seed.touch);
-        } else if (!isUnbounded && !spec.isEndless()) {
+        } else if (!isUnbounded && !spec.isEndless() && !found.touched.contains(lowEdge, highEdge)) {
             touchEdges(line, spec, lowEdge, highEdge);
+            found.touched.include(lowEdge, highEdge);
         }
         LineSpec* stored = &graph.blueprint.lines.ptr[line];
         stored.lowest = lowerOf(spec.lowest, lowEdge);
@@ -296,12 +388,14 @@ struct BlueprintBuilder {
     }
 
     void stop(SiteFrame site, ColumnSpot spot) {
-        graph.blueprint.route.append(RouteStop(site, spot));
-        graph.reference(site.node);
+        if (!isRestoring) {
+            graph.blueprint.route.append(RouteStop(site, spot));
+            graph.reference(site.node);
+        }
     }
 
     void enter(SiteFrame site, ColumnSpot spot) {
-        if (!graph.blueprint.hasEntrance) {
+        if (!isRestoring && !graph.blueprint.hasEntrance) {
             graph.blueprint.entrance = RouteStop(site, spot);
             graph.blueprint.hasEntrance = true;
             graph.reference(site.node);

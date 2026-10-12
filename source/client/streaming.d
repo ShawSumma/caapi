@@ -21,7 +21,6 @@ import common.worldgen.generation : ChunkParams, GeneratedVoxels;
 enum uint RESERVED_CORES = 2;
 enum uint MAIN_WORKER = 0;
 enum double RESCAN = 0;
-enum double DONE_FOREVER = double.infinity;
 enum uint MAX_SCAN_NODES_PER_FRAME = 4096;
 enum size_t SKIPPED_PER_CLOCK_CHECK = 1024;
 enum uint IN_FLIGHT_PER_WORKER = 256;
@@ -191,6 +190,7 @@ struct Streamer {
     Array!GenResult results;
     Array!BuildingRequest buildingRequests;
     Array!double rescanAt;
+    Array!uint waiting;
     GenQueue* queue;
     size_t resultsHead;
     double travel = 0;
@@ -251,10 +251,33 @@ struct Streamer {
         if (scanVersion != nearbyVersion) {
             scanVersion = nearbyVersion;
             scanCursor = 0;
+            waiting.clear();
         }
         ScanRange range = ScanRange.make(cameraLocal * MPoint!float.origin(), distance + CHUNK_BOUNDING_SPHERE_RADIUS, KEEP_RADIUS + CHUNK_BOUNDING_SPHERE_RADIUS);
-        scanCursor = cast(uint) scan(graph, nearby, range, requestBudget(isUnbudgeted), deadline);
+        uint budget = requestBudget(isUnbudgeted);
+        rescanBuilt(graph, nearby, range, budget);
+        scanCursor = cast(uint) scan(graph, nearby, range, budget, deadline);
         submitRequests();
+    }
+
+    void rescanBuilt(ref Graph graph, const(NearbyNode)[] nearby, ScanRange range, uint budget) {
+        size_t kept = 0;
+        foreach (index; waiting.slice()) {
+            NearbyNode nearbyNode = nearby[index];
+            bool isDone = false;
+            if (!graph.nodeAt(nearbyNode.slot).isBuildingQueued) {
+                immutable ScanOutcome outcome = scanNode(graph, nearbyNode, range, budget);
+                isDone = !outcome.isInterrupted && !outcome.isWaitingOnBuilding;
+                if (isDone) {
+                    rescanAt.ptr[nearbyNode.slot] = travel + range.margin(outcome);
+                }
+            }
+            if (!isDone) {
+                waiting.ptr[kept] = index;
+                kept += 1;
+            }
+        }
+        waiting.length = kept;
     }
 
     uint requestBudget(bool isUnbudgeted) const {
@@ -284,6 +307,7 @@ struct Streamer {
                     break;
                 } else if (outcome.isWaitingOnBuilding) {
                     rescanAt.ptr[nearbyNode.slot] = RESCAN;
+                    waiting.append(cast(uint) index);
                 } else {
                     rescanAt.ptr[nearbyNode.slot] = travel + range.margin(outcome);
                 }
@@ -300,34 +324,29 @@ struct Streamer {
         return -camera.mip((nearbyNode.transform * vertex.chunkBoundingSphereCenter).vec);
     }
 
-    bool isRequestBlocked(ref const Graph graph, NearbyNode nearbyNode, Vertex vertex, ScanRange range, uint budget) const {
-        ChunkState state = graph.chunkAt(ChunkSlot(nearbyNode.slot, vertex)).state;
-        bool isWanted = (state == ChunkState.fresh && !(rangeProduct(nearbyNode, vertex, range.camera) > range.threshold)) || (state == ChunkState.dropped && !(rangeProduct(nearbyNode, vertex, range.camera) > range.keepThreshold));
-        return isWanted && requests.length >= budget;
-    }
-
     ScanOutcome scanNode(ref Graph graph, NearbyNode nearbyNode, ScanRange range, uint budget) {
         ScanOutcome outcome = ScanOutcome(float.infinity, float.infinity, false, false);
         uint vertexIndex = 0;
-        while (vertexIndex < VERTEX_COUNT && !isRequestBlocked(graph, nearbyNode, cast(Vertex) vertexIndex, range, budget)) {
+        while (vertexIndex < VERTEX_COUNT && !outcome.isInterrupted) {
             Vertex vertex = cast(Vertex) vertexIndex;
             ChunkSlot slot = ChunkSlot(nearbyNode.slot, vertex);
             ChunkState state = graph.chunkAt(slot).state;
-            if (state == ChunkState.fresh) {
+            if (state == ChunkState.fresh || state == ChunkState.dropped) {
                 float product = rangeProduct(nearbyNode, vertex, range.camera);
-                if (product > range.threshold) {
+                bool isFresh = state == ChunkState.fresh;
+                bool isOutOfRange = product > (isFresh ? range.threshold : range.keepThreshold);
+                if (!isOutOfRange && requests.length >= budget) {
+                    outcome.isInterrupted = true;
+                } else if (isFresh && isOutOfRange) {
                     if (product < outcome.nearestOutOfRange) {
                         outcome.nearestOutOfRange = product;
                     }
-                } else if (!isBuildingReady(graph, nearbyNode.slot)) {
+                } else if (isFresh && !isBuildingReady(graph, nearbyNode.slot)) {
                     scheduleBuilding(graph, nearbyNode.slot);
                     outcome.isWaitingOnBuilding = true;
-                } else {
+                } else if (isFresh) {
                     request(graph, slot);
-                }
-            } else if (state == ChunkState.dropped) {
-                float product = rangeProduct(nearbyNode, vertex, range.camera);
-                if (product > range.keepThreshold) {
+                } else if (isOutOfRange) {
                     if (product < outcome.nearestDropped) {
                         outcome.nearestDropped = product;
                     }
@@ -335,9 +354,10 @@ struct Streamer {
                     restore(graph, slot);
                 }
             }
-            vertexIndex += 1;
+            if (!outcome.isInterrupted) {
+                vertexIndex += 1;
+            }
         }
-        outcome.isInterrupted = vertexIndex < VERTEX_COUNT;
         return outcome;
     }
 
@@ -349,6 +369,7 @@ struct Streamer {
     void scheduleBuilding(ref Graph graph, uint slot) {
         if (!graph.nodeAt(slot).hasBuilding && !graph.nodeAt(slot).isBuildingQueued) {
             graph.nodeAt(slot).isBuildingQueued = true;
+            graph.restoreBrushes(slot);
             buildingRequests.append(BuildingRequest(BuildingPlan.make(graph, slot), slot));
         }
     }
@@ -436,7 +457,6 @@ struct Streamer {
         if (built.slot < rescanAt.length) {
             rescanAt.ptr[built.slot] = RESCAN;
         }
-        scanCursor = 0;
     }
 
     void release() {
@@ -476,6 +496,7 @@ struct Streamer {
         requests.release();
         results.release();
         rescanAt.release();
+        waiting.release();
     }
 }
 
