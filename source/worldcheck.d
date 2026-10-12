@@ -1,7 +1,7 @@
 module worldcheck;
 
-import core.stdc.math : coshf;
-import core.stdc.stdio : FILE, fprintf;
+import core.stdc.math : coshf, floorf;
+import core.stdc.stdio : FILE, fprintf, fputc;
 import core.stdc.stdlib : free, malloc;
 import base.array : Array;
 import base.clock : nowMilliseconds;
@@ -20,7 +20,8 @@ import common.node : Chunk, ChunkSlot, ChunkState, Voxels, cellIndex;
 import common.position : Position;
 import common.traversal : NO_DEADLINE, NearbyNode, NearbyScratch;
 import common.worldgen.generation : ChunkParams, GeneratedVoxels, Worldgen;
-import common.worldgen.structure : altitude, edgeLength;
+import common.worldgen.sky : ChunkPoint, chunkPointOf;
+import common.worldgen.structure : ColumnSpot, SiteFrame, Turn, altitude, columnPoint, edgeLength, forwarded, rootSite, sitePlacement, turned;
 import geometry.honeycomb : CORNER_COUNT, CUBE_RADIUS, Corner, cubeCenter;
 import geometry.lorentz : Motion, Point;
 
@@ -29,6 +30,8 @@ enum uint DRIVE_IDLE_ITERATIONS = 200;
 enum double DRIVE_BUDGET_MILLISECONDS = 5.0;
 enum size_t HASH_HEADER_BYTES = 2;
 enum float STRUCTURE_DUMP_RADIUS = 4.5f;
+enum uint SLICE_QUARTERS_AROUND = 4;
+enum uint SLICE_QUARTERS_OF_FACE = 5;
 
 struct ContentHashes {
     ulong[2] materials;
@@ -301,6 +304,62 @@ bool checkRepaint(FILE* output, ubyte dimension, Worldgen worldgen) {
     }
     graph.release();
     return !problem.isPresent && differing == 0;
+}
+
+// The structure's cells at one height in the quarters around the root's vertex and the next one along its edge, then
+// the quarters of the root's face, each printed with its vertex at the bottom left and the middle of its face at the top right: # is solid and
+// . is open. A quarter's left column and bottom row lie along edges of the tiling, its others across its face.
+bool printSlices(FILE* output, ubyte dimension, Worldgen worldgen, int height) {
+    Graph graph = Graph.make(dimension, worldgen);
+    StructureProblem problem = graph.placeWorldStructure();
+    if (!problem.isPresent) {
+        SiteFrame root = rootSite(graph.anchorSlot);
+        SiteFrame[2] vertices = [root, forwarded(root, 1)];
+        foreach (vertex, first; vertices) {
+            SiteFrame around = first;
+            foreach (index; 0 .. SLICE_QUARTERS_AROUND) {
+                fprintf(output, "vertex %u quarter %u\n", cast(uint) vertex, cast(uint) index);
+                graph.printQuarter(output, around, height);
+                around = graph.view.turned(around, Turn.right);
+            }
+        }
+        SiteFrame corner = root;
+        foreach (index; 0 .. SLICE_QUARTERS_OF_FACE) {
+            fprintf(output, "face quarter %u\n", cast(uint) index);
+            graph.printQuarter(output, corner, height);
+            corner = graph.view.turned(forwarded(corner, 1), Turn.right);
+        }
+        problem = growthProblem(graph);
+    }
+    if (problem.isPresent) {
+        fprintf(output, "%s\n", problem.text.ptr);
+    }
+    graph.release();
+    return !problem.isPresent;
+}
+
+void printQuarter(ref Graph graph, FILE* output, SiteFrame quarter, int height) {
+    SiteFrame tower = graph.view.turned(graph.view.turned(quarter, Turn.pitchUp), Turn.rollRight);
+    int far = graph.layout.dimension - 1;
+    foreach_reverse (y; 0 .. far + 1) {
+        foreach (x; 0 .. far + 1) {
+            fputc(graph.paintedAt(tower, [x, y, height]) == Material.none ? '.' : '#', output);
+        }
+        fputc('\n', output);
+    }
+}
+
+Material paintedAt(ref Graph graph, SiteFrame tower, int[3] cell) {
+    Point!float center = sitePlacement(tower, graph.layout) * columnPoint(graph.layout, ColumnSpot(cell[0] + 0.5f, cell[1] + 0.5f, cell[2] + 0.5f));
+    Position at = graph.ensureNormalized(Position(graph.idAt(tower.node), Motion!float.shiftTo(center)));
+    uint slot = graph.slotOf(at.node);
+    graph.ensureStructureAt(slot);
+    ChunkPoint inChunk = chunkPointOf(at.local * Point!float.origin());
+    int[3] voxel = void;
+    foreach (axis; 0 .. 3) {
+        voxel[axis] = cast(int) floorf(graph.layout.cubeToGrid(inChunk.coords[axis]));
+    }
+    return graph.ensureBuildingAt(slot).materialAt(inChunk.corner, voxel, Material.none);
 }
 
 ulong generatedHash(ref Graph graph, uint slot) {

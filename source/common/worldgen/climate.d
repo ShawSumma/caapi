@@ -175,6 +175,10 @@ enum float LAPSE_RATE = 0.3f;
 enum float COVER_DEPTH = 0.06f;
 enum float SOIL_DEPTH = 0.4f;
 enum float SNOW_WARMTH = -0.45f;
+// Below this height above the ground's plane, whatever the terrain leaves open is water; ice where it is cold.
+enum float WATER_LEVEL = -0.6f;
+enum float BEACH_HEIGHT = 0.08f;
+enum float DEEP_WATER = 0.5f;
 // Above this height, ground that is not snowed over is bare rock.
 enum float ROCKY_RELIEF = 2.2f;
 
@@ -190,6 +194,17 @@ Material groundAt(float depth, Climate climate) {
     }
 }
 
+// What fills the open space at a height above the ground's plane: water below the water level, otherwise nothing.
+Material openAt(float altitude, Climate climate) {
+    if (altitude >= WATER_LEVEL) {
+        return Material.none;
+    } else if (climate.warmth() < SNOW_WARMTH) {
+        return Material.ice;
+    } else {
+        return Material.water;
+    }
+}
+
 bool isDesert(float warmth, float wetness) {
     return warmth > 0.45f && wetness < -0.35f;
 }
@@ -198,11 +213,19 @@ bool isRedDesert(float warmth, float wetness) {
     return isDesert(warmth, wetness) && wetness < -0.65f;
 }
 
+bool isShore(float relief) {
+    return relief < WATER_LEVEL + BEACH_HEIGHT;
+}
+
 Material coverOf(float warmth, float wetness, float relief) {
     if (warmth < SNOW_WARMTH) {
         return Material.snow;
     } else if (relief > ROCKY_RELIEF) {
         return Material.andesite;
+    } else if (relief < WATER_LEVEL - DEEP_WATER) {
+        return Material.gravel;
+    } else if (isShore(relief)) {
+        return Material.sand;
     } else if (warmth < -0.15f) {
         return wetness < -0.2f ? Material.gravel : Material.coarseGrass;
     } else if (isDesert(warmth, wetness)) {
@@ -221,6 +244,8 @@ Material coverOf(float warmth, float wetness, float relief) {
 Material soilOf(float warmth, float wetness, float relief) {
     if (relief > ROCKY_RELIEF) {
         return Material.andesite;
+    } else if (isShore(relief)) {
+        return Material.sand;
     } else if (isRedDesert(warmth, wetness)) {
         return Material.redSand;
     } else if (isDesert(warmth, wetness)) {

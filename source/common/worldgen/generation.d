@@ -4,13 +4,13 @@ import core.stdc.math : asinhf, atanf, cosf, coshf, sinhf, tanf;
 import core.stdc.stdlib : abs;
 import core.stdc.string : memcpy;
 import base.array : Array;
-import base.numbers : PI, clamped;
+import base.numbers : PI, clamped, higherOf;
 import common.graph : Graph, MAX_PARENTS, NO_SLOT, NodeId, ParentList;
 import common.material : Material;
 import common.node : ChunkLayout, Occupancy, Voxels, cellIndex;
 import common.view : GraphView;
 import common.worldgen.building : Building;
-import common.worldgen.climate : Climate, CubeClimate, NodeClimate, SNOW_WARMTH, UniformRock, groundAt, isDesert, uniformRock;
+import common.worldgen.climate : Climate, CubeClimate, NodeClimate, SNOW_WARMTH, UniformRock, WATER_LEVEL, groundAt, isDesert, openAt, uniformRock;
 import common.worldgen.plane : Plane;
 import common.worldgen.sky : Ground, Grounds, PLANET, groundsAt;
 import common.worldgen.structure : firstSideAmong, ringFaces;
@@ -348,9 +348,12 @@ struct ChunkParams {
         return ValueRange(center - radius, center + radius);
     }
 
+    // Terrain that dips below the water level is covered by water up to it.
     float terrainCeiling(uint index) const {
         if (ground(index).isFlat) {
             return 0;
+        } else if (climate.lowest.relief < WATER_LEVEL) {
+            return higherOf(climate.highest.relief, WATER_LEVEL);
         } else {
             return climate.highest.relief;
         }
@@ -529,9 +532,13 @@ struct TerrainGenerator {
 
     void generateTerrainVoxel(uint ground, float[3] center, size_t index) {
         Climate here = params.climate.at(center);
-        float depth = here.relief - params.ground(ground).surface.distanceToChunk(params.chunk, center);
-        if (depth >= 0.0f && voxels.at(index) == Material.none) {
-            voxels.toDense(params.dimension)[index] = groundAt(depth, here);
+        float altitude = params.ground(ground).surface.distanceToChunk(params.chunk, center);
+        float depth = here.relief - altitude;
+        if (voxels.at(index) == Material.none) {
+            Material material = depth >= 0.0f ? groundAt(depth, here) : openAt(altitude, here);
+            if (material != Material.none) {
+                voxels.toDense(params.dimension)[index] = material;
+            }
         }
     }
 

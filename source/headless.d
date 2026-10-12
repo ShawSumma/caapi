@@ -15,7 +15,7 @@ import client.structures : StructureProblem, placeStructure;
 import common.settings : CHUNK_DIMENSION;
 import common.worldgen.embedded : EMBEDDED_STRUCTURE_NAMES, isLuaPath;
 import common.worldgen.generation : Worldgen, WorldgenKind;
-import worldcheck : benchDrive, benchGen, benchMesh, benchNearby, checkRepaint, dumpStructure, dumpWorld, printMaterialCensus, printWorldDigest;
+import worldcheck : benchDrive, benchGen, benchMesh, benchNearby, checkRepaint, dumpStructure, dumpWorld, printMaterialCensus, printSlices, printWorldDigest;
 
 enum int EXIT_PASSED = 0;
 enum int EXIT_FAILED = 1;
@@ -24,6 +24,7 @@ enum float DEFAULT_DUMP_RADIUS = 3.0f;
 enum float DEFAULT_GEN_RADIUS = 2.5f;
 enum float DEFAULT_NEARBY_RADIUS = 4.5f;
 enum uint DEFAULT_NEARBY_ITERATIONS = 50;
+enum int DEFAULT_SLICE_HEIGHT = 1;
 
 immutable string[2] SKIPPED_NAMES = ["lib", "visual"];
 
@@ -33,6 +34,7 @@ enum Command : ubyte {
     worldDigest,
     materialCensus,
     dumpStructure,
+    slices,
     checkRepaint,
     benchGen,
     benchDrive,
@@ -86,6 +88,9 @@ struct HeadlessArguments {
             return index + 1;
         } else if (strcmp(argument, "--dump-structure") == 0) {
             command = Command.dumpStructure;
+            return index + 1;
+        } else if (strcmp(argument, "--slice") == 0) {
+            command = Command.slices;
             return index + 1;
         } else if (strcmp(argument, "--check-repaint") == 0) {
             command = Command.checkRepaint;
@@ -154,6 +159,8 @@ struct HeadlessArguments {
             return StartupError(EMBEDDED_STRUCTURE_NAMES[], "needs --worldgen structure <name or file.lua>", "--dump-structure");
         } else if (command == Command.checkRepaint && worldgen.kind != WorldgenKind.structure) {
             return StartupError(EMBEDDED_STRUCTURE_NAMES[], "needs --worldgen structure <name or file.lua>", "--check-repaint");
+        } else if (command == Command.slices && worldgen.kind != WorldgenKind.structure) {
+            return StartupError(EMBEDDED_STRUCTURE_NAMES[], "needs --worldgen structure <name or file.lua>", "--slice");
         } else {
             return StartupError.init;
         }
@@ -168,6 +175,14 @@ struct HeadlessArguments {
             return DEFAULT_NEARBY_RADIUS;
         } else {
             return DEFAULT_GEN_RADIUS;
+        }
+    }
+
+    int sliceHeight() const {
+        if (radius.isPresent) {
+            return cast(int) radius.value;
+        } else {
+            return DEFAULT_SLICE_HEIGHT;
         }
     }
 
@@ -227,6 +242,8 @@ int runScripts(ref const HeadlessArguments arguments, FILE* report) {
 bool runWorldCommand(ref const HeadlessArguments arguments, FILE* output) {
     if (arguments.command == Command.dumpStructure) {
         return dumpStructure(output, CHUNK_DIMENSION, arguments.worldgen);
+    } else if (arguments.command == Command.slices) {
+        return printSlices(output, CHUNK_DIMENSION, arguments.worldgen, arguments.sliceHeight());
     } else if (arguments.command == Command.checkRepaint) {
         return checkRepaint(output, CHUNK_DIMENSION, arguments.worldgen);
     } else {

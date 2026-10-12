@@ -1,4 +1,4 @@
-local backrooms = require("backrooms")
+local backrooms = require("backrooms.layout")
 local connector = require("connector")
 local kit = require("buildings.kit")
 local town = require("town")
@@ -47,7 +47,7 @@ function sky.city(face, info, options)
 end
 
 function sky.backrooms(face, info, options)
-  backrooms.tile(face, { foot = info.foot:hash("vertex") })
+  backrooms.tile(face, { vertex = info.foot:hash("vertex"), has_shaft = true })
   connect(face, info, BACKROOMS_GROUND, settings_of(options))
 end
 

@@ -26,6 +26,8 @@ local STREET_TREES = 0.5
 local PARK_PERCENT = 6
 local PLAZA_PERCENT = 5
 local PARKING_PERCENT = 3
+local POND_PERCENT = 50
+local FOUNTAIN_PERCENT = 60
 local ALLEY_PERCENT = 20
 local MAX_INSET = 1
 local VARIANTS = 1024
@@ -153,6 +155,9 @@ local function is_street(edge, root)
   end
 end
 
+-- Whether the edge a turtle faces along carries a street, the same from every turtle on that edge.
+town.is_street = is_street
+
 local function has_trees(edge)
   math.randomseed(edge:hash("edge"))
   math.random()
@@ -259,6 +264,35 @@ local function plant(parts)
   end
 end
 
+-- A stone basin of water with a column in the middle that water spills from.
+local function fountain(tower, x, y)
+  tower:paint("marble", { x = { x - 2, x + 2 }, y = { y - 2, y + 2 }, z = { 1, 1 } })
+  tower:paint("water", { x = { x - 1, x + 1 }, y = { y - 1, y + 1 }, z = { 1, 1 } })
+  tower:paint("marble", { x = { x, x }, y = { y, y }, z = { 1, 2 } })
+  tower:paint("water", { x = { x, x }, y = { y, y }, z = { 3, 3 } })
+end
+
+local function fountains(parts)
+  for _, part in ipairs(parts) do
+    local tower, area = ground_of(part)
+    if is_roomy(area) then
+      fountain(tower, centre(area.x), centre(area.y))
+    end
+  end
+end
+
+-- Water sunk into the lawn on a bed of sand, leaving a rim of grass.
+local function ponds(parts)
+  for _, part in ipairs(parts) do
+    local tower, area = ground_of(part)
+    if is_roomy(area) then
+      local water = { x = { area.x[1] + 1, area.x[2] - 1 }, y = { area.y[1] + 1, area.y[2] - 1 } }
+      tower:paint("water", { x = water.x, y = water.y, z = { -1, 0 } })
+      tower:paint("sand", { x = water.x, y = water.y, z = { -2, -2 } })
+    end
+  end
+end
+
 local function parking(parts)
   for _, part in ipairs(parts) do
     local tower, area = ground_of(part)
@@ -319,10 +353,18 @@ local function lot(parts, is_route, is_root, root)
     build(parts, route_spec())
   elseif chance(site, PARK_PERCENT) then
     pave(parts, "grass")
-    plant(parts)
+    if chance(site, POND_PERCENT) then
+      ponds(parts)
+    else
+      plant(parts)
+    end
   elseif chance(site, PLAZA_PERCENT) then
     pave(parts, "granite")
-    plant(parts)
+    if chance(site, FOUNTAIN_PERCENT) then
+      fountains(parts)
+    else
+      plant(parts)
+    end
   elseif chance(site, PARKING_PERCENT) then
     parking(parts)
   else

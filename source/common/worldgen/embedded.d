@@ -7,19 +7,22 @@ struct EmbeddedLua {
     string source;
 }
 
-immutable EmbeddedLua[6] EMBEDDED_STRUCTURES = [
+immutable EmbeddedLua[7] EMBEDDED_STRUCTURES = [
     EmbeddedLua("tower", import("tower.lua")),
     EmbeddedLua("crown", import("crown.lua")),
     EmbeddedLua("road", import("road.lua")),
     EmbeddedLua("trail", import("trail.lua")),
     EmbeddedLua("city", import("city.lua")),
     EmbeddedLua("planet", import("planet.lua")),
+    EmbeddedLua("backrooms", import("backrooms.lua")),
 ];
 
-immutable EmbeddedLua[14] EMBEDDED_MODULES = [
+immutable EmbeddedLua[16] EMBEDDED_MODULES = [
     EmbeddedLua("box", import("box.lua")),
     EmbeddedLua("town", import("town.lua")),
-    EmbeddedLua("backrooms", import("backrooms.lua")),
+    EmbeddedLua("backrooms.layout", import("backrooms/layout.lua")),
+    EmbeddedLua("backrooms.kit", import("backrooms/kit.lua")),
+    EmbeddedLua("backrooms.levels", import("backrooms/levels.lua")),
     EmbeddedLua("connector", import("connector.lua")),
     EmbeddedLua("sky", import("sky.lua")),
     EmbeddedLua("buildings.kit", import("buildings/kit.lua")),

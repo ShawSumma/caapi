@@ -6,11 +6,13 @@ local SKY_ALTITUDE = 1.5
 local FLOORS = {
   carpet = true,
   damp_carpet = true,
+  red_carpet = true,
   concrete = true,
 }
 local CEILINGS = {
   ceiling_tile = true,
   light_panel = true,
+  concrete = true,
 }
 
 -- The connector climbs from the planet into the backrooms, where the floor is carpet and the ceiling is low.

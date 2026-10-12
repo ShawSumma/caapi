@@ -1,0 +1,20 @@
+local climb = require("lib.climb")
+local walk = require("lib.walk")
+
+local BACKROOMS = "tests/lib/backrooms.lua"
+local NOCLIP_SPEED = 0.6
+local RISE = 0.55
+local TURN_DEGREES = 120
+
+-- Up the connector, then straight up through two floors into the top layer by the connector's shaft.
+return function(world)
+  world:worldgen("structure", BACKROOMS)
+  world:enter_route()
+  world:wait(walk.SETTLE_SECONDS)
+  climb.follow(world, math.huge)
+  world:wait(walk.SETTLE_SECONDS)
+  world:mode("noclip")
+  world:press(RISE / NOCLIP_SPEED, "up")
+  world:look(TURN_DEGREES, 0)
+  world:step()
+end
