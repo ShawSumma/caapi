@@ -1,4 +1,4 @@
-module common.vector3;
+module base.vector3;
 
 import core.math : sqrt;
 

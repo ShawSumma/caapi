@@ -6,18 +6,19 @@ import core.stdc.string : memcpy, strlen;
 import bindings.lua : luaL_checkinteger, luaL_checklstring, luaL_checknumber, luaL_checktype, luaL_checkudata, luaL_error, luaL_loadbufferx, luaL_loadfilex, luaL_newmetatable, luaL_ref, luaL_setmetatable, luaL_testudata, luaL_unref, lua_CFunction, lua_Integer, lua_State, lua_close, lua_createtable, lua_getfield, lua_getglobal, lua_gettop, lua_newuserdatauv, lua_pcallk, lua_pushboolean, lua_pushcclosure, lua_pushinteger, lua_pushlightuserdata, lua_pushvalue, lua_rawgeti, lua_rawseti, lua_setfield, lua_settop, lua_tointegerx, lua_tolstring, lua_touserdata, lua_type;
 import client.game : Game;
 import client.lua : LUA_BELOW_TOP, LUA_FIRST_UPVALUE, LUA_NO_REF, LUA_REGISTRY, LUA_SECOND_UPVALUE, LUA_STATUS_OK, LUA_TOP, LUA_TYPE_FUNCTION, LUA_TYPE_TABLE, LuaLookup, LuaName, SELF, TRACEBACK_INDEX, isNoneOrNil, luaTraceback, newSafeState, registerMethod, setPackagePath;
-import common.array : Array;
-import common.dodeca : Side;
+import base.array : Array;
+import base.names : ENUM_NAMES;
+import base.parallel : Executor;
 import client.tiles : TileWork;
-import common.graph : Graph, Grower;
-import common.parallel : Executor;
+import common.graph : Graph;
 import common.material : Material;
-import common.names : ENUM_NAMES;
+import common.worldgen.store : Grower;
 import common.worldgen.blueprint : BlueprintBuilder, CellBox, EVERY_HEIGHT, PaintResult, Rhythm, TileRecord;
 import common.worldgen.embedded : EMBEDDED_MODULES, EMBEDDED_STRUCTURES, EmbeddedLua, embeddedIndex, isLuaPath;
 import common.worldgen.generation : STRUCTURE_NAME_CAPACITY, SplitMix, StructureWorld, Worldgen;
-import common.worldgen.sky : LOWEST_SKY_EDGES, PLANET, SkyChoice, SkyGround, SkyKind, Skies, World, balanceAlong, ensureWorldsAt, isPaintedBySky, measuredWorld, openSky, worldAt, worldGroundNodeOf;
-import common.worldgen.structure : ClaimKey, ColumnSpot, GROUND_RING, PLACE_SLACK, RootedVertex, SiteFrame, SitePart, Turn, anchorBits, claimKeyOf, edgeCells, faceSite, forwarded, groundRing, rootSite, siteHash, siteOrigin, turned;
+import common.worldgen.sky : LOWEST_SKY_EDGES, PLANET, SkyChoice, SkyGround, SkyKind, Skies, World, balanceAlong, ensureWorldsAt, isPaintedBySky, measuredWorld, openSky, worldGroundNodeOf;
+import common.worldgen.structure : ClaimKey, ColumnSpot, GROUND_RING, PLACE_SLACK, RootedCorner, SiteFrame, SitePart, Turn, anchorBits, claimKeyOf, edgeCells, faceSite, forwarded, groundRing, rootSite, siteHash, siteOrigin, turned;
+import geometry.honeycomb : Face;
 
 enum size_t MESSAGE_CAPACITY = 1024;
 enum int CHUNK_RESULTS = 1;
@@ -169,23 +170,23 @@ struct StructureHost {
         builder.graph = &graph;
         if (!problem.isPresent && hasCover()) {
             if (hasTile()) {
-                coverRing(graph, graph.groundRing(graph.worldGroundNodeOf(slot, PLANET), Side.a), Side.a, PLANET);
+                coverRing(graph, graph.view.groundRing(graph.view.worldGroundNodeOf(slot, PLANET), Face.f0), Face.f0, PLANET);
             }
-            foreach (sky; graph.ensureWorldsAt(slot)) {
-                if (graph.isPaintedBySky(slot, sky)) {
-                    Side label = graph.worldAt(sky.world).label;
-                    coverRing(graph, graph.groundRing(graph.worldGroundNodeOf(slot, sky.world), label), label, sky.world);
+            foreach (sky; graph.view.ensureWorldsAt(slot)) {
+                if (graph.view.isPaintedBySky(slot, sky)) {
+                    Face label = graph.skies.world(sky.world).label;
+                    coverRing(graph, graph.view.groundRing(graph.view.worldGroundNodeOf(slot, sky.world), label), label, sky.world);
                 }
             }
             runTiles(graph);
         }
     }
 
-    void coverRing(ref Graph graph, uint[GROUND_RING] ring, Side label, uint sky) {
+    void coverRing(ref Graph graph, uint[GROUND_RING] ring, Face label, uint sky) {
         foreach (face; ring) {
-            const(uint)* known = graph.tiledFaces.find(graph.idAt(face));
-            if (known !is null && !graph.blueprint.tiles.ptr[*known].isDropped) {
-                graph.blueprint.tiles.ptr[*known].lastUse = graph.blueprint.travel;
+            const(uint)* known = graph.structures.tiledFaces.find(graph.idAt(face));
+            if (known !is null && !graph.structures.blueprint.tiles.ptr[*known].isDropped) {
+                graph.structures.blueprint.tiles.ptr[*known].lastUse = graph.structures.blueprint.travel;
             } else {
                 tiles.addTask(graph, graph.idAt(face), face, null, label, sky);
             }
@@ -199,11 +200,11 @@ struct StructureHost {
         }
     }
 
-    void prepare(ref Graph graph, const(uint)[] candidates, Executor chosen) {
+    void paintAhead(ref Graph graph, const(uint)[] candidates, Executor chosen) {
         executor = chosen;
         builder.graph = &graph;
         if (!problem.isPresent && hasCover()) {
-            tiles.prepare(graph, candidates, executor);
+            tiles.paintAhead(graph, candidates, executor);
             if (tiles.hasFailed) {
                 problem = StructureProblem.fromMessage(name.name(), tiles.failure.ptr);
             }
@@ -312,7 +313,7 @@ StructureProblem placeWorldStructure(ref Graph graph) {
         if (problem.isPresent || !(host.hasQueued() || host.hasCover())) {
             releaseStructureHost(host);
         } else {
-            graph.grower = Grower(&growStructures, &coverStructures, &prepareStructures, &releaseStructureHost, host);
+            graph.structures.grower = Grower(&growStructures, &coverStructures, &paintStructuresAhead, &releaseStructureHost, host);
         }
         return problem;
     }
@@ -326,8 +327,8 @@ void coverStructures(void* context, ref Graph graph, uint slot) {
     (cast(StructureHost*) context).cover(graph, slot);
 }
 
-void prepareStructures(void* context, ref Graph graph, const(uint)[] candidates, Executor executor) {
-    (cast(StructureHost*) context).prepare(graph, candidates, executor);
+void paintStructuresAhead(void* context, ref Graph graph, const(uint)[] candidates, Executor executor) {
+    (cast(StructureHost*) context).paintAhead(graph, candidates, executor);
 }
 
 void releaseStructureHost(void* context) {
@@ -337,19 +338,19 @@ void releaseStructureHost(void* context) {
 }
 
 uint[2] tileCounts(ref const Graph graph) {
-    if (graph.grower.context is null) {
+    if (graph.structures.grower.context is null) {
         return [0, 0];
     } else {
-        const(TileWork)* tiles = &(cast(const(StructureHost)*) graph.grower.context).tiles;
+        const(TileWork)* tiles = &(cast(const(StructureHost)*) graph.structures.grower.context).tiles;
         return [tiles.preparedTiles, tiles.fallbackTiles];
     }
 }
 
 StructureProblem growthProblem(ref const Graph graph) {
-    if (graph.grower.context is null) {
+    if (graph.structures.grower.context is null) {
         return StructureProblem.init;
     } else {
-        return (cast(const(StructureHost)*) graph.grower.context).problem;
+        return (cast(const(StructureHost)*) graph.structures.grower.context).problem;
     }
 }
 
@@ -514,7 +515,7 @@ extern (C) int luaSiteForward(lua_State* lua) {
 extern (C) int luaSiteTurn(lua_State* lua) {
     StructureHost* host = structureHost(lua);
     Turn turn = cast(Turn) lua_tointegerx(lua, LUA_SECOND_UPVALUE, null);
-    lua.pushSite((*host.builder.graph).turned(siteArgument(lua), turn));
+    lua.pushSite(host.builder.graph.view.turned(siteArgument(lua), turn));
     return 1;
 }
 
@@ -585,7 +586,7 @@ extern (C) int luaSitePlace(lua_State* lua) {
     StructureHost* host = structureHost(lua);
     SiteFrame site = siteArgument(lua);
     luaL_checktype(lua, SELF + 1, LUA_TYPE_FUNCTION);
-    RootedVertex origin = (*host.builder.graph).siteOrigin(site);
+    RootedCorner origin = host.builder.graph.view.siteOrigin(site);
     bool isAhead = cast(int) origin.depth + PLACE_SLACK >= cast(int) host.key;
     if (isAhead) {
         int count = lua_gettop(lua) - SELF;
@@ -672,13 +673,13 @@ extern (C) int luaSiteClaim(lua_State* lua) {
 
 extern (C) int luaSiteIsClaimed(lua_State* lua) {
     StructureHost* host = structureHost(lua);
-    lua_pushboolean(lua, host.builder.graph.blueprint.isClaimed(claimArgument(lua, *host.builder.graph)));
+    lua_pushboolean(lua, host.builder.blueprint.isClaimed(claimArgument(lua, *host.builder.graph)));
     return 1;
 }
 
 extern (C) int luaSiteHash(lua_State* lua) {
     StructureHost* host = structureHost(lua);
-    lua_pushinteger(lua, cast(lua_Integer)(*host.builder.graph).siteHash(siteArgument(lua), partArgument(lua, SELF + 1)));
+    lua_pushinteger(lua, cast(lua_Integer) host.builder.graph.view.siteHash(siteArgument(lua), partArgument(lua, SELF + 1)));
     return 1;
 }
 
@@ -700,5 +701,5 @@ ClaimKey claimArgument(lua_State* lua, ref Graph graph) {
     if (part == SitePart.edge) {
         luaL_error(lua, "a site claims its vertex or face, not its edge");
     }
-    return graph.claimKeyOf(siteArgument(lua), part);
+    return graph.view.claimKeyOf(siteArgument(lua), part);
 }

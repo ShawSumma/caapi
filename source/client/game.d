@@ -1,27 +1,28 @@
 module client.game;
 
 import core.stdc.math : acoshf, atan2f, atanhf, coshf, fabsf, sinhf, tanhf;
+import base.array : Array;
+import base.units : Acceleration, Angle, Length, Speed, Time;
+import base.vector3 : ZERO_VECTOR, cross, dot, magnitude, negated, plus, rejectAlong, scaled;
+import client.arrivals : generateNow;
 import client.camera : Camera;
-import client.streaming : generateNow;
 import client.world : LocalWorld, Placement;
-import common.array : Array;
 import common.character.controller : CharacterInput, CharacterState, MovementMode, Mover, Slide, Stepped, movedBy, regionReach;
-import common.character.features : CellOverlap, Features, RequiredChunks, visitCells;
+import common.character.features : CellOverlap, CellRange, Features, LocalFrame, RequiredChunks, visitCells;
 import common.character.sweep : Capsule, sectionCenters;
-import common.graph : NodeId;
+import common.graph : Graph, NodeId;
 import common.material : Material;
-import common.math : MIsometry, MPoint, MVector;
-import common.node : ChunkSlot;
+import common.node : ChunkSlot, ChunkState;
 import common.position : Position;
 import common.settings : CHUNK_DIMENSION, CharacterConfig;
 import common.traversal : NearbyNode, NearbyScratch;
-import common.units : Acceleration, Angle, Length, Speed, Time;
-import common.vector3 : ZERO_VECTOR, cross, dot, magnitude, negated, plus, rejectAlong, scaled;
 import common.worldgen.blueprint : RouteStop;
 import common.worldgen.generation : NodeState, Worldgen;
 import common.worldgen.sky : ensureWorldsAt, gravityAt;
 import common.worldgen.spawn : clearSpawnPosition, collectChunksNear;
 import common.worldgen.structure : SiteFrame, columnPoint, rootSite, siteToNode, sitePlacement, spawnBefore;
+import geometry.honeycomb : Face;
+import geometry.lorentz : Motion, Point, Vec4;
 
 enum float STRUCTURE_SEARCH_RADIUS = 4.0f;
 enum uint MAX_BODY_SECTIONS = 64;
@@ -64,6 +65,39 @@ float axisValue(bool isHeld) {
         return 1.0f;
     } else {
         return 0.0f;
+    }
+}
+
+// A fresh chunk of a node whose building is on its way has been asked for; it is only waiting.
+struct UnloadedCount {
+    uint fresh;
+    uint generating;
+    uint dropped;
+    uint missingNodes;
+    uint awaitingBuilding;
+
+    void visitMissingNode(uint, Face) {
+        missingNodes += 1;
+    }
+
+    void visitChunk(ref const Graph graph, LocalFrame, ChunkSlot slot, CellRange) {
+        final switch (graph.chunks.at(slot).state) {
+            case ChunkState.fresh:
+                if (graph.structures.at(slot.slot).isBuildingQueued) {
+                    awaitingBuilding += 1;
+                } else {
+                    fresh += 1;
+                }
+                break;
+            case ChunkState.generating:
+                generating += 1;
+                break;
+            case ChunkState.dropped:
+                dropped += 1;
+                break;
+            case ChunkState.populated:
+                break;
+        }
     }
 }
 
@@ -133,8 +167,8 @@ struct Game {
     }
 
     void placeAtSpawn() {
-        if (world.graph.blueprint.hasEntrance) {
-            RouteStop entrance = world.graph.blueprint.entrance;
+        if (world.graph.structures.blueprint.hasEntrance) {
+            RouteStop entrance = world.graph.structures.blueprint.entrance;
             placeAt(sitePosition(entrance.site, spawnBefore(world.graph.layout, entrance.spot)), bodyExtent() + character.skin);
         } else {
             Position spawn = world.graph.clearSpawnPosition(bodyReach().value);
@@ -143,7 +177,7 @@ struct Game {
         }
         settleToGround();
         resetView();
-        if (world.graph.blueprint.hasEntrance) {
+        if (world.graph.structures.blueprint.hasEntrance) {
             camera.turn(yawToward(directionToDoor()), Angle(0));
         } else if (world.graph.worldgen.groundTiltRadians() != 0) {
             camera.turn(yawToward(uphillDirection()), Angle(0));
@@ -157,7 +191,7 @@ struct Game {
         Slide drop;
         while (!drop.hasLanded) {
             generateAround(characterState.position, reach);
-            world.graph.ensureNodeState(characterState.position.node);
+            world.graph.ensureState(world.graph.slotOf(characterState.position.node));
             characterState.up = world.graph.gravityAt(characterState.position).up;
             characterState.pull = characterState.up;
             features.collect(world.graph, characterState.position, reach);
@@ -181,11 +215,10 @@ struct Game {
 
     Length currentAltitude() {
         Position position = characterState.position;
-        world.graph.ensureNodeState(position.node);
-        return Length(world.graph.nodeState(position.node).surface.distanceTo(position.local * MPoint!float.origin()));
+        return Length(world.graph.ensureState(world.graph.slotOf(position.node)).surface.distanceTo(position.local * Point!float.origin()));
     }
 
-    MIsometry!float nodeTransform(NodeId node, float radius) {
+    Motion!float nodeTransform(NodeId node, float radius) {
         NearbyScratch scratch;
         NearbyNode[] nearby = scratch.collectAll(world.graph, characterState.position, radius);
         size_t index = 0;
@@ -193,21 +226,20 @@ struct Game {
             index += 1;
         }
         assert(index < nearby.length);
-        MIsometry!float transform = nearby[index].transform;
+        Motion!float transform = nearby[index].transform;
         scratch.release();
         return transform;
     }
 
     float[3] directionToDoor() {
-        RouteStop entrance = world.graph.blueprint.entrance;
-        MPoint!float door = sitePlacement(entrance.site, world.graph.layout) * columnPoint(world.graph.layout, entrance.spot);
-        MIsometry!float siteToBody = characterState.position.local.inverse() * nodeTransform(world.graph.idAt(entrance.site.node), STRUCTURE_SEARCH_RADIUS);
-        return (siteToBody * door).vec.xyz();
+        RouteStop entrance = world.graph.structures.blueprint.entrance;
+        Point!float door = sitePlacement(entrance.site, world.graph.layout) * columnPoint(world.graph.layout, entrance.spot);
+        Motion!float siteToBody = characterState.position.local.inverse() * nodeTransform(world.graph.idAt(entrance.site.node), STRUCTURE_SEARCH_RADIUS);
+        return (siteToBody * door).v.spatial();
     }
 
     float[3] uphillDirection() const {
-        const(NodeState)* state = world.graph.nodeState(characterState.position.node);
-        return (characterState.position.local.inverse() * state.reference.scaledNormal).xyz().negated;
+        return world.graph.stateAt(world.graph.slotOf(characterState.position.node)).reference.upAt(characterState.position.local).negated;
     }
 
     Angle yawToward(float[3] direction) const {
@@ -217,45 +249,45 @@ struct Game {
     }
 
     void enterStructure(Length height) {
-        placeAt(sitePosition(rootSite(world.graph.anchorSlot), MPoint!float(MVector!float([0, sinhf(height.value), 0, coshf(height.value)]))), Length(0));
+        placeAt(sitePosition(rootSite(world.graph.anchorSlot), Point!float(Vec4!float([0, sinhf(height.value), 0, coshf(height.value)]))), Length(0));
     }
 
-    Position sitePosition(SiteFrame site, MPoint!float inSite) {
-        MPoint!float point = sitePlacement(site, world.graph.layout) * inSite;
-        return world.graph.ensureNormalized(Position(world.graph.idAt(site.node), MIsometry!float.fromTranslation(MPoint!float.origin(), point)));
+    Position sitePosition(SiteFrame site, Point!float inSite) {
+        Point!float point = sitePlacement(site, world.graph.layout) * inSite;
+        return world.graph.ensureNormalized(Position(world.graph.idAt(site.node), Motion!float.shiftTo(point)));
     }
 
     void enterRoute() {
-        RouteStop stop = world.graph.blueprint.route.ptr[0];
+        RouteStop stop = world.graph.structures.blueprint.route.ptr[0];
         placeAt(sitePosition(stop.site, columnPoint(world.graph.layout, stop.spot)), bodyExtent() + character.skin);
     }
 
-    RouteWaypoint routeWaypoint(size_t index) const {
-        if (index >= world.graph.blueprint.route.length) {
+    RouteWaypoint routeWaypoint(size_t index) {
+        if (index >= world.graph.structures.blueprint.route.length) {
             return RouteWaypoint.init;
         } else {
-            RouteStop stop = world.graph.blueprint.route.ptr[index];
-            MIsometry!float siteToBody = world.graph.siteToNode(stop.site, world.graph.slotOf(characterState.position.node));
+            RouteStop stop = world.graph.structures.blueprint.route.ptr[index];
+            Motion!float siteToBody = world.graph.view.siteToNode(stop.site, world.graph.slotOf(characterState.position.node));
             return waypointAt(siteToBody * columnPoint(world.graph.layout, stop.spot));
         }
     }
 
-    RouteWaypoint waypointAt(MPoint!float floor) const {
-        MVector!float local = (characterState.position.local.inverse() * floor).vec;
-        float[3] direction = local.xyz();
+    RouteWaypoint waypointAt(Point!float floor) const {
+        Vec4!float local = (characterState.position.local.inverse() * floor).v;
+        float[3] direction = local.spatial();
         float length = direction.magnitude;
-        float[3] toFloor = direction.scaled(acoshf(local.data[3]) / length);
+        float[3] toFloor = direction.scaled(acoshf(local.c[3]) / length);
         float[3] fromFeet = toFloor.plus(characterState.up.scaled(bodyExtent().value));
         return RouteWaypoint(yawToward(toFloor), Length(fromFeet.rejectAlong(characterState.up).magnitude), Length(fromFeet.dot(characterState.up)), true);
     }
 
     void placeAt(Position target, Length lift) {
-        world.graph.ensureNodeState(target.node);
-        world.graph.ensureWorldsAt(world.graph.slotOf(target.node));
+        world.graph.ensureState(world.graph.slotOf(target.node));
+        world.graph.view.ensureWorldsAt(world.graph.slotOf(target.node));
         float[3] up = world.graph.gravityAt(target).up;
-        Position lifted = world.graph.ensureNormalized(Position(target.node, (target.local * MIsometry!float.fromDisplacement(up.scaled(lift.value))).renormalized()));
-        world.graph.ensureNodeState(lifted.node);
-        world.graph.ensureWorldsAt(world.graph.slotOf(lifted.node));
+        Position lifted = world.graph.ensureNormalized(Position(target.node, (target.local * Motion!float.shift(up.scaled(lift.value))).orthonormalized()));
+        world.graph.ensureState(world.graph.slotOf(lifted.node));
+        world.graph.view.ensureWorldsAt(world.graph.slotOf(lifted.node));
         float[3] liftedUp = world.graph.gravityAt(lifted).up;
         characterState = CharacterState(lifted, ZERO_VECTOR, characterState.groundNormal, liftedUp, liftedUp, false);
         resetView();
@@ -280,7 +312,7 @@ struct Game {
 
     bool placeBlock() {
         Placement placement = world.placementTarget();
-        if (placement.isFound && !isBodyOverlapping(ChunkSlot(world.graph.slotOf(placement.chunk.node), placement.chunk.vertex), placement)) {
+        if (placement.isFound && !isBodyOverlapping(ChunkSlot(world.graph.slotOf(placement.chunk.node), placement.chunk.corner), placement)) {
             return world.setVoxel(placement.chunk, placement.coords, MATERIAL_PALETTE[materialIndex]);
         } else {
             return false;
@@ -300,7 +332,7 @@ struct Game {
     }
 
     void followBody() {
-        MIsometry!float eye = MIsometry!float.fromDisplacement(characterState.up.scaled(camera.eyeOffset.value));
+        Motion!float eye = Motion!float.shift(characterState.up.scaled(camera.eyeOffset.value));
         camera.follow(characterState.position, eye, characterState.up);
         camera.levelRoll();
         camera.holdPitch();
@@ -327,6 +359,20 @@ struct Game {
             world.update(false);
         }
         time = time + dt;
+    }
+
+    UnloadedCount unloadedWithin(Length radius) const {
+        UnloadedCount counted;
+        visitCells(world.graph, characterState.position, radius, counted);
+        return counted;
+    }
+
+    bool isLoadedAround() const {
+        Features features;
+        features.collect(world.graph, characterState.position, regionReach(character));
+        bool isLoaded = features.isLoaded;
+        features.release();
+        return isLoaded;
     }
 
     Stepped runCharacter(CharacterInput input, Time dt) {

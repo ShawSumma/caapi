@@ -1,8 +1,8 @@
-module common.allocator;
+module base.allocator;
 
 import core.bitop : bsr;
-import common.array : Array;
-import common.hashmap : HashMap;
+import base.array : Array;
+import base.hashmap : HashMap;
 
 enum uint TEST_CAPACITY = 100;
 enum uint NO_RANGE = uint.max;

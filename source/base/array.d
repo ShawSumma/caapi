@@ -1,4 +1,4 @@
-module common.array;
+module base.array;
 
 import core.stdc.stdlib : free, realloc;
 import core.stdc.string : memcpy, memset;

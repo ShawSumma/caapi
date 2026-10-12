@@ -1,4 +1,4 @@
-module common.units;
+module base.units;
 
 enum float TEST_TOLERANCE = 1e-6f;
 

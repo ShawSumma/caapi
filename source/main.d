@@ -7,6 +7,10 @@ import core.stdc.string : strcmp;
 import core.sys.posix.sys.resource : RUSAGE_SELF, getrusage, rusage;
 import core.sys.posix.time : nanosleep, timespec;
 import bindings.platform : Atom, Button1, Button3, ButtonPress, ClientMessage, CurrentTime, Cursor, Display, False, FocusOut, GenericEvent, GrabModeAsync, GrabSuccess, KeyPress, KeyRelease, KeySym, Pixmap, Success, True, UnmapNotify, VkExtent2D, Window, XBlackPixel, XCloseDisplay, XColor, XCreateBitmapFromData, XCreatePixmapCursor, XCreateSimpleWindow, XDefaultScreen, XDestroyWindow, XDisplayHeight, XDisplayWidth, XEvent, XFlush, XFreeCursor, XFreeEventData, XFreePixmap, XGenericEventCookie, XGetEventData, XGrabPointer, XIAllMasterDevices, XIDeviceInfo, XIEventMask, XIFreeDeviceInfo, XIModeAbsolute, XIQueryDevice, XIQueryVersion, XIRawEvent, XISelectEvents, XIValuatorClass, XIValuatorClassInfo, XI_DeviceChanged, XI_RawMotion, XInternAtom, XK_1, XK_9, XK_Escape, XK_Down, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_n, XK_s, XK_space, XK_v, XK_w, XLookupKeysym, XMapWindow, XNextEvent, XOpenDisplay, XPending, XQueryExtension, XRootWindow, XSelectInput, XSetWMProtocols, XStoreName, XUngrabPointer, XkbSetDetectableAutoRepeat;
+import base.clock : MILLISECONDS_PER_SECOND, NANOSECONDS_PER_SECOND, PhaseTimes, nowSeconds, threadCpuMilliseconds;
+import base.crash : reportCrashes;
+import base.names : ENUM_NAMES;
+import base.units : Angle, AngularSpeed, Time;
 import client.arguments : StartupError, FlagValue, NumberArgument, WorldgenArgument;
 import client.config : ClientConfig;
 import client.game : FrameInput, Game, KEY_COUNT, Key, MATERIAL_PALETTE, axisValue;
@@ -17,16 +21,16 @@ import client.script : ScriptHost, ScriptRecorder;
 import client.structures : StructureProblem, growthProblem, placeStructure, tileCounts;
 import client.world : LocalWorld, RENDER_RADIUS, StepPhases;
 import common.character.controller : MovementMode;
-import common.clock : MILLISECONDS_PER_SECOND, NANOSECONDS_PER_SECOND, PhaseTimes, nowSeconds, threadCpuMilliseconds;
-import common.dodeca : VERTEX_COUNT;
 import common.graph : Graph, Node;
 import common.material : Material;
-import common.names : ENUM_NAMES;
-import common.node : Chunk, ChunkState;
+import common.node : Chunk, ChunkState, cellCount;
 import common.settings : CHUNK_DIMENSION;
-import common.units : Angle, AngularSpeed, Time;
-import common.worldgen.blueprint : Brush;
-import common.worldgen.generation : Worldgen;
+import common.worldgen.blueprint : Blueprint, Brush, LineRun, RunRef;
+import common.worldgen.building : Building;
+import common.worldgen.generation : NodeState, Worldgen;
+import common.worldgen.sky : NodeWorlds;
+import common.worldgen.store : NodeStructure;
+import geometry.honeycomb : CORNER_COUNT;
 
 enum uint WINDOW_WIDTH = 1280;
 enum uint WINDOW_HEIGHT = 720;
@@ -768,14 +772,14 @@ void measureLoad(FILE* report, ref Renderer renderer, ref Game game) {
     } while (renderer.meshBacklog() > 0 || !game.world.isWorldgenSettled());
     double elapsed = nowSeconds() - start;
     uint dense = 0;
-    foreach (index; 0 .. cast(size_t) game.world.graph.blockCount * VERTEX_COUNT) {
-        if (!game.world.graph.chunks.at(index).voxels.isSolid()) {
+    foreach (index; 0 .. cast(size_t) game.world.graph.chunks.blockCount * CORNER_COUNT) {
+        if (!game.world.graph.chunks.records.at(index).voxels.isUniform()) {
             dense += 1;
         }
     }
-    fprintf(report, "bench-load frames=%u wall=%.2fs nodes=%u dense_chunks=%u meshed=%u faces=%u\n", frames, elapsed, game.world.graph.nodeCount, dense, renderer.meshes.meshedChunks, renderer.meshes.allocator.used());
+    fprintf(report, "bench-load frames=%u wall=%.2fs nodes=%u dense_chunks=%u meshed=%u faces=%u\n", frames, elapsed, game.world.graph.slotCount, dense, renderer.meshes.meshedChunks, renderer.meshes.allocator.used());
     fprintf(report, "nearby set complete at frame %u, worldgen settled at frame %u, meshing done at frame %u\n", nearbyFrame, generatedFrame, frames);
-    printMemory(report, game.world.graph);
+    printMemory(report, game.world);
     printWorldStats(report, game.world);
     fprintf(report, "frame avg=%.2fms worst=%.2fms\n", frame.averageMs(), frame.worstMs);
     fprintf(report, "step avg=%.2fms worst=%.2fms, of which main thread cpu avg=%.2fms\n", step.averageMs(), step.worstMs, stepCpu.averageMs());
@@ -786,7 +790,7 @@ void measureLoad(FILE* report, ref Renderer renderer, ref Game game) {
 void measureFlight(FILE* report, ref Renderer renderer, ref Game game) {
     game.mode = MovementMode.noclip;
     foreach (leg; 0 .. BENCH_FLIGHT_LEGS) {
-        fprintf(report, "flight leg %u from depth %u:\n", leg + 1, game.world.graph.nodeAt(game.world.graph.slotOf(game.characterState.position.node)).depth);
+        fprintf(report, "flight leg %u from depth %u:\n", leg + 1, game.world.graph.depthOf(game.world.graph.slotOf(game.characterState.position.node)));
         measureLeg(report, renderer, game);
         fflush(report);
     }
@@ -823,75 +827,69 @@ void measureLeg(FILE* report, ref Renderer renderer, ref Game game) {
     fprintf(report, "moving step avg=%.2fms worst=%.2fms (main thread cpu avg=%.2fms), render avg=%.2fms worst=%.2fms\n", movingStep.averageMs(), movingStep.worstMs, stepCpu.averageMs(), movingRender.averageMs(), movingRender.worstMs);
     breakdown.print(report);
     fprintf(report, "  drawable chunks %u, %zu of them waiting for their node\n", renderer.meshes.drawableCount, renderer.meshes.unlisted.length);
-    printMemory(report, game.world.graph);
+    printMemory(report, game.world);
     printWorldStats(report, game.world);
 }
 
 void printWorldStats(FILE* report, ref const LocalWorld world) {
     fprintf(report, "evicted %u nodes, dropped %u far chunks and %u tiles\n", world.evictor.evicted, world.evictor.dropped, world.evictor.droppedTiles);
-    fprintf(report, "step phases avg/worst: prepare %.2f/%.2fms ", world.phases.prepare.averageMs(), world.phases.prepare.worstMs);
+    fprintf(report, "step phases avg/worst: paint ahead %.2f/%.2fms ", world.phases.paint.averageMs(), world.phases.paint.worstMs);
     fprintf(report, "nearby %.2f/%.2fms (cpu %.2f) ", world.phases.nearby.averageMs(), world.phases.nearby.worstMs, world.phases.nearbyCpu.averageMs());
     fprintf(report, "streamer %.2f/%.2fms (cpu %.2f) ", world.phases.streamer.averageMs(), world.phases.streamer.worstMs, world.phases.streamerCpu.averageMs());
     fprintf(report, "evict %.2f/%.2fms\n", world.phases.evict.averageMs(), world.phases.evict.worstMs);
     fprintf(report, "parallel jobs %u, main waited %.0fms for other threads to finish them\n", world.streamer.pool.runs, world.streamer.pool.waitedMs);
     uint[2] tiles = tileCounts(world.graph);
-    fprintf(report, "tiles painted ahead on all threads %u, painted when needed %u\n", tiles[0], tiles[1]);    fprintf(report, "nearby %zu nodes, %u published, %u recoveries (%.0fms), %.0fms sliced\n", world.cachedNodes.length, world.nearbyStats.publishes, world.nearbyStats.recoveries, world.nearbyStats.recoveryMilliseconds, world.nearbyStats.slicedMilliseconds);
+    fprintf(report, "tiles painted ahead on all threads %u, painted when needed %u\n", tiles[0], tiles[1]);
+    fprintf(report, "nearby %zu nodes, %u published, %u recoveries (%.0fms), %.0fms sliced\n", world.cachedNodes.length, world.nearbyStats.publishes, world.nearbyStats.recoveries, world.nearbyStats.recoveryMilliseconds, world.nearbyStats.slicedMilliseconds);
+    fprintf(report, "nearby sets grown from the last %u, keeping %zu nodes as they were and expanding %zu again\n", world.nearbyStats.grown, world.nearbyStats.kept, world.nearbyStats.reexpanded);
 }
 
-void printMemory(FILE* report, ref const Graph graph) {
+void printMemory(FILE* report, ref const LocalWorld world) {
+    const(Graph)* graph = &world.graph;
     size_t buildings = 0;
     size_t buildingBytes = 0;
-    foreach (slot; 0 .. graph.nodeCount) {
-        if (graph.nodeAt(slot).hasBuilding) {
-            buildings += 1;
-            buildingBytes += graph.nodeAt(slot).building.paintBytes();
-        }
-    }
-    size_t denseBytes = 0;
-    foreach (index; 0 .. cast(size_t) graph.blockCount * VERTEX_COUNT) {
-        denseBytes += graph.chunks.at(index).voxels.denseData.length * Material.sizeof;
-    }
     size_t holding = 0;
     size_t stated = 0;
     size_t touched = 0;
     size_t referenced = 0;
     size_t parents = 0;
     size_t recent = 0;
-    foreach (slot; 0 .. graph.nodeCount) {
+    foreach (slot; 0 .. graph.slotCount) {
         const(Node)* node = graph.nodeAt(slot);
-        if (graph.hasChunks(slot)) {
-            holding += 1;
+        const(Building)* building = graph.structures.buildingAt(slot);
+        if (building !is null) {
+            buildings += 1;
+            buildingBytes += building.paintBytes();
         }
-        if (node.hasState) {
-            stated += 1;
-        }
-        if (node.touchLength > 0) {
-            touched += 1;
-        }
-        if (node.references > 0) {
-            referenced += 1;
-        }
-        if (node.liveChildren > 0) {
-            parents += 1;
-        }
-        if (node.isRecent) {
-            recent += 1;
+        holding += graph.chunks.has(slot);
+        stated += node.hasState;
+        touched += graph.structures.touchesAt(slot).length > 0;
+        referenced += node.references > 0;
+        parents += node.liveChildren > 0;
+        recent += slot < world.evictor.isRecent.length && world.evictor.isRecent.ptr[slot];
+    }
+    size_t denseBytes = 0;
+    foreach (index; 0 .. cast(size_t) graph.chunks.blockCount * CORNER_COUNT) {
+        if (!graph.chunks.records.at(index).voxels.isUniform()) {
+            denseBytes += cellCount(graph.layout.dimension) * Material.sizeof;
         }
     }
     fprintf(report, "nodes holding chunks=%zu with state=%zu, structure-touched=%zu referenced=%zu with children=%zu recent=%zu\n", holding, stated, touched, referenced, parents, recent);
     rusage usage;
     getrusage(RUSAGE_SELF, &usage);
-    size_t slabBytes = cast(size_t) graph.nodeCount * Node.sizeof + cast(size_t) graph.blockCount * VERTEX_COUNT * Chunk.sizeof;
-    fprintf(report, "memory: rss now=%zuMB peak=%ldMB nodes=%u of %u slots, %u chunk blocks (%zuMB) buildings=%zu (%zuMB) dense voxels %zuMB\n", residentBytes() / BYTES_PER_MEGABYTE, usage.ru_maxrss / KILOBYTES_PER_MEGABYTE, graph.liveCount, graph.nodeCount, graph.blockCount, slabBytes / BYTES_PER_MEGABYTE, buildings, buildingBytes / BYTES_PER_MEGABYTE, denseBytes / BYTES_PER_MEGABYTE);
-    size_t brushBytes = 0;
-    foreach (ref painted; graph.blueprint.brushes.slice()) {
-        brushBytes += painted.capacity * Brush.sizeof;
+    size_t nodeBytes = cast(size_t) graph.slotCount * (Node.sizeof + NodeState.sizeof + NodeStructure.sizeof + NodeWorlds.sizeof + uint.sizeof);
+    size_t chunkBytes = cast(size_t) graph.chunks.blockCount * CORNER_COUNT * Chunk.sizeof;
+    fprintf(report, "memory: rss now=%zuMB peak=%ldMB nodes=%u of %u slots (%zuMB), %u chunk blocks (%zuMB) buildings=%zu (%zuMB) dense voxels %zuMB\n", residentBytes() / BYTES_PER_MEGABYTE, usage.ru_maxrss / KILOBYTES_PER_MEGABYTE, graph.liveCount, graph.slotCount, nodeBytes / BYTES_PER_MEGABYTE, graph.chunks.blockCount, chunkBytes / BYTES_PER_MEGABYTE, buildings, buildingBytes / BYTES_PER_MEGABYTE, denseBytes / BYTES_PER_MEGABYTE);
+    const(Blueprint)* blueprint = &graph.structures.blueprint;
+    size_t brushBytes = blueprint.placed.brushes.capacity * Brush.sizeof + blueprint.placed.runs.capacity * LineRun.sizeof;
+    foreach (ref tile; blueprint.tiles.slice()) {
+        brushBytes += tile.painted.brushes.capacity * Brush.sizeof + tile.painted.runs.capacity * LineRun.sizeof;
     }
-    size_t brushes = 0;
-    foreach (ref painted; graph.blueprint.brushes.slice()) {
-        brushes += painted.length;
+    size_t runBytes = 0;
+    foreach (ref listed; blueprint.runsOn.slice()) {
+        runBytes += listed.capacity * RunRef.sizeof;
     }
-    fprintf(report, "blueprint: %zu lines, %zu brushes (%zuMB), %zu tiles, %u painted again\n", graph.blueprint.lines.length, brushes, brushBytes / BYTES_PER_MEGABYTE, graph.blueprint.tiles.length, graph.blueprint.restoredTiles);
+    fprintf(report, "blueprint: %zu lines, %zu brushes (%zuMB, line runs %zuMB), %zu tiles, %u painted again\n", blueprint.lines.length, blueprint.brushTotal(), brushBytes / BYTES_PER_MEGABYTE, runBytes / BYTES_PER_MEGABYTE, blueprint.tiles.length, blueprint.restoredTiles);
 }
 
 size_t residentBytes() {
@@ -929,6 +927,7 @@ int runWindowed(Arguments arguments) {
 }
 
 extern (C) int main(int argc, char** argv) {
+    reportCrashes();
     Arguments arguments = Arguments.fromArgv(argc, argv);
     if (arguments.error.isPresent()) {
         arguments.error.report(argv[0]);

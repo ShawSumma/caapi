@@ -1,14 +1,16 @@
 module common.worldgen.blueprint;
 
-import common.array : Array;
-import common.dodeca : SIDE_COUNT, Side, VERTEX_COUNT, Vertex;
+import base.array : Array;
+import base.hashmap : HashMap;
+import base.numbers : higherOf, lowerOf;
 import common.graph : Graph, NodeId;
-import common.hashmap : HashMap;
 import common.material : Material;
 import common.worldgen.structure : CanonicalSite, ClaimKey, ColumnSpot, LineTransform, PAINT_REACH, SiteFrame, SlotTouch, addPendingTouch, aroundEdge, canonicalOf, edgeCells, isEndless, seedTouch, walkedTouch;
+import geometry.honeycomb : Corner, FACE_COUNT, Face;
 
 enum size_t MAX_MATERIALS = ubyte.max;
 enum ulong LINE_HASH_MULTIPLIER = 0x9E3779B97F4A7C15;
+enum uint PLACED_RECORD = uint.max;
 
 struct Paint {
     ubyte material;
@@ -67,19 +69,19 @@ struct LineSpec {
     int lowest;
     int highest;
     uint node;
-    Vertex lower;
-    Side xSide;
-    Side ySide;
+    Corner lower;
+    Face xSide;
+    Face ySide;
 }
 
 struct LineKey {
     NodeId node;
-    Vertex lower;
-    Side xSide;
-    Side ySide;
+    Corner lower;
+    Face xSide;
+    Face ySide;
 
     size_t toHash() const {
-        return node.toHash() ^ ((cast(size_t) lower * SIDE_COUNT + xSide) * SIDE_COUNT + ySide);
+        return node.toHash() ^ ((cast(size_t) lower * FACE_COUNT + xSide) * FACE_COUNT + ySide);
     }
 }
 
@@ -97,14 +99,36 @@ struct RouteStop {
     ColumnSpot spot;
 }
 
-// One tile call's brushes carry consecutive orders, so a tile can be dropped from its lines and painted again later:
-// tiles decide everything from site hashes, and the touches they recorded stay.
+// A stretch of one painter's brushes that all lie on one line.
+struct LineRun {
+    uint line;
+    uint first;
+    uint count;
+}
+
+// Brushes kept by whoever painted them, in runs by line.
+struct PaintedBrushes {
+    Array!Brush brushes;
+    Array!LineRun runs;
+
+    void release() {
+        brushes.release();
+        runs.release();
+    }
+}
+
+// A run by its painter, a tile's record or PLACED_RECORD for placed structures, and its place among their runs.
+struct RunRef {
+    uint record;
+    uint run;
+}
+
+// A tile keeps the brushes it painted, so it can be dropped and painted again later: tiles decide everything from
+// site hashes, and the touches they recorded stay.
 struct TileRecord {
-    Array!uint lines;
+    PaintedBrushes painted;
     NodeId face;
     double lastUse = 0;
-    uint firstOrder;
-    uint endOrder;
     bool isDropped;
 }
 
@@ -141,12 +165,15 @@ enum PaintResult : ubyte {
     behind,
 }
 
+// Each line lists the runs painted on it, so the brushes a node needs are found from its lines alone, and dropping a
+// tile only takes its own runs off the lines it painted.
 struct Blueprint {
     Array!LineSpec lines;
-    Array!(Array!Brush) brushes;
+    Array!(Array!RunRef) runsOn;
+    PaintedBrushes placed;
+    Array!TileRecord tiles;
     Array!RouteStop route;
     Array!Material materials;
-    Array!TileRecord tiles;
     HashMap!(LineKey, uint) lineIndex;
     HashMap!(LineEdge, bool) touchedEdges;
     HashMap!(ClaimKey, bool) claims;
@@ -172,7 +199,7 @@ struct Blueprint {
         if (found is null) {
             uint index = cast(uint) lines.length;
             lines.append(spec);
-            brushes.append(Array!Brush.init);
+            runsOn.append(Array!RunRef.init);
             lineIndex.insert(key, index);
             return index;
         } else {
@@ -182,26 +209,66 @@ struct Blueprint {
     }
 
     uint addTile(NodeId face) {
-        tiles.append(TileRecord(Array!uint.init, face, travel, 0, 0, false));
+        tiles.append(TileRecord(PaintedBrushes.init, face, travel, false));
         return cast(uint)(tiles.length - 1);
+    }
+
+    ref inout(PaintedBrushes) paintedBy(uint record) inout return {
+        return record == PLACED_RECORD ? placed : tiles.ptr[record].painted;
+    }
+
+    // Brushes paint over those with lower orders, so orders follow the order things were painted in.
+    uint takeOrders(uint count) {
+        uint first = brushCount;
+        brushCount += count;
+        return first;
+    }
+
+    // A brush on the same line as its painter's last one joins that run.
+    void addBrush(uint record, uint line, Brush brush) {
+        PaintedBrushes* painted = &paintedBy(record);
+        if (painted.runs.length == 0 || painted.runs.ptr[painted.runs.length - 1].line != line) {
+            painted.runs.append(LineRun(line, cast(uint) painted.brushes.length, 0));
+            runsOn.ptr[line].append(RunRef(record, cast(uint)(painted.runs.length - 1)));
+        }
+        painted.runs.ptr[painted.runs.length - 1].count += 1;
+        painted.brushes.append(brush);
     }
 
     void dropTile(uint tile) {
         TileRecord* record = &tiles.ptr[tile];
-        foreach (line; record.lines.slice()) {
-            Array!Brush* painted = &brushes.ptr[line];
-            size_t kept = 0;
-            foreach (brush; painted.slice()) {
-                if (brush.order < record.firstOrder || brush.order >= record.endOrder) {
-                    painted.ptr[kept] = brush;
-                    kept += 1;
+        foreach (index, run; record.painted.runs.slice()) {
+            Array!RunRef* listed = &runsOn.ptr[run.line];
+            size_t at = 0;
+            while (listed.ptr[at].record != tile || listed.ptr[at].run != index) {
+                at += 1;
+            }
+            listed.length -= 1;
+            listed.ptr[at] = listed.ptr[listed.length];
+        }
+        record.painted.release();
+        record.isDropped = true;
+    }
+
+    // The brushes on a line whose heights reach into an edge level, in no particular order.
+    void collectBrushes(uint line, int level, ref Array!Brush into) const {
+        foreach (listed; runsOn.ptr[line].slice()) {
+            const(PaintedBrushes)* painted = &paintedBy(listed.record);
+            LineRun run = painted.runs.ptr[listed.run];
+            foreach (brush; painted.brushes.ptr[run.first .. run.first + run.count]) {
+                if (edgeOf(brush.box.low[2], dimension) <= level && edgeOf(brush.box.high[2], dimension) >= level) {
+                    into.append(brush);
                 }
             }
-            painted.length = kept;
-            painted.shrink();
         }
-        record.lines.release();
-        record.isDropped = true;
+    }
+
+    size_t brushTotal() const {
+        size_t total = placed.brushes.length;
+        foreach (ref tile; tiles.slice()) {
+            total += tile.painted.brushes.length;
+        }
+        return total;
     }
 
     ubyte paintOf(Material material) {
@@ -231,17 +298,18 @@ struct Blueprint {
     }
 
     void release() {
-        foreach (ref painted; brushes.slice()) {
-            painted.release();
-        }
         foreach (ref tile; tiles.slice()) {
-            tile.lines.release();
+            tile.painted.release();
+        }
+        foreach (ref listed; runsOn.slice()) {
+            listed.release();
         }
         lines.release();
-        brushes.release();
+        runsOn.release();
+        placed.release();
+        tiles.release();
         route.release();
         materials.release();
-        tiles.release();
         lineIndex.release();
         touchedEdges.release();
         claims.release();
@@ -264,8 +332,12 @@ struct BlueprintBuilder {
         isGrowing = true;
     }
 
+    ref Blueprint blueprint() {
+        return graph.structures.blueprint;
+    }
+
     bool isOpen(uint slot) const {
-        return cast(int) graph.nodeAt(slot).depth >= paintLimit;
+        return cast(int) graph.depthOf(slot) >= paintLimit;
     }
 
     SiteLine* lineOf(SiteFrame site) {
@@ -274,8 +346,8 @@ struct BlueprintBuilder {
             index += 1;
         }
         if (index == known.length) {
-            CanonicalSite canonical = (*graph).canonicalOf(site);
-            known.append(SiteLine(site, canonical.transform, graph.blueprint.lineOf(canonical.line, graph.idAt(canonical.line.node))));
+            CanonicalSite canonical = graph.view.canonicalOf(site);
+            known.append(SiteLine(site, canonical.transform, blueprint.lineOf(canonical.line, graph.idAt(canonical.line.node))));
         }
         return &known.ptr[index];
     }
@@ -293,9 +365,7 @@ struct BlueprintBuilder {
             return PaintResult.behind;
         } else {
             record(*found, lowEdge, highEdge, isUnbounded);
-            Brush brush = Brush(canonical, canonicalRhythm(rhythm, found.transform, dimension), graph.blueprint.brushCount, Paint(graph.blueprint.paintOf(material), isIntoAirOnly));
-            graph.blueprint.brushes.ptr[found.line].append(brush);
-            graph.blueprint.brushCount += 1;
+            blueprint.addBrush(PLACED_RECORD, found.line, Brush(canonical, canonicalRhythm(rhythm, found.transform, dimension), blueprint.takeOrders(1), Paint(blueprint.paintOf(material), isIntoAirOnly)));
             return PaintResult.painted;
         }
     }
@@ -305,13 +375,13 @@ struct BlueprintBuilder {
         if (found.open.contains(lowEdge, highEdge)) {
             return true;
         } else {
-            LineSpec spec = graph.blueprint.lines.ptr[found.line];
+            LineSpec spec = blueprint.lines.ptr[found.line];
             SlotTouch edge = seedTouch(spec, found.line);
             bool isClear = true;
             int level = lowEdge;
             while (isClear && level <= highEdge) {
-                edge = (*graph).walkedTouch(edge, spec, level);
-                foreach (around; (*graph).aroundEdge(edge, spec)) {
+                edge = graph.view.walkedTouch(edge, spec, level);
+                foreach (around; graph.view.aroundEdge(edge, spec)) {
                     isClear = isClear && isOpen(around.slot);
                 }
                 level += 1;
@@ -325,7 +395,7 @@ struct BlueprintBuilder {
 
     void record(ref SiteLine found, int lowEdge, int highEdge, bool isUnbounded) {
         uint line = found.line;
-        LineSpec spec = graph.blueprint.lines.ptr[line];
+        LineSpec spec = blueprint.lines.ptr[line];
         if (isUnbounded && !spec.isEndless()) {
             SlotTouch seed = seedTouch(spec, line);
             (*graph).addPendingTouch(seed.slot, seed.touch);
@@ -333,7 +403,7 @@ struct BlueprintBuilder {
             touchEdges(line, spec, lowEdge, highEdge);
             found.touched.include(lowEdge, highEdge);
         }
-        LineSpec* stored = &graph.blueprint.lines.ptr[line];
+        LineSpec* stored = &blueprint.lines.ptr[line];
         stored.lowest = lowerOf(spec.lowest, lowEdge);
         stored.highest = higherOf(spec.highest, highEdge);
     }
@@ -342,10 +412,10 @@ struct BlueprintBuilder {
         SlotTouch edge = seedTouch(spec, line);
         foreach (level; lowEdge .. highEdge + 1) {
             LineEdge key = LineEdge(line, level);
-            if (graph.blueprint.touchedEdges.find(key) is null) {
-                graph.blueprint.touchedEdges.insert(key, true);
-                edge = (*graph).walkedTouch(edge, spec, level);
-                foreach (around; (*graph).aroundEdge(edge, spec)) {
+            if (blueprint.touchedEdges.find(key) is null) {
+                blueprint.touchedEdges.insert(key, true);
+                edge = graph.view.walkedTouch(edge, spec, level);
+                foreach (around; graph.view.aroundEdge(edge, spec)) {
                     (*graph).addPendingTouch(around.slot, around.touch);
                 }
             }
@@ -353,20 +423,20 @@ struct BlueprintBuilder {
     }
 
     void stop(SiteFrame site, ColumnSpot spot) {
-        graph.blueprint.route.append(RouteStop(site, spot));
+        blueprint.route.append(RouteStop(site, spot));
         graph.reference(site.node);
     }
 
     void enter(SiteFrame site, ColumnSpot spot) {
-        if (!graph.blueprint.hasEntrance) {
-            graph.blueprint.entrance = RouteStop(site, spot);
-            graph.blueprint.hasEntrance = true;
+        if (!blueprint.hasEntrance) {
+            blueprint.entrance = RouteStop(site, spot);
+            blueprint.hasEntrance = true;
             graph.reference(site.node);
         }
     }
 
     bool claim(ClaimKey key) {
-        immutable bool isNewlyClaimed = graph.blueprint.claim(key);
+        immutable bool isNewlyClaimed = blueprint.claim(key);
         if (isNewlyClaimed) {
             graph.reference(key.slot);
         }
@@ -449,22 +519,6 @@ int floorDivision(int value, int divisor) {
         quotient -= 1;
     }
     return quotient;
-}
-
-int lowerOf(int a, int b) {
-    if (a < b) {
-        return a;
-    } else {
-        return b;
-    }
-}
-
-int higherOf(int a, int b) {
-    if (a > b) {
-        return a;
-    } else {
-        return b;
-    }
 }
 
 unittest {

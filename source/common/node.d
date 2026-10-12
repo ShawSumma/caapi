@@ -2,12 +2,10 @@ module common.node;
 
 import core.stdc.math : coshf, fabsf, floorf, logf, powf;
 import core.stdc.stdlib : free, malloc;
-import common.coords : CHUNK_DIRECTIONS, ChunkDirection, Coords;
-import common.dodeca : BOUNDING_SPHERE_RADIUS, NODE_VOLUME, VERTEX_COUNT, Vertex, vertexDualToChunkFactor;
+import base.numbers : higherOf, lowerOf;
 import common.graph : NodeId;
-import common.margins : CoordsWithMargins, MarginList, MarginTables, boundaryCoordWithMargins, clampToInterior, copyMargin, directionIndex, hasVoidnessOtherThan, marginCoord;
-import common.material : Material;
-import common.math : higherOf, lowerOf;
+import common.material : MATERIAL_COUNT, Material, isSeeThrough;
+import geometry.honeycomb : CORNER_COUNT, Corner, NODE_RADIUS, NODE_VOLUME, cubeScale;
 
 enum int OUTSIDE_GRID = -1;
 enum float DENSITY_EXPONENT = -4.0f / 3.0f;
@@ -21,35 +19,38 @@ enum ubyte TEST_DIMENSION = 4;
 
 struct ChunkId {
     NodeId node;
-    Vertex vertex;
+    Corner corner;
 }
 
 struct ChunkSlot {
     uint slot;
-    Vertex vertex;
+    Corner corner;
 
     static ChunkSlot fromIndex(size_t index) {
-        return ChunkSlot(cast(uint)(index / VERTEX_COUNT), cast(Vertex)(index % VERTEX_COUNT));
+        return ChunkSlot(cast(uint)(index / CORNER_COUNT), cast(Corner)(index % CORNER_COUNT));
     }
 }
 
+// Where a cube's cell walls sit. Cube coordinates run from 0 at the corner to 1 at the node's center, and the corner
+// frame's Klein coordinates are those scaled by the cube size. Cells shrink geometrically toward the center, where
+// the Klein coordinates stretch space least, so that every cell holds about the same volume.
 struct ChunkLayout {
-    float dualToChunkFactor;
+    float kleinToCube;
     float cellRatio;
-    float chunkSpan;
+    float cubeSpan;
     ubyte dimension;
 
     static ChunkLayout make(ubyte dimension) {
-        float cellRatio = powf(coshf(BOUNDING_SPHERE_RADIUS), DENSITY_EXPONENT / dimension);
-        return ChunkLayout(vertexDualToChunkFactor(), cellRatio, 1.0f - powf(cellRatio, dimension), dimension);
+        float cellRatio = powf(coshf(NODE_RADIUS), DENSITY_EXPONENT / dimension);
+        return ChunkLayout(1 / cubeScale(), cellRatio, 1.0f - powf(cellRatio, dimension), dimension);
     }
 
-    float gridToChunk(float gridCoord) const {
-        return (1.0f - powf(cellRatio, gridCoord)) / chunkSpan;
+    float gridToCube(float grid) const {
+        return (1.0f - powf(cellRatio, grid)) / cubeSpan;
     }
 
-    float chunkToGrid(float chunkCoord) const {
-        float remaining = 1.0f - chunkCoord * chunkSpan;
+    float cubeToGrid(float cube) const {
+        float remaining = 1.0f - cube * cubeSpan;
         if (remaining > 0) {
             return logf(remaining) / logf(cellRatio);
         } else {
@@ -57,26 +58,26 @@ struct ChunkLayout {
         }
     }
 
-    float gridToDual(float gridCoord) const {
-        return gridToChunk(gridCoord) / dualToChunkFactor;
+    float gridToKlein(float grid) const {
+        return gridToCube(grid) / kleinToCube;
     }
 
-    float dualToGrid(float dualCoord) const {
-        return chunkToGrid(dualCoord * dualToChunkFactor);
+    float kleinToGrid(float klein) const {
+        return cubeToGrid(klein * kleinToCube);
     }
 
     float[3] cellCenter(int[3] cell) const {
-        return [cellCenterCoord(cell[0]), cellCenterCoord(cell[1]), cellCenterCoord(cell[2])];
+        return [cellCenterAlong(cell[0]), cellCenterAlong(cell[1]), cellCenterAlong(cell[2])];
     }
 
-    float cellCenterCoord(int cell) const {
-        return gridToChunk(cell + 0.5f);
+    float cellCenterAlong(int cell) const {
+        return gridToCube(cell + 0.5f);
     }
 
-    int dualToVoxel(float dualCoord) const {
-        float floorGridCoord = floorf(dualToGrid(dualCoord));
-        if (floorGridCoord >= 0.0f && floorGridCoord < cast(float) dimension) {
-            return cast(int) floorGridCoord;
+    int kleinToCell(float klein) const {
+        float grid = floorf(kleinToGrid(klein));
+        if (grid >= 0.0f && grid < cast(float) dimension) {
+            return cast(int) grid;
         } else {
             return OUTSIDE_GRID;
         }
@@ -109,8 +110,8 @@ unittest {
     foreach (x; 0 .. VOLUME_TEST_DIMENSION) {
         foreach (y; 0 .. VOLUME_TEST_DIMENSION) {
             foreach (z; 0 .. VOLUME_TEST_DIMENSION) {
-                assert(fabsf(layout.chunkToGrid(layout.gridToChunk(x)) - x) < GRID_TOLERANCE);
-                float volume = kleinBoxVolume([layout.gridToDual(x), layout.gridToDual(y), layout.gridToDual(z)], [layout.gridToDual(x + 1), layout.gridToDual(y + 1), layout.gridToDual(z + 1)]);
+                assert(fabsf(layout.cubeToGrid(layout.gridToCube(x)) - x) < GRID_TOLERANCE);
+                float volume = kleinBoxVolume([layout.gridToKlein(x), layout.gridToKlein(y), layout.gridToKlein(z)], [layout.gridToKlein(x + 1), layout.gridToKlein(y + 1), layout.gridToKlein(z + 1)]);
                 smallest = lowerOf(smallest, volume);
                 largest = higherOf(largest, volume);
                 total += volume;
@@ -118,160 +119,103 @@ unittest {
         }
     }
     assert(largest / smallest < MAX_VOLUME_SPREAD);
-    assert(fabsf(total * VERTEX_COUNT / NODE_VOLUME - 1) < VOLUME_TOLERANCE);
+    assert(fabsf(total * CORNER_COUNT / NODE_VOLUME - 1) < VOLUME_TOLERANCE);
 }
 
-enum VoxelKind : ubyte {
-    solid,
-    dense,
+size_t cellCount(ubyte dimension) {
+    return cast(size_t) dimension * dimension * dimension;
 }
 
-Coords interiorCellAt(ubyte dimension, size_t cell) {
-    size_t row = cell / dimension;
-    return Coords([cast(ubyte)(cell % dimension), cast(ubyte)(row % dimension), cast(ubyte)(row / dimension)]);
+size_t cellIndex(ubyte dimension, uint x, uint y, uint z) {
+    return x + dimension * (y + cast(size_t) dimension * z);
 }
 
-CoordsWithMargins marginCellAt(ubyte dimension, size_t cell) {
-    size_t faceCells = cast(size_t) dimension * dimension;
-    ChunkDirection direction = CHUNK_DIRECTIONS[cell / faceCells];
-    size_t inFace = cell % faceCells;
-    return CoordsWithMargins.fromTuv(marginCoord(dimension, direction.sign), cast(ubyte)(inFace % dimension + 1), cast(ubyte)(inFace / dimension + 1), direction.axis);
-}
+// A chunk's cells: either a pointer to all of them, or the one material that fills the chunk. No allocation lives
+// below MATERIAL_COUNT, so a value that small is a fill material.
+struct Voxels {
+    size_t bits;
 
-struct VoxelData {
-    Material[] denseData;
-    VoxelKind kind;
-    Material solidMaterial;
-
-    static VoxelData fromMaterial(Material material) {
-        return VoxelData(null, VoxelKind.solid, material);
+    static Voxels filled(Material material) {
+        return Voxels(material);
     }
 
-    Material get(size_t index) const {
-        if (kind == VoxelKind.dense) {
-            return denseData[index];
+    bool isUniform() const {
+        return bits < MATERIAL_COUNT;
+    }
+
+    bool isFilledWith(Material material) const {
+        return bits == material;
+    }
+
+    // Chunks filled with something opaque show no faces of their own: every face on their border is drawn by the
+    // see-through neighbor in front of it.
+    bool isOpaqueFill() const {
+        return isUniform() && !isSeeThrough(cast(Material) bits);
+    }
+
+    Material fill() const {
+        assert(isUniform());
+        return cast(Material) bits;
+    }
+
+    Material at(size_t index) const {
+        if (isUniform()) {
+            return cast(Material) bits;
         } else {
-            return solidMaterial;
+            return (cast(const(Material)*) bits)[index];
         }
+    }
+
+    const(Material)[] cells(ubyte dimension) const {
+        assert(!isUniform());
+        return (cast(const(Material)*) bits)[0 .. cellCount(dimension)];
     }
 
     Material[] toDense(ubyte dimension) {
-        if (kind == VoxelKind.solid) {
-            size_t side = cast(size_t) dimension + 2;
-            size_t count = side * side * side;
-            Material* memory = cast(Material*) malloc(count * Material.sizeof);
-            denseData = memory[0 .. count];
-            foreach (i; 0 .. count) {
-                denseData[i] = solidMaterial;
+        size_t count = cellCount(dimension);
+        if (isUniform()) {
+            Material* memory = cast(Material*) malloc(count);
+            memory[0 .. count] = cast(Material) bits;
+            bits = cast(size_t) memory;
+        }
+        return (cast(Material*) bits)[0 .. count];
+    }
+
+    void compress(ubyte dimension) {
+        if (!isUniform()) {
+            const(Material)[] all = cells(dimension);
+            size_t index = 1;
+            while (index < all.length && all[index] == all[0]) {
+                index += 1;
             }
-            kind = VoxelKind.dense;
-        }
-        return denseData;
-    }
-
-    bool isSolid() const {
-        return kind == VoxelKind.solid;
-    }
-
-    bool isSolidVoid() const {
-        return kind == VoxelKind.solid && solidMaterial == Material.none;
-    }
-
-    bool isUniform(ubyte dimension) const {
-        Material first = get(Coords.init.toIndex(dimension));
-        size_t cellCount = cast(size_t) dimension * dimension * dimension;
-        size_t cell = 0;
-        while (cell < cellCount && get(interiorCellAt(dimension, cell).toIndex(dimension)) == first) {
-            cell += 1;
-        }
-        return cell == cellCount;
-    }
-
-    void compressUniform(ubyte dimension) {
-        if (kind == VoxelKind.dense && isUniform(dimension)) {
-            Material first = get(Coords.init.toIndex(dimension));
-            release();
-            this = VoxelData.fromMaterial(first);
-        }
-    }
-
-    void fixMargins(ref VoxelData neighbor, ref const MarginTables tables, Vertex vertex, ChunkDirection direction) {
-        size_t index = directionIndex(direction);
-        const(ushort)[] ownBoundary = tables.list(vertex, index, MarginList.ownBoundary);
-        const(ushort)[] theirBoundary = tables.list(vertex, index, MarginList.theirBoundary);
-        bool isOursStale = !isSolid() || tables.hasVoidnessOtherThan(neighbor, theirBoundary, solidMaterial == Material.none);
-        bool isTheirsStale = !neighbor.isSolid() || tables.hasVoidnessOtherThan(this, ownBoundary, neighbor.solidMaterial == Material.none);
-        if (isOursStale) {
-            toDense(tables.dimension);
-        }
-        if (isTheirsStale) {
-            neighbor.toDense(tables.dimension);
-        }
-        if (isOursStale) {
-            copyMargin(this, tables.list(vertex, index, MarginList.ownMargin), neighbor, theirBoundary);
-        }
-        if (isTheirsStale) {
-            copyMargin(neighbor, tables.list(vertex, index, MarginList.theirMargin), this, ownBoundary);
-        }
-    }
-
-    bool hasVoidInMargins(ubyte dimension) const {
-        if (isSolid()) {
-            return false;
-        } else {
-            size_t cellCount = CHUNK_DIRECTIONS.length * dimension * dimension;
-            size_t cell = 0;
-            while (cell < cellCount && get(marginCellAt(dimension, cell).toIndex(dimension)) != Material.none) {
-                cell += 1;
-            }
-            return cell < cellCount;
-        }
-    }
-
-    void initializeMargins(ubyte dimension) {
-        if (!isSolid()) {
-            Material[] data = toDense(dimension);
-            foreach (direction; CHUNK_DIRECTIONS) {
-                ubyte margin = marginCoord(dimension, direction.sign);
-                ubyte boundary = boundaryCoordWithMargins(dimension, direction.sign);
-                foreach (j; 0 .. dimension + 2) {
-                    foreach (i; 0 .. dimension + 2) {
-                        CoordsWithMargins boundaryCoords = CoordsWithMargins.fromTuv(boundary, clampToInterior(i, dimension), clampToInterior(j, dimension), direction.axis);
-                        CoordsWithMargins marginCoords = CoordsWithMargins.fromTuv(margin, cast(ubyte) i, cast(ubyte) j, direction.axis);
-                        data[marginCoords.toIndex(dimension)] = data[boundaryCoords.toIndex(dimension)];
-                    }
-                }
+            if (index == all.length) {
+                Material first = all[0];
+                release();
+                bits = first;
             }
         }
     }
 
     void release() {
-        if (kind == VoxelKind.dense) {
-            free(denseData.ptr);
+        if (!isUniform()) {
+            free(cast(void*) bits);
+            bits = Material.none;
         }
-        denseData = null;
-        kind = VoxelKind.solid;
     }
 }
 
 unittest {
-    MarginTables tables = MarginTables.make(TEST_DIMENSION);
-    VoxelData stone = VoxelData.fromMaterial(Material.granite);
-    VoxelData dirt = VoxelData.fromMaterial(Material.dirt);
-    stone.fixMargins(dirt, tables, Vertex.a, CHUNK_DIRECTIONS[0]);
-    assert(stone.isSolid() && dirt.isSolid());
-    VoxelData buried = VoxelData.fromMaterial(Material.dirt);
-    buried.toDense(TEST_DIMENSION);
-    buried.initializeMargins(TEST_DIMENSION);
-    stone.fixMargins(buried, tables, Vertex.a, CHUNK_DIRECTIONS[3]);
-    assert(stone.isSolid());
-    VoxelData empty = VoxelData.fromMaterial(Material.none);
-    stone.fixMargins(empty, tables, Vertex.a, CHUNK_DIRECTIONS[4]);
-    assert(!stone.isSolid() && !empty.isSolid());
+    Voxels stone = Voxels.filled(Material.granite);
+    assert(stone.isUniform() && stone.isOpaqueFill() && stone.at(5) == Material.granite);
+    Material[] cells = stone.toDense(TEST_DIMENSION);
+    assert(!stone.isUniform() && cells.length == cellCount(TEST_DIMENSION) && stone.at(5) == Material.granite);
+    stone.compress(TEST_DIMENSION);
+    assert(stone.isFilledWith(Material.granite));
+    stone.toDense(TEST_DIMENSION)[cellIndex(TEST_DIMENSION, 1, 2, 3)] = Material.glass;
+    stone.compress(TEST_DIMENSION);
+    assert(!stone.isUniform() && stone.at(cellIndex(TEST_DIMENSION, 1, 2, 3)) == Material.glass);
     stone.release();
-    empty.release();
-    buried.release();
-    tables.release();
+    assert(!Voxels.filled(Material.none).isOpaqueFill() && !Voxels.filled(Material.glass).isOpaqueFill());
 }
 
 enum ChunkState : ubyte {
@@ -287,24 +231,13 @@ enum Occupancy : ubyte {
     empty,
 }
 
-// Set only while a batch of arrived chunks is joined to its neighbors.
-enum Integration : ubyte {
-    none,
-    populating,
-    restoring,
-    adjacent,
-}
-
 struct Chunk {
-    VoxelData voxels;
+    Voxels voxels;
     ChunkState state;
     Occupancy predicted;
-    Integration integration;
     bool hasDeferredMaterials;
     bool isQueued;
     bool isEdited;
 }
 
-bool isArriving(Integration integration) {
-    return integration == Integration.populating || integration == Integration.restoring;
-}
+static assert(Chunk.sizeof == 16);

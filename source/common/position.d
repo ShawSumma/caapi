@@ -1,13 +1,13 @@
 module common.position;
 
 import common.graph : NodeId, ROOT_NODE;
-import common.math : MIsometry;
+import geometry.lorentz : Motion;
 
 struct Position {
     NodeId node;
-    MIsometry!float local;
+    Motion!float local;
 
     static Position origin() {
-        return Position(ROOT_NODE, MIsometry!float.identity());
+        return Position(ROOT_NODE, Motion!float.identity());
     }
 }

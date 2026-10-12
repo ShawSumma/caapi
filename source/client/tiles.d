@@ -1,23 +1,23 @@
 module client.tiles;
 
 import core.stdc.stdlib : calloc, free;
-import core.stdc.string : strlen;
+import core.stdc.string : memcpy, strlen;
 import bindings.lua : luaL_checkinteger, luaL_checklstring, luaL_checknumber, luaL_checktype, luaL_checkudata, luaL_error, luaL_newmetatable, lua_CFunction, lua_Integer, lua_State, lua_close, lua_createtable, lua_gettop, lua_pcallk, lua_pushboolean, lua_pushcclosure, lua_pushinteger, lua_pushlightuserdata, lua_rawgeti, lua_setfield, lua_settop, lua_tointegerx, lua_tolstring, lua_touserdata, lua_type;
 import client.lua : LUA_BELOW_TOP, LUA_FIRST_UPVALUE, LUA_REGISTRY, LUA_SECOND_UPVALUE, LUA_STATUS_OK, LUA_TOP, LUA_TYPE_FUNCTION, LuaName, SELF, TRACEBACK_INDEX, isNoneOrNil, luaTraceback, newSafeState, registerMethod;
 import client.structures : AIR, CHUNK_RESULTS, COLUMN_RESULTS, MESSAGE_CAPACITY, PLACED_FUNCTION, SITE_TYPE, SKY_FIELDS, SKY_TILE, STRUCTURE_ARGUMENTS, StructureProblem, TURN_UPVALUES, TileCall, boxArgument, columnOf, loadStructureChunk, materialArgument, packedCall, partArgument, pushSite, registerModules, rhythmArgument, siteArgument, spotArgument;
-import common.array : Array;
-import common.dodeca : Side;
+import base.array : Array;
+import base.hashmap : HashMap;
+import base.names : ENUM_NAMES;
+import base.numbers : higherOf, lowerOf;
+import base.parallel : Executor, ParallelJob;
 import common.graph : Graph, NO_SLOT, NodeId, ROOT_NODE;
-import common.hashmap : HashMap;
 import common.material : Material;
-import common.names : ENUM_NAMES;
-import common.parallel : Executor, ParallelJob;
 import common.view : GraphView, VIRTUAL;
-import common.worldgen.blueprint : Brush, CellBox, LevelRange, LineEdge, LineKey, LineSpec, Paint, PaintResult, Rhythm, RouteStop, TileRecord, canonicalBox, canonicalRhythm, edgeOf, higherOf, lowerOf;
+import common.worldgen.blueprint : Blueprint, Brush, CellBox, LevelRange, LineEdge, LineKey, LineSpec, Paint, PaintResult, Rhythm, RouteStop, TileRecord, canonicalBox, canonicalRhythm, edgeOf;
 import common.worldgen.generation : SplitMix, StructureWorld;
-import common.worldgen.sky : PLANET, SkyMeasure, World, balanceAlong, ensureWorldsAt, isPaintedBySky, makeWantedWorlds, measureOf, measuredWorld, storeMeasure, worldAt, worldGroundNodeOf;
+import common.worldgen.sky : PLANET, SkyMeasure, World, balanceAlong, ensureWorldsAt, isPaintedBySky, measureOf, measuredWorld, storeMeasure, worldGroundNodeOf;
 import common.worldgen.structure : CanonicalSite, ColumnSpot, EDGE_NODES, GROUND_RING, LineTouch, LineTransform, SiteFrame, SlotTouch, Turn, addPendingTouch, aroundEdge, canonicalOf, edgeCells, faceSite, forwarded, groundRing, seedTouch, siteHash, turned, walkedTouch;
-import common.worldgen.sky : applyDiscoveries;
+import geometry.honeycomb : Face;
 
 enum uint NO_RECORD = uint.max;
 enum size_t TILE_TASK_BUDGET = 256;
@@ -81,7 +81,7 @@ struct TilePainter {
     Array!BrushOutput brushes;
     Array!TouchOutput touches;
     Array!StopOutput stops;
-    Array!Side paths;
+    Array!Face paths;
     Array!TileOutput outputs;
     TileOutput current;
     bool isRestoring;
@@ -220,7 +220,7 @@ struct TileTask {
     uint pathLength;
     uint record;
     uint sky;
-    Side label;
+    Face label;
     bool isRestoring;
 }
 
@@ -230,7 +230,7 @@ struct PlannedFace {
     uint pathStart;
     uint pathLength;
     uint sky;
-    Side label;
+    Face label;
 }
 
 struct PlanResult {
@@ -247,7 +247,7 @@ struct MeasuredSky {
 
 struct PlanOutputs {
     Array!PlannedFace faces;
-    Array!Side paths;
+    Array!Face paths;
     Array!PlanResult results;
     Array!uint usedRecords;
     Array!MeasuredSky measures;
@@ -278,11 +278,11 @@ struct PlanOutputs {
 }
 
 // One per thread that runs tiles: its own Lua state, which ran the world's structure once to register the same tile
-// functions, and its own view of the graph.
+// functions. It reads the graph through the view of whichever thread runs its current call.
 struct TileHost {
     TilePainter painter;
     PlanOutputs plan;
-    GraphView view;
+    GraphView* view;
     Array!TileCall skyTiles;
     TileCall planetTile;
     SplitMix random;
@@ -293,8 +293,8 @@ struct TileHost {
     bool hasFailed;
     char[MESSAGE_CAPACITY] failure;
 
-    void build(ref const Graph graph, StructureWorld name, SiteFrame root, ulong seed) {
-        view = GraphView.over(graph);
+    void build(GraphView* threadView, StructureWorld name, SiteFrame root, ulong seed) {
+        view = threadView;
         lua = newSafeState();
         registerModules(lua);
         registerSiteType();
@@ -320,7 +320,7 @@ struct TileHost {
         if (length >= failure.length) {
             length = failure.length - 1;
         }
-        failure[0 .. length] = message[0 .. length];
+        memcpy(failure.ptr, message, length);
         failure[length] = 0;
     }
 
@@ -359,8 +359,8 @@ struct TileHost {
         return view.layout.dimension;
     }
 
-    void run(ref const Graph graph, ref const TileTask task, const(Side)[] path, uint index) {
-        view.graph = &graph;
+    void run(ref const Graph graph, GraphView* threadView, ref const TileTask task, const(Face)[] path, uint index) {
+        view = threadView;
         uint face = task.start;
         foreach (side; path) {
             face = view.ensureNeighborSlot(face, side);
@@ -370,7 +370,7 @@ struct TileHost {
         sky = task.sky;
         TileCall call = planetTile;
         if (task.sky != PLANET) {
-            call = skyTiles.ptr[graph.worldAt(task.sky).kind];
+            call = skyTiles.ptr[graph.skies.world(task.sky).kind];
         }
         lua_rawgeti(lua, LUA_REGISTRY, call.reference);
         int placed = lua_gettop(lua);
@@ -378,7 +378,7 @@ struct TileHost {
         lua.pushSite(faceSite(face, task.label));
         int pushed = STRUCTURE_ARGUMENTS;
         if (task.sky != PLANET) {
-            pushSky(graph.worldAt(task.sky));
+            pushSky(graph.skies.world(task.sky));
             pushed += 1;
         }
         foreach (argument; 0 .. call.argumentCount) {
@@ -407,17 +407,17 @@ struct TileHost {
     }
 
     // Works out which faces a node's cover needs painted, the same faces StructureHost.cover tiles on the main thread.
-    void planCandidate(ref const Graph graph, uint candidate, uint index) {
-        view.graph = &graph;
+    void planCandidate(ref const Graph graph, GraphView* threadView, uint candidate, uint index) {
+        view = threadView;
         uint faceStart = cast(uint) plan.faces.length;
-        if (!graph.hasStructureAt(candidate)) {
+        if (!graph.isFinished(candidate)) {
             if (hasPlanetTile) {
-                planRing(graph, view.groundRing(view.worldGroundNodeOf(candidate, PLANET), Side.a), Side.a, PLANET);
+                planRing(graph, (*view).groundRing((*view).worldGroundNodeOf(candidate, PLANET), Face.f0), Face.f0, PLANET);
             }
-            foreach (near; view.ensureWorldsAt(candidate)) {
-                if (!view.isBlocked && view.isPaintedBySky(candidate, near)) {
-                    Side label = graph.worldAt(near.world).label;
-                    planRing(graph, view.groundRing(view.worldGroundNodeOf(candidate, near.world), label), label, near.world);
+            foreach (near; (*view).ensureWorldsAt(candidate)) {
+                if (!view.isBlocked && (*view).isPaintedBySky(candidate, near)) {
+                    Face label = graph.skies.world(near.world).label;
+                    planRing(graph, (*view).groundRing((*view).worldGroundNodeOf(candidate, near.world), label), label, near.world);
                 }
             }
         }
@@ -435,8 +435,8 @@ struct TileHost {
     void measureSkies(ref const Graph graph, uint faceStart) {
         foreach (index; faceStart .. plan.faces.length) {
             uint sky = plan.faces.ptr[index].sky;
-            if (sky != PLANET && !graph.worldAt(sky).isMeasured && !plan.hasMeasure(sky)) {
-                SkyMeasure measure = view.measureOf(sky);
+            if (sky != PLANET && !graph.skies.world(sky).isMeasured && !plan.hasMeasure(sky)) {
+                SkyMeasure measure = (*view).measureOf(sky);
                 if (view.isBlocked) {
                     view.forget();
                 } else {
@@ -446,14 +446,14 @@ struct TileHost {
         }
     }
 
-    void planRing(ref const Graph graph, uint[GROUND_RING] ring, Side label, uint world) {
+    void planRing(ref const Graph graph, uint[GROUND_RING] ring, Face label, uint world) {
         foreach (face; ring) {
             NodeId id = view.idAt(face);
-            const(uint)* known = graph.tiledFaces.find(id);
+            const(uint)* known = graph.structures.tiledFaces.find(id);
             if (known !is null) {
                 plan.usedRecords.append(*known);
             }
-            if (known is null || graph.blueprint.tiles.ptr[*known].isDropped) {
+            if (known is null || graph.structures.blueprint.tiles.ptr[*known].isDropped) {
                 uint pathStart = cast(uint) plan.paths.length;
                 uint start = view.pathTo(face, plan.paths);
                 plan.faces.append(PlannedFace(id, start, pathStart, cast(uint) plan.paths.length - pathStart, world, label));
@@ -464,7 +464,6 @@ struct TileHost {
     void release() {
         painter.release();
         plan.release();
-        view.release();
         skyTiles.release();
         if (lua !is null) {
             lua_close(lua);
@@ -486,7 +485,7 @@ extern (C) int tileForward(lua_State* lua) {
 extern (C) int tileTurn(lua_State* lua) {
     TileHost* host = tileHost(lua);
     Turn turn = cast(Turn) lua_tointegerx(lua, LUA_SECOND_UPVALUE, null);
-    lua.pushSite(host.view.turned(siteArgument(lua), turn));
+    lua.pushSite((*host.view).turned(siteArgument(lua), turn));
     return 1;
 }
 
@@ -526,7 +525,7 @@ int tilePaintWith(lua_State* lua, bool isIntoAirOnly) {
     CellBox box = boxArgument(lua, SELF + 2, host.dimension());
     Rhythm rhythm = rhythmArgument(lua, SELF + 3);
     if (!host.isReplaying) {
-        PaintResult result = host.painter.paint(host.view, siteArgument(lua), box, rhythm, material, isIntoAirOnly);
+        PaintResult result = host.painter.paint(*host.view, siteArgument(lua), box, rhythm, material, isIntoAirOnly);
         if (result == PaintResult.endless) {
             luaL_error(lua, "a placed structure paints bounded heights: give the box a z range");
         } else if (result == PaintResult.behind) {
@@ -540,7 +539,7 @@ extern (C) int tileStop(lua_State* lua) {
     TileHost* host = tileHost(lua);
     ColumnSpot spot = spotArgument(lua, SELF + 1);
     if (!host.isReplaying) {
-        host.painter.stop(host.view, siteArgument(lua), spot, false);
+        host.painter.stop(*host.view, siteArgument(lua), spot, false);
     }
     return 0;
 }
@@ -549,7 +548,7 @@ extern (C) int tileEntrance(lua_State* lua) {
     TileHost* host = tileHost(lua);
     ColumnSpot spot = spotArgument(lua, SELF + 1);
     if (!host.isReplaying) {
-        host.painter.stop(host.view, siteArgument(lua), spot, true);
+        host.painter.stop(*host.view, siteArgument(lua), spot, true);
     }
     return 0;
 }
@@ -620,33 +619,33 @@ extern (C) int tileBalance(lua_State* lua) {
     } else if (most < 1 || most > int.max) {
         luaL_error(lua, "balance looks at least one cell up");
     }
-    lua_pushinteger(lua, host.view.balanceAlong(host.view.turned(siteArgument(lua), Turn.pitchUp), host.sky, cast(int) most));
+    lua_pushinteger(lua, (*host.view).balanceAlong((*host.view).turned(siteArgument(lua), Turn.pitchUp), host.sky, cast(int) most));
     return 1;
 }
 
 extern (C) int tileHash(lua_State* lua) {
     TileHost* host = tileHost(lua);
-    lua_pushinteger(lua, cast(lua_Integer) host.view.siteHash(siteArgument(lua), partArgument(lua, SELF + 1)));
+    lua_pushinteger(lua, cast(lua_Integer)(*host.view).siteHash(siteArgument(lua), partArgument(lua, SELF + 1)));
     return 1;
 }
 
 struct TileJob {
-    const(Graph)* graph;
+    Graph* graph;
     TileHost** hosts;
     const(TileTask)* tasks;
-    const(Side)* paths;
+    const(Face)* paths;
     const(uint)* candidates;
 }
 
 void runTileTask(void* context, size_t index, uint worker) {
     TileJob* job = cast(TileJob*) context;
     const(TileTask)* task = &job.tasks[index];
-    job.hosts[worker].run(*job.graph, *task, job.paths[task.pathStart .. task.pathStart + task.pathLength], cast(uint) index);
+    job.hosts[worker].run(*job.graph, &job.graph.threadViews[worker], *task, job.paths[task.pathStart .. task.pathStart + task.pathLength], cast(uint) index);
 }
 
 void planCandidateTask(void* context, size_t index, uint worker) {
     TileJob* job = cast(TileJob*) context;
-    job.hosts[worker].planCandidate(*job.graph, job.candidates[index], cast(uint) index);
+    job.hosts[worker].planCandidate(*job.graph, &job.graph.threadViews[worker], job.candidates[index], cast(uint) index);
 }
 
 struct HostBuild {
@@ -659,7 +658,7 @@ void buildTileHost(void* context, size_t index, uint worker) {
     TileWork* work = build.work;
     TileHost* host = cast(TileHost*) calloc(1, TileHost.sizeof);
     *host = TileHost.init;
-    host.build(*work.graph, work.name, work.root, work.seed);
+    host.build(&work.graph.threadViews[worker], work.name, work.root, work.seed);
     work.hosts.ptr[build.first + index] = host;
 }
 
@@ -673,14 +672,14 @@ struct TaskOutput {
 struct TileWork {
     Array!(TileHost*) hosts;
     Array!TileTask tasks;
-    Array!Side paths;
+    Array!Face paths;
     Array!TaskOutput outputOf;
     Array!uint lineIndices;
     Array!uint covered;
     Array!uint planning;
     Array!uint blocked;
     HashMap!(NodeId, uint) taskOf;
-    const(Graph)* graph;
+    Graph* graph;
     StructureWorld name;
     SiteFrame root;
     ulong seed;
@@ -691,29 +690,27 @@ struct TileWork {
 
     // Every thread that can run a job gets a host before the first tile, built in parallel since each one runs the
     // world's structure script.
-    void ensureHosts(ref const Graph target, Executor executor) {
+    void ensureHosts(ref Graph target, Executor executor) {
         graph = &target;
         if (hosts.length < executor.workers) {
             HostBuild build = HostBuild(&this, hosts.length);
             hosts.resize(executor.workers);
+            target.threadViews.begin(target, executor.workers);
             ParallelJob job = ParallelJob(&buildTileHost, &build, double.infinity, hosts.length - build.first);
             executor.run(&job);
+            target.threadViews.finish(target);
             foreach (host; hosts.slice()) {
                 if (host.hasFailed && !hasFailed) {
                     takeFailure(host);
                 }
             }
         }
-        foreach (host; hosts.slice()) {
-            host.view.graph = &target;
-            host.view.forget();
-        }
     }
 
     // Plans the cover of each candidate in parallel, makes tasks for the faces they need within the budget, and runs
     // them; candidates whose faces all got painted are marked covered. A candidate whose plan needed a world that did
     // not exist yet is planned again once this thread has made that world.
-    void prepare(ref Graph target, const(uint)[] candidates, Executor executor) {
+    void paintAhead(ref Graph target, const(uint)[] candidates, Executor executor) {
         ensureHosts(target, executor);
         covered.clear();
         planning.clear();
@@ -721,7 +718,7 @@ struct TileWork {
         bool isWorldMade = true;
         uint round = 0;
         while (planning.length > 0 && isWorldMade && round < PLAN_ROUNDS && tasks.length < TILE_TASK_BUDGET) {
-            planCandidates(target, executor);
+            isWorldMade = planCandidates(target, executor);
             blocked.clear();
             size_t index = 0;
             while (index < planning.length && tasks.length < TILE_TASK_BUDGET) {
@@ -737,10 +734,6 @@ struct TileWork {
                 }
                 index += 1;
             }
-            isWorldMade = false;
-            foreach (host; hosts.slice()) {
-                isWorldMade = target.makeWantedWorlds(host.view) || isWorldMade;
-            }
             planning.clear();
             planning.appendAll(blocked.slice());
             round += 1;
@@ -748,28 +741,28 @@ struct TileWork {
         preparedTiles += cast(uint) tasks.length;
         if (runTasks(target, executor)) {
             foreach (slot; covered.slice()) {
-                target.nodeAt(slot).isCovered = true;
+                target.structures.at(slot).isCovered = true;
             }
         }
     }
 
-    void planCandidates(ref Graph target, Executor executor) {
+    // Returns whether a world some plan stopped at was made, so planning it again can get further.
+    bool planCandidates(ref Graph target, Executor executor) {
         foreach (host; hosts.slice()) {
             host.plan.clear();
-            host.view.graph = &target;
-            host.view.forget();
         }
+        target.threadViews.begin(target, executor.workers);
         TileJob context = TileJob(&target, hosts.ptr, null, null, planning.ptr);
         ParallelJob job = ParallelJob(&planCandidateTask, &context, double.infinity, planning.length);
         executor.run(&job);
+        bool isWorldMade = target.threadViews.finish(target);
         outputOf.resize(planning.length);
         foreach (hostIndex, host; hosts.slice()) {
-            target.applyDiscoveries(host.view);
             foreach (record; host.plan.usedRecords.slice()) {
-                target.blueprint.tiles.ptr[record].lastUse = target.blueprint.travel;
+                target.structures.blueprint.tiles.ptr[record].lastUse = target.structures.blueprint.travel;
             }
             foreach (measured; host.plan.measures.slice()) {
-                if (!target.worldAt(measured.sky).isMeasured) {
+                if (!target.skies.world(measured.sky).isMeasured) {
                     target.storeMeasure(measured.sky, measured.measure);
                 }
             }
@@ -777,6 +770,7 @@ struct TileWork {
                 outputOf.ptr[result.candidate] = TaskOutput(cast(uint) hostIndex, cast(uint) resultIndex);
             }
         }
+        return isWorldMade;
     }
 
     void takeFailure(const(TileHost)* host) {
@@ -787,25 +781,25 @@ struct TileWork {
     void clearTasks() {
         tasks.clear();
         paths.clear();
-        taskOf.release();
+        taskOf.clear();
     }
 
     bool hasTask(NodeId face) const {
         return taskOf.find(face) !is null;
     }
 
-    void addTask(ref Graph target, NodeId face, uint start, const(Side)[] path, Side label, uint sky) {
+    void addTask(ref Graph target, NodeId face, uint start, const(Face)[] path, Face label, uint sky) {
         if (taskOf.find(face) is null) {
-            const(uint)* known = target.tiledFaces.find(face);
+            const(uint)* known = target.structures.tiledFaces.find(face);
             uint record = NO_RECORD;
             bool isRestoring = false;
             if (known is null) {
-                record = target.blueprint.addTile(face);
-                target.tiledFaces.insert(face, record);
+                record = target.structures.blueprint.addTile(face);
+                target.structures.tiledFaces.insert(face, record);
                 if (sky != PLANET) {
                     target.skies.worlds.ptr[sky - 1].isTiled = true;
                 }
-            } else if (target.blueprint.tiles.ptr[*known].isDropped) {
+            } else if (target.structures.blueprint.tiles.ptr[*known].isDropped) {
                 record = *known;
                 isRestoring = true;
             }
@@ -827,9 +821,11 @@ struct TileWork {
             foreach (host; hosts.slice()) {
                 host.painter.clear();
             }
+            target.threadViews.begin(target, executor.workers);
             TileJob context = TileJob(&target, hosts.ptr, tasks.ptr, paths.ptr, null);
             ParallelJob job = ParallelJob(&runTileTask, &context, double.infinity, tasks.length);
             executor.run(&job);
+            target.threadViews.finish(target);
             outputOf.resize(tasks.length);
             foreach (hostIndex, host; hosts.slice()) {
                 foreach (outputIndex, output; host.painter.outputs.slice()) {
@@ -853,33 +849,37 @@ struct TileWork {
     }
 
     void apply(ref Graph target, ref const TileTask task, ref const TilePainter painter, TileOutput output) {
-        TileRecord* record = &target.blueprint.tiles.ptr[task.record];
-        uint first = target.blueprint.brushCount;
+        Blueprint* blueprint = &target.structures.blueprint;
         lineIndices.resize(output.lineCount);
         uint[] lines = lineIndices.slice();
-        record.lines.clear();
         foreach (local; 0 .. output.lineCount) {
             const(LineOutput)* line = &painter.lines.ptr[output.lineStart + local];
             LineSpec spec = line.spec;
             spec.node = NO_SLOT;
-            uint index = target.blueprint.lineOf(spec, line.key.node);
-            LineSpec* stored = &target.blueprint.lines.ptr[index];
+            uint index = blueprint.lineOf(spec, line.key.node);
+            LineSpec* stored = &blueprint.lines.ptr[index];
             stored.lowest = lowerOf(stored.lowest, line.lowest);
             stored.highest = higherOf(stored.highest, line.highest);
             lines[local] = index;
-            record.lines.append(index);
         }
-        foreach (painted; painter.brushes.ptr[output.brushStart .. output.brushStart + output.brushCount]) {
-            Brush brush = painted.brush;
-            brush.order = target.blueprint.brushCount;
-            brush.paint.material = target.blueprint.paintOf(painted.material);
-            target.blueprint.brushes.ptr[lines[painted.line - output.lineStart]].append(brush);
-            target.blueprint.brushCount += 1;
+        // Brushes keep the order they were painted in, but are stored a line at a time so each line gets one run.
+        const(BrushOutput)[] painted = painter.brushes.ptr[output.brushStart .. output.brushStart + output.brushCount];
+        uint first = blueprint.takeOrders(output.brushCount);
+        blueprint.tiles.ptr[task.record].painted.brushes.reserve(output.brushCount);
+        foreach (local; 0 .. output.lineCount) {
+            foreach (index, made; painted) {
+                if (made.line - output.lineStart == local) {
+                    Brush brush = made.brush;
+                    brush.order = first + cast(uint) index;
+                    brush.paint.material = blueprint.paintOf(made.material);
+                    blueprint.addBrush(task.record, lines[local], brush);
+                }
+            }
         }
         foreach (touched; painter.touches.ptr[output.touchStart .. output.touchStart + output.touchCount]) {
             uint line = lines[touched.line - output.lineStart];
-            if (target.blueprint.touchedEdges.find(LineEdge(line, touched.level)) is null) {
-                target.blueprint.touchedEdges.insert(LineEdge(line, touched.level), true);
+            if (blueprint.touchedEdges.find(LineEdge(line, touched.level)) is null) {
+                blueprint.touchedEdges.insert(LineEdge(line, touched.level), true);
                 foreach (corner; 0 .. EDGE_NODES) {
                     LineTouch touch = touched.touches[corner];
                     touch.line = line;
@@ -895,20 +895,19 @@ struct TileWork {
             SiteFrame site = stop.site;
             site.node = slot;
             if (!stop.isEntrance) {
-                target.blueprint.route.append(RouteStop(site, stop.spot));
+                blueprint.route.append(RouteStop(site, stop.spot));
                 target.reference(slot);
-            } else if (!target.blueprint.hasEntrance) {
-                target.blueprint.entrance = RouteStop(site, stop.spot);
-                target.blueprint.hasEntrance = true;
+            } else if (!blueprint.hasEntrance) {
+                blueprint.entrance = RouteStop(site, stop.spot);
+                blueprint.hasEntrance = true;
                 target.reference(slot);
             }
         }
-        record.firstOrder = first;
-        record.endOrder = target.blueprint.brushCount;
-        record.lastUse = target.blueprint.travel;
+        TileRecord* record = &blueprint.tiles.ptr[task.record];
+        record.lastUse = blueprint.travel;
         record.isDropped = false;
         if (task.isRestoring) {
-            target.blueprint.restoredTiles += 1;
+            blueprint.restoredTiles += 1;
         }
     }
 

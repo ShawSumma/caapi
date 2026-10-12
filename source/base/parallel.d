@@ -1,9 +1,9 @@
-module common.parallel;
+module base.parallel;
 
 import core.atomic : atomicFetchAdd, atomicLoad, atomicOp, atomicStore, cas;
 import core.stdc.stdlib : calloc, free;
 import core.sys.posix.pthread : pthread_create, pthread_join, pthread_t;
-import common.clock : nowMilliseconds;
+import base.clock : nowMilliseconds;
 
 version (X86_64) {
     enum long SYS_FUTEX = 202;

@@ -1,22 +1,24 @@
 module common.graph;
 
 import core.bitop : bsf;
-import common.array : Array;
-import common.dodeca : SIDE_COUNT, Side, VERTEX_COUNT, isAdjacentTo, isFacing, reflection;
-import common.hashmap : HashMap;
-import common.margins : MarginTables;
-import common.math : MIsometry, MPoint;
-import common.murmur : murmurHash3;
-import common.parallel : Executor;
-import common.node : Chunk, ChunkLayout, ChunkSlot;
+import base.array : Array;
+import base.hashmap : HashMap;
+import base.murmur : murmurHash3;
+import base.parallel : Executor;
+import base.slab : Slab;
+import common.chunks : ChunkStore;
+import common.neighbors : needsMesh;
+import common.node : ChunkLayout, ChunkSlot;
 import common.position : Position;
-import common.slab : SLAB_SHIFT, Slab;
+import common.view : GraphView, ThreadViews;
 import common.worldgen.blueprint : Blueprint;
 import common.worldgen.building : Building, BuildingPlan;
-import common.view : GraphView;
 import common.worldgen.generation : NodeState, Worldgen;
-import common.worldgen.sky : Skies, WorldRef;
-import common.worldgen.structure : LineTouch, PAINT_REACH, PendingTouch, anchorSlotOf, finalizeStructure;
+import common.worldgen.sky : Skies;
+import common.worldgen.store : StructureStore;
+import common.worldgen.structure : PAINT_REACH, anchorSlotOf, finalizeStructure;
+import geometry.honeycomb : BEYOND_TOLERANCE, FACE_COUNT, Face, adjacentFaces, faceBit, mirror, normal;
+import geometry.lorentz : Point;
 
 enum ulong NODE_HASH_MULTIPLIER = 0x9E3779B97F4A7C15;
 enum size_t NODE_ID_BYTES = 16;
@@ -41,10 +43,8 @@ enum NodeId ROOT_NODE = NodeId([1, 1]);
 enum NodeId NO_NODE = NodeId.init;
 enum uint NO_SLOT = uint.max;
 enum uint MAX_PARENTS = 3;
-enum uint FREE_RUN_LENGTHS = 16;
-enum uint NO_CHUNKS = 0;
-
-immutable Chunk FRESH_CHUNK = Chunk.init;
+enum uint NO_FACE = FACE_COUNT;
+enum ushort ALL_FACES = (1u << FACE_COUNT) - 1;
 
 enum NodeContent : ubyte {
     unknown,
@@ -52,42 +52,25 @@ enum NodeContent : ubyte {
     holding,
 }
 
+// Nodes are the honeycomb's cells. Reflections in a cell's faces generate a right-angled Coxeter group, since faces
+// that meet do so at right angles and their reflections commute, so each cell is one element of that group. A cell's
+// parent faces are those whose reflection brings it nearer the root; they meet pairwise, so there are at most three.
+// Every other face leads to a child. The graph keeps only where a node sits among the others; what else is known about
+// a node lives in the side tables of whatever owns it, under the same slot.
 struct Node {
-    Building building;
     NodeId id;
-    NodeState state;
-    uint[SIDE_COUNT] neighbors;
+    uint[FACE_COUNT] neighbors;
     uint depth;
-    uint touchStart;
-    uint touchLength;
-    uint worldStart;
-    uint worldCount;
-    uint chunkBlock;
-    ushort parentSides;
+    ushort parentFaces;
     ushort liveChildren;
     ushort references;
     NodeContent content;
     bool hasState;
-    bool hasWorlds;
-    bool hasStructure;
-    bool isCovered;
-    bool isInStructure;
-    bool hasBuilding;
-    bool isBuildingQueued;
-    bool isRecent;
-}
-
-struct Grower {
-    void function(void* context, ref Graph graph, int through) grow;
-    void function(void* context, ref Graph graph, uint slot) cover;
-    void function(void* context, ref Graph graph, const(uint)[] candidates, Executor executor) prepare;
-    void function(void* context) release;
-    void* context;
 }
 
 struct ParentEntry {
     uint slot;
-    Side side;
+    Face side;
 }
 
 struct ParentList {
@@ -95,174 +78,77 @@ struct ParentList {
     uint count;
 }
 
-struct FacingSide {
-    Side side;
-    bool isFound;
-
-    static FacingSide fromIndex(uint side) {
-        if (side == SIDE_COUNT) {
-            return FacingSide(Side.init, false);
-        } else {
-            return FacingSide(cast(Side) side, true);
-        }
-    }
-
-    static FacingSide fromLocal(MIsometry!float local) {
-        MPoint!float location = local * MPoint!float.origin();
-        uint side = 0;
-        while (side < SIDE_COUNT && !(cast(Side) side).isFacing(location)) {
-            side += 1;
-        }
-        return FacingSide.fromIndex(side);
-    }
+// The parent faces of the child across a face: that face, and each parent face of this node that meets it, since
+// crossing the two in either order reaches the same cell.
+ushort childParentFaces(ushort parentFaces, Face face) {
+    return cast(ushort)((parentFaces & adjacentFaces(face)) | faceBit(face));
 }
 
-struct SlotPosition {
-    MIsometry!float local;
-    uint slot;
+// A child is named after its first parent, the one across its lowest parent face, which is the same whichever of its
+// parents it is reached from.
+NodeId childId(NodeId firstParent, Face face) {
+    ubyte[NODE_ID_BYTES + 1] hashInput;
+    hashInput[0 .. NODE_ID_BYTES] = (cast(const(ubyte)*) firstParent.value.ptr)[0 .. NODE_ID_BYTES];
+    hashInput[NODE_ID_BYTES] = face;
+    return NodeId(murmurHash3(hashInput[]));
+}
+
+// Of the faces allowed, the one the point lies farthest beyond, or NO_FACE when it lies beyond none of them. A point
+// on a face belongs to either cell; without the tolerance, rounding could pass it back and forth between them.
+uint farthestFaceBeyond(Point!float point, ushort allowed) {
+    uint farthest = NO_FACE;
+    float most = BEYOND_TOLERANCE * point.v.c[3];
+    foreach (index; 0 .. FACE_COUNT) {
+        float beyond = normal(cast(Face) index).minkowski(point.v);
+        if ((allowed & (1u << index)) != 0 && beyond > most) {
+            most = beyond;
+            farthest = index;
+        }
+    }
+    return farthest;
 }
 
 struct Graph {
     Slab!Node nodes;
-    Slab!Chunk chunks;
+    Slab!NodeState states;
     HashMap!(NodeId, uint) slots;
-    HashMap!(NodeId, uint) pendingHeads;
-    HashMap!(NodeId, uint) tiledFaces;
-    Array!ChunkSlot changedChunks;
-    Slab!LineTouch touches;
-    Slab!PendingTouch pendingTouches;
-    Slab!WorldRef worldRefs;
-    Array!LineTouch touchScratch;
     Array!uint freeSlots;
-    Array!uint freeBlocks;
-    Array!ChunkSlot restores;
-    GraphView view;
-    Array!uint[FREE_RUN_LENGTHS] freeWorldRuns;
-    Array!uint[FREE_RUN_LENGTHS] freeTouchRuns;
-    Blueprint blueprint;
+    ChunkStore chunks;
+    StructureStore structures;
     Skies skies;
-    Grower grower;
-    size_t changedHead;
+    GraphView ownView;
+    ThreadViews threadViews;
     Worldgen worldgen;
     ChunkLayout layout;
-    MarginTables margins;
-    uint nodeCount;
+    uint slotCount;
     uint liveCount;
-    uint blockCount;
     uint anchorSlot;
-    uint touchCount;
-    uint pendingCount;
-    uint worldRefCount;
-    int grownThrough = -1;
 
     static Graph make(ubyte dimension, Worldgen chosen) {
         Graph graph;
         graph.layout = ChunkLayout.make(dimension);
-        graph.margins = MarginTables.make(dimension);
         graph.worldgen = chosen;
-        graph.blueprint = Blueprint.make(dimension);
-        graph.addNode(ROOT_NODE, 0);
-        graph.anchorSlot = graph.slotOf(ROOT_NODE);
+        graph.skies.isPlanetFlat = chosen.hasPlaneGround();
+        graph.structures.blueprint = Blueprint.make(dimension);
+        uint root = graph.addNode(ROOT_NODE, 0, 0);
+        graph.anchorSlot = root;
         if (chosen.hasStructure()) {
             graph.anchorSlot = graph.anchorSlotOf();
         }
-        graph.reference(graph.slotOf(ROOT_NODE));
+        graph.reference(root);
         graph.reference(graph.anchorSlot);
         return graph;
     }
 
-    void markChanged(ChunkSlot chunk) {
-        Chunk* target = chunkFor(chunk);
-        if (!target.isQueued && !target.voxels.isSolid()) {
-            target.isQueued = true;
-            changedChunks.append(chunk);
-        }
-    }
-
-    bool hasChanges() const {
-        return changedHead < changedChunks.length;
-    }
-
-    ChunkSlot takeChanged() {
-        ChunkSlot result = changedChunks.ptr[changedHead];
-        changedHead += 1;
-        if (hasChunks(result.slot)) {
-            chunkFor(result).isQueued = false;
-        }
-        if (changedHead == changedChunks.length) {
-            changedChunks.clear();
-            changedHead = 0;
-        }
-        return result;
+    // The main thread's way to read the graph through worldgen: wherever it reads past the graph, the graph grows.
+    ref GraphView view() return {
+        ownView.graph = &this;
+        ownView.owner = &this;
+        return ownView;
     }
 
     inout(Node)* nodeAt(uint slot) inout {
         return nodes.at(slot);
-    }
-
-    bool hasChunks(uint slot) const {
-        return nodeAt(slot).chunkBlock != NO_CHUNKS;
-    }
-
-    const(Chunk)* chunkAt(ChunkSlot chunk) const {
-        uint block = nodeAt(chunk.slot).chunkBlock;
-        if (block == NO_CHUNKS) {
-            return &FRESH_CHUNK;
-        } else {
-            return chunks.at(cast(size_t)(block - 1) * VERTEX_COUNT + chunk.vertex);
-        }
-    }
-
-    // For threads that each write their own chunks: never allocates, so the graph itself is left as it was.
-    Chunk* heldChunk(ChunkSlot chunk) const {
-        assert(hasChunks(chunk.slot));
-        return cast(Chunk*) chunks.at(cast(size_t)(nodeAt(chunk.slot).chunkBlock - 1) * VERTEX_COUNT + chunk.vertex);
-    }
-
-    Chunk* chunkFor(ChunkSlot chunk) {
-        Node* node = nodeAt(chunk.slot);
-        if (node.chunkBlock == NO_CHUNKS) {
-            if (freeBlocks.length > 0) {
-                node.chunkBlock = freeBlocks.ptr[freeBlocks.length - 1];
-                freeBlocks.length -= 1;
-            } else {
-                blockCount += 1;
-                chunks.ensure(cast(size_t) blockCount * VERTEX_COUNT);
-                node.chunkBlock = blockCount;
-            }
-        }
-        return chunks.at(cast(size_t)(node.chunkBlock - 1) * VERTEX_COUNT + chunk.vertex);
-    }
-
-    void releaseChunks(uint slot) {
-        Node* node = nodeAt(slot);
-        foreach (vertex; 0 .. VERTEX_COUNT) {
-            Chunk* chunk = chunks.at(cast(size_t)(node.chunkBlock - 1) * VERTEX_COUNT + vertex);
-            chunk.voxels.release();
-            *chunk = Chunk.init;
-        }
-        freeBlocks.append(node.chunkBlock);
-        node.chunkBlock = NO_CHUNKS;
-    }
-
-    uint addNode(NodeId id, uint depth) {
-        uint slot = nodeCount;
-        if (freeSlots.length > 0) {
-            slot = freeSlots.ptr[freeSlots.length - 1];
-            freeSlots.length -= 1;
-        } else {
-            nodes.ensure(slot + 1);
-            nodeCount += 1;
-        }
-        Node* added = nodeAt(slot);
-        added.id = id;
-        added.depth = depth;
-        foreach (side; 0 .. SIDE_COUNT) {
-            added.neighbors[side] = NO_SLOT;
-        }
-        liveCount += 1;
-        slots.insert(id, slot);
-        return slot;
     }
 
     bool isLive(uint slot) const {
@@ -271,11 +157,7 @@ struct Graph {
 
     uint slotOf(NodeId id) const {
         const(uint)* found = slots.find(id);
-        if (found is null) {
-            return NO_SLOT;
-        } else {
-            return *found;
-        }
+        return found is null ? NO_SLOT : *found;
     }
 
     NodeId idAt(uint slot) const {
@@ -286,73 +168,97 @@ struct Graph {
         return nodeAt(slot).depth;
     }
 
-    ushort parentSidesOf(uint slot) const {
-        return nodeAt(slot).parentSides;
+    uint neighborSlot(uint slot, Face face) const {
+        return nodeAt(slot).neighbors[face];
     }
 
-    bool hasStructureAt(uint slot) const {
-        return nodeAt(slot).hasStructure;
+    NodeId neighbor(NodeId node, Face face) const {
+        uint found = neighborSlot(slotOf(node), face);
+        return found == NO_SLOT ? NO_NODE : idAt(found);
     }
 
-    NodeState stateAt(uint slot) {
-        return *ensureNodeStateAt(slot);
+    bool isParentFace(uint slot, Face face) const {
+        return (nodeAt(slot).parentFaces & faceBit(face)) != 0;
     }
 
-    // The main thread's view of this graph, for reads that must not create nodes; it is forgotten after evictions.
-    ref GraphView ownView() return {
-        view.graph = &this;
-        return view;
+    ParentList parents(uint slot) const {
+        ParentList list;
+        const(Node)* node = nodeAt(slot);
+        uint remaining = node.parentFaces;
+        while (remaining != 0) {
+            uint face = bsf(remaining);
+            remaining &= remaining - 1;
+            list.links[list.count] = ParentEntry(node.neighbors[face], cast(Face) face);
+            list.count += 1;
+        }
+        return list;
     }
 
-    uint neighborSlot(uint slot, Side which) const {
-        return nodeAt(slot).neighbors[which];
-    }
-
-    NodeId neighbor(NodeId node, Side which) const {
-        uint neighborIndex = neighborSlot(slotOf(node), which);
-        if (neighborIndex == NO_SLOT) {
-            return NO_NODE;
+    uint addNode(NodeId id, uint depth, ushort parentFaces) {
+        uint slot = slotCount;
+        if (freeSlots.length > 0) {
+            freeSlots.length -= 1;
+            slot = freeSlots.ptr[freeSlots.length];
         } else {
-            return idAt(neighborIndex);
+            slotCount += 1;
+            nodes.ensure(slotCount);
+            states.ensure(slotCount);
+            chunks.ensureSlots(slotCount);
+            structures.ensureSlots(slotCount);
+            skies.ensureSlots(slotCount);
         }
+        Node* added = nodeAt(slot);
+        *added = Node.init;
+        added.id = id;
+        added.neighbors[] = NO_SLOT;
+        added.depth = depth;
+        added.parentFaces = parentFaces;
+        liveCount += 1;
+        slots.insert(id, slot);
+        return slot;
     }
 
-    uint ensureNeighborSlot(uint slot, Side side) {
-        uint existing = nodeAt(slot).neighbors[side];
-        if (existing == NO_SLOT) {
-            return insertChildSlot(slot, side);
-        } else {
-            return existing;
+    // Only for a node with no children left; its parents stop counting it.
+    void removeNode(uint slot) {
+        ParentList list = parents(slot);
+        foreach (link; list.links[0 .. list.count]) {
+            Node* parent = nodeAt(link.slot);
+            parent.neighbors[link.side] = NO_SLOT;
+            parent.liveChildren -= 1;
         }
+        slots.remove(idAt(slot));
+        *nodeAt(slot) = Node.init;
+        freeSlots.append(slot);
+        liveCount -= 1;
     }
 
-    uint insertChildSlot(uint nodeSlot, Side side) {
-        ParentEntry[MAX_PARENTS] parents;
-        uint parentCount = 0;
-        foreach (candidateIndex; 0 .. SIDE_COUNT) {
-            Side candidateSide = cast(Side) candidateIndex;
-            if (candidateSide == side) {
-                parents[parentCount] = ParentEntry(nodeSlot, side);
-                parentCount += 1;
-            } else if (candidateSide.isAdjacentTo(side) && isParentSide(nodeSlot, candidateSide)) {
-                uint parentOfNode = nodeAt(nodeSlot).neighbors[candidateSide];
-                uint parentOfSubject = ensureNeighborSlot(parentOfNode, side);
-                parents[parentCount] = ParentEntry(parentOfSubject, candidateSide);
-                parentCount += 1;
-            }
-        }
+    uint ensureNeighborSlot(uint slot, Face face) {
+        uint existing = neighborSlot(slot, face);
+        return existing == NO_SLOT ? addChild(slot, face) : existing;
+    }
 
-        NodeId id = childId(idAt(parents[0].slot), parents[0].side);
-        uint newSlot = existingOrAdded(id, nodeAt(nodeSlot).depth + 1);
-        foreach (i; 0 .. parentCount) {
-            Node* parent = nodeAt(parents[i].slot);
-            if (parent.neighbors[parents[i].side] != newSlot) {
-                parent.liveChildren += 1;
-            }
-            linkNeighborSlots(newSlot, parents[i].slot, parents[i].side);
-            nodeAt(newSlot).parentSides |= sideBit(parents[i].side);
+    // A missing neighbor is always a child: a node's parents exist as long as it does and are linked to it from the
+    // start. Its parents across faces other than this one are this node's parents' children across the same face.
+    uint addChild(uint slot, Face face) {
+        ushort parentFaces = childParentFaces(nodeAt(slot).parentFaces, face);
+        ParentList list;
+        uint remaining = parentFaces;
+        while (remaining != 0) {
+            Face through = cast(Face) bsf(remaining);
+            remaining &= remaining - 1;
+            uint parent = through == face ? slot : ensureNeighborSlot(neighborSlot(slot, through), face);
+            list.links[list.count] = ParentEntry(parent, through);
+            list.count += 1;
         }
-        return newSlot;
+        NodeId id = childId(idAt(list.links[0].slot), list.links[0].side);
+        assert(slotOf(id) == NO_SLOT);
+        uint child = addNode(id, depthOf(slot) + 1, parentFaces);
+        foreach (link; list.links[0 .. list.count]) {
+            nodeAt(link.slot).neighbors[link.side] = child;
+            nodeAt(link.slot).liveChildren += 1;
+            nodeAt(child).neighbors[link.side] = link.slot;
+        }
+        return child;
     }
 
     void reference(uint slot) {
@@ -363,258 +269,119 @@ struct Graph {
         nodeAt(slot).references -= 1;
     }
 
-    uint existingOrAdded(NodeId id, uint depth) {
-        uint existing = slotOf(id);
-        if (existing == NO_SLOT) {
-            return addNode(id, depth);
-        } else {
-            return existing;
+    // Crosses into neighbors that exist until the position lies inside its node or beyond only missing ones.
+    Position normalized(Position start) const {
+        uint slot = slotOf(start.node);
+        Point!float point = start.local * Point!float.origin();
+        uint face = farthestFaceBeyond(point, linkedFaces(slot));
+        while (face != NO_FACE) {
+            slot = neighborSlot(slot, cast(Face) face);
+            start.local = mirror(cast(Face) face) * start.local;
+            point = start.local * Point!float.origin();
+            face = farthestFaceBeyond(point, linkedFaces(slot));
         }
+        return Position(idAt(slot), start.local);
     }
 
-    bool isParentSide(uint slot, Side side) const {
-        return (nodeAt(slot).parentSides & sideBit(side)) != 0;
-    }
-
-    void linkNeighborSlots(uint a, uint b, Side side) {
-        nodeAt(a).neighbors[side] = b;
-        nodeAt(b).neighbors[side] = a;
-    }
-
-    ParentList parents(uint slot) const {
-        ParentList result;
-        const(Node)* node = nodeAt(slot);
-        uint remaining = node.parentSides;
-        while (remaining != 0) {
-            uint sideIndex = bsf(remaining);
-            remaining &= remaining - 1;
-            result.links[result.count] = ParentEntry(node.neighbors[sideIndex], cast(Side) sideIndex);
-            result.count += 1;
+    ushort linkedFaces(uint slot) const {
+        ushort linked = 0;
+        foreach (index; 0 .. FACE_COUNT) {
+            if (nodeAt(slot).neighbors[index] != NO_SLOT) {
+                linked |= faceBit(cast(Face) index);
+            }
         }
-        return result;
+        return linked;
     }
 
-    Array!Side sidesToRoot(uint start) const {
-        Array!Side sides;
-        uint slot = start;
-        while (nodeAt(slot).depth > 0) {
-            ParentEntry parent = parents(slot).links[0];
-            sides.append(parent.side);
-            slot = parent.slot;
-        }
-        return sides;
+    Position ensureNormalized(Position start) {
+        return view.ensureNormalized(start);
     }
 
-    NodeId ensureFromRoot(const(Side)[] sidesToRoot) {
-        uint slot = slotOf(ROOT_NODE);
-        foreach_reverse (side; sidesToRoot) {
-            slot = ensureNeighborSlot(slot, side);
-        }
-        return idAt(slot);
+    ref const(NodeState) stateAt(uint slot) const {
+        assert(nodeAt(slot).hasState);
+        return *states.at(slot);
     }
 
-    const(NodeState)* ensureNodeStateAt(uint slot) {
+    const(NodeState)* ensureState(uint slot) {
         if (!nodeAt(slot).hasState) {
-            nodeAt(slot).state = NodeState.fromParents(this, slot);
+            *states.at(slot) = NodeState.fromParents(view, slot);
             nodeAt(slot).hasState = true;
         }
-        return &nodeAt(slot).state;
+        return states.at(slot);
     }
 
+    void markChanged(ChunkSlot chunk) {
+        if (!chunks.at(chunk).isQueued && this.needsMesh(chunk)) {
+            chunks.queue(chunk);
+        }
+    }
+
+    bool isFinished(uint slot) const {
+        return structures.at(slot).isFinished;
+    }
+
+    // Returns whether structure runs through the node, finishing its structure first: its parents', then whatever is
+    // painted up to its depth.
     bool ensureStructureAt(uint slot) {
-        if (!nodeAt(slot).hasStructure) {
-            ParentList parentList = parents(slot);
-            foreach (link; parentList.links[0 .. parentList.count]) {
+        if (!isFinished(slot)) {
+            ParentList list = parents(slot);
+            foreach (link; list.links[0 .. list.count]) {
                 ensureStructureAt(link.slot);
             }
-            growBefore(nodeAt(slot).depth);
-            if (grower.cover !is null && !nodeAt(slot).isCovered) {
-                grower.cover(grower.context, this, slot);
+            growBefore(depthOf(slot));
+            if (structures.grower.cover !is null && !structures.at(slot).isCovered) {
+                structures.grower.cover(structures.grower.context, this, slot);
             }
             this.finalizeStructure(slot);
-            nodeAt(slot).hasStructure = true;
+            structures.at(slot).isFinished = true;
         }
-        return nodeAt(slot).isInStructure;
+        return structures.at(slot).isInStructure;
     }
 
     // Paints on every thread the structure that these nodes' checks are about to need, so those checks only finish it.
-    void prepareStructures(const(uint)[] candidates, Executor executor) {
-        if (grower.prepare !is null && candidates.length > 0) {
-            grower.prepare(grower.context, this, candidates, executor);
+    void paintAhead(const(uint)[] candidates, Executor executor) {
+        if (structures.grower.paintAhead !is null && candidates.length > 0) {
+            structures.grower.paintAhead(structures.grower.context, this, candidates, executor);
         }
     }
 
     void growBefore(uint depth) {
         int through = cast(int) depth + PAINT_REACH;
-        if (grower.grow !is null && through > grownThrough) {
-            grownThrough = through;
-            grower.grow(grower.context, this, through);
+        if (structures.grower.grow !is null && through > structures.grownThrough) {
+            structures.grownThrough = through;
+            structures.grower.grow(structures.grower.context, this, through);
         }
     }
 
-    const(LineTouch)[] touchesAt(uint slot) const {
-        const(Node)* node = nodeAt(slot);
-        if (node.touchLength == 0) {
-            return null;
-        } else {
-            return touches.at(node.touchStart)[0 .. node.touchLength];
-        }
-    }
-
-    uint reserveTouches(uint length) {
-        return reserveRun(touches, touchCount, freeTouchRuns, length);
-    }
-
-    void releaseTouches(uint start, uint length) {
-        releaseRun(freeTouchRuns, start, length);
-    }
-
-    uint reserveWorlds(uint length) {
-        return reserveRun(worldRefs, worldRefCount, freeWorldRuns, length);
-    }
-
-    void releaseWorlds(uint start, uint length) {
-        releaseRun(freeWorldRuns, start, length);
-    }
-
+    // Tiles dropped since the node was covered are painted again, since its building is made from their brushes.
     void restoreBrushes(uint slot) {
-        if (grower.cover !is null) {
-            grower.cover(grower.context, this, slot);
+        if (structures.grower.cover !is null) {
+            structures.grower.cover(structures.grower.context, this, slot);
         }
     }
 
     const(Building)* ensureBuildingAt(uint slot) {
-        if (!nodeAt(slot).hasBuilding) {
+        if (structures.buildingAt(slot) is null) {
             ensureStructureAt(slot);
             restoreBrushes(slot);
             BuildingPlan plan = BuildingPlan.make(this, slot);
-            nodeAt(slot).building = Building.make(plan);
+            structures.storeBuilding(slot, Building.make(plan));
             plan.release();
-            nodeAt(slot).hasBuilding = true;
         }
-        return &nodeAt(slot).building;
-    }
-
-    void ensureNodeState(NodeId nodeId) {
-        ensureNodeStateAt(slotOf(nodeId));
-    }
-
-    const(NodeState)* nodeState(NodeId nodeId) const {
-        return &nodeAt(slotOf(nodeId)).state;
-    }
-
-    bool isLinkedFacing(SlotPosition position, MPoint!float location, Side side) const {
-        return side.isFacing(location) && neighborSlot(position.slot, side) != NO_SLOT;
-    }
-
-    FacingSide facingLinkedSide(SlotPosition position) const {
-        MPoint!float location = position.local * MPoint!float.origin();
-        uint side = 0;
-        while (side < SIDE_COUNT && !isLinkedFacing(position, location, cast(Side) side)) {
-            side += 1;
-        }
-        return FacingSide.fromIndex(side);
-    }
-
-    Position normalized(Position start) const {
-        SlotPosition current = SlotPosition(start.local, slotOf(start.node));
-        FacingSide facing = facingLinkedSide(current);
-        while (facing.isFound) {
-            current = SlotPosition(facing.side.reflection * current.local, neighborSlot(current.slot, facing.side));
-            facing = facingLinkedSide(current);
-        }
-        return Position(idAt(current.slot), current.local);
-    }
-
-    Position ensureNormalized(Position start) {
-        SlotPosition current = SlotPosition(start.local, slotOf(start.node));
-        FacingSide facing = FacingSide.fromLocal(current.local);
-        while (facing.isFound) {
-            current = SlotPosition(facing.side.reflection * current.local, ensureNeighborSlot(current.slot, facing.side));
-            facing = FacingSide.fromLocal(current.local);
-        }
-        return Position(idAt(current.slot), current.local);
+        return structures.buildingAt(slot);
     }
 
     void release() {
-        if (grower.release !is null) {
-            grower.release(grower.context);
-        }
-        grower = Grower.init;
-        foreach (index; 0 .. cast(size_t) blockCount * VERTEX_COUNT) {
-            chunks.at(index).voxels.release();
-        }
-        foreach (slot; 0 .. nodeCount) {
-            if (nodeAt(slot).hasBuilding) {
-                nodeAt(slot).building.release();
-            }
-        }
-        nodes.release();
+        structures.release();
         chunks.release();
-        slots.release();
-        pendingHeads.release();
-        tiledFaces.release();
-        changedChunks.release();
-        touches.release();
-        pendingTouches.release();
-        worldRefs.release();
-        touchScratch.release();
-        freeSlots.release();
-        freeBlocks.release();
-        restores.release();
-        view.release();
-        foreach (ref runs; freeWorldRuns) {
-            runs.release();
-        }
-        foreach (ref runs; freeTouchRuns) {
-            runs.release();
-        }
-        blueprint.release();
         skies.release();
-        margins.release();
-        nodeCount = 0;
+        nodes.release();
+        states.release();
+        slots.release();
+        freeSlots.release();
+        ownView.release();
+        threadViews.release();
+        slotCount = 0;
         liveCount = 0;
-        blockCount = 0;
-        touchCount = 0;
-        pendingCount = 0;
-        worldRefCount = 0;
-    }
-}
-
-uint reserveRun(T)(ref Slab!T slab, ref uint count, ref Array!uint[FREE_RUN_LENGTHS] free, uint length) {
-    if (length < FREE_RUN_LENGTHS && free[length].length > 0) {
-        uint start = free[length].ptr[free[length].length - 1];
-        free[length].length -= 1;
-        return start;
-    } else {
-        uint start = slabRun(count, length);
-        slab.ensure(start + length);
-        count = start + length;
-        return start;
-    }
-}
-
-void releaseRun(ref Array!uint[FREE_RUN_LENGTHS] free, uint start, uint length) {
-    if (length > 0 && length < FREE_RUN_LENGTHS) {
-        free[length].append(start);
-    }
-}
-
-ushort sideBit(Side side) {
-    return cast(ushort)(1u << side);
-}
-
-NodeId childId(NodeId primaryParent, Side side) {
-    ubyte[NODE_ID_BYTES + 1] hashInput;
-    hashInput[0 .. NODE_ID_BYTES] = (cast(const(ubyte)*) primaryParent.value.ptr)[0 .. NODE_ID_BYTES];
-    hashInput[NODE_ID_BYTES] = side;
-    return NodeId(murmurHash3(hashInput[]));
-}
-
-uint slabRun(uint count, uint length) {
-    if (length > 0 && count >> SLAB_SHIFT != (count + length - 1) >> SLAB_SHIFT) {
-        return ((count >> SLAB_SHIFT) + 1) << SLAB_SHIFT;
-    } else {
-        return count;
     }
 }

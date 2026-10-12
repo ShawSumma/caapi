@@ -1,15 +1,16 @@
 module common.character.controller;
 
 import core.stdc.math : acosf, atanhf, ceilf, cosf, expf, fabsf, sinf;
+import base.numbers : clamped, higherOf;
+import base.units : Length, Ratio, Speed, Time;
+import base.vector3 : ZERO_VECTOR, cappedTo, cross, dot, magnitude, minus, negated, plus, projectedOntoPlane, rejectAlong, scaled;
 import common.character.features : BlockProbe, Features, visitCells;
 import common.character.sweep : Capsule, ContactPlane, MIN_CREASE_SINE, Sweep, isSameDirection;
 import common.graph : Graph;
-import common.math : MIsometry, clamped, higherOf;
-import common.worldgen.sky : Gravity, gravityAt;
 import common.position : Position;
 import common.settings : CharacterConfig;
-import common.units : Length, Ratio, Speed, Time;
-import common.vector3 : ZERO_VECTOR, cappedTo, cross, dot, magnitude, minus, negated, plus, projectedOntoPlane, rejectAlong, scaled;
+import common.worldgen.sky : Gravity, gravityAt;
+import geometry.lorentz : Motion;
 
 enum uint MAX_CONTACT_PLANES = 5;
 enum uint MAX_SLIDE_PLANES = MAX_CONTACT_PLANES + 1;
@@ -100,7 +101,7 @@ struct CharacterState {
         } else {
             float[3] ahead = level.scaled((character.radius + character.skin).value / length).minus(up.scaled((character.halfHeight - character.radius).value));
             BlockProbe probe = BlockProbe(up);
-            visitCells(graph, Position(position.node, position.local * MIsometry!float.fromDisplacement(ahead)), Length(0), probe);
+            visitCells(graph, Position(position.node, position.local * Motion!float.shift(ahead)), Length(0), probe);
             if (probe.isFound) {
                 return probe.block.heightOf(character.stepHeight) + character.skin;
             } else {
@@ -194,8 +195,8 @@ Position movedBy(ref const Graph graph, Position start, float[3] klein) {
     if (length == 0) {
         return start;
     } else {
-        MIsometry!float step = MIsometry!float.fromDisplacement(klein.scaled(atanhf(length) / length));
-        return graph.normalized(Position(start.node, (start.local * step).renormalized()));
+        Motion!float step = Motion!float.shift(klein.scaled(atanhf(length) / length));
+        return graph.normalized(Position(start.node, (start.local * step).orthonormalized()));
     }
 }
 

@@ -4,17 +4,17 @@ import core.stdc.string : memcpy;
 import bindings.platform : VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, VK_STRUCTURE_TYPE_MEMORY_BARRIER, VkBuffer, VkBufferCopy, VkBufferUsageFlags, VkCommandBuffer, VkDevice, VkDeviceSize, VkDrawIndirectCommand, VkMemoryBarrier, VkPhysicalDevice, vkCmdCopyBuffer, vkCmdPipelineBarrier;
 import client.graphics.matrices : MATRIX_FLOATS, flatten;
 import client.graphics.pipeline : GpuBuffer;
-import client.meshing : Face, Mesher;
-import common.allocator : Allocation, RangeAllocator;
-import common.array : Array, grownCapacity;
-import common.coords : CHUNK_DIRECTIONS;
-import common.dodeca : VERTEX_COUNT, Vertex, chunkBoundingSphereCenter, chunkToNode;
+import base.allocator : Allocation, RangeAllocator;
+import base.array : Array, grownCapacity;
+import base.slab : Slab;
+import client.meshing : Mesher, Quad;
 import common.eviction : Unloaded;
 import common.graph : Graph, NO_SLOT;
 import common.neighbors : chunkNeighborSlot;
 import common.node : Chunk, ChunkSlot, ChunkState;
-import common.slab : Slab;
 import common.traversal : NOT_COLLECTED, NearbyNode, NearbyScratch;
+import geometry.cube : DIRECTIONS;
+import geometry.honeycomb : CORNER_COUNT, Corner, cubeCenter, cubeToNode;
 
 enum uint INITIAL_FACE_CAPACITY = 2 ^^ 20;
 enum uint INITIAL_STAGING_FACES = 2 ^^ 16;
@@ -23,14 +23,14 @@ enum uint INITIAL_NODE_CAPACITY = 2 ^^ 16;
 enum uint NO_VERSION = uint.max;
 enum uint POINT_FLOATS = 4;
 
-struct ChunkVertex {
-    float[MATRIX_FLOATS] chunkToNode;
-    float[POINT_FLOATS] sphereCenter;
+struct CubeFrame {
+    float[MATRIX_FLOATS] cubeToNode;
+    float[POINT_FLOATS] center;
 }
 
 struct DrawableRecord {
     uint node;
-    uint vertex;
+    uint corner;
     uint faceOffset;
     uint faceCount;
 }
@@ -61,9 +61,10 @@ struct MeshRecord {
 
 struct WorkerMeshes {
     Mesher mesher;
-    Array!Face faces;
+    Array!Quad faces;
     Array!MeshRecord records;
     Array!ChunkSlot waiting;
+    Array!ChunkSlot dropped;
 }
 
 struct MeshBatch {
@@ -71,34 +72,34 @@ struct MeshBatch {
     const(Graph)* graph;
 }
 
+// A chunk waits while a neighbor across a face is on its way, and asks for a dropped one back, since its border faces
+// come from that neighbor's cells.
 void meshJob(void* context, size_t index, uint worker) {
     MeshBatch* batch = cast(MeshBatch*) context;
     const(Graph)* graph = batch.graph;
-    ChunkSlot slot = graph.changedChunks.ptr[graph.changedHead + index];
-    const(Chunk)* chunk = graph.chunkAt(slot);
+    ChunkSlot slot = graph.chunks.pending()[index];
+    const(Chunk)* chunk = graph.chunks.at(slot);
     WorkerMeshes* output = &batch.workers.ptr[worker];
-    if (chunk.state != ChunkState.populated || chunk.voxels.isSolid()) {
-        return;
-    } else if ((*graph).isFaceNeighborGenerating(slot)) {
-        output.waiting.append(slot);
-    } else {
-        const(Face)[] meshed = output.mesher.mesh(*graph, slot);
-        output.records.append(MeshRecord(slot, graph.nodeAt(slot.slot).chunkBlock, cast(uint) output.faces.length, cast(uint) meshed.length));
-        output.faces.appendAll(meshed);
+    if (chunk.state == ChunkState.populated && !chunk.voxels.isOpaqueFill()) {
+        bool isWaiting = false;
+        foreach (direction; DIRECTIONS) {
+            ChunkSlot neighbor = (*graph).chunkNeighborSlot(slot, direction);
+            if (neighbor.slot != NO_SLOT) {
+                ChunkState state = graph.chunks.at(neighbor).state;
+                isWaiting = isWaiting || state == ChunkState.generating || state == ChunkState.dropped;
+                if (state == ChunkState.dropped) {
+                    output.dropped.append(neighbor);
+                }
+            }
+        }
+        if (isWaiting) {
+            output.waiting.append(slot);
+        } else {
+            const(Quad)[] meshed = output.mesher.mesh(*graph, slot);
+            output.records.append(MeshRecord(slot, graph.chunks.blockOf(slot.slot), cast(uint) output.faces.length, cast(uint) meshed.length));
+            output.faces.appendAll(meshed);
+        }
     }
-}
-
-bool isNeighborGenerating(ref const Graph graph, ChunkSlot chunk, size_t direction) {
-    ChunkSlot neighbor = graph.chunkNeighborSlot(chunk, CHUNK_DIRECTIONS[direction]);
-    return neighbor.slot != NO_SLOT && graph.chunkAt(neighbor).state == ChunkState.generating;
-}
-
-bool isFaceNeighborGenerating(ref const Graph graph, ChunkSlot chunk) {
-    size_t direction = 0;
-    while (direction < CHUNK_DIRECTIONS.length && !graph.isNeighborGenerating(chunk, direction)) {
-        direction += 1;
-    }
-    return direction < CHUNK_DIRECTIONS.length;
 }
 
 struct BufferCopy {
@@ -110,7 +111,7 @@ struct BufferCopy {
 struct ChunkMeshes {
     GpuBuffer faces;
     GpuBuffer staging;
-    GpuBuffer vertices;
+    GpuBuffer cubeFrames;
     GpuBuffer nodes;
     GpuBuffer drawables;
     GpuBuffer transforms;
@@ -143,16 +144,15 @@ struct ChunkMeshes {
         physicalDevice = physical;
         device = logical;
         dimension = chunkDimension;
-        ChunkVertex[VERTEX_COUNT] table;
-        foreach (vertexIndex; 0 .. VERTEX_COUNT) {
-            Vertex vertex = cast(Vertex) vertexIndex;
-            table[vertexIndex].chunkToNode = flatten(vertex.chunkToNode);
-            table[vertexIndex].sphereCenter = vertex.chunkBoundingSphereCenter.vec.data;
+        CubeFrame[CORNER_COUNT] table;
+        foreach (index; 0 .. CORNER_COUNT) {
+            Corner corner = cast(Corner) index;
+            table[index] = CubeFrame(flatten(corner.cubeToNode), corner.cubeCenter.v.c);
         }
-        vertices = GpuBuffer.makeFilled(physicalDevice, device, table[], VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-        faces = GpuBuffer.makeDeviceLocal(physicalDevice, device, cast(VkDeviceSize) INITIAL_FACE_CAPACITY * Face.sizeof, faceUsage());
+        cubeFrames = GpuBuffer.makeFilled(physicalDevice, device, table[], VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        faces = GpuBuffer.makeDeviceLocal(physicalDevice, device, cast(VkDeviceSize) INITIAL_FACE_CAPACITY * Quad.sizeof, faceUsage());
         allocator.grow(INITIAL_FACE_CAPACITY);
-        staging = GpuBuffer.makeMapped(physicalDevice, device, cast(VkDeviceSize) INITIAL_STAGING_FACES * Face.sizeof, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+        staging = GpuBuffer.makeMapped(physicalDevice, device, cast(VkDeviceSize) INITIAL_STAGING_FACES * Quad.sizeof, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
         stagingCapacity = INITIAL_STAGING_FACES;
         growDrawBuffers(INITIAL_DRAWABLE_CAPACITY);
         nodes = grownMapped(nodes, cast(VkDeviceSize) INITIAL_NODE_CAPACITY * MATRIX_FLOATS * float.sizeof, 0);
@@ -188,7 +188,7 @@ struct ChunkMeshes {
         drawableChunks.clear();
         unlisted.clear();
         allocator.release();
-        allocator.grow(cast(uint)(faces.size / Face.sizeof));
+        allocator.grow(cast(uint)(faces.size / Quad.sizeof));
         listedVersion = NO_VERSION;
         listedNodes = 0;
         meshedChunks = 0;
@@ -228,7 +228,7 @@ struct ChunkMeshes {
         }
         float[MATRIX_FLOATS]* nodeMatrices = cast(float[MATRIX_FLOATS]*) nodes.mapped;
         foreach (index; listedNodes .. listed.length) {
-            nodeMatrices[index] = flatten(listed[index].transform.mat);
+            nodeMatrices[index] = flatten(listed[index].transform.m);
         }
         listedNodes = cast(uint) listed.length;
     }
@@ -286,6 +286,7 @@ struct ChunkMeshes {
             batch.workers.ptr[i].faces.clear();
             batch.workers.ptr[i].records.clear();
             batch.workers.ptr[i].waiting.clear();
+            batch.workers.ptr[i].dropped.clear();
         }
     }
 
@@ -293,6 +294,13 @@ struct ChunkMeshes {
         foreach (worker; batch.workers.slice()) {
             foreach (slot; worker.waiting.slice()) {
                 graph.markChanged(slot);
+            }
+            foreach (slot; worker.dropped.slice()) {
+                Chunk* chunk = graph.chunks.existing(slot);
+                if (chunk.state == ChunkState.dropped) {
+                    chunk.state = ChunkState.generating;
+                    graph.chunks.restores.append(slot);
+                }
             }
         }
     }
@@ -305,7 +313,7 @@ struct ChunkMeshes {
         }
     }
 
-    uint renderIndexFor(uint block, Vertex vertex) {
+    uint renderIndexFor(uint block, Corner corner) {
         if (renderBlocks.length <= block) {
             renderBlocks.resize(block + 1);
         }
@@ -316,15 +324,15 @@ struct ChunkMeshes {
                 freeRenderBlocks.length -= 1;
             } else {
                 renderBlockCount += 1;
-                chunks.ensure(cast(size_t) renderBlockCount * VERTEX_COUNT);
+                chunks.ensure(cast(size_t) renderBlockCount * CORNER_COUNT);
             }
             renderBlocks.ptr[block] = render + 1;
         }
-        return (renderBlocks.ptr[block] - 1) * VERTEX_COUNT + vertex;
+        return (renderBlocks.ptr[block] - 1) * CORNER_COUNT + corner;
     }
 
-    void apply(ref const NearbyScratch nearby, MeshRecord record, const(Face)[] meshed) {
-        uint chunkIndex = renderIndexFor(record.block, record.slot.vertex);
+    void apply(ref const NearbyScratch nearby, MeshRecord record, const(Quad)[] meshed) {
+        uint chunkIndex = renderIndexFor(record.block, record.slot.corner);
         RenderChunk* entry = chunks.at(chunkIndex);
         if (entry.faceCount > 0) {
             allocator.release(entry.faceOffset, entry.faceCount);
@@ -345,14 +353,16 @@ struct ChunkMeshes {
         foreach (released; unloaded) {
             if (released.block < renderBlocks.length && renderBlocks.ptr[released.block] != 0) {
                 uint render = renderBlocks.ptr[released.block] - 1;
-                foreach (vertex; 0 .. VERTEX_COUNT) {
-                    uint chunkIndex = render * VERTEX_COUNT + vertex;
+                foreach (corner; 0 .. CORNER_COUNT) {
+                    uint chunkIndex = render * CORNER_COUNT + corner;
                     RenderChunk* entry = chunks.at(chunkIndex);
                     if (entry.faceCount > 0) {
                         allocator.release(entry.faceOffset, entry.faceCount);
                     }
                     removeDrawable(chunkIndex);
-                    *entry = RenderChunk(0, 0, 0, 0, false, false, entry.isUnlisted);
+                    bool isUnlisted = entry.isUnlisted;
+                    *entry = RenderChunk.init;
+                    entry.isUnlisted = isUnlisted;
                 }
                 freeRenderBlocks.append(render);
                 renderBlocks.ptr[released.block] = 0;
@@ -381,7 +391,7 @@ struct ChunkMeshes {
             drawableChunks.append(chunkIndex);
         }
         DrawableRecord* records = cast(DrawableRecord*) drawables.mapped;
-        records[entry.drawable] = DrawableRecord(node, slot.vertex, entry.faceOffset, entry.faceCount);
+        records[entry.drawable] = DrawableRecord(node, slot.corner, entry.faceOffset, entry.faceCount);
         noteNode(chunkIndex, node);
     }
 
@@ -399,25 +409,25 @@ struct ChunkMeshes {
         }
     }
 
-    void stage(const(Face)[] meshed, uint deviceOffset) {
+    void stage(const(Quad)[] meshed, uint deviceOffset) {
         uint needed = stagedFaces + cast(uint) meshed.length;
         if (needed > stagingCapacity) {
             uint capacity = cast(uint) grownCapacity(stagingCapacity, needed);
-            GpuBuffer larger = GpuBuffer.makeMapped(physicalDevice, device, cast(VkDeviceSize) capacity * Face.sizeof, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
-            memcpy(larger.mapped, staging.mapped, stagedFaces * Face.sizeof);
+            GpuBuffer larger = GpuBuffer.makeMapped(physicalDevice, device, cast(VkDeviceSize) capacity * Quad.sizeof, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+            memcpy(larger.mapped, staging.mapped, stagedFaces * Quad.sizeof);
             retired.append(staging);
             staging = larger;
             stagingCapacity = capacity;
         }
-        memcpy(cast(Face*) staging.mapped + stagedFaces, meshed.ptr, meshed.length * Face.sizeof);
-        uploads.append(VkBufferCopy(cast(VkDeviceSize) stagedFaces * Face.sizeof, cast(VkDeviceSize) deviceOffset * Face.sizeof, meshed.length * Face.sizeof));
+        memcpy(cast(Quad*) staging.mapped + stagedFaces, meshed.ptr, meshed.length * Quad.sizeof);
+        uploads.append(VkBufferCopy(cast(VkDeviceSize) stagedFaces * Quad.sizeof, cast(VkDeviceSize) deviceOffset * Quad.sizeof, meshed.length * Quad.sizeof));
         stagedFaces = needed;
     }
 
     void growFaces(uint needed) {
         uint capacity = cast(uint) grownCapacity(allocator.capacity, allocator.capacity + needed);
-        GpuBuffer larger = GpuBuffer.makeDeviceLocal(physicalDevice, device, cast(VkDeviceSize) capacity * Face.sizeof, faceUsage());
-        growthCopies.append(BufferCopy(faces.buffer, larger.buffer, cast(VkDeviceSize) allocator.capacity * Face.sizeof));
+        GpuBuffer larger = GpuBuffer.makeDeviceLocal(physicalDevice, device, cast(VkDeviceSize) capacity * Quad.sizeof, faceUsage());
+        growthCopies.append(BufferCopy(faces.buffer, larger.buffer, cast(VkDeviceSize) allocator.capacity * Quad.sizeof));
         retired.append(faces);
         faces = larger;
         allocator.grow(capacity);
@@ -444,7 +454,7 @@ struct ChunkMeshes {
         }
         faces.destroy(device);
         staging.destroy(device);
-        vertices.destroy(device);
+        cubeFrames.destroy(device);
         nodes.destroy(device);
         drawables.destroy(device);
         transforms.destroy(device);
@@ -454,6 +464,7 @@ struct ChunkMeshes {
             batch.workers.ptr[i].faces.release();
             batch.workers.ptr[i].records.release();
             batch.workers.ptr[i].waiting.release();
+            batch.workers.ptr[i].dropped.release();
         }
         batch.workers.release();
         retired.release();

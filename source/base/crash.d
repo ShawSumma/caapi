@@ -1,0 +1,43 @@
+module base.crash;
+
+import core.stdc.signal : SIGABRT, SIGFPE, SIGILL, SIGSEGV;
+import core.stdc.stdlib : _Exit;
+import core.sys.linux.execinfo : backtrace, backtrace_symbols_fd;
+import core.sys.posix.signal : SA_RESETHAND, SIGALRM, SIGBUS, sigaction, sigaction_t, sigemptyset;
+import core.sys.posix.unistd : STDERR_FILENO, alarm, write;
+
+enum uint CRASH_FRAMES = 64;
+enum int CRASH_STATUS = 128;
+immutable int[5] CRASH_SIGNALS = [SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT];
+
+// A crash in a release build otherwise says nothing about where it happened.
+void reportCrashes() {
+    void*[1] warm;
+    backtrace(warm.ptr, 1);
+    foreach (signal; CRASH_SIGNALS) {
+        reportOn(signal);
+    }
+}
+
+// Prints where the process is if it is still running after the given time, for runs that must finish.
+void reportHangAfter(uint seconds) {
+    reportOn(SIGALRM);
+    alarm(seconds);
+}
+
+void reportOn(int signal) {
+    sigaction_t action;
+    action.sa_handler = &printCrash;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = SA_RESETHAND;
+    sigaction(signal, &action, null);
+}
+
+extern (C) void printCrash(int signal) nothrow @nogc {
+    immutable string heading = "crashed, backtrace:\n";
+    write(STDERR_FILENO, heading.ptr, heading.length);
+    void*[CRASH_FRAMES] frames;
+    int depth = backtrace(frames.ptr, CRASH_FRAMES);
+    backtrace_symbols_fd(frames.ptr, depth, STDERR_FILENO);
+    _Exit(CRASH_STATUS + signal);
+}

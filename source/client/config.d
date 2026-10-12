@@ -3,7 +3,7 @@ module client.config;
 import core.stdc.stdio : FILE, fclose, fgets, fopen;
 import core.stdc.stdlib : strtof;
 import core.stdc.string : strlen;
-import common.units : Angle, AngularSpeed, Length;
+import base.units : Angle, AngularSpeed, Length;
 
 enum size_t CONFIG_LINE_CAPACITY = 256;
 

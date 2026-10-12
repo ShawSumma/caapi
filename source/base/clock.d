@@ -1,4 +1,4 @@
-module common.clock;
+module base.clock;
 
 import core.sys.posix.time : CLOCK_MONOTONIC, CLOCK_THREAD_CPUTIME_ID, clock_gettime, timespec;
 

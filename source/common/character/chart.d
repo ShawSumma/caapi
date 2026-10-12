@@ -1,22 +1,22 @@
 module common.character.chart;
 
-import common.dodeca : Vertex, chunkToNode;
-import common.math : MIsometry, MPoint, MVector;
 import common.node : ChunkLayout;
+import geometry.honeycomb : Corner, cubeToNode;
+import geometry.lorentz : Motion, Point, Vec4;
 
 enum float GRID_SLOPE_STEP = 1e-4f;
 enum float TEST_TOLERANCE = 1e-3f;
 
-float[3][3] gridJacobian(ref const ChunkLayout layout, MIsometry!float toDual) {
-    MVector!float point = (toDual * MPoint!float.origin()).vec;
-    float[3] klein = [point.data[0] / point.data[3], point.data[1] / point.data[3], point.data[2] / point.data[3]];
+float[3][3] gridJacobian(ref const ChunkLayout layout, Motion!float toCorner) {
+    Vec4!float point = (toCorner * Point!float.origin()).v;
+    float[3] klein = [point.c[0] / point.c[3], point.c[1] / point.c[3], point.c[2] / point.c[3]];
     float[3][3] jacobian;
     foreach (bodyAxis; 0 .. 3) {
         float[4] basis = [0, 0, 0, 0];
         basis[bodyAxis] = 1;
-        MVector!float direction = toDual * MVector!float(basis);
+        Vec4!float direction = toCorner * Vec4!float(basis);
         foreach (gridAxis; 0 .. 3) {
-            float kleinRate = (direction.data[gridAxis] - klein[gridAxis] * direction.data[3]) / point.data[3];
+            float kleinRate = (direction.c[gridAxis] - klein[gridAxis] * direction.c[3]) / point.c[3];
             jacobian[gridAxis][bodyAxis] = gridSlope(layout, klein[gridAxis]) * kleinRate;
         }
     }
@@ -24,11 +24,11 @@ float[3][3] gridJacobian(ref const ChunkLayout layout, MIsometry!float toDual) {
 }
 
 float gridSlope(ref const ChunkLayout layout, float klein) {
-    return (layout.dualToGrid(klein + GRID_SLOPE_STEP) - layout.dualToGrid(klein - GRID_SLOPE_STEP)) / (2 * GRID_SLOPE_STEP);
+    return (layout.kleinToGrid(klein + GRID_SLOPE_STEP) - layout.kleinToGrid(klein - GRID_SLOPE_STEP)) / (2 * GRID_SLOPE_STEP);
 }
 
-MPoint!float chunkPointInNode(Vertex vertex, float[3] chunk) {
-    return (vertex.chunkToNode * MVector!float([chunk[0], chunk[1], chunk[2], 1.0f])).normalizedPoint();
+Point!float chunkPointInNode(Corner corner, float[3] chunk) {
+    return (corner.cubeToNode * Vec4!float([chunk[0], chunk[1], chunk[2], 1.0f])).toPoint();
 }
 
 float[3][3] inverted(float[3][3] m) {

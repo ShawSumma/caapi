@@ -9,9 +9,9 @@ import core.sys.posix.pthread : pthread_equal, pthread_self, pthread_t;
 import core.sys.posix.signal : SA_RESTART, SIGPROF, sigaction, sigaction_t, sigemptyset, sigevent;
 import core.sys.posix.sys.time : ITIMER_PROF, itimerval, setitimer, timeval;
 import core.sys.posix.time : CLOCK_THREAD_CPUTIME_ID, itimerspec, timer_create, timer_delete, timer_settime, timer_t, timespec;
-import common.array : Array;
-import common.hashmap : HashMap;
-import common.parallel : syscall;
+import base.array : Array;
+import base.hashmap : HashMap;
+import base.parallel : syscall;
 
 version (X86_64) {
     enum long SYS_GETTID = 186;

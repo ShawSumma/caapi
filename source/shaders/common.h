@@ -3,14 +3,16 @@
 
 const float INFINITY = 1.0 / 0.0;
 
+// Laid out as CommonUniforms in surface.d.
 layout(set = 0, binding = 0) uniform Common {
     mat4 projection;
-    mat4 inverse_projection;
     mat4 camera_inverse;
     vec4 frustum_planes[5];
     vec4 fog_color;
-    float fog_density;
-    float fog_exponent;
+    vec2 half_tangents;
+    float depth_scale;
+    float fog_reach;
+    float fog_sharpness;
     float view_parity;
     float cull_sinh_radius;
 };

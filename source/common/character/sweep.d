@@ -2,9 +2,9 @@ module common.character.sweep;
 
 import core.math : sqrt;
 import core.stdc.math : ceilf;
-import common.character.features : Edge, Face, Features, absolute, unit;
-import common.math : isNan;
-import common.vector3 : ZERO_VECTOR, cross, dot, magnitude, minus, plus, scaled;
+import base.numbers : isNan;
+import base.vector3 : ZERO_VECTOR, cross, dot, magnitude, minus, plus, scaled;
+import common.character.features : Edge, Features, Quad, absolute, unit;
 
 enum double MIN_DISPLACEMENT_SQUARED = 1e-16;
 enum float MIN_CREASE_SINE = 1e-3f;
@@ -101,16 +101,16 @@ struct Section {
         }
     }
 
-    Contact faceContact(ref const Face face, float[3] direction, float distance, Contact best) const {
-        float separation = face.separation(center);
-        float rate = face.normal.dot(direction);
+    Contact quadContact(ref const Quad quad, float[3] direction, float distance, Contact best) const {
+        float separation = quad.separation(center);
+        float rate = quad.normal.dot(direction);
         float stop = contactTime(separation * separation, separation * rate, rate * rate, stopRadius);
         if (rate >= 0 || !isTouchWithin(stop, distance) || !best.isImprovedBy(stop)) {
             return best;
         } else {
             float[3] at = center.plus(direction.scaled(stop));
-            if (face.isAbove(at.minus(face.normal.scaled(face.separation(at))))) {
-                return accepted(best, Contact(face.normal, stop, gapAt(separation, stop), isLowest));
+            if (quad.isAbove(at.minus(quad.normal.scaled(quad.separation(at))))) {
+                return accepted(best, Contact(quad.normal, stop, gapAt(separation, stop), isLowest));
             } else {
                 return best;
             }
@@ -197,8 +197,8 @@ Contact capsuleContact(ref const Features features, Capsule capsule, float[3] st
     Contact best;
     foreach (index; 0 .. count) {
         Section section = Section(clipped, capsule.sectionCenter(start, index, count), capsule.radius, capsule.radius + capsule.skin, index == 0);
-        foreach (ref face; features.faces.slice()) {
-            best = section.faceContact(face, direction, distance, best);
+        foreach (ref quad; features.quads.slice()) {
+            best = section.quadContact(quad, direction, distance, best);
         }
         foreach (ref edge; features.edges.slice()) {
             best = section.edgeContact(edge, direction, distance, best);
@@ -231,15 +231,15 @@ unittest {
 }
 
 unittest {
-    Face floor = Face([[0, 1, 0], [0, 1, 1], [1, 1, 1], [1, 1, 0]], [0, 1, 0]);
+    Quad floor = Quad([[0, 1, 0], [0, 1, 1], [1, 1, 1], [1, 1, 0]], [0, 1, 0]);
     Section section = Section(null, [0.5f, 2.0f, 0.5f], 0.4f, 0.41f, true);
     float[3] down = [0, -1, 0];
-    Contact landing = section.faceContact(floor, down, 2.0f, Contact.init);
+    Contact landing = section.quadContact(floor, down, 2.0f, Contact.init);
     assert(landing.isHit() && absolute(landing.stop - 0.59f) < TEST_TOLERANCE);
     float[3] along = [1, 0, 0];
-    assert(!section.faceContact(floor, along, 2.0f, Contact.init).isHit());
+    assert(!section.quadContact(floor, along, 2.0f, Contact.init).isHit());
     Section resting = Section(null, [0.5f, 1.405f, 0.5f], 0.4f, 0.41f, true);
-    Contact touching = resting.faceContact(floor, down, 1.0f, Contact.init);
+    Contact touching = resting.quadContact(floor, down, 1.0f, Contact.init);
     assert(touching.stop == 0 && touching.gap > 0.004f && touching.gap < 0.006f);
     Edge rim = Edge([1, 1, 0], [1, 1, 1]);
     Section beside = Section(null, [1.6f, 1.2f, 0.5f], 0.4f, 0.41f, true);

@@ -1,77 +1,118 @@
 module common.neighbors;
 
-import common.array : Array;
-import common.coords : ChunkDirection, CoordAxis, CoordSign;
-import common.dodeca : SIDE_COUNT, Side, VERTEX_COUNT, Vertex, adjacentVertices, canonicalSides;
+import base.array : Array;
 import common.graph : Graph, NO_SLOT, ROOT_NODE;
-import common.margins : CoordsWithMargins, boundaryCoordWithMargins, marginCoord, neighborAxisPermutation;
-import common.material : Material;
-import common.node : Chunk, ChunkSlot, ChunkState, Occupancy;
+import common.material : Material, isShownAgainst;
+import common.node : Chunk, ChunkId, ChunkSlot, ChunkState, Occupancy, cellIndex;
 import common.worldgen.generation : Worldgen;
+import geometry.cube : AXIS_COUNT, Axis, AxisMap, DIRECTIONS, Direction, Sign, boundaryOf;
+import geometry.honeycomb : CORNER_COUNT, Corner, FACE_COUNT, Face, across, axisMaps, faces;
 
-enum uint AXIS_COUNT = 3;
+// Cells are named from a chunk with coordinates that may reach one step past its border, from -1 to the dimension;
+// a cell past the border belongs to the neighbor across it.
+
 enum ubyte TEST_DIMENSION = 4;
-enum ubyte TEST_EDGE_COORD = 2;
+enum int TEST_EDGE_CELL = 2;
 
 struct CellHop {
-    CoordsWithMargins coords;
     ChunkSlot chunk;
+    int[3] cell;
     bool isPopulated;
 }
 
-ChunkSlot chunkNeighborSlot(ref const Graph graph, ChunkSlot chunk, ChunkDirection direction) {
-    if (direction.sign == CoordSign.minus) {
-        return ChunkSlot(graph.neighborSlot(chunk.slot, chunk.vertex.canonicalSides[direction.axis]), chunk.vertex);
+ChunkId chunkNeighborId(ref const Graph graph, ChunkId chunk, Direction direction) {
+    if (direction.sign == Sign.plus) {
+        return ChunkId(chunk.node, chunk.corner.across[direction.axis]);
     } else {
-        return ChunkSlot(chunk.slot, chunk.vertex.adjacentVertices[direction.axis]);
+        return ChunkId(graph.neighbor(chunk.node, chunk.corner.faces[direction.axis]), chunk.corner);
     }
 }
 
-bool isOutsideInterior(ubyte dimension, ubyte coord) {
-    return coord == 0 || coord == dimension + 1;
-}
-
-bool isInteriorCell(ubyte dimension, CoordsWithMargins coords) {
-    uint axis = 0;
-    while (axis < AXIS_COUNT && !isOutsideInterior(dimension, coords.data[axis])) {
-        axis += 1;
-    }
-    return axis == AXIS_COUNT;
-}
-
-CoordSign marginSign(ubyte coord) {
-    if (coord == 0) {
-        return CoordSign.minus;
+ChunkSlot chunkNeighborSlot(ref const Graph graph, ChunkSlot chunk, Direction direction) {
+    if (direction.sign == Sign.minus) {
+        return ChunkSlot(graph.neighborSlot(chunk.slot, chunk.corner.faces[direction.axis]), chunk.corner);
     } else {
-        return CoordSign.plus;
+        return ChunkSlot(chunk.slot, chunk.corner.across[direction.axis]);
     }
 }
 
-CellHop hopCell(ref const Graph graph, ChunkSlot chunk, CoordsWithMargins coords, size_t axis) {
-    CoordSign sign = marginSign(coords.data[axis]);
-    ChunkDirection direction = ChunkDirection(cast(CoordAxis) axis, sign);
+// Across a minus border the neighbor is the same corner of the next node, mirrored onto the same axes; across a
+// plus border it is another corner of the same node, whose axes come in another order.
+AxisMap neighborAxisMap(Corner corner, Direction direction) {
+    if (direction.sign == Sign.plus) {
+        return corner.axisMaps[direction.axis];
+    } else {
+        return AxisMap.init;
+    }
+}
+
+// Where a cell one step past the border along the axis lies in the neighbor's own coordinates.
+int[3] acrossBorder(ubyte dimension, Corner corner, int[3] cell, Direction direction) {
+    int[3] moved = cell;
+    moved[direction.axis] = boundaryOf(dimension, direction.sign);
+    return neighborAxisMap(corner, direction).apply(moved);
+}
+
+Direction borderCrossed(int[3] cell, size_t axis) {
+    return Direction(cast(Axis) axis, cell[axis] < 0 ? Sign.minus : Sign.plus);
+}
+
+bool isOutside(ubyte dimension, int coordinate) {
+    return coordinate < 0 || coordinate >= dimension;
+}
+
+bool isInside(ubyte dimension, int[3] cell) {
+    return !isOutside(dimension, cell[0]) && !isOutside(dimension, cell[1]) && !isOutside(dimension, cell[2]);
+}
+
+size_t indexIn(ubyte dimension, int[3] cell) {
+    return cellIndex(dimension, cell[0], cell[1], cell[2]);
+}
+
+CellHop hopCell(ref const Graph graph, ChunkSlot chunk, int[3] cell, size_t axis) {
+    ubyte dimension = graph.layout.dimension;
+    Direction direction = borderCrossed(cell, axis);
     ChunkSlot neighbor = graph.chunkNeighborSlot(chunk, direction);
     if (neighbor.slot == NO_SLOT) {
-        return CellHop(CoordsWithMargins.init, neighbor, false);
+        return CellHop(neighbor, cell, false);
     } else {
-        CoordsWithMargins moved = coords;
-        moved.data[axis] = boundaryCoordWithMargins(graph.layout.dimension, sign);
-        CoordsWithMargins permuted = neighborAxisPermutation(chunk.vertex, direction).apply(moved);
-        return CellHop(permuted, neighbor, graph.chunkAt(neighbor).state == ChunkState.populated);
+        return CellHop(neighbor, acrossBorder(dimension, chunk.corner, cell, direction), graph.chunks.at(neighbor).state == ChunkState.populated);
     }
 }
 
-bool isOccupiedAcross(ref const Graph graph, ChunkSlot chunk, CoordsWithMargins coords, size_t axis) {
-    return isOutsideInterior(graph.layout.dimension, coords.data[axis]) && graph.isHopOccupied(graph.hopCell(chunk, coords, axis));
-}
-
-bool isCellOccupied(ref const Graph graph, ChunkSlot chunk, CoordsWithMargins coords) {
+// Past one border, the cell's material, or none when the neighbor holding it is not loaded.
+Material materialNear(ref const Graph graph, ChunkSlot chunk, int[3] cell) {
     ubyte dimension = graph.layout.dimension;
-    if (isInteriorCell(dimension, coords)) {
-        return graph.chunkAt(chunk).voxels.get(coords.toIndex(dimension)) != Material.none;
+    if (isInside(dimension, cell)) {
+        return graph.chunks.at(chunk).voxels.at(indexIn(dimension, cell));
     } else {
         uint axis = 0;
-        while (axis < AXIS_COUNT && !graph.isOccupiedAcross(chunk, coords, axis)) {
+        while (!isOutside(dimension, cell[axis])) {
+            axis += 1;
+        }
+        CellHop hop = graph.hopCell(chunk, cell, axis);
+        if (hop.isPopulated) {
+            return graph.chunks.at(hop.chunk).voxels.at(indexIn(dimension, hop.cell));
+        } else {
+            return Material.none;
+        }
+    }
+}
+
+bool isOccupiedAcross(ref const Graph graph, ChunkSlot chunk, int[3] cell, size_t axis) {
+    return isOutside(graph.layout.dimension, cell[axis]) && graph.isHopOccupied(graph.hopCell(chunk, cell, axis));
+}
+
+// Whether something fills a cell past any number of borders, assuming what a chunk's prediction says while it is not
+// loaded. A cell past two borders is reached by crossing either first, which lands in different chunks where more than
+// four of them meet an edge, so it counts as filled when any route finds it filled.
+bool isCellOccupied(ref const Graph graph, ChunkSlot chunk, int[3] cell) {
+    ubyte dimension = graph.layout.dimension;
+    if (isInside(dimension, cell)) {
+        return graph.chunks.at(chunk).voxels.at(indexIn(dimension, cell)) != Material.none;
+    } else {
+        uint axis = 0;
+        while (axis < AXIS_COUNT && !graph.isOccupiedAcross(chunk, cell, axis)) {
             axis += 1;
         }
         return axis < AXIS_COUNT;
@@ -80,9 +121,9 @@ bool isCellOccupied(ref const Graph graph, ChunkSlot chunk, CoordsWithMargins co
 
 bool isHopOccupied(ref const Graph graph, CellHop hop) {
     if (hop.isPopulated) {
-        return graph.isCellOccupied(hop.chunk, hop.coords);
+        return graph.isCellOccupied(hop.chunk, hop.cell);
     } else {
-        return hop.chunk.slot == NO_SLOT || isAssumedOccupied(graph.chunkAt(hop.chunk).predicted);
+        return hop.chunk.slot == NO_SLOT || isAssumedOccupied(graph.chunks.at(hop.chunk).predicted);
     }
 }
 
@@ -91,49 +132,107 @@ bool isAssumedOccupied(Occupancy predicted) {
 }
 
 bool isPredictionContradicted(ref const Chunk chunk) {
-    if (chunk.voxels.isSolid()) {
-        return (chunk.voxels.solidMaterial != Material.none) != isAssumedOccupied(chunk.predicted);
+    if (chunk.voxels.isUniform()) {
+        return !chunk.voxels.isFilledWith(Material.none) != isAssumedOccupied(chunk.predicted);
     } else {
         return true;
     }
 }
 
-// Collects the chunks holding a cell, through every chain of margins that reaches it.
-void touchHolders(ref const Graph graph, ChunkSlot chunk, CoordsWithMargins coords, ref Array!ChunkSlot holders) {
+// A chunk draws the faces that border its see-through cells, its border included, so one filled with something opaque
+// draws nothing, and one filled with something see-through only draws what its neighbors show against it.
+bool needsMesh(ref const Graph graph, ChunkSlot chunk) {
+    const(Chunk)* own = graph.chunks.at(chunk);
+    if (own.state != ChunkState.populated || own.voxels.isOpaqueFill()) {
+        return false;
+    } else if (!own.voxels.isUniform()) {
+        return true;
+    } else {
+        uint direction = 0;
+        while (direction < DIRECTIONS.length && !graph.showsAgainst(chunk, DIRECTIONS[direction], own.voxels.fill)) {
+            direction += 1;
+        }
+        return direction < DIRECTIONS.length;
+    }
+}
+
+bool showsAgainst(ref const Graph graph, ChunkSlot chunk, Direction direction, Material fill) {
+    ChunkSlot neighbor = graph.chunkNeighborSlot(chunk, direction);
+    if (neighbor.slot == NO_SLOT || graph.chunks.at(neighbor).state != ChunkState.populated) {
+        return false;
+    } else if (graph.chunks.at(neighbor).voxels.isUniform()) {
+        return isShownAgainst(graph.chunks.at(neighbor).voxels.fill, fill);
+    } else {
+        return true;
+    }
+}
+
+// Whether a loaded neighbor has an empty cell against this chunk's border, which would show what is inside it.
+bool isBorderingVoid(ref const Graph graph, ChunkSlot chunk) {
     ubyte dimension = graph.layout.dimension;
-    if (isInteriorCell(dimension, coords)) {
+    bool isFound = false;
+    foreach (direction; DIRECTIONS) {
+        ChunkSlot neighbor = graph.chunkNeighborSlot(chunk, direction);
+        if (!isFound && neighbor.slot != NO_SLOT && graph.chunks.at(neighbor).state == ChunkState.populated) {
+            const(Chunk)* other = graph.chunks.at(neighbor);
+            if (other.voxels.isUniform()) {
+                isFound = other.voxels.isFilledWith(Material.none);
+            } else {
+                size_t u = (direction.axis + 1) % AXIS_COUNT;
+                size_t v = (direction.axis + 2) % AXIS_COUNT;
+                int[3] cell;
+                cell[direction.axis] = direction.sign == Sign.plus ? dimension : -1;
+                foreach (j; 0 .. dimension) {
+                    foreach (i; 0 .. dimension) {
+                        cell[u] = i;
+                        cell[v] = j;
+                        isFound = isFound || other.voxels.at(indexIn(dimension, acrossBorder(dimension, chunk.corner, cell, direction))) == Material.none;
+                    }
+                }
+            }
+        }
+    }
+    return isFound;
+}
+
+// Collects the chunks holding a cell past any number of borders, through every route that reaches it.
+void touchHolders(ref const Graph graph, ChunkSlot chunk, int[3] cell, ref Array!ChunkSlot holders) {
+    ubyte dimension = graph.layout.dimension;
+    if (isInside(dimension, cell)) {
         holders.append(chunk);
     } else {
         foreach (axis; 0 .. AXIS_COUNT) {
-            if (isOutsideInterior(dimension, coords.data[axis])) {
-                CellHop hop = graph.hopCell(chunk, coords, axis);
+            if (isOutside(dimension, cell[axis])) {
+                CellHop hop = graph.hopCell(chunk, cell, axis);
                 if (hop.isPopulated) {
-                    graph.touchHolders(hop.chunk, hop.coords, holders);
+                    graph.touchHolders(hop.chunk, hop.cell, holders);
                 }
             }
         }
     }
 }
 
-void touchChunksReading(ref const Graph graph, ChunkSlot chunk, CoordsWithMargins cell, ref Array!ChunkSlot holders) {
+// Collects the chunks whose meshes read a cell on this chunk's border: those that hold it one step past their own
+// border, for its faces, or past two or three, for the shading of nearby corners.
+void touchChunksReading(ref const Graph graph, ChunkSlot chunk, int[3] cell, ref Array!ChunkSlot holders) {
     ubyte dimension = graph.layout.dimension;
-    ubyte[AXIS_COUNT] margins;
-    uint boundaryAxes = 0;
+    int[AXIS_COUNT] outward;
+    uint borderAxes = 0;
     foreach (axis; 0 .. AXIS_COUNT) {
-        if (cell.data[axis] == boundaryCoordWithMargins(dimension, CoordSign.minus)) {
-            margins[axis] = marginCoord(dimension, CoordSign.minus);
-            boundaryAxes |= 1u << axis;
-        } else if (cell.data[axis] == boundaryCoordWithMargins(dimension, CoordSign.plus)) {
-            margins[axis] = marginCoord(dimension, CoordSign.plus);
-            boundaryAxes |= 1u << axis;
+        if (cell[axis] == 0) {
+            outward[axis] = -1;
+            borderAxes |= 1u << axis;
+        } else if (cell[axis] == dimension - 1) {
+            outward[axis] = dimension;
+            borderAxes |= 1u << axis;
         }
     }
     foreach (subset; 1 .. 2 ^^ AXIS_COUNT) {
-        if ((subset & boundaryAxes) == subset) {
-            CoordsWithMargins pushed = cell;
+        if ((subset & borderAxes) == subset) {
+            int[3] pushed = cell;
             foreach (axis; 0 .. AXIS_COUNT) {
                 if ((subset & (1u << axis)) != 0) {
-                    pushed.data[axis] = margins[axis];
+                    pushed[axis] = outward[axis];
                 }
             }
             graph.touchHolders(chunk, pushed, holders);
@@ -142,15 +241,11 @@ void touchChunksReading(ref const Graph graph, ChunkSlot chunk, CoordsWithMargin
 }
 
 void touchChunksAround(ref const Graph graph, ChunkSlot chunk, ref Array!ChunkSlot holders) {
-    ubyte dimension = graph.layout.dimension;
+    int last = graph.layout.dimension - 1;
     foreach (corner; 0 .. 2 ^^ AXIS_COUNT) {
-        CoordsWithMargins cell;
+        int[3] cell;
         foreach (axis; 0 .. AXIS_COUNT) {
-            if ((corner & (1u << axis)) != 0) {
-                cell.data[axis] = boundaryCoordWithMargins(dimension, CoordSign.plus);
-            } else {
-                cell.data[axis] = boundaryCoordWithMargins(dimension, CoordSign.minus);
-            }
+            cell[axis] = (corner & (1u << axis)) != 0 ? last : 0;
         }
         graph.touchChunksReading(chunk, cell, holders);
     }
@@ -158,42 +253,41 @@ void touchChunksAround(ref const Graph graph, ChunkSlot chunk, ref Array!ChunkSl
 
 CellHop hopRemaining(ref const Graph graph, CellHop hop) {
     uint axis = AXIS_COUNT;
-    while (axis > 0 && !isOutsideInterior(graph.layout.dimension, hop.coords.data[axis - 1])) {
+    while (axis > 0 && !isOutside(graph.layout.dimension, hop.cell[axis - 1])) {
         axis -= 1;
     }
     if (axis == 0) {
         return hop;
     } else {
-        return graph.hopCell(hop.chunk, hop.coords, axis - 1);
+        return graph.hopCell(hop.chunk, hop.cell, axis - 1);
     }
 }
 
 unittest {
     Graph graph = Graph.make(TEST_DIMENSION, Worldgen.makeTerrain());
     uint root = graph.slotOf(ROOT_NODE);
-    foreach (side; 0 .. SIDE_COUNT) {
-        uint neighbor = graph.ensureNeighborSlot(root, cast(Side) side);
-        foreach (outer; 0 .. SIDE_COUNT) {
-            graph.ensureNeighborSlot(neighbor, cast(Side) outer);
+    foreach (face; 0 .. FACE_COUNT) {
+        uint neighbor = graph.ensureNeighborSlot(root, cast(Face) face);
+        foreach (outer; 0 .. FACE_COUNT) {
+            graph.ensureNeighborSlot(neighbor, cast(Face) outer);
         }
     }
     uint valenceFourEdges = 0;
     uint valenceFiveEdges = 0;
-    foreach (vertexIndex; 0 .. VERTEX_COUNT) {
-        ChunkSlot chunk = ChunkSlot(root, cast(Vertex) vertexIndex);
+    foreach (cornerIndex; 0 .. CORNER_COUNT) {
+        ChunkSlot chunk = ChunkSlot(root, cast(Corner) cornerIndex);
         foreach (a; 0 .. AXIS_COUNT) {
             foreach (b; a + 1 .. AXIS_COUNT) {
                 foreach (signs; 0 .. 4u) {
-                    CoordSign signA = signFromBit(signs & 1);
-                    CoordSign signB = signFromBit(signs & 2);
-                    CoordsWithMargins edge;
-                    edge.data = [TEST_EDGE_COORD, TEST_EDGE_COORD, TEST_EDGE_COORD];
-                    edge.data[a] = marginCoord(TEST_DIMENSION, signA);
-                    edge.data[b] = marginCoord(TEST_DIMENSION, signB);
+                    bool isPlusA = (signs & 1) != 0;
+                    bool isPlusB = (signs & 2) != 0;
+                    int[3] edge = [TEST_EDGE_CELL, TEST_EDGE_CELL, TEST_EDGE_CELL];
+                    edge[a] = isPlusA ? TEST_DIMENSION : -1;
+                    edge[b] = isPlusB ? TEST_DIMENSION : -1;
                     CellHop viaA = graph.hopRemaining(graph.hopCell(chunk, edge, a));
                     CellHop viaB = graph.hopRemaining(graph.hopCell(chunk, edge, b));
-                    bool isSame = viaA.chunk == viaB.chunk && viaA.coords == viaB.coords;
-                    if (signA == CoordSign.plus && signB == CoordSign.plus) {
+                    bool isSame = viaA.chunk == viaB.chunk && viaA.cell == viaB.cell;
+                    if (isPlusA && isPlusB) {
                         assert(!isSame);
                         valenceFiveEdges += 1;
                     } else {
@@ -203,16 +297,20 @@ unittest {
                 }
             }
         }
+        foreach (direction; DIRECTIONS) {
+            int[3] past = [TEST_EDGE_CELL, 1, 0];
+            past[direction.axis] = direction.sign == Sign.plus ? TEST_DIMENSION : -1;
+            CellHop there = graph.hopCell(chunk, past, direction.axis);
+            Axis back = neighborAxisMap(chunk.corner, direction).to[direction.axis];
+            int[3] stepped = there.cell;
+            stepped[back] = direction.sign == Sign.plus ? TEST_DIMENSION : -1;
+            CellHop home = graph.hopCell(there.chunk, stepped, back);
+            int[3] expected = past;
+            expected[direction.axis] = boundaryOf(TEST_DIMENSION, direction.sign);
+            assert(home.chunk == chunk && home.cell == expected);
+        }
     }
-    assert(valenceFourEdges == VERTEX_COUNT * AXIS_COUNT * 3);
-    assert(valenceFiveEdges == VERTEX_COUNT * AXIS_COUNT);
+    assert(valenceFourEdges == CORNER_COUNT * AXIS_COUNT * 3);
+    assert(valenceFiveEdges == CORNER_COUNT * AXIS_COUNT);
     graph.release();
-}
-
-CoordSign signFromBit(uint bit) {
-    if (bit != 0) {
-        return CoordSign.plus;
-    } else {
-        return CoordSign.minus;
-    }
 }

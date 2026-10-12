@@ -9,8 +9,9 @@ import client.arguments : StartupError, FlagValue, NumberArgument, WorldgenArgum
 import client.config : ClientConfig;
 import client.game : Game;
 import client.script : ScriptHost;
+import base.array : Array;
+import base.crash : reportCrashes;
 import client.structures : StructureProblem, placeStructure;
-import common.array : Array;
 import common.settings : CHUNK_DIMENSION;
 import common.worldgen.embedded : EMBEDDED_STRUCTURE_NAMES, isLuaPath;
 import common.worldgen.generation : Worldgen, WorldgenKind;
@@ -282,6 +283,7 @@ int startCommand(ref const HeadlessArguments arguments, const(char)* program) {
 }
 
 extern (C) int main(int argc, char** argv) {
+    reportCrashes();
     HeadlessArguments arguments = HeadlessArguments.fromArgv(argc, argv);
     int status = startCommand(arguments, argv[0]);
     arguments.release();

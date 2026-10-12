@@ -2,9 +2,10 @@ module client.camera;
 
 import core.math : cos, sin, sqrt;
 import core.stdc.math : asinf, atan2f, fabsf;
-import common.math : MIsometry, Matrix4, PI, clamped;
+import base.numbers : PI, clamped;
+import base.units : Angle, Length;
 import common.position : Position;
-import common.units : Angle, Length;
+import geometry.lorentz : Mat4, Motion;
 
 enum Angle PITCH_LIMIT = Angle(PI / 2.0f - 1e-3f);
 enum float OPPOSITE_DOT_LIMIT = -0.999999f;
@@ -75,19 +76,19 @@ struct Quaternion {
         }
     }
 
-    MIsometry!float toIsometry() const {
-        Matrix4!float m;
-        m.data[0][0] = 1 - 2 * (y * y + z * z);
-        m.data[0][1] = 2 * (x * y + w * z);
-        m.data[0][2] = 2 * (x * z - w * y);
-        m.data[1][0] = 2 * (x * y - w * z);
-        m.data[1][1] = 1 - 2 * (x * x + z * z);
-        m.data[1][2] = 2 * (y * z + w * x);
-        m.data[2][0] = 2 * (x * z + w * y);
-        m.data[2][1] = 2 * (y * z - w * x);
-        m.data[2][2] = 1 - 2 * (x * x + y * y);
-        m.data[3][3] = 1;
-        return MIsometry!float(m);
+    Motion!float toMotion() const {
+        Mat4!float m;
+        m.c[0][0] = 1 - 2 * (y * y + z * z);
+        m.c[0][1] = 2 * (x * y + w * z);
+        m.c[0][2] = 2 * (x * z - w * y);
+        m.c[1][0] = 2 * (x * y - w * z);
+        m.c[1][1] = 1 - 2 * (x * x + z * z);
+        m.c[1][2] = 2 * (y * z + w * x);
+        m.c[2][0] = 2 * (x * z + w * y);
+        m.c[2][1] = 2 * (y * z - w * x);
+        m.c[2][2] = 1 - 2 * (x * x + y * y);
+        m.c[3][3] = 1;
+        return Motion!float(m);
     }
 }
 
@@ -113,18 +114,18 @@ float[3] unitOrZero(float[3] axis) {
 
 struct Camera {
     Position position;
-    MIsometry!float eye;
+    Motion!float eye;
     Quaternion orientation;
     float[3] viewUp = [0, 1, 0];
     Length eyeOffset;
     Angle pitch;
 
     static Camera make(Length eyeOffset) {
-        return Camera(Position.origin(), MIsometry!float.identity(), Quaternion.identity(), [0, 1, 0], eyeOffset, Angle(0));
+        return Camera(Position.origin(), Motion!float.identity(), Quaternion.identity(), [0, 1, 0], eyeOffset, Angle(0));
     }
 
     Position orientedPosition() const {
-        return Position(position.node, position.local * eye * orientation.toIsometry());
+        return Position(position.node, position.local * eye * orientation.toMotion());
     }
 
     float[3] forward() const {
@@ -136,7 +137,7 @@ struct Camera {
         return Angle(asinf(clamped(ahead[0] * viewUp[0] + ahead[1] * viewUp[1] + ahead[2] * viewUp[2], -1.0f, 1.0f)));
     }
 
-    void follow(Position bodyPosition, MIsometry!float eyeFromBody, float[3] visibleUp) {
+    void follow(Position bodyPosition, Motion!float eyeFromBody, float[3] visibleUp) {
         position = bodyPosition;
         eye = eyeFromBody;
         viewUp = visibleUp;
@@ -187,14 +188,14 @@ unittest {
 unittest {
     Camera camera = Camera.make(Length(0));
     float[3] before = camera.forward();
-    camera.follow(camera.position, MIsometry!float.identity(), [1, 0, 0]);
+    camera.follow(camera.position, Motion!float.identity(), [1, 0, 0]);
     float[3] after = camera.forward();
     assert(before[0] == after[0] && before[1] == after[1] && before[2] == after[2]);
 }
 
 unittest {
     Camera camera = Camera.make(Length(0));
-    camera.follow(camera.position, MIsometry!float.identity(), [0.6f, 0.8f, 0]);
+    camera.follow(camera.position, Motion!float.identity(), [0.6f, 0.8f, 0]);
     float[3] before = camera.forward();
     camera.levelRoll();
     float[3] after = camera.forward();

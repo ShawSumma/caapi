@@ -1,42 +1,38 @@
 module common.view;
 
-import core.stdc.stdlib : calloc, free;
-import common.array : Array;
-import common.dodeca : SIDE_COUNT, Side, isAdjacentTo, reflection;
-import common.graph : FacingSide, Graph, NO_SLOT, Node, NodeId, ParentEntry, ParentList, SlotPosition, childId, sideBit;
-import common.hashmap : HashMap;
+import core.bitop : bsf;
+import base.array : Array;
+import base.hashmap : HashMap;
+import common.graph : ALL_FACES, Graph, NO_FACE, NO_SLOT, NodeId, ParentEntry, ParentList, childId, childParentFaces, farthestFaceBeyond;
+import common.node : ChunkLayout;
 import common.position : Position;
-import common.dodeca : Vertex;
-import common.worldgen.generation : ChunkStructure, CornerCache, NodeState;
-import common.worldgen.sky : GroundKey, PLANET, SkyChoice, SkyList, VertexKey, WorldRef, hasWorldsAt, knownChoice, knownRising, vertexKeyOf, worldsAt;
+import common.worldgen.blueprint : Blueprint;
+import common.worldgen.building : Building;
+import common.worldgen.generation : ChunkStructure, NodeState, Worldgen;
+import common.worldgen.sky : CornerKey, GroundKey, PLANET, SkyChoice, SkyList, Skies, WorldRef, applyDiscoveries, makeWantedWorlds, makeWorld;
+import common.worldgen.store : NodeStructure;
 import common.worldgen.structure : ClaimKey;
+import geometry.honeycomb : Corner, FACE_COUNT, Face, faceBit, mirror;
+import geometry.lorentz : Point;
 
 enum uint VIRTUAL = 1u << 31;
 
-ref GraphView viewOf(ref Graph graph) {
-    return graph.ownView();
-}
-
-ref GraphView viewOf(ref GraphView view) {
-    return view;
-}
-
 struct ViewNode {
     ParentList parents;
-    uint[SIDE_COUNT] children;
+    uint[FACE_COUNT] children;
     NodeId id;
     NodeState state;
     uint depth;
-    ushort parentSides;
+    ushort parentFaces;
     bool hasState;
 }
 
 struct SideKey {
     uint node;
-    Side side;
+    Face side;
 
     size_t toHash() const {
-        return cast(size_t) node * SIDE_COUNT + side;
+        return cast(size_t) node * FACE_COUNT + side;
     }
 }
 
@@ -48,9 +44,6 @@ struct SlotKey {
     }
 }
 
-// Reads the graph without changing it: a node that does not exist yet is worked out here the way
-// Graph.insertChildSlot and NodeState.fromParents would make it, under a handle with the VIRTUAL bit, so a view can
-// navigate anywhere while other threads read the same graph. Handles below VIRTUAL are graph slots.
 struct WorldRange {
     uint start;
     uint count;
@@ -62,14 +55,19 @@ struct WantedWorld {
     uint pathStart;
     uint pathLength;
     uint parent;
-    Vertex vertex;
+    Corner corner;
 }
 
+// The one way worldgen reads the graph. The main thread's own view has an owner, and wherever it reads past what the
+// graph holds, the graph grows. Any other view leaves the graph alone, so threads can read it at once: a node the
+// graph lacks is worked out here the way the graph would make it, under a handle with the VIRTUAL bit, and what the
+// graph would store is kept here. Handles below VIRTUAL are graph slots.
 struct GraphView {
     const(Graph)* graph;
+    Graph* owner;
     Array!ViewNode nodes;
     Array!WantedWorld wanted;
-    Array!Side wantedPaths;
+    Array!Face wantedPaths;
     HashMap!(NodeId, uint) virtualIds;
     HashMap!(SideKey, uint) missingChildren;
     HashMap!(SlotKey, NodeState) statesOfSlots;
@@ -77,11 +75,10 @@ struct GraphView {
     HashMap!(SlotKey, WorldRange) worldsOfNodes;
     Array!uint risingSkies;
     HashMap!(GroundKey, SkyList) rising;
-    HashMap!(VertexKey, SkyChoice) choices;
+    HashMap!(CornerKey, SkyChoice) choices;
     Array!uint storedSlots;
     Array!GroundKey risingKeys;
-    Array!VertexKey choiceKeys;
-    CornerCache* corners;
+    Array!CornerKey choiceKeys;
     bool isBlocked;
 
     static GraphView over(ref const Graph graph) {
@@ -90,17 +87,18 @@ struct GraphView {
         return view;
     }
 
-    // Virtual nodes keep graph slots as parents, so they are forgotten whenever the graph may have evicted nodes.
+    // Virtual nodes keep graph slots as parents and the caches hold what the graph lacked, so a view is cleared
+    // whenever the graph may have changed. What it wanted stays until the main thread makes it.
     void forget() {
         nodes.clear();
-        virtualIds.release();
-        missingChildren.release();
-        statesOfSlots.release();
+        virtualIds.clear();
+        missingChildren.clear();
+        statesOfSlots.clear();
         worldRefs.clear();
-        worldsOfNodes.release();
+        worldsOfNodes.clear();
         risingSkies.clear();
-        rising.release();
-        choices.release();
+        rising.clear();
+        choices.clear();
         storedSlots.clear();
         risingKeys.clear();
         choiceKeys.clear();
@@ -108,113 +106,36 @@ struct GraphView {
     }
 
     void release() {
-        forget();
         nodes.release();
         wanted.release();
         wantedPaths.release();
+        virtualIds.release();
+        missingChildren.release();
+        statesOfSlots.release();
         worldRefs.release();
+        worldsOfNodes.release();
         risingSkies.release();
+        rising.release();
+        choices.release();
         storedSlots.release();
         risingKeys.release();
         choiceKeys.release();
-        free(corners);
-        corners = null;
     }
 
-    bool hasWorldsAt(uint node) const {
-        return (!isVirtual(node) && (*graph).hasWorldsAt(node)) || worldsOfNodes.find(SlotKey(node)) !is null;
-    }
-
-    void storeWorlds(uint node, const(WorldRef)[] found) {
-        worldsOfNodes.insert(SlotKey(node), WorldRange(cast(uint) worldRefs.length, cast(uint) found.length));
-        worldRefs.appendAll(found);
-        if (!isVirtual(node)) {
-            storedSlots.append(node);
-        }
-    }
-
-    const(uint)[] knownRising(GroundKey key) const {
-        const(uint)[] global = (*graph).knownRising(key);
-        const(SkyList)* local = rising.find(key);
-        if (global !is null || local is null) {
-            return global;
-        } else {
-            return risingSkies.ptr[local.start .. local.start + local.count];
-        }
-    }
-
-    const(uint)[] storeRising(GroundKey key, const(uint)[] skies) {
-        SkyList list = SkyList(cast(uint) risingSkies.length, cast(uint) skies.length);
-        risingSkies.appendAll(skies);
-        rising.insert(key, list);
-        risingKeys.append(key);
-        return risingSkies.ptr[list.start .. list.start + list.count];
-    }
-
-    const(SkyChoice)* knownChoice(VertexKey key) const {
-        const(SkyChoice)* global = (*graph).knownChoice(key);
-        return global !is null ? global : choices.find(key);
-    }
-
-    void storeChoice(VertexKey key, SkyChoice choice) {
-        choices.insert(key, choice);
-        choiceKeys.append(key);
-    }
-
-    // The sides that make a node from a graph slot, so another view or the graph itself can reach the same node.
-    uint pathTo(uint node, ref Array!Side sides) const {
-        if (!isVirtual(node)) {
-            return node;
-        } else {
-            ParentEntry parent = virtualAt(node).parents.links[0];
-            uint start = pathTo(parent.slot, sides);
-            sides.append(parent.side);
-            return start;
-        }
-    }
-
-    // Only the main thread makes worlds; a view that needs a new one stops being trusted until it is forgotten, and
-    // keeps what it wanted, which forgetting does not clear.
-    uint ensureWorld(ClaimKey rooted, uint face, Vertex vertex, uint parent, SkyChoice choice) {
-        const(uint)* known = graph.skies.worldOf.find(vertexKeyOf(this, rooted));
-        if (known is null) {
-            isBlocked = true;
-            uint pathStart = cast(uint) wantedPaths.length;
-            uint start = pathTo(face, wantedPaths);
-            wanted.append(WantedWorld(start, pathStart, cast(uint) wantedPaths.length - pathStart, parent, vertex));
-            return PLANET;
-        } else {
-            return *known;
-        }
-    }
-
-    void clearWanted() {
-        wanted.clear();
-        wantedPaths.clear();
-    }
-
-    ref CornerCache cornerCache() {
-        if (corners is null) {
-            corners = cast(CornerCache*) calloc(1, CornerCache.sizeof);
-            *corners = CornerCache.init;
-        }
-        return *corners;
-    }
-
-    ref const(typeof(Graph.layout)) layout() const {
+    ref const(ChunkLayout) layout() const {
         return graph.layout;
     }
 
-    ref const(typeof(Graph.worldgen)) worldgen() const {
+    ref const(Worldgen) worldgen() const {
         return graph.worldgen;
     }
 
-    ref const(typeof(Graph.skies)) skies() const {
+    ref const(Skies) skies() const {
         return graph.skies;
     }
 
-    ref const(typeof(Graph.blueprint)) blueprint() const {
-        return graph.blueprint;
+    ref const(Blueprint) blueprint() const {
+        return graph.structures.blueprint;
     }
 
     static bool isVirtual(uint node) {
@@ -226,64 +147,19 @@ struct GraphView {
     }
 
     NodeId idAt(uint node) const {
-        if (isVirtual(node)) {
-            return virtualAt(node).id;
-        } else {
-            return graph.idAt(node);
-        }
+        return isVirtual(node) ? virtualAt(node).id : graph.idAt(node);
     }
 
     uint depthOf(uint node) const {
-        if (isVirtual(node)) {
-            return virtualAt(node).depth;
-        } else {
-            return graph.depthOf(node);
-        }
+        return isVirtual(node) ? virtualAt(node).depth : graph.depthOf(node);
     }
 
-    ushort parentSidesOf(uint node) const {
-        if (isVirtual(node)) {
-            return virtualAt(node).parentSides;
-        } else {
-            return graph.parentSidesOf(node);
-        }
+    ushort parentFacesOf(uint node) const {
+        return isVirtual(node) ? virtualAt(node).parentFaces : graph.nodeAt(node).parentFaces;
     }
 
     ParentList parents(uint node) const {
-        if (isVirtual(node)) {
-            return virtualAt(node).parents;
-        } else {
-            return graph.parents(node);
-        }
-    }
-
-    bool hasStructureAt(uint node) const {
-        return !isVirtual(node) && graph.hasStructureAt(node);
-    }
-
-    // A view reads a structure the main thread already finished; without one it cannot say.
-    ChunkStructure chunkStructureAt(uint slot) const {
-        const(Node)* node = graph.nodeAt(slot);
-        if (!node.hasStructure || (node.isInStructure && !node.hasBuilding)) {
-            return ChunkStructure(null, false, false);
-        } else if (node.isInStructure) {
-            return ChunkStructure(&node.building, true);
-        } else {
-            return ChunkStructure(null, false);
-        }
-    }
-
-    const(WorldRef)[] worldsAt(uint node) const {
-        if (!isVirtual(node) && (*graph).hasWorldsAt(node)) {
-            return (*graph).worldsAt(node);
-        } else {
-            const(WorldRange)* range = worldsOfNodes.find(SlotKey(node));
-            if (range is null || range.count == 0) {
-                return null;
-            } else {
-                return worldRefs.ptr[range.start .. range.start + range.count];
-            }
-        }
+        return isVirtual(node) ? virtualAt(node).parents : graph.parents(node);
     }
 
     uint slotOf(NodeId id) const {
@@ -296,60 +172,54 @@ struct GraphView {
         }
     }
 
-    uint neighborSlot(uint node, Side side) const {
+    uint neighborSlot(uint node, Face face) const {
         if (!isVirtual(node)) {
-            return graph.neighborSlot(node, side);
-        } else if ((virtualAt(node).parentSides & sideBit(side)) != 0) {
-            return parentAcross(node, side);
+            return graph.neighborSlot(node, face);
+        } else if ((virtualAt(node).parentFaces & faceBit(face)) != 0) {
+            ParentList list = virtualAt(node).parents;
+            uint index = 0;
+            while (list.links[index].side != face) {
+                index += 1;
+            }
+            return list.links[index].slot;
         } else {
-            return virtualAt(node).children[side];
+            return virtualAt(node).children[face];
         }
     }
 
-    uint parentAcross(uint node, Side side) const {
-        ParentList list = parents(node);
-        uint index = 0;
-        while (list.links[index].side != side) {
-            index += 1;
-        }
-        return list.links[index].slot;
-    }
-
-    uint ensureNeighborSlot(uint node, Side side) {
-        uint existing = neighborSlot(node, side);
-        if (existing != NO_SLOT) {
+    uint ensureNeighborSlot(uint node, Face face) {
+        uint existing = neighborSlot(node, face);
+        if (owner !is null) {
+            return existing == NO_SLOT ? owner.addChild(node, face) : existing;
+        } else if (existing != NO_SLOT) {
             return existing;
         } else if (isVirtual(node)) {
-            uint child = virtualChild(node, side);
-            virtualAt(node).children[side] = child;
+            uint child = virtualChild(node, face);
+            virtualAt(node).children[face] = child;
             return child;
         } else {
-            const(uint)* known = missingChildren.find(SideKey(node, side));
+            const(uint)* known = missingChildren.find(SideKey(node, face));
             if (known !is null) {
                 return *known;
             } else {
-                uint child = virtualChild(node, side);
-                missingChildren.insert(SideKey(node, side), child);
+                uint child = virtualChild(node, face);
+                missingChildren.insert(SideKey(node, face), child);
                 return child;
             }
         }
     }
 
-    // A missing neighbor is always a child: parents exist before their children and link to them when made.
-    uint virtualChild(uint parent, Side side) {
+    // Worked out as Graph.addChild makes it.
+    uint virtualChild(uint node, Face face) {
+        ushort parentFaces = childParentFaces(parentFacesOf(node), face);
         ParentList list;
-        ushort sides = 0;
-        foreach (candidateIndex; 0 .. SIDE_COUNT) {
-            Side candidate = cast(Side) candidateIndex;
-            if (candidate == side || (candidate.isAdjacentTo(side) && (parentSidesOf(parent) & sideBit(candidate)) != 0)) {
-                uint through = parent;
-                if (candidate != side) {
-                    through = ensureNeighborSlot(neighborSlot(parent, candidate), side);
-                }
-                list.links[list.count] = ParentEntry(through, candidate);
-                sides |= sideBit(candidate);
-                list.count += 1;
-            }
+        uint remaining = parentFaces;
+        while (remaining != 0) {
+            Face through = cast(Face) bsf(remaining);
+            remaining &= remaining - 1;
+            uint parent = through == face ? node : ensureNeighborSlot(neighborSlot(node, through), face);
+            list.links[list.count] = ParentEntry(parent, through);
+            list.count += 1;
         }
         NodeId id = childId(idAt(list.links[0].slot), list.links[0].side);
         const(uint)* known = virtualIds.find(id);
@@ -360,8 +230,8 @@ struct GraphView {
             made.parents = list;
             made.children[] = NO_SLOT;
             made.id = id;
-            made.depth = depthOf(parent) + 1;
-            made.parentSides = sides;
+            made.depth = depthOf(node) + 1;
+            made.parentFaces = parentFaces;
             nodes.append(made);
             uint handle = cast(uint)(nodes.length - 1) | VIRTUAL;
             virtualIds.insert(id, handle);
@@ -369,16 +239,52 @@ struct GraphView {
         }
     }
 
+    Position ensureNormalized(Position start) {
+        uint node = slotOf(start.node);
+        uint face = farthestFaceBeyond(start.local * Point!float.origin(), ALL_FACES);
+        while (face != NO_FACE) {
+            node = ensureNeighborSlot(node, cast(Face) face);
+            start.local = mirror(cast(Face) face) * start.local;
+            face = farthestFaceBeyond(start.local * Point!float.origin(), ALL_FACES);
+        }
+        return Position(idAt(node), start.local);
+    }
+
+    // The faces crossed from a node down to the root, nearest first.
+    Array!Face sidesToRoot(uint start) const {
+        Array!Face sides;
+        uint node = start;
+        while (depthOf(node) > 0) {
+            ParentEntry parent = parents(node).links[0];
+            sides.append(parent.side);
+            node = parent.slot;
+        }
+        return sides;
+    }
+
+    // The faces that make a node from a graph slot, so another view or the graph itself can reach the same node.
+    uint pathTo(uint node, ref Array!Face sides) const {
+        if (!isVirtual(node)) {
+            return node;
+        } else {
+            ParentEntry parent = virtualAt(node).parents.links[0];
+            uint start = pathTo(parent.slot, sides);
+            sides.append(parent.side);
+            return start;
+        }
+    }
+
     NodeState stateAt(uint node) {
-        if (isVirtual(node)) {
+        if (owner !is null) {
+            return *owner.ensureState(node);
+        } else if (isVirtual(node)) {
             if (!virtualAt(node).hasState) {
-                NodeState state = NodeState.fromParents(this, node);
-                virtualAt(node).state = state;
+                virtualAt(node).state = NodeState.fromParents(this, node);
                 virtualAt(node).hasState = true;
             }
             return virtualAt(node).state;
         } else if (graph.nodeAt(node).hasState) {
-            return graph.nodeAt(node).state;
+            return graph.stateAt(node);
         } else {
             const(NodeState)* known = statesOfSlots.find(SlotKey(node));
             if (known !is null) {
@@ -391,24 +297,155 @@ struct GraphView {
         }
     }
 
-    Array!Side sidesToRoot(uint start) const {
-        Array!Side sides;
-        uint node = start;
-        while (depthOf(node) > 0) {
-            ParentEntry parent = parents(node).links[0];
-            sides.append(parent.side);
-            node = parent.slot;
-        }
-        return sides;
+    bool hasStructureAt(uint node) const {
+        return !isVirtual(node) && graph.isFinished(node);
     }
 
-    Position ensureNormalized(Position start) {
-        SlotPosition current = SlotPosition(start.local, slotOf(start.node));
-        FacingSide facing = FacingSide.fromLocal(current.local);
-        while (facing.isFound) {
-            current = SlotPosition(facing.side.reflection * current.local, ensureNeighborSlot(current.slot, facing.side));
-            facing = FacingSide.fromLocal(current.local);
+    // The main thread finishes a node's structure and building as it asks; another view can only read what is
+    // finished, and says when it cannot know.
+    ChunkStructure chunkStructureAt(uint slot) {
+        if (owner !is null) {
+            if (owner.ensureStructureAt(slot)) {
+                return ChunkStructure(owner.ensureBuildingAt(slot), true);
+            } else {
+                return ChunkStructure(null, false);
+            }
+        } else {
+            const(NodeStructure)* node = &graph.structures.at(slot);
+            const(Building)* building = graph.structures.buildingAt(slot);
+            if (!node.isFinished || (node.isInStructure && building is null)) {
+                return ChunkStructure(null, false, false);
+            } else {
+                return ChunkStructure(building, node.isInStructure);
+            }
         }
-        return Position(idAt(current.slot), current.local);
+    }
+
+    bool hasWorldsAt(uint node) const {
+        return (!isVirtual(node) && graph.skies.hasWorldsAt(node)) || worldsOfNodes.find(SlotKey(node)) !is null;
+    }
+
+    const(WorldRef)[] worldsAt(uint node) const {
+        if (!isVirtual(node) && graph.skies.hasWorldsAt(node)) {
+            return graph.skies.worldsAt(node);
+        } else {
+            const(WorldRange)* range = worldsOfNodes.find(SlotKey(node));
+            if (range is null || range.count == 0) {
+                return null;
+            } else {
+                return worldRefs.ptr[range.start .. range.start + range.count];
+            }
+        }
+    }
+
+    void storeWorlds(uint node, const(WorldRef)[] found) {
+        if (owner !is null) {
+            owner.skies.storeWorlds(node, found);
+        } else {
+            worldsOfNodes.insert(SlotKey(node), WorldRange(cast(uint) worldRefs.length, cast(uint) found.length));
+            worldRefs.appendAll(found);
+            if (!isVirtual(node)) {
+                storedSlots.append(node);
+            }
+        }
+    }
+
+    const(uint)[] knownRising(GroundKey key) const {
+        const(uint)[] global = graph.skies.knownRising(key);
+        const(SkyList)* local = rising.find(key);
+        if (global !is null || local is null) {
+            return global;
+        } else {
+            return risingSkies.ptr[local.start .. local.start + local.count];
+        }
+    }
+
+    const(uint)[] storeRising(GroundKey key, const(uint)[] skies) {
+        if (owner !is null) {
+            return owner.skies.storeRising(key, skies);
+        } else {
+            SkyList list = SkyList(cast(uint) risingSkies.length, cast(uint) skies.length);
+            risingSkies.appendAll(skies);
+            rising.insert(key, list);
+            risingKeys.append(key);
+            return risingSkies.ptr[list.start .. list.start + list.count];
+        }
+    }
+
+    const(SkyChoice)* knownChoice(CornerKey key) const {
+        const(SkyChoice)* global = graph.skies.choices.find(key);
+        return global !is null ? global : choices.find(key);
+    }
+
+    void storeChoice(CornerKey key, SkyChoice choice) {
+        if (owner !is null) {
+            owner.skies.choices.insert(key, choice);
+        } else {
+            choices.insert(key, choice);
+            choiceKeys.append(key);
+        }
+    }
+
+    CornerKey cornerKeyOf(ClaimKey key) const {
+        return CornerKey(idAt(key.slot), cast(Corner) key.feature);
+    }
+
+    // Only the main thread makes worlds. Another view that needs a new one stops being trusted until it is
+    // forgotten, and keeps what it wanted, which forgetting does not clear.
+    uint ensureWorld(ClaimKey rooted, uint face, Corner corner, uint parent, SkyChoice choice) {
+        const(uint)* known = graph.skies.worldOf.find(cornerKeyOf(rooted));
+        if (known !is null) {
+            return *known;
+        } else if (owner !is null) {
+            return (*owner).makeWorld(rooted, face, corner, parent, choice);
+        } else {
+            isBlocked = true;
+            uint pathStart = cast(uint) wantedPaths.length;
+            uint start = pathTo(face, wantedPaths);
+            wanted.append(WantedWorld(start, pathStart, cast(uint) wantedPaths.length - pathStart, parent, corner));
+            return PLANET;
+        }
+    }
+
+    void clearWanted() {
+        wanted.clear();
+        wantedPaths.clear();
+    }
+}
+
+// One view per thread for parallel jobs, cleared as each job begins. When it ends, what the views worked out is kept
+// and the worlds they stopped at are made.
+struct ThreadViews {
+    Array!GraphView views;
+
+    void begin(ref const Graph graph, uint threads) {
+        while (views.length < threads) {
+            views.append(GraphView.init);
+        }
+        foreach (ref view; views.slice()) {
+            view.graph = &graph;
+            view.forget();
+        }
+    }
+
+    ref GraphView opIndex(uint worker) return {
+        return views.ptr[worker];
+    }
+
+    // Returns whether any world was made, after which work the views stopped at can run again.
+    bool finish(ref Graph graph) {
+        bool isMade = false;
+        foreach (ref view; views.slice()) {
+            graph.applyDiscoveries(view);
+            isMade = graph.makeWantedWorlds(view) || isMade;
+        }
+        return isMade;
+    }
+
+    void release() {
+        foreach (ref view; views.slice()) {
+            view.release();
+        }
+        views.release();
     }
 }

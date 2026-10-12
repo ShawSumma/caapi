@@ -1,6 +1,4 @@
-module common.names;
-
-import common.material : Material;
+module base.names;
 
 immutable string[E.max + 1] ENUM_NAMES(E) = [__traits(allMembers, E)];
 
@@ -21,8 +19,14 @@ struct NameLookup(E) {
     }
 }
 
+enum TestKind : ubyte {
+    first,
+    second,
+    third,
+}
+
 unittest {
-    assert(ENUM_NAMES!Material[Material.oakWood] == "oakWood");
-    assert(NameLookup!Material.fromName("glass").value == Material.glass);
-    assert(!NameLookup!Material.fromName("goo").isFound);
+    assert(ENUM_NAMES!TestKind[TestKind.second] == "second");
+    assert(NameLookup!TestKind.fromName("third").value == TestKind.third);
+    assert(!NameLookup!TestKind.fromName("fourth").isFound);
 }

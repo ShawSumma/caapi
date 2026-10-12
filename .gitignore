@@ -12,4 +12,4 @@ mined-test-application
 mined-*test
 screenshots/
 export.py
-export.har
+export.txt

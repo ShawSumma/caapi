@@ -6,27 +6,28 @@ import client.graphics.base : SwapchainState;
 import client.graphics.core : VulkanCore;
 import client.graphics.crosshair : CrosshairPipeline;
 import client.graphics.fog : FogPipeline;
-import client.graphics.frustum : FRUSTUM_PLANE_COUNT, Frustum;
+import client.graphics.frustum : FRUSTUM_PLANE_COUNT, Frustum, kleinDepthScale;
 import client.graphics.highlight : HighlightPipeline;
-import client.graphics.matrices : MATRIX_FLOATS, determinant, flatten, matrixInverse, matrixMultiply;
+import client.graphics.matrices : MATRIX_FLOATS, determinant, flatten, matrixMultiply;
 import client.graphics.pipeline : GpuBuffer, VULKAN_TRUE, expectSuccess;
 import client.graphics.voxels.cull : CullPipeline;
 import client.graphics.voxels.meshes : ChunkMeshes, meshJob;
 import client.graphics.voxels.surface : CommonUniforms, FACES_BINDING, LayoutPush, SurfacePipeline, TRANSFORMS_BINDING;
-import common.parallel : ParallelJob;
 import client.world : LocalWorld;
-import common.clock : NANOSECONDS_PER_MILLISECOND, nowMilliseconds;
-import common.dodeca : CHUNK_BOUNDING_SPHERE_RADIUS, chunkToNode;
-import common.math : MDirection, PI;
+import base.clock : NANOSECONDS_PER_MILLISECOND, nowMilliseconds;
+import base.numbers : PI;
+import base.parallel : ParallelJob;
+import base.units : Angle;
 import common.node : ChunkLayout;
 import common.raycast.graph : GraphCastHit;
 import common.traversal : NOT_COLLECTED;
-import common.units : Angle;
+import geometry.honeycomb : CUBE_RADIUS, cubeToNode;
+import geometry.lorentz : Normal;
 
 enum Angle HALF_VERTICAL_FOV = Angle(45.0f * (PI / 180.0f));
 enum float NEAR_PLANE = 1.0e-4f;
 enum float FOG_VISIBILITY_THRESHOLD = 1e-3f;
-enum float FOG_EXPONENT = 5.0f;
+enum float FOG_SHARPNESS = 5.0f;
 enum float CLEAR_DEPTH = 0.0f;
 enum ulong NO_TIMEOUT = ulong.max;
 enum double MESH_BUDGET_MILLISECONDS = 2.0;
@@ -183,26 +184,29 @@ struct Renderer {
         return backlog;
     }
 
+    // Fog lets through e^-(distance / reach)^sharpness of what is behind it, which falls to the visibility threshold at
+    // the render radius.
     CommonUniforms commonUniforms(ref const LocalWorld world) const {
         VkExtent2D extent = swapchain.extent;
-        Frustum frustum = Frustum.fromHalfFov(HALF_VERTICAL_FOV, cast(float) extent.width / cast(float) extent.height);
-        float[MATRIX_FLOATS] cameraInverse = flatten(world.cameraInNearbyFrame().inverse().mat);
+        Frustum frustum = Frustum.fromVerticalHalf(HALF_VERTICAL_FOV, cast(float) extent.width / cast(float) extent.height);
+        float[MATRIX_FLOATS] cameraInverse = flatten(world.cameraInNearbyFrame().inverse().m);
         float[MATRIX_FLOATS] projection = frustum.projection(NEAR_PLANE);
-        MDirection!float[FRUSTUM_PLANE_COUNT] planes = frustum.planes();
+        Normal!float[FRUSTUM_PLANE_COUNT] planes = frustum.planes();
         float[4][FRUSTUM_PLANE_COUNT] frustumPlanes;
         foreach (i; 0 .. FRUSTUM_PLANE_COUNT) {
-            frustumPlanes[i] = planes[i].vec.data;
+            frustumPlanes[i] = planes[i].v.c;
         }
         return CommonUniforms(
             projection,
-            matrixInverse(projection),
             cameraInverse,
             frustumPlanes,
             skyLinear,
-            powf(logf(1.0f / FOG_VISIBILITY_THRESHOLD), 1.0f / FOG_EXPONENT) / world.renderRadius,
-            FOG_EXPONENT,
+            [frustum.tanHalfWidth, frustum.tanHalfHeight],
+            kleinDepthScale(NEAR_PLANE),
+            world.renderRadius / powf(logf(1.0f / FOG_VISIBILITY_THRESHOLD), 1.0f / FOG_SHARPNESS),
+            FOG_SHARPNESS,
             parityOf(determinant(matrixMultiply(projection, cameraInverse))),
-            sinhf(CHUNK_BOUNDING_SPHERE_RADIUS),
+            sinhf(CUBE_RADIUS),
         );
     }
 
@@ -253,17 +257,17 @@ struct Renderer {
     }
 
     void meshChanged(ref LocalWorld world) {
-        if (world.graph.hasChanges()) {
+        if (world.graph.chunks.hasChanges()) {
             meshes.prepareBatch(world.graph, world.streamer.workerCount + 1);
-            ParallelJob job = ParallelJob(&meshJob, &meshes.batch, nowMilliseconds() + MESH_BUDGET_MILLISECONDS, world.graph.changedChunks.length - world.graph.changedHead);
+            ParallelJob job = ParallelJob(&meshJob, &meshes.batch, nowMilliseconds() + MESH_BUDGET_MILLISECONDS, world.graph.chunks.pending().length);
             world.streamer.runParallel(&job);
             foreach (_; 0 .. job.count) {
-                world.graph.takeChanged();
+                world.graph.chunks.takeChanged();
             }
             meshes.applyBatch(world.nearby[world.published]);
             meshes.requeueWaiting(world.graph);
         }
-        backlog = cast(uint)(world.graph.changedChunks.length - world.graph.changedHead);
+        backlog = cast(uint) world.graph.chunks.pending().length;
     }
 
     HighlightTarget findHighlightTarget(ref const LocalWorld world) const {
@@ -272,10 +276,10 @@ struct Renderer {
         if (!hit.isHit() || index == NOT_COLLECTED) {
             return HighlightTarget.init;
         } else {
-            float[MATRIX_FLOATS] chunkToWorld = matrixMultiply(flatten(world.cachedNodes[index].transform.mat), flatten(hit.chunk.vertex.chunkToNode));
-            ubyte[3] cell = hit.voxelCoords.data;
-            float[3] low = [layout.gridToChunk(cell[0]), layout.gridToChunk(cell[1]), layout.gridToChunk(cell[2])];
-            float[3] high = [layout.gridToChunk(cell[0] + 1), layout.gridToChunk(cell[1] + 1), layout.gridToChunk(cell[2] + 1)];
+            float[MATRIX_FLOATS] chunkToWorld = matrixMultiply(flatten(world.cachedNodes[index].transform.m), flatten(hit.chunk.corner.cubeToNode));
+            ubyte[3] cell = hit.voxelCoords.c;
+            float[3] low = [layout.gridToCube(cell[0]), layout.gridToCube(cell[1]), layout.gridToCube(cell[2])];
+            float[3] high = [layout.gridToCube(cell[0] + 1), layout.gridToCube(cell[1] + 1), layout.gridToCube(cell[2] + 1)];
             return HighlightTarget(chunkToWorld, low, high, true);
         }
     }

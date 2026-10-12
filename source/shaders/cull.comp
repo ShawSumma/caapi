@@ -9,8 +9,8 @@ const uint NOT_LISTED = 0xffffffffu;
 
 layout(local_size_x = 64) in;
 
-layout(set = 0, binding = 1) readonly restrict buffer Vertices {
-    ChunkVertex vertices[];
+layout(set = 0, binding = 1) readonly restrict buffer CubeFrames {
+    CubeFrame cube_frames[];
 };
 
 layout(set = 0, binding = 2) readonly restrict buffer Nodes {
@@ -33,13 +33,14 @@ layout(push_constant) uniform PushConstants {
     uint drawable_count;
 };
 
-float mip(vec4 a, vec4 b) {
+float minkowski(vec4 a, vec4 b) {
     return dot(a.xyz, b.xyz) - a.w * b.w;
 }
 
-bool inside_frustum(vec4 center) {
+// A frustum plane's unit normal against a point gives the sinh of the point's distance in front of the plane.
+bool is_in_frustum(vec4 center) {
     for (uint plane = 0; plane < FRUSTUM_PLANES; plane++) {
-        if (mip(frustum_planes[plane], center) < -cull_sinh_radius) {
+        if (minkowski(frustum_planes[plane], center) < -cull_sinh_radius) {
             return false;
         }
     }
@@ -53,11 +54,11 @@ void main() {
         DrawCommand command = DrawCommand(0, 0, 0, index);
         if (drawable.node != NOT_LISTED && drawable.face_count > 0) {
             mat4 node = nodes[drawable.node];
-            ChunkVertex chunk = vertices[drawable.vertex];
-            mat4 transform = node * chunk.chunk_to_node;
+            CubeFrame frame = cube_frames[drawable.corner];
+            mat4 transform = node * frame.cube_to_node;
             transforms[index].transform = transform;
             transforms[index].reversed = vec4(float(view_parity * determinant(transform) < 0.0));
-            if (inside_frustum(camera_inverse * (node * chunk.sphere_center))) {
+            if (is_in_frustum(camera_inverse * (node * frame.center))) {
                 command = DrawCommand(drawable.face_count * VERTICES_PER_FACE, 1, drawable.face_offset * VERTICES_PER_FACE, index);
             }
         }

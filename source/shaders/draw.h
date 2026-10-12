@@ -1,14 +1,15 @@
 #ifndef DRAW_H
 #define DRAW_H
 
-struct ChunkVertex {
-    mat4 chunk_to_node;
-    vec4 sphere_center;
+// Where one of a node's twenty cubes sits in the node, and the center its culling sphere is around.
+struct CubeFrame {
+    mat4 cube_to_node;
+    vec4 center;
 };
 
 struct Drawable {
     uint node;
-    uint vertex;
+    uint corner;
     uint face_offset;
     uint face_count;
 };

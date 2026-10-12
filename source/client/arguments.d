@@ -3,7 +3,7 @@ module client.arguments;
 import core.stdc.stdio : FILE, fclose, fopen, fprintf, stderr;
 import core.stdc.stdlib : strtof;
 import core.stdc.string : memcpy, strlen;
-import common.names : ENUM_NAMES, NameLookup;
+import base.names : ENUM_NAMES, NameLookup;
 import common.worldgen.embedded : EMBEDDED_STRUCTURES, EMBEDDED_STRUCTURE_NAMES, embeddedIndex, isLuaPath;
 import common.worldgen.generation : PlaneWorld, STRUCTURE_NAME_CAPACITY, StructureWorld, Worldgen, WorldgenKind, degreesToRadians;
 

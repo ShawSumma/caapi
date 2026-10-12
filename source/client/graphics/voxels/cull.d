@@ -56,7 +56,7 @@ struct CullPipeline {
 
     void bindBuffers(VkDevice device, ref ChunkMeshes meshes) {
         VkDescriptorBufferInfo[CULL_STORAGE_BINDINGS] infos = [
-            VkDescriptorBufferInfo(meshes.vertices.buffer, 0, WHOLE_SIZE),
+            VkDescriptorBufferInfo(meshes.cubeFrames.buffer, 0, WHOLE_SIZE),
             VkDescriptorBufferInfo(meshes.nodes.buffer, 0, WHOLE_SIZE),
             VkDescriptorBufferInfo(meshes.drawables.buffer, 0, WHOLE_SIZE),
             VkDescriptorBufferInfo(meshes.transforms.buffer, 0, WHOLE_SIZE),

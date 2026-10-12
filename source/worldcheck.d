@@ -3,24 +3,25 @@ module worldcheck;
 import core.stdc.math : coshf;
 import core.stdc.stdio : FILE, fprintf;
 import core.stdc.stdlib : free, malloc;
+import base.array : Array;
+import base.clock : nowMilliseconds;
+import base.murmur : murmurHash3;
+import base.parallel : Executor;
+import client.arrivals : populateChunk, resolveMaterials;
 import client.meshing : Mesher;
-import client.streaming : Streamer, populateChunk, resolveMaterials;
+import client.streaming : Streamer;
 import client.structures : StructureProblem, growthProblem, placeWorldStructure;
 import client.world : FULL_RADIUS;
-import common.array : Array;
-import common.clock : nowMilliseconds;
-import common.coords : Coords;
-import common.dodeca : CHUNK_BOUNDING_SPHERE_RADIUS, VERTEX_COUNT, Vertex, chunkBoundingSphereCenter;
 import common.graph : Graph, NodeId;
 import common.material : Material;
-import common.math : MIsometry, MPoint;
-import common.murmur : murmurHash3;
-import common.node : Chunk, ChunkSlot, ChunkState, VoxelData;
-import common.parallel : Executor;
+import common.neighbors : needsMesh;
+import common.node : Chunk, ChunkSlot, ChunkState, Voxels, cellIndex;
 import common.position : Position;
 import common.traversal : NO_DEADLINE, NearbyNode, NearbyScratch;
 import common.worldgen.generation : ChunkParams, GeneratedVoxels, Worldgen;
 import common.worldgen.structure : altitude, edgeLength;
+import geometry.honeycomb : CORNER_COUNT, CUBE_RADIUS, Corner, cubeCenter;
+import geometry.lorentz : Motion, Point;
 
 enum uint DRIVE_NEARBY_VERSION = 1;
 enum uint DRIVE_IDLE_ITERATIONS = 200;
@@ -32,21 +33,20 @@ struct ContentHashes {
     ulong[2] materials;
     ulong[2] occupancy;
 
-    static ContentHashes fromVoxels(Vertex vertex, ref const VoxelData voxels, ubyte dimension) {
+    static ContentHashes fromVoxels(Corner corner, ref const Voxels voxels, ubyte dimension) {
         size_t cells = cast(size_t) dimension * dimension * dimension;
         ubyte* materialBytes = cast(ubyte*) malloc(HASH_HEADER_BYTES + cells * Material.sizeof);
         ubyte* occupancy = cast(ubyte*) malloc(HASH_HEADER_BYTES + cells);
         Material* materials = cast(Material*)(materialBytes + HASH_HEADER_BYTES);
-        materialBytes[0] = vertex;
+        materialBytes[0] = corner;
         materialBytes[1] = dimension;
-        occupancy[0] = vertex;
+        occupancy[0] = corner;
         occupancy[1] = dimension;
         size_t cell = 0;
         foreach (x; 0 .. dimension) {
             foreach (y; 0 .. dimension) {
                 foreach (z; 0 .. dimension) {
-                    ubyte[3] coords = [cast(ubyte) x, cast(ubyte) y, cast(ubyte) z];
-                    materials[cell] = voxels.get(Coords(coords).toIndex(dimension));
+                    materials[cell] = voxels.at(cellIndex(dimension, x, y, z));
                     occupancy[HASH_HEADER_BYTES + cell] = materials[cell] != Material.none;
                     cell += 1;
                 }
@@ -66,11 +66,11 @@ struct WorldDigest {
 
     static WorldDigest fromGraph(ref const Graph graph) {
         WorldDigest digest;
-        foreach (index; 0 .. cast(size_t) graph.nodeCount * VERTEX_COUNT) {
+        foreach (index; 0 .. cast(size_t) graph.slotCount * CORNER_COUNT) {
             ChunkSlot slot = ChunkSlot.fromIndex(index);
-            const(Chunk)* chunk = graph.chunkAt(slot);
+            const(Chunk)* chunk = graph.chunks.at(slot);
             if (chunk.state == ChunkState.populated) {
-                digest.add(ContentHashes.fromVoxels(slot.vertex, chunk.voxels, graph.layout.dimension));
+                digest.add(ContentHashes.fromVoxels(slot.corner, chunk.voxels, graph.layout.dimension));
             }
         }
         return digest;
@@ -103,14 +103,14 @@ struct ChunkPass {
     uint deferred;
 
     void generate(ref Graph graph, const(NearbyNode)[] nearby, float radius) {
-        float threshold = coshf(radius + CHUNK_BOUNDING_SPHERE_RADIUS);
-        MPoint!float start = MPoint!float.origin();
+        float threshold = coshf(radius + CUBE_RADIUS);
+        Point!float start = Point!float.origin();
         foreach (nearbyNode; nearby) {
-            foreach (vertexIndex; 0 .. VERTEX_COUNT) {
-                Vertex vertex = cast(Vertex) vertexIndex;
-                ChunkSlot slot = ChunkSlot(nearbyNode.slot, vertex);
-                MPoint!float chunkCenter = nearbyNode.transform * vertex.chunkBoundingSphereCenter;
-                if (graph.chunkAt(slot).state == ChunkState.fresh && !(-start.mip(chunkCenter.vec) > threshold)) {
+            foreach (cornerIndex; 0 .. CORNER_COUNT) {
+                Corner corner = cast(Corner) cornerIndex;
+                ChunkSlot slot = ChunkSlot(nearbyNode.slot, corner);
+                Point!float chunkCenter = nearbyNode.transform * corner.cubeCenter;
+                if (graph.chunks.at(slot).state == ChunkState.fresh && !(start.coshDistance(chunkCenter) > threshold)) {
                     generateChunk(graph, slot);
                 }
             }
@@ -119,8 +119,8 @@ struct ChunkPass {
 
     void generateChunk(ref Graph graph, ChunkSlot slot) {
         double t0 = nowMilliseconds();
-        ChunkParams params = ChunkParams.make(graph, slot.slot, slot.vertex);
-        graph.chunkFor(slot).predicted = params.predictOccupancy();
+        ChunkParams params = ChunkParams.make(graph.view, slot.slot, slot.corner);
+        graph.chunks.writable(slot).predicted = params.predictOccupancy();
         double t1 = nowMilliseconds();
         GeneratedVoxels result = params.generateVoxels();
         double t2 = nowMilliseconds();
@@ -130,7 +130,7 @@ struct ChunkPass {
         voxelsMs += t2 - t1;
         populateMs += t3 - t2;
         generated += 1;
-        if (result.voxels.isSolid()) {
+        if (result.voxels.isUniform()) {
             solid += 1;
         } else {
             denseMs += t2 - t1;
@@ -143,8 +143,8 @@ struct ChunkPass {
 
 uint countDeferred(ref const Graph graph) {
     uint count = 0;
-    foreach (index; 0 .. cast(size_t) graph.nodeCount * VERTEX_COUNT) {
-        if (graph.chunkAt(ChunkSlot.fromIndex(index)).hasDeferredMaterials) {
+    foreach (index; 0 .. cast(size_t) graph.slotCount * CORNER_COUNT) {
+        if (graph.chunks.at(ChunkSlot.fromIndex(index)).hasDeferredMaterials) {
             count += 1;
         }
     }
@@ -152,8 +152,8 @@ uint countDeferred(ref const Graph graph) {
 }
 
 void resolveAllMaterials(ref Graph graph) {
-    foreach (index; 0 .. cast(size_t) graph.nodeCount * VERTEX_COUNT) {
-        if (graph.chunkAt(ChunkSlot.fromIndex(index)).hasDeferredMaterials) {
+    foreach (index; 0 .. cast(size_t) graph.slotCount * CORNER_COUNT) {
+        if (graph.chunks.at(ChunkSlot.fromIndex(index)).hasDeferredMaterials) {
             graph.resolveMaterials(ChunkSlot.fromIndex(index));
         }
     }
@@ -172,9 +172,9 @@ void printHash(FILE* output, ulong[2] hash) {
     fprintf(output, "%016llx%016llx", hash[0], hash[1]);
 }
 
-void printChunkLine(FILE* output, NodeId node, Vertex vertex, ContentHashes hashes) {
+void printChunkLine(FILE* output, NodeId node, Corner corner, ContentHashes hashes) {
     printHash(output, node.value);
-    fprintf(output, " %02u ", cast(uint) vertex);
+    fprintf(output, " %02u ", cast(uint) corner);
     printHash(output, hashes.materials);
     fprintf(output, " ");
     printHash(output, hashes.occupancy);
@@ -184,11 +184,11 @@ void printChunkLine(FILE* output, NodeId node, Vertex vertex, ContentHashes hash
 void dumpWorld(FILE* output, float radius, ubyte dimension) {
     Graph graph = terrainGraph(dimension);
     graph.generateWorld(radius);
-    foreach (index; 0 .. cast(size_t) graph.nodeCount * VERTEX_COUNT) {
+    foreach (index; 0 .. cast(size_t) graph.slotCount * CORNER_COUNT) {
         ChunkSlot slot = ChunkSlot.fromIndex(index);
-        const(Chunk)* chunk = graph.chunkAt(slot);
+        const(Chunk)* chunk = graph.chunks.at(slot);
         if (chunk.state == ChunkState.populated) {
-            printChunkLine(output, graph.idAt(slot.slot), slot.vertex, ContentHashes.fromVoxels(slot.vertex, chunk.voxels, dimension));
+            printChunkLine(output, graph.idAt(slot.slot), slot.corner, ContentHashes.fromVoxels(slot.corner, chunk.voxels, dimension));
         }
     }
     WorldDigest.fromGraph(graph).print(output);
@@ -204,13 +204,12 @@ void printWorldDigest(FILE* output, float radius, ubyte dimension) {
 
 size_t filledVoxels(ref Graph graph, uint slot) {
     size_t filled = 0;
-    foreach (vertexIndex; 0 .. VERTEX_COUNT) {
-        GeneratedVoxels generated = ChunkParams.make(graph, slot, cast(Vertex) vertexIndex).generateVoxels();
+    foreach (cornerIndex; 0 .. CORNER_COUNT) {
+        GeneratedVoxels generated = ChunkParams.make(graph.view, slot, cast(Corner) cornerIndex).generateVoxels();
         foreach (x; 0 .. graph.layout.dimension) {
             foreach (y; 0 .. graph.layout.dimension) {
                 foreach (z; 0 .. graph.layout.dimension) {
-                    ubyte[3] coords = [cast(ubyte) x, cast(ubyte) y, cast(ubyte) z];
-                    if (generated.voxels.get(Coords(coords).toIndex(graph.layout.dimension)) != Material.none) {
+                    if (generated.voxels.at(cellIndex(graph.layout.dimension, x, y, z)) != Material.none) {
                         filled += 1;
                     }
                 }
@@ -226,15 +225,14 @@ bool dumpStructure(FILE* output, ubyte dimension, Worldgen worldgen) {
     StructureProblem problem = graph.placeWorldStructure();
     if (!problem.isPresent) {
         NearbyScratch scratch;
-        NearbyNode[] nearby = scratch.collectAll(graph, Position(graph.idAt(graph.anchorSlot), MIsometry!float.identity()), STRUCTURE_DUMP_RADIUS);
+        NearbyNode[] nearby = scratch.collectAll(graph, Position(graph.idAt(graph.anchorSlot), Motion!float.identity()), STRUCTURE_DUMP_RADIUS);
         foreach (node; nearby) {
             if (graph.ensureStructureAt(node.slot)) {
-                graph.ensureNodeStateAt(node.slot);
-                fprintf(output, "altitude=%.3f filled=%zu\n", cast(double) graph.nodeAt(node.slot).state.altitude(), graph.filledVoxels(node.slot));
+                fprintf(output, "altitude=%.3f filled=%zu\n", cast(double)(*graph.ensureState(node.slot)).altitude(), graph.filledVoxels(node.slot));
             }
         }
         scratch.release();
-        fprintf(output, "lines=%zu brushes=%u stops=%zu claims=%u edge=%.4f\n", graph.blueprint.lines.length, graph.blueprint.brushCount, graph.blueprint.route.length, graph.blueprint.claimCount,cast(double) edgeLength(graph.layout).value);
+        fprintf(output, "lines=%zu brushes=%u stops=%zu claims=%u edge=%.4f\n", graph.structures.blueprint.lines.length, graph.structures.blueprint.brushCount, graph.structures.blueprint.route.length, graph.structures.blueprint.claimCount, cast(double) edgeLength(graph.layout).value);
         problem = growthProblem(graph);
     }
     if (problem.isPresent) {
@@ -250,22 +248,19 @@ bool checkRepaint(FILE* output, ubyte dimension, Worldgen worldgen) {
     uint differing = 0;
     if (!problem.isPresent) {
         NearbyScratch scratch;
-        NearbyNode[] nearby = scratch.collectAll(graph, Position(graph.idAt(graph.anchorSlot), MIsometry!float.identity()), STRUCTURE_DUMP_RADIUS);
+        NearbyNode[] nearby = scratch.collectAll(graph, Position(graph.idAt(graph.anchorSlot), Motion!float.identity()), STRUCTURE_DUMP_RADIUS);
         Array!ulong painted;
         foreach (node; nearby) {
             if (graph.ensureStructureAt(node.slot)) {
                 painted.append(graph.generatedHash(node.slot));
             }
         }
-        size_t tiles = graph.blueprint.tiles.length;
+        size_t tiles = graph.structures.blueprint.tiles.length;
         foreach (tile; 0 .. tiles) {
-            graph.blueprint.dropTile(cast(uint) tile);
+            graph.structures.blueprint.dropTile(cast(uint) tile);
         }
-        foreach (slot; 0 .. graph.nodeCount) {
-            if (graph.nodeAt(slot).hasBuilding) {
-                graph.nodeAt(slot).building.release();
-                graph.nodeAt(slot).hasBuilding = false;
-            }
+        foreach (slot; 0 .. graph.slotCount) {
+            graph.structures.releaseBuilding(slot);
         }
         size_t index = 0;
         foreach (node; nearby) {
@@ -274,7 +269,7 @@ bool checkRepaint(FILE* output, ubyte dimension, Worldgen worldgen) {
                 index += 1;
             }
         }
-        fprintf(output, "repaint structured=%zu tiles=%zu painted_again=%u differing=%u\n", painted.length, tiles, graph.blueprint.restoredTiles, differing);
+        fprintf(output, "repaint structured=%zu tiles=%zu painted_again=%u differing=%u\n", painted.length, tiles, graph.structures.blueprint.restoredTiles, differing);
         painted.release();
         scratch.release();
         problem = growthProblem(graph);
@@ -288,9 +283,9 @@ bool checkRepaint(FILE* output, ubyte dimension, Worldgen worldgen) {
 
 ulong generatedHash(ref Graph graph, uint slot) {
     ulong hash = 0;
-    foreach (vertexIndex; 0 .. VERTEX_COUNT) {
-        GeneratedVoxels generated = ChunkParams.make(graph, slot, cast(Vertex) vertexIndex).generateVoxels();
-        hash += ContentHashes.fromVoxels(cast(Vertex) vertexIndex, generated.voxels, graph.layout.dimension).materials[0];
+    foreach (cornerIndex; 0 .. CORNER_COUNT) {
+        GeneratedVoxels generated = ChunkParams.make(graph.view, slot, cast(Corner) cornerIndex).generateVoxels();
+        hash +=ContentHashes.fromVoxels(cast(Corner) cornerIndex, generated.voxels, graph.layout.dimension).materials[0];
         generated.voxels.release();
     }
     return hash;
@@ -336,9 +331,8 @@ void benchMesh(FILE* output, float radius, ubyte dimension) {
     size_t mostFaces = 0;
     double totalMs = 0;
     double slowestMs = 0;
-    foreach (index; 0 .. cast(size_t) graph.nodeCount * VERTEX_COUNT) {
-        const(Chunk)* chunk = graph.chunkAt(ChunkSlot.fromIndex(index));
-        if (chunk.state == ChunkState.populated && !chunk.voxels.isSolid()) {
+    foreach (index; 0 .. cast(size_t) graph.slotCount * CORNER_COUNT) {
+        if (graph.needsMesh(ChunkSlot.fromIndex(index))) {
             double start = nowMilliseconds();
             size_t count = mesher.mesh(graph, ChunkSlot.fromIndex(index)).length;
             double elapsed = nowMilliseconds() - start;
@@ -363,13 +357,13 @@ void benchDrive(FILE* output, float radius, ubyte dimension) {
     NearbyScratch scratch;
     NearbyNode[] nearby = scratch.collectAll(graph, Position.origin(), radius);
     Streamer streamer = Streamer.make();
-    uint nodesBefore = graph.nodeCount;
+    uint nodesBefore = graph.slotCount;
     double start = nowMilliseconds();
     double driveMs = 0;
     uint drives = 0;
     do {
         double driveStart = nowMilliseconds();
-        streamer.drive(graph, nearby, MIsometry!float.identity(), radius, DRIVE_NEARBY_VERSION, false, driveStart + DRIVE_BUDGET_MILLISECONDS);
+        streamer.drive(graph, nearby, Position.origin(), Motion!float.identity(), radius, DRIVE_NEARBY_VERSION, false, driveStart + DRIVE_BUDGET_MILLISECONDS);
         driveMs += nowMilliseconds() - driveStart;
         drives += 1;
         if (streamer.inFlight > 0) {
@@ -378,15 +372,15 @@ void benchDrive(FILE* output, float radius, ubyte dimension) {
     } while (streamer.inFlight > 0 || streamer.scanCursor < nearby.length);
     double totalMs = nowMilliseconds() - start;
     uint populated = 0;
-    foreach (index; 0 .. cast(size_t) graph.nodeCount * VERTEX_COUNT) {
-        if (graph.chunkAt(ChunkSlot.fromIndex(index)).state == ChunkState.populated) {
+    foreach (index; 0 .. cast(size_t) graph.slotCount * CORNER_COUNT) {
+        if (graph.chunks.at(ChunkSlot.fromIndex(index)).state == ChunkState.populated) {
             populated += 1;
         }
     }
-    fprintf(output, "bench-drive dim=%u radius=%.2f populated=%u nodes=%u->%u drives=%u total=%.1fms drive=%.1fms integrate_and_wait=%.1fms\n", cast(uint) dimension, cast(double) radius, populated, nodesBefore, graph.nodeCount, drives, totalMs, driveMs, totalMs - driveMs);
+    fprintf(output, "bench-drive dim=%u radius=%.2f populated=%u nodes=%u->%u drives=%u total=%.1fms drive=%.1fms integrate_and_wait=%.1fms\n", cast(uint) dimension, cast(double) radius, populated, nodesBefore, graph.slotCount, drives, totalMs, driveMs, totalMs - driveMs);
     double idleStart = nowMilliseconds();
     foreach (_; 0 .. DRIVE_IDLE_ITERATIONS) {
-        streamer.drive(graph, nearby, MIsometry!float.identity(), radius, DRIVE_NEARBY_VERSION, false, nowMilliseconds() + DRIVE_BUDGET_MILLISECONDS);
+        streamer.drive(graph, nearby, Position.origin(), Motion!float.identity(), radius, DRIVE_NEARBY_VERSION, false, nowMilliseconds() + DRIVE_BUDGET_MILLISECONDS);
     }
     fprintf(output, "bench-drive idle scan=%.3fms/drive nodes=%zu\n", (nowMilliseconds() - idleStart) / DRIVE_IDLE_ITERATIONS, nearby.length);
     streamer.release();
@@ -404,7 +398,8 @@ void benchNearby(FILE* output, float radius, uint iterations, ubyte dimension) {
     foreach (_; 0 .. iterations) {
         scratch.collectPruned(graph, radius);
     }
-    fprintf(output, "bench-nearby dim=%u radius=%.1f nodes=%zu graph=%u iterations=%u cold=%.1fms collect=%.3fms\n", cast(uint) dimension, cast(double) radius, nodeCount, graph.nodeCount, iterations, coldMs, (nowMilliseconds() - start) / iterations);    scratch.release();
+    fprintf(output, "bench-nearby dim=%u radius=%.1f nodes=%zu graph=%u iterations=%u cold=%.1fms collect=%.3fms\n", cast(uint) dimension, cast(double) radius, nodeCount, graph.slotCount, iterations, coldMs, (nowMilliseconds() - start) / iterations);
+    scratch.release();
     graph.release();
 }
 

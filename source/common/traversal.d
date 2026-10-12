@@ -2,23 +2,23 @@ module common.traversal;
 
 import core.atomic : atomicExchange;
 import core.stdc.math : coshf;
-import common.array : Array;
-import common.clock : nowMilliseconds;
-import common.dodeca : BOUNDING_SPHERE_RADIUS, SIDE_COUNT, Side, reflection;
+import base.array : Array;
+import base.clock : nowMilliseconds;
+import base.parallel : Executor, ParallelJob;
 import common.graph : Graph, NO_SLOT, NodeContent, NodeId;
-import common.math : MIsometry, MPoint, MVector;
-import common.parallel : Executor, ParallelJob;
 import common.position : Position;
 import common.worldgen.sky : mayHoldContent;
+import geometry.honeycomb : FACE_COUNT, FACE_DISTANCE, Face, NODE_RADIUS, mirror;
+import geometry.lorentz : Motion, Point, Vec4;
 
 enum double NO_DEADLINE = double.infinity;
 enum uint NOT_COLLECTED = uint.max;
 enum size_t EXPAND_BATCH = 256;
-enum size_t PREPARE_BATCH = 256;
+enum size_t PAINT_BATCH = 256;
 
 struct NodeVisit {
     uint slot;
-    MIsometry!float inverse;
+    Motion!float inverse;
 }
 
 bool isVisited(const(NodeVisit)[] visits, uint slot) {
@@ -36,7 +36,7 @@ struct VisitQueue(uint capacity) {
 
     static VisitQueue fromSlot(uint slot) {
         VisitQueue queue;
-        queue.visits[0] = NodeVisit(slot, MIsometry!float.identity());
+        queue.visits[0] = NodeVisit(slot, Motion!float.identity());
         queue.count = 1;
         return queue;
     }
@@ -53,16 +53,16 @@ struct VisitQueue(uint capacity) {
         return visits[0 .. count].isVisited(slot);
     }
 
-    bool isUnvisitedWithin(ref const Graph graph, NodeVisit visit, Side side, MVector!float point, float nodeThreshold) const {
+    bool isUnvisitedWithin(ref const Graph graph, NodeVisit visit, Face side, Vec4!float point, float nodeThreshold) const {
         uint neighbor = graph.neighborSlot(visit.slot, side);
-        return neighbor != NO_SLOT && !isVisited(neighbor) && !((side.reflection * visit.inverse * point).data[3] > nodeThreshold);
+        return neighbor != NO_SLOT && !isVisited(neighbor) && !((side.mirror * visit.inverse * point).c[3] > nodeThreshold);
     }
 
-    void expand(ref const Graph graph, NodeVisit visit, MVector!float point, float nodeThreshold) {
-        foreach (sideIndex; 0 .. SIDE_COUNT) {
-            Side side = cast(Side) sideIndex;
+    void expand(ref const Graph graph, NodeVisit visit, Vec4!float point, float nodeThreshold) {
+        foreach (sideIndex; 0 .. FACE_COUNT) {
+            Face side = cast(Face) sideIndex;
             if (count < capacity && isUnvisitedWithin(graph, visit, side, point, nodeThreshold)) {
-                visits[count] = NodeVisit(graph.neighborSlot(visit.slot, side), side.reflection * visit.inverse);
+                visits[count] = NodeVisit(graph.neighborSlot(visit.slot, side), side.mirror * visit.inverse);
                 count += 1;
             }
         }
@@ -72,13 +72,13 @@ struct VisitQueue(uint capacity) {
 
 struct NearbyNode {
     NodeId id;
-    MIsometry!float transform;
+    Motion!float transform;
     uint slot;
 }
 
 struct MissingSide {
     uint index;
-    Side side;
+    Face side;
 }
 
 struct ExpandOutput {
@@ -126,6 +126,101 @@ void expandBatch(void* context, size_t index, uint worker) {
     }
 }
 
+enum ubyte DROPPED = 0;
+enum ubyte KEPT = 1;
+enum ubyte FRONTIER = 2;
+enum size_t KEEP_BLOCK = 4096;
+
+struct BlockCounts {
+    uint kept;
+    uint frontier;
+}
+
+// Nodes are sorted a block at a time on every thread, then each block copies its nodes to where the counts of the
+// blocks before it put them, kept nodes first and frontier nodes after, both in their old order.
+struct KeepJob {
+    const(NearbyNode)* from;
+    size_t count;
+    NearbyScratch* scratch;
+    BlockCounts* blocks;
+    Point!float camera;
+    Point!float previous;
+    float coshReach;
+    float coshPreviousReach;
+    float coshFrontier;
+    float coshInner;
+    uint keptTotal;
+
+    size_t end(size_t block) const {
+        return (block + 1) * KEEP_BLOCK < count ? (block + 1) * KEEP_BLOCK : count;
+    }
+
+    bool hasNeighborNewlyInReach(Motion!float transform) const {
+        uint face = 0;
+        while (face < FACE_COUNT && !isNewlyInReach(transform * MIRRORED_ORIGINS[face])) {
+            face += 1;
+        }
+        return face < FACE_COUNT;
+    }
+
+    bool isNewlyInReach(Vec4!float center) const {
+        return !(-camera.minkowski(center) > coshReach) && -previous.minkowski(center) > coshPreviousReach;
+    }
+}
+
+immutable Vec4!float[FACE_COUNT] MIRRORED_ORIGINS = mirroredOrigins();
+
+Vec4!float[FACE_COUNT] mirroredOrigins() {
+    Vec4!float[FACE_COUNT] origins;
+    foreach (face; 0 .. FACE_COUNT) {
+        origins[face] = mirror(cast(Face) face).m.column(3);
+    }
+    return origins;
+}
+
+// A node that was expanded before has every neighbor within the old reach already, so it is expanded again only when
+// a neighbor has come within reach, or when it has come within the inner radius and may not have been expanded. A
+// neighbor's center lies two face distances away, so only nodes that near the new boundary need their neighbors
+// checked.
+void sortKept(void* context, size_t block, uint worker) {
+    KeepJob* job = cast(KeepJob*) context;
+    BlockCounts counts;
+    foreach (index; block * KEEP_BLOCK .. job.end(block)) {
+        Motion!float transform = job.from[index].transform;
+        Vec4!float center = transform * Vec4!float.origin();
+        float product = -job.camera.minkowski(center);
+        bool isNewlyInner = !(product > job.coshInner) && -job.previous.minkowski(center) > job.coshInner;
+        ubyte kind = KEPT;
+        if (product > job.coshReach) {
+            kind = DROPPED;
+        } else if (isNewlyInner || (product > job.coshFrontier && job.hasNeighborNewlyInReach(transform))) {
+            kind = FRONTIER;
+            counts.frontier += 1;
+        } else {
+            counts.kept += 1;
+        }
+        job.scratch.kinds.ptr[index] = kind;
+    }
+    job.blocks[block] = counts;
+}
+
+void copyKept(void* context, size_t block, uint worker) {
+    KeepJob* job = cast(KeepJob*) context;
+    NearbyScratch* scratch = job.scratch;
+    uint kept = job.blocks[block].kept;
+    uint frontier = job.keptTotal + job.blocks[block].frontier;
+    foreach (index; block * KEEP_BLOCK .. job.end(block)) {
+        ubyte kind = scratch.kinds.ptr[index];
+        if (kind != DROPPED) {
+            uint at = kind == KEPT ? kept++ : frontier++;
+            NearbyNode node = job.from[index];
+            scratch.nodes.ptr[at] = node;
+            scratch.stamp.ptr[node.slot] = scratch.generation;
+            scratch.position.ptr[node.slot] = at;
+        }
+    }
+}
+
 struct NearbyScratch {
     Array!NearbyNode nodes;
     Array!uint stamp;
@@ -133,16 +228,18 @@ struct NearbyScratch {
     Array!ExpandOutput outputs;
     ExpandOutput serial;
     Array!uint candidates;
-    MPoint!float startPoint;
+    Array!ubyte kinds;
+    Array!BlockCounts blocks;
+    Point!float startPoint;
     size_t front;
     size_t missingHead;
     size_t unknownHead;
-    size_t preparedHead;
+    size_t paintedHead;
     float coshThreshold = 0;
     float coshInner = 0;
-    double preparingMs = 0;
+    double paintingMs = 0;
     uint generation;
-    bool hasPrepared;
+    bool hasPainted;
 
     void release() {
         nodes.release();
@@ -154,6 +251,8 @@ struct NearbyScratch {
         outputs.release();
         serial.release();
         candidates.release();
+        kinds.release();
+        blocks.release();
     }
 
     uint indexOf(uint slot) const {
@@ -166,25 +265,25 @@ struct NearbyScratch {
 
     // The next nodes to have their content checked need their structure, which is painted for them all at once here.
     // Painting stops at a task budget, so the next batch starts at the first node this one left uncovered.
-    void prepareUnknown(ref Graph graph, Executor executor) {
+    void paintUnknownAhead(ref Graph graph, Executor executor) {
         candidates.clear();
         size_t index = unknownHead;
-        while (index < serial.unknown.length && candidates.length < PREPARE_BATCH) {
+        while (index < serial.unknown.length && candidates.length < PAINT_BATCH) {
             if (!isUnknownReady(graph, index)) {
                 candidates.append(nodes.ptr[serial.unknown.ptr[index]].slot);
             }
             index += 1;
         }
-        graph.prepareStructures(candidates.slice(), executor);
-        preparedHead = unknownHead + 1;
-        while (preparedHead < index && isUnknownReady(graph, preparedHead)) {
-            preparedHead += 1;
+        graph.paintAhead(candidates.slice(), executor);
+        paintedHead = unknownHead + 1;
+        while (paintedHead < index && isUnknownReady(graph, paintedHead)) {
+            paintedHead += 1;
         }
     }
 
     bool isUnknownReady(ref const Graph graph, size_t index) const {
         uint slot = nodes.ptr[serial.unknown.ptr[index]].slot;
-        return graph.hasStructureAt(slot) || graph.nodeAt(slot).isCovered;
+        return graph.isFinished(slot) || graph.structures.at(slot).isCovered;
     }
 
     bool hasSerialWork() const {
@@ -196,23 +295,23 @@ struct NearbyScratch {
     }
 
     void begin(ref Graph graph, Position start, float distance, float inner) {
-        coshThreshold = coshf(distance + BOUNDING_SPHERE_RADIUS);
+        coshThreshold = coshf(distance + NODE_RADIUS);
         coshInner = coshf(inner);
         nodes.clear();
         serial.clear();
         front = 0;
         missingHead = 0;
         unknownHead = 0;
-        preparedHead = 0;
+        paintedHead = 0;
         generation += 1;
-        startPoint = start.local * MPoint!float.origin();
-        collect(graph, NearbyNode(start.node, MIsometry!float.identity(), graph.slotOf(start.node)));
+        startPoint = start.local * Point!float.origin();
+        collect(graph, NearbyNode(start.node, Motion!float.identity(), graph.slotOf(start.node)));
     }
 
     void reserveStamps(ref const Graph graph) {
-        if (stamp.length < graph.nodeCount) {
-            stamp.resize(graph.nodeCount);
-            position.resize(graph.nodeCount);
+        if (stamp.length < graph.slotCount) {
+            stamp.resize(graph.slotCount);
+            position.resize(graph.slotCount);
         }
     }
 
@@ -232,7 +331,7 @@ struct NearbyScratch {
             outputs.append(ExpandOutput.init);
         }
         bool isLate = false;
-        hasPrepared = false;
+        hasPainted = false;
         while (isBuilding() && !isLate) {
             if (hasSerialWork()) {
                 isLate = !drainSerial(graph, deadline, executor);
@@ -274,15 +373,15 @@ struct NearbyScratch {
                 NearbyNode current = nodes.ptr[missing.index];
                 uint neighbor = graph.ensureNeighborSlot(current.slot, missing.side);
                 if (indexOf(neighbor) == NOT_COLLECTED) {
-                    collect(graph, NearbyNode(graph.idAt(neighbor), current.transform * missing.side.reflection, neighbor));
+                    collect(graph, NearbyNode(graph.idAt(neighbor), current.transform * missing.side.mirror, neighbor));
                 }
-            } else if (unknownHead >= preparedHead && hasPrepared && nowMilliseconds() + preparingMs > deadline) {
+            } else if (unknownHead >= paintedHead && hasPainted && nowMilliseconds() + paintingMs > deadline) {
                 isStalled = true;
-            } else if (unknownHead >= preparedHead) {
+            } else if (unknownHead >= paintedHead) {
                 double start = nowMilliseconds();
-                prepareUnknown(graph, executor);
-                preparingMs = nowMilliseconds() - start;
-                hasPrepared = true;
+                paintUnknownAhead(graph, executor);
+                paintingMs = nowMilliseconds() - start;
+                hasPainted = true;
             } else {
                 NearbyNode current = nodes.ptr[serial.unknown.ptr[unknownHead]];
                 unknownHead += 1;
@@ -295,50 +394,85 @@ struct NearbyScratch {
             serial.clear();
             missingHead = 0;
             unknownHead = 0;
-            preparedHead = 0;
+            paintedHead = 0;
         }
         return !isStalled;
     }
 
-    bool isWithinReach(NearbyNode current, Side side) const {
-        MIsometry!float step = side.reflection;
-        MVector!float reflectedOrigin = MVector!float(step.mat.data[3]);
-        return !(-startPoint.mip(current.transform * reflectedOrigin) > coshThreshold);
+    bool isWithinReach(NearbyNode current, Face side) const {
+        Vec4!float mirroredOrigin = side.mirror.m.column(3);
+        return !(-startPoint.minkowski(current.transform * mirroredOrigin) > coshThreshold);
     }
 
     bool isInner(NearbyNode current) const {
-        return !(-startPoint.mip(current.transform * MVector!float.origin()) > coshInner);
+        return !(-startPoint.minkowski(current.transform * Vec4!float.origin()) > coshInner);
     }
 
     void expandKnown(ref const Graph graph, NearbyNode current, uint index, ref ExpandOutput output) {
-        foreach (sideIndex; 0 .. SIDE_COUNT) {
-            Side side = cast(Side) sideIndex;
+        foreach (sideIndex; 0 .. FACE_COUNT) {
+            Face side = cast(Face) sideIndex;
             uint existing = graph.neighborSlot(current.slot, side);
             if ((existing == NO_SLOT || stamp.ptr[existing] != generation) && isWithinReach(current, side)) {
                 if (existing == NO_SLOT) {
                     output.missing.append(MissingSide(index, side));
                 } else if (claim(existing)) {
-                    output.found.append(NearbyNode(graph.idAt(existing), current.transform * side.reflection, existing));
+                    output.found.append(NearbyNode(graph.idAt(existing), current.transform * side.mirror, existing));
                 }
             }
         }
     }
 
     void expandAll(ref Graph graph, NearbyNode current) {
-        foreach (sideIndex; 0 .. SIDE_COUNT) {
-            Side side = cast(Side) sideIndex;
+        foreach (sideIndex; 0 .. FACE_COUNT) {
+            Face side = cast(Face) sideIndex;
             uint existing = graph.neighborSlot(current.slot, side);
             if ((existing == NO_SLOT || indexOf(existing) == NOT_COLLECTED) && isWithinReach(current, side)) {
                 uint neighbor = graph.ensureNeighborSlot(current.slot, side);
                 if (indexOf(neighbor) == NOT_COLLECTED) {
-                    collect(graph, NearbyNode(graph.idAt(neighbor), current.transform * side.reflection, neighbor));
+                    collect(graph, NearbyNode(graph.idAt(neighbor), current.transform * side.mirror, neighbor));
                 }
             }
         }
     }
 
+    // Starts a search from where a finished one left off, in its frame, around a camera point given in that frame:
+    // nodes still within reach keep their place and transform, and only those whose neighbors may have come within
+    // reach, or which have come within the inner radius, are expanded again.
+    void beginFrom(ref const NearbyScratch finished, ref Graph graph, Point!float camera, float distance, float inner, Executor executor) {
+        float moved = camera.distance(finished.startPoint);
+        float frontier = distance + NODE_RADIUS - 2 * FACE_DISTANCE - moved;
+        size_t blockCount = (finished.nodes.length + KEEP_BLOCK - 1) / KEEP_BLOCK;
+        kinds.resize(finished.nodes.length);
+        blocks.resize(blockCount);
+        serial.clear();
+        missingHead = 0;
+        unknownHead = 0;
+        paintedHead = 0;
+        generation += 1;
+        reserveStamps(graph);
+        KeepJob keeping = KeepJob(finished.nodes.ptr, finished.nodes.length, &this, blocks.ptr, camera, finished.startPoint, coshf(distance + NODE_RADIUS), finished.coshThreshold, frontier > 0 ? coshf(frontier) : 1, coshf(inner));
+        ParallelJob sorting = ParallelJob(&sortKept, &keeping, NO_DEADLINE, blockCount);
+        executor.run(&sorting);
+        BlockCounts total;
+        foreach (ref counts; blocks.slice()) {
+            BlockCounts own = counts;
+            counts = total;
+            total.kept += own.kept;
+            total.frontier += own.frontier;
+        }
+        keeping.keptTotal = total.kept;
+        nodes.reserve(total.kept + total.frontier);
+        nodes.length = total.kept + total.frontier;
+        ParallelJob copying = ParallelJob(&copyKept, &keeping, NO_DEADLINE, blockCount);
+        executor.run(&copying);
+        coshThreshold = keeping.coshReach;
+        coshInner = keeping.coshInner;
+        startPoint = camera;
+        front = total.kept;
+    }
+
     NearbyNode[] collectAll(ref Graph graph, Position start, float distance) {
-        begin(graph, start, distance, distance + BOUNDING_SPHERE_RADIUS);
+        begin(graph, start, distance, distance + NODE_RADIUS);
         advance(graph, NO_DEADLINE, Executor.init);
         return nodes.slice();
     }

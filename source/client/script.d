@@ -5,14 +5,14 @@ import core.stdc.stdio : FILE, fclose, fopen, fprintf;
 import core.stdc.string : strlen;
 import bindings.lua : luaL_checkinteger, luaL_checklstring, luaL_checknumber, luaL_checktype, luaL_error, luaL_loadfilex, luaL_optnumber, luaL_ref, luaL_unref, lua_CFunction, lua_Integer, lua_State, lua_callk, lua_close, lua_createtable, lua_gettop, lua_pcallk, lua_pushboolean, lua_pushcclosure, lua_pushinteger, lua_pushnil, lua_pushnumber, lua_pushvalue, lua_rawgeti, lua_tolstring, lua_touserdata, lua_type;
 import client.arguments : StructureName;
-import client.game : FrameInput, Game, KEY_COUNT, Key, MATERIAL_PALETTE, RouteWaypoint;
+import client.game : FrameInput, Game, KEY_COUNT, Key, MATERIAL_PALETTE, RouteWaypoint, UnloadedCount;
 import client.lua : LUA_FIRST_UPVALUE, LUA_NO_REF, LUA_REGISTRY, LUA_STATUS_OK, LUA_TOP, LUA_TYPE_FUNCTION, LUA_TYPE_TABLE, LuaLookup, LuaName, SELF, TRACEBACK_INDEX, isNoneOrNil, luaTraceback, newSafeState, pushLuaName, registerMethod, setPackagePath;
 import client.structures : StructureProblem, growthProblem, restartGame;
+import base.names : ENUM_NAMES;
+import base.units : Angle, AngularSpeed, Length, Time;
+import base.vector3 : dot, magnitude, rejectAlong;
 import client.world : TargetMaterial;
 import common.character.controller : MovementMode;
-import common.names : ENUM_NAMES;
-import common.units : Angle, AngularSpeed, Length, Time;
-import common.vector3 : dot, magnitude, rejectAlong;
 import common.worldgen.generation : PlaneWorld, StructureWorld, Worldgen, WorldgenKind;
 
 enum int CHUNK_RESULTS = 1;
@@ -20,6 +20,7 @@ enum int SCRIPT_ARGUMENTS = 1;
 enum Time DEFAULT_TIMESTEP = Time(0.016f);
 enum Time ONE_SECOND = Time(1.0f);
 enum double RADIANS_PER_DEGREE = 0.017453292519943295;
+enum int UNLOADED_RESULTS = 5;
 
 struct ScriptHost {
     lua_State* lua;
@@ -110,6 +111,9 @@ struct ScriptHost {
         lua.registerMethod(&this, "route_waypoint", &luaRouteWaypoint);
         lua.registerMethod(&this, "traveled", &luaTraveled);
         lua.registerMethod(&this, "is_on_ground", &luaIsOnGround);
+        lua.registerMethod(&this, "live", &luaLive);
+        lua.registerMethod(&this, "is_loaded", &luaIsLoaded);
+        lua.registerMethod(&this, "unloaded_within", &luaUnloadedWithin);
         lua.registerMethod(&this, "altitude", &luaAltitude);
         lua.registerMethod(&this, "speed", &luaSpeed);
         lua.registerMethod(&this, "horizontal_speed", &luaHorizontalSpeed);
@@ -271,7 +275,7 @@ extern (C) int luaEnterStructure(lua_State* lua) {
 
 extern (C) int luaEnterRoute(lua_State* lua) {
     ScriptHost* host = methodHost(lua);
-    if (host.game.world.graph.blueprint.route.length == 0) {
+    if (host.game.world.graph.structures.blueprint.route.length == 0) {
         luaL_error(lua, "enter_route needs a structure with a route");
     } else {
         host.game.enterRoute();
@@ -426,6 +430,30 @@ extern (C) int luaTraveled(lua_State* lua) {
 extern (C) int luaIsOnGround(lua_State* lua) {
     lua_pushboolean(lua, methodHost(lua).game.characterState.isOnGround);
     return 1;
+}
+
+// Steps from here on load the world the way the game does, a budget at a time, instead of generating on demand.
+extern (C) int luaLive(lua_State* lua) {
+    methodHost(lua).game.isGeneratingOnDemand = false;
+    return 0;
+}
+
+extern (C) int luaIsLoaded(lua_State* lua) {
+    lua_pushboolean(lua, methodHost(lua).game.isLoadedAround());
+    return 1;
+}
+
+// Returns how many chunks within the distance are fresh, generating and dropped, how many nodes are missing, and how
+// many fresh chunks wait for their node's building.
+extern (C) int luaUnloadedWithin(lua_State* lua) {
+    ScriptHost* host = methodHost(lua);
+    UnloadedCount counted = host.game.unloadedWithin(Length(cast(float) luaL_checknumber(lua, SELF + 1)));
+    lua_pushinteger(lua, counted.fresh);
+    lua_pushinteger(lua, counted.generating);
+    lua_pushinteger(lua, counted.dropped);
+    lua_pushinteger(lua, counted.missingNodes);
+    lua_pushinteger(lua, counted.awaitingBuilding);
+    return UNLOADED_RESULTS;
 }
 
 extern (C) int luaAltitude(lua_State* lua) {

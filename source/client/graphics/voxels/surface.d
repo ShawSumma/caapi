@@ -5,7 +5,7 @@ import bindings.platform : VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_B
 import client.graphics.frustum : FRUSTUM_PLANE_COUNT;
 import client.graphics.matrices : MATRIX_FLOATS;
 import client.graphics.pipeline : Blend, GpuBuffer, PipelineSettings, QUEUE_FAMILY_IGNORED, WHOLE_SIZE, bindDeviceLocalImage, bufferWrite, createGraphicsPipeline, createPipelineLayout, createSetLayout, createShader, expectSuccess, imageWrite, layoutBinding;
-import common.material : Material;
+import common.material : MATERIAL_COLORS, Material;
 
 enum string VOXELS_VERT_SPV = import("voxels.vert.spv");
 enum string VOXELS_FRAG_SPV = import("voxels.frag.spv");
@@ -17,55 +17,6 @@ enum uint GLASS_FRAME_TEXELS = 1;
 enum uint TEXTURE_LAYERS = Material.max;
 enum uint TEXEL_BYTES = 4;
 enum uint COLOR_CHANNELS = 3;
-
-immutable ubyte[COLOR_CHANNELS][TEXTURE_LAYERS] MATERIAL_SRGB = [
-    [120, 85, 58],
-    [219, 203, 150],
-    [160, 140, 110],
-    [170, 110, 80],
-    [90, 70, 50],
-    [150, 120, 80],
-    [130, 105, 75],
-    [135, 90, 65],
-    [190, 100, 60],
-    [200, 195, 175],
-    [95, 95, 100],
-    [210, 205, 190],
-    [205, 175, 125],
-    [170, 80, 55],
-    [235, 235, 230],
-    [75, 80, 90],
-    [165, 150, 145],
-    [200, 200, 195],
-    [130, 130, 130],
-    [60, 60, 60],
-    [50, 50, 55],
-    [110, 130, 60],
-    [50, 90, 170],
-    [220, 80, 20],
-    [105, 75, 45],
-    [60, 120, 40],
-    [180, 140, 90],
-    [130, 130, 135],
-    [220, 220, 215],
-    [180, 215, 240],
-    [200, 220, 230],
-    [135, 130, 125],
-    [245, 248, 250],
-    [110, 130, 60],
-    [170, 160, 90],
-    [70, 150, 50],
-    [90, 110, 50],
-    [90, 140, 50],
-    [70, 100, 80],
-    [215, 210, 195],
-    [125, 175, 70],
-    [80, 58, 38],
-    [45, 85, 55],
-    [165, 205, 225],
-    [160, 160, 155],
-    [115, 120, 130],
-];
 enum uint FACES_BINDING = 0;
 enum uint TEXTURE_BINDING = 1;
 enum uint TRANSFORMS_BINDING = 2;
@@ -88,14 +39,16 @@ struct LayoutPush {
     float cellRatio;
 }
 
+// Laid out as Common in common.h.
 struct CommonUniforms {
     float[MATRIX_FLOATS] projection;
-    float[MATRIX_FLOATS] inverseProjection;
     float[MATRIX_FLOATS] cameraInverse;
     float[4][FRUSTUM_PLANE_COUNT] frustumPlanes;
     float[4] fogColor;
-    float fogDensity;
-    float fogExponent;
+    float[2] halfTangents;
+    float depthScale;
+    float fogReach;
+    float fogSharpness;
     float viewParity;
     float cullSinhRadius;
 }
@@ -212,7 +165,7 @@ struct SurfacePipeline {
         size_t totalBytes = layerTexels * TEXEL_BYTES * TEXTURE_LAYERS;
         ubyte* pixels = cast(ubyte*) malloc(totalBytes);
         foreach (texel; 0 .. layerTexels * TEXTURE_LAYERS) {
-            pixels[texel * TEXEL_BYTES .. texel * TEXEL_BYTES + COLOR_CHANNELS] = MATERIAL_SRGB[texel / layerTexels][];
+            pixels[texel * TEXEL_BYTES .. texel * TEXEL_BYTES + COLOR_CHANNELS] = MATERIAL_COLORS[texel / layerTexels + 1][];
             pixels[texel * TEXEL_BYTES + COLOR_CHANNELS] = texelAlpha(cast(uint)(texel / layerTexels), cast(uint)(texel % layerTexels));
         }
         GpuBuffer staging = GpuBuffer.makeFilled(physicalDevice, device, pixels[0 .. totalBytes], VK_BUFFER_USAGE_TRANSFER_SRC_BIT);

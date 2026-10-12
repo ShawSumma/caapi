@@ -1,4 +1,4 @@
-module common.murmur;
+module base.murmur;
 
 enum ulong MURMUR_C1 = 0x87c37b91114253d5;
 enum ulong MURMUR_C2 = 0x4cf5ad432745937f;

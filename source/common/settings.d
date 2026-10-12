@@ -1,7 +1,7 @@
 module common.settings;
 
 import core.stdc.math : sqrtf;
-import common.units : Acceleration, AngularSpeed, Blocks, Length, Rate, Ratio, Speed;
+import base.units : Acceleration, AngularSpeed, Blocks, Length, Rate, Ratio, Speed;
 
 enum ubyte CHUNK_DIMENSION = 12;
 

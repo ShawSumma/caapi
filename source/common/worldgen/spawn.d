@@ -1,43 +1,43 @@
 module common.worldgen.spawn;
 
 import core.stdc.math : coshf;
-import common.array : Array;
-import common.dodeca : BOUNDING_SPHERE_RADIUS, CHUNK_BOUNDING_SPHERE_RADIUS, SIDE_COUNT, Side, VERTEX_COUNT, Vertex, chunkBoundingSphereCenter, reflection;
+import base.array : Array;
+import base.vector3 : scaled;
 import common.graph : Graph, ROOT_NODE;
-import common.math : MIsometry, MPoint, MVector;
 import common.node : ChunkSlot;
 import common.position : Position;
 import common.traversal : NodeVisit, isVisited;
-import common.vector3 : scaled;
 import common.worldgen.generation : ChunkParams, PlaneWorld, Worldgen;
 import common.worldgen.sky : gravityAt;
+import geometry.honeycomb : CORNER_COUNT, CUBE_RADIUS, Corner, FACE_COUNT, Face, NODE_RADIUS, cubeCenter, mirror;
+import geometry.lorentz : Motion, Point, Vec4;
 
 enum float TEST_BODY_REACH = 0.1f;
 enum float TEST_ALTITUDE_TOLERANCE = 1e-4f;
 enum ubyte TEST_DIMENSION = 12;
 
 Array!ChunkSlot collectChunksNear(ref Graph graph, Position position, float distance) {
-    float nodeThreshold = coshf(distance + BOUNDING_SPHERE_RADIUS + CHUNK_BOUNDING_SPHERE_RADIUS);
-    float chunkThreshold = coshf(distance + CHUNK_BOUNDING_SPHERE_RADIUS);
-    MVector!float point = (position.local * MPoint!float.origin()).vec;
+    float nodeThreshold = coshf(distance + NODE_RADIUS + CUBE_RADIUS);
+    float chunkThreshold = coshf(distance + CUBE_RADIUS);
+    Vec4!float point = (position.local * Point!float.origin()).v;
     Array!ChunkSlot chunks;
     Array!NodeVisit visits;
-    visits.append(NodeVisit(graph.slotOf(position.node), MIsometry!float.identity()));
+    visits.append(NodeVisit(graph.slotOf(position.node), Motion!float.identity()));
     size_t front = 0;
     while (front < visits.length) {
         NodeVisit visit = visits.ptr[front];
         front += 1;
-        MVector!float localPoint = visit.inverse * point;
-        foreach (vertexIndex; 0 .. VERTEX_COUNT) {
-            Vertex vertex = cast(Vertex) vertexIndex;
-            if (!(-localPoint.mip(vertex.chunkBoundingSphereCenter.vec) > chunkThreshold)) {
-                chunks.append(ChunkSlot(visit.slot, vertex));
+        Vec4!float localPoint = visit.inverse * point;
+        foreach (index; 0 .. CORNER_COUNT) {
+            Corner corner = cast(Corner) index;
+            if (!(-localPoint.minkowski(corner.cubeCenter.v) > chunkThreshold)) {
+                chunks.append(ChunkSlot(visit.slot, corner));
             }
         }
-        foreach (sideIndex; 0 .. SIDE_COUNT) {
-            Side side = cast(Side) sideIndex;
-            MIsometry!float neighborInverse = side.reflection * visit.inverse;
-            if (!((neighborInverse * point).data[3] > nodeThreshold)) {
+        foreach (index; 0 .. FACE_COUNT) {
+            Face side = cast(Face) index;
+            Motion!float neighborInverse = side.mirror * visit.inverse;
+            if (!((neighborInverse * point).c[3] > nodeThreshold)) {
                 uint neighbor = graph.ensureNeighborSlot(visit.slot, side);
                 if (!isVisited(visits.slice(), neighbor)) {
                     visits.append(NodeVisit(neighbor, neighborInverse));
@@ -52,7 +52,7 @@ Array!ChunkSlot collectChunksNear(ref Graph graph, Position position, float dist
 bool isEveryChunkProvenClear(ref Graph graph, const(ChunkSlot)[] chunks) {
     uint unproven = 0;
     foreach (chunk; chunks) {
-        ChunkParams params = ChunkParams.make(graph, chunk.slot, chunk.vertex);
+        ChunkParams params = ChunkParams.make(graph.view, chunk.slot, chunk.corner);
         if (!params.isProvenClear()) {
             unproven += 1;
         }
@@ -68,9 +68,8 @@ bool isRegionProvenClear(ref Graph graph, Position position, float distance) {
 }
 
 Position clearSpawnPosition(ref Graph graph, float bodyReach) {
-    graph.ensureNodeState(ROOT_NODE);
+    float rootAltitude = graph.ensureState(graph.slotOf(ROOT_NODE)).surface.distanceTo(Point!float.origin());
     float[3] up = graph.gravityAt(Position.origin()).up;
-    float rootAltitude = graph.nodeState(ROOT_NODE).surface.distanceTo(MPoint!float.origin());
     return graph.clearPositionFrom(up, rootAltitude, bodyReach, bodyReach);
 }
 
@@ -85,15 +84,15 @@ Position clearPositionFrom(ref Graph graph, float[3] up, float rootAltitude, flo
 }
 
 Position positionAtRise(ref Graph graph, float[3] up, float rise) {
-    Position result = graph.ensureNormalized(Position(ROOT_NODE, MIsometry!float.fromDisplacement(up.scaled(rise))));
-    graph.ensureNodeState(result.node);
+    Position result = graph.ensureNormalized(Position(ROOT_NODE, Motion!float.shift(up.scaled(rise))));
+    graph.ensureState(graph.slotOf(result.node));
     return result;
 }
 
 unittest {
     Graph graph = Graph.make(TEST_DIMENSION, Worldgen.fromPlane(PlaneWorld(0)));
     Position spawn = graph.clearSpawnPosition(TEST_BODY_REACH);
-    float altitude = graph.nodeState(spawn.node).surface.distanceTo(spawn.local * MPoint!float.origin());
+    float altitude = graph.stateAt(graph.slotOf(spawn.node)).surface.distanceTo(spawn.local * Point!float.origin());
     assert(altitude > TEST_BODY_REACH - TEST_ALTITUDE_TOLERANCE);
     assert(graph.isRegionProvenClear(spawn, TEST_BODY_REACH));
     graph.release();
