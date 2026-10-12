@@ -1,5 +1,6 @@
 module common.worldgen.building;
 
+import core.stdc.stdlib : calloc, free, malloc;
 import common.array : Array;
 import common.dodeca : VERTEX_COUNT, Vertex;
 import common.graph : Graph;
@@ -16,12 +17,8 @@ struct NodeCells {
         return dimension * dimension * dimension;
     }
 
-    int cellCount() const {
-        return VERTEX_COUNT * cellsPerChunk();
-    }
-
-    int cellIndex(Vertex vertex, int[3] cell) const {
-        return vertex * cellsPerChunk() + (cell[0] * dimension + cell[1]) * dimension + cell[2];
+    int cellIndex(int[3] cell) const {
+        return (cell[0] * dimension + cell[1]) * dimension + cell[2];
     }
 }
 
@@ -87,19 +84,19 @@ struct BrushUse {
 }
 
 struct Building {
-    Array!Paint paints;
+    Paint** chunkPaints;
     Array!Material materials;
     NodeCells cells;
 
     static Building make(ref const BuildingPlan plan) {
-        Building building = Building(Array!Paint.init, Array!Material.init, NodeCells(plan.dimension));
+        Building building;
+        building.cells = NodeCells(plan.dimension);
         building.materials.appendAll(plan.materials.slice());
         building.stamp(plan);
         return building;
     }
 
     void stamp(ref const BuildingPlan plan) {
-        paints.resize(cells.cellCount());
         Array!BrushUse uses;
         foreach (index; 0 .. VERTEX_COUNT) {
             Vertex vertex = cast(Vertex) index;
@@ -122,6 +119,11 @@ struct Building {
     }
 
     void stampChunk(Vertex vertex, ref const ChunkLines found, const(BrushUse)[] uses, const(Brush)[] brushes) {
+        if (chunkPaints is null) {
+            chunkPaints = cast(Paint**) calloc(VERTEX_COUNT, (Paint*).sizeof);
+        }
+        Paint* paints = cast(Paint*) malloc(cells.cellsPerChunk() * Paint.sizeof);
+        chunkPaints[vertex] = paints;
         int[3][MAX_LINES_AT_VERTEX] columns = void;
         foreach (x; 0 .. cells.dimension) {
             foreach (y; 0 .. cells.dimension) {
@@ -136,21 +138,39 @@ struct Building {
                             paint = brushes[use.brush].paint;
                         }
                     }
-                    paints.ptr[cells.cellIndex(vertex, cell)] = paint;
+                    paints[cells.cellIndex(cell)] = paint;
                 }
             }
         }
     }
 
+    size_t paintBytes() const {
+        size_t bytes = 0;
+        if (chunkPaints !is null) {
+            foreach (paints; chunkPaints[0 .. VERTEX_COUNT]) {
+                if (paints !is null) {
+                    bytes += cells.cellsPerChunk() * Paint.sizeof;
+                }
+            }
+        }
+        return bytes;
+    }
+
     void release() {
-        paints.release();
+        if (chunkPaints !is null) {
+            foreach (paints; chunkPaints[0 .. VERTEX_COUNT]) {
+                free(paints);
+            }
+            free(chunkPaints);
+            chunkPaints = null;
+        }
         materials.release();
     }
 
     Material materialAt(Vertex vertex, int[3] cell, Material existing) const {
         Paint paint = Paint.init;
-        if (paints.length > 0) {
-            paint = paints.ptr[cells.cellIndex(vertex, cell)];
+        if (chunkPaints !is null && chunkPaints[vertex] !is null) {
+            paint = chunkPaints[vertex][cells.cellIndex(cell)];
         }
         if (paint.material == 0 || (paint.isIntoAirOnly && existing != Material.none)) {
             return existing;

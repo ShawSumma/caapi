@@ -12,9 +12,10 @@ import client.config : ClientConfig;
 import client.game : FrameInput, Game, KEY_COUNT, Key, MATERIAL_PALETTE, axisValue;
 import client.graphics.renderer : FrameTimes, Renderer;
 import client.png : writePng;
+import client.sampler : Sampler;
 import client.script : ScriptHost, ScriptRecorder;
 import client.structures : StructureProblem, growthProblem, placeStructure;
-import client.world : RENDER_RADIUS;
+import client.world : LocalWorld, RENDER_RADIUS;
 import common.character.controller : MovementMode;
 import common.clock : MILLISECONDS_PER_SECOND, NANOSECONDS_PER_SECOND, nowSeconds;
 import common.dodeca : VERTEX_COUNT;
@@ -24,7 +25,6 @@ import common.names : ENUM_NAMES;
 import common.node : Chunk, ChunkState;
 import common.settings : CHUNK_DIMENSION;
 import common.units : Angle, AngularSpeed, Time;
-import common.worldgen.blueprint : Paint;
 import common.worldgen.generation : Worldgen;
 
 enum uint WINDOW_WIDTH = 1280;
@@ -34,6 +34,7 @@ enum uint SCREENSHOT_HEIGHT = 360;
 enum double BENCH_FRAME_SECONDS = 1.0 / 60.0;
 enum uint BENCH_MOVE_FRAMES = 300;
 enum uint BENCH_FLIGHT_LEGS = 6;
+enum uint BENCH_PROGRESS_FRAMES = 600;
 enum double TITLE_INTERVAL_SECONDS = 1.0;
 enum size_t TEXT_CAPACITY = 256;
 enum uint KEYCODE_COUNT = 256;
@@ -71,6 +72,7 @@ struct Arguments {
     bool hasSensitivity;
     bool isYInverted;
     bool isBenchLoad;
+    bool isProfiled;
 
     static Arguments fromArgv(int argc, char** argv) {
         Arguments arguments = Arguments(StartupError.init, argv[0]);
@@ -115,6 +117,9 @@ struct Arguments {
             return index + 2;
         } else if (strcmp(argument, "--bench-load") == 0) {
             isBenchLoad = true;
+            return index + 1;
+        } else if (strcmp(argument, "--profile") == 0) {
+            isProfiled = true;
             return index + 1;
         } else if (strcmp(argument, "--out") == 0) {
             reportPath = value.text;
@@ -162,6 +167,8 @@ struct Arguments {
     StartupError usageError() const {
         if (isBenchLoad && reportPath is null) {
             return StartupError(null, "needs --out", "--bench-load");
+        } else if (isProfiled && !isBenchLoad) {
+            return StartupError(null, "is only for --bench-load", "--profile");
         } else if (screenshotPath !is null && (reportPath is null || scriptPath is null)) {
             return StartupError(null, "needs --out and a script", "--screenshot");
         } else if (screenshotPath is null && !isBenchLoad && (reportPath !is null || scriptPath !is null)) {
@@ -609,6 +616,7 @@ bool renderScreenshot(Arguments arguments) {
         *renderer = Renderer.init;
         renderer.setupOffscreen(VkExtent2D(SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT), CHUNK_DIMENSION);
         Game game = Game.make(arguments.worldgen, config.reach);
+        game.world.renderRadius = arguments.renderRadius;
         game.isGeneratingOnDemand = true;
         immutable bool isPlaced = isStructurePlaced(game, arguments);
         bool isWritten = isPlaced && captureScreenshot(arguments, report, *renderer, game);
@@ -691,11 +699,23 @@ bool benchLoad(Arguments arguments) {
         Game game = Game.make(arguments.worldgen, config.reach);
         game.world.renderRadius = arguments.renderRadius;
         immutable bool isPlaced = isStructurePlaced(game, arguments);
+        Sampler sampler;
         if (isPlaced) {
+            if (arguments.isProfiled) {
+                sampler.start();
+            }
             measureLoad(report, *renderer, game);
+            if (arguments.isProfiled) {
+                sampler.report(report, "load");
+                sampler.start();
+            }
             fflush(report);
             measureFlight(report, *renderer, game);
+            if (arguments.isProfiled) {
+                sampler.report(report, "flight");
+            }
         }
+        sampler.release();
         immutable bool isGrown = isPlaced && isStructureGrown(game, arguments);
         renderer.cleanup();
         free(renderer);
@@ -747,11 +767,15 @@ void measureLoad(FILE* report, ref Renderer renderer, ref Game game) {
         if (generatedFrame == 0 && game.world.isWorldgenSettled()) {
             generatedFrame = frames;
         }
+        if (frames % BENCH_PROGRESS_FRAMES == 0) {
+            fprintf(report, "loading: frame %u at %.1fs, nearby %zu nodes, %u chunks in flight, %u meshes queued\n", frames, nowSeconds() - start, game.world.cachedNodes.length, game.world.streamer.inFlight, renderer.meshBacklog());
+            fflush(report);
+        }
         pauseUntilFrameEnd(frameStart);
     } while (renderer.meshBacklog() > 0 || !game.world.isWorldgenSettled());
     double elapsed = nowSeconds() - start;
     uint dense = 0;
-    foreach (index; 0 .. cast(size_t) game.world.graph.nodeCount * VERTEX_COUNT) {
+    foreach (index; 0 .. cast(size_t) game.world.graph.blockCount * VERTEX_COUNT) {
         if (!game.world.graph.chunks.at(index).voxels.isSolid()) {
             dense += 1;
         }
@@ -759,7 +783,7 @@ void measureLoad(FILE* report, ref Renderer renderer, ref Game game) {
     fprintf(report, "bench-load frames=%u wall=%.2fs nodes=%u dense_chunks=%u meshed=%u faces=%u\n", frames, elapsed, game.world.graph.nodeCount, dense, renderer.meshes.meshedChunks, renderer.meshes.allocator.used());
     fprintf(report, "nearby set complete at frame %u, worldgen settled at frame %u, meshing done at frame %u\n", nearbyFrame, generatedFrame, frames);
     printMemory(report, game.world.graph);
-    fprintf(report, "evictions=%u worst=%.1fms, next above %u nodes\n", game.world.evictions, game.world.worstEviction, game.world.evictAbove);
+    printWorldStats(report, game.world);
     fprintf(report, "frame avg=%.2fms worst=%.2fms\n", frame.totalMs / frames, frame.worstMs);
     fprintf(report, "step avg=%.2fms worst=%.2fms\n", step.totalMs / frames, step.worstMs);
     fprintf(report, "render avg=%.2fms worst=%.2fms\n", render.totalMs / frames, render.worstMs);
@@ -802,7 +826,12 @@ void measureLeg(FILE* report, ref Renderer renderer, ref Game game) {
     fprintf(report, "moving step avg=%.2fms worst=%.2fms, render avg=%.2fms worst=%.2fms\n", movingStep.totalMs / BENCH_MOVE_FRAMES, movingStep.worstMs, movingRender.totalMs / BENCH_MOVE_FRAMES, movingRender.worstMs);
     breakdown.print(report, BENCH_MOVE_FRAMES);
     printMemory(report, game.world.graph);
-    fprintf(report, "evictions=%u worst=%.1fms, next above %u nodes\n", game.world.evictions, game.world.worstEviction, game.world.evictAbove);
+    printWorldStats(report, game.world);
+}
+
+void printWorldStats(FILE* report, ref const LocalWorld world) {
+    fprintf(report, "evicted %u nodes, dropped %u far chunks, worst sweep %.1fms\n", world.evictor.evicted, world.evictor.dropped, world.worstEviction);
+    fprintf(report, "nearby %zu nodes, %u published, %u recoveries (%.0fms), %.0fms sliced\n", world.cachedNodes.length, world.nearbyStats.publishes, world.nearbyStats.recoveries, world.nearbyStats.recoveryMilliseconds, world.nearbyStats.slicedMilliseconds);
 }
 
 void printMemory(FILE* report, ref const Graph graph) {
@@ -811,32 +840,45 @@ void printMemory(FILE* report, ref const Graph graph) {
     foreach (slot; 0 .. graph.nodeCount) {
         if (graph.nodeAt(slot).hasBuilding) {
             buildings += 1;
-            buildingBytes += graph.nodeAt(slot).building.paints.length * Paint.sizeof;
+            buildingBytes += graph.nodeAt(slot).building.paintBytes();
         }
     }
     size_t denseBytes = 0;
+    foreach (index; 0 .. cast(size_t) graph.blockCount * VERTEX_COUNT) {
+        denseBytes += graph.chunks.at(index).voxels.denseData.length * Material.sizeof;
+    }
     size_t holding = 0;
     size_t stated = 0;
+    size_t touched = 0;
+    size_t referenced = 0;
+    size_t parents = 0;
+    size_t recent = 0;
     foreach (slot; 0 .. graph.nodeCount) {
-        uint generated = 0;
-        foreach (vertex; 0 .. VERTEX_COUNT) {
-            const(Chunk)* chunk = graph.chunks.at(cast(size_t) slot * VERTEX_COUNT + vertex);
-            denseBytes += chunk.voxels.denseData.length * Material.sizeof;
-            if (chunk.state != ChunkState.fresh) {
-                generated += 1;
-            }
-        }
-        if (generated > 0) {
+        const(Node)* node = graph.nodeAt(slot);
+        if (graph.hasChunks(slot)) {
             holding += 1;
         }
-        if (graph.nodeAt(slot).hasState) {
+        if (node.hasState) {
             stated += 1;
         }
+        if (node.touchLength > 0) {
+            touched += 1;
+        }
+        if (node.references > 0) {
+            referenced += 1;
+        }
+        if (node.liveChildren > 0) {
+            parents += 1;
+        }
+        if (node.isRecent) {
+            recent += 1;
+        }
     }
-    fprintf(report, "nodes holding chunks=%zu with state=%zu\n", holding, stated);
+    fprintf(report, "nodes holding chunks=%zu with state=%zu, structure-touched=%zu referenced=%zu with children=%zu recent=%zu\n", holding, stated, touched, referenced, parents, recent);
     rusage usage;
     getrusage(RUSAGE_SELF, &usage);
-    fprintf(report, "memory: rss now=%zuMB peak=%ldMB nodes=%u of %u slots (%zuMB) buildings=%zu (%zuMB) dense voxels %zuMB\n", residentBytes() / BYTES_PER_MEGABYTE, usage.ru_maxrss / KILOBYTES_PER_MEGABYTE, graph.liveCount, graph.nodeCount, cast(size_t) graph.nodeCount * (Node.sizeof + VERTEX_COUNT * Chunk.sizeof) / BYTES_PER_MEGABYTE, buildings, buildingBytes / BYTES_PER_MEGABYTE, denseBytes / BYTES_PER_MEGABYTE);
+    size_t slabBytes = cast(size_t) graph.nodeCount * Node.sizeof + cast(size_t) graph.blockCount * VERTEX_COUNT * Chunk.sizeof;
+    fprintf(report, "memory: rss now=%zuMB peak=%ldMB nodes=%u of %u slots, %u chunk blocks (%zuMB) buildings=%zu (%zuMB) dense voxels %zuMB\n", residentBytes() / BYTES_PER_MEGABYTE, usage.ru_maxrss / KILOBYTES_PER_MEGABYTE, graph.liveCount, graph.nodeCount, graph.blockCount, slabBytes / BYTES_PER_MEGABYTE, buildings, buildingBytes / BYTES_PER_MEGABYTE, denseBytes / BYTES_PER_MEGABYTE);
 }
 
 size_t residentBytes() {

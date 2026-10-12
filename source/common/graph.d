@@ -1,8 +1,10 @@
 module common.graph;
 
+import core.bitop : bsf;
 import common.array : Array;
 import common.dodeca : SIDE_COUNT, Side, VERTEX_COUNT, isAdjacentTo, isFacing, reflection;
 import common.hashmap : HashMap;
+import common.margins : MarginTables;
 import common.math : MIsometry, MPoint;
 import common.murmur : murmurHash3;
 import common.node : Chunk, ChunkLayout, ChunkSlot;
@@ -37,6 +39,16 @@ enum NodeId ROOT_NODE = NodeId([1, 1]);
 enum NodeId NO_NODE = NodeId.init;
 enum uint NO_SLOT = uint.max;
 enum uint MAX_PARENTS = 3;
+enum uint FREE_RUN_LENGTHS = 16;
+enum uint NO_CHUNKS = 0;
+
+immutable Chunk FRESH_CHUNK = Chunk.init;
+
+enum NodeContent : ubyte {
+    unknown,
+    empty,
+    holding,
+}
 
 struct Node {
     Building building;
@@ -46,23 +58,26 @@ struct Node {
     uint depth;
     uint touchStart;
     uint touchLength;
-    uint pendingHead;
     uint worldStart;
     uint worldCount;
+    uint chunkBlock;
+    ushort parentSides;
+    ushort liveChildren;
+    ushort references;
+    NodeContent content;
     bool hasState;
     bool hasWorlds;
     bool hasStructure;
     bool isInStructure;
-    bool isTiled;
     bool hasBuilding;
     bool isBuildingQueued;
-    bool hasChunks;
+    bool hasChoices;
+    bool isRecent;
 }
 
 struct Grower {
     void function(void* context, ref Graph graph, int through) grow;
     void function(void* context, ref Graph graph, uint slot) cover;
-    void function(void* context, ref Array!uint held) hold;
     void function(void* context) release;
     void* context;
 }
@@ -108,20 +123,28 @@ struct Graph {
     Slab!Node nodes;
     Slab!Chunk chunks;
     HashMap!(NodeId, uint) slots;
+    HashMap!(NodeId, uint) pendingHeads;
+    HashMap!(NodeId, bool) tiledFaces;
     Array!ChunkSlot changedChunks;
     Slab!LineTouch touches;
     Slab!PendingTouch pendingTouches;
     Slab!WorldRef worldRefs;
     Array!LineTouch touchScratch;
     Array!uint freeSlots;
+    Array!uint freeBlocks;
+    Array!ChunkSlot restores;
+    Array!uint[FREE_RUN_LENGTHS] freeWorldRuns;
+    Array!uint[FREE_RUN_LENGTHS] freeTouchRuns;
     Blueprint blueprint;
     Skies skies;
     Grower grower;
     size_t changedHead;
     Worldgen worldgen;
     ChunkLayout layout;
+    MarginTables margins;
     uint nodeCount;
     uint liveCount;
+    uint blockCount;
     uint anchorSlot;
     uint touchCount;
     uint pendingCount;
@@ -131,6 +154,7 @@ struct Graph {
     static Graph make(ubyte dimension, Worldgen chosen) {
         Graph graph;
         graph.layout = ChunkLayout.make(dimension);
+        graph.margins = MarginTables.make(dimension);
         graph.worldgen = chosen;
         graph.blueprint = Blueprint.make(dimension);
         graph.addNode(ROOT_NODE, 0);
@@ -138,11 +162,13 @@ struct Graph {
         if (chosen.hasStructure()) {
             graph.anchorSlot = graph.anchorSlotOf();
         }
+        graph.reference(graph.slotOf(ROOT_NODE));
+        graph.reference(graph.anchorSlot);
         return graph;
     }
 
     void markChanged(ChunkSlot chunk) {
-        Chunk* target = chunkAt(chunk);
+        Chunk* target = chunkFor(chunk);
         if (!target.isQueued && !target.voxels.isSolid()) {
             target.isQueued = true;
             changedChunks.append(chunk);
@@ -156,7 +182,9 @@ struct Graph {
     ChunkSlot takeChanged() {
         ChunkSlot result = changedChunks.ptr[changedHead];
         changedHead += 1;
-        chunkAt(result).isQueued = false;
+        if (hasChunks(result.slot)) {
+            chunkFor(result).isQueued = false;
+        }
         if (changedHead == changedChunks.length) {
             changedChunks.clear();
             changedHead = 0;
@@ -168,8 +196,43 @@ struct Graph {
         return nodes.at(slot);
     }
 
-    inout(Chunk)* chunkAt(ChunkSlot chunk) inout {
-        return chunks.at(cast(size_t) chunk.slot * VERTEX_COUNT + chunk.vertex);
+    bool hasChunks(uint slot) const {
+        return nodeAt(slot).chunkBlock != NO_CHUNKS;
+    }
+
+    const(Chunk)* chunkAt(ChunkSlot chunk) const {
+        uint block = nodeAt(chunk.slot).chunkBlock;
+        if (block == NO_CHUNKS) {
+            return &FRESH_CHUNK;
+        } else {
+            return chunks.at(cast(size_t)(block - 1) * VERTEX_COUNT + chunk.vertex);
+        }
+    }
+
+    Chunk* chunkFor(ChunkSlot chunk) {
+        Node* node = nodeAt(chunk.slot);
+        if (node.chunkBlock == NO_CHUNKS) {
+            if (freeBlocks.length > 0) {
+                node.chunkBlock = freeBlocks.ptr[freeBlocks.length - 1];
+                freeBlocks.length -= 1;
+            } else {
+                blockCount += 1;
+                chunks.ensure(cast(size_t) blockCount * VERTEX_COUNT);
+                node.chunkBlock = blockCount;
+            }
+        }
+        return chunks.at(cast(size_t)(node.chunkBlock - 1) * VERTEX_COUNT + chunk.vertex);
+    }
+
+    void releaseChunks(uint slot) {
+        Node* node = nodeAt(slot);
+        foreach (vertex; 0 .. VERTEX_COUNT) {
+            Chunk* chunk = chunks.at(cast(size_t)(node.chunkBlock - 1) * VERTEX_COUNT + vertex);
+            chunk.voxels.release();
+            *chunk = Chunk.init;
+        }
+        freeBlocks.append(node.chunkBlock);
+        node.chunkBlock = NO_CHUNKS;
     }
 
     uint addNode(NodeId id, uint depth) {
@@ -179,7 +242,6 @@ struct Graph {
             freeSlots.length -= 1;
         } else {
             nodes.ensure(slot + 1);
-            chunks.ensure(cast(size_t)(slot + 1) * VERTEX_COUNT);
             nodeCount += 1;
         }
         Node* added = nodeAt(slot);
@@ -256,9 +318,22 @@ struct Graph {
 
         uint newSlot = existingOrAdded(id, nodeAt(nodeSlot).depth + 1);
         foreach (i; 0 .. parentCount) {
+            Node* parent = nodeAt(parents[i].slot);
+            if (parent.neighbors[parents[i].side] != newSlot) {
+                parent.liveChildren += 1;
+            }
             linkNeighborSlots(newSlot, parents[i].slot, parents[i].side);
+            nodeAt(newSlot).parentSides |= sideBit(parents[i].side);
         }
         return newSlot;
+    }
+
+    void reference(uint slot) {
+        nodeAt(slot).references += 1;
+    }
+
+    void unreference(uint slot) {
+        nodeAt(slot).references -= 1;
     }
 
     uint existingOrAdded(NodeId id, uint depth) {
@@ -271,8 +346,7 @@ struct Graph {
     }
 
     bool isParentSide(uint slot, Side side) const {
-        uint neighborIndex = nodeAt(slot).neighbors[side];
-        return neighborIndex != NO_SLOT && nodeAt(neighborIndex).depth < nodeAt(slot).depth;
+        return (nodeAt(slot).parentSides & sideBit(side)) != 0;
     }
 
     void linkNeighborSlots(uint a, uint b, Side side) {
@@ -282,13 +356,13 @@ struct Graph {
 
     ParentList parents(uint slot) const {
         ParentList result;
-        uint nodeDepth = nodeAt(slot).depth;
-        foreach (sideIndex; 0 .. SIDE_COUNT) {
-            uint neighborIndex = nodeAt(slot).neighbors[sideIndex];
-            if (neighborIndex != NO_SLOT && result.count < MAX_PARENTS && nodeAt(neighborIndex).depth < nodeDepth) {
-                result.links[result.count] = ParentEntry(neighborIndex, cast(Side) sideIndex);
-                result.count += 1;
-            }
+        const(Node)* node = nodeAt(slot);
+        uint remaining = node.parentSides;
+        while (remaining != 0) {
+            uint sideIndex = bsf(remaining);
+            remaining &= remaining - 1;
+            result.links[result.count] = ParentEntry(node.neighbors[sideIndex], cast(Side) sideIndex);
+            result.count += 1;
         }
         return result;
     }
@@ -358,17 +432,23 @@ struct Graph {
     }
 
     uint reserveTouches(uint length) {
-        uint start = slabRun(touchCount, length);
-        touches.ensure(start + length);
-        touchCount = start + length;
-        return start;
+        return reserveRun(touches, touchCount, freeTouchRuns, length);
+    }
+
+    void releaseTouches(uint start, uint length) {
+        releaseRun(freeTouchRuns, start, length);
     }
 
     uint reserveWorlds(uint length) {
-        uint start = slabRun(worldRefCount, length);
-        worldRefs.ensure(start + length);
-        worldRefCount = start + length;
-        return start;
+        return reserveRun(worldRefs, worldRefCount, freeWorldRuns, length);
+    }
+
+    void releaseWorlds(uint start, uint length) {
+        releaseRun(freeWorldRuns, start, length);
+    }
+
+    bool isTiled(uint slot) const {
+        return tiledFaces.find(idAt(slot)) !is null;
     }
 
     const(Building)* ensureBuildingAt(uint slot) {
@@ -428,7 +508,7 @@ struct Graph {
             grower.release(grower.context);
         }
         grower = Grower.init;
-        foreach (index; 0 .. cast(size_t) nodeCount * VERTEX_COUNT) {
+        foreach (index; 0 .. cast(size_t) blockCount * VERTEX_COUNT) {
             chunks.at(index).voxels.release();
         }
         foreach (slot; 0 .. nodeCount) {
@@ -439,20 +519,55 @@ struct Graph {
         nodes.release();
         chunks.release();
         slots.release();
+        pendingHeads.release();
+        tiledFaces.release();
         changedChunks.release();
         touches.release();
         pendingTouches.release();
         worldRefs.release();
         touchScratch.release();
         freeSlots.release();
+        freeBlocks.release();
+        restores.release();
+        foreach (ref runs; freeWorldRuns) {
+            runs.release();
+        }
+        foreach (ref runs; freeTouchRuns) {
+            runs.release();
+        }
         blueprint.release();
         skies.release();
+        margins.release();
         nodeCount = 0;
         liveCount = 0;
+        blockCount = 0;
         touchCount = 0;
         pendingCount = 0;
         worldRefCount = 0;
     }
+}
+
+uint reserveRun(T)(ref Slab!T slab, ref uint count, ref Array!uint[FREE_RUN_LENGTHS] free, uint length) {
+    if (length < FREE_RUN_LENGTHS && free[length].length > 0) {
+        uint start = free[length].ptr[free[length].length - 1];
+        free[length].length -= 1;
+        return start;
+    } else {
+        uint start = slabRun(count, length);
+        slab.ensure(start + length);
+        count = start + length;
+        return start;
+    }
+}
+
+void releaseRun(ref Array!uint[FREE_RUN_LENGTHS] free, uint start, uint length) {
+    if (length > 0 && length < FREE_RUN_LENGTHS) {
+        free[length].append(start);
+    }
+}
+
+ushort sideBit(Side side) {
+    return cast(ushort)(1u << side);
 }
 
 uint slabRun(uint count, uint length) {

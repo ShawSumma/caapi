@@ -1,32 +1,48 @@
 module common.hashmap;
 
+import core.bitop : bsr;
 import core.stdc.stdlib : calloc, free;
 
+enum size_t FIBONACCI_MULTIPLIER = 0x9E3779B97F4A7C15;
 enum size_t INITIAL_HASH_MAP_CAPACITY = 16;
 enum size_t MIGRATED_SLOTS_PER_INSERT = 8;
+enum size_t LIVE_SPREAD = 2;
 enum size_t TEST_KEYS = 100000;
-enum size_t TEST_HASH_MULTIPLIER = 0x9E3779B97F4A7C15;
+enum size_t TEST_KEPT = 3;
 
 struct HashEntry(K, V) {
     K key;
     V value;
     bool isUsed;
+    bool isRemoved;
+
+    bool isLive() const {
+        return isUsed && !isRemoved;
+    }
 }
 
 struct HashTable(K, V) {
     HashEntry!(K, V)* entries;
     size_t capacity;
     size_t count;
+    size_t removed;
+    uint shift;
 
     void allocate(size_t slots) {
         entries = cast(HashEntry!(K, V)*) calloc(slots, HashEntry!(K, V).sizeof);
         capacity = slots;
         count = 0;
+        removed = 0;
+        shift = cast(uint)(size_t.sizeof * 8 - bsr(slots));
+    }
+
+    size_t live() const {
+        return count - removed;
     }
 
     size_t slotOf(K key) const {
         size_t mask = capacity - 1;
-        size_t index = key.toHash() & mask;
+        size_t index = (key.toHash() * FIBONACCI_MULTIPLIER) >> shift;
         while (entries[index].isUsed && !(entries[index].key == key)) {
             index = (index + 1) & mask;
         }
@@ -38,7 +54,7 @@ struct HashTable(K, V) {
             return null;
         } else {
             inout(HashEntry!(K, V))* entry = &entries[slotOf(key)];
-            if (entry.isUsed) {
+            if (entry.isLive()) {
                 return &entry.value;
             } else {
                 return null;
@@ -49,9 +65,13 @@ struct HashTable(K, V) {
     void assign(K key, V value) {
         HashEntry!(K, V)* entry = &entries[slotOf(key)];
         if (entry.isUsed) {
+            if (entry.isRemoved) {
+                entry.isRemoved = false;
+                removed -= 1;
+            }
             entry.value = value;
         } else {
-            *entry = HashEntry!(K, V)(key, value, true);
+            *entry = HashEntry!(K, V)(key, value, true, false);
             count += 1;
         }
     }
@@ -59,8 +79,18 @@ struct HashTable(K, V) {
     void assignIfMissing(K key, V value) {
         HashEntry!(K, V)* entry = &entries[slotOf(key)];
         if (!entry.isUsed) {
-            *entry = HashEntry!(K, V)(key, value, true);
+            *entry = HashEntry!(K, V)(key, value, true, false);
             count += 1;
+        }
+    }
+
+    void remove(K key) {
+        if (capacity > 0) {
+            HashEntry!(K, V)* entry = &entries[slotOf(key)];
+            if (entry.isLive()) {
+                entry.isRemoved = true;
+                removed += 1;
+            }
         }
     }
 
@@ -76,11 +106,10 @@ struct HashMap(K, V) {
     size_t migrated;
 
     inout(V)* find(K key) inout {
-        inout(V)* found = current.find(key);
-        if (found is null) {
-            return previous.find(key);
+        if (current.capacity > 0 && current.entries[current.slotOf(key)].isUsed) {
+            return current.find(key);
         } else {
-            return found;
+            return previous.find(key);
         }
     }
 
@@ -92,14 +121,15 @@ struct HashMap(K, V) {
         migrate(MIGRATED_SLOTS_PER_INSERT);
     }
 
+    void remove(K key) {
+        current.remove(key);
+        previous.remove(key);
+    }
+
     void grow() {
         migrate(previous.capacity);
         previous = current;
-        if (previous.capacity == 0) {
-            current.allocate(INITIAL_HASH_MAP_CAPACITY);
-        } else {
-            current.allocate(previous.capacity * 2);
-        }
+        current.allocate(capacityFor(previous.live()));
         migrated = 0;
     }
 
@@ -109,7 +139,7 @@ struct HashMap(K, V) {
             end = previous.capacity;
         }
         foreach (i; migrated .. end) {
-            if (previous.entries[i].isUsed) {
+            if (previous.entries[i].isLive()) {
                 current.assignIfMissing(previous.entries[i].key, previous.entries[i].value);
             }
         }
@@ -127,45 +157,19 @@ struct HashMap(K, V) {
     }
 }
 
-void keepWhere(alias isKept, K, V, C)(ref HashMap!(K, V) map, ref C context) {
+size_t capacityFor(size_t live) {
     size_t capacity = INITIAL_HASH_MAP_CAPACITY;
-    while (capacity < (map.current.count + map.previous.count) * 2) {
+    while (capacity < live * LIVE_SPREAD) {
         capacity *= 2;
     }
-    HashMap!(K, V) kept;
-    kept.current.allocate(capacity);
-    insertKept!isKept(kept.current, map.current, context);
-    insertKept!isKept(kept.current, map.previous, context);
-    map.release();
-    map = kept;
-}
-
-void insertKept(alias isKept, K, V, C)(ref HashTable!(K, V) kept, ref const HashTable!(K, V) table, ref C context) {
-    foreach (entry; table.entries[0 .. table.capacity]) {
-        if (entry.isUsed && isKept(context, entry.key, entry.value)) {
-            kept.assignIfMissing(entry.key, entry.value);
-        }
-    }
-}
-
-void visitEntries(alias visit, K, V, C)(ref const HashMap!(K, V) map, ref C context) {
-    foreach (entry; map.current.entries[0 .. map.current.capacity]) {
-        if (entry.isUsed) {
-            visit(context, entry.key, entry.value);
-        }
-    }
-    foreach (entry; map.previous.entries[0 .. map.previous.capacity]) {
-        if (entry.isUsed && map.current.find(entry.key) is null) {
-            visit(context, entry.key, entry.value);
-        }
-    }
+    return capacity;
 }
 
 struct TestKey {
     size_t value;
 
     size_t toHash() const {
-        return value * TEST_HASH_MULTIPLIER;
+        return value;
     }
 }
 
@@ -181,14 +185,19 @@ unittest {
     assert(map.find(TestKey(TEST_KEYS)) is null);
     map.insert(TestKey(3), 7);
     assert(*map.find(TestKey(3)) == 7);
-    size_t divisor = 3;
-    keepWhere!((ref size_t every, TestKey key, size_t value) => key.value % every == 0)(map, divisor);
-    foreach (i; 0 .. TEST_KEYS) {
-        assert((map.find(TestKey(i)) !is null) == (i % divisor == 0));
-    }
-    assert(*map.find(TestKey(3)) == 7);
-    size_t visited = 0;
-    visitEntries!((ref size_t count, TestKey key, size_t value) { count += 1; })(map, visited);
-    assert(visited == (TEST_KEYS + divisor - 1) / divisor);
     map.release();
+    HashMap!(TestKey, size_t) churn;
+    foreach (i; 0 .. TEST_KEYS) {
+        churn.insert(TestKey(i), i);
+        if (i >= TEST_KEPT) {
+            churn.remove(TestKey(i - TEST_KEPT));
+            assert(churn.find(TestKey(i - TEST_KEPT)) is null);
+        }
+        assert(*churn.find(TestKey(i)) == i);
+    }
+    assert(churn.current.capacity < TEST_KEYS);
+    churn.remove(TestKey(TEST_KEYS - 1));
+    churn.insert(TestKey(TEST_KEYS - 1), 1);
+    assert(*churn.find(TestKey(TEST_KEYS - 1)) == 1);
+    churn.release();
 }

@@ -1,12 +1,12 @@
 module client.world;
 
-import core.stdc.math : coshf;
+import core.stdc.math : acoshf, coshf;
 import client.camera : CAMERA_FORWARD;
 import client.streaming : Streamer, chunkNeighborId, hasPopulatedNeighbor, resolveIfExposed, resolveMaterials;
 import common.clock : nowMilliseconds;
 import common.array : Array;
 import common.coords : CHUNK_DIRECTIONS, ChunkDirection, Coords, boundaryCoord;
-import common.eviction : evictOutside;
+import common.eviction : Evictor, Unloaded;
 import common.graph : Graph, NO_NODE;
 import common.margins : CoordsWithMargins, neighborAxisPermutation;
 import common.material : Material;
@@ -20,16 +20,24 @@ import common.traversal : NOT_COLLECTED, NO_DEADLINE, NearbyNode, NearbyScratch;
 import common.worldgen.generation : Worldgen;
 
 enum float NEARBY_PADDING = 0.05f;
-enum float RENDER_RADIUS = 6.5f;
+enum float NEARBY_REBUILD_DISTANCE = 0.25f;
+enum double TELEPORT_TRAVEL = 1.0e3;
+enum float RENDER_RADIUS = 8.0f;
 enum float FULL_RADIUS = 4.5f;
 enum double NEARBY_BUDGET_MILLISECONDS = 2.0;
-enum uint EVICTION_FLOOR = 1 << 18;
-enum uint EVICTION_GROWTH = 2;
+enum double RECOVERY_BUDGET_MILLISECONDS = 8.0;
 
 struct Placement {
     ChunkId chunk;
     Coords coords;
     bool isFound;
+}
+
+struct NearbyStats {
+    double slicedMilliseconds = 0;
+    double recoveryMilliseconds = 0;
+    uint publishes;
+    uint recoveries;
 }
 
 struct TargetMaterial {
@@ -44,16 +52,18 @@ struct LocalWorld {
     Position cameraPosition;
     MPoint!float publishedPoint;
     MPoint!float pendingPoint;
+    MPoint!float trackedCamera;
+    uint trackedVersion;
     NearbyNode[] cachedNodes;
-    Array!uint unloaded;
+    Array!Unloaded unloaded;
     float renderRadius;
     float tanhReach;
     uint published;
     uint nearbyVersion;
     uint epoch;
-    uint evictAbove = EVICTION_FLOOR;
-    uint evictions;
+    Evictor evictor;
     double worstEviction = 0;
+    NearbyStats nearbyStats;
     bool hasNearby;
 
     static LocalWorld make(ubyte dimension, Worldgen worldgen, float tanhReach) {
@@ -70,6 +80,7 @@ struct LocalWorld {
         streamer.release();
         nearby[0].release();
         nearby[1].release();
+        evictor.release();
         unloaded.release();
         graph.release();
     }
@@ -88,35 +99,43 @@ struct LocalWorld {
         if (!hasNearby) {
             buildInitialNearby(distance, deadline);
         } else if (cameraNearbyIndex() == NOT_COLLECTED) {
-            rebuildNearbyNow(distance);
+            recoverNearby(distance);
         } else {
             refreshNearby(distance, deadline);
         }
+        trackTravel();
         streamer.drive(graph, cachedNodes, cameraInNearbyFrame(), renderRadius, nearbyVersion, isUnbudgeted);
-        if (graph.liveCount > evictAbove) {
-            evict();
-        }
+        evict();
     }
 
     void evict() {
         size_t first = unloaded.length;
         NearbyScratch* next = &nearby[1 - published];
-        NearbyNode[] building = null;
+        const(NearbyScratch)* building = null;
         if (next.isBuilding()) {
-            building = next.nodes.slice();
+            building = next;
         }
-        double t0 = nowMilliseconds();
-        graph.evictOutside(cachedNodes, building, unloaded);
-        double spent = nowMilliseconds() - t0;
-        evictions += 1;
+        double start = nowMilliseconds();
+        evictor.sweep(graph, nearby[published], building, cameraInNearbyFrame() * MPoint!float.origin(), unloaded, start);
+        double spent = nowMilliseconds() - start;
         if (spent > worstEviction) {
             worstEviction = spent;
         }
         streamer.forget(unloaded.slice()[first .. $]);
-        evictAbove = EVICTION_FLOOR;
-        if (graph.liveCount * EVICTION_GROWTH > evictAbove) {
-            evictAbove = graph.liveCount * EVICTION_GROWTH;
+    }
+
+    void trackTravel() {
+        MPoint!float camera = cameraInNearbyFrame() * MPoint!float.origin();
+        if (trackedVersion == nearbyVersion) {
+            float product = -trackedCamera.mip(camera.vec);
+            if (product > 1) {
+                streamer.travel += acoshf(product);
+            }
+        } else {
+            streamer.travel += NEARBY_PADDING;
         }
+        trackedCamera = camera;
+        trackedVersion = nearbyVersion;
     }
 
     void buildInitialNearby(float distance, double deadline) {
@@ -125,32 +144,48 @@ struct LocalWorld {
             current.begin(graph, cameraPosition, distance, FULL_RADIUS);
             publishedPoint = cameraPosition.local * MPoint!float.origin();
             nearbyVersion += 1;
+            streamer.travel += TELEPORT_TRAVEL;
         }
-        current.advance(graph, deadline);
+        current.advance(graph, deadline, streamer.executor());
         hasNearby = !current.isBuilding();
         cachedNodes = current.nodes.slice();
     }
 
-    void rebuildNearbyNow(float distance) {
+    void recoverNearby(float distance) {
+        double start = nowMilliseconds();
         NearbyScratch* next = &nearby[1 - published];
-        next.begin(graph, cameraPosition, distance, FULL_RADIUS);
-        next.advance(graph, NO_DEADLINE);
-        publish(cameraPosition.local * MPoint!float.origin());
+        if (!next.isBuilding() || next.indexOf(graph.slotOf(cameraPosition.node)) == NOT_COLLECTED) {
+            next.begin(graph, cameraPosition, distance, FULL_RADIUS);
+            pendingPoint = cameraPosition.local * MPoint!float.origin();
+            next.advance(graph, start + RECOVERY_BUDGET_MILLISECONDS, streamer.executor());
+        }
+        nearbyStats.recoveries += 1;
+        nearbyStats.recoveryMilliseconds += nowMilliseconds() - start;
+        streamer.travel += TELEPORT_TRAVEL;
+        publish(pendingPoint);
     }
 
     void refreshNearby(float distance, double deadline) {
+        double start = nowMilliseconds();
+        NearbyScratch* current = &nearby[published];
         NearbyScratch* next = &nearby[1 - published];
         MPoint!float camera = cameraInNearbyFrame() * MPoint!float.origin();
-        if (!next.isBuilding() && -publishedPoint.mip(camera.vec) > coshf(NEARBY_PADDING / 2)) {
-            next.begin(graph, cameraPosition, distance, FULL_RADIUS);
-            pendingPoint = cameraPosition.local * MPoint!float.origin();
-        }
-        if (next.isBuilding()) {
-            next.advance(graph, deadline);
-            if (!next.isBuilding()) {
-                publish(pendingPoint);
+        if (current.isBuilding()) {
+            current.advance(graph, deadline, streamer.executor());
+            cachedNodes = current.nodes.slice();
+        } else {
+            if (!next.isBuilding() && -publishedPoint.mip(camera.vec) > coshf(NEARBY_REBUILD_DISTANCE)) {
+                next.begin(graph, cameraPosition, distance, FULL_RADIUS);
+                pendingPoint = cameraPosition.local * MPoint!float.origin();
+            }
+            if (next.isBuilding()) {
+                next.advance(graph, deadline, streamer.executor());
+                if (!next.isBuilding()) {
+                    publish(pendingPoint);
+                }
             }
         }
+        nearbyStats.slicedMilliseconds += nowMilliseconds() - start;
     }
 
     void publish(MPoint!float point) {
@@ -158,10 +193,11 @@ struct LocalWorld {
         cachedNodes = nearby[published].nodes.slice();
         publishedPoint = point;
         nearbyVersion += 1;
+        nearbyStats.publishes += 1;
     }
 
     bool isWorldgenSettled() const {
-        return hasNearby && streamer.isIdle() && streamer.scanCursor >= cachedNodes.length;
+        return hasNearby && !nearby[published].isBuilding() && streamer.isIdle() && streamer.scanCursor >= cachedNodes.length;
     }
 
     GraphCastHit castCenterRay() const {
@@ -217,10 +253,10 @@ struct LocalWorld {
     bool setVoxel(ChunkId chunkId, Coords coords, Material material) {
         ubyte dimension = graph.layout.dimension;
         ChunkSlot slot = ChunkSlot(graph.slotOf(chunkId.node), chunkId.vertex);
-        Chunk* chunk = graph.chunkAt(slot);
-        if (chunk.state != ChunkState.populated) {
+        if (graph.chunkAt(slot).state != ChunkState.populated) {
             return false;
         } else {
+            Chunk* chunk = graph.chunkFor(slot);
             if (chunk.hasDeferredMaterials) {
                 graph.resolveMaterials(slot);
             }
@@ -230,7 +266,7 @@ struct LocalWorld {
             foreach (direction; CHUNK_DIRECTIONS) {
                 if (coords.data[direction.axis] == boundaryCoord(dimension, direction.sign) && graph.hasPopulatedNeighbor(slot, direction)) {
                     ChunkSlot neighbor = graph.chunkNeighborSlot(slot, direction);
-                    chunk.voxels.fixMargins(graph.chunkAt(neighbor).voxels, dimension, chunkId.vertex, direction);
+                    chunk.voxels.fixMargins(graph.chunkFor(neighbor).voxels, graph.margins, chunkId.vertex, direction);
                     graph.markChanged(neighbor);
                     graph.resolveIfExposed(neighbor);
                 }

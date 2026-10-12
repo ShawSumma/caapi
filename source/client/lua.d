@@ -60,7 +60,7 @@ struct LuaLookup(E) {
 
     static LuaLookup fromName(const(char)[] name) {
         uint index = 0;
-        while (index < ENUM_NAMES!E.length && LuaName.fromMember(ENUM_NAMES!E[index]).slice() != name) {
+        while (index < ENUM_NAMES!E.length && !isLuaNameOf(ENUM_NAMES!E[index], name)) {
             index += 1;
         }
         if (index < ENUM_NAMES!E.length) {
@@ -69,6 +69,24 @@ struct LuaLookup(E) {
             return LuaLookup(E.init, false);
         }
     }
+}
+
+bool isLuaNameOf(const(char)[] member, const(char)[] name) {
+    size_t at = 0;
+    size_t index = 0;
+    bool isMatch = true;
+    while (isMatch && index < member.length) {
+        char c = member[index];
+        if (isUpperCase(c)) {
+            isMatch = at + 1 < name.length && name[at] == LUA_NAME_SEPARATOR && name[at + 1] == lowerCase(c);
+            at += 2;
+        } else {
+            isMatch = at < name.length && name[at] == c;
+            at += 1;
+        }
+        index += 1;
+    }
+    return isMatch && at == name.length;
 }
 
 bool isUpperCase(char c) {

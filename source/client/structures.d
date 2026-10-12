@@ -43,6 +43,7 @@ struct StructureProblem {
 
 struct QueuedStructure {
     SiteFrame site;
+    Array!uint held;
     uint key;
     int reference;
     int argumentCount;
@@ -127,11 +128,16 @@ struct StructureHost {
         }
     }
 
-    void run(QueuedStructure queued) {
+    void run(ref QueuedStructure queued) {
         key = queued.key;
         builder.growFrom(queued.key);
-        call(queued.reference, queued.argumentCount, queued.site, PLANET);
-        luaL_unref(lua, LUA_REGISTRY, queued.reference);
+        foreach (slot; queued.held.slice()) {
+            builder.graph.unreference(slot);
+        }
+        queued.held.release();
+        immutable int reference = queued.reference;
+        call(reference, queued.argumentCount, queued.site, PLANET);
+        luaL_unref(lua, LUA_REGISTRY, reference);
     }
 
     void call(int reference, int argumentCount, SiteFrame site, uint sky) {
@@ -189,8 +195,8 @@ struct StructureHost {
 
     void tileFaces(ref Graph graph, const(uint)[] faces, Side label, TileCall tile, uint sky) {
         foreach (face; faces) {
-            if (!problem.isPresent && !graph.nodeAt(face).isTiled) {
-                graph.nodeAt(face).isTiled = true;
+            if (!problem.isPresent && !graph.isTiled(face)) {
+                graph.tiledFaces.insert(graph.idAt(face), true);
                 if (sky != PLANET) {
                     graph.skies.worlds.ptr[sky - 1].isTiled = true;
                 }
@@ -201,22 +207,7 @@ struct StructureHost {
         }
     }
 
-    void hold(ref Array!uint held) {
-        foreach (bucket; queue.slice()[nextKey .. $]) {
-            foreach (queued; bucket.slice()) {
-                held.append(queued.site.node);
-                holdArguments(queued.reference, queued.argumentCount, held);
-            }
-        }
-        if (hasTile()) {
-            holdArguments(tileReference, tileArgumentCount, held);
-        }
-        foreach (tile; skyTiles.slice()) {
-            holdArguments(tile.reference, tile.argumentCount, held);
-        }
-    }
-
-    void holdArguments(int reference, int argumentCount, ref Array!uint held) {
+    void referenceArguments(int reference, int argumentCount, ref Array!uint held) {
         lua_rawgeti(lua, LUA_REGISTRY, reference);
         int placed = lua_gettop(lua);
         foreach (index; 0 .. argumentCount) {
@@ -225,7 +216,8 @@ struct StructureHost {
                 lua_getfield(lua, LUA_TOP, "node");
                 int isNumber = 0;
                 lua_Integer node = lua_tointegerx(lua, LUA_TOP, &isNumber);
-                if (isNumber != 0 && node >= 0 && node < builder.graph.nodeCount) {
+                if (isNumber != 0 && node >= 0 && node < builder.graph.nodeCount && builder.graph.isLive(cast(uint) node)) {
+                    builder.graph.reference(cast(uint) node);
                     held.append(cast(uint) node);
                 }
             }
@@ -238,7 +230,16 @@ struct StructureHost {
         while (queue.length <= queued.key) {
             queue.append(Array!QueuedStructure.init);
         }
+        builder.graph.reference(queued.site.node);
+        queued.held.append(queued.site.node);
+        referenceArguments(queued.reference, queued.argumentCount, queued.held);
         queue.ptr[queued.key].append(queued);
+    }
+
+    void keepTile(TileCall tile) {
+        Array!uint held;
+        referenceArguments(tile.reference, tile.argumentCount, held);
+        held.release();
     }
 
     bool hasQueued() const {
@@ -289,6 +290,9 @@ struct StructureHost {
             lua_close(lua);
         }
         foreach (ref bucket; queue.slice()) {
+            foreach (ref queued; bucket.slice()) {
+                queued.held.release();
+            }
             bucket.release();
         }
         queue.release();
@@ -308,7 +312,7 @@ StructureProblem placeWorldStructure(ref Graph graph) {
         if (problem.isPresent || !(host.hasQueued() || host.hasCover())) {
             releaseStructureHost(host);
         } else {
-            graph.grower = Grower(&growStructures, &coverStructures, &holdStructures, &releaseStructureHost, host);
+            graph.grower = Grower(&growStructures, &coverStructures, &releaseStructureHost, host);
         }
         return problem;
     }
@@ -320,10 +324,6 @@ void growStructures(void* context, ref Graph graph, int through) {
 
 void coverStructures(void* context, ref Graph graph, uint slot) {
     (cast(StructureHost*) context).cover(graph, slot);
-}
-
-void holdStructures(void* context, ref Array!uint held) {
-    (cast(StructureHost*) context).hold(held);
 }
 
 void releaseStructureHost(void* context) {
@@ -627,7 +627,7 @@ extern (C) int luaSitePlace(lua_State* lua) {
         if (origin.depth > queuedKey) {
             queuedKey = origin.depth;
         }
-        host.enqueue(QueuedStructure(site, queuedKey, packedCall(lua, SELF + 1), count - PLACED_FUNCTION));
+        host.enqueue(QueuedStructure(site, Array!uint.init, queuedKey, packedCall(lua, SELF + 1), count - PLACED_FUNCTION));
     }
     lua_pushboolean(lua, isAhead);
     return 1;
@@ -642,6 +642,7 @@ extern (C) int luaSiteTile(lua_State* lua) {
     }
     host.tileArgumentCount = lua_gettop(lua) - SELF - PLACED_FUNCTION;
     host.tileReference = packedCall(lua, SELF + 1);
+    host.keepTile(TileCall(host.tileReference, host.tileArgumentCount));
     return 0;
 }
 
@@ -662,6 +663,7 @@ extern (C) int luaSiteSky(lua_State* lua) {
     }
     skies.kinds.append(SkyKind(odds, lookup.value));
     host.skyTiles.append(TileCall(packedCall(lua, SKY_TILE), lua_gettop(lua) - SKY_TILE));
+    host.keepTile(host.skyTiles.ptr[host.skyTiles.length - 1]);
     lua_pushinteger(lua, cast(lua_Integer) skies.kinds.length);
     return 1;
 }
@@ -706,7 +708,7 @@ extern (C) int luaSiteClaim(lua_State* lua) {
     StructureHost* host = structureHost(lua);
     refuseInTile(lua, host, "claim");
     ClaimKey key = claimArgument(lua, *host.builder.graph);
-    immutable bool isNewlyClaimed = host.builder.graph.blueprint.claim(key);
+    immutable bool isNewlyClaimed = host.builder.claim(key);
     lua_pushboolean(lua, isNewlyClaimed);
     return 1;
 }

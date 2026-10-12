@@ -13,7 +13,7 @@ import client.graphics.pipeline : GpuBuffer, VULKAN_TRUE, expectSuccess;
 import client.graphics.voxels.cull : CullPipeline;
 import client.graphics.voxels.meshes : ChunkMeshes, meshJob;
 import client.graphics.voxels.surface : CommonUniforms, FACES_BINDING, LayoutPush, SurfacePipeline, TRANSFORMS_BINDING;
-import client.streaming : ParallelJob;
+import common.parallel : ParallelJob;
 import client.world : LocalWorld;
 import common.clock : NANOSECONDS_PER_MILLISECOND, nowMilliseconds;
 import common.dodeca : CHUNK_BOUNDING_SPHERE_RADIUS, chunkToNode;
@@ -261,6 +261,7 @@ struct Renderer {
                 world.graph.takeChanged();
             }
             meshes.applyBatch(world.nearby[world.published]);
+            meshes.requeueWaiting(world.graph);
         }
         backlog = cast(uint)(world.graph.changedChunks.length - world.graph.changedHead);
     }

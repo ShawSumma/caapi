@@ -9,6 +9,7 @@ import common.allocator : Allocation, RangeAllocator;
 import common.array : Array, grownCapacity;
 import common.coords : CHUNK_DIRECTIONS;
 import common.dodeca : VERTEX_COUNT, Vertex, chunkBoundingSphereCenter, chunkToNode;
+import common.eviction : Unloaded;
 import common.graph : Graph, NO_SLOT;
 import common.neighbors : chunkNeighborSlot;
 import common.node : Chunk, ChunkSlot, ChunkState;
@@ -43,11 +44,13 @@ struct RenderChunk {
     uint faceOffset;
     uint faceCount;
     uint drawable;
+    uint slot;
     bool hasDrawable;
 }
 
 struct MeshRecord {
     ChunkSlot slot;
+    uint block;
     uint offset;
     uint count;
 }
@@ -56,6 +59,7 @@ struct WorkerMeshes {
     Mesher mesher;
     Array!Face faces;
     Array!MeshRecord records;
+    Array!ChunkSlot waiting;
 }
 
 struct MeshBatch {
@@ -68,10 +72,14 @@ void meshJob(void* context, size_t index, uint worker) {
     const(Graph)* graph = batch.graph;
     ChunkSlot slot = graph.changedChunks.ptr[graph.changedHead + index];
     const(Chunk)* chunk = graph.chunkAt(slot);
-    if (chunk.state == ChunkState.populated && !chunk.voxels.isSolid() && !(*graph).isFaceNeighborGenerating(slot)) {
-        WorkerMeshes* output = &batch.workers.ptr[worker];
+    WorkerMeshes* output = &batch.workers.ptr[worker];
+    if (chunk.state != ChunkState.populated || chunk.voxels.isSolid()) {
+        return;
+    } else if ((*graph).isFaceNeighborGenerating(slot)) {
+        output.waiting.append(slot);
+    } else {
         const(Face)[] meshed = output.mesher.mesh(*graph, slot);
-        output.records.append(MeshRecord(slot, cast(uint) output.faces.length, cast(uint) meshed.length));
+        output.records.append(MeshRecord(slot, graph.nodeAt(slot.slot).chunkBlock, cast(uint) output.faces.length, cast(uint) meshed.length));
         output.faces.appendAll(meshed);
     }
 }
@@ -104,6 +112,8 @@ struct ChunkMeshes {
     GpuBuffer transforms;
     GpuBuffer commands;
     Slab!RenderChunk chunks;
+    Array!uint renderBlocks;
+    Array!uint freeRenderBlocks;
     Array!uint drawableChunks;
     Array!VkBufferCopy uploads;
     Array!BufferCopy growthCopies;
@@ -118,6 +128,7 @@ struct ChunkMeshes {
     uint nodeCapacity;
     uint stagedFaces;
     uint stagingCapacity;
+    uint renderBlockCount;
     uint meshedChunks;
     ubyte dimension;
     bool hasReplacedFaces;
@@ -166,6 +177,9 @@ struct ChunkMeshes {
 
     void forgetWorld() {
         chunks.release();
+        renderBlocks.clear();
+        freeRenderBlocks.clear();
+        renderBlockCount = 0;
         drawableChunks.clear();
         allocator.release();
         allocator.grow(cast(uint)(faces.size / Face.sizeof));
@@ -213,7 +227,7 @@ struct ChunkMeshes {
     void refreshDrawableNodes(ref const NearbyScratch nearby) {
         DrawableRecord* records = cast(DrawableRecord*) drawables.mapped;
         foreach (drawable, chunkIndex; drawableChunks.slice()) {
-            records[drawable].node = nearby.indexOf(chunkIndex / VERTEX_COUNT);
+            records[drawable].node = nearby.indexOf(chunks.at(chunkIndex).slot);
         }
     }
 
@@ -226,44 +240,77 @@ struct ChunkMeshes {
         foreach (i; 0 .. batch.workers.length) {
             batch.workers.ptr[i].faces.clear();
             batch.workers.ptr[i].records.clear();
+            batch.workers.ptr[i].waiting.clear();
+        }
+    }
+
+    void requeueWaiting(ref Graph graph) {
+        foreach (worker; batch.workers.slice()) {
+            foreach (slot; worker.waiting.slice()) {
+                graph.markChanged(slot);
+            }
         }
     }
 
     void applyBatch(ref const NearbyScratch nearby) {
         foreach (worker; batch.workers.slice()) {
             foreach (record; worker.records.slice()) {
-                apply(nearby, record.slot, worker.faces.ptr[record.offset .. record.offset + record.count]);
+                apply(nearby, record, worker.faces.ptr[record.offset .. record.offset + record.count]);
             }
         }
     }
 
-    void apply(ref const NearbyScratch nearby, ChunkSlot slot, const(Face)[] meshed) {
-        uint chunkIndex = slot.slot * VERTEX_COUNT + slot.vertex;
-        RenderChunk* entry = chunks.touch(chunkIndex);
+    uint renderIndexFor(uint block, Vertex vertex) {
+        if (renderBlocks.length <= block) {
+            renderBlocks.resize(block + 1);
+        }
+        if (renderBlocks.ptr[block] == 0) {
+            uint render = renderBlockCount;
+            if (freeRenderBlocks.length > 0) {
+                render = freeRenderBlocks.ptr[freeRenderBlocks.length - 1];
+                freeRenderBlocks.length -= 1;
+            } else {
+                renderBlockCount += 1;
+                chunks.ensure(cast(size_t) renderBlockCount * VERTEX_COUNT);
+            }
+            renderBlocks.ptr[block] = render + 1;
+        }
+        return (renderBlocks.ptr[block] - 1) * VERTEX_COUNT + vertex;
+    }
+
+    void apply(ref const NearbyScratch nearby, MeshRecord record, const(Face)[] meshed) {
+        uint chunkIndex = renderIndexFor(record.block, record.slot.vertex);
+        RenderChunk* entry = chunks.at(chunkIndex);
         if (entry.faceCount > 0) {
             allocator.release(entry.faceOffset, entry.faceCount);
         }
         entry.faceCount = cast(uint) meshed.length;
+        entry.slot = record.slot.slot;
         meshedChunks += 1;
         if (meshed.length == 0) {
             removeDrawable(chunkIndex);
         } else {
             entry.faceOffset = allocateFaces(entry.faceCount);
             stage(meshed, entry.faceOffset);
-            writeDrawable(chunkIndex, slot, nearby.indexOf(slot.slot));
+            writeDrawable(chunkIndex, record.slot, nearby.indexOf(record.slot.slot));
         }
     }
 
-    void forget(const(uint)[] slots) {
-        foreach (slot; slots) {
-            foreach (vertex; 0 .. VERTEX_COUNT) {
-                uint chunkIndex = slot * VERTEX_COUNT + vertex;
-                RenderChunk* entry = chunks.touch(chunkIndex);
-                if (entry.faceCount > 0) {
-                    allocator.release(entry.faceOffset, entry.faceCount);
+    void forget(const(Unloaded)[] unloaded) {
+        foreach (released; unloaded) {
+            if (released.block < renderBlocks.length && renderBlocks.ptr[released.block] != 0) {
+                uint render = renderBlocks.ptr[released.block] - 1;
+                foreach (vertex; 0 .. VERTEX_COUNT) {
+                    uint chunkIndex = render * VERTEX_COUNT + vertex;
+                    RenderChunk* entry = chunks.at(chunkIndex);
+                    if (entry.faceCount > 0) {
+                        allocator.release(entry.faceOffset, entry.faceCount);
+                    }
+                    removeDrawable(chunkIndex);
+                    *entry = RenderChunk.init;
                 }
-                removeDrawable(chunkIndex);
-                *entry = RenderChunk.init;
+                freeRenderBlocks.append(render);
+                renderBlocks.ptr[released.block] = 0;
             }
         }
     }
@@ -360,6 +407,7 @@ struct ChunkMeshes {
             batch.workers.ptr[i].mesher.release();
             batch.workers.ptr[i].faces.release();
             batch.workers.ptr[i].records.release();
+            batch.workers.ptr[i].waiting.release();
         }
         batch.workers.release();
         retired.release();
@@ -368,6 +416,8 @@ struct ChunkMeshes {
         drawableChunks.release();
         allocator.release();
         chunks.release();
+        renderBlocks.release();
+        freeRenderBlocks.release();
     }
 }
 

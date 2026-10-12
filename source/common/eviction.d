@@ -1,189 +1,146 @@
 module common.eviction;
 
+import core.stdc.math : coshf;
 import common.array : Array;
-import common.dodeca : VERTEX_COUNT;
-import common.graph : Graph, NO_NODE, NO_SLOT, Node, NodeId, ROOT_NODE, slabRun;
-import common.hashmap : keepWhere, visitEntries;
+import common.clock : nowMilliseconds;
+import common.coords : CHUNK_DIRECTIONS;
+import common.dodeca : CHUNK_BOUNDING_SPHERE_RADIUS, VERTEX_COUNT, Vertex, chunkBoundingSphereCenter;
+import common.graph : Graph, NO_SLOT, Node, ParentList;
+import common.math : MPoint;
+import common.neighbors : chunkNeighborSlot;
 import common.node : Chunk, ChunkSlot, ChunkState;
-import common.slab : Slab;
-import common.traversal : NearbyNode;
-import common.worldgen.sky : PLANET, SkyChoice, World, WorldRef, worldAt, worldsAt;
-import common.worldgen.structure : ClaimKey;
+import common.traversal : NOT_COLLECTED, NearbyNode, NearbyScratch;
+import common.worldgen.sky : releaseIdleWorlds, worldsAt;
+import common.worldgen.structure : ClaimKey, SitePart;
 
-enum ubyte EVICTED = 0;
-enum ubyte HELD = 1;
-enum ubyte NEAR = 2;
+enum uint SLOTS_PER_CLOCK_CHECK = 256;
+enum uint SWEEP_CYCLE_FRAMES = 120;
+enum double SWEEP_LEAST_MILLISECONDS = 1.0;
+enum double SWEEP_MOST_MILLISECONDS = 3.0;
+enum float KEEP_RADIUS = 3.0f;
+enum float DROP_RADIUS = 3.5f;
 
-void evictOutside(ref Graph graph, const(NearbyNode)[] published, const(NearbyNode)[] building, ref Array!uint unloaded) {
-    Keeper keeper = Keeper.make(graph);
-    foreach (node; published) {
-        keeper.hold(graph, node.slot, NEAR);
-    }
-    foreach (node; building) {
-        keeper.hold(graph, node.slot, NEAR);
-    }
-    keeper.holdStructures(graph);
-    keeper.holdWorlds(graph);
-    keeper.evictWorlds(graph);
-    WorldCompaction worlds;
-    foreach (slot; 0 .. graph.nodeCount) {
-        Node* node = graph.nodeAt(slot);
-        if (node.id == NO_NODE) {
-            continue;
-        } else if (keeper.marks.ptr[slot] == EVICTED) {
-            graph.evictNode(slot, unloaded);
-        } else {
-            if (keeper.marks.ptr[slot] == HELD) {
+struct Evictor {
+    Array!uint stack;
+    uint cursor;
+    uint evicted;
+    uint dropped;
+
+    void sweep(ref Graph graph, ref const NearbyScratch published, const(NearbyScratch)* building, MPoint!float camera, ref Array!Unloaded unloaded, double start) {
+        Near near = Near(&published, building);
+        float dropThreshold = coshf(DROP_RADIUS + CHUNK_BOUNDING_SPHERE_RADIUS);
+        uint wanted = graph.nodeCount / SWEEP_CYCLE_FRAMES;
+        uint examined = 0;
+        bool isDone = false;
+        while (examined < graph.nodeCount && !isDone) {
+            if (cursor >= graph.nodeCount) {
+                cursor = 0;
+                graph.releaseIdleWorlds();
+            }
+            uint slot = cursor;
+            cursor += 1;
+            examined += 1;
+            if (examined % SLOTS_PER_CLOCK_CHECK == 0) {
+                double spent = nowMilliseconds() - start;
+                isDone = spent >= SWEEP_MOST_MILLISECONDS || (examined >= wanted && spent >= SWEEP_LEAST_MILLISECONDS);
+            }
+            Node* node = graph.nodeAt(slot);
+            if (!graph.isLive(slot)) {
+                continue;
+            } else if (node.isRecent) {
+                node.isRecent = false;
+            } else if (near.contains(slot)) {
+                node.isRecent = true;
+                uint index = published.indexOf(slot);
+                if (index != NOT_COLLECTED && graph.hasChunks(slot)) {
+                    dropped += graph.dropFarChunks(published.nodes.ptr[index], camera, dropThreshold);
+                }
+            } else if (graph.isEvictable(slot)) {
+                evictFrom(graph, slot, near, unloaded);
+            } else {
                 graph.unloadNode(slot, unloaded);
             }
-            foreach (ref neighbor; node.neighbors) {
-                if (neighbor != NO_SLOT && keeper.marks.ptr[neighbor] == EVICTED) {
-                    neighbor = NO_SLOT;
-                }
-            }
-            worlds.keep(graph, node);
-        }
-    }
-    worlds.finish(graph);
-    keepWhere!((ref Array!ubyte kept, NodeId id, uint slot) => kept.ptr[slot] != EVICTED)(graph.slots, keeper.marks);
-    keepWhere!((ref Array!ubyte kept, ClaimKey key, SkyChoice choice) => kept.ptr[key.slot] != EVICTED)(graph.skies.choices, keeper.marks);
-    graph.keepQueuedChanges();
-    keeper.release();
-}
-
-struct Keeper {
-    Array!ubyte marks;
-    Array!uint stack;
-    Array!uint marked;
-    Array!bool keptWorlds;
-    Array!uint worldQueue;
-
-    static Keeper make(ref const Graph graph) {
-        Keeper keeper;
-        keeper.marks.resize(graph.nodeCount);
-        keeper.keptWorlds.resize(graph.skies.worlds.length);
-        return keeper;
-    }
-
-    void hold(ref const Graph graph, uint slot, ubyte mark) {
-        if (graph.isLive(slot) && marks.ptr[slot] == EVICTED) {
-            marks.ptr[slot] = mark;
-            stack.append(slot);
         }
     }
 
-    void holdStructures(ref Graph graph) {
-        hold(graph, graph.slotOf(ROOT_NODE), HELD);
-        hold(graph, graph.anchorSlot, HELD);
-        foreach (slot; 0 .. graph.nodeCount) {
-            if (graph.isLive(slot) && graph.isPinned(slot)) {
-                hold(graph, slot, HELD);
-            }
-        }
-        foreach (line; graph.blueprint.lines.slice()) {
-            hold(graph, line.node, HELD);
-        }
-        foreach (stop; graph.blueprint.route.slice()) {
-            hold(graph, stop.site.node, HELD);
-        }
-        if (graph.blueprint.hasEntrance) {
-            hold(graph, graph.blueprint.entrance.site.node, HELD);
-        }
-        Array!uint slots;
-        visitEntries!((ref Array!uint found, ClaimKey key, bool isClaimed) { found.append(key.slot); })(graph.blueprint.claims, slots);
-        visitEntries!((ref Array!uint found, ClaimKey key, SkyChoice choice) { found.append(key.slot); })(graph.skies.forced, slots);
-        if (graph.grower.hold !is null) {
-            graph.grower.hold(graph.grower.context, slots);
-        }
-        foreach (slot; slots.slice()) {
-            hold(graph, slot, HELD);
-        }
-        slots.release();
-    }
-
-    void holdWorlds(ref Graph graph) {
-        foreach (index, world; graph.skies.worlds.slice()) {
-            if (world.isKnown && world.isTiled) {
-                keepWorld(cast(uint) index + 1);
-            }
-        }
-        Array!ClaimKey forced;
-        visitEntries!((ref Array!ClaimKey found, ClaimKey key, SkyChoice choice) { found.append(key); })(graph.skies.forced, forced);
-        foreach (key; forced.slice()) {
-            const(uint)* world = graph.skies.worldOf.find(key);
-            if (world !is null) {
-                keepWorld(*world);
-            }
-        }
-        forced.release();
-        size_t scanned = 0;
-        do {
-            holdAncestors(graph);
-            foreach (slot; marked.slice()[scanned .. $]) {
-                foreach (near; graph.worldsAt(slot)) {
-                    keepWorld(near.world);
-                }
-            }
-            scanned = marked.length;
-            while (worldQueue.length > 0) {
-                World world = graph.worldAt(worldQueue.ptr[worldQueue.length - 1]);
-                worldQueue.length -= 1;
-                keepWorld(world.parent);
-                hold(graph, world.foot.node, HELD);
-                hold(graph, world.footNode, HELD);
-                hold(graph, world.vertex.slot, HELD);
-            }
-        } while (stack.length > 0);
-    }
-
-    void keepWorld(uint world) {
-        if (world != PLANET && !keptWorlds.ptr[world - 1]) {
-            keptWorlds.ptr[world - 1] = true;
-            worldQueue.append(world);
-        }
-    }
-
-    void holdAncestors(ref const Graph graph) {
+    void evictFrom(ref Graph graph, uint slot, Near near, ref Array!Unloaded unloaded) {
+        stack.append(slot);
         while (stack.length > 0) {
-            uint slot = stack.ptr[stack.length - 1];
+            uint current = stack.ptr[stack.length - 1];
             stack.length -= 1;
-            marked.append(slot);
-            const(Node)* node = graph.nodeAt(slot);
-            foreach (neighbor; node.neighbors) {
-                if (neighbor != NO_SLOT && graph.nodeAt(neighbor).depth < node.depth) {
-                    hold(graph, neighbor, HELD);
+            ParentList parents = graph.parents(current);
+            graph.evictNode(current, unloaded);
+            evicted += 1;
+            foreach (link; parents.links[0 .. parents.count]) {
+                Node* parent = graph.nodeAt(link.slot);
+                parent.neighbors[link.side] = NO_SLOT;
+                parent.liveChildren -= 1;
+                if (!parent.isRecent && !near.contains(link.slot) && graph.isEvictable(link.slot)) {
+                    stack.append(link.slot);
                 }
             }
         }
-    }
-
-    void evictWorlds(ref Graph graph) {
-        foreach (index, ref world; graph.skies.worlds.slice()) {
-            if (world.isKnown && !keptWorlds.ptr[index]) {
-                world = World.init;
-                graph.skies.freeWorlds.append(cast(uint) index + 1);
-            }
-        }
-        keepWhere!((ref Array!bool kept, ClaimKey key, uint world) => kept.ptr[world - 1])(graph.skies.worldOf, keptWorlds);
     }
 
     void release() {
-        marks.release();
         stack.release();
-        marked.release();
-        keptWorlds.release();
-        worldQueue.release();
     }
 }
 
-bool isPinned(ref const Graph graph, uint slot) {
+struct Near {
+    const(NearbyScratch)* published;
+    const(NearbyScratch)* building;
+
+    bool contains(uint slot) const {
+        return published.indexOf(slot) != NOT_COLLECTED || (building !is null && building.indexOf(slot) != NOT_COLLECTED);
+    }
+}
+
+uint dropFarChunks(ref Graph graph, NearbyNode node, MPoint!float camera, float threshold) {
+    uint count = 0;
+    foreach (vertexIndex; 0 .. VERTEX_COUNT) {
+        Vertex vertex = cast(Vertex) vertexIndex;
+        ChunkSlot chunk = ChunkSlot(node.slot, vertex);
+        const(Chunk)* current = graph.chunkAt(chunk);
+        if (current.state == ChunkState.populated && !current.voxels.isSolid() && !current.isEdited && !current.isQueued && -camera.mip((node.transform * vertex.chunkBoundingSphereCenter).vec) > threshold && graph.areFaceNeighborsSettled(chunk)) {
+            Chunk* target = graph.chunkFor(chunk);
+            target.voxels.release();
+            target.state = ChunkState.dropped;
+            count += 1;
+        }
+    }
+    return count;
+}
+
+bool areFaceNeighborsSettled(ref const Graph graph, ChunkSlot chunk) {
+    uint direction = 0;
+    while (direction < CHUNK_DIRECTIONS.length && graph.isSettled(graph.chunkNeighborSlot(chunk, CHUNK_DIRECTIONS[direction]))) {
+        direction += 1;
+    }
+    return direction == CHUNK_DIRECTIONS.length;
+}
+
+bool isSettled(ref const Graph graph, ChunkSlot chunk) {
+    if (chunk.slot == NO_SLOT) {
+        return false;
+    } else {
+        ChunkState state = graph.chunkAt(chunk).state;
+        return state == ChunkState.populated || state == ChunkState.dropped;
+    }
+}
+
+bool isEvictable(ref const Graph graph, uint slot) {
     const(Node)* node = graph.nodeAt(slot);
-    return node.touchLength > 0 || node.pendingHead != 0 || node.isTiled || node.isBuildingQueued || (node.hasChunks && graph.hasPinnedChunk(slot));
+    return node.liveChildren == 0 && node.references == 0 && !graph.isPinned(slot);
+}
+
+bool isPinned(ref const Graph graph, uint slot) {
+    return graph.nodeAt(slot).isBuildingQueued || (graph.hasChunks(slot) && graph.hasPinnedChunk(slot));
 }
 
 bool hasPinnedChunk(ref const Graph graph, uint slot) {
     uint vertex = 0;
-    while (vertex < VERTEX_COUNT && !isPinnedChunk(graph.chunkAt(ChunkSlot.fromIndex(cast(size_t) slot * VERTEX_COUNT + vertex)))) {
+    while (vertex < VERTEX_COUNT && !isPinnedChunk(graph.chunkAt(ChunkSlot(slot, cast(Vertex) vertex)))) {
         vertex += 1;
     }
     return vertex < VERTEX_COUNT;
@@ -193,81 +150,65 @@ bool isPinnedChunk(const(Chunk)* chunk) {
     return chunk.state == ChunkState.generating || chunk.isEdited;
 }
 
-void unloadNode(ref Graph graph, uint slot, ref Array!uint unloaded) {
-    Node* node = graph.nodeAt(slot);
+struct Unloaded {
+    uint slot;
+    uint block;
+}
+
+void unloadNode(ref Graph graph, uint slot, ref Array!Unloaded unloaded) {
     bool isHeld = false;
-    if (node.hasChunks) {
+    if (graph.hasChunks(slot)) {
         bool isReleased = false;
         foreach (vertex; 0 .. VERTEX_COUNT) {
-            Chunk* chunk = graph.chunks.at(cast(size_t) slot * VERTEX_COUNT + vertex);
-            if (chunk.state == ChunkState.populated && !chunk.isEdited) {
+            Chunk* chunk = graph.chunkFor(ChunkSlot(slot, cast(Vertex) vertex));
+            if ((chunk.state == ChunkState.populated || chunk.state == ChunkState.dropped) && !chunk.isEdited) {
                 chunk.voxels.release();
                 *chunk = Chunk.init;
                 isReleased = true;
             }
             isHeld = isHeld || chunk.state != ChunkState.fresh;
         }
-        node.hasChunks = isHeld;
         if (isReleased) {
-            unloaded.append(slot);
+            unloaded.append(Unloaded(slot, graph.nodeAt(slot).chunkBlock));
+        }
+        if (!isHeld) {
+            graph.releaseChunks(slot);
+        } else if (isReleased) {
+            foreach (vertex; 0 .. VERTEX_COUNT) {
+                if (graph.chunkAt(ChunkSlot(slot, cast(Vertex) vertex)).state == ChunkState.populated) {
+                    graph.markChanged(ChunkSlot(slot, cast(Vertex) vertex));
+                }
+            }
         }
     }
+    Node* node = graph.nodeAt(slot);
     if (node.hasBuilding && !isHeld) {
         node.building.release();
         node.hasBuilding = false;
     }
 }
 
-void evictNode(ref Graph graph, uint slot, ref Array!uint unloaded) {
+void evictNode(ref Graph graph, uint slot, ref Array!Unloaded unloaded) {
     Node* node = graph.nodeAt(slot);
-    if (node.hasChunks) {
-        foreach (vertex; 0 .. VERTEX_COUNT) {
-            Chunk* chunk = graph.chunks.at(cast(size_t) slot * VERTEX_COUNT + vertex);
-            chunk.voxels.release();
-            *chunk = Chunk.init;
-        }
-        unloaded.append(slot);
+    if (graph.hasChunks(slot)) {
+        unloaded.append(Unloaded(slot, node.chunkBlock));
+        graph.releaseChunks(slot);
     }
     if (node.hasBuilding) {
         node.building.release();
     }
+    foreach (near; graph.worldsAt(slot)) {
+        graph.skies.worlds.ptr[near.world - 1].users -= 1;
+    }
+    graph.releaseWorlds(node.worldStart, node.worldCount);
+    graph.releaseTouches(node.touchStart, node.touchLength);
+    if (node.hasChoices) {
+        foreach (vertex; 0 .. VERTEX_COUNT) {
+            graph.skies.choices.remove(ClaimKey(slot, cast(Vertex) vertex, SitePart.vertex));
+        }
+    }
+    graph.slots.remove(node.id);
     *node = Node.init;
     graph.freeSlots.append(slot);
     graph.liveCount -= 1;
-}
-
-struct WorldCompaction {
-    Slab!WorldRef kept;
-    uint count;
-
-    void keep(ref const Graph graph, Node* node) {
-        if (node.worldCount > 0) {
-            uint start = slabRun(count, node.worldCount);
-            kept.ensure(start + node.worldCount);
-            foreach (index; 0 .. node.worldCount) {
-                *kept.at(start + index) = *graph.worldRefs.at(node.worldStart + index);
-            }
-            node.worldStart = start;
-            count = start + node.worldCount;
-        }
-    }
-
-    void finish(ref Graph graph) {
-        graph.worldRefs.release();
-        graph.worldRefs = kept;
-        graph.worldRefCount = count;
-    }
-}
-
-void keepQueuedChanges(ref Graph graph) {
-    size_t kept = 0;
-    foreach (index; graph.changedHead .. graph.changedChunks.length) {
-        ChunkSlot chunk = graph.changedChunks.ptr[index];
-        if (graph.chunkAt(chunk).isQueued) {
-            graph.changedChunks.ptr[kept] = chunk;
-            kept += 1;
-        }
-    }
-    graph.changedChunks.length = kept;
-    graph.changedHead = 0;
 }

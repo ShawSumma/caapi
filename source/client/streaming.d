@@ -1,6 +1,6 @@
 module client.streaming;
 
-import core.stdc.math : coshf;
+import core.stdc.math : acoshf, coshf;
 import core.stdc.stdlib : calloc, free;
 import core.sys.posix.pthread : pthread_cond_broadcast, pthread_cond_destroy, pthread_cond_init, pthread_cond_signal, pthread_cond_t, pthread_cond_wait, pthread_create, pthread_join, pthread_mutex_destroy, pthread_mutex_init, pthread_mutex_lock, pthread_mutex_t, pthread_mutex_unlock, pthread_t;
 import core.sys.posix.unistd : _SC_NPROCESSORS_ONLN, sysconf;
@@ -8,30 +8,35 @@ import common.array : Array;
 import common.clock : nowMilliseconds;
 import common.coords : CHUNK_DIRECTIONS, ChunkDirection, CoordSign;
 import common.dodeca : CHUNK_BOUNDING_SPHERE_RADIUS, VERTEX_COUNT, Vertex, adjacentVertices, canonicalSides, chunkBoundingSphereCenter;
+import common.eviction : KEEP_RADIUS, Unloaded;
 import common.graph : Graph, NO_SLOT, Node;
 import common.math : MIsometry, MPoint;
 import common.neighbors : chunkNeighborSlot, isPredictionContradicted, touchChunksAround;
 import common.node : Chunk, ChunkId, ChunkSlot, ChunkState, Occupancy;
+import common.parallel : Executor, ParallelJob;
 import common.traversal : NO_DEADLINE, NearbyNode;
 import common.worldgen.building : Building, BuildingPlan;
 import common.worldgen.generation : ChunkParams, GeneratedVoxels;
 
 enum uint RESERVED_CORES = 2;
 enum uint MAIN_WORKER = 0;
-enum uint DONE_FOREVER = uint.max;
-enum uint RESCAN = DONE_FOREVER - 1;
+enum double RESCAN = 0;
+enum double DONE_FOREVER = double.infinity;
 enum uint MAX_SCAN_NODES_PER_FRAME = 4096;
+enum size_t SKIPPED_PER_CLOCK_CHECK = 1024;
 enum uint IN_FLIGHT_PER_WORKER = 256;
 enum double WORLDGEN_BUDGET_MILLISECONDS = 6.0;
 
 struct GenRequest {
     ChunkParams params;
     ChunkSlot chunk;
+    bool isRestoring;
 }
 
 struct GenResult {
     GeneratedVoxels generated;
     ChunkSlot chunk;
+    bool isRestoring;
 }
 
 struct BuildingRequest {
@@ -42,15 +47,6 @@ struct BuildingRequest {
 struct BuildingResult {
     Building building;
     uint slot;
-}
-
-struct ParallelJob {
-    void function(void* context, size_t index, uint worker) run;
-    void* context;
-    double deadline;
-    size_t count;
-    size_t claimed;
-    size_t finished;
 }
 
 struct GenQueue {
@@ -130,7 +126,7 @@ struct GenQueue {
         pthread_mutex_unlock(&mutex);
         GeneratedVoxels generated = request.params.generateVoxels();
         pthread_mutex_lock(&mutex);
-        done.append(GenResult(generated, request.chunk));
+        done.append(GenResult(generated, request.chunk, request.isRestoring));
         pthread_cond_signal(&resultsReady);
     }
 
@@ -164,9 +160,28 @@ extern (C) void* workerMain(void* argument) {
 }
 
 struct ScanOutcome {
-    uint freshOutOfRange;
+    float nearestOutOfRange;
+    float nearestDropped;
     bool isWaitingOnBuilding;
     bool isInterrupted;
+}
+
+struct ScanRange {
+    MPoint!float camera;
+    float range;
+    float threshold;
+    float keepRange;
+    float keepThreshold;
+
+    static ScanRange make(MPoint!float camera, float range, float keepRange) {
+        return ScanRange(camera, range, coshf(range), keepRange, coshf(keepRange));
+    }
+
+    double margin(ScanOutcome outcome) const {
+        float fresh = outcome.nearestOutOfRange == float.infinity ? float.infinity : acoshf(outcome.nearestOutOfRange) - range;
+        float dropped = outcome.nearestDropped == float.infinity ? float.infinity : acoshf(outcome.nearestDropped) - keepRange;
+        return fresh < dropped ? fresh : dropped;
+    }
 }
 
 struct Streamer {
@@ -175,9 +190,10 @@ struct Streamer {
     Array!GenRequest requests;
     Array!GenResult results;
     Array!BuildingRequest buildingRequests;
-    Array!uint doneVersion;
+    Array!double rescanAt;
     GenQueue* queue;
     size_t resultsHead;
+    double travel = 0;
     uint workerCount;
     uint inFlight;
     uint buildingsInFlight;
@@ -216,19 +232,28 @@ struct Streamer {
         pthread_mutex_unlock(&queue.mutex);
     }
 
+    Executor executor() {
+        return Executor(&runOn, &this, workerCount + 1);
+    }
+
     void drive(ref Graph graph, const(NearbyNode)[] nearby, MIsometry!float cameraLocal, float distance, uint nearbyVersion, bool isUnbudgeted) {
         double deadline = budgetDeadline(isUnbudgeted);
-        if (doneVersion.length < graph.nodeCount) {
-            doneVersion.resize(graph.nodeCount);
+        if (rescanAt.length < graph.nodeCount) {
+            rescanAt.resize(graph.nodeCount);
         }
         integrate(graph, false, deadline);
         requests.clear();
         buildingRequests.clear();
+        foreach (chunk; graph.restores.slice()) {
+            requests.append(GenRequest(ChunkParams.make(graph, chunk.slot, chunk.vertex), chunk, true));
+        }
+        graph.restores.clear();
         if (scanVersion != nearbyVersion) {
             scanVersion = nearbyVersion;
             scanCursor = 0;
         }
-        scanCursor = cast(uint) scan(graph, nearby, cameraLocal * MPoint!float.origin(), coshf(distance + CHUNK_BOUNDING_SPHERE_RADIUS), requestBudget(isUnbudgeted), deadline);
+        ScanRange range = ScanRange.make(cameraLocal * MPoint!float.origin(), distance + CHUNK_BOUNDING_SPHERE_RADIUS, KEEP_RADIUS + CHUNK_BOUNDING_SPHERE_RADIUS);
+        scanCursor = cast(uint) scan(graph, nearby, range, requestBudget(isUnbudgeted), deadline);
         submitRequests();
     }
 
@@ -243,66 +268,82 @@ struct Streamer {
     }
 
     bool isScanPending(uint slot) const {
-        return doneVersion.ptr[slot] != DONE_FOREVER && doneVersion.ptr[slot] != scanVersion;
+        return rescanAt.ptr[slot] <= travel;
     }
 
-    size_t scan(ref Graph graph, const(NearbyNode)[] nearby, MPoint!float startPoint, float threshold, uint budget, double deadline) {
+    size_t scan(ref Graph graph, const(NearbyNode)[] nearby, ScanRange range, uint budget, double deadline) {
         uint scanned = 0;
         size_t index = scanCursor;
-        while (index < nearby.length && scanned < MAX_SCAN_NODES_PER_FRAME && nowMilliseconds() < deadline) {
+        bool isLate = nowMilliseconds() >= deadline;
+        while (index < nearby.length && scanned < MAX_SCAN_NODES_PER_FRAME && !isLate) {
             NearbyNode nearbyNode = nearby[index];
             if (isScanPending(nearbyNode.slot)) {
                 scanned += 1;
-                immutable ScanOutcome outcome = scanNode(graph, nearbyNode, startPoint, threshold, budget, deadline);
+                immutable ScanOutcome outcome = scanNode(graph, nearbyNode, range, budget);
                 if (outcome.isInterrupted) {
                     break;
                 } else if (outcome.isWaitingOnBuilding) {
-                    doneVersion.ptr[nearbyNode.slot] = RESCAN;
+                    rescanAt.ptr[nearbyNode.slot] = RESCAN;
                 } else {
-                    doneVersion.ptr[nearbyNode.slot] = doneMark(outcome.freshOutOfRange);
+                    rescanAt.ptr[nearbyNode.slot] = travel + range.margin(outcome);
                 }
+                isLate = nowMilliseconds() >= deadline;
+            } else if (index % SKIPPED_PER_CLOCK_CHECK == 0) {
+                isLate = nowMilliseconds() >= deadline;
             }
             index += 1;
         }
         return index;
     }
 
-    uint doneMark(uint freshOutOfRange) const {
-        if (freshOutOfRange == 0) {
-            return DONE_FOREVER;
-        } else {
-            return scanVersion;
-        }
+    float rangeProduct(NearbyNode nearbyNode, Vertex vertex, MPoint!float camera) const {
+        return -camera.mip((nearbyNode.transform * vertex.chunkBoundingSphereCenter).vec);
     }
 
-    bool isOutOfRange(NearbyNode nearbyNode, Vertex vertex, MPoint!float startPoint, float threshold) const {
-        return -startPoint.mip((nearbyNode.transform * vertex.chunkBoundingSphereCenter).vec) > threshold;
+    bool isRequestBlocked(ref const Graph graph, NearbyNode nearbyNode, Vertex vertex, ScanRange range, uint budget) const {
+        ChunkState state = graph.chunkAt(ChunkSlot(nearbyNode.slot, vertex)).state;
+        bool isWanted = (state == ChunkState.fresh && !(rangeProduct(nearbyNode, vertex, range.camera) > range.threshold)) || (state == ChunkState.dropped && !(rangeProduct(nearbyNode, vertex, range.camera) > range.keepThreshold));
+        return isWanted && requests.length >= budget;
     }
 
-    bool isRequestBlocked(ref const Graph graph, NearbyNode nearbyNode, Vertex vertex, MPoint!float startPoint, float threshold, uint budget, double deadline) const {
-        return graph.chunkAt(ChunkSlot(nearbyNode.slot, vertex)).state == ChunkState.fresh && !isOutOfRange(nearbyNode, vertex, startPoint, threshold) && (requests.length >= budget || nowMilliseconds() >= deadline);
-    }
-
-    ScanOutcome scanNode(ref Graph graph, NearbyNode nearbyNode, MPoint!float startPoint, float threshold, uint budget, double deadline) {
-        uint freshOutOfRange = 0;
-        bool isWaitingOnBuilding = false;
+    ScanOutcome scanNode(ref Graph graph, NearbyNode nearbyNode, ScanRange range, uint budget) {
+        ScanOutcome outcome = ScanOutcome(float.infinity, float.infinity, false, false);
         uint vertexIndex = 0;
-        while (vertexIndex < VERTEX_COUNT && !isRequestBlocked(graph, nearbyNode, cast(Vertex) vertexIndex, startPoint, threshold, budget, deadline)) {
+        while (vertexIndex < VERTEX_COUNT && !isRequestBlocked(graph, nearbyNode, cast(Vertex) vertexIndex, range, budget)) {
             Vertex vertex = cast(Vertex) vertexIndex;
             ChunkSlot slot = ChunkSlot(nearbyNode.slot, vertex);
-            if (graph.chunkAt(slot).state == ChunkState.fresh) {
-                if (isOutOfRange(nearbyNode, vertex, startPoint, threshold)) {
-                    freshOutOfRange += 1;
+            ChunkState state = graph.chunkAt(slot).state;
+            if (state == ChunkState.fresh) {
+                float product = rangeProduct(nearbyNode, vertex, range.camera);
+                if (product > range.threshold) {
+                    if (product < outcome.nearestOutOfRange) {
+                        outcome.nearestOutOfRange = product;
+                    }
                 } else if (!isBuildingReady(graph, nearbyNode.slot)) {
                     scheduleBuilding(graph, nearbyNode.slot);
-                    isWaitingOnBuilding = true;
+                    outcome.isWaitingOnBuilding = true;
                 } else {
                     request(graph, slot);
+                }
+            } else if (state == ChunkState.dropped) {
+                float product = rangeProduct(nearbyNode, vertex, range.camera);
+                if (product > range.keepThreshold) {
+                    if (product < outcome.nearestDropped) {
+                        outcome.nearestDropped = product;
+                    }
+                } else {
+                    restore(graph, slot);
                 }
             }
             vertexIndex += 1;
         }
-        return ScanOutcome(freshOutOfRange, isWaitingOnBuilding, vertexIndex < VERTEX_COUNT);
+        outcome.isInterrupted = vertexIndex < VERTEX_COUNT;
+        return outcome;
+    }
+
+    void restore(ref Graph graph, ChunkSlot slot) {
+        graph.chunkFor(slot).state = ChunkState.generating;
+        requests.append(GenRequest(ChunkParams.make(graph, slot.slot, slot.vertex), slot, true));
     }
 
     void scheduleBuilding(ref Graph graph, uint slot) {
@@ -314,12 +355,11 @@ struct Streamer {
 
     void request(ref Graph graph, ChunkSlot slot) {
         ChunkParams params = ChunkParams.make(graph, slot.slot, slot.vertex);
-        Chunk* chunk = graph.chunkAt(slot);
+        Chunk* chunk = graph.chunkFor(slot);
         chunk.predicted = params.predictOccupancy();
-        if (chunk.predicted == Occupancy.unknown) {
-            requests.append(GenRequest(params, slot));
+        if (chunk.predicted != Occupancy.empty) {
+            requests.append(GenRequest(params, slot, false));
             chunk.state = ChunkState.generating;
-            graph.nodeAt(slot.slot).hasChunks = true;
         } else {
             graph.populateChunk(slot, params.generateVoxels());
         }
@@ -337,10 +377,10 @@ struct Streamer {
         }
     }
 
-    void forget(const(uint)[] slots) {
-        foreach (slot; slots) {
-            if (slot < doneVersion.length) {
-                doneVersion.ptr[slot] = RESCAN;
+    void forget(const(Unloaded)[] unloaded) {
+        foreach (entry; unloaded) {
+            if (entry.slot < rescanAt.length) {
+                rescanAt.ptr[entry.slot] = RESCAN;
             }
         }
     }
@@ -371,7 +411,11 @@ struct Streamer {
             GenResult result = results.ptr[resultsHead];
             resultsHead += 1;
             inFlight -= 1;
-            graph.populateChunk(result.chunk, result.generated);
+            if (result.isRestoring) {
+                graph.restoreChunk(result.chunk, result.generated);
+            } else {
+                graph.populateChunk(result.chunk, result.generated);
+            }
         }
         if (resultsHead == results.length) {
             results.clear();
@@ -389,8 +433,8 @@ struct Streamer {
             node.building = built.building;
             node.hasBuilding = true;
         }
-        if (built.slot < doneVersion.length) {
-            doneVersion.ptr[built.slot] = RESCAN;
+        if (built.slot < rescanAt.length) {
+            rescanAt.ptr[built.slot] = RESCAN;
         }
         scanCursor = 0;
     }
@@ -431,8 +475,12 @@ struct Streamer {
         queue = null;
         requests.release();
         results.release();
-        doneVersion.release();
+        rescanAt.release();
     }
+}
+
+void runOn(void* context, ParallelJob* job) {
+    (cast(Streamer*) context).runParallel(job);
 }
 
 bool isBuildingReady(ref Graph graph, uint slot) {
@@ -458,7 +506,7 @@ double budgetDeadline(bool isUnbudgeted) {
 void generateNow(ref Graph graph, ChunkSlot chunk) {
     if (graph.chunkAt(chunk).state == ChunkState.fresh) {
         ChunkParams params = ChunkParams.make(graph, chunk.slot, chunk.vertex);
-        graph.chunkAt(chunk).predicted = params.predictOccupancy();
+        graph.chunkFor(chunk).predicted = params.predictOccupancy();
         graph.populateChunk(chunk, params.generateVoxels());
     }
 }
@@ -469,13 +517,13 @@ bool hasPopulatedNeighbor(ref const Graph graph, ChunkSlot chunk, ChunkDirection
 }
 
 void populateChunk(ref Graph graph, ChunkSlot chunk, GeneratedVoxels generated) {
-    Chunk* target = graph.chunkAt(chunk);
+    Chunk* target = graph.chunkFor(chunk);
     target.voxels = generated.voxels;
     target.hasDeferredMaterials = generated.hasDeferredMaterials;
     bool isContradicted = (*target).isPredictionContradicted();
+    graph.restoreDroppedNeighbors(chunk);
     graph.connectMargins(chunk);
     target.state = ChunkState.populated;
-    graph.nodeAt(chunk.slot).hasChunks = true;
     if (isContradicted) {
         graph.touchChunksAround(chunk);
     }
@@ -487,12 +535,34 @@ void populateChunk(ref Graph graph, ChunkSlot chunk, GeneratedVoxels generated) 
     }
 }
 
+void restoreDroppedNeighbors(ref Graph graph, ChunkSlot chunk) {
+    foreach (direction; CHUNK_DIRECTIONS) {
+        ChunkSlot neighbor = graph.chunkNeighborSlot(chunk, direction);
+        if (neighbor.slot != NO_SLOT && graph.chunkAt(neighbor).state == ChunkState.dropped) {
+            graph.chunkFor(neighbor).state = ChunkState.generating;
+            graph.restores.append(neighbor);
+        }
+    }
+}
+
+void restoreChunk(ref Graph graph, ChunkSlot chunk, GeneratedVoxels generated) {
+    Chunk* target = graph.chunkFor(chunk);
+    target.voxels = generated.voxels;
+    target.hasDeferredMaterials = generated.hasDeferredMaterials;
+    foreach (direction; CHUNK_DIRECTIONS) {
+        if (graph.hasPopulatedNeighbor(chunk, direction)) {
+            target.voxels.fixMargins(graph.chunkFor(graph.chunkNeighborSlot(chunk, direction)).voxels, graph.margins, chunk.vertex, direction);
+        }
+    }
+    target.state = ChunkState.populated;
+}
+
 void connectMargins(ref Graph graph, ChunkSlot chunk) {
-    Chunk* target = graph.chunkAt(chunk);
+    Chunk* target = graph.chunkFor(chunk);
     foreach (direction; CHUNK_DIRECTIONS) {
         if (graph.hasPopulatedNeighbor(chunk, direction)) {
             ChunkSlot neighbor = graph.chunkNeighborSlot(chunk, direction);
-            target.voxels.fixMargins(graph.chunkAt(neighbor).voxels, graph.layout.dimension, chunk.vertex, direction);
+            target.voxels.fixMargins(graph.chunkFor(neighbor).voxels, graph.margins, chunk.vertex, direction);
             graph.markChanged(neighbor);
         }
     }
@@ -500,7 +570,7 @@ void connectMargins(ref Graph graph, ChunkSlot chunk) {
 }
 
 void resolveIfExposed(ref Graph graph, ChunkSlot chunk) {
-    Chunk* target = graph.chunkAt(chunk);
+    const(Chunk)* target = graph.chunkAt(chunk);
     if (target.hasDeferredMaterials && target.voxels.hasVoidInMargins(graph.layout.dimension)) {
         graph.resolveMaterials(chunk);
     }
@@ -510,7 +580,7 @@ void resolveMaterials(ref Graph graph, ChunkSlot chunk) {
     ChunkParams params = ChunkParams.make(graph, chunk.slot, chunk.vertex);
     params.isResolvingMaterials = true;
     GeneratedVoxels generated = params.generateVoxels();
-    Chunk* target = graph.chunkAt(chunk);
+    Chunk* target = graph.chunkFor(chunk);
     target.voxels.release();
     target.voxels = generated.voxels;
     target.hasDeferredMaterials = false;

@@ -15,6 +15,7 @@ import common.material : Material;
 import common.math : MIsometry, MPoint;
 import common.murmur : murmurHash3;
 import common.node : Chunk, ChunkSlot, ChunkState, VoxelData;
+import common.parallel : Executor;
 import common.position : Position;
 import common.traversal : NO_DEADLINE, NearbyNode, NearbyScratch;
 import common.worldgen.generation : ChunkParams, GeneratedVoxels, Worldgen;
@@ -117,7 +118,7 @@ struct ChunkPass {
     void generateChunk(ref Graph graph, ChunkSlot slot) {
         double t0 = nowMilliseconds();
         ChunkParams params = ChunkParams.make(graph, slot.slot, slot.vertex);
-        graph.chunkAt(slot).predicted = params.predictOccupancy();
+        graph.chunkFor(slot).predicted = params.predictOccupancy();
         double t1 = nowMilliseconds();
         GeneratedVoxels result = params.generateVoxels();
         double t2 = nowMilliseconds();
@@ -355,6 +356,6 @@ void benchNearby(FILE* output, float radius, uint iterations, ubyte dimension) {
 
 NearbyNode[] collectPruned(ref NearbyScratch scratch, ref Graph graph, float radius) {
     scratch.begin(graph, Position.origin(), radius, FULL_RADIUS);
-    scratch.advance(graph, NO_DEADLINE);
+    scratch.advance(graph, NO_DEADLINE, Executor.init);
     return scratch.nodes.slice();
 }

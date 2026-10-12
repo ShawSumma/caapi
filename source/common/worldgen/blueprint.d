@@ -224,7 +224,11 @@ struct BlueprintBuilder {
         }
         if (index == known.length) {
             CanonicalSite canonical = (*graph).canonicalOf(site);
+            size_t lines = graph.blueprint.lines.length;
             known.append(SiteLine(site, canonical.transform, graph.blueprint.lineOf(canonical.line)));
+            if (graph.blueprint.lines.length > lines) {
+                graph.reference(canonical.line.node);
+            }
         }
         return known.ptr[index];
     }
@@ -293,13 +297,23 @@ struct BlueprintBuilder {
 
     void stop(SiteFrame site, ColumnSpot spot) {
         graph.blueprint.route.append(RouteStop(site, spot));
+        graph.reference(site.node);
     }
 
     void enter(SiteFrame site, ColumnSpot spot) {
         if (!graph.blueprint.hasEntrance) {
             graph.blueprint.entrance = RouteStop(site, spot);
             graph.blueprint.hasEntrance = true;
+            graph.reference(site.node);
         }
+    }
+
+    bool claim(ClaimKey key) {
+        immutable bool isNewlyClaimed = graph.blueprint.claim(key);
+        if (isNewlyClaimed) {
+            graph.reference(key.slot);
+        }
+        return isNewlyClaimed;
     }
 
     void release() {

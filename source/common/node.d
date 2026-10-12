@@ -5,7 +5,7 @@ import core.stdc.stdlib : free, malloc;
 import common.coords : CHUNK_DIRECTIONS, ChunkDirection, Coords;
 import common.dodeca : BOUNDING_SPHERE_RADIUS, NODE_VOLUME, VERTEX_COUNT, Vertex, vertexDualToChunkFactor;
 import common.graph : NodeId;
-import common.margins : CoordsWithMargins, MarginFace, boundaryCoordWithMargins, clampToInterior, marginCoord;
+import common.margins : CoordsWithMargins, MarginList, MarginTables, boundaryCoordWithMargins, clampToInterior, copyMargin, directionIndex, hasVoidnessOtherThan, marginCoord;
 import common.material : Material;
 import common.math : higherOf, lowerOf;
 
@@ -195,29 +195,23 @@ struct VoxelData {
         }
     }
 
-    void fixMargins(ref VoxelData neighbor, ubyte dimension, Vertex vertex, ChunkDirection direction) {
-        MarginFace face = MarginFace.make(dimension, vertex, direction);
-        bool isOursStale = face.isMarginStale(this, neighbor, true);
-        bool isTheirsStale = face.isMarginStale(neighbor, this, false);
+    void fixMargins(ref VoxelData neighbor, ref const MarginTables tables, Vertex vertex, ChunkDirection direction) {
+        size_t index = directionIndex(direction);
+        const(ushort)[] ownBoundary = tables.list(vertex, index, MarginList.ownBoundary);
+        const(ushort)[] theirBoundary = tables.list(vertex, index, MarginList.theirBoundary);
+        bool isOursStale = !isSolid() || tables.hasVoidnessOtherThan(neighbor, theirBoundary, solidMaterial == Material.none);
+        bool isTheirsStale = !neighbor.isSolid() || tables.hasVoidnessOtherThan(this, ownBoundary, neighbor.solidMaterial == Material.none);
         if (isOursStale) {
-            toDense(dimension);
+            toDense(tables.dimension);
         }
         if (isTheirsStale) {
-            neighbor.toDense(dimension);
+            neighbor.toDense(tables.dimension);
         }
-        if (isOursStale || isTheirsStale) {
-            foreach (j; 0 .. dimension + 2) {
-                foreach (i; 0 .. dimension + 2) {
-                    CoordsWithMargins boundaryCoords = face.boundaryCell(i, j);
-                    CoordsWithMargins marginCoords = face.marginCell(i, j);
-                    if (isOursStale) {
-                        denseData[marginCoords.toIndex(dimension)] = neighbor.get(face.neighborIndex(boundaryCoords));
-                    }
-                    if (isTheirsStale) {
-                        neighbor.denseData[face.neighborIndex(marginCoords)] = get(boundaryCoords.toIndex(dimension));
-                    }
-                }
-            }
+        if (isOursStale) {
+            copyMargin(this, tables.list(vertex, index, MarginList.ownMargin), neighbor, theirBoundary);
+        }
+        if (isTheirsStale) {
+            copyMargin(neighbor, tables.list(vertex, index, MarginList.theirMargin), this, ownBoundary);
         }
     }
 
@@ -261,27 +255,30 @@ struct VoxelData {
 }
 
 unittest {
+    MarginTables tables = MarginTables.make(TEST_DIMENSION);
     VoxelData stone = VoxelData.fromMaterial(Material.granite);
     VoxelData dirt = VoxelData.fromMaterial(Material.dirt);
-    stone.fixMargins(dirt, TEST_DIMENSION, Vertex.a, CHUNK_DIRECTIONS[0]);
+    stone.fixMargins(dirt, tables, Vertex.a, CHUNK_DIRECTIONS[0]);
     assert(stone.isSolid() && dirt.isSolid());
     VoxelData buried = VoxelData.fromMaterial(Material.dirt);
     buried.toDense(TEST_DIMENSION);
     buried.initializeMargins(TEST_DIMENSION);
-    stone.fixMargins(buried, TEST_DIMENSION, Vertex.a, CHUNK_DIRECTIONS[3]);
+    stone.fixMargins(buried, tables, Vertex.a, CHUNK_DIRECTIONS[3]);
     assert(stone.isSolid());
     VoxelData empty = VoxelData.fromMaterial(Material.none);
-    stone.fixMargins(empty, TEST_DIMENSION, Vertex.a, CHUNK_DIRECTIONS[4]);
+    stone.fixMargins(empty, tables, Vertex.a, CHUNK_DIRECTIONS[4]);
     assert(!stone.isSolid() && !empty.isSolid());
     stone.release();
     empty.release();
     buried.release();
+    tables.release();
 }
 
 enum ChunkState : ubyte {
     fresh,
     generating,
     populated,
+    dropped,
 }
 
 enum Occupancy : ubyte {

@@ -1,7 +1,8 @@
 module common.margins;
 
-import common.coords : ChunkAxisPermutation, ChunkDirection, CoordSign, Coords, IDENTITY_PERMUTATION;
-import common.dodeca : Vertex, chunkAxisPermutations;
+import core.stdc.stdlib : free, malloc;
+import common.coords : CHUNK_DIRECTIONS, ChunkAxisPermutation, ChunkDirection, CoordSign, Coords, IDENTITY_PERMUTATION;
+import common.dodeca : VERTEX_COUNT, Vertex, chunkAxisPermutations;
 import common.material : Material;
 import common.node : VoxelData;
 
@@ -86,29 +87,95 @@ struct MarginFace {
     size_t neighborIndex(CoordsWithMargins coords) const {
         return permutation.apply(coords).toIndex(dimension);
     }
+}
 
-    size_t boundaryIndex(size_t i, size_t j, bool isNeighborSide) const {
-        if (isNeighborSide) {
-            return neighborIndex(boundaryCell(i, j));
-        } else {
-            return boundaryCell(i, j).toIndex(dimension);
-        }
-    }
+enum MarginList : ubyte {
+    ownBoundary,
+    ownMargin,
+    theirBoundary,
+    theirMargin,
+}
 
-    bool hasBoundaryVoidnessOtherThan(ref const VoxelData source, bool isNeighborSide, bool isVoid) const {
-        if (source.isSolid()) {
-            return (source.solidMaterial == Material.none) != isVoid;
-        } else {
-            size_t cellCount = cast(size_t) dimension * dimension;
-            size_t cell = 0;
-            while (cell < cellCount && (source.get(boundaryIndex(cell % dimension + 1, cell / dimension + 1, isNeighborSide)) == Material.none) == isVoid) {
-                cell += 1;
+enum uint MARGIN_LIST_COUNT = MarginList.max + 1;
+
+struct MarginTables {
+    ushort* indices;
+    uint faceCells;
+    ubyte dimension;
+
+    static MarginTables make(ubyte dimension) {
+        uint side = dimension + 2;
+        MarginTables tables = MarginTables(null, side * side, dimension);
+        tables.indices = cast(ushort*) malloc(cast(size_t) VERTEX_COUNT * CHUNK_DIRECTIONS.length * MARGIN_LIST_COUNT * tables.faceCells * ushort.sizeof);
+        foreach (vertex; 0 .. VERTEX_COUNT) {
+            foreach (direction; 0 .. CHUNK_DIRECTIONS.length) {
+                MarginFace face = MarginFace.make(dimension, cast(Vertex) vertex, CHUNK_DIRECTIONS[direction]);
+                ushort[] ownBoundary = tables.list(cast(Vertex) vertex, direction, MarginList.ownBoundary);
+                ushort[] ownMargin = tables.list(cast(Vertex) vertex, direction, MarginList.ownMargin);
+                ushort[] theirBoundary = tables.list(cast(Vertex) vertex, direction, MarginList.theirBoundary);
+                ushort[] theirMargin = tables.list(cast(Vertex) vertex, direction, MarginList.theirMargin);
+                foreach (j; 0 .. side) {
+                    foreach (i; 0 .. side) {
+                        size_t cell = i + j * side;
+                        CoordsWithMargins boundary = face.boundaryCell(i, j);
+                        CoordsWithMargins margin = face.marginCell(i, j);
+                        ownBoundary[cell] = cast(ushort) boundary.toIndex(dimension);
+                        ownMargin[cell] = cast(ushort) margin.toIndex(dimension);
+                        theirBoundary[cell] = cast(ushort) face.neighborIndex(boundary);
+                        theirMargin[cell] = cast(ushort) face.neighborIndex(margin);
+                    }
+                }
             }
-            return cell < cellCount;
         }
+        return tables;
     }
 
-    bool isMarginStale(ref const VoxelData target, ref const VoxelData source, bool isSourceNeighbor) const {
-        return !target.isSolid() || hasBoundaryVoidnessOtherThan(source, isSourceNeighbor, target.solidMaterial == Material.none);
+    inout(ushort)[] list(Vertex vertex, size_t direction, MarginList kind) inout {
+        size_t start = ((cast(size_t) vertex * CHUNK_DIRECTIONS.length + direction) * MARGIN_LIST_COUNT + kind) * faceCells;
+        return indices[start .. start + faceCells];
+    }
+
+    bool isInterior(size_t cell) const {
+        size_t side = dimension + 2;
+        size_t i = cell % side;
+        size_t j = cell / side;
+        return i >= 1 && i <= dimension && j >= 1 && j <= dimension;
+    }
+
+    void release() {
+        free(indices);
+        indices = null;
+    }
+}
+
+size_t directionIndex(ChunkDirection direction) {
+    if (direction.sign == CoordSign.plus) {
+        return direction.axis;
+    } else {
+        return direction.axis + 3;
+    }
+}
+
+bool hasVoidnessOtherThan(ref const MarginTables tables, ref const VoxelData source, const(ushort)[] boundary, bool isVoid) {
+    if (source.isSolid()) {
+        return (source.solidMaterial == Material.none) != isVoid;
+    } else {
+        size_t cell = 0;
+        while (cell < boundary.length && (!tables.isInterior(cell) || (source.denseData[boundary[cell]] == Material.none) == isVoid)) {
+            cell += 1;
+        }
+        return cell < boundary.length;
+    }
+}
+
+void copyMargin(ref VoxelData target, const(ushort)[] margin, ref const VoxelData source, const(ushort)[] boundary) {
+    if (source.isSolid()) {
+        foreach (cell; margin) {
+            target.denseData[cell] = source.solidMaterial;
+        }
+    } else {
+        foreach (cell, index; margin) {
+            target.denseData[index] = source.denseData[boundary[cell]];
+        }
     }
 }

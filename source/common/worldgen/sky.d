@@ -3,8 +3,8 @@ module common.worldgen.sky;
 import core.math : sqrt;
 import core.stdc.math : acoshf, cosh, coshf, expf, fabsf, floorf, logf, sinh, sinhf, sqrtf;
 import common.array : Array;
-import common.dodeca : BOUNDING_SPHERE_RADIUS, SIDE_COUNT, Side, VERTEX_COUNT, Vertex, adjacentVertices, canonicalSides, dualToNode, faceDistance, nodeToDual, vertexDualToChunkFactor;
-import common.graph : Graph, NO_SLOT, Node, ParentList;
+import common.dodeca : BOUNDING_SPHERE_RADIUS, SIDE_COUNT, Side, VERTEX_COUNT, Vertex, adjacentVertices, canonicalSides, dualToNode, faceDistance, nodeToDual, reflection, vertexDualToChunkFactor;
+import common.graph : Graph, NO_SLOT, Node, NodeId, ParentList;
 import common.hashmap : HashMap;
 import common.material : Material;
 import common.math : MIsometry, MPoint, MVector;
@@ -32,6 +32,8 @@ enum float ELEVATION_SPREAD = 8.0f;
 enum float SKY_SIDE_MARGIN = 2.0f * BOUNDING_SPHERE_RADIUS + ELEVATION_SPREAD / TERRAIN_SMOOTHNESS;
 enum float LINE_TOLERANCE = 0.05f;
 enum float GROUND_LIFT_FACTOR = 0.1f;
+enum float DESCENT_ALTITUDE = 2.0f;
+enum float DESCENT_TOLERANCE = 1e-3f;
 enum ubyte TEST_DIMENSION = 12;
 enum float TEST_RADIUS = 3.0f;
 enum float TEST_PLANE_TOLERANCE = 1e-2f;
@@ -64,6 +66,7 @@ struct World {
     ClaimKey vertex;
     uint parent;
     uint footNode;
+    uint users;
     int ground;
     int below;
     int balance;
@@ -108,6 +111,20 @@ struct ChunkPoint {
     Vertex vertex;
 }
 
+struct GroundKey {
+    NodeId ground;
+    uint world;
+
+    size_t toHash() const {
+        return ground.toHash() ^ world;
+    }
+}
+
+struct SkyList {
+    uint start;
+    uint count;
+}
+
 struct Skies {
     Array!SkyKind kinds;
     Array!World worlds;
@@ -115,6 +132,13 @@ struct Skies {
     HashMap!(ClaimKey, SkyChoice) forced;
     HashMap!(ClaimKey, SkyChoice) choices;
     HashMap!(ClaimKey, uint) worldOf;
+    HashMap!(GroundKey, SkyList) risingFrom;
+    Array!uint risingSkies;
+
+    void forgetRising() {
+        risingFrom.release();
+        risingSkies.clear();
+    }
 
     bool isOpen() const {
         return kinds.length > 0;
@@ -150,6 +174,8 @@ struct Skies {
         forced.release();
         choices.release();
         worldOf.release();
+        risingFrom.release();
+        risingSkies.release();
     }
 }
 
@@ -195,6 +221,7 @@ const(WorldRef)[] ensureWorldsAt(ref Graph graph, uint slot) {
         uint start = graph.reserveWorlds(cast(uint) found.length);
         foreach (index, near; found.slice()) {
             *graph.worldRefs.at(start + cast(uint) index) = near;
+            graph.skies.worlds.ptr[near.world - 1].users += 1;
         }
         Node* node = graph.nodeAt(slot);
         node.worldStart = start;
@@ -227,14 +254,52 @@ void discoverWorlds(ref Graph graph, uint slot, ref Array!WorldRef found) {
 }
 
 uint worldGroundNodeOf(ref Graph graph, uint slot, uint world) {
-    MVector!double normal = graph.planeOfWorldIn(world, slot).scaledNormal.toType!double();
+    uint current = slot;
+    MVector!double center = MVector!double.origin();
+    Plane carried = graph.planeNear(world, current);
+    float altitude = fabsf(carried.distanceTo(MPoint!float.origin()));
+    bool isDescending = altitude > DESCENT_ALTITUDE;
+    while (isDescending) {
+        Side lowest = Side.a;
+        float lowestAltitude = float.infinity;
+        foreach (index; 0 .. SIDE_COUNT) {
+            float candidate = fabsf(carried.distanceTo(reflection(cast(Side) index) * MPoint!float.origin()));
+            if (candidate < lowestAltitude) {
+                lowestAltitude = candidate;
+                lowest = cast(Side) index;
+            }
+        }
+        isDescending = lowestAltitude < altitude - DESCENT_TOLERANCE;
+        if (isDescending) {
+            current = graph.ensureNeighborSlot(current, lowest);
+            center = reflection(lowest).toType!double() * center;
+            carried = carried.reflectAcross(lowest);
+            altitude = lowestAltitude;
+            isDescending = altitude > DESCENT_ALTITUDE;
+        }
+    }
+    Plane plane = graph.planeNear(world, current);
+    MVector!double normal = plane.scaledNormal.toType!double();
     normal = normal * (1.0 / sqrt(normal.mip(normal)));
-    double along = MVector!double.origin().mip(normal);
-    MVector!double foot = (MVector!double.origin() - normal * along) * (1.0 / sqrt(1.0 + along * along));
+    double along = center.mip(normal);
+    MVector!double foot = (center - normal * along) * (1.0 / sqrt(1.0 + along * along));
     float lift = GROUND_LIFT_FACTOR * faceDistance();
     MVector!double above = foot * cosh(lift) + normal * sinh(lift);
     MIsometry!float toAbove = MIsometry!float.fromTranslation(MPoint!float.origin(), MPoint!float(above.toType!float()));
-    return graph.slotOf(graph.ensureNormalized(Position(graph.idAt(slot), toAbove)).node);
+    return graph.slotOf(graph.ensureNormalized(Position(graph.idAt(current), toAbove)).node);
+}
+
+Plane planeNear(ref Graph graph, uint world, uint slot) {
+    if (world == PLANET) {
+        return graph.ensureNodeStateAt(slot).surface;
+    } else {
+        foreach (near; graph.worldsAt(slot)) {
+            if (near.world == world) {
+                return near.plane;
+            }
+        }
+        return graph.planeOfWorldIn(world, slot);
+    }
 }
 
 bool isWithinSkyReach(Plane plane) {
@@ -246,22 +311,62 @@ bool opensSkies(ref const Graph graph, uint world) {
 }
 
 void addSkiesOver(ref Graph graph, uint slot, uint world, ref Array!WorldRef found) {
-    Side label = graph.labelOf(world);
-    uint[GROUND_RING] ring = graph.groundRing(graph.worldGroundNodeOf(slot, world), label);
-    foreach (face; ring) {
-        foreach (index; 0 .. VERTEX_COUNT) {
-            Vertex vertex = cast(Vertex) index;
-            if (sideAxis(vertex, label) < 3) {
-                uint sky = graph.skyOver(face, vertex, world);
-                if (sky != PLANET && !found.contains(sky)) {
-                    Plane skyPlane = graph.planeOfWorldIn(sky, slot);
-                    if (isWithinSkyReach(skyPlane)) {
-                        found.append(WorldRef(skyPlane, sky));
+    SkyList rising = graph.skiesRisingFrom(graph.worldGroundNodeOf(slot, world), world);
+    foreach (index; rising.start .. rising.start + rising.count) {
+        uint sky = graph.skies.risingSkies.ptr[index];
+        if (!found.contains(sky)) {
+            Plane skyPlane = graph.inheritedPlaneOf(sky, slot);
+            if (isWithinSkyReach(skyPlane)) {
+                found.append(WorldRef(skyPlane, sky));
+            }
+        }
+    }
+}
+
+Plane inheritedPlaneOf(ref Graph graph, uint sky, uint slot) {
+    ParentList parents = graph.parents(slot);
+    foreach (link; parents.links[0 .. parents.count]) {
+        foreach (near; graph.worldsAt(link.slot)) {
+            if (near.world == sky) {
+                return near.plane.reflectAcross(link.side);
+            }
+        }
+    }
+    return graph.planeOfWorldIn(sky, slot);
+}
+
+SkyList skiesRisingFrom(ref Graph graph, uint ground, uint world) {
+    GroundKey key = GroundKey(graph.idAt(ground), world);
+    const(SkyList)* known = graph.skies.risingFrom.find(key);
+    if (known !is null) {
+        return *known;
+    } else {
+        Side label = graph.labelOf(world);
+        uint[GROUND_RING] ring = graph.groundRing(ground, label);
+        SkyList rising = SkyList(cast(uint) graph.skies.risingSkies.length, 0);
+        foreach (face; ring) {
+            foreach (index; 0 .. VERTEX_COUNT) {
+                Vertex vertex = cast(Vertex) index;
+                if (sideAxis(vertex, label) < 3) {
+                    uint sky = graph.skyOver(face, vertex, world);
+                    if (sky != PLANET && !graph.skies.risingSkies.slice()[rising.start .. $].containsWorld(sky)) {
+                        graph.skies.risingSkies.append(sky);
+                        rising.count += 1;
                     }
                 }
             }
         }
+        graph.skies.risingFrom.insert(key, rising);
+        return rising;
     }
+}
+
+bool containsWorld(const(uint)[] worlds, uint world) {
+    size_t index = 0;
+    while (index < worlds.length && worlds[index] != world) {
+        index += 1;
+    }
+    return index < worlds.length;
 }
 
 uint skyOver(ref Graph graph, uint face, Vertex vertex, uint world) {
@@ -273,6 +378,7 @@ uint skyOver(ref Graph graph, uint face, Vertex vertex, uint world) {
     } else {
         choice = graph.chosenSky(face, vertex, world, key);
         graph.skies.choices.insert(key, choice);
+        graph.nodeAt(key.slot).hasChoices = true;
     }
     if (choice.kind == NO_SKY) {
         return PLANET;
@@ -388,7 +494,7 @@ uint ensureWorld(ref Graph graph, ClaimKey key, uint face, Vertex vertex, uint p
         if (plane.distanceTo(MPoint!float.origin()) < 0) {
             plane = -plane;
         }
-        World made = World(plane, groundSite(foot, top.vertex, label), key, parent, foot, 0, 0, 0, label, cast(ubyte)(choice.kind - 1), choice.edges, false, true, false);
+        World made = World(plane, groundSite(foot, top.vertex, label), key, parent, foot, 0, 0, 0, 0, label, cast(ubyte)(choice.kind - 1), choice.edges, false, true, false);
         uint world = void;
         if (graph.skies.freeWorlds.length > 0) {
             world = graph.skies.freeWorlds.ptr[graph.skies.freeWorlds.length - 1];
@@ -399,8 +505,43 @@ uint ensureWorld(ref Graph graph, ClaimKey key, uint face, Vertex vertex, uint p
             world = cast(uint) graph.skies.worlds.length;
         }
         graph.skies.worldOf.insert(key, world);
+        graph.reference(foot);
+        graph.reference(key.slot);
+        if (parent != PLANET) {
+            graph.skies.worlds.ptr[parent - 1].users += 1;
+        }
         return world;
     }
+}
+
+bool isIdle(ref const Graph graph, ref const World world) {
+    return world.isKnown && world.users == 0 && !world.isTiled && graph.skies.forced.find(world.vertex) is null;
+}
+
+void releaseIdleWorlds(ref Graph graph) {
+    bool isReleased = true;
+    while (isReleased) {
+        isReleased = false;
+        foreach (index; 0 .. graph.skies.worlds.length) {
+            if (graph.isIdle(graph.skies.worlds.ptr[index])) {
+                graph.releaseWorld(cast(uint) index + 1);
+                isReleased = true;
+            }
+        }
+    }
+}
+
+void releaseWorld(ref Graph graph, uint index) {
+    World world = graph.worldAt(index);
+    graph.unreference(world.footNode);
+    graph.unreference(world.vertex.slot);
+    graph.skies.worldOf.remove(world.vertex);
+    if (world.parent != PLANET) {
+        graph.skies.worlds.ptr[world.parent - 1].users -= 1;
+    }
+    graph.skies.worlds.ptr[index - 1] = World.init;
+    graph.skies.freeWorlds.append(index);
+    graph.skies.forgetRising();
 }
 
 bool openSky(ref Graph graph, SiteFrame site, SkyChoice choice) {
@@ -415,7 +556,9 @@ bool openSky(ref Graph graph, SiteFrame site, SkyChoice choice) {
     if (besides > 0) {
         return false;
     } else {
-        graph.skies.forced.insert(graph.siteOrigin(ground).key, choice);
+        ClaimKey key = graph.siteOrigin(ground).key;
+        graph.skies.forced.insert(key, choice);
+        graph.reference(key.slot);
         return true;
     }
 }

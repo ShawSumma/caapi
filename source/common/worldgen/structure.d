@@ -4,7 +4,7 @@ import core.math : sqrt;
 import core.stdc.math : atanhf, coshf, fabsf, floorf;
 import common.array : Array;
 import common.dodeca : SIDE_COUNT, Side, VERTEX_COUNT, Vertex, adjacentVertices, canonicalSides, chunkToNode, dualToNode, faceDistance, isAdjacentTo, reflection;
-import common.graph : Graph, Node, ParentList, ROOT_NODE;
+import common.graph : Graph, Node, NodeId, ParentList, ROOT_NODE;
 import common.material : Material;
 import common.math : MIsometry, MPoint, MVector, Matrix4;
 import common.node : ChunkLayout;
@@ -198,7 +198,8 @@ Side crossingSide(Vertex vertex, ref const LineSpec spec) {
 
 void finalizeStructure(ref Graph graph, uint slot) {
     graph.touchScratch.clear();
-    uint pending = graph.nodeAt(slot).pendingHead;
+    const(uint)* head = graph.pendingHeads.find(graph.idAt(slot));
+    uint pending = head is null ? 0 : *head;
     while (pending != 0) {
         PendingTouch record = *graph.pendingTouches.at(pending - 1);
         graph.touchScratch.addUnique(record.touch);
@@ -244,10 +245,12 @@ void addUnique(ref Array!LineTouch touches, LineTouch touch) {
 
 void addPendingTouch(ref Graph graph, uint slot, LineTouch touch) {
     assert(!graph.nodeAt(slot).hasStructure);
+    NodeId id = graph.idAt(slot);
+    const(uint)* head = graph.pendingHeads.find(id);
     uint index = graph.pendingCount;
     graph.pendingTouches.ensure(index + 1);
-    *graph.pendingTouches.at(index) = PendingTouch(touch, graph.nodeAt(slot).pendingHead);
-    graph.nodeAt(slot).pendingHead = index + 1;
+    *graph.pendingTouches.at(index) = PendingTouch(touch, head is null ? 0 : *head);
+    graph.pendingHeads.insert(id, index + 1);
     graph.pendingCount += 1;
 }
 
