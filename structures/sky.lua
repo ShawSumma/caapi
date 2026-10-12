@@ -14,7 +14,6 @@ local SPIRE_TYPES = {
 local VARIANTS = 1024
 local LOT_FRONT = 4
 local MEADOW_GROUND = 0
-local BACKROOMS_GROUND = 1
 local NO_OPTIONS = {}
 
 local function settings_of(options)
@@ -48,7 +47,7 @@ end
 
 function sky.backrooms(face, info, options)
   backrooms.tile(face, { vertex = info.foot:hash("vertex"), has_shaft = true })
-  connect(face, info, BACKROOMS_GROUND, settings_of(options))
+  connect(face, info, backrooms.GROUND, settings_of(options))
 end
 
 local function meadow(quarters)

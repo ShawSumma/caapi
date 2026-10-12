@@ -63,6 +63,9 @@ enum Material : ubyte {
     ceilingTile,
     lightPanel,
     redCarpet,
+    sunlight,
+    plaster,
+    wetConcrete,
 }
 
 enum uint MATERIAL_COUNT = Material.max + 1;
@@ -140,4 +143,7 @@ immutable ubyte[3][MATERIAL_COUNT] MATERIAL_COLORS = [
     Material.ceilingTile: [224, 218, 194],
     Material.lightPanel: [252, 250, 236],
     Material.redCarpet: [128, 36, 40],
+    Material.sunlight: [252, 236, 168],
+    Material.plaster: [218, 208, 186],
+    Material.wetConcrete: [118, 118, 112],
 ];

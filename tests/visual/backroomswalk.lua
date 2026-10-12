@@ -1,4 +1,4 @@
-local LOOK_DEGREES = 45
+local LOOK_DEGREES = 0
 
 -- Standing in the lobby of a world of nothing but the backrooms.
 return function(world)

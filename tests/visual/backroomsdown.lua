@@ -1,14 +1,13 @@
-local NOCLIP_SPEED = 0.6
-local DROP = 0.55
-local LOOK_DEGREES = 45
-local LOOK_UP_DEGREES = 0
+local walk = require("lib.walk")
 
--- From the backrooms world's lobby straight down through the ground into the layer below.
+local STAIRS = "tests/lib/backroomsstairs.lua"
+local LOOK_DEGREES = 150
+
+-- At the foot of the stairs up from the house's upper story, looking back into its rooms.
 return function(world)
-  world:worldgen("structure", "backrooms")
-  world:live()
-  world:mode("noclip")
-  world:press(DROP / NOCLIP_SPEED, "down")
-  world:look(LOOK_DEGREES, LOOK_UP_DEGREES)
+  world:worldgen("structure", STAIRS)
+  world:enter_route()
+  world:wait(walk.SETTLE_SECONDS)
+  world:look(LOOK_DEGREES, 0)
   world:step()
 end
