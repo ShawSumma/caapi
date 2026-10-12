@@ -1,11 +1,11 @@
 module client.game;
 
-import core.stdc.math : acoshf, atan2f, atanhf, coshf, fabsf, sinhf, tanhf;
+import core.stdc.math : acoshf, atan2f, atanhf, coshf, fabs, fabsf, sinhf, sqrt, tanhf;
 import base.array : Array;
 import base.units : Acceleration, Angle, Length, Speed, Time;
 import base.vector3 : ZERO_VECTOR, cross, dot, magnitude, negated, plus, rejectAlong, scaled;
 import client.arrivals : generateNow;
-import client.camera : Camera;
+import client.camera : CAMERA_FORWARD, Camera;
 import client.world : LocalWorld, Placement;
 import common.character.controller : CharacterInput, CharacterState, MovementMode, Mover, Slide, Stepped, movedBy, regionReach;
 import common.character.features : CellOverlap, CellRange, Features, LocalFrame, RequiredChunks, visitCells;
@@ -15,13 +15,13 @@ import common.material : Material;
 import common.node : ChunkSlot, ChunkState;
 import common.position : Position;
 import common.settings : CHUNK_DIMENSION, CharacterConfig;
-import common.traversal : NearbyNode, NearbyScratch;
+import common.traversal : NOT_COLLECTED, NearbyNode, NearbyScratch;
 import common.worldgen.blueprint : RouteStop;
 import common.worldgen.generation : NodeState, Worldgen;
 import common.worldgen.sky : ensureWorldsAt, gravityAt;
 import common.worldgen.spawn : clearSpawnPosition, collectChunksNear;
 import common.worldgen.structure : SiteFrame, columnPoint, rootSite, siteToNode, sitePlacement, spawnBefore;
-import geometry.honeycomb : Face;
+import geometry.honeycomb : CORNER_COUNT, Corner, Face, cornerToNode;
 import geometry.lorentz : Motion, Point, Vec4;
 
 enum float STRUCTURE_SEARCH_RADIUS = 4.0f;
@@ -207,7 +207,6 @@ struct Game {
         camera = Camera.make(character.eyeOffset);
         altitude = currentAltitude();
         followBody();
-        camera.level();
         updateView();
         cameraAltitude = altitude + camera.eyeOffset;
         hasCameraVerticalVelocity = false;
@@ -243,7 +242,7 @@ struct Game {
     }
 
     Angle yawToward(float[3] direction) const {
-        float[3] forward = camera.forward().rejectAlong(camera.viewUp);
+        float[3] forward = camera.heading.rotate(CAMERA_FORWARD);
         float[3] level = direction.rejectAlong(camera.viewUp);
         return Angle(atan2f(camera.viewUp.dot(forward.cross(level)), forward.dot(level)));
     }
@@ -334,8 +333,6 @@ struct Game {
     void followBody() {
         Motion!float eye = Motion!float.shift(characterState.up.scaled(camera.eyeOffset.value));
         camera.follow(characterState.position, eye, characterState.up);
-        camera.levelRoll();
-        camera.holdPitch();
     }
 
     void updateView() {
@@ -359,6 +356,34 @@ struct Game {
             world.update(false);
         }
         time = time + dt;
+    }
+
+    // How far the corners of the nodes within the radius are drawn from where a fresh search from the camera's node
+    // puts them, as seen from the camera.
+    Length frameDrift(Length radius) {
+        NearbyScratch scratch;
+        NearbyNode[] fresh = scratch.collectAll(world.graph, world.cameraPosition, radius.value);
+        const(NearbyScratch)* drawn = &world.nearby[world.published];
+        Motion!float fromFrame = world.cameraInNearbyFrame().inverse();
+        Motion!float fromNode = world.cameraPosition.local.inverse();
+        double most = 0;
+        foreach (node; fresh) {
+            uint index = drawn.indexOf(node.slot);
+            if (index != NOT_COLLECTED) {
+                Motion!float drawnToCamera = fromFrame * drawn.nodes.ptr[index].transform;
+                Motion!float freshToCamera = fromNode * node.transform;
+                foreach (corner; 0 .. CORNER_COUNT) {
+                    Motion!float toNode = (cast(Corner) corner).cornerToNode;
+                    Vec4!double apart = (drawnToCamera * toNode * Point!float.origin()).v.as!double() - (freshToCamera * toNode * Point!float.origin()).v.as!double();
+                    double chord = sqrt(fabs(apart.minkowski(apart)));
+                    if (chord > most) {
+                        most = chord;
+                    }
+                }
+            }
+        }
+        scratch.release();
+        return Length(cast(float) most);
     }
 
     UnloadedCount unloadedWithin(Length radius) const {
@@ -407,9 +432,7 @@ struct Game {
     }
 
     float[3] levelMove(float moveX, float moveZ) const {
-        float[3] right = camera.orientation.rotate([1, 0, 0]).rejectAlong(characterState.up);
-        float[3] back = camera.orientation.rotate([0, 0, 1]).rejectAlong(characterState.up);
-        return right.scaled(moveX / right.magnitude).plus(back.scaled(moveZ / back.magnitude));
+        return camera.heading.rotate([1, 0, 0]).scaled(moveX).plus(camera.heading.rotate([0, 0, 1]).scaled(moveZ));
     }
 
     void trackCameraAcceleration(Length newCameraAltitude, Time dt) {

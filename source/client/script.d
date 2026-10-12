@@ -114,6 +114,7 @@ struct ScriptHost {
         lua.registerMethod(&this, "live", &luaLive);
         lua.registerMethod(&this, "is_loaded", &luaIsLoaded);
         lua.registerMethod(&this, "unloaded_within", &luaUnloadedWithin);
+        lua.registerMethod(&this, "frame_drift", &luaFrameDrift);
         lua.registerMethod(&this, "altitude", &luaAltitude);
         lua.registerMethod(&this, "speed", &luaSpeed);
         lua.registerMethod(&this, "horizontal_speed", &luaHorizontalSpeed);
@@ -454,6 +455,12 @@ extern (C) int luaUnloadedWithin(lua_State* lua) {
     lua_pushinteger(lua, counted.missingNodes);
     lua_pushinteger(lua, counted.awaitingBuilding);
     return UNLOADED_RESULTS;
+}
+
+extern (C) int luaFrameDrift(lua_State* lua) {
+    ScriptHost* host = methodHost(lua);
+    lua_pushnumber(lua, host.game.frameDrift(Length(cast(float) luaL_checknumber(lua, SELF + 1))).value);
+    return 1;
 }
 
 extern (C) int luaAltitude(lua_State* lua) {

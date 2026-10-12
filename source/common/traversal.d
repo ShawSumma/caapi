@@ -188,6 +188,7 @@ Vec4!float[FACE_COUNT] mirroredOrigins() {
 
 struct RebaseJob {
     NearbyNode* nodes;
+    const(bool)* isRederived;
     size_t count;
     Motion!float toFrame;
 }
@@ -196,7 +197,9 @@ void rebaseBlock(void* context, size_t block, uint worker) {
     RebaseJob* job = cast(RebaseJob*) context;
     size_t end = (block + 1) * KEEP_BLOCK < job.count ? (block + 1) * KEEP_BLOCK : job.count;
     foreach (index; block * KEEP_BLOCK .. end) {
-        job.nodes[index].transform = job.toFrame * job.nodes[index].transform;
+        if (!job.isRederived[index]) {
+            job.nodes[index].transform = job.toFrame * job.nodes[index].transform;
+        }
     }
 }
 
@@ -253,6 +256,8 @@ struct NearbyScratch {
     Array!ubyte kinds;
     Array!BlockCounts blocks;
     Array!uint around;
+    Array!uint chain;
+    Array!bool isRederived;
     Point!float startPoint;
     size_t front;
     size_t missingHead;
@@ -262,7 +267,6 @@ struct NearbyScratch {
     float coshInner = 0;
     double paintingMs = 0;
     uint generation;
-    uint derivedSteps;
     bool hasPainted;
 
     void release() {
@@ -278,6 +282,8 @@ struct NearbyScratch {
         kinds.release();
         blocks.release();
         around.release();
+        chain.release();
+        isRederived.release();
     }
 
     uint indexOf(uint slot) const {
@@ -329,7 +335,6 @@ struct NearbyScratch {
         unknownHead = 0;
         paintedHead = 0;
         generation += 1;
-        derivedSteps = 0;
         startPoint = start.local * Point!float.origin();
         collect(graph, NearbyNode(start.node, Motion!float.identity(), graph.slotOf(start.node)));
     }
@@ -384,12 +389,6 @@ struct NearbyScratch {
                     }
                 }
                 head += 1;
-                if (head == 5000) {
-                    import core.stdc.stdio : fprintf, stderr;
-                    Vec4!float c = camera.v;
-                    Vec4!float n = nodes.ptr[first].transform * Vec4!float.origin();
-                    fprintf(stderr, "runaway camera %g %g %g %g node %g %g %g %g finished %d steps %u nodes %zu\n", c.c[0], c.c[1], c.c[2], c.c[3], n.c[0], n.c[1], n.c[2], n.c[3], cast(int) isFinished, derivedSteps, nodes.length);
-                }
             }
             if (isFinished) {
                 front = nodes.length;
@@ -541,18 +540,44 @@ struct NearbyScratch {
         coshInner = keeping.coshInner;
         startPoint = camera;
         front = total.kept;
-        derivedSteps = finished.derivedSteps + 1;
     }
 
-    // Re-expresses every transform in another frame, so the frame can follow the camera: far from the frame's origin,
-    // float coordinates no longer tell nearby points apart. Each step rounds every transform again, so sets grown and
-    // moved this way are searched afresh after a while.
-    void rebase(Motion!float toFrame, Executor executor) {
-        RebaseJob job = RebaseJob(nodes.ptr, nodes.length, toFrame);
+    // Moves the frame to the camera's node, so the frame can follow the camera: far from the frame's origin, float
+    // coordinates no longer tell nearby points apart. Within the radius, every transform is worked out again from that
+    // node through the set, as a fresh search would. Multiplying the old ones by toFrame instead would keep the
+    // rounding each got while it was far from the origin, which every later move makes worse. Nodes beyond the radius
+    // are only moved; whatever they gather that way is dropped when they come within it.
+    void rebase(ref const Graph graph, uint cameraSlot, Motion!float toFrame, float radius, Executor executor) {
+        float coshRadius = coshf(radius);
+        uint first = indexOf(cameraSlot);
+        isRederived.clear();
+        isRederived.resize(nodes.length);
+        chain.clear();
+        chain.append(first);
+        isRederived.ptr[first] = true;
+        nodes.ptr[first].transform = Motion!float.identity();
+        size_t head = 0;
+        while (head < chain.length) {
+            NearbyNode current = nodes.ptr[chain.ptr[head]];
+            foreach (sideIndex; 0 .. FACE_COUNT) {
+                Face side = cast(Face) sideIndex;
+                uint neighbor = graph.neighborSlot(current.slot, side);
+                uint index = neighbor == NO_SLOT ? NOT_COLLECTED : indexOf(neighbor);
+                if (index != NOT_COLLECTED && !isRederived.ptr[index]) {
+                    Motion!float transform = current.transform * side.mirror;
+                    if (!((transform * Point!float.origin()).v.c[3] > coshRadius)) {
+                        nodes.ptr[index].transform = transform;
+                        isRederived.ptr[index] = true;
+                        chain.append(index);
+                    }
+                }
+            }
+            head += 1;
+        }
+        RebaseJob job = RebaseJob(nodes.ptr, isRederived.ptr, nodes.length, toFrame);
         ParallelJob rebasing = ParallelJob(&rebaseBlock, &job, NO_DEADLINE, (nodes.length + KEEP_BLOCK - 1) / KEEP_BLOCK);
         executor.run(&rebasing);
         startPoint = toFrame * startPoint;
-        derivedSteps += 1;
     }
 
     NearbyNode[] collectAll(ref Graph graph, Position start, float distance) {

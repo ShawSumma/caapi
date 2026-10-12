@@ -1,7 +1,7 @@
 module client.camera;
 
 import core.math : cos, sin, sqrt;
-import core.stdc.math : asinf, atan2f, fabsf;
+import core.stdc.math : asinf, fabsf;
 import base.numbers : PI, clamped;
 import base.units : Angle, Length;
 import common.position : Position;
@@ -60,12 +60,6 @@ struct Quaternion {
         return result;
     }
 
-    float[3] inverseRotate(float[3] v) const {
-        Quaternion rotated = Quaternion(w, -x, -y, -z) * Quaternion(0, v[0], v[1], v[2]) * this;
-        float[3] result = [rotated.x, rotated.y, rotated.z];
-        return result;
-    }
-
     Quaternion normalized() const {
         float length = sqrt(w * w + x * x + y * y + z * z);
         if (length < MIN_QUATERNION_LENGTH) {
@@ -112,16 +106,22 @@ float[3] unitOrZero(float[3] axis) {
     }
 }
 
+// The view is a level heading, whose up is the visible up, pitched about its own x axis. Yaw and pitch are kept apart
+// so that neither is ever worked out from the other: looking straight down, the heading is still well defined.
 struct Camera {
     Position position;
     Motion!float eye;
-    Quaternion orientation;
+    Quaternion heading;
     float[3] viewUp = [0, 1, 0];
     Length eyeOffset;
     Angle pitch;
 
     static Camera make(Length eyeOffset) {
         return Camera(Position.origin(), Motion!float.identity(), Quaternion.identity(), [0, 1, 0], eyeOffset, Angle(0));
+    }
+
+    Quaternion orientation() const {
+        return heading * Quaternion.fromAxisAngle([1, 0, 0], pitch.value);
     }
 
     Position orientedPosition() const {
@@ -137,40 +137,17 @@ struct Camera {
         return Angle(asinf(clamped(ahead[0] * viewUp[0] + ahead[1] * viewUp[1] + ahead[2] * viewUp[2], -1.0f, 1.0f)));
     }
 
+    // The heading turns the least that brings its up to the new one, from its own up so rounding never builds up.
     void follow(Position bodyPosition, Motion!float eyeFromBody, float[3] visibleUp) {
         position = bodyPosition;
         eye = eyeFromBody;
+        heading = (Quaternion.fromVectors(heading.rotate([0, 1, 0]), visibleUp) * heading).normalized();
         viewUp = visibleUp;
     }
 
     void turn(Angle deltaYaw, Angle deltaPitch) {
-        orientation = (Quaternion.fromAxisAngle(viewUp, deltaYaw.value) * orientation).normalized();
+        heading = (Quaternion.fromAxisAngle(viewUp, deltaYaw.value) * heading).normalized();
         pitch = Angle(clamped((pitch + deltaPitch).value, -PITCH_LIMIT.value, PITCH_LIMIT.value));
-        holdPitch();
-    }
-
-    void holdPitch() {
-        orientation = (orientation * Quaternion.fromAxisAngle([1, 0, 0], (pitch - elevation()).value)).normalized();
-    }
-
-    void level() {
-        orientation = (orientation * Quaternion.fromVectors([0.0f, 1.0f, 0.0f], orientation.inverseRotate(viewUp))).normalized();
-        pitch = Angle(0);
-    }
-
-    Angle roll() const {
-        float[3] ahead = forward();
-        float[3] cameraUp = orientation.rotate([0, 1, 0]);
-        float along = viewUp[0] * ahead[0] + viewUp[1] * ahead[1] + viewUp[2] * ahead[2];
-        float[3] level = [viewUp[0] - along * ahead[0], viewUp[1] - along * ahead[1], viewUp[2] - along * ahead[2]];
-        float[3] turned = [cameraUp[1] * level[2] - cameraUp[2] * level[1], cameraUp[2] * level[0] - cameraUp[0] * level[2], cameraUp[0] * level[1] - cameraUp[1] * level[0]];
-        float sine = turned[0] * ahead[0] + turned[1] * ahead[1] + turned[2] * ahead[2];
-        float cosine = cameraUp[0] * level[0] + cameraUp[1] * level[1] + cameraUp[2] * level[2];
-        return Angle(atan2f(sine, cosine));
-    }
-
-    void levelRoll() {
-        orientation = (Quaternion.fromAxisAngle(forward(), roll().value) * orientation).normalized();
     }
 }
 
@@ -187,18 +164,24 @@ unittest {
 
 unittest {
     Camera camera = Camera.make(Length(0));
-    float[3] before = camera.forward();
-    camera.follow(camera.position, Motion!float.identity(), [1, 0, 0]);
-    float[3] after = camera.forward();
-    assert(before[0] == after[0] && before[1] == after[1] && before[2] == after[2]);
+    camera.turn(Angle(0), Angle(0.3f));
+    camera.follow(camera.position, Motion!float.identity(), [0.6f, 0.8f, 0]);
+    float[3] up = camera.heading.rotate([0, 1, 0]);
+    assert(fabsf(up[0] - 0.6f) + fabsf(up[1] - 0.8f) + fabsf(up[2]) < TEST_ANGLE_TOLERANCE.value);
+    assert(fabsf(camera.elevation().value - 0.3f) < TEST_ANGLE_TOLERANCE.value);
 }
 
+// Looking straight down while the up wanders a little, the way it does while moving, leaves the heading where it was.
 unittest {
     Camera camera = Camera.make(Length(0));
-    camera.follow(camera.position, Motion!float.identity(), [0.6f, 0.8f, 0]);
-    float[3] before = camera.forward();
-    camera.levelRoll();
-    float[3] after = camera.forward();
-    assert(fabsf(camera.roll().value) < TEST_ANGLE_TOLERANCE.value);
-    assert(fabsf(before[0] - after[0]) + fabsf(before[1] - after[1]) + fabsf(before[2] - after[2]) < TEST_ANGLE_TOLERANCE.value);
+    camera.turn(Angle(0), -PITCH_LIMIT);
+    float[3] before = camera.heading.rotate(CAMERA_FORWARD);
+    foreach (step; 0 .. 100) {
+        float wobble = (step % 2 == 0 ? 1e-3f : -1e-3f);
+        float[3] up = [wobble, 1, wobble * 0.5f];
+        float length = sqrt(up[0] * up[0] + up[1] * up[1] + up[2] * up[2]);
+        camera.follow(camera.position, Motion!float.identity(), [up[0] / length, up[1] / length, up[2] / length]);
+    }
+    float[3] after = camera.heading.rotate(CAMERA_FORWARD);
+    assert(before[0] * after[0] + before[1] * after[1] + before[2] * after[2] > cos(TEST_ANGLE_TOLERANCE.value * 10));
 }

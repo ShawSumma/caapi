@@ -24,7 +24,9 @@ enum float NEARBY_PADDING = 0.05f;
 enum float NEARBY_REBUILD_DISTANCE = 0.25f;
 // The camera's node puts the camera within NODE_RADIUS of the origin, so a set moves at most once per this much travel.
 enum float REBASE_DISTANCE = NODE_RADIUS + 1.0f;
-enum uint FRESH_SEARCH_STEPS = 64;
+// Nodes this near the camera's node have their transforms worked out afresh on every rebase, so whatever is within
+// this less REBASE_DISTANCE of the camera is always drawn from exact chains.
+enum float REDERIVE_RADIUS = 6.0f;
 enum double TELEPORT_TRAVEL = 1.0e3;
 enum float RENDER_RADIUS = 8.0f;
 enum float FULL_RADIUS = 4.5f;
@@ -248,20 +250,14 @@ struct LocalWorld {
         nearbyStats.slicedMilliseconds += nowMilliseconds() - start;
     }
 
-    // The next set grows out of the published one, whose frame follows the camera, until enough steps have rounded
-    // its transforms that a fresh search is due.
+    // The next set grows out of the published one, whose frame follows the camera.
     void startNext(float distance, Point!float camera) {
         NearbyScratch* next = &nearby[1 - published];
-        if (nearby[published].derivedSteps < FRESH_SEARCH_STEPS) {
-            next.beginFrom(nearby[published], graph, camera, distance, FULL_RADIUS, streamer.executor());
-            pendingPoint = camera;
-            nearbyStats.grown += 1;
-            nearbyStats.kept += next.front;
-            nearbyStats.reexpanded += next.nodes.length - next.front;
-        } else {
-            next.begin(graph, cameraPosition, distance, FULL_RADIUS);
-            pendingPoint = cameraPosition.local * Point!float.origin();
-        }
+        next.beginFrom(nearby[published], graph, camera, distance, FULL_RADIUS, streamer.executor());
+        pendingPoint = camera;
+        nearbyStats.grown += 1;
+        nearbyStats.kept += next.front;
+        nearbyStats.reexpanded += next.nodes.length - next.front;
     }
 
     // A search started before the camera jumped, or left behind by a recovery and resumed, may not reach the camera;
@@ -293,7 +289,7 @@ struct LocalWorld {
         Motion!float toCamera = current.nodes.ptr[current.indexOf(cameraSlot)].transform;
         if (isFarFromOrigin(toCamera * cameraPosition.local)) {
             Motion!float toFrame = toCamera.inverse();
-            current.rebase(toFrame, streamer.executor());
+            current.rebase(graph, cameraSlot, toFrame, REDERIVE_RADIUS, streamer.executor());
             publishedPoint = toFrame * publishedPoint;
             trackedCamera = toFrame * trackedCamera;
             listVersion += 1;
@@ -303,7 +299,7 @@ struct LocalWorld {
         uint index = next.indexOf(cameraSlot);
         if (next.isBuilding() && index != NOT_COLLECTED && isFarFromOrigin(next.nodes.ptr[index].transform * cameraPosition.local)) {
             Motion!float toFrame = next.nodes.ptr[index].transform.inverse();
-            next.rebase(toFrame, streamer.executor());
+            next.rebase(graph, cameraSlot, toFrame, REDERIVE_RADIUS, streamer.executor());
             pendingPoint = toFrame * pendingPoint;
         }
     }
