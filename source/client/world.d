@@ -3,7 +3,7 @@ module client.world;
 import core.stdc.math : acoshf, coshf;
 import client.camera : CAMERA_FORWARD;
 import client.streaming : Streamer, chunkNeighborId, hasPopulatedNeighbor, resolveIfExposed, resolveMaterials;
-import common.clock : nowMilliseconds;
+import common.clock : PhaseTimes, nowMilliseconds, threadCpuMilliseconds;
 import common.array : Array;
 import common.coords : CHUNK_DIRECTIONS, ChunkDirection, Coords, boundaryCoord;
 import common.eviction : Evictor, Unloaded;
@@ -24,8 +24,10 @@ enum float NEARBY_REBUILD_DISTANCE = 0.25f;
 enum double TELEPORT_TRAVEL = 1.0e3;
 enum float RENDER_RADIUS = 8.0f;
 enum float FULL_RADIUS = 4.5f;
-enum double NEARBY_BUDGET_MILLISECONDS = 2.0;
-enum double STEP_BUDGET_MILLISECONDS = 10.0;
+enum double STEP_BUDGET_MILLISECONDS = 5.0;
+enum double NEARBY_LEAST_MILLISECONDS = 1.0;
+enum double STREAMER_LEAST_MILLISECONDS = 1.0;
+enum size_t STRUCTURE_CANDIDATES = 256;
 enum double RECOVERY_BUDGET_MILLISECONDS = 8.0;
 
 struct Placement {
@@ -39,6 +41,15 @@ struct NearbyStats {
     double recoveryMilliseconds = 0;
     uint publishes;
     uint recoveries;
+}
+
+struct StepPhases {
+    PhaseTimes prepare;
+    PhaseTimes nearby;
+    PhaseTimes streamer;
+    PhaseTimes evict;
+    PhaseTimes nearbyCpu;
+    PhaseTimes streamerCpu;
 }
 
 struct TargetMaterial {
@@ -57,14 +68,14 @@ struct LocalWorld {
     uint trackedVersion;
     NearbyNode[] cachedNodes;
     Array!Unloaded unloaded;
+    Array!uint candidates;
     float renderRadius;
     float tanhReach;
     uint published;
     uint nearbyVersion;
     uint epoch;
     Evictor evictor;
-    double worstEviction = 0;
-    double streamerMilliseconds = 0;
+    StepPhases phases;
     NearbyStats nearbyStats;
     bool hasNearby;
 
@@ -84,6 +95,7 @@ struct LocalWorld {
         nearby[1].release();
         evictor.release();
         unloaded.release();
+        candidates.release();
         graph.release();
     }
 
@@ -95,9 +107,16 @@ struct LocalWorld {
         return nearby[published].nodes.ptr[cameraNearbyIndex()].transform * cameraPosition.local;
     }
 
+    // The world's share of a frame is split by what each phase took last frame: the nearby search gets what the
+    // streamer and eviction leave, and every phase gets at least a little so none of them stalls.
     void update(bool isUnbudgeted) {
+        double start = nowMilliseconds();
+        double end = start + STEP_BUDGET_MILLISECONDS;
+        prepareStructures();
+        double prepared = nowMilliseconds();
+        double preparedCpu = threadCpuMilliseconds();
         float distance = renderRadius + NEARBY_PADDING;
-        double deadline = nearbyDeadline(isUnbudgeted, streamerMilliseconds);
+        double deadline = phaseDeadline(isUnbudgeted, end - phases.streamer.lastMs - phases.evict.lastMs, NEARBY_LEAST_MILLISECONDS);
         if (!hasNearby) {
             buildInitialNearby(distance, deadline);
         } else if (cameraNearbyIndex() == NOT_COLLECTED) {
@@ -106,10 +125,28 @@ struct LocalWorld {
             refreshNearby(distance, deadline);
         }
         trackTravel();
-        double start = nowMilliseconds();
-        streamer.drive(graph, cachedNodes, cameraInNearbyFrame(), renderRadius, nearbyVersion, isUnbudgeted);
-        streamerMilliseconds = nowMilliseconds() - start;
+        double found = nowMilliseconds();
+        double foundCpu = threadCpuMilliseconds();
+        streamer.drive(graph, cachedNodes, cameraInNearbyFrame(), renderRadius, nearbyVersion, isUnbudgeted, phaseDeadline(isUnbudgeted, end - phases.evict.lastMs, STREAMER_LEAST_MILLISECONDS));
+        double streamed = nowMilliseconds();
+        double streamedCpu = threadCpuMilliseconds();
         evict();
+        phases.prepare.add(prepared - start);
+        phases.nearby.add(found - prepared);
+        phases.streamer.add(streamed - found);
+        phases.evict.add(nowMilliseconds() - streamed);
+        phases.nearbyCpu.add(foundCpu - preparedCpu);
+        phases.streamerCpu.add(streamedCpu - foundCpu);
+    }
+
+    // Structure for the nodes the scan needs next is painted on every thread here, so the scan's structure checks on
+    // this thread only finish what is already painted.
+    void prepareStructures() {
+        if (graph.grower.prepare !is null) {
+            candidates.clear();
+            streamer.collectUnstructured(graph, cachedNodes, candidates, STRUCTURE_CANDIDATES);
+            graph.prepareStructures(candidates.slice(), streamer.executor());
+        }
     }
 
     void evict() {
@@ -119,12 +156,7 @@ struct LocalWorld {
         if (next.isBuilding()) {
             building = next;
         }
-        double start = nowMilliseconds();
-        evictor.sweep(graph, nearby[published], building, cameraInNearbyFrame() * MPoint!float.origin(), unloaded, start);
-        double spent = nowMilliseconds() - start;
-        if (spent > worstEviction) {
-            worstEviction = spent;
-        }
+        evictor.sweep(graph, nearby[published], building, cameraInNearbyFrame() * MPoint!float.origin(), unloaded, nowMilliseconds());
         streamer.forget(unloaded.slice()[first .. $]);
     }
 
@@ -277,18 +309,24 @@ struct LocalWorld {
                     graph.resolveIfExposed(neighbor);
                 }
             }
-            graph.touchChunksReading(slot, CoordsWithMargins.fromCoords(coords));
+            Array!ChunkSlot holders;
+            graph.touchChunksReading(slot, CoordsWithMargins.fromCoords(coords), holders);
+            foreach (holder; holders.slice()) {
+                graph.markChanged(holder);
+            }
+            holders.release();
             return true;
         }
     }
 }
 
-double nearbyDeadline(bool isUnbudgeted, double streamerMilliseconds) {
+double phaseDeadline(bool isUnbudgeted, double planned, double leastMilliseconds) {
+    double earliest = nowMilliseconds() + leastMilliseconds;
     if (isUnbudgeted) {
         return NO_DEADLINE;
-    } else if (STEP_BUDGET_MILLISECONDS - streamerMilliseconds > NEARBY_BUDGET_MILLISECONDS) {
-        return nowMilliseconds() + STEP_BUDGET_MILLISECONDS - streamerMilliseconds;
+    } else if (planned > earliest) {
+        return planned;
     } else {
-        return nowMilliseconds() + NEARBY_BUDGET_MILLISECONDS;
+        return earliest;
     }
 }

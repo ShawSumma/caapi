@@ -1,5 +1,6 @@
 module common.neighbors;
 
+import common.array : Array;
 import common.coords : ChunkDirection, CoordAxis, CoordSign;
 import common.dodeca : SIDE_COUNT, Side, VERTEX_COUNT, Vertex, adjacentVertices, canonicalSides;
 import common.graph : Graph, NO_SLOT, ROOT_NODE;
@@ -97,23 +98,24 @@ bool isPredictionContradicted(ref const Chunk chunk) {
     }
 }
 
-void touchHolders(ref Graph graph, ChunkSlot chunk, CoordsWithMargins coords) {
+// Collects the chunks holding a cell, through every chain of margins that reaches it.
+void touchHolders(ref const Graph graph, ChunkSlot chunk, CoordsWithMargins coords, ref Array!ChunkSlot holders) {
     ubyte dimension = graph.layout.dimension;
     if (isInteriorCell(dimension, coords)) {
-        graph.markChanged(chunk);
+        holders.append(chunk);
     } else {
         foreach (axis; 0 .. AXIS_COUNT) {
             if (isOutsideInterior(dimension, coords.data[axis])) {
                 CellHop hop = graph.hopCell(chunk, coords, axis);
                 if (hop.isPopulated) {
-                    graph.touchHolders(hop.chunk, hop.coords);
+                    graph.touchHolders(hop.chunk, hop.coords, holders);
                 }
             }
         }
     }
 }
 
-void touchChunksReading(ref Graph graph, ChunkSlot chunk, CoordsWithMargins cell) {
+void touchChunksReading(ref const Graph graph, ChunkSlot chunk, CoordsWithMargins cell, ref Array!ChunkSlot holders) {
     ubyte dimension = graph.layout.dimension;
     ubyte[AXIS_COUNT] margins;
     uint boundaryAxes = 0;
@@ -134,12 +136,12 @@ void touchChunksReading(ref Graph graph, ChunkSlot chunk, CoordsWithMargins cell
                     pushed.data[axis] = margins[axis];
                 }
             }
-            graph.touchHolders(chunk, pushed);
+            graph.touchHolders(chunk, pushed, holders);
         }
     }
 }
 
-void touchChunksAround(ref Graph graph, ChunkSlot chunk) {
+void touchChunksAround(ref const Graph graph, ChunkSlot chunk, ref Array!ChunkSlot holders) {
     ubyte dimension = graph.layout.dimension;
     foreach (corner; 0 .. 2 ^^ AXIS_COUNT) {
         CoordsWithMargins cell;
@@ -150,7 +152,7 @@ void touchChunksAround(ref Graph graph, ChunkSlot chunk) {
                 cell.data[axis] = boundaryCoordWithMargins(dimension, CoordSign.minus);
             }
         }
-        graph.touchChunksReading(chunk, cell);
+        graph.touchChunksReading(chunk, cell, holders);
     }
 }
 

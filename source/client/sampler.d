@@ -6,15 +6,24 @@ import core.stdc.stdlib : calloc, free;
 import core.sys.linux.dlfcn : Dl_info, dladdr;
 import core.sys.linux.execinfo : backtrace;
 import core.sys.posix.pthread : pthread_equal, pthread_self, pthread_t;
-import core.sys.posix.signal : SA_RESTART, SIGPROF, sigaction, sigaction_t, sigemptyset;
+import core.sys.posix.signal : SA_RESTART, SIGPROF, sigaction, sigaction_t, sigemptyset, sigevent;
 import core.sys.posix.sys.time : ITIMER_PROF, itimerval, setitimer, timeval;
+import core.sys.posix.time : CLOCK_THREAD_CPUTIME_ID, itimerspec, timer_create, timer_delete, timer_settime, timer_t, timespec;
 import common.array : Array;
 import common.hashmap : HashMap;
+import common.parallel : syscall;
 
+version (X86_64) {
+    enum long SYS_GETTID = 186;
+} else version (AArch64) {
+    enum long SYS_GETTID = 178;
+}
+enum int SIGEV_THREAD_ID = 4;
 enum uint SAMPLE_FRAMES = 48;
 enum uint SAMPLE_CAPACITY = 1 << 18;
 enum uint SIGNAL_FRAMES = 2;
 enum int SAMPLE_MICROSECONDS = 4000;
+enum long MAIN_SAMPLE_NANOSECONDS = 500_000;
 enum uint LISTED_FUNCTIONS = 60;
 enum uint LISTED_CALLEES = 30;
 enum uint LISTED_CALLERS = 4;
@@ -23,6 +32,7 @@ enum size_t NAME_CAPACITY = 160;
 enum size_t ADDRESS_HASH_MULTIPLIER = 0x9E3779B97F4A7C15;
 
 extern (C) int* __errno_location() nothrow @nogc;
+extern (C) int __libc_current_sigrtmin() nothrow @nogc;
 
 struct Sample {
     void*[SAMPLE_FRAMES] frames;
@@ -34,13 +44,25 @@ __gshared Sample* samples;
 __gshared pthread_t mainThread;
 shared uint sampleCount;
 
-extern (C) void recordSample(int signal) {
+// The process timer lands mostly on whichever threads are busiest, so the main thread has a timer of its own and the
+// process timer only samples the other threads.
+extern (C) void recordWorkerSample(int signal) {
+    if (pthread_equal(pthread_self(), mainThread) == 0) {
+        record(false);
+    }
+}
+
+extern (C) void recordMainSample(int signal) {
+    record(true);
+}
+
+void record(bool isMain) {
     int saved = *__errno_location();
     uint index = atomicOp!"+="(sampleCount, 1) - 1;
     if (index < SAMPLE_CAPACITY) {
         Sample* sample = &samples[index];
         sample.depth = backtrace(sample.frames.ptr, SAMPLE_FRAMES);
-        sample.isMain = pthread_equal(pthread_self(), mainThread) != 0;
+        sample.isMain = isMain;
     }
     *__errno_location() = saved;
 }
@@ -78,6 +100,7 @@ struct CallCounts {
 }
 
 struct Sampler {
+    timer_t mainTimer;
     bool isRunning;
 
     void start() {
@@ -88,19 +111,32 @@ struct Sampler {
         }
         mainThread = pthread_self();
         atomicStore(sampleCount, 0);
-        sigaction_t action;
-        action.sa_handler = &recordSample;
-        sigemptyset(&action.sa_mask);
-        action.sa_flags = SA_RESTART;
-        sigaction(SIGPROF, &action, null);
+        handle(SIGPROF, &recordWorkerSample);
+        handle(__libc_current_sigrtmin(), &recordMainSample);
+        sigevent event;
+        event.sigev_notify = SIGEV_THREAD_ID;
+        event.sigev_signo = __libc_current_sigrtmin();
+        event._tid = cast(int) syscall(SYS_GETTID);
+        timer_create(CLOCK_THREAD_CPUTIME_ID, &event, &mainTimer);
+        itimerspec mainPeriod = itimerspec(timespec(0, MAIN_SAMPLE_NANOSECONDS), timespec(0, MAIN_SAMPLE_NANOSECONDS));
+        timer_settime(mainTimer, 0, &mainPeriod, null);
         itimerval timer = itimerval(timeval(0, SAMPLE_MICROSECONDS), timeval(0, SAMPLE_MICROSECONDS));
         setitimer(ITIMER_PROF, &timer, null);
         isRunning = true;
     }
 
+    void handle(int signal, typeof(sigaction_t.sa_handler) handler) {
+        sigaction_t action;
+        action.sa_handler = handler;
+        sigemptyset(&action.sa_mask);
+        action.sa_flags = SA_RESTART;
+        sigaction(signal, &action, null);
+    }
+
     void stop() {
         itimerval timer;
         setitimer(ITIMER_PROF, &timer, null);
+        timer_delete(mainTimer);
         isRunning = false;
     }
 
@@ -142,7 +178,7 @@ struct Sampler {
                 callee = current;
             }
         }
-        fprintf(output, "profile %s: %u samples of %dms cpu (%u dropped), main %u, workers %u\n", title, count, SAMPLE_MICROSECONDS / 1000, taken - count, mainSamples, workerSamples);
+        fprintf(output, "profile %s: main %u samples of %ldus of its cpu, workers %u samples of %dus of process cpu (%u dropped)\n", title, mainSamples, MAIN_SAMPLE_NANOSECONDS / 1000, workerSamples, SAMPLE_MICROSECONDS, taken - count);
         listTop(output, "main by total", functions, mainSamples, Column.totalMain, Column.selfMain, Column.totalMain);
         listTop(output, "main by self", functions, mainSamples, Column.selfMain, Column.selfMain, Column.totalMain);
         listTop(output, "workers by total", functions, workerSamples, Column.totalWorker, Column.selfWorker, Column.totalWorker);

@@ -14,6 +14,7 @@ import common.worldgen.sky : mayHoldContent;
 enum double NO_DEADLINE = double.infinity;
 enum uint NOT_COLLECTED = uint.max;
 enum size_t EXPAND_BATCH = 256;
+enum size_t PREPARE_BATCH = 256;
 
 struct NodeVisit {
     uint slot;
@@ -131,13 +132,17 @@ struct NearbyScratch {
     Array!uint position;
     Array!ExpandOutput outputs;
     ExpandOutput serial;
+    Array!uint candidates;
     MPoint!float startPoint;
     size_t front;
     size_t missingHead;
     size_t unknownHead;
+    size_t preparedHead;
     float coshThreshold = 0;
     float coshInner = 0;
+    double preparingMs = 0;
     uint generation;
+    bool hasPrepared;
 
     void release() {
         nodes.release();
@@ -148,6 +153,7 @@ struct NearbyScratch {
         }
         outputs.release();
         serial.release();
+        candidates.release();
     }
 
     uint indexOf(uint slot) const {
@@ -156,6 +162,29 @@ struct NearbyScratch {
         } else {
             return NOT_COLLECTED;
         }
+    }
+
+    // The next nodes to have their content checked need their structure, which is painted for them all at once here.
+    // Painting stops at a task budget, so the next batch starts at the first node this one left uncovered.
+    void prepareUnknown(ref Graph graph, Executor executor) {
+        candidates.clear();
+        size_t index = unknownHead;
+        while (index < serial.unknown.length && candidates.length < PREPARE_BATCH) {
+            if (!isUnknownReady(graph, index)) {
+                candidates.append(nodes.ptr[serial.unknown.ptr[index]].slot);
+            }
+            index += 1;
+        }
+        graph.prepareStructures(candidates.slice(), executor);
+        preparedHead = unknownHead + 1;
+        while (preparedHead < index && isUnknownReady(graph, preparedHead)) {
+            preparedHead += 1;
+        }
+    }
+
+    bool isUnknownReady(ref const Graph graph, size_t index) const {
+        uint slot = nodes.ptr[serial.unknown.ptr[index]].slot;
+        return graph.hasStructureAt(slot) || graph.nodeAt(slot).isCovered;
     }
 
     bool hasSerialWork() const {
@@ -174,6 +203,7 @@ struct NearbyScratch {
         front = 0;
         missingHead = 0;
         unknownHead = 0;
+        preparedHead = 0;
         generation += 1;
         startPoint = start.local * MPoint!float.origin();
         collect(graph, NearbyNode(start.node, MIsometry!float.identity(), graph.slotOf(start.node)));
@@ -202,9 +232,10 @@ struct NearbyScratch {
             outputs.append(ExpandOutput.init);
         }
         bool isLate = false;
+        hasPrepared = false;
         while (isBuilding() && !isLate) {
             if (hasSerialWork()) {
-                drainSerial(graph, deadline);
+                isLate = !drainSerial(graph, deadline, executor);
             } else {
                 reserveStamps(graph);
                 ExpandJob expansion = ExpandJob(&this, &graph, front, nodes.length);
@@ -216,7 +247,7 @@ struct NearbyScratch {
                 }
                 gather();
             }
-            isLate = nowMilliseconds() >= deadline;
+            isLate = isLate || nowMilliseconds() >= deadline;
         }
     }
 
@@ -232,8 +263,11 @@ struct NearbyScratch {
         }
     }
 
-    void drainSerial(ref Graph graph, double deadline) {
-        while (hasSerialWork() && nowMilliseconds() < deadline) {
+    // Returns false when a batch of structure would not fit before the deadline; every advance prepares at least one,
+    // so the search always moves on.
+    bool drainSerial(ref Graph graph, double deadline, Executor executor) {
+        bool isStalled = false;
+        while (hasSerialWork() && nowMilliseconds() < deadline && !isStalled) {
             if (missingHead < serial.missing.length) {
                 MissingSide missing = serial.missing.ptr[missingHead];
                 missingHead += 1;
@@ -242,6 +276,13 @@ struct NearbyScratch {
                 if (indexOf(neighbor) == NOT_COLLECTED) {
                     collect(graph, NearbyNode(graph.idAt(neighbor), current.transform * missing.side.reflection, neighbor));
                 }
+            } else if (unknownHead >= preparedHead && hasPrepared && nowMilliseconds() + preparingMs > deadline) {
+                isStalled = true;
+            } else if (unknownHead >= preparedHead) {
+                double start = nowMilliseconds();
+                prepareUnknown(graph, executor);
+                preparingMs = nowMilliseconds() - start;
+                hasPrepared = true;
             } else {
                 NearbyNode current = nodes.ptr[serial.unknown.ptr[unknownHead]];
                 unknownHead += 1;
@@ -254,7 +295,9 @@ struct NearbyScratch {
             serial.clear();
             missingHead = 0;
             unknownHead = 0;
+            preparedHead = 0;
         }
+        return !isStalled;
     }
 
     bool isWithinReach(NearbyNode current, Side side) const {

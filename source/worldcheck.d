@@ -24,6 +24,7 @@ import common.worldgen.structure : altitude, edgeLength;
 
 enum uint DRIVE_NEARBY_VERSION = 1;
 enum uint DRIVE_IDLE_ITERATIONS = 200;
+enum double DRIVE_BUDGET_MILLISECONDS = 5.0;
 enum size_t HASH_HEADER_BYTES = 2;
 enum float STRUCTURE_DUMP_RADIUS = 4.5f;
 
@@ -368,7 +369,7 @@ void benchDrive(FILE* output, float radius, ubyte dimension) {
     uint drives = 0;
     do {
         double driveStart = nowMilliseconds();
-        streamer.drive(graph, nearby, MIsometry!float.identity(), radius, DRIVE_NEARBY_VERSION, false);
+        streamer.drive(graph, nearby, MIsometry!float.identity(), radius, DRIVE_NEARBY_VERSION, false, driveStart + DRIVE_BUDGET_MILLISECONDS);
         driveMs += nowMilliseconds() - driveStart;
         drives += 1;
         if (streamer.inFlight > 0) {
@@ -385,7 +386,7 @@ void benchDrive(FILE* output, float radius, ubyte dimension) {
     fprintf(output, "bench-drive dim=%u radius=%.2f populated=%u nodes=%u->%u drives=%u total=%.1fms drive=%.1fms integrate_and_wait=%.1fms\n", cast(uint) dimension, cast(double) radius, populated, nodesBefore, graph.nodeCount, drives, totalMs, driveMs, totalMs - driveMs);
     double idleStart = nowMilliseconds();
     foreach (_; 0 .. DRIVE_IDLE_ITERATIONS) {
-        streamer.drive(graph, nearby, MIsometry!float.identity(), radius, DRIVE_NEARBY_VERSION, false);
+        streamer.drive(graph, nearby, MIsometry!float.identity(), radius, DRIVE_NEARBY_VERSION, false, nowMilliseconds() + DRIVE_BUDGET_MILLISECONDS);
     }
     fprintf(output, "bench-drive idle scan=%.3fms/drive nodes=%zu\n", (nowMilliseconds() - idleStart) / DRIVE_IDLE_ITERATIONS, nearby.length);
     streamer.release();

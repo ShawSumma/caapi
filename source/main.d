@@ -14,10 +14,10 @@ import client.graphics.renderer : FrameTimes, Renderer;
 import client.png : writePng;
 import client.sampler : Sampler;
 import client.script : ScriptHost, ScriptRecorder;
-import client.structures : StructureProblem, growthProblem, placeStructure;
-import client.world : LocalWorld, RENDER_RADIUS;
+import client.structures : StructureProblem, growthProblem, placeStructure, tileCounts;
+import client.world : LocalWorld, RENDER_RADIUS, StepPhases;
 import common.character.controller : MovementMode;
-import common.clock : MILLISECONDS_PER_SECOND, NANOSECONDS_PER_SECOND, nowSeconds;
+import common.clock : MILLISECONDS_PER_SECOND, NANOSECONDS_PER_SECOND, PhaseTimes, nowSeconds, threadCpuMilliseconds;
 import common.dodeca : VERTEX_COUNT;
 import common.graph : Graph, Node;
 import common.material : Material;
@@ -656,18 +656,6 @@ bool captureScreenshot(Arguments arguments, FILE* report, ref Renderer renderer,
     }
 }
 
-struct PhaseTimes {
-    double totalMs = 0;
-    double worstMs = 0;
-
-    void add(double ms) {
-        totalMs += ms;
-        if (ms > worstMs) {
-            worstMs = ms;
-        }
-    }
-}
-
 struct RenderBreakdown {
     PhaseTimes fenceWait;
     PhaseTimes chunkUpdate;
@@ -681,9 +669,9 @@ struct RenderBreakdown {
         gpuCull.add(times.gpu.cullMs);
     }
 
-    void print(FILE* report, uint frames) const {
-        fprintf(report, "  fence wait avg=%.2fms worst=%.2fms, chunk update avg=%.2fms worst=%.2fms\n", fenceWait.totalMs / frames, fenceWait.worstMs, chunkUpdate.totalMs / frames, chunkUpdate.worstMs);
-        fprintf(report, "  gpu frame avg=%.2fms worst=%.2fms, gpu cull avg=%.3fms worst=%.3fms\n", gpuFrame.totalMs / frames, gpuFrame.worstMs, gpuCull.totalMs / frames, gpuCull.worstMs);
+    void print(FILE* report) const {
+        fprintf(report, "  fence wait avg=%.2fms worst=%.2fms, chunk update avg=%.2fms worst=%.2fms\n", fenceWait.averageMs(), fenceWait.worstMs, chunkUpdate.averageMs(), chunkUpdate.worstMs);
+        fprintf(report, "  gpu frame avg=%.2fms worst=%.2fms, gpu cull avg=%.3fms worst=%.3fms\n", gpuFrame.averageMs(), gpuFrame.worstMs, gpuCull.averageMs(), gpuCull.worstMs);
     }
 }
 
@@ -750,10 +738,14 @@ void measureLoad(FILE* report, ref Renderer renderer, ref Game game) {
     uint frames = 0;
     uint nearbyFrame = 0;
     uint generatedFrame = 0;
+    game.world.phases = StepPhases.init;
+    PhaseTimes stepCpu;
     double start = nowSeconds();
     do {
         double frameStart = nowSeconds();
+        double cpuStart = threadCpuMilliseconds();
         game.step(FrameInput.init, Time(cast(float) BENCH_FRAME_SECONDS));
+        stepCpu.add(threadCpuMilliseconds() - cpuStart);
         double stepped = nowSeconds();
         renderer.render(game.world);
         double rendered = nowSeconds();
@@ -785,10 +777,10 @@ void measureLoad(FILE* report, ref Renderer renderer, ref Game game) {
     fprintf(report, "nearby set complete at frame %u, worldgen settled at frame %u, meshing done at frame %u\n", nearbyFrame, generatedFrame, frames);
     printMemory(report, game.world.graph);
     printWorldStats(report, game.world);
-    fprintf(report, "frame avg=%.2fms worst=%.2fms\n", frame.totalMs / frames, frame.worstMs);
-    fprintf(report, "step avg=%.2fms worst=%.2fms\n", step.totalMs / frames, step.worstMs);
-    fprintf(report, "render avg=%.2fms worst=%.2fms\n", render.totalMs / frames, render.worstMs);
-    breakdown.print(report, frames);
+    fprintf(report, "frame avg=%.2fms worst=%.2fms\n", frame.averageMs(), frame.worstMs);
+    fprintf(report, "step avg=%.2fms worst=%.2fms, of which main thread cpu avg=%.2fms\n", step.averageMs(), step.worstMs, stepCpu.averageMs());
+    fprintf(report, "render avg=%.2fms worst=%.2fms\n", render.averageMs(), render.worstMs);
+    breakdown.print(report);
 }
 
 void measureFlight(FILE* report, ref Renderer renderer, ref Game game) {
@@ -808,9 +800,13 @@ void measureLeg(FILE* report, ref Renderer renderer, ref Game game) {
     uint backloggedFrames = 0;
     FrameInput forward;
     forward.isHeld[Key.fwd] = true;
+    game.world.phases = StepPhases.init;
+    PhaseTimes stepCpu;
     foreach (_; 0 .. BENCH_MOVE_FRAMES) {
         double frameStart = nowSeconds();
+        double cpuStart = threadCpuMilliseconds();
         game.step(forward, Time(cast(float) BENCH_FRAME_SECONDS));
+        stepCpu.add(threadCpuMilliseconds() - cpuStart);
         double stepped = nowSeconds();
         renderer.render(game.world);
         double rendered = nowSeconds();
@@ -823,15 +819,23 @@ void measureLeg(FILE* report, ref Renderer renderer, ref Game game) {
         }
         pauseUntilFrameEnd(frameStart);
     }
-    fprintf(report, "moving noclip: frame avg=%.2fms worst=%.2fms, %u of %u frames with loading pending\n", moving.totalMs / BENCH_MOVE_FRAMES, moving.worstMs, backloggedFrames, BENCH_MOVE_FRAMES);
-    fprintf(report, "moving step avg=%.2fms worst=%.2fms, render avg=%.2fms worst=%.2fms\n", movingStep.totalMs / BENCH_MOVE_FRAMES, movingStep.worstMs, movingRender.totalMs / BENCH_MOVE_FRAMES, movingRender.worstMs);
-    breakdown.print(report, BENCH_MOVE_FRAMES);
+    fprintf(report, "moving noclip: frame avg=%.2fms worst=%.2fms, %u of %u frames with loading pending\n", moving.averageMs(), moving.worstMs, backloggedFrames, BENCH_MOVE_FRAMES);
+    fprintf(report, "moving step avg=%.2fms worst=%.2fms (main thread cpu avg=%.2fms), render avg=%.2fms worst=%.2fms\n", movingStep.averageMs(), movingStep.worstMs, stepCpu.averageMs(), movingRender.averageMs(), movingRender.worstMs);
+    breakdown.print(report);
+    fprintf(report, "  drawable chunks %u, %zu of them waiting for their node\n", renderer.meshes.drawableCount, renderer.meshes.unlisted.length);
     printMemory(report, game.world.graph);
     printWorldStats(report, game.world);
 }
 
 void printWorldStats(FILE* report, ref const LocalWorld world) {
-    fprintf(report, "evicted %u nodes, dropped %u far chunks and %u tiles, worst sweep %.1fms\n", world.evictor.evicted, world.evictor.dropped, world.evictor.droppedTiles, world.worstEviction);    fprintf(report, "nearby %zu nodes, %u published, %u recoveries (%.0fms), %.0fms sliced\n", world.cachedNodes.length, world.nearbyStats.publishes, world.nearbyStats.recoveries, world.nearbyStats.recoveryMilliseconds, world.nearbyStats.slicedMilliseconds);
+    fprintf(report, "evicted %u nodes, dropped %u far chunks and %u tiles\n", world.evictor.evicted, world.evictor.dropped, world.evictor.droppedTiles);
+    fprintf(report, "step phases avg/worst: prepare %.2f/%.2fms ", world.phases.prepare.averageMs(), world.phases.prepare.worstMs);
+    fprintf(report, "nearby %.2f/%.2fms (cpu %.2f) ", world.phases.nearby.averageMs(), world.phases.nearby.worstMs, world.phases.nearbyCpu.averageMs());
+    fprintf(report, "streamer %.2f/%.2fms (cpu %.2f) ", world.phases.streamer.averageMs(), world.phases.streamer.worstMs, world.phases.streamerCpu.averageMs());
+    fprintf(report, "evict %.2f/%.2fms\n", world.phases.evict.averageMs(), world.phases.evict.worstMs);
+    fprintf(report, "parallel jobs %u, main waited %.0fms for other threads to finish them\n", world.streamer.pool.runs, world.streamer.pool.waitedMs);
+    uint[2] tiles = tileCounts(world.graph);
+    fprintf(report, "tiles painted ahead on all threads %u, painted when needed %u\n", tiles[0], tiles[1]);    fprintf(report, "nearby %zu nodes, %u published, %u recoveries (%.0fms), %.0fms sliced\n", world.cachedNodes.length, world.nearbyStats.publishes, world.nearbyStats.recoveries, world.nearbyStats.recoveryMilliseconds, world.nearbyStats.slicedMilliseconds);
 }
 
 void printMemory(FILE* report, ref const Graph graph) {

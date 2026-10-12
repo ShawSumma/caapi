@@ -7,12 +7,14 @@ import common.hashmap : HashMap;
 import common.margins : MarginTables;
 import common.math : MIsometry, MPoint;
 import common.murmur : murmurHash3;
+import common.parallel : Executor;
 import common.node : Chunk, ChunkLayout, ChunkSlot;
 import common.position : Position;
 import common.slab : SLAB_SHIFT, Slab;
 import common.worldgen.blueprint : Blueprint;
 import common.worldgen.building : Building, BuildingPlan;
-import common.worldgen.generation : CornerCache, NodeState, VirtualNode, Worldgen;
+import common.view : GraphView;
+import common.worldgen.generation : NodeState, Worldgen;
 import common.worldgen.sky : Skies, WorldRef;
 import common.worldgen.structure : LineTouch, PAINT_REACH, PendingTouch, anchorSlotOf, finalizeStructure;
 
@@ -68,16 +70,17 @@ struct Node {
     bool hasState;
     bool hasWorlds;
     bool hasStructure;
+    bool isCovered;
     bool isInStructure;
     bool hasBuilding;
     bool isBuildingQueued;
-    bool hasChoices;
     bool isRecent;
 }
 
 struct Grower {
     void function(void* context, ref Graph graph, int through) grow;
     void function(void* context, ref Graph graph, uint slot) cover;
+    void function(void* context, ref Graph graph, const(uint)[] candidates, Executor executor) prepare;
     void function(void* context) release;
     void* context;
 }
@@ -133,8 +136,7 @@ struct Graph {
     Array!uint freeSlots;
     Array!uint freeBlocks;
     Array!ChunkSlot restores;
-    Array!VirtualNode virtuals;
-    CornerCache corners;
+    GraphView view;
     Array!uint[FREE_RUN_LENGTHS] freeWorldRuns;
     Array!uint[FREE_RUN_LENGTHS] freeTouchRuns;
     Blueprint blueprint;
@@ -211,6 +213,12 @@ struct Graph {
         }
     }
 
+    // For threads that each write their own chunks: never allocates, so the graph itself is left as it was.
+    Chunk* heldChunk(ChunkSlot chunk) const {
+        assert(hasChunks(chunk.slot));
+        return cast(Chunk*) chunks.at(cast(size_t)(nodeAt(chunk.slot).chunkBlock - 1) * VERTEX_COUNT + chunk.vertex);
+    }
+
     Chunk* chunkFor(ChunkSlot chunk) {
         Node* node = nodeAt(chunk.slot);
         if (node.chunkBlock == NO_CHUNKS) {
@@ -272,6 +280,28 @@ struct Graph {
 
     NodeId idAt(uint slot) const {
         return nodeAt(slot).id;
+    }
+
+    uint depthOf(uint slot) const {
+        return nodeAt(slot).depth;
+    }
+
+    ushort parentSidesOf(uint slot) const {
+        return nodeAt(slot).parentSides;
+    }
+
+    bool hasStructureAt(uint slot) const {
+        return nodeAt(slot).hasStructure;
+    }
+
+    NodeState stateAt(uint slot) {
+        return *ensureNodeStateAt(slot);
+    }
+
+    // The main thread's view of this graph, for reads that must not create nodes; it is forgotten after evictions.
+    ref GraphView ownView() return {
+        view.graph = &this;
+        return view;
     }
 
     uint neighborSlot(uint slot, Side which) const {
@@ -385,10 +415,6 @@ struct Graph {
 
     const(NodeState)* ensureNodeStateAt(uint slot) {
         if (!nodeAt(slot).hasState) {
-            ParentList parentList = parents(slot);
-            foreach (i; 0 .. parentList.count) {
-                ensureNodeStateAt(parentList.links[i].slot);
-            }
             nodeAt(slot).state = NodeState.fromParents(this, slot);
             nodeAt(slot).hasState = true;
         }
@@ -402,13 +428,20 @@ struct Graph {
                 ensureStructureAt(link.slot);
             }
             growBefore(nodeAt(slot).depth);
-            if (grower.cover !is null) {
+            if (grower.cover !is null && !nodeAt(slot).isCovered) {
                 grower.cover(grower.context, this, slot);
             }
             this.finalizeStructure(slot);
             nodeAt(slot).hasStructure = true;
         }
         return nodeAt(slot).isInStructure;
+    }
+
+    // Paints on every thread the structure that these nodes' checks are about to need, so those checks only finish it.
+    void prepareStructures(const(uint)[] candidates, Executor executor) {
+        if (grower.prepare !is null && candidates.length > 0) {
+            grower.prepare(grower.context, this, candidates, executor);
+        }
     }
 
     void growBefore(uint depth) {
@@ -529,7 +562,7 @@ struct Graph {
         freeSlots.release();
         freeBlocks.release();
         restores.release();
-        virtuals.release();
+        view.release();
         foreach (ref runs; freeWorldRuns) {
             runs.release();
         }

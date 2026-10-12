@@ -6,7 +6,9 @@ import core.stdc.stdlib : abs;
 import core.stdc.string : memcpy;
 import common.coords : CELL_NEIGHBOR_OFFSETS;
 import common.dodeca : SIDE_COUNT, Side, VERTEX_COUNT, Vertex, canonicalSides, chunkGridCenterRadius, isAdjacentTo;
-import common.graph : Graph, MAX_PARENTS, NO_SLOT, NodeId, ParentList, childId, sideBit;
+import common.array : Array;
+import common.graph : Graph, NO_SLOT, NodeId, ParentList, sideBit;
+import common.view : GraphView, viewOf;
 import common.material : Material;
 import common.math : PI, clamped;
 import common.node : ChunkLayout, Occupancy, VoxelData;
@@ -210,12 +212,12 @@ struct NodeState {
     Plane reference;
     NodeStateKind kind;
 
-    static NodeState fromParents(ref Graph graph, uint slot) {
+    static NodeState fromParents(G)(ref G graph, uint slot) {
         ParentList parents = graph.parents(slot);
         if (parents.count == 0) {
             return NodeState(EnviroFactors.init, Plane.fromSide(Side.a), Plane.fromSide(firstSideAmong(ringFaces(Side.a))), NodeStateKind.land);
         } else {
-            NodeState first = graph.nodeAt(parents.links[0].slot).state;
+            NodeState first = graph.stateAt(parents.links[0].slot);
             Side firstSide = parents.links[0].side;
             NodeStateKind kind = first.kind.child(firstSide);
             return NodeState(graph.inheritedEnviro(slot, parents), kind.surface(first.surface, firstSide), first.reference.reflectAcross(firstSide), kind);
@@ -223,18 +225,17 @@ struct NodeState {
     }
 }
 
-EnviroFactors inheritedEnviro(ref Graph graph, uint slot, ParentList parents) {
-    EnviroFactors first = graph.nodeAt(parents.links[0].slot).state.enviro;
+EnviroFactors inheritedEnviro(G)(ref G graph, uint slot, ParentList parents) {
+    EnviroFactors first = graph.stateAt(parents.links[0].slot).enviro;
     uint abSlot = graph.sharedParentSlot(parents);
     if (abSlot == NO_SLOT) {
         return first.variedBy(graph.idAt(slot).spice());
     } else {
-        EnviroFactors ab = graph.ensureNodeStateAt(abSlot).enviro;
-        return first.continuedFrom(graph.nodeAt(parents.links[1].slot).state.enviro, ab);
+        return first.continuedFrom(graph.stateAt(parents.links[1].slot).enviro, graph.stateAt(abSlot).enviro);
     }
 }
 
-uint sharedParentSlot(ref const Graph graph, ParentList parents) {
+uint sharedParentSlot(G)(ref const G graph, ParentList parents) {
     if (parents.count > 1) {
         return graph.neighborSlot(parents.links[0].slot, parents.links[1].side);
     } else {
@@ -295,25 +296,30 @@ struct ChunkIncidentEnviroFactors {
     float[8] rainfalls;
     float[8] blockinesses;
 
-    static ChunkIncidentEnviroFactors make(ref Graph graph, uint slot, Vertex vertex) {
+    // Reads the eight nodes around the vertex through a view, so the ones past the loaded region are worked out
+    // instead of created.
+    static ChunkIncidentEnviroFactors make(ref GraphView view, uint slot, Vertex vertex) {
         Side[3] sides = vertex.canonicalSides;
         ChunkIncidentEnviroFactors result;
-        graph.corners.focus(graph.idAt(slot));
-        graph.virtuals.clear();
+        CornerCache* corners = &view.cornerCache();
+        corners.focus(view.idAt(slot));
         foreach (corner; 0 .. 8) {
             ushort crossed = 0;
+            uint at = slot;
             foreach (axis; 0 .. 3) {
                 if ((corner & (4 >> axis)) != 0) {
                     crossed |= sideBit(sides[axis]);
                 }
             }
-            if (!graph.corners.has(crossed)) {
-                NodeRef first = graph.crossedIf(NodeRef(slot, 0), sides[0], (corner & 4) != 0);
-                NodeRef second = graph.crossedIf(first, sides[1], (corner & 2) != 0);
-                NodeRef third = graph.crossedIf(second, sides[2], (corner & 1) != 0);
-                graph.corners.store(crossed, graph.enviroOf(third));
+            if (!corners.has(crossed)) {
+                foreach (axis; 0 .. 3) {
+                    if ((corner & (4 >> axis)) != 0) {
+                        at = view.ensureNeighborSlot(at, sides[axis]);
+                    }
+                }
+                corners.store(crossed, view.stateAt(at).enviro);
             }
-            EnviroFactors enviro = graph.corners.values[crossed];
+            EnviroFactors enviro = corners.values[crossed];
             result.maxElevations[corner] = enviro.maxElevation;
             result.temperatures[corner] = enviro.temperature;
             result.rainfalls[corner] = enviro.rainfall;
@@ -348,106 +354,52 @@ struct CornerCache {
     }
 }
 
-// A node that does not exist yet, worked out the way Graph.insertChildSlot and NodeState.fromParents would create it,
-// so terrain can read the enviro of nodes past the loaded region without creating and later evicting them.
-struct VirtualNode {
-    NodeRef[MAX_PARENTS] parents;
-    Side[MAX_PARENTS] sides;
-    uint count;
-    ushort parentSides;
-    NodeId id;
-    EnviroFactors enviro;
-}
-
-struct NodeRef {
-    uint slot;
-    uint index;
-
-    bool isVirtual() const {
-        return slot == NO_SLOT;
+bool isSameState(NodeState a, NodeState b) {
+    bool isSame = a.kind == b.kind && a.surface.exponent == b.surface.exponent && a.reference.exponent == b.reference.exponent;
+    isSame = isSame && a.enviro.maxElevation == b.enviro.maxElevation && a.enviro.temperature == b.enviro.temperature;
+    isSame = isSame && a.enviro.rainfall == b.enviro.rainfall && a.enviro.blockiness == b.enviro.blockiness;
+    foreach (axis; 0 .. 4) {
+        isSame = isSame && a.surface.scaledNormal.data[axis] == b.surface.scaledNormal.data[axis] && a.reference.scaledNormal.data[axis] == b.reference.scaledNormal.data[axis];
     }
+    return isSame;
 }
 
-NodeRef crossedIf(ref Graph graph, NodeRef node, Side side, bool isCrossed) {
-    if (isCrossed) {
-        return graph.neighborRef(node, side);
-    } else {
-        return node;
-    }
-}
-
-NodeRef neighborRef(ref Graph graph, NodeRef node, Side side) {
-    if (!node.isVirtual()) {
-        uint existing = graph.neighborSlot(node.slot, side);
-        if (existing != NO_SLOT) {
-            return NodeRef(existing, 0);
-        } else {
-            return graph.virtualChild(node, side);
+unittest {
+    Graph graph = Graph.make(TEST_DIMENSION, Worldgen.makeTerrain());
+    foreach (side; 0 .. SIDE_COUNT) {
+        uint neighbor = graph.ensureNeighborSlot(graph.anchorSlot, cast(Side) side);
+        foreach (outer; 0 .. SIDE_COUNT) {
+            graph.ensureNeighborSlot(neighbor, cast(Side) outer);
         }
-    } else if ((graph.virtuals.ptr[node.index].parentSides & sideBit(side)) != 0) {
-        return graph.virtualParent(node, side);
-    } else {
-        return graph.virtualChild(node, side);
     }
-}
-
-NodeRef virtualParent(ref Graph graph, NodeRef node, Side side) {
-    const(VirtualNode)* virtual = &graph.virtuals.ptr[node.index];
-    uint index = 0;
-    while (virtual.sides[index] != side) {
-        index += 1;
-    }
-    return virtual.parents[index];
-}
-
-ushort parentSidesOf(ref const Graph graph, NodeRef node) {
-    if (node.isVirtual()) {
-        return graph.virtuals.ptr[node.index].parentSides;
-    } else {
-        return graph.nodeAt(node.slot).parentSides;
-    }
-}
-
-NodeId idOf(ref const Graph graph, NodeRef node) {
-    if (node.isVirtual()) {
-        return graph.virtuals.ptr[node.index].id;
-    } else {
-        return graph.idAt(node.slot);
-    }
-}
-
-EnviroFactors enviroOf(ref Graph graph, NodeRef node) {
-    if (node.isVirtual()) {
-        return graph.virtuals.ptr[node.index].enviro;
-    } else {
-        return graph.ensureNodeStateAt(node.slot).enviro;
-    }
-}
-
-NodeRef virtualChild(ref Graph graph, NodeRef parent, Side side) {
-    VirtualNode made;
-    foreach (candidateIndex; 0 .. SIDE_COUNT) {
-        Side candidate = cast(Side) candidateIndex;
-        if (candidate == side || (candidate.isAdjacentTo(side) && (graph.parentSidesOf(parent) & sideBit(candidate)) != 0)) {
-            if (candidate == side) {
-                made.parents[made.count] = parent;
-            } else {
-                made.parents[made.count] = graph.neighborRef(graph.neighborRef(parent, candidate), side);
+    uint region = graph.nodeCount;
+    GraphView view = GraphView.over(graph);
+    Array!NodeState worked;
+    Array!NodeId ids;
+    foreach (slot; 0 .. region) {
+        foreach (side; 0 .. SIDE_COUNT) {
+            foreach (outer; 0 .. SIDE_COUNT) {
+                uint far = view.ensureNeighborSlot(view.ensureNeighborSlot(slot, cast(Side) side), cast(Side) outer);
+                worked.append(view.stateAt(far));
+                ids.append(view.idAt(far));
             }
-            made.sides[made.count] = candidate;
-            made.parentSides |= sideBit(candidate);
-            made.count += 1;
         }
     }
-    made.id = childId(graph.idOf(made.parents[0]), made.sides[0]);
-    EnviroFactors first = graph.enviroOf(made.parents[0]);
-    if (made.count > 1 && graph.isLinked(made.parents[0], made.sides[1])) {
-        made.enviro = first.continuedFrom(graph.enviroOf(made.parents[1]), graph.enviroOf(graph.neighborRef(made.parents[0], made.sides[1])));
-    } else {
-        made.enviro = first.variedBy(made.id.spice());
+    assert(graph.nodeCount == region && view.nodes.length > 0);
+    size_t index = 0;
+    foreach (slot; 0 .. region) {
+        foreach (side; 0 .. SIDE_COUNT) {
+            foreach (outer; 0 .. SIDE_COUNT) {
+                uint far = graph.ensureNeighborSlot(graph.ensureNeighborSlot(slot, cast(Side) side), cast(Side) outer);
+                assert(graph.idAt(far) == ids.ptr[index] && isSameState(graph.stateAt(far), worked.ptr[index]));
+                index += 1;
+            }
+        }
     }
-    graph.virtuals.append(made);
-    return NodeRef(NO_SLOT, cast(uint)(graph.virtuals.length - 1));
+    view.release();
+    worked.release();
+    ids.release();
+    graph.release();
 }
 
 unittest {
@@ -463,9 +415,9 @@ unittest {
         foreach (vertexIndex; 0 .. VERTEX_COUNT) {
             Vertex vertex = cast(Vertex) vertexIndex;
             uint live = graph.liveCount;
-            ChunkIncidentEnviroFactors computed = ChunkIncidentEnviroFactors.make(graph, slot, vertex);
+            ChunkIncidentEnviroFactors computed = ChunkIncidentEnviroFactors.make(graph.ownView(), slot, vertex);
             assert(graph.liveCount == live);
-            virtualCorners += cast(uint) graph.virtuals.length;
+            virtualCorners += cast(uint) graph.ownView().nodes.length;
             Side[3] sides = vertex.canonicalSides;
             foreach (corner; 0 .. 8) {
                 uint at = slot;
@@ -484,19 +436,17 @@ unittest {
     graph.release();
 }
 
-bool isLinked(ref const Graph graph, NodeRef node, Side side) {
-    if (node.isVirtual()) {
-        return (graph.virtuals.ptr[node.index].parentSides & sideBit(side)) != 0;
-    } else {
-        return graph.neighborSlot(node.slot, side) != NO_SLOT;
-    }
+struct ChunkStructure {
+    const(Building)* building;
+    bool isInStructure;
+    bool isKnown = true;
 }
 
-const(Building)* buildingIfPresent(ref Graph graph, uint slot) {
+ChunkStructure chunkStructureAt(ref Graph graph, uint slot) {
     if (graph.ensureStructureAt(slot)) {
-        return graph.ensureBuildingAt(slot);
+        return ChunkStructure(graph.ensureBuildingAt(slot), true);
     } else {
-        return null;
+        return ChunkStructure(null, false);
     }
 }
 
@@ -513,21 +463,25 @@ struct ChunkParams {
     bool hasStructure;
     bool isResolvingMaterials;
 
-    static ChunkParams make(ref Graph graph, uint slot, Vertex vertex) {
-        NodeState state = *graph.ensureNodeStateAt(slot);
+    static ChunkParams make(G)(ref G graph, uint slot, Vertex vertex, ChunkStructure structure) {
+        NodeState state = graph.stateAt(slot);
         return ChunkParams(
-            graph.buildingIfPresent(slot),
+            structure.building,
             graph.idAt(slot).spice(),
             graph.groundsAt(slot),
-            ChunkIncidentEnviroFactors.make(graph, slot, vertex),
+            ChunkIncidentEnviroFactors.make(graph.viewOf(), slot, vertex),
             state.reference,
             tanf(graph.worldgen.groundTiltRadians()),
             1.0f / cosf(graph.worldgen.groundTiltRadians()),
             graph.layout,
             vertex,
-            graph.ensureStructureAt(slot),
+            structure.isInStructure,
             false,
         );
+    }
+
+    static ChunkParams make(ref Graph graph, uint slot, Vertex vertex) {
+        return ChunkParams.make(graph, slot, vertex, graph.chunkStructureAt(slot));
     }
 
     ubyte dimension() const {
@@ -644,8 +598,8 @@ struct ChunkParams {
         }
     }
 
-    GeneratedVoxels generateVoxels() const {
-        TerrainGenerator generator = TerrainGenerator(VoxelData.fromMaterial(Material.none), this, SplitMix(hash(nodeSpice, chunk)), false);
+    GeneratedVoxels generateVoxels(Yield yield = Yield.init) const {
+        TerrainGenerator generator = TerrainGenerator(VoxelData.fromMaterial(Material.none), this, SplitMix(hash(nodeSpice, chunk)), yield, false);
         foreach (index; 0 .. grounds.count) {
             if (ground(index).isFlat) {
                 generator.generateFlat(index);
@@ -666,10 +620,23 @@ struct GeneratedVoxels {
     bool hasDeferredMaterials;
 }
 
+// Called between slices of a chunk, so the thread generating it can briefly do something more urgent.
+struct Yield {
+    void function(void* context) call;
+    void* context;
+
+    void now() {
+        if (call !is null) {
+            call(context);
+        }
+    }
+}
+
 struct TerrainGenerator {
     VoxelData voxels;
     ChunkParams params;
     SplitMix rng;
+    Yield yield;
     bool hasDeferredMaterials;
 
     void generateTerrain(uint ground) {
@@ -689,6 +656,7 @@ struct TerrainGenerator {
                             generateTerrainVoxel(ground, params.layout.cellCenter([x, y, z]), voxelIndex(dimension, x, y, z));
                         }
                     }
+                    yield.now();
                 }
             }
         }
@@ -723,6 +691,7 @@ struct TerrainGenerator {
                         }
                     }
                 }
+                yield.now();
             }
         }
     }
@@ -741,6 +710,7 @@ struct TerrainGenerator {
                         }
                     }
                 }
+                yield.now();
             }
         }
     }

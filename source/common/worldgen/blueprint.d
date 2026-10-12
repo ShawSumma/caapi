@@ -253,52 +253,19 @@ struct BlueprintBuilder {
     Graph* graph;
     int paintLimit;
     bool isGrowing;
-    bool isTiling;
-    bool isRestoring;
 
     static BlueprintBuilder make(ref Graph target) {
-        return BlueprintBuilder(Array!SiteLine.init, &target, 0, false, false, false);
+        return BlueprintBuilder(Array!SiteLine.init, &target, 0, false);
     }
 
     void growFrom(uint key) {
         known.clear();
         paintLimit = cast(int) key - PAINT_REACH;
         isGrowing = true;
-        isTiling = false;
-        isRestoring = false;
-    }
-
-    void tile() {
-        known.clear();
-        isGrowing = true;
-        isTiling = true;
-        isRestoring = false;
-    }
-
-    void restore() {
-        tile();
-        isRestoring = true;
-    }
-
-    void collectLines(ref Array!uint lines) {
-        lines.clear();
-        foreach (found; known.slice()) {
-            uint index = 0;
-            while (index < lines.length && lines.ptr[index] != found.line) {
-                index += 1;
-            }
-            if (index == lines.length) {
-                lines.append(found.line);
-            }
-        }
     }
 
     bool isOpen(uint slot) const {
-        if (isTiling) {
-            return !graph.nodeAt(slot).hasStructure;
-        } else {
-            return cast(int) graph.nodeAt(slot).depth >= paintLimit;
-        }
+        return cast(int) graph.nodeAt(slot).depth >= paintLimit;
     }
 
     SiteLine* lineOf(SiteFrame site) {
@@ -322,12 +289,10 @@ struct BlueprintBuilder {
         bool isUnbounded = lowEdge == int.min || highEdge == int.max;
         if (isGrowing && isUnbounded) {
             return PaintResult.endless;
-        } else if (isGrowing && !isRestoring && !isAhead(*found, lowEdge, highEdge)) {
+        } else if (isGrowing && !isAhead(*found, lowEdge, highEdge)) {
             return PaintResult.behind;
         } else {
-            if (!isRestoring) {
-                record(*found, lowEdge, highEdge, isUnbounded);
-            }
+            record(*found, lowEdge, highEdge, isUnbounded);
             Brush brush = Brush(canonical, canonicalRhythm(rhythm, found.transform, dimension), graph.blueprint.brushCount, Paint(graph.blueprint.paintOf(material), isIntoAirOnly));
             graph.blueprint.brushes.ptr[found.line].append(brush);
             graph.blueprint.brushCount += 1;
@@ -388,14 +353,12 @@ struct BlueprintBuilder {
     }
 
     void stop(SiteFrame site, ColumnSpot spot) {
-        if (!isRestoring) {
-            graph.blueprint.route.append(RouteStop(site, spot));
-            graph.reference(site.node);
-        }
+        graph.blueprint.route.append(RouteStop(site, spot));
+        graph.reference(site.node);
     }
 
     void enter(SiteFrame site, ColumnSpot spot) {
-        if (!isRestoring && !graph.blueprint.hasEntrance) {
+        if (!graph.blueprint.hasEntrance) {
             graph.blueprint.entrance = RouteStop(site, spot);
             graph.blueprint.hasEntrance = true;
             graph.reference(site.node);

@@ -1,0 +1,745 @@
+loading: frame 600 at 10.1s, nearby 461190 nodes, 736 chunks in flight, 2 meshes queued
+bench-load frames=1088 wall=18.35s nodes=665539 dense_chunks=185675 meshed=641634 faces=33387499
+nearby set complete at frame 906, worldgen settled at frame 1088, meshing done at frame 1088
+nodes holding chunks=477938 with state=586181, structure-touched=14463 referenced=20922 with children=381671 recent=338756
+memory: rss now=2638MB peak=2634MB nodes=630790 of 665539 slots, 477938 chunk blocks (423MB) buildings=12834 (107MB) dense voxels 971MB
+blueprint: 103501 lines, 7245128 brushes (436MB), 83717 tiles, 0 painted again
+evicted 362170 nodes, dropped 119595 far chunks and 0 tiles
+step phases avg/worst: prepare 0.32/12.46ms nearby 3.43/15.21ms streamer 2.00/9.07ms evict 0.29/5.04ms
+parallel jobs 17228, main waited 1580ms for other threads to finish them
+tiles painted ahead on all threads 82944, painted when needed 773
+nearby 546226 nodes, 0 published, 0 recoveries (0ms), 0ms sliced
+frame avg=7.67ms worst=98.40ms
+step avg=6.20ms worst=16.89ms, of which main thread cpu avg=4.94ms
+render avg=1.47ms worst=91.34ms
+  fence wait avg=0.00ms worst=0.03ms, chunk update avg=1.21ms worst=91.19ms
+  gpu frame avg=1.67ms worst=5.87ms, gpu cull avg=0.327ms worst=2.249ms
+profile load: main 6563 samples of 500us of its cpu, workers 23309 samples of 4000us of process cpu (0 dropped)
+  main by total (total% self%):
+    100.0   0.2  main.measureLoad
+    100.0   0.0  main.benchLoad
+    100.0   0.0  main
+    100.0   0.0  ?70382f42a1ca
+    100.0   0.0  __libc_start_main
+    100.0   0.0  _start
+     79.7   0.0  client.game.Game.step
+     77.5   0.0  client.world.LocalWorld.update
+     40.1   0.0  common.traversal.NearbyScratch.advance
+     40.1   0.0  client.world.LocalWorld.buildInitialNearby
+     40.0   0.2  common.traversal.NearbyScratch.drainSerial
+     33.1   1.9  common.parallel.WorkerPool.run
+     28.2   0.3  client.tiles.TileWork.prepare
+     28.2   0.0  client.structures.prepareStructures
+     26.9   0.0  client.streaming.Streamer.drive
+     26.6   0.3  common.traversal.NearbyScratch.prepareUnknown
+     19.8   0.0  client.graphics.renderer.Renderer.renderFrame
+     18.4   0.1  client.tiles.TileWork.runTasks
+     15.9   0.0  client.graphics.renderer.Renderer.updateChunks
+     13.3   0.2  client.graphics.renderer.Renderer.meshChanged
+     10.7   2.1  client.streaming.Streamer.integrate
+     10.6   2.3  client.streaming.Integrator.join
+     10.0   0.5  client.streaming.Streamer.planParams
+      8.8   4.9  client.tiles.TileWork.apply
+      8.7   0.0  client.tiles.TileHost.run
+      8.6   0.0  luaD_pcall
+      8.6   1.5  luaV_execute
+      8.6   0.0  ?5ab73fd718fd
+      8.5   0.3  common.worldgen.sky.mayHoldContent
+      7.8   0.1  common.worldgen.sky!ensureWorldsAt
+      7.7   0.1  common.worldgen.sky!discoverWorlds
+      7.5   0.0  common.worldgen.sky!addSkiesOver
+      7.4   0.0  client.graphics.voxels.meshes.meshJob
+      7.3   4.4  client.meshing.ChunkCells.extractFaces
+      6.3   0.9  common.graph.Graph.insertChildSlot
+      6.0   0.1  client.streaming.Streamer.scan
+      5.5   4.0  client.graphics.voxels.meshes.ChunkMeshes.applyBatch
+      5.0   0.3  common.graph.Graph.ensureStructureAt
+      4.8   1.1  client.streaming.Streamer.scanNode
+      4.7   0.7  common.worldgen.generation.ChunkIncidentEnviroFactors.make
+      4.6   0.1  common.worldgen.sky!skiesRisingFrom
+      4.6   0.4  client.structures.StructureHost.cover
+      4.6   4.6  syscall
+      4.6   0.8  common.traversal.NearbyScratch.expandAll
+      4.5   4.5  common.hashmap!HashMap
+      4.5   0.9  common.eviction.Evictor.sweep
+      4.5   0.0  client.world.LocalWorld.evict
+      3.8   0.1  client.streaming.computeParams
+      3.5   0.9  __libc_free
+      3.3   0.0  common.worldgen.generation.ChunkParams!make
+      3.2   0.2  luaD_precall
+      2.9   0.5  common.graph.Graph.addNode
+      2.9   2.8  client.meshing.ChunkCells.faceOcclusion
+      2.8   0.0  client.tiles.TileHost.planCandidate
+      2.7   0.5  common.worldgen.sky!worldGroundNodeOf
+      2.6   0.5  common.worldgen.sky!skyOver
+      2.6   1.9  common.hashmap!HashMap
+      2.6   0.8  common.view.GraphView.virtualChild
+      2.3   0.0  client.graphics.voxels.meshes.ChunkMeshes.writeNodes
+      2.3   0.0  client.graphics.voxels.meshes.ChunkMeshes.list
+  main by self (total% self%):
+      8.8   4.9  client.tiles.TileWork.apply
+      4.6   4.6  syscall
+      4.5   4.5  common.hashmap!HashMap
+      7.3   4.4  client.meshing.ChunkCells.extractFaces
+      5.5   4.0  client.graphics.voxels.meshes.ChunkMeshes.applyBatch
+      2.9   2.8  client.meshing.ChunkCells.faceOcclusion
+     10.6   2.3  client.streaming.Integrator.join
+      2.2   2.2  ?70382f5a1efa
+     10.7   2.1  client.streaming.Streamer.integrate
+      1.9   1.9  client.world.LocalWorld.prepareStructures
+      1.9   1.9  ?70382f5a1653
+      2.6   1.9  common.hashmap!HashMap
+     33.1   1.9  common.parallel.WorkerPool.run
+      8.6   1.5  luaV_execute
+      1.6   1.3  common.worldgen.structure!nodeToNode
+      2.2   1.1  common.eviction.dropFarChunks
+      1.1   1.1  client.streaming.copyTargetMargins
+      1.2   1.1  common.hashmap!HashMap
+      1.1   1.1  common.hashmap!HashMap
+      4.8   1.1  client.streaming.Streamer.scanNode
+      1.0   1.0  common.hashmap!HashMap
+      1.0   1.0  common.neighbors.hopCell
+      1.0   1.0  common.hashmap!HashMap
+      1.8   0.9  common.view.GraphView.stateAt
+      3.5   0.9  __libc_free
+      6.3   0.9  common.graph.Graph.insertChildSlot
+      1.1   0.9  ?70381d1e837e
+      0.9   0.9  ?70382fa4999a
+      4.5   0.9  common.eviction.Evictor.sweep
+      0.8   0.8  ?70382f4ad265
+      2.6   0.8  common.view.GraphView.virtualChild
+      2.2   0.8  asinhf
+      4.6   0.8  common.traversal.NearbyScratch.expandAll
+      1.0   0.8  common.raycast.chunk.planeCollision
+      4.7   0.7  common.worldgen.generation.ChunkIncidentEnviroFactors.make
+      0.7   0.7  common.character.sweep.Section.edgeContact
+      0.6   0.6  ?70382f5a19d2
+      0.6   0.6  common.hashmap!HashMap
+      0.6   0.6  common.eviction.areFaceNeighborsSettled
+      2.9   0.5  common.graph.Graph.addNode
+      1.8   0.5  client.streaming.planTarget
+      0.5   0.5  ioctl
+      1.4   0.5  common.graph.Graph.chunkFor
+      2.6   0.5  common.worldgen.sky!skyOver
+      0.9   0.5  common.worldgen.generation.NodeState!fromParents
+     10.0   0.5  client.streaming.Streamer.planParams
+      0.5   0.5  client.streaming.claimNeighborsOf
+      0.5   0.5  client.streaming.scanFacts
+      0.5   0.5  ?70382f4a9be1
+      2.7   0.5  common.worldgen.sky!worldGroundNodeOf
+      0.5   0.5  ?70382f4a9ce6
+      0.5   0.5  common.math!MIsometry
+      0.5   0.5  ?5ab73fd62c34
+      0.5   0.4  common.worldgen.structure!nodeToNode
+      0.4   0.4  common.worldgen.sky.chunkPointOf
+      0.4   0.4  ?70382f4ac5fa
+      0.4   0.4  ?70382f5a18eb
+      4.6   0.4  client.structures.StructureHost.cover
+      0.4   0.4  ?70382f4ab115
+      2.0   0.3  malloc
+  workers by total (total% self%):
+    100.0   0.1  workerMain
+    100.0   0.0  ?70382f49cb84
+    100.0   0.0  ?70382f529ecc
+     88.5   1.4  client.streaming.takeTask
+     86.8   0.3  common.worldgen.generation.ChunkParams.generateVoxels
+     82.9   3.7  common.worldgen.generation.TerrainGenerator.generateTerrain
+     65.8  14.5  common.worldgen.generation.TerrainGenerator.generateTerrainVoxel
+     16.7   1.0  common.parallel.WorkerPool.joinJob
+     12.5  11.1  common.worldgen.generation.terrainElevation
+     12.4  11.2  common.worldgen.plane.Plane.distanceToChunk
+     10.0   4.2  asinhf
+      7.4   7.2  common.worldgen.terraingen.nearestLatticePoint
+      5.6   0.0  luaD_pcall
+      5.6   0.0  client.tiles.TileHost.run
+      5.6   1.4  luaV_execute
+      5.6   0.0  ?5ab73fd718fd
+      4.1   0.0  client.graphics.voxels.meshes.meshJob
+      4.1   2.5  client.meshing.ChunkCells.extractFaces
+      2.1   0.1  luaD_precall
+      2.0   0.0  common.worldgen.generation.TerrainGenerator.generateTrees
+      2.0   0.1  common.worldgen.generation.TerrainGenerator.placeTree
+      1.9   0.4  common.worldgen.plane.Plane.gridUpAt
+      1.9   0.3  common.worldgen.generation.ChunkIncidentEnviroFactors.make
+      1.9   0.1  client.streaming.computeParams
+      1.7   0.0  client.tiles.TileHost.planCandidate
+      1.6   1.5  client.meshing.ChunkCells.faceOcclusion
+      1.6   0.0  common.worldgen.generation.ChunkParams!make
+      1.3   1.3  ?70382f924ec2
+      1.3   0.4  common.view.GraphView.virtualChild
+      1.3   1.3  ?70382f924ef0
+      1.2   1.2  common.dodeca.chunkToNode
+      1.1   0.7  common.character.chart.gridJacobian
+      1.1   1.1  ?70382f925088
+      1.1   1.1  ?70382f924eda
+      1.1   1.1  ?70382f925064
+      1.0   0.0  client.streaming.planMargins
+      1.0   0.0  ?5ab73fd632da
+      1.0   0.3  client.streaming.planTarget
+      0.8   0.8  ?70382f924eeb
+      0.8   0.8  common.node.VoxelData.initializeMargins
+      0.8   0.3  malloc
+      0.8   0.8  ?70382f924ef4
+      0.8   0.0  common.worldgen.sky!worldHeightAt
+      0.7   0.7  ?70382f924eb4
+      0.7   0.0  client.tiles.tilePaintWith
+      0.7   0.0  tilePaint
+      0.7   0.1  luaH_resize
+      0.7   0.2  common.neighbors.touchHolders
+      0.6   0.0  common.worldgen.sky!ensureWorldsAt
+      0.6   0.6  ?70382f925084
+      0.6   0.0  common.worldgen.sky!measureOf
+      0.6   0.0  client.tiles.TileHost.measureSkies
+      0.6   0.1  common.view.GraphView.ensureNeighborSlot
+      0.6   0.0  common.worldgen.sky!discoverWorlds
+      0.6   0.0  common.worldgen.sky!balanceAlong
+      0.6   0.6  ?70382f925019
+      0.6   0.0  common.worldgen.generation.TerrainGenerator.generateFlat
+      0.6   0.0  common.worldgen.sky!addSkiesOver
+      0.5   0.5  ?70382f924e5d
+      0.5   0.0  common.neighbors.touchChunksAround
+  workers by self (total% self%):
+     65.8  14.5  common.worldgen.generation.TerrainGenerator.generateTerrainVoxel
+     12.4  11.2  common.worldgen.plane.Plane.distanceToChunk
+     12.5  11.1  common.worldgen.generation.terrainElevation
+      7.4   7.2  common.worldgen.terraingen.nearestLatticePoint
+     10.0   4.2  asinhf
+     82.9   3.7  common.worldgen.generation.TerrainGenerator.generateTerrain
+      4.1   2.5  client.meshing.ChunkCells.extractFaces
+      1.6   1.5  client.meshing.ChunkCells.faceOcclusion
+      5.6   1.4  luaV_execute
+     88.5   1.4  client.streaming.takeTask
+      1.3   1.3  ?70382f924ec2
+      1.3   1.3  ?70382f924ef0
+      1.2   1.2  common.dodeca.chunkToNode
+      1.1   1.1  ?70382f925088
+      1.1   1.1  ?70382f924eda
+      1.1   1.1  ?70382f925064
+     16.7   1.0  common.parallel.WorkerPool.joinJob
+      0.8   0.8  ?70382f924eeb
+      0.8   0.8  common.node.VoxelData.initializeMargins
+      0.8   0.8  ?70382f924ef4
+      0.7   0.7  ?70382f924eb4
+      1.1   0.7  common.character.chart.gridJacobian
+      0.6   0.6  ?70382f925084
+      0.6   0.6  ?70382f925019
+      0.5   0.5  ?70382f924e5d
+      0.5   0.5  common.neighbors.hopCell
+      0.5   0.5  ?70382f925010
+      0.5   0.5  syscall
+      0.5   0.5  client.streaming.copyTargetMargins
+      0.5   0.5  ?70382f924ea2
+      1.3   0.4  common.view.GraphView.virtualChild
+      1.9   0.4  common.worldgen.plane.Plane.gridUpAt
+      0.4   0.4  ?70382f924fe8
+      0.4   0.4  ?70382f925441
+      0.3   0.3  ?70382f8e8d78
+      0.3   0.3  ?70382f92541c
+     86.8   0.3  common.worldgen.generation.ChunkParams.generateVoxels
+      1.0   0.3  client.streaming.planTarget
+      0.3   0.3  ?70382f92500c
+      0.3   0.3  ?70382f925052
+      0.3   0.3  ?70382f924f54
+      0.3   0.3  ?70382f924ed1
+      0.5   0.3  common.view.GraphView.stateAt
+      0.3   0.3  client.streaming.claimNeighborsOf
+      1.9   0.3  common.worldgen.generation.ChunkIncidentEnviroFactors.make
+      0.8   0.3  malloc
+      0.3   0.3  ?70382f925002
+      0.2   0.2  ?70382f924fda
+      0.2   0.2  common.worldgen.building.Building.stampChunk
+      0.2   0.2  ?70382f8e8c4a
+      0.4   0.2  common.worldgen.structure!nodeToNode
+      0.2   0.2  ?5ab73fc8b450
+      0.2   0.2  ?70382f925334
+      0.2   0.2  ?70382f92540f
+      0.2   0.2  ?70382f924ede
+      0.2   0.2  common.worldgen.sky.chunkPointOf
+      0.2   0.2  ?70382f925413
+      0.2   0.2  ?70382f925404
+      0.2   0.2  ?70382f8e8cad
+      0.2   0.2  ?70382f8e8ca5
+  main callers of the heaviest functions (total%):
+     79.7  client.game.Game.step
+            79.7  from main.measureLoad
+     77.5  client.world.LocalWorld.update
+            77.5  from client.game.Game.step
+     40.1  common.traversal.NearbyScratch.advance
+            40.1  from client.world.LocalWorld.buildInitialNearby
+     40.1  client.world.LocalWorld.buildInitialNearby
+            40.1  from client.world.LocalWorld.update
+     40.0  common.traversal.NearbyScratch.drainSerial
+            40.0  from common.traversal.NearbyScratch.advance
+     33.1  common.parallel.WorkerPool.run
+             9.0  from client.tiles.TileWork.runTasks
+             8.2  from client.streaming.Integrator.join
+             7.5  from client.graphics.renderer.Renderer.meshChanged
+             4.1  from client.streaming.Streamer.planParams
+     28.2  client.tiles.TileWork.prepare
+            28.2  from client.structures.prepareStructures
+     28.2  client.structures.prepareStructures
+            26.3  from common.traversal.NearbyScratch.prepareUnknown
+             1.9  from client.world.LocalWorld.update
+     26.9  client.streaming.Streamer.drive
+            26.9  from client.world.LocalWorld.update
+     26.6  common.traversal.NearbyScratch.prepareUnknown
+            26.6  from common.traversal.NearbyScratch.drainSerial
+     19.8  client.graphics.renderer.Renderer.renderFrame
+            19.8  from main.measureLoad
+     18.4  client.tiles.TileWork.runTasks
+            18.2  from client.tiles.TileWork.prepare
+             0.2  from client.structures.StructureHost.cover
+     15.9  client.graphics.renderer.Renderer.updateChunks
+            15.9  from client.graphics.renderer.Renderer.renderFrame
+     13.3  client.graphics.renderer.Renderer.meshChanged
+            13.3  from client.graphics.renderer.Renderer.updateChunks
+     10.7  client.streaming.Streamer.integrate
+            10.7  from client.streaming.Streamer.drive
+     10.6  client.streaming.Integrator.join
+             7.7  from client.streaming.Streamer.integrate
+             2.9  from client.streaming.Streamer.planParams
+     10.0  client.streaming.Streamer.planParams
+            10.0  from client.streaming.Streamer.drive
+      8.8  client.tiles.TileWork.apply
+             8.8  from client.tiles.TileWork.runTasks
+      8.7  client.tiles.TileHost.run
+             8.7  from common.parallel.WorkerPool.run
+      8.6  luaD_pcall
+             8.6  from client.tiles.TileHost.run
+             0.0  from luaD_protectedparser
+             0.0  from client.structures.StructureHost.call
+      8.6  luaV_execute
+             8.6  from ?5ab73fd718fd
+      8.6  ?5ab73fd718fd
+             8.6  from luaD_pcall
+      8.5  common.worldgen.sky.mayHoldContent
+             8.5  from common.traversal.NearbyScratch.drainSerial
+      7.8  common.worldgen.sky!ensureWorldsAt
+             5.0  from client.tiles.TileWork.prepare
+             3.6  from common.worldgen.sky!discoverWorlds
+             2.3  from common.worldgen.sky.mayHoldContent
+             0.5  from client.structures.StructureHost.cover
+      7.7  common.worldgen.sky!discoverWorlds
+             7.7  from common.worldgen.sky!ensureWorldsAt
+      7.5  common.worldgen.sky!addSkiesOver
+             7.5  from common.worldgen.sky!discoverWorlds
+      7.4  client.graphics.voxels.meshes.meshJob
+             7.4  from common.parallel.WorkerPool.run
+      7.3  client.meshing.ChunkCells.extractFaces
+             7.3  from client.graphics.voxels.meshes.meshJob
+      6.3  common.graph.Graph.insertChildSlot
+             3.4  from common.traversal.NearbyScratch.expandAll
+             2.1  from common.worldgen.structure!groundRing
+             0.6  from common.worldgen.structure!stepped
+             0.0  from common.traversal.NearbyScratch.drainSerial
+      6.0  client.streaming.Streamer.scan
+             6.0  from client.streaming.Streamer.drive
+flight leg 1 from depth 1:
+moving noclip: frame avg=7.10ms worst=16.73ms, 214 of 300 frames with loading pending
+moving step avg=6.19ms worst=15.25ms (main thread cpu avg=5.03ms), render avg=0.91ms worst=5.14ms
+  fence wait avg=0.00ms worst=0.01ms, chunk update avg=0.75ms worst=4.97ms
+  gpu frame avg=1.85ms worst=5.05ms, gpu cull avg=0.400ms worst=1.101ms
+  drawable chunks 185678, 1163 of them waiting for their node
+nodes holding chunks=487040 with state=694529, structure-touched=18376 referenced=28712 with children=487170 recent=434873
+memory: rss now=3002MB peak=2998MB nodes=795372 of 810181 slots, 487220 chunk blocks (458MB) buildings=13523 (113MB) dense voxels 975MB
+blueprint: 137895 lines, 9623253 brushes (578MB), 111661 tiles, 0 painted again
+evicted 493268 nodes, dropped 170893 far chunks and 974 tiles
+step phases avg/worst: prepare 0.15/0.35ms nearby 4.15/14.81ms streamer 1.30/5.21ms evict 0.59/1.26ms
+parallel jobs 20858, main waited 1972ms for other threads to finish them
+tiles painted ahead on all threads 110560, painted when needed 1101
+nearby 540156 nodes, 1 published, 0 recoveries (0ms), 1246ms sliced
+flight leg 2 from depth 5:
+moving noclip: frame avg=7.79ms worst=17.04ms, 215 of 300 frames with loading pending
+moving step avg=6.89ms worst=16.22ms (main thread cpu avg=5.83ms), render avg=0.90ms worst=6.71ms
+  fence wait avg=0.00ms worst=0.01ms, chunk update avg=0.62ms worst=6.33ms
+  gpu frame avg=1.06ms worst=2.67ms, gpu cull avg=0.396ms worst=1.882ms
+  drawable chunks 187075, 18573 of them waiting for their node
+nodes holding chunks=423431 with state=727932, structure-touched=20876 referenced=34436 with children=551302 recent=299163
+memory: rss now=3207MB peak=3223MB nodes=986327 of 986439 slots, 494598 chunk blocks (497MB) buildings=12013 (100MB) dense voxels 1013MB
+blueprint: 175600 lines, 3714828 brushes (222MB), 140527 tiles, 4907 painted again
+evicted 706929 nodes, dropped 193806 far chunks and 105600 tiles
+step phases avg/worst: prepare 0.13/0.35ms nearby 4.51/12.39ms streamer 1.26/6.01ms evict 0.99/2.39ms
+parallel jobs 24423, main waited 2315ms for other threads to finish them
+tiles painted ahead on all threads 143493, painted when needed 1941
+nearby 535237 nodes, 2 published, 0 recoveries (0ms), 2599ms sliced
+flight leg 3 from depth 8:
+moving noclip: frame avg=7.04ms worst=15.36ms, 0 of 300 frames with loading pending
+moving step avg=6.78ms worst=15.18ms (main thread cpu avg=5.11ms), render avg=0.25ms worst=0.76ms
+  fence wait avg=0.00ms worst=0.01ms, chunk update avg=0.00ms worst=0.00ms
+  gpu frame avg=0.81ms worst=0.87ms, gpu cull avg=0.254ms worst=0.321ms
+  drawable chunks 187075, 18573 of them waiting for their node
+nodes holding chunks=423431 with state=941560, structure-touched=25623 referenced=40814 with children=667697 recent=409515
+memory: rss now=3294MB peak=3290MB nodes=1128428 of 1128428 slots, 494598 chunk blocks (525MB) buildings=12013 (100MB) dense voxels 974MB
+blueprint: 211999 lines, 2056331 brushes (122MB), 167393 tiles, 49901 painted again
+evicted 815693 nodes, dropped 201149 far chunks and 194061 tiles
+step phases avg/worst: prepare 0.00/0.00ms nearby 6.04/14.52ms streamer 0.00/0.03ms evict 0.73/2.64ms
+parallel jobs 25422, main waited 2806ms for other threads to finish them
+tiles painted ahead on all threads 213658, painted when needed 3636
+nearby 535237 nodes, 2 published, 0 recoveries (0ms), 4411ms sliced
+flight leg 4 from depth 12:
+moving noclip: frame avg=7.06ms worst=17.65ms, 161 of 300 frames with loading pending
+moving step avg=6.54ms worst=17.51ms (main thread cpu avg=5.01ms), render avg=0.53ms worst=6.84ms
+  fence wait avg=0.00ms worst=0.01ms, chunk update avg=0.30ms worst=6.70ms
+  gpu frame avg=0.73ms worst=1.33ms, gpu cull avg=0.222ms worst=0.665ms
+  drawable chunks 108617, 94879 of them waiting for their node
+nodes holding chunks=232983 with state=956415, structure-touched=28587 referenced=44208 with children=677219 recent=471731
+memory: rss now=3389MB peak=3385MB nodes=1196383 of 1217337 slots, 494598 chunk blocks (543MB) buildings=6719 (56MB) dense voxels 654MB
+blueprint: 249149 lines, 1495516 brushes (90MB), 194558 tiles, 71299 painted again
+evicted 1094987 nodes, dropped 204460 far chunks and 248674 tiles
+step phases avg/worst: prepare 0.10/0.32ms nearby 4.93/16.87ms streamer 0.61/3.60ms evict 0.88/2.88ms
+parallel jobs 27987, main waited 3274ms for other threads to finish them
+tiles painted ahead on all threads 259823, painted when needed 6034
+nearby 634924 nodes, 3 published, 1 recoveries (0ms), 5892ms sliced
+flight leg 5 from depth 14:
+moving noclip: frame avg=9.03ms worst=23.64ms, 259 of 300 frames with loading pending
+moving step avg=7.54ms worst=22.05ms (main thread cpu avg=6.22ms), render avg=1.49ms worst=4.85ms
+  fence wait avg=0.00ms worst=0.01ms, chunk update avg=1.29ms worst=4.56ms
+  gpu frame avg=0.43ms worst=1.19ms, gpu cull avg=0.199ms worst=0.964ms
+  drawable chunks 29039, 0 of them waiting for their node
+nodes holding chunks=70379 with state=372031, structure-touched=24007 referenced=49877 with children=379321 recent=280573
+memory: rss now=3492MB peak=3487MB nodes=708239 of 1217337 slots, 494598 chunk blocks (543MB) buildings=2313 (18MB) dense voxels 363MB
+blueprint: 285033 lines, 3820749 brushes (231MB), 220926 tiles, 88210 painted again
+evicted 1914014 nodes, dropped 211259 far chunks and 267469 tiles
+step phases avg/worst: prepare 0.16/0.33ms nearby 4.74/18.73ms streamer 1.41/3.69ms evict 1.23/3.25ms
+parallel jobs 32058, main waited 3689ms for other threads to finish them
+tiles painted ahead on all threads 301015, painted when needed 8121
+nearby 498887 nodes, 4 published, 2 recoveries (0ms), 7313ms sliced
+flight leg 6 from depth 18:
+moving noclip: frame avg=8.07ms worst=24.36ms, 300 of 300 frames with loading pending
+moving step avg=7.62ms worst=23.31ms (main thread cpu avg=5.83ms), render avg=0.46ms worst=3.92ms
+  fence wait avg=0.00ms worst=0.16ms, chunk update avg=0.26ms worst=3.75ms
+  gpu frame avg=0.25ms worst=0.71ms, gpu cull avg=0.115ms worst=0.574ms
+  drawable chunks 39898, 0 of them waiting for their node
+nodes holding chunks=97857 with state=610381, structure-touched=29033 referenced=56413 with children=538704 recent=366646
+memory: rss now=3493MB peak=3551MB nodes=960117 of 1217337 slots, 494598 chunk blocks (543MB) buildings=2719 (20MB) dense voxels 338MB
+blueprint: 326257 lines, 796465 brushes (47MB), 251291 tiles, 110674 painted again
+evicted 2028372 nodes, dropped 250433 far chunks and 353440 tiles
+step phases avg/worst: prepare 2.89/18.10ms nearby 3.18/11.20ms streamer 0.91/3.36ms evict 0.64/3.16ms
+parallel jobs 35341, main waited 4237ms for other threads to finish them
+tiles painted ahead on all threads 349123, painted when needed 12842
+nearby 728974 nodes, 4 published, 2 recoveries (0ms), 8265ms sliced
+profile flight: main 11112 samples of 500us of its cpu, workers 17064 samples of 4000us of process cpu (0 dropped)
+  main by total (total% self%):
+    100.0   0.0  main.measureLeg
+    100.0   0.0  main.measureFlight
+    100.0   0.0  main.benchLoad
+    100.0   0.0  main
+    100.0   0.0  ?70382f42a1ca
+    100.0   0.0  __libc_start_main
+    100.0   0.0  _start
+     87.6   0.0  client.game.Game.step
+     87.6   0.0  client.world.LocalWorld.update
+     54.7   0.0  client.world.LocalWorld.refreshNearby
+     54.6   0.0  common.traversal.NearbyScratch.advance
+     54.1   0.6  common.traversal.NearbyScratch.drainSerial
+     42.9   0.0  client.structures.prepareStructures
+     42.9   0.4  client.tiles.TileWork.prepare
+     37.4   0.4  common.traversal.NearbyScratch.prepareUnknown
+     32.6   0.1  client.tiles.TileWork.runTasks
+     31.7   0.6  common.parallel.WorkerPool.run
+     17.7   0.0  client.tiles.TileHost.run
+     17.5   3.0  luaV_execute
+     17.5   0.0  ?5ab73fd718fd
+     17.5   0.0  luaD_pcall
+     13.6   8.6  client.tiles.TileWork.apply
+     13.4   0.0  client.world.LocalWorld.evict
+     13.4   2.4  common.eviction.Evictor.sweep
+     11.2   0.0  client.streaming.Streamer.drive
+     11.2   0.0  client.graphics.renderer.Renderer.renderFrame
+     11.2   0.0  client.graphics.renderer.Renderer.render
+     10.8   0.3  common.worldgen.sky.mayHoldContent
+      8.4   0.0  common.worldgen.sky!ensureWorldsAt
+      8.3   0.1  common.worldgen.sky!discoverWorlds
+      8.1   0.1  common.worldgen.sky!addSkiesOver
+      7.7   0.0  client.graphics.renderer.Renderer.updateChunks
+      6.7   0.4  luaD_precall
+      6.7   0.2  common.graph.Graph.ensureStructureAt
+      6.7   6.7  common.hashmap!HashMap
+      6.3   1.2  common.graph.Graph.insertChildSlot
+      5.3   1.9  __libc_free
+      5.3   0.6  malloc
+      5.0   0.1  common.worldgen.sky!skiesRisingFrom
+      4.6   0.3  client.structures.StructureHost.cover
+      4.6   0.1  client.graphics.renderer.Renderer.meshChanged
+      4.5   0.9  client.streaming.Streamer.integrate
+      4.0   0.8  client.streaming.Integrator.join
+      3.9   0.0  ?5ab73fd632da
+      3.9   0.1  client.streaming.Streamer.planParams
+      3.8   0.7  common.traversal.NearbyScratch.expandAll
+      3.7   0.7  common.eviction.Evictor.evictFrom
+      3.7   0.0  client.tiles.TileHost.planCandidate
+      3.5   0.3  common.worldgen.generation.ChunkIncidentEnviroFactors.make
+      3.4   2.1  common.eviction.dropFarChunks
+      3.3   3.3  syscall
+      3.1   0.5  common.worldgen.sky!skyOver
+      3.0   0.0  client.graphics.voxels.meshes.meshJob
+      3.0   2.1  client.meshing.ChunkCells.extractFaces
+      2.9   0.9  common.eviction.evictNode
+      2.8   0.3  client.streaming.Streamer.scan
+      2.8   0.4  realloc
+      2.7   0.6  common.view.GraphView.virtualChild
+      2.6   0.6  common.worldgen.sky!worldGroundNodeOf
+      2.5   0.2  luaH_resize
+  main by self (total% self%):
+     13.6   8.6  client.tiles.TileWork.apply
+      6.7   6.7  common.hashmap!HashMap
+      3.3   3.3  syscall
+     17.5   3.0  luaV_execute
+     13.4   2.4  common.eviction.Evictor.sweep
+      3.4   2.1  common.eviction.dropFarChunks
+      3.0   2.1  client.meshing.ChunkCells.extractFaces
+      5.3   1.9  __libc_free
+      1.9   1.9  client.graphics.voxels.meshes.ChunkMeshes.list
+      1.8   1.8  common.hashmap!HashMap
+      1.5   1.5  ?70382f4ac178
+      1.5   1.5  common.hashmap!HashMap
+      2.0   1.4  common.worldgen.structure!nodeToNode
+      1.4   1.4  ?70382f4a9be1
+      1.4   1.4  client.world.LocalWorld.prepareStructures
+      6.3   1.2  common.graph.Graph.insertChildSlot
+      1.1   1.1  ?5ab73fd62c34
+      1.4   1.1  client.graphics.voxels.meshes.ChunkMeshes.applyBatch
+      1.2   1.1  main.printMemory
+      1.1   1.1  common.hashmap!HashMap
+      1.8   1.1  common.worldgen.blueprint.Blueprint.dropTile
+      2.3   1.0  common.hashmap!HashMap
+      1.0   1.0  client.graphics.voxels.meshes.ChunkMeshes.forget
+      4.5   0.9  client.streaming.Streamer.integrate
+      0.9   0.9  ?70382f5a1653
+      0.9   0.9  ?70382f4a9ce6
+      2.9   0.9  common.eviction.evictNode
+      0.9   0.9  client.meshing.ChunkCells.faceOcclusion
+      0.9   0.9  common.hashmap!HashMap
+      1.2   0.8  common.worldgen.structure!nodeToNode
+      0.8   0.8  common.eviction.areFaceNeighborsSettled
+      4.0   0.8  client.streaming.Integrator.join
+      0.7   0.7  ?70382fa4999a
+      0.8   0.7  common.hashmap!HashMap
+      3.7   0.7  common.eviction.Evictor.evictFrom
+      3.8   0.7  common.traversal.NearbyScratch.expandAll
+      0.6   0.6  ?70382f5a1efa
+      0.6   0.6  ?70382f4abf50
+      2.6   0.6  common.worldgen.sky!worldGroundNodeOf
+      0.6   0.6  ?70382f4ab115
+     54.1   0.6  common.traversal.NearbyScratch.drainSerial
+      1.8   0.6  asinhf
+      1.1   0.6  common.worldgen.generation.NodeState!fromParents
+     31.7   0.6  common.parallel.WorkerPool.run
+      0.6   0.6  common.hashmap!HashMap
+      2.7   0.6  common.view.GraphView.virtualChild
+      5.3   0.6  malloc
+      0.5   0.5  ?70382f5a19d2
+      0.6   0.5  common.raycast.chunk.planeCollision
+      0.5   0.5  ?70382f4a9bdb
+      0.5   0.5  client.streaming.copyTargetMargins
+      0.5   0.5  ?70382f4a9bc3
+      3.1   0.5  common.worldgen.sky!skyOver
+      1.3   0.5  common.view.GraphView.stateAt
+      6.7   0.4  luaD_precall
+      0.4   0.4  client.structures.materialArgument
+      0.4   0.4  common.math!MIsometry
+      0.4   0.4  ?70382f4ab8e0
+      0.4   0.4  ?70382f4abf7b
+      0.4   0.4  common.worldgen.sky.chunkPointOf
+  workers by total (total% self%):
+    100.0   0.1  workerMain
+    100.0   0.0  ?70382f49cb84
+    100.0   0.0  ?70382f529ecc
+     65.0   1.3  client.streaming.takeTask
+     63.5   0.3  common.worldgen.generation.ChunkParams.generateVoxels
+     60.2   2.6  common.worldgen.generation.TerrainGenerator.generateTerrain
+     47.7  10.0  common.worldgen.generation.TerrainGenerator.generateTerrainVoxel
+     38.5   1.2  common.parallel.WorkerPool.joinJob
+     24.9   0.0  client.tiles.TileHost.run
+     24.6   0.0  luaD_pcall
+     24.6   5.7  luaV_execute
+     24.6   0.0  ?5ab73fd718fd
+     10.9   0.7  luaD_precall
+      8.6   7.7  common.worldgen.generation.terrainElevation
+      8.2   7.4  common.worldgen.plane.Plane.distanceToChunk
+      7.8   7.7  common.worldgen.terraingen.nearestLatticePoint
+      7.2   3.0  asinhf
+      4.3   0.1  client.tiles.TileHost.planCandidate
+      4.0   0.0  client.graphics.voxels.meshes.meshJob
+      4.0   2.5  client.meshing.ChunkCells.extractFaces
+      3.6   0.0  ?5ab73fd632da
+      3.4   0.1  client.tiles.tilePaintWith
+      3.4   0.0  tilePaint
+      3.1   0.0  common.worldgen.sky!balanceAlong
+      3.1   0.1  common.worldgen.sky!worldHeightAt
+      2.9   1.0  malloc
+      2.9   0.0  tileBalance
+      2.8   0.4  common.worldgen.generation.ChunkIncidentEnviroFactors.make
+      2.5   0.4  luaH_resize
+      2.4   0.6  common.view.GraphView.virtualChild
+      2.0   0.0  ?5ab73fd62c47
+      1.8   0.2  luaL_alloc
+      1.8   0.3  common.view.GraphView.ensureNeighborSlot
+      1.8   0.0  common.worldgen.sky!planeOfWorldIn
+      1.8   0.7  __libc_free
+      1.8   1.3  common.worldgen.structure!nodeToNode
+      1.7   0.0  common.worldgen.sky!ensureWorldsAt
+      1.7   0.0  common.worldgen.generation.TerrainGenerator.generateTrees
+      1.7   0.1  common.worldgen.generation.TerrainGenerator.placeTree
+      1.7   0.1  common.worldgen.sky!discoverWorlds
+      1.7   0.1  client.streaming.computeParams
+      1.6   0.3  common.worldgen.plane.Plane.gridUpAt
+      1.6   0.0  common.worldgen.sky!addSkiesOver
+      1.6   0.1  tileHash
+      1.5   0.0  __libc_calloc
+      1.4   1.4  client.meshing.ChunkCells.faceOcclusion
+      1.4   0.0  common.worldgen.generation.ChunkParams!make
+      1.3   0.5  common.view.GraphView.stateAt
+      1.3   0.0  ?70382f4abb70
+      1.3   0.0  common.worldgen.sky!measureOf
+      1.3   0.0  client.tiles.TileHost.measureSkies
+      1.2   0.3  luaL_testudata
+      1.2   0.6  luaS_new
+      1.2   0.0  ?5ab73fd711c9
+      1.1   0.1  common.worldgen.sky!worldGroundNodeOf
+      1.1   0.0  common.worldgen.sky!cellOnLine
+      1.1   0.1  common.worldgen.structure!siteHash
+      1.0   0.0  tileTurn
+      1.0   0.0  client.structures.boxArgument
+      1.0   0.1  common.hashmap!HashMap
+  workers by self (total% self%):
+     47.7  10.0  common.worldgen.generation.TerrainGenerator.generateTerrainVoxel
+      7.8   7.7  common.worldgen.terraingen.nearestLatticePoint
+      8.6   7.7  common.worldgen.generation.terrainElevation
+      8.2   7.4  common.worldgen.plane.Plane.distanceToChunk
+     24.6   5.7  luaV_execute
+      7.2   3.0  asinhf
+     60.2   2.6  common.worldgen.generation.TerrainGenerator.generateTerrain
+      4.0   2.5  client.meshing.ChunkCells.extractFaces
+      1.4   1.4  client.meshing.ChunkCells.faceOcclusion
+      1.8   1.3  common.worldgen.structure!nodeToNode
+     65.0   1.3  client.streaming.takeTask
+     38.5   1.2  common.parallel.WorkerPool.joinJob
+      2.9   1.0  malloc
+      0.9   0.9  ?70382f924ef0
+      0.9   0.9  ?70382f924ec2
+      0.9   0.9  common.node.VoxelData.initializeMargins
+      0.8   0.8  common.dodeca.chunkToNode
+      0.8   0.8  ?70382f924eda
+      0.8   0.8  ?70382f925088
+      0.8   0.8  client.structures.materialArgument
+      0.7   0.7  syscall
+      0.7   0.7  ?70382f924eeb
+      1.8   0.7  __libc_free
+     10.9   0.7  luaD_precall
+      0.7   0.7  ?70382f925064
+      0.6   0.6  ?5ab73fd62c34
+      1.0   0.6  common.character.chart.gridJacobian
+      2.4   0.6  common.view.GraphView.virtualChild
+      1.2   0.6  luaS_new
+      0.6   0.6  ?70382f924eb4
+      0.6   0.6  common.worldgen.sky.chunkPointOf
+      0.5   0.5  ?70382f924ef4
+      0.5   0.5  ?70382f924e5d
+      0.5   0.5  ?70382f925019
+      0.5   0.5  ?70382f4a9ce6
+      1.3   0.5  common.view.GraphView.stateAt
+      0.5   0.5  ?70382f925084
+      0.4   0.4  luaD_poscall
+      0.4   0.4  client.streaming.copyTargetMargins
+      0.4   0.4  common.neighbors.hopCell
+      2.5   0.4  luaH_resize
+      2.8   0.4  common.worldgen.generation.ChunkIncidentEnviroFactors.make
+      0.4   0.4  common.hashmap!HashMap
+      0.4   0.4  ?70382f925010
+      0.4   0.4  client.streaming.scanFacts
+      0.3   0.3  ?70382f4ab3ed
+      1.6   0.3  common.worldgen.plane.Plane.gridUpAt
+      0.3   0.3  ?70382f8e8d78
+      0.3   0.3  ?70382f924fe8
+     63.5   0.3  common.worldgen.generation.ChunkParams.generateVoxels
+      1.8   0.3  common.view.GraphView.ensureNeighborSlot
+      1.0   0.3  client.structures.rangeField
+      1.2   0.3  luaL_testudata
+      0.3   0.3  common.hashmap!HashMap
+      0.3   0.3  luaV_equalobj
+      0.3   0.3  ?70382f924ea2
+      0.3   0.3  lua_rawgeti
+      0.3   0.3  ?70382f924ede
+      0.2   0.2  ?70382f4abb18
+      0.2   0.2  ?70382f92500c
+  main callers of the heaviest functions (total%):
+     87.6  client.game.Game.step
+            87.6  from main.measureLeg
+     87.6  client.world.LocalWorld.update
+            87.6  from client.game.Game.step
+     54.7  client.world.LocalWorld.refreshNearby
+            54.7  from client.world.LocalWorld.update
+     54.6  common.traversal.NearbyScratch.advance
+            54.6  from client.world.LocalWorld.refreshNearby
+     54.1  common.traversal.NearbyScratch.drainSerial
+            54.1  from common.traversal.NearbyScratch.advance
+     42.9  client.structures.prepareStructures
+            37.0  from common.traversal.NearbyScratch.prepareUnknown
+             5.9  from client.world.LocalWorld.update
+     42.9  client.tiles.TileWork.prepare
+            42.9  from client.structures.prepareStructures
+     37.4  common.traversal.NearbyScratch.prepareUnknown
+            37.4  from common.traversal.NearbyScratch.drainSerial
+     32.6  client.tiles.TileWork.runTasks
+            31.4  from client.tiles.TileWork.prepare
+             1.2  from client.structures.StructureHost.cover
+     31.7  common.parallel.WorkerPool.run
+            18.4  from client.tiles.TileWork.runTasks
+             4.1  from client.tiles.TileWork.prepare
+             3.2  from client.streaming.Integrator.join
+             3.1  from client.graphics.renderer.Renderer.meshChanged
+     17.7  client.tiles.TileHost.run
+            17.7  from common.parallel.WorkerPool.run
+     17.5  luaV_execute
+            17.5  from ?5ab73fd718fd
+     17.5  ?5ab73fd718fd
+            17.5  from luaD_pcall
+     17.5  luaD_pcall
+            17.5  from client.tiles.TileHost.run
+             0.0  from client.structures.StructureHost.call
+     13.6  client.tiles.TileWork.apply
+            13.6  from client.tiles.TileWork.runTasks
+     13.4  client.world.LocalWorld.evict
+            13.4  from client.world.LocalWorld.update
+     13.4  common.eviction.Evictor.sweep
+            13.4  from client.world.LocalWorld.evict
+     11.2  client.streaming.Streamer.drive
+            11.2  from client.world.LocalWorld.update
+     11.2  client.graphics.renderer.Renderer.renderFrame
+            11.2  from client.graphics.renderer.Renderer.render
+     11.2  client.graphics.renderer.Renderer.render
+            11.2  from main.measureLeg
+     10.8  common.worldgen.sky.mayHoldContent
+            10.8  from common.traversal.NearbyScratch.drainSerial
+      8.4  common.worldgen.sky!ensureWorldsAt
+             5.2  from client.tiles.TileWork.prepare
+             3.0  from common.worldgen.sky!discoverWorlds
+             2.6  from common.worldgen.sky.mayHoldContent
+             0.5  from client.structures.StructureHost.cover
+      8.3  common.worldgen.sky!discoverWorlds
+             8.3  from common.worldgen.sky!ensureWorldsAt
+      8.1  common.worldgen.sky!addSkiesOver
+             8.1  from common.worldgen.sky!discoverWorlds
+      7.7  client.graphics.renderer.Renderer.updateChunks
+             7.7  from client.graphics.renderer.Renderer.renderFrame
+      6.7  luaD_precall
+             6.7  from luaV_execute
+      6.7  common.graph.Graph.ensureStructureAt
+             6.6  from common.worldgen.sky.mayHoldContent
+             0.1  from client.streaming.Streamer.scanNode
+      6.7  common.hashmap!HashMap
+             3.5  from common.graph.Graph.insertChildSlot
+             2.1  from common.worldgen.structure.finalizeStructure
+             0.4  from common.eviction.Evictor.dropIdleTiles
+             0.2  from common.view.GraphView.virtualChild
+      6.3  common.graph.Graph.insertChildSlot
+             3.0  from common.traversal.NearbyScratch.expandAll
+             1.7  from common.worldgen.structure!groundRing
+             1.2  from common.traversal.NearbyScratch.drainSerial
+             0.4  from common.worldgen.structure!stepped
+      5.3  __libc_free
+             2.0  from luaL_alloc
+             1.0  from common.view.GraphView.forget
+             0.7  from common.eviction.unloadNode
+             0.6  from common.worldgen.blueprint.Blueprint.dropTile

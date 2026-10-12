@@ -1,33 +1,342 @@
 module common.parallel;
 
+import core.atomic : atomicFetchAdd, atomicLoad, atomicOp, atomicStore, cas;
+import core.stdc.stdlib : calloc, free;
+import core.sys.posix.pthread : pthread_create, pthread_join, pthread_t;
 import common.clock : nowMilliseconds;
+
+version (X86_64) {
+    enum long SYS_FUTEX = 202;
+} else version (AArch64) {
+    enum long SYS_FUTEX = 98;
+}
+enum int FUTEX_WAIT_PRIVATE = 128;
+enum int FUTEX_WAKE_PRIVATE = 129;
+enum int WAKE_ALL = int.max;
+enum uint MAIN_WORKER = 0;
+enum size_t CACHE_LINE = 64;
+enum size_t GRAINS_PER_PARTICIPANT = 8;
+
+extern (C) long syscall(long number, ...) nothrow @nogc;
+
+// Sleeps while the word still holds the expected value; the kernel checks and sleeps atomically, so a wake that
+// changed the word first is never missed.
+void waitWhile(ref shared uint word, uint expected) {
+    syscall(SYS_FUTEX, &word, FUTEX_WAIT_PRIVATE, expected, null, null, 0);
+}
+
+void wake(ref shared uint word) {
+    syscall(SYS_FUTEX, &word, FUTEX_WAKE_PRIVATE, WAKE_ALL, null, null, 0);
+}
 
 struct ParallelJob {
     void function(void* context, size_t index, uint worker) run;
     void* context;
     double deadline;
     size_t count;
-    size_t claimed;
-    size_t finished;
+    size_t grain = 1;
+    shared size_t claimed;
+    shared bool isLate;
+
+    // Items are claimed in order a grain at a time and every claimed item runs, so after the join the items that ran
+    // are [0, count). A grain spreads the claims over several items, so threads rarely contend for the counter.
+    void work(uint worker) {
+        bool isDone = false;
+        while (!isDone && !atomicLoad(isLate)) {
+            size_t first = atomicFetchAdd(claimed, grain);
+            isDone = first >= count;
+            if (!isDone) {
+                size_t end = first + grain < count ? first + grain : count;
+                foreach (index; first .. end) {
+                    run(context, index, worker);
+                }
+                if (deadline != double.infinity && nowMilliseconds() >= deadline) {
+                    atomicStore(isLate, true);
+                }
+            }
+        }
+    }
+
+    void finish() {
+        size_t taken = atomicLoad(claimed);
+        if (taken < count) {
+            count = taken;
+        }
+    }
+}
+
+struct TaskSource {
+    bool function(void* context, uint worker) take;
+    void* context;
+}
+
+struct WorkerStart {
+    WorkerPool* pool;
+    uint worker;
+}
+
+struct WorkerPool {
+    TaskSource source;
+    pthread_t* threads;
+    WorkerStart* starts;
+    shared size_t job;
+    shared uint active;
+    shared uint epoch;
+    shared uint sleepers;
+    shared uint isJoining;
+    shared bool isStopping;
+    uint workerCount;
+    uint runs;
+    double waitedMs = 0;
+
+    static WorkerPool* make(uint workers, TaskSource source) {
+        WorkerPool* pool = cast(WorkerPool*) calloc(1, WorkerPool.sizeof);
+        pool.source = source;
+        pool.workerCount = workers;
+        pool.threads = cast(pthread_t*) calloc(workers, pthread_t.sizeof);
+        pool.starts = cast(WorkerStart*) calloc(workers, WorkerStart.sizeof);
+        foreach (index; 0 .. workers) {
+            pool.starts[index] = WorkerStart(pool, index + 1);
+            pthread_create(&pool.threads[index], null, &workerMain, &pool.starts[index]);
+        }
+        return pool;
+    }
+
+    uint participants() const {
+        return workerCount + 1;
+    }
+
+    void signal() {
+        atomicOp!"+="(epoch, 1);
+        if (atomicLoad(sleepers) > 0) {
+            wake(epoch);
+        }
+    }
+
+    void serve(uint worker) {
+        while (!atomicLoad(isStopping)) {
+            uint seen = atomicLoad(epoch);
+            if (!joinJob(worker) && !source.take(source.context, worker)) {
+                atomicOp!"+="(sleepers, 1);
+                if (atomicLoad(epoch) == seen && !atomicLoad(isStopping)) {
+                    waitWhile(epoch, seen);
+                }
+                atomicOp!"-="(sleepers, 1);
+            }
+        }
+    }
+
+    // A worker counts itself in before looking at the job, and run() unpublishes the job before waiting for the count
+    // to reach zero, so no worker can still be inside a job once run() returns.
+    bool joinJob(uint worker) {
+        atomicOp!"+="(active, 1);
+        ParallelJob* current = cast(ParallelJob*) atomicLoad(job);
+        bool hasWork = current !is null && atomicLoad(current.claimed) < current.count && !atomicLoad(current.isLate);
+        if (hasWork) {
+            current.work(worker);
+        }
+        if (atomicOp!"-="(active, 1) == 0 && atomicLoad(isJoining) != 0) {
+            wake(active);
+        }
+        return hasWork;
+    }
+
+    // Long tasks call this between their steps, so a job never waits for its threads to finish whole tasks first.
+    void helpWithJob(uint worker) {
+        if (atomicLoad(job) != 0) {
+            joinJob(worker);
+        }
+    }
+
+    void run(ParallelJob* parallel) {
+        if (parallel.deadline == double.infinity) {
+            parallel.grain = grainFor(parallel.count, participants());
+        }
+        atomicStore(job, cast(size_t) parallel);
+        signal();
+        parallel.work(MAIN_WORKER);
+        atomicStore(job, 0);
+        double start = nowMilliseconds();
+        atomicStore(isJoining, 1);
+        uint inside = atomicLoad(active);
+        while (inside != 0) {
+            waitWhile(active, inside);
+            inside = atomicLoad(active);
+        }
+        atomicStore(isJoining, 0);
+        parallel.finish();
+        runs += 1;
+        waitedMs += nowMilliseconds() - start;
+    }
+
+    void release() {
+        atomicStore(isStopping, true);
+        signal();
+        wake(epoch);
+        foreach (index; 0 .. workerCount) {
+            pthread_join(threads[index], null);
+        }
+        free(threads);
+        free(starts);
+    }
+}
+
+// Several grains per thread, so a thread that joins late or gets slow items still leaves work for the others.
+size_t grainFor(size_t count, uint participants) {
+    size_t grain = count / (cast(size_t) participants * GRAINS_PER_PARTICIPANT);
+    return grain > 0 ? grain : 1;
+}
+
+extern (C) void* workerMain(void* argument) {
+    WorkerStart* start = cast(WorkerStart*) argument;
+    start.pool.serve(start.worker);
+    return null;
 }
 
 struct Executor {
-    void function(void* context, ParallelJob* job) start;
-    void* context;
-    uint workers = 1;
+    WorkerPool* pool;
 
-    void run(ParallelJob* job) {
-        if (start is null) {
-            while (job.claimed < job.count) {
-                job.claimed += 1;
-                job.run(job.context, job.claimed - 1, 0);
-                if (nowMilliseconds() >= job.deadline) {
-                    job.count = job.claimed;
-                }
-            }
-            job.finished = job.count;
+    uint workers() const {
+        if (pool is null) {
+            return 1;
         } else {
-            start(context, job);
+            return pool.participants();
         }
     }
+
+    void run(ParallelJob* job) {
+        if (pool is null) {
+            job.work(MAIN_WORKER);
+            job.finish();
+        } else {
+            pool.run(job);
+        }
+    }
+}
+
+struct QueueCell(T) {
+    shared size_t sequence;
+    T value;
+}
+
+// Bounded multi-producer multi-consumer queue (Vyukov): each cell's sequence number says whose turn it is, so a value
+// is only read after its writer published it and only overwritten after its reader released it.
+struct ConcurrentQueue(T) {
+    QueueCell!T* cells;
+    size_t mask;
+    ubyte[CACHE_LINE] beforeHead;
+    shared size_t head;
+    ubyte[CACHE_LINE] beforeTail;
+    shared size_t tail;
+    ubyte[CACHE_LINE] afterTail;
+
+    static ConcurrentQueue make(size_t capacity) {
+        assert((capacity & (capacity - 1)) == 0);
+        ConcurrentQueue queue;
+        queue.cells = cast(QueueCell!T*) calloc(capacity, QueueCell!T.sizeof);
+        queue.mask = capacity - 1;
+        foreach (index; 0 .. capacity) {
+            atomicStore(queue.cells[index].sequence, index);
+        }
+        return queue;
+    }
+
+    bool push(T value) {
+        size_t position = atomicLoad(head);
+        while (true) {
+            QueueCell!T* cell = &cells[position & mask];
+            ptrdiff_t difference = cast(ptrdiff_t)(atomicLoad(cell.sequence) - position);
+            if (difference == 0) {
+                if (cas(&head, position, position + 1)) {
+                    cell.value = value;
+                    atomicStore(cell.sequence, position + 1);
+                    return true;
+                }
+                position = atomicLoad(head);
+            } else if (difference < 0) {
+                return false;
+            } else {
+                position = atomicLoad(head);
+            }
+        }
+    }
+
+    bool pop(ref T value) {
+        size_t position = atomicLoad(tail);
+        while (true) {
+            QueueCell!T* cell = &cells[position & mask];
+            ptrdiff_t difference = cast(ptrdiff_t)(atomicLoad(cell.sequence) - (position + 1));
+            if (difference == 0) {
+                if (cas(&tail, position, position + 1)) {
+                    value = cell.value;
+                    atomicStore(cell.sequence, position + mask + 1);
+                    return true;
+                }
+                position = atomicLoad(tail);
+            } else if (difference < 0) {
+                return false;
+            } else {
+                position = atomicLoad(tail);
+            }
+        }
+    }
+
+    void release() {
+        free(cells);
+        cells = null;
+    }
+}
+
+enum uint TEST_WORKERS = 3;
+enum size_t TEST_ITEMS = 10000;
+enum uint TEST_ROUNDS = 50;
+
+struct TestCounts {
+    shared uint[TEST_ITEMS] seen;
+}
+
+void countItem(void* context, size_t index, uint worker) {
+    atomicOp!"+="((cast(TestCounts*) context).seen[index], 1);
+}
+
+bool takeNothing(void* context, uint worker) {
+    return false;
+}
+
+unittest {
+    WorkerPool* pool = WorkerPool.make(TEST_WORKERS, TaskSource(&takeNothing, null));
+    TestCounts* counts = cast(TestCounts*) calloc(1, TestCounts.sizeof);
+    foreach (round; 0 .. TEST_ROUNDS) {
+        ParallelJob job = ParallelJob(&countItem, counts, double.infinity, TEST_ITEMS);
+        pool.run(&job);
+        assert(job.count == TEST_ITEMS);
+    }
+    foreach (index; 0 .. TEST_ITEMS) {
+        assert(atomicLoad(counts.seen[index]) == TEST_ROUNDS);
+    }
+    ParallelJob late = ParallelJob(&countItem, counts, 0, TEST_ITEMS);
+    pool.run(&late);
+    assert(late.count >= 1 && late.count < TEST_ITEMS);
+    foreach (index; 0 .. TEST_ITEMS) {
+        assert(atomicLoad(counts.seen[index]) == TEST_ROUNDS + (index < late.count));
+    }
+    free(counts);
+    pool.release();
+    free(pool);
+}
+
+unittest {
+    ConcurrentQueue!uint queue = ConcurrentQueue!uint.make(4);
+    foreach (value; 0 .. 4) {
+        assert(queue.push(value));
+    }
+    assert(!queue.push(4));
+    uint popped;
+    assert(queue.pop(popped) && popped == 0);
+    assert(queue.push(4));
+    foreach (expected; 1 .. 5) {
+        assert(queue.pop(popped) && popped == expected);
+    }
+    assert(!queue.pop(popped));
+    queue.release();
 }

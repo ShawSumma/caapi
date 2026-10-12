@@ -4,7 +4,7 @@ import core.math : sqrt;
 import core.stdc.math : atanhf, coshf, fabsf, floorf;
 import common.array : Array;
 import common.dodeca : SIDE_COUNT, Side, VERTEX_COUNT, Vertex, adjacentVertices, canonicalSides, chunkToNode, dualToNode, faceDistance, isAdjacentTo, reflection;
-import common.graph : Graph, Node, NodeId, ParentList, ROOT_NODE;
+import common.graph : Graph, NO_SLOT, Node, NodeId, ParentList, ROOT_NODE;
 import common.material : Material;
 import common.math : MIsometry, MPoint, MVector, Matrix4;
 import common.node : ChunkLayout;
@@ -246,8 +246,11 @@ void addUnique(ref Array!LineTouch touches, LineTouch touch) {
 }
 
 void addPendingTouch(ref Graph graph, uint slot, LineTouch touch) {
-    assert(!graph.nodeAt(slot).hasStructure);
-    NodeId id = graph.idAt(slot);
+    graph.addPendingTouch(graph.idAt(slot), touch);
+}
+
+void addPendingTouch(ref Graph graph, NodeId id, LineTouch touch) {
+    assert(graph.slotOf(id) == NO_SLOT || !graph.hasStructureAt(graph.slotOf(id)));
     const(uint)* head = graph.pendingHeads.find(id);
     uint index = graph.pendingCount;
     graph.pendingTouches.ensure(index + 1);
@@ -260,7 +263,7 @@ SlotTouch seedTouch(ref const LineSpec spec, uint line) {
     return SlotTouch(LineTouch(0, line, spec.lower, 1, 1), spec.node);
 }
 
-SlotTouch walkedTouch(ref Graph graph, SlotTouch from, ref const LineSpec spec, int edge) {
+SlotTouch walkedTouch(G)(ref G graph, SlotTouch from, ref const LineSpec spec, int edge) {
     SlotTouch current = from;
     while (current.touch.level != edge) {
         Side side = crossingSide(current.touch.lower, spec);
@@ -272,7 +275,7 @@ SlotTouch walkedTouch(ref Graph graph, SlotTouch from, ref const LineSpec spec, 
     return current;
 }
 
-SlotTouch[EDGE_NODES] aroundEdge(ref Graph graph, SlotTouch edge, ref const LineSpec spec) {
+SlotTouch[EDGE_NODES] aroundEdge(G)(ref G graph, SlotTouch edge, ref const LineSpec spec) {
     SlotTouch x = SlotTouch(crossed(edge.touch, spec, spec.xSide).touch, graph.ensureNeighborSlot(edge.slot, spec.xSide));
     SlotTouch y = SlotTouch(crossed(edge.touch, spec, spec.ySide).touch, graph.ensureNeighborSlot(edge.slot, spec.ySide));
     SlotTouch both = SlotTouch(crossed(y.touch, spec, spec.xSide).touch, graph.ensureNeighborSlot(y.slot, spec.xSide));
@@ -296,7 +299,7 @@ SiteFrame forwarded(SiteFrame site, int edges) {
     return SiteFrame(site.level - edges, site.node, site.vertex, site.xSide, site.ySide, site.xSign, site.ySign, site.zSign);
 }
 
-SiteFrame atLevel(ref Graph graph, SiteFrame site, int level) {
+SiteFrame atLevel(G)(ref G graph, SiteFrame site, int level) {
     SiteFrame result = site;
     while (result.level != level) {
         result = graph.stepped(result, level > result.level);
@@ -304,7 +307,7 @@ SiteFrame atLevel(ref Graph graph, SiteFrame site, int level) {
     return result;
 }
 
-SiteFrame stepped(ref Graph graph, SiteFrame site, bool isUp) {
+SiteFrame stepped(G)(ref G graph, SiteFrame site, bool isUp) {
     bool isInside = (site.zSign > 0) == isUp;
     if (isInside) {
         int rise = -1;
@@ -318,7 +321,7 @@ SiteFrame stepped(ref Graph graph, SiteFrame site, bool isUp) {
     }
 }
 
-SiteFrame turned(ref Graph graph, SiteFrame site, Turn turn) {
+SiteFrame turned(G)(ref G graph, SiteFrame site, Turn turn) {
     SiteFrame at = graph.atLevel(site, 0);
     Axis x = at.x();
     Axis y = at.y();
@@ -347,7 +350,7 @@ SiteFrame turned(ref Graph graph, SiteFrame site, Turn turn) {
     return SiteFrame.fromAxes(0, at.node, at.vertex, axes[0], axes[1], axes[2]);
 }
 
-RootedVertex rootedVertex(ref const Graph graph, uint node, Vertex vertex) {
+RootedVertex rootedVertex(G)(ref const G graph, uint node, Vertex vertex) {
     uint slot = node;
     bool isLowest = false;
     while (!isLowest) {
@@ -361,15 +364,15 @@ RootedVertex rootedVertex(ref const Graph graph, uint node, Vertex vertex) {
             slot = parents.links[index].slot;
         }
     }
-    return RootedVertex(ClaimKey(slot, vertex, SitePart.vertex), graph.nodeAt(slot).depth);
+    return RootedVertex(ClaimKey(slot, vertex, SitePart.vertex), graph.depthOf(slot));
 }
 
-RootedVertex siteOrigin(ref Graph graph, SiteFrame site) {
+RootedVertex siteOrigin(G)(ref G graph, SiteFrame site) {
     SiteFrame origin = graph.atLevel(site, 0);
     return graph.rootedVertex(origin.node, origin.vertex);
 }
 
-ClaimKey siteFace(ref Graph graph, SiteFrame site) {
+ClaimKey siteFace(G)(ref G graph, SiteFrame site) {
     SiteFrame at = graph.atLevel(site, 0);
     uint node = at.node;
     if (at.xSign < 0) {
@@ -379,13 +382,13 @@ ClaimKey siteFace(ref Graph graph, SiteFrame site) {
         node = graph.ensureNeighborSlot(node, at.zSide());
     }
     uint across = graph.ensureNeighborSlot(node, at.ySide);
-    if (graph.nodeAt(across).depth < graph.nodeAt(node).depth) {
+    if (graph.depthOf(across) < graph.depthOf(node)) {
         node = across;
     }
     return ClaimKey(node, at.ySide, SitePart.face);
 }
 
-ClaimKey claimKeyOf(ref Graph graph, SiteFrame site, SitePart part) {
+ClaimKey claimKeyOf(G)(ref G graph, SiteFrame site, SitePart part) {
     assert(part != SitePart.edge);
     if (part == SitePart.vertex) {
         return graph.siteOrigin(site).key;
@@ -394,7 +397,7 @@ ClaimKey claimKeyOf(ref Graph graph, SiteFrame site, SitePart part) {
     }
 }
 
-ulong siteHash(ref Graph graph, SiteFrame site, SitePart part) {
+ulong siteHash(G)(ref G graph, SiteFrame site, SitePart part) {
     ulong seed = void;
     final switch (part) {
         case SitePart.vertex:
@@ -413,7 +416,7 @@ ulong mixedSeed(ulong spice, uint feature, SitePart part) {
     return spice ^ ((cast(ulong) feature * (SitePart.max + 1) + part + 1) * HASH_MULTIPLIER);
 }
 
-ulong edgeSeed(ref Graph graph, SiteFrame site) {
+ulong edgeSeed(G)(ref G graph, SiteFrame site) {
     CanonicalSite canonical = graph.canonicalOf(site);
     ubyte dimension = graph.layout.dimension;
     int cells = edgeCells(dimension);
@@ -424,7 +427,7 @@ ulong edgeSeed(ref Graph graph, SiteFrame site) {
     return mixedSeed(graph.idAt(line.node).spice() ^ (level * LEVEL_MULTIPLIER), feature, SitePart.edge);
 }
 
-uint[GROUND_RING] groundRing(ref Graph graph, uint sky, Side label) {
+uint[GROUND_RING] groundRing(G)(ref G graph, uint sky, Side label) {
     uint[GROUND_RING] ring = void;
     uint count = 0;
     ring[count] = sky;
@@ -465,7 +468,7 @@ FrameCrossing crossedFrame(SiteFrame site, Side side, uint node) {
     }
 }
 
-SiteFrame lowerFrame(ref const Graph graph, SiteFrame site) {
+SiteFrame lowerFrame(G)(ref const G graph, SiteFrame site) {
     ParentList parents = graph.parents(site.node);
     uint index = 0;
     while (index < parents.count && !crossedFrame(site, parents.links[index].side, parents.links[index].slot).isKept) {
@@ -478,7 +481,7 @@ SiteFrame lowerFrame(ref const Graph graph, SiteFrame site) {
     }
 }
 
-CanonicalSite canonicalOf(ref const Graph graph, SiteFrame site) {
+CanonicalSite canonicalOf(G)(ref const G graph, SiteFrame site) {
     SiteFrame entry = site;
     bool isLowest = false;
     while (!isLowest) {
@@ -603,16 +606,16 @@ SiteFrame lineSite(ref const LineSpec spec) {
     return SiteFrame(0, spec.node, spec.lower, spec.xSide, spec.ySide, 1, 1, 1);
 }
 
-MIsometry!float siteToNode(ref const Graph graph, ref const SiteFrame site, uint slot) {
+MIsometry!float siteToNode(G)(ref const G graph, ref const SiteFrame site, uint slot) {
     return graph.nodeToNode(site.node, slot) * sitePlacement(site, graph.layout);
 }
 
-MIsometry!float lineToNode(ref const Graph graph, uint line, uint slot) {
+MIsometry!float lineToNode(G)(ref const G graph, uint line, uint slot) {
     SiteFrame site = lineSite(graph.blueprint.lines.ptr[line]);
     return graph.siteToNode(site, slot);
 }
 
-MIsometry!float nodeToNode(ref const Graph graph, uint from, uint to) {
+MIsometry!float nodeToNode(G)(ref const G graph, uint from, uint to) {
     Array!Side toPath = graph.sidesToRoot(to);
     Array!Side fromPath = graph.sidesToRoot(from);
     Array!Side path;

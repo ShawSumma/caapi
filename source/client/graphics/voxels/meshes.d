@@ -14,7 +14,7 @@ import common.graph : Graph, NO_SLOT;
 import common.neighbors : chunkNeighborSlot;
 import common.node : Chunk, ChunkSlot, ChunkState;
 import common.slab : Slab;
-import common.traversal : NearbyNode, NearbyScratch;
+import common.traversal : NOT_COLLECTED, NearbyNode, NearbyScratch;
 
 enum uint INITIAL_FACE_CAPACITY = 2 ^^ 20;
 enum uint INITIAL_STAGING_FACES = 2 ^^ 16;
@@ -40,12 +40,16 @@ struct DrawTransform {
     float[POINT_FLOATS] reversed;
 }
 
+// Drawable records live in memory the GPU reads, which is slow to read back, so whether a record still waits for its
+// node is kept here.
 struct RenderChunk {
     uint faceOffset;
     uint faceCount;
     uint drawable;
     uint slot;
     bool hasDrawable;
+    bool isNodeMissing;
+    bool isUnlisted;
 }
 
 struct MeshRecord {
@@ -115,6 +119,7 @@ struct ChunkMeshes {
     Array!uint renderBlocks;
     Array!uint freeRenderBlocks;
     Array!uint drawableChunks;
+    Array!uint unlisted;
     Array!VkBufferCopy uploads;
     Array!BufferCopy growthCopies;
     Array!GpuBuffer retired;
@@ -181,6 +186,7 @@ struct ChunkMeshes {
         freeRenderBlocks.clear();
         renderBlockCount = 0;
         drawableChunks.clear();
+        unlisted.clear();
         allocator.release();
         allocator.grow(cast(uint)(faces.size / Face.sizeof));
         listedVersion = NO_VERSION;
@@ -200,14 +206,17 @@ struct ChunkMeshes {
         hasReplacedDrawBuffers = false;
     }
 
+    // A new nearby set renumbers every node, while a growing one only adds nodes, which only the drawables whose node
+    // was missing can be waiting for.
     void list(ref const NearbyScratch nearby, uint nearbyVersion) {
         if (nearbyVersion != listedVersion) {
             listedVersion = nearbyVersion;
             listedNodes = 0;
-        }
-        if (nearby.nodes.length > listedNodes) {
             writeNodes(nearby.nodes.slice());
             refreshDrawableNodes(nearby);
+        } else if (nearby.nodes.length > listedNodes) {
+            writeNodes(nearby.nodes.slice());
+            refreshUnlisted(nearby);
         }
     }
 
@@ -226,9 +235,45 @@ struct ChunkMeshes {
 
     void refreshDrawableNodes(ref const NearbyScratch nearby) {
         DrawableRecord* records = cast(DrawableRecord*) drawables.mapped;
-        foreach (drawable, chunkIndex; drawableChunks.slice()) {
-            records[drawable].node = nearby.indexOf(chunks.at(chunkIndex).slot);
+        foreach (chunkIndex; unlisted.slice()) {
+            chunks.at(chunkIndex).isUnlisted = false;
         }
+        unlisted.clear();
+        foreach (drawable, chunkIndex; drawableChunks.slice()) {
+            uint node = nearby.indexOf(chunks.at(chunkIndex).slot);
+            records[drawable].node = node;
+            noteNode(chunkIndex, node);
+        }
+    }
+
+    void noteNode(uint chunkIndex, uint node) {
+        RenderChunk* entry = chunks.at(chunkIndex);
+        entry.isNodeMissing = node == NOT_COLLECTED;
+        if (entry.isNodeMissing && !entry.isUnlisted) {
+            entry.isUnlisted = true;
+            unlisted.append(chunkIndex);
+        }
+    }
+
+    void refreshUnlisted(ref const NearbyScratch nearby) {
+        DrawableRecord* records = cast(DrawableRecord*) drawables.mapped;
+        size_t kept = 0;
+        foreach (chunkIndex; unlisted.slice()) {
+            RenderChunk* entry = chunks.at(chunkIndex);
+            if (entry.hasDrawable && entry.isNodeMissing) {
+                uint node = nearby.indexOf(entry.slot);
+                if (node != NOT_COLLECTED) {
+                    records[entry.drawable].node = node;
+                    entry.isNodeMissing = false;
+                }
+            }
+            entry.isUnlisted = entry.hasDrawable && entry.isNodeMissing;
+            if (entry.isUnlisted) {
+                unlisted.ptr[kept] = chunkIndex;
+                kept += 1;
+            }
+        }
+        unlisted.length = kept;
     }
 
     void prepareBatch(ref const Graph graph, uint workers) {
@@ -307,7 +352,7 @@ struct ChunkMeshes {
                         allocator.release(entry.faceOffset, entry.faceCount);
                     }
                     removeDrawable(chunkIndex);
-                    *entry = RenderChunk.init;
+                    *entry = RenderChunk(0, 0, 0, 0, false, false, entry.isUnlisted);
                 }
                 freeRenderBlocks.append(render);
                 renderBlocks.ptr[released.block] = 0;
@@ -337,6 +382,7 @@ struct ChunkMeshes {
         }
         DrawableRecord* records = cast(DrawableRecord*) drawables.mapped;
         records[entry.drawable] = DrawableRecord(node, slot.vertex, entry.faceOffset, entry.faceCount);
+        noteNode(chunkIndex, node);
     }
 
     void removeDrawable(uint chunkIndex) {
@@ -414,6 +460,7 @@ struct ChunkMeshes {
         uploads.release();
         growthCopies.release();
         drawableChunks.release();
+        unlisted.release();
         allocator.release();
         chunks.release();
         renderBlocks.release();

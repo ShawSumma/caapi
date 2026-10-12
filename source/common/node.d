@@ -287,11 +287,24 @@ enum Occupancy : ubyte {
     empty,
 }
 
+// Set only while a batch of arrived chunks is joined to its neighbors.
+enum Integration : ubyte {
+    none,
+    populating,
+    restoring,
+    adjacent,
+}
+
 struct Chunk {
     VoxelData voxels;
     ChunkState state;
     Occupancy predicted;
+    Integration integration;
     bool hasDeferredMaterials;
     bool isQueued;
     bool isEdited;
+}
+
+bool isArriving(Integration integration) {
+    return integration == Integration.populating || integration == Integration.restoring;
 }

@@ -16,11 +16,10 @@ import common.worldgen.structure : ClaimKey, SitePart;
 
 enum uint SLOTS_PER_CLOCK_CHECK = 256;
 enum uint SWEEP_CYCLE_FRAMES = 120;
-enum double SWEEP_LEAST_MILLISECONDS = 1.0;
 enum double SWEEP_MOST_MILLISECONDS = 3.0;
 enum float KEEP_RADIUS = 3.0f;
 enum float DROP_RADIUS = 3.5f;
-enum double TILE_IDLE_TRAVEL = 3.0;
+enum double TILE_IDLE_TRAVEL = 12.0;
 
 struct Evictor {
     Array!uint stack;
@@ -32,6 +31,12 @@ struct Evictor {
 
     void sweep(ref Graph graph, ref const NearbyScratch published, const(NearbyScratch)* building, MPoint!float camera, ref Array!Unloaded unloaded, double start) {
         Near near = Near(&published, building);
+        uint evictedBefore = evicted;
+        scope (exit) {
+            if (evicted != evictedBefore) {
+                graph.ownView().forget();
+            }
+        }
         dropIdleTiles(graph, near);
         float dropThreshold = coshf(DROP_RADIUS + CHUNK_BOUNDING_SPHERE_RADIUS);
         uint wanted = graph.nodeCount / SWEEP_CYCLE_FRAMES;
@@ -46,8 +51,7 @@ struct Evictor {
             cursor += 1;
             examined += 1;
             if (examined % SLOTS_PER_CLOCK_CHECK == 0) {
-                double spent = nowMilliseconds() - start;
-                isDone = spent >= SWEEP_MOST_MILLISECONDS || (examined >= wanted && spent >= SWEEP_LEAST_MILLISECONDS);
+                isDone = examined >= wanted || nowMilliseconds() - start >= SWEEP_MOST_MILLISECONDS;
             }
             Node* node = graph.nodeAt(slot);
             if (!graph.isLive(slot)) {
@@ -229,11 +233,6 @@ void evictNode(ref Graph graph, uint slot, ref Array!Unloaded unloaded) {
     }
     graph.releaseWorlds(node.worldStart, node.worldCount);
     graph.releaseTouches(node.touchStart, node.touchLength);
-    if (node.hasChoices) {
-        foreach (vertex; 0 .. VERTEX_COUNT) {
-            graph.skies.choices.remove(ClaimKey(slot, cast(Vertex) vertex, SitePart.vertex));
-        }
-    }
     graph.slots.remove(node.id);
     *node = Node.init;
     graph.freeSlots.append(slot);
