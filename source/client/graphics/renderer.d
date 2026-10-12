@@ -27,7 +27,7 @@ import geometry.lorentz : Normal;
 enum Angle HALF_VERTICAL_FOV = Angle(45.0f * (PI / 180.0f));
 enum float NEAR_PLANE = 1.0e-4f;
 enum float FOG_VISIBILITY_THRESHOLD = 1e-3f;
-enum float FOG_SHARPNESS = 5.0f;
+enum float FOG_SHARPNESS = 4.0f;
 enum float CLEAR_DEPTH = 0.0f;
 enum ulong NO_TIMEOUT = ulong.max;
 enum double MESH_BUDGET_MILLISECONDS = 2.0;
@@ -46,9 +46,9 @@ enum float SRGB_GAMMA = 2.4f;
 enum uint COLOR_CHANNELS = 3;
 
 immutable float[4] SKY_SRGB = [
-    0.5f,
-    0.65f,
-    0.9f,
+    0.55f,
+    0.7f,
+    0.94f,
     1.0f,
 ];
 
@@ -249,7 +249,7 @@ struct Renderer {
         meshes.beginFrame();
         meshes.forget(world.unloaded.slice());
         world.unloaded.clear();
-        meshes.list(world.nearby[world.published], world.nearbyVersion);
+        meshes.list(world.nearby[world.published], world.listVersion);
         meshChanged(world);
         if (meshes.hasReplacedFaces || meshes.hasReplacedDrawBuffers) {
             bindMeshBuffers();

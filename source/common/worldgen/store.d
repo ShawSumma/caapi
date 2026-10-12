@@ -30,6 +30,7 @@ struct NodeStructure {
     bool isInStructure;
     bool isCovered;
     bool isBuildingQueued;
+    bool isBuildingUrgent;
 }
 
 // Structure painted into the world, and what each node has taken from it: the lines through the node and the

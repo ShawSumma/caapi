@@ -21,6 +21,14 @@ struct NodeVisit {
     Motion!float inverse;
 }
 
+bool isListed(const(uint)[] list, uint value) {
+    size_t index = 0;
+    while (index < list.length && list[index] != value) {
+        index += 1;
+    }
+    return index < list.length;
+}
+
 bool isVisited(const(NodeVisit)[] visits, uint slot) {
     size_t index = 0;
     while (index < visits.length && visits[index].slot != slot) {
@@ -178,6 +186,20 @@ Vec4!float[FACE_COUNT] mirroredOrigins() {
     return origins;
 }
 
+struct RebaseJob {
+    NearbyNode* nodes;
+    size_t count;
+    Motion!float toFrame;
+}
+
+void rebaseBlock(void* context, size_t block, uint worker) {
+    RebaseJob* job = cast(RebaseJob*) context;
+    size_t end = (block + 1) * KEEP_BLOCK < job.count ? (block + 1) * KEEP_BLOCK : job.count;
+    foreach (index; block * KEEP_BLOCK .. end) {
+        job.nodes[index].transform = job.toFrame * job.nodes[index].transform;
+    }
+}
+
 // A node that was expanded before has every neighbor within the old reach already, so it is expanded again only when
 // a neighbor has come within reach, or when it has come within the inner radius and may not have been expanded. A
 // neighbor's center lies two face distances away, so only nodes that near the new boundary need their neighbors
@@ -230,6 +252,7 @@ struct NearbyScratch {
     Array!uint candidates;
     Array!ubyte kinds;
     Array!BlockCounts blocks;
+    Array!uint around;
     Point!float startPoint;
     size_t front;
     size_t missingHead;
@@ -239,6 +262,7 @@ struct NearbyScratch {
     float coshInner = 0;
     double paintingMs = 0;
     uint generation;
+    uint derivedSteps;
     bool hasPainted;
 
     void release() {
@@ -253,6 +277,7 @@ struct NearbyScratch {
         candidates.release();
         kinds.release();
         blocks.release();
+        around.release();
     }
 
     uint indexOf(uint slot) const {
@@ -304,6 +329,7 @@ struct NearbyScratch {
         unknownHead = 0;
         paintedHead = 0;
         generation += 1;
+        derivedSteps = 0;
         startPoint = start.local * Point!float.origin();
         collect(graph, NearbyNode(start.node, Motion!float.identity(), graph.slotOf(start.node)));
     }
@@ -324,6 +350,52 @@ struct NearbyScratch {
 
     bool claim(uint slot) {
         return atomicExchange(cast(shared(uint)*) &stamp.ptr[slot], generation) != generation;
+    }
+
+    // Adds the camera node's neighbors and every node whose center is within reach of the camera, so the node the
+    // camera moves into next is always already in the set, however far the search has got. The camera point is in
+    // the set's frame. A finished set takes them as they are; one still being searched expands them too. Returns
+    // false when the camera's node is not in the set.
+    bool collectAround(ref Graph graph, uint cameraSlot, Point!float camera, float reach) {
+        uint first = indexOf(cameraSlot);
+        if (first == NOT_COLLECTED) {
+            return false;
+        } else {
+            bool isFinished = !isBuilding();
+            float coshReach = coshf(reach);
+            around.clear();
+            around.append(first);
+            size_t head = 0;
+            while (head < around.length) {
+                NearbyNode current = nodes.ptr[around.ptr[head]];
+                foreach (index; 0 .. FACE_COUNT) {
+                    Face face = cast(Face) index;
+                    Motion!float transform = current.transform * face.mirror;
+                    if (head == 0 || !(-camera.minkowski(transform * Vec4!float.origin()) > coshReach)) {
+                        uint neighbor = graph.ensureNeighborSlot(current.slot, face);
+                        uint position = indexOf(neighbor);
+                        if (position == NOT_COLLECTED) {
+                            position = cast(uint) nodes.length;
+                            collect(graph, NearbyNode(graph.idAt(neighbor), transform, neighbor));
+                        }
+                        if (!isListed(around.slice(), position)) {
+                            around.append(position);
+                        }
+                    }
+                }
+                head += 1;
+                if (head == 5000) {
+                    import core.stdc.stdio : fprintf, stderr;
+                    Vec4!float c = camera.v;
+                    Vec4!float n = nodes.ptr[first].transform * Vec4!float.origin();
+                    fprintf(stderr, "runaway camera %g %g %g %g node %g %g %g %g finished %d steps %u nodes %zu\n", c.c[0], c.c[1], c.c[2], c.c[3], n.c[0], n.c[1], n.c[2], n.c[3], cast(int) isFinished, derivedSteps, nodes.length);
+                }
+            }
+            if (isFinished) {
+                front = nodes.length;
+            }
+            return true;
+        }
     }
 
     void advance(ref Graph graph, double deadline, Executor executor) {
@@ -469,6 +541,18 @@ struct NearbyScratch {
         coshInner = keeping.coshInner;
         startPoint = camera;
         front = total.kept;
+        derivedSteps = finished.derivedSteps + 1;
+    }
+
+    // Re-expresses every transform in another frame, so the frame can follow the camera: far from the frame's origin,
+    // float coordinates no longer tell nearby points apart. Each step rounds every transform again, so sets grown and
+    // moved this way are searched afresh after a while.
+    void rebase(Motion!float toFrame, Executor executor) {
+        RebaseJob job = RebaseJob(nodes.ptr, nodes.length, toFrame);
+        ParallelJob rebasing = ParallelJob(&rebaseBlock, &job, NO_DEADLINE, (nodes.length + KEEP_BLOCK - 1) / KEEP_BLOCK);
+        executor.run(&rebasing);
+        startPoint = toFrame * startPoint;
+        derivedSteps += 1;
     }
 
     NearbyNode[] collectAll(ref Graph graph, Position start, float distance) {

@@ -9,6 +9,7 @@ import base.clock : nowMilliseconds;
 import base.parallel : Executor, ParallelJob, TaskSource, WorkerPool;
 import base.units : Length;
 import client.arrivals : Integrator;
+import base.parallel : ConcurrentQueue;
 import client.tasks : BuildingRequest, BuildingResult, GenRequest, GenResult, QUEUE_CAPACITY, TaskQueues, pushedPrefix, takeTask, workerThreadCount;
 import common.character.features : RequiredChunks, visitCells;
 import common.eviction : KEEP_RADIUS, Unloaded;
@@ -18,6 +19,7 @@ import common.position : Position;
 import common.traversal : NearbyNode;
 import common.view : GraphView;
 import common.worldgen.building : BuildingPlan;
+import common.worldgen.store : NodeStructure;
 import common.worldgen.generation : ChunkParams, GeneratedVoxels;
 import geometry.honeycomb : CORNER_COUNT, CUBE_RADIUS, Corner, cubeCenter;
 import geometry.lorentz : Motion, Point;
@@ -27,6 +29,7 @@ enum double RESCAN = 0;
 enum uint MAX_SCAN_NODES_PER_FRAME = 4096;
 enum size_t SCAN_WINDOW = 4096;
 enum uint IN_FLIGHT_PER_WORKER = 256;
+enum uint FAR_BUILDINGS_PER_WORKER = 4;
 enum size_t INTEGRATION_BATCH = 4096;
 enum Length FOCUS_REACH = Length(0.75f);
 enum double NEAR_REFRESH_TRAVEL = 0.25;
@@ -180,10 +183,13 @@ void sortIntoBand(void* context, size_t item, uint worker) {
 
 // Decides which chunks to load and when: it walks the nearby set asking for chunks in range, plans their parameters
 // on every thread, hands them to the workers and joins what comes back to the graph.
+// Buildings wait here as node slots until they are handed to the workers, a few at a time, so a node near the camera
+// can still go ahead of them.
 struct Streamer {
     Array!GenRequest requests;
     Array!GenRequest urgentRequests;
-    Array!BuildingRequest buildingRequests;
+    Array!uint buildingSlots;
+    Array!uint urgentBuildingSlots;
     Array!PlannedChunk planned;
     Array!PlannedParams made;
     Array!ScanFacts facts;
@@ -275,7 +281,7 @@ struct Streamer {
             } else if (state == ChunkState.fresh && isBuildingReady(graph, chunk.slot)) {
                 plan(graph, chunk, false, true);
             } else if (state == ChunkState.fresh) {
-                scheduleBuilding(graph, chunk.slot);
+                scheduleBuilding(graph, chunk.slot, true);
             }
         }
     }
@@ -306,7 +312,7 @@ struct Streamer {
             scanCursor = cast(uint) scan(graph, nearby, range, budget, deadline);
         }
         planParams(graph);
-        submitRequests();
+        submitRequests(graph);
     }
 
     void rescanBuilt(ref Graph graph, const(NearbyNode)[] nearby, ScanRange range, uint budget) {
@@ -453,7 +459,7 @@ struct Streamer {
                     if (isReady) {
                         plan(graph, chunk, false, isUrgent);
                     } else {
-                        scheduleBuilding(graph, slot);
+                        scheduleBuilding(graph, slot, isUrgent);
                         outcome.isWaitingOnBuilding = true;
                     }
                 }
@@ -470,25 +476,63 @@ struct Streamer {
         planned.append(PlannedChunk(slot, isRestoring, isUrgent));
     }
 
-    void scheduleBuilding(ref Graph graph, uint slot) {
-        if (graph.structures.buildingAt(slot) is null && !graph.structures.at(slot).isBuildingQueued) {
-            graph.structures.at(slot).isBuildingQueued = true;
-            graph.restoreBrushes(slot);
-            buildingRequests.append(BuildingRequest(BuildingPlan.make(graph, slot), slot));
+    // A node asked for near the camera is moved ahead of the waiting ones, unless its building is already with a
+    // worker, where it is never far behind.
+    void scheduleBuilding(ref Graph graph, uint slot, bool isUrgent) {
+        NodeStructure* node = &graph.structures.at(slot);
+        if (graph.structures.buildingAt(slot) is null && !node.isBuildingQueued) {
+            node.isBuildingQueued = true;
+            node.isBuildingUrgent = isUrgent;
+            (isUrgent ? urgentBuildingSlots : buildingSlots).append(slot);
+        } else if (isUrgent && node.isBuildingQueued && !node.isBuildingUrgent) {
+            node.isBuildingUrgent = true;
+            size_t index = 0;
+            while (index < buildingSlots.length && buildingSlots.ptr[index] != slot) {
+                index += 1;
+            }
+            if (index < buildingSlots.length) {
+                foreach (moved; index + 1 .. buildingSlots.length) {
+                    buildingSlots.ptr[moved - 1] = buildingSlots.ptr[moved];
+                }
+                buildingSlots.length -= 1;
+                urgentBuildingSlots.append(slot);
+            }
         }
     }
 
-    // Requests that do not fit in a full queue stay at the front of their array and go out on the next drive. Only as
-    // many go out as their results have room for, since a worker cannot hold on to a result it has no room to hand back.
-    void submitRequests() {
+    // Requests that do not fit stay at the front of their array and go out on the next drive. Only as many go out as
+    // their results have room for, since a worker cannot hold on to a result it has no room to hand back. Buildings
+    // far from the camera go out only a few per worker at a time.
+    void submitRequests(ref Graph graph) {
         size_t generations = pushedPrefix(queues.urgent, urgentRequests, QUEUE_CAPACITY - inFlight);
         generations += pushedPrefix(queues.generations, requests, QUEUE_CAPACITY - inFlight - generations);
-        size_t buildings = pushedPrefix(queues.buildings, buildingRequests, QUEUE_CAPACITY - buildingsInFlight);
+        size_t buildings = submitBuildings(graph, urgentBuildingSlots, queues.urgentBuildings, QUEUE_CAPACITY - buildingsInFlight);
+        size_t farLimit = workerCount * FAR_BUILDINGS_PER_WORKER;
+        if (buildingsInFlight + buildings < farLimit) {
+            buildings += submitBuildings(graph, buildingSlots, queues.buildings, farLimit - buildingsInFlight - buildings);
+        }
         inFlight += cast(uint) generations;
         buildingsInFlight += cast(uint) buildings;
         if (generations > 0 || buildings > 0) {
             pool.signal();
         }
+    }
+
+    // A building's plan is copied from the blueprint as it goes out, painting again any tiles dropped meanwhile.
+    size_t submitBuildings(ref Graph graph, ref Array!uint slots, ref ConcurrentQueue!BuildingRequest queue, size_t room) {
+        size_t pushed = 0;
+        while (pushed < slots.length && pushed < room) {
+            uint slot = slots.ptr[pushed];
+            graph.restoreBrushes(slot);
+            bool isPushed = queue.push(BuildingRequest(BuildingPlan.make(graph, slot), slot));
+            assert(isPushed);
+            pushed += 1;
+        }
+        foreach (index; pushed .. slots.length) {
+            slots.ptr[index - pushed] = slots.ptr[index];
+        }
+        slots.length -= pushed;
+        return pushed;
     }
 
     void forget(const(Unloaded)[] unloaded) {
@@ -500,12 +544,12 @@ struct Streamer {
     }
 
     bool isIdle() const {
-        return inFlight == 0 && buildingsInFlight == 0 && requests.length == 0 && urgentRequests.length == 0 && buildingRequests.length == 0;
+        return inFlight == 0 && buildingsInFlight == 0 && requests.length == 0 && urgentRequests.length == 0 && buildingSlots.length == 0 && urgentBuildingSlots.length == 0;
     }
 
     void settle(ref Graph graph) {
         while (!isIdle()) {
-            submitRequests();
+            submitRequests(graph);
             uint seen = atomicLoad(queues.completed);
             if (integrate(graph, true, 0) == 0) {
                 queues.await(seen);
@@ -533,6 +577,7 @@ struct Streamer {
     void integrateBuilding(ref Graph graph, BuildingResult built) {
         buildingsInFlight -= 1;
         graph.structures.at(built.slot).isBuildingQueued = false;
+        graph.structures.at(built.slot).isBuildingUrgent = false;
         if (graph.structures.buildingAt(built.slot) !is null) {
             built.building.release();
         } else {
@@ -557,10 +602,8 @@ struct Streamer {
         queues.release();
         free(queues);
         queues = null;
-        foreach (request; buildingRequests.slice()) {
-            request.plan.release();
-        }
-        buildingRequests.release();
+        buildingSlots.release();
+        urgentBuildingSlots.release();
         requests.release();
         urgentRequests.release();
         planned.release();

@@ -35,12 +35,13 @@ struct BuildingResult {
 }
 
 // Worker threads take chunk and building tasks from lock-free queues and hand results back the same way; the main
-// thread alone touches the graph, applying results as it drains them. Chunks near the camera go in their own queue,
+// thread alone touches the graph, applying results as it drains them. Work near the camera goes in its own queues,
 // which workers empty before the rest.
 struct TaskQueues {
     ConcurrentQueue!GenRequest generations;
     ConcurrentQueue!GenRequest urgent;
     ConcurrentQueue!BuildingRequest buildings;
+    ConcurrentQueue!BuildingRequest urgentBuildings;
     ConcurrentQueue!GenResult generated;
     ConcurrentQueue!BuildingResult built;
     WorkerPool* pool;
@@ -52,6 +53,7 @@ struct TaskQueues {
         queues.generations = ConcurrentQueue!GenRequest.make(QUEUE_CAPACITY);
         queues.urgent = ConcurrentQueue!GenRequest.make(QUEUE_CAPACITY);
         queues.buildings = ConcurrentQueue!BuildingRequest.make(QUEUE_CAPACITY);
+        queues.urgentBuildings = ConcurrentQueue!BuildingRequest.make(QUEUE_CAPACITY);
         queues.generated = ConcurrentQueue!GenResult.make(QUEUE_CAPACITY);
         queues.built = ConcurrentQueue!BuildingResult.make(QUEUE_CAPACITY);
         return queues;
@@ -79,7 +81,7 @@ struct TaskQueues {
         while (urgent.pop(request)) {
         }
         BuildingRequest building;
-        while (buildings.pop(building)) {
+        while (buildings.pop(building) || urgentBuildings.pop(building)) {
             building.plan.release();
         }
         GenResult result;
@@ -93,6 +95,7 @@ struct TaskQueues {
         generations.release();
         urgent.release();
         buildings.release();
+        urgentBuildings.release();
         generated.release();
         built.release();
     }
@@ -108,26 +111,37 @@ void yieldToJob(void* context) {
     help.pool.helpWithJob(help.worker);
 }
 
+// A building comes before the chunks of its node, and everything near the camera before anything farther.
 bool takeTask(void* context, uint worker) {
     TaskQueues* queues = cast(TaskQueues*) context;
     BuildingRequest building;
     GenRequest request;
-    if (queues.buildings.pop(building)) {
-        BuildingResult made = BuildingResult(Building.make(building.plan), building.slot);
-        building.plan.release();
-        bool isPushed = queues.built.push(made);
-        assert(isPushed);
-        queues.announce();
-        return true;
-    } else if (queues.urgent.pop(request) || queues.generations.pop(request)) {
-        JobHelp help = JobHelp(queues.pool, worker);
-        bool isPushed = queues.generated.push(GenResult(request.params.generateVoxels(Yield(&yieldToJob, &help)), request.chunk, request.isRestoring));
-        assert(isPushed);
-        queues.announce();
-        return true;
+    if (queues.urgentBuildings.pop(building)) {
+        makeBuilding(queues, building);
+    } else if (queues.urgent.pop(request)) {
+        generate(queues, request, worker);
+    } else if (queues.buildings.pop(building)) {
+        makeBuilding(queues, building);
+    } else if (queues.generations.pop(request)) {
+        generate(queues, request, worker);
     } else {
         return false;
     }
+    queues.announce();
+    return true;
+}
+
+void makeBuilding(TaskQueues* queues, BuildingRequest building) {
+    BuildingResult made = BuildingResult(Building.make(building.plan), building.slot);
+    building.plan.release();
+    bool isPushed = queues.built.push(made);
+    assert(isPushed);
+}
+
+void generate(TaskQueues* queues, GenRequest request, uint worker) {
+    JobHelp help = JobHelp(queues.pool, worker);
+    bool isPushed = queues.generated.push(GenResult(request.params.generateVoxels(Yield(&yieldToJob, &help)), request.chunk, request.isRestoring));
+    assert(isPushed);
 }
 
 // Pushes what fits from the front of the pending list; the rest moves to the front and waits for the next push.

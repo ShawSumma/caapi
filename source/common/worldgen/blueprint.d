@@ -4,11 +4,10 @@ import base.array : Array;
 import base.hashmap : HashMap;
 import base.numbers : higherOf, lowerOf;
 import common.graph : Graph, NodeId;
-import common.material : Material;
+import common.material : MATERIAL_COUNT, Material;
 import common.worldgen.structure : CanonicalSite, ClaimKey, ColumnSpot, LineTransform, PAINT_REACH, SiteFrame, SlotTouch, addPendingTouch, aroundEdge, canonicalOf, edgeCells, isEndless, seedTouch, walkedTouch;
 import geometry.honeycomb : Corner, FACE_COUNT, Face;
 
-enum size_t MAX_MATERIALS = ubyte.max;
 enum ulong LINE_HASH_MULTIPLIER = 0x9E3779B97F4A7C15;
 enum uint PLACED_RECORD = uint.max;
 
@@ -174,6 +173,7 @@ struct Blueprint {
     Array!TileRecord tiles;
     Array!RouteStop route;
     Array!Material materials;
+    ubyte[MATERIAL_COUNT] paints;
     HashMap!(LineKey, uint) lineIndex;
     HashMap!(LineEdge, bool) touchedEdges;
     HashMap!(ClaimKey, bool) claims;
@@ -271,16 +271,13 @@ struct Blueprint {
         return total;
     }
 
+    // Paint numbers count from 1 in the order materials were first painted; 0 is no paint.
     ubyte paintOf(Material material) {
-        uint index = 0;
-        while (index < materials.length && materials.ptr[index] != material) {
-            index += 1;
-        }
-        if (index == materials.length) {
-            assert(materials.length < MAX_MATERIALS);
+        if (paints[material] == 0) {
             materials.append(material);
+            paints[material] = cast(ubyte) materials.length;
         }
-        return cast(ubyte)(index + 1);
+        return paints[material];
     }
 
     bool isClaimed(ClaimKey key) const {

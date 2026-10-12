@@ -206,11 +206,11 @@ struct ChunkMeshes {
         hasReplacedDrawBuffers = false;
     }
 
-    // A new nearby set renumbers every node, while a growing one only adds nodes, which only the drawables whose node
-    // was missing can be waiting for.
-    void list(ref const NearbyScratch nearby, uint nearbyVersion) {
-        if (nearbyVersion != listedVersion) {
-            listedVersion = nearbyVersion;
+    // A new nearby set renumbers every node and a set moved to another frame changes every transform, while a growing
+    // one only adds nodes, which only the drawables whose node was missing can be waiting for.
+    void list(ref const NearbyScratch nearby, uint listVersion) {
+        if (listVersion != listedVersion) {
+            listedVersion = listVersion;
             listedNodes = 0;
             writeNodes(nearby.nodes.slice());
             refreshDrawableNodes(nearby);
@@ -310,6 +310,14 @@ struct ChunkMeshes {
             foreach (record; worker.records.slice()) {
                 apply(nearby, record, worker.faces.ptr[record.offset .. record.offset + record.count]);
             }
+        }
+    }
+
+    uint faceCountOf(uint block, Corner corner) const {
+        if (block < renderBlocks.length && renderBlocks.ptr[block] != 0) {
+            return chunks.at((renderBlocks.ptr[block] - 1) * CORNER_COUNT + corner).faceCount;
+        } else {
+            return 0;
         }
     }
 

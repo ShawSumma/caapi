@@ -16,15 +16,19 @@ import common.raycast.graph : GraphCastHit, rayCast;
 import common.traversal : NOT_COLLECTED, NO_DEADLINE, NearbyNode, NearbyScratch;
 import common.worldgen.generation : Worldgen;
 import geometry.cube : Cell, Direction, boundaryOf;
+import geometry.honeycomb : NODE_RADIUS;
 import geometry.lorentz : Motion, Point, Vec4;
 import geometry.ray : Ray;
 
 enum float NEARBY_PADDING = 0.05f;
 enum float NEARBY_REBUILD_DISTANCE = 0.25f;
-enum float NEARBY_REROOT_DISTANCE = 3.0f;
+// The camera's node puts the camera within NODE_RADIUS of the origin, so a set moves at most once per this much travel.
+enum float REBASE_DISTANCE = NODE_RADIUS + 1.0f;
+enum uint FRESH_SEARCH_STEPS = 64;
 enum double TELEPORT_TRAVEL = 1.0e3;
 enum float RENDER_RADIUS = 8.0f;
 enum float FULL_RADIUS = 4.5f;
+enum float CAMERA_REACH = 2.0f;
 enum double STEP_BUDGET_MILLISECONDS = 5.0;
 enum double NEARBY_LEAST_MILLISECONDS = 1.0;
 enum double STREAMER_LEAST_MILLISECONDS = 1.0;
@@ -45,6 +49,7 @@ struct NearbyStats {
     uint publishes;
     uint recoveries;
     uint grown;
+    uint rebases;
 }
 
 struct StepPhases {
@@ -77,6 +82,7 @@ struct LocalWorld {
     float tanhReach;
     uint published;
     uint nearbyVersion;
+    uint listVersion;
     uint epoch;
     Evictor evictor;
     StepPhases phases;
@@ -128,6 +134,8 @@ struct LocalWorld {
         } else {
             refreshNearby(distance, deadline);
         }
+        followCamera();
+        keepCameraCollected();
         trackTravel();
         double found = nowMilliseconds();
         double foundCpu = threadCpuMilliseconds();
@@ -164,6 +172,19 @@ struct LocalWorld {
         streamer.forget(unloaded.slice()[first .. $]);
     }
 
+    // Every set the camera is in holds the nodes right around it, so it never leaves the published set between
+    // searches, and whatever is meshed near it has a node to be drawn from.
+    void keepCameraCollected() {
+        uint cameraSlot = graph.slotOf(cameraPosition.node);
+        nearby[published].collectAround(graph, cameraSlot, cameraInNearbyFrame() * Point!float.origin(), CAMERA_REACH);
+        NearbyScratch* next = &nearby[1 - published];
+        uint index = next.indexOf(cameraSlot);
+        if (next.isBuilding() && index != NOT_COLLECTED) {
+            next.collectAround(graph, cameraSlot, next.nodes.ptr[index].transform * cameraPosition.local * Point!float.origin(), CAMERA_REACH);
+        }
+        cachedNodes = nearby[published].nodes.slice();
+    }
+
     void trackTravel() {
         Point!float camera = cameraInNearbyFrame() * Point!float.origin();
         if (trackedVersion == nearbyVersion) {
@@ -183,6 +204,7 @@ struct LocalWorld {
             current.begin(graph, cameraPosition, distance, FULL_RADIUS);
             publishedPoint = cameraPosition.local * Point!float.origin();
             nearbyVersion += 1;
+            listVersion += 1;
             streamer.travel += TELEPORT_TRAVEL;
         }
         current.advance(graph, deadline, streamer.executor());
@@ -226,11 +248,11 @@ struct LocalWorld {
         nearbyStats.slicedMilliseconds += nowMilliseconds() - start;
     }
 
-    // The next set grows out of the published one while the camera stays near its frame's origin. Past that, nodes on
-    // the far side get transforms large enough to lose precision, so the next set starts over around the camera.
+    // The next set grows out of the published one, whose frame follows the camera, until enough steps have rounded
+    // its transforms that a fresh search is due.
     void startNext(float distance, Point!float camera) {
         NearbyScratch* next = &nearby[1 - published];
-        if (camera.distance(Point!float.origin()) < NEARBY_REROOT_DISTANCE) {
+        if (nearby[published].derivedSteps < FRESH_SEARCH_STEPS) {
             next.beginFrom(nearby[published], graph, camera, distance, FULL_RADIUS, streamer.executor());
             pendingPoint = camera;
             nearbyStats.grown += 1;
@@ -259,7 +281,31 @@ struct LocalWorld {
         cachedNodes = nearby[published].nodes.slice();
         publishedPoint = point;
         nearbyVersion += 1;
+        listVersion += 1;
         nearbyStats.publishes += 1;
+    }
+
+    // A set's frame moves to the camera's node once the camera is far enough from its origin that float coordinates
+    // start to blur what is around it. The points kept in a set's frame move with it.
+    void followCamera() {
+        uint cameraSlot = graph.slotOf(cameraPosition.node);
+        NearbyScratch* current = &nearby[published];
+        Motion!float toCamera = current.nodes.ptr[current.indexOf(cameraSlot)].transform;
+        if (isFarFromOrigin(toCamera * cameraPosition.local)) {
+            Motion!float toFrame = toCamera.inverse();
+            current.rebase(toFrame, streamer.executor());
+            publishedPoint = toFrame * publishedPoint;
+            trackedCamera = toFrame * trackedCamera;
+            listVersion += 1;
+            nearbyStats.rebases += 1;
+        }
+        NearbyScratch* next = &nearby[1 - published];
+        uint index = next.indexOf(cameraSlot);
+        if (next.isBuilding() && index != NOT_COLLECTED && isFarFromOrigin(next.nodes.ptr[index].transform * cameraPosition.local)) {
+            Motion!float toFrame = next.nodes.ptr[index].transform.inverse();
+            next.rebase(toFrame, streamer.executor());
+            pendingPoint = toFrame * pendingPoint;
+        }
     }
 
     bool isWorldgenSettled() const {
@@ -340,6 +386,10 @@ struct LocalWorld {
             return true;
         }
     }
+}
+
+bool isFarFromOrigin(Motion!float camera) {
+    return (camera * Point!float.origin()).v.c[3] > coshf(REBASE_DISTANCE);
 }
 
 double phaseDeadline(bool isUnbudgeted, double planned, double leastMilliseconds) {

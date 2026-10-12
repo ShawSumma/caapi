@@ -8,7 +8,7 @@ import core.sys.posix.sys.resource : RUSAGE_SELF, getrusage, rusage;
 import core.sys.posix.time : nanosleep, timespec;
 import bindings.platform : Atom, Button1, Button3, ButtonPress, ClientMessage, CurrentTime, Cursor, Display, False, FocusOut, GenericEvent, GrabModeAsync, GrabSuccess, KeyPress, KeyRelease, KeySym, Pixmap, Success, True, UnmapNotify, VkExtent2D, Window, XBlackPixel, XCloseDisplay, XColor, XCreateBitmapFromData, XCreatePixmapCursor, XCreateSimpleWindow, XDefaultScreen, XDestroyWindow, XDisplayHeight, XDisplayWidth, XEvent, XFlush, XFreeCursor, XFreeEventData, XFreePixmap, XGenericEventCookie, XGetEventData, XGrabPointer, XIAllMasterDevices, XIDeviceInfo, XIEventMask, XIFreeDeviceInfo, XIModeAbsolute, XIQueryDevice, XIQueryVersion, XIRawEvent, XISelectEvents, XIValuatorClass, XIValuatorClassInfo, XI_DeviceChanged, XI_RawMotion, XInternAtom, XK_1, XK_9, XK_Escape, XK_Down, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_n, XK_s, XK_space, XK_v, XK_w, XLookupKeysym, XMapWindow, XNextEvent, XOpenDisplay, XPending, XQueryExtension, XRootWindow, XSelectInput, XSetWMProtocols, XStoreName, XUngrabPointer, XkbSetDetectableAutoRepeat;
 import base.clock : MILLISECONDS_PER_SECOND, NANOSECONDS_PER_SECOND, PhaseTimes, nowSeconds, threadCpuMilliseconds;
-import base.crash : reportCrashes;
+import base.crash : reportCrashes, reportHangAfter;
 import base.names : ENUM_NAMES;
 import base.units : Angle, AngularSpeed, Time;
 import client.arguments : StartupError, FlagValue, NumberArgument, WorldgenArgument;
@@ -21,16 +21,19 @@ import client.script : ScriptHost, ScriptRecorder;
 import client.structures : StructureProblem, growthProblem, placeStructure, tileCounts;
 import client.world : LocalWorld, RENDER_RADIUS, StepPhases;
 import common.character.controller : MovementMode;
-import common.graph : Graph, Node;
+import client.meshing : Mesher;
+import common.graph : Graph, NO_SLOT, Node;
 import common.material : Material;
-import common.node : Chunk, ChunkState, cellCount;
+import common.neighbors : chunkNeighborSlot, needsMesh;
+import common.node : Chunk, ChunkSlot, ChunkState, cellCount;
+import geometry.cube : DIRECTIONS;
 import common.settings : CHUNK_DIMENSION;
 import common.worldgen.blueprint : Blueprint, Brush, LineRun, RunRef;
 import common.worldgen.building : Building;
 import common.worldgen.generation : NodeState, Worldgen;
 import common.worldgen.sky : NodeWorlds;
 import common.worldgen.store : NodeStructure;
-import geometry.honeycomb : CORNER_COUNT;
+import geometry.honeycomb : CORNER_COUNT, Corner;
 
 enum uint WINDOW_WIDTH = 1280;
 enum uint WINDOW_HEIGHT = 720;
@@ -40,6 +43,8 @@ enum double BENCH_FRAME_SECONDS = 1.0 / 60.0;
 enum uint BENCH_MOVE_FRAMES = 300;
 enum uint BENCH_FLIGHT_LEGS = 6;
 enum uint BENCH_PROGRESS_FRAMES = 600;
+enum uint STALE_MESHES_SHOWN = 8;
+enum uint BENCH_TIME_LIMIT_SECONDS = 300;
 enum double TITLE_INTERVAL_SECONDS = 1.0;
 enum size_t TEXT_CAPACITY = 256;
 enum uint KEYCODE_COUNT = 256;
@@ -697,6 +702,7 @@ bool benchLoad(Arguments arguments) {
             if (arguments.isProfiled) {
                 sampler.start();
             }
+            reportHangAfter(BENCH_TIME_LIMIT_SECONDS);
             measureLoad(report, *renderer, game);
             if (arguments.isProfiled) {
                 sampler.report(report, "load");
@@ -779,12 +785,55 @@ void measureLoad(FILE* report, ref Renderer renderer, ref Game game) {
     }
     fprintf(report, "bench-load frames=%u wall=%.2fs nodes=%u dense_chunks=%u meshed=%u faces=%u\n", frames, elapsed, game.world.graph.slotCount, dense, renderer.meshes.meshedChunks, renderer.meshes.allocator.used());
     fprintf(report, "nearby set complete at frame %u, worldgen settled at frame %u, meshing done at frame %u\n", nearbyFrame, generatedFrame, frames);
+    checkMeshes(report, renderer, game.world.graph);
     printMemory(report, game.world);
     printWorldStats(report, game.world);
     fprintf(report, "frame avg=%.2fms worst=%.2fms\n", frame.averageMs(), frame.worstMs);
     fprintf(report, "step avg=%.2fms worst=%.2fms, of which main thread cpu avg=%.2fms\n", step.averageMs(), step.worstMs, stepCpu.averageMs());
     fprintf(report, "render avg=%.2fms worst=%.2fms\n", render.averageMs(), render.worstMs);
     breakdown.print(report);
+}
+
+// Meshes the settled world again and counts the chunks whose drawn faces differ from what they should be now. A chunk
+// beside a dropped one is left out, since its mesh was made while that neighbor's cells were still there.
+void checkMeshes(FILE* report, ref const Renderer renderer, ref const Graph graph) {
+    Mesher mesher;
+    mesher.setup(graph.layout.dimension);
+    uint checked = 0;
+    uint stale = 0;
+    foreach (slot; 0 .. graph.slotCount) {
+        if (graph.isLive(slot) && graph.chunks.has(slot)) {
+            foreach (index; 0 .. CORNER_COUNT) {
+                ChunkSlot chunk = ChunkSlot(slot, cast(Corner) index);
+                if (graph.chunks.at(chunk).state == ChunkState.populated && !graph.isBesideDropped(chunk)) {
+                    size_t expected = graph.needsMesh(chunk) ? mesher.mesh(graph, chunk).length : 0;
+                    uint drawn = renderer.meshes.faceCountOf(graph.chunks.blockOf(slot), chunk.corner);
+                    checked += 1;
+                    if (drawn != expected) {
+                        if (stale < STALE_MESHES_SHOWN) {
+                            fprintf(report, "  stale mesh: slot %u corner %u draws %u faces, should draw %zu\n", slot, index, drawn, expected);
+                        }
+                        stale += 1;
+                    }
+                }
+            }
+        }
+    }
+    fprintf(report, "meshes checked=%u stale=%u\n", checked, stale);
+    mesher.release();
+}
+
+bool isSettledSolid(const(Chunk)* chunk) {
+    return chunk.state == ChunkState.populated && chunk.voxels.isOpaqueFill() && !chunk.isEdited && !chunk.isQueued;
+}
+
+bool isBesideDropped(ref const Graph graph, ChunkSlot chunk) {
+    bool isBeside = false;
+    foreach (direction; DIRECTIONS) {
+        ChunkSlot neighbor = graph.chunkNeighborSlot(chunk, direction);
+        isBeside = isBeside || (neighbor.slot != NO_SLOT && graph.chunks.at(neighbor).state == ChunkState.dropped);
+    }
+    return isBeside;
 }
 
 void measureFlight(FILE* report, ref Renderer renderer, ref Game game) {
@@ -841,7 +890,7 @@ void printWorldStats(FILE* report, ref const LocalWorld world) {
     uint[2] tiles = tileCounts(world.graph);
     fprintf(report, "tiles painted ahead on all threads %u, painted when needed %u\n", tiles[0], tiles[1]);
     fprintf(report, "nearby %zu nodes, %u published, %u recoveries (%.0fms), %.0fms sliced\n", world.cachedNodes.length, world.nearbyStats.publishes, world.nearbyStats.recoveries, world.nearbyStats.recoveryMilliseconds, world.nearbyStats.slicedMilliseconds);
-    fprintf(report, "nearby sets grown from the last %u, keeping %zu nodes as they were and expanding %zu again\n", world.nearbyStats.grown, world.nearbyStats.kept, world.nearbyStats.reexpanded);
+    fprintf(report, "nearby sets grown from the last %u, keeping %zu nodes as they were and expanding %zu again; %u moved to the camera\n", world.nearbyStats.grown, world.nearbyStats.kept, world.nearbyStats.reexpanded, world.nearbyStats.rebases);
 }
 
 void printMemory(FILE* report, ref const LocalWorld world) {
@@ -874,6 +923,17 @@ void printMemory(FILE* report, ref const LocalWorld world) {
             denseBytes += cellCount(graph.layout.dimension) * Material.sizeof;
         }
     }
+    size_t solidBlocks = 0;
+    foreach (slot; 0 .. graph.slotCount) {
+        if (graph.isLive(slot) && graph.chunks.has(slot)) {
+            uint corner = 0;
+            while (corner < CORNER_COUNT && isSettledSolid(graph.chunks.at(ChunkSlot(slot, cast(Corner) corner)))) {
+                corner += 1;
+            }
+            solidBlocks += corner == CORNER_COUNT;
+        }
+    }
+    fprintf(report, "chunk blocks whose chunks are all settled and filled with something opaque: %zu\n", solidBlocks);
     fprintf(report, "nodes holding chunks=%zu with state=%zu, structure-touched=%zu referenced=%zu with children=%zu recent=%zu\n", holding, stated, touched, referenced, parents, recent);
     rusage usage;
     getrusage(RUSAGE_SELF, &usage);
