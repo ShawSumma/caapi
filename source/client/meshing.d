@@ -19,8 +19,6 @@ enum uint FLIPPED_BIT = 1 << 3;
 enum ubyte TEST_DIMENSION = 4;
 enum ubyte TEST_CELL = 2;
 
-// A face of a cell: its cell, the axis it faces along with whether it faces down that axis and which diagonal splits
-// it, then its material and the shading at its four corners.
 struct Quad {
     uint posAxis;
     uint occlusionMaterial;
@@ -35,8 +33,6 @@ struct Quad {
     }
 }
 
-// A chunk's cells with one more layer around each face, read from the neighbors. Only the layers across faces are
-// filled; cells past an edge or a corner are only needed for shading, which asks the graph for them.
 struct ChunkCells {
     const(Material)* padded;
     const(Graph)* graph;
@@ -76,7 +72,6 @@ struct ChunkCells {
         return result;
     }
 
-    // Faces sit between neighboring cells along each axis; a uniform chunk has them only on its border.
     uint extractQuads(Quad* quads) const {
         size_t side = dimension + 2;
         size_t[AXIS_COUNT] strides = [1, side, side * side];
@@ -141,8 +136,6 @@ struct Mesher {
         return quads[0 .. cells.extractQuads(quads)];
     }
 
-    // A face against a neighbor that is not loaded yet is left out: the cell past it copies the one inside, and the
-    // chunk is meshed again when the neighbor arrives.
     void pad(ref const Graph graph, ChunkSlot chunk) {
         ubyte dimension = graph.layout.dimension;
         const(Chunk)* own = graph.chunks.at(chunk);
@@ -207,7 +200,6 @@ uint cornerOcclusion(bool isEdgeBOccupied, bool isEdgeCOccupied, bool isDiagonal
     }
 }
 
-// A quad is split along the diagonal joining its brighter pair of corners, so its shading runs evenly across.
 bool isDiagonalFlipped(uint[CORNERS_PER_FACE] occlusion) {
     return occlusion[1] + occlusion[2] > occlusion[0] + occlusion[3];
 }

@@ -6,15 +6,10 @@ import common.node : ChunkLayout;
 import geometry.honeycomb : Corner, FACE_COUNT, FACE_DISTANCE, Face, cubeToNode, direction, mirror, nodeToCorner, opposite;
 import geometry.lorentz : Motion, Point, Vec4;
 
-// Past this the scaled normal's cosh would leave double range, and distances are taken from its logarithm.
 enum double LARGEST_DIRECT_SCALE = 600;
-// Neighboring face normals are 63 degrees apart, so a plane this close to one can only be that face.
 enum float SNAP_TOLERANCE = 0.05f;
 enum float SNAP_ALIGNMENT = 0.99f;
 
-// A plane as one node sees it: how high the node's center is above it, and which way is up at the center. Its unit
-// normal, cosh(height) (up, -tanh(height)), grows without bound with the height, so it is only ever handled divided by
-// cosh(height), which keeps a plane exact however far away the node is.
 struct Plane {
     float[3] up;
     float height;
@@ -36,9 +31,6 @@ struct Plane {
         return transformBy(face.mirror);
     }
 
-    // Every plane the world uses is the plane of some face of the honeycomb, so wherever one touches a node it is one
-    // of that node's faces, and it is put back exactly there. Rounding carried from node to node then never builds up
-    // near the plane, where it matters.
     Plane snappedToFaces() const {
         Plane snapped = this;
         if (fabsf(fabsf(height) - FACE_DISTANCE) < SNAP_TOLERANCE) {
@@ -56,8 +48,6 @@ struct Plane {
         return snapped;
     }
 
-    // The new height is this plane's distance to the new frame's center, which stays exact even where the scaled
-    // normal has lost the plane's height to rounding.
     Plane transformBy(Motion!float motion) const {
         Vec4!double moved = motion.as!double() * scaledNormal();
         return Plane(unit(moved.spatial()), distanceTo(motion.inverse() * Point!float.origin()));
@@ -67,7 +57,6 @@ struct Plane {
         return Vec4!double([up[0], up[1], up[2], -tanh(height)]);
     }
 
-    // Signed distance from the plane, positive on the up side.
     float distanceTo(Point!float point) const {
         return cast(float) scaledAsinh(scaledNormal().minkowski(point.v.as!double()), logCosh(height));
     }
@@ -77,7 +66,6 @@ struct Plane {
         return distanceTo(transformed.toPoint());
     }
 
-    // Straight away from the plane at a body's position, in the body's frame.
     float[3] upAt(Motion!float local) const {
         Vec4!double away = local.inverse().as!double() * scaledNormal();
         double[3] spatial = away.spatial();
@@ -92,7 +80,6 @@ struct Plane {
         return [up[0] / length, up[1] / length, up[2] / length];
     }
 
-    // Which of a cell's six neighbors lies most nearly straight up.
     int risingNeighbor(Corner chunk, ref const ChunkLayout layout, int[3] cell) const {
         float[3] up = gridUpAt(chunk, layout, [cell[0] + 0.5f, cell[1] + 0.5f, cell[2] + 0.5f]);
         int rising = 0;
@@ -112,7 +99,6 @@ double logCosh(double x) {
     return size + log1p(exp(-2 * size)) - log(2.0);
 }
 
-// asinh(value * e^logScale), without forming e^logScale when it is out of range.
 double scaledAsinh(double value, double logScale) {
     if (logScale < LARGEST_DIRECT_SCALE) {
         return asinh(value * exp(logScale));

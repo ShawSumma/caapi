@@ -12,7 +12,6 @@ local CEILINGS = {
   concrete = true,
 }
 
--- The backrooms world starts in its lobby, standing on the floor under the low ceiling.
 return function(world)
   world:worldgen("structure", "backrooms")
   walk.spawn(world)

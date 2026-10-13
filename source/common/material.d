@@ -74,12 +74,10 @@ bool isSeeThrough(Material material) {
     return material == Material.none || material == Material.glass;
 }
 
-// Whether a cell's face toward the cell beside it is drawn.
 bool isShownAgainst(Material material, Material beside) {
     return material != Material.none && isSeeThrough(beside) && !(material == Material.glass && beside == Material.glass);
 }
 
-// The color each solid material is drawn with, in sRGB; none is never drawn.
 immutable ubyte[3][MATERIAL_COUNT] MATERIAL_COLORS = [
     Material.none: [0, 0, 0],
     Material.dirt: [120, 85, 58],

@@ -5,28 +5,17 @@ import common.material : Material;
 import common.view : GraphView;
 import geometry.honeycomb : Corner, Face, faces;
 
-// Relief and climate are numbers each node carries for its center. A node takes a share of its parents' mean and
-// adds noise drawn from its own id, so the values wander from node to node but always back toward zero: neighbors
-// are close, distant nodes unrelated, and nothing grows without bound however far the world goes. Being numbers
-// rather than geometry, they lose no precision with distance either.
-
-// How strongly a value holds to its parents', how far it may step from them, and the salt of its noise.
 struct Process {
     float keep;
     float spread;
     ulong salt;
 }
 
-// Relief, in units of distance above the ground's plane, is the sum of a broad slow swell and a local roughness.
 immutable Process BROAD_RELIEF = Process(0.92f, 0.25f, 0x51ED2701);
 immutable Process LOCAL_RELIEF = Process(0.5f, 0.25f, 0x7A3D9C11);
-// Warmth and wetness mostly stay between about -1 and 1, wandering far enough within a few nodes that climates change
-// over a short walk.
 immutable Process HEAT = Process(0.94f, 0.3f, 0x2B992DD3);
 immutable Process WETNESS = Process(0.94f, 0.3f, 0x6C8E9CF5);
-// Shifts the depths at which one kind of rock gives way to the next, so the layers undulate.
 immutable Process STRATA = Process(0.8f, 0.25f, 0x3C6EF372);
-// Where ruggedness climbs past its threshold, mountains rise in proportion to how far past it is.
 immutable Process RUGGEDNESS = Process(0.9f, 0.2f, 0x1F83D9AB);
 enum float RUGGED_THRESHOLD = 0.4f;
 enum float MOUNTAIN_HEIGHT = 2.5f;
@@ -40,8 +29,6 @@ float mountainOf(float ruggedness) {
 }
 
 enum float RELIEF_BOUND = boundOf(BROAD_RELIEF) + boundOf(LOCAL_RELIEF) + MOUNTAIN_HEIGHT * (boundOf(RUGGEDNESS) - RUGGED_THRESHOLD);
-// Within a node, relief strays from its value at the center by no more than two steps of each process: every point is
-// a blend of nodes at most that far apart. Mountains change by at most their height times ruggedness's change.
 enum float RELIEF_SLACK = 4 * (BROAD_RELIEF.spread + LOCAL_RELIEF.spread + MOUNTAIN_HEIGHT * RUGGEDNESS.spread);
 
 struct NodeClimate {
@@ -74,7 +61,6 @@ float stepped(float mean, Process process, ulong spice) {
     return process.keep * mean + process.spread * noiseOf(spice ^ process.salt);
 }
 
-// A value from -1 to 1 that the seed alone decides.
 float noiseOf(ulong seed) {
     ulong z = seed + 0x9E3779B97F4A7C15;
     z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9;
@@ -101,22 +87,16 @@ struct Climate {
         return sum;
     }
 
-    // High ground is colder.
     float warmth() const {
         return heat - LAPSE_RATE * relief;
     }
 }
 
-// The climate inside one of a node's cubes. Each corner of the cube takes the mean of the nodes that share that
-// point: the dodecahedron's corner is shared by the eight nodes around it, the middle of an edge by four, the middle
-// of a face by two, and the node's center is its own. Neighboring cubes therefore agree wherever they meet, the
-// inside is interpolated between the corners, and the corners bound every value inside exactly.
 struct CubeClimate {
     Climate[8] corners;
     Climate lowest;
     Climate highest;
 
-    // Around the dodecahedron's corner, the node reached by crossing the cube's faces whose bits are set.
     static CubeClimate fromAround(ref const NodeClimate[8] around) {
         CubeClimate cube;
         foreach (index; 0 .. 8) {
@@ -155,7 +135,6 @@ struct CubeClimate {
         return fromAround(around);
     }
 
-    // Cube coordinates run from the dodecahedron's corner at 0 to the node's center at 1.
     Climate at(float[3] cube) const {
         Climate[4] alongX;
         foreach (index; 0 .. 4) {
@@ -175,14 +154,11 @@ enum float LAPSE_RATE = 0.3f;
 enum float COVER_DEPTH = 0.06f;
 enum float SOIL_DEPTH = 0.4f;
 enum float SNOW_WARMTH = -0.45f;
-// Below this height above the ground's plane, whatever the terrain leaves open is water; ice where it is cold.
 enum float WATER_LEVEL = -0.6f;
 enum float BEACH_HEIGHT = 0.08f;
 enum float DEEP_WATER = 0.5f;
-// Above this height, ground that is not snowed over is bare rock.
 enum float ROCKY_RELIEF = 2.2f;
 
-// What lies at a depth below the ground's surface, the surface being as high as the climate's relief.
 Material groundAt(float depth, Climate climate) {
     float warmth = climate.warmth();
     if (depth < COVER_DEPTH) {
@@ -194,7 +170,6 @@ Material groundAt(float depth, Climate climate) {
     }
 }
 
-// What fills the open space at a height above the ground's plane: water below the water level, otherwise nothing.
 Material openAt(float altitude, Climate climate) {
     if (altitude >= WATER_LEVEL) {
         return Material.none;
@@ -261,8 +236,6 @@ Material soilOf(float warmth, float wetness, float relief) {
     }
 }
 
-// Rock is chosen by three classes that each only grow with their value, so one kind fills a range of depths and
-// climates exactly when both ends of the range land in the same classes.
 immutable float[3] ROCK_BAND_DEPTHS = [1.2f, 2.6f, 4.5f];
 immutable float[2] WETNESS_CLASS_LIMITS = [-0.2f, 0.3f];
 enum float WARMTH_CLASS_LIMIT = 0.35f;
@@ -299,7 +272,6 @@ struct UniformRock {
     bool isProven;
 }
 
-// The one rock filling every depth and climate in the given ranges, when there is one.
 UniformRock uniformRock(float shallowest, float deepest, Climate lowest, Climate highest) {
     float coldest = lowest.heat - LAPSE_RATE * highest.relief;
     float warmest = highest.heat - LAPSE_RATE * lowest.relief;

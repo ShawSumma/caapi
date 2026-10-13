@@ -1,10 +1,10 @@
 local box = {}
 
-box.HALF = 5
+box.HALF_WIDTH = 5
 box.STORY = 4
 box.DOOR = box.STORY - 1
 box.FOUNDATION = 3
-box.STAIR_START = 2 - box.HALF
+box.STAIR_START = 2 - box.HALF_WIDTH
 box.WINDOW_INSET = 1
 box.WINDOW_WIDTH = 2
 box.MIDDLE_LANE = 0
@@ -19,8 +19,8 @@ box.PALETTES = {
   { wall = "grey_brick", floor = "concrete", trim = "marble" },
 }
 
-local LOW = -box.HALF
-local HIGH = box.HALF - 1
+local LOW = -box.HALF_WIDTH
+local HIGH = box.HALF_WIDTH - 1
 local SQUARE = { LOW, HIGH }
 local INSIDE = { LOW + 1, HIGH - 1 }
 
@@ -34,9 +34,9 @@ end
 
 function box.lane(story)
   if story % 2 == 0 then
-    return 1 - box.HALF
+    return 1 - box.HALF_WIDTH
   else
-    return box.HALF - 3
+    return box.HALF_WIDTH - 3
   end
 end
 

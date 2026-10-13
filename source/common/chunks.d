@@ -9,8 +9,6 @@ enum uint NO_BLOCK = 0;
 
 immutable Chunk FRESH_CHUNK = Chunk.init;
 
-// Every node's chunks, one block of a chunk per corner, given to a node the first time one of its chunks is written.
-// Blocks count from 1, so a node's entry of NO_BLOCK means it has none yet. Chunks that need meshing wait in a queue.
 struct ChunkStore {
     Slab!Chunk records;
     Slab!uint blocks;
@@ -37,7 +35,6 @@ struct ChunkStore {
         return block == NO_BLOCK ? &FRESH_CHUNK : records.at(indexOf(block, chunk));
     }
 
-    // For threads that each write their own chunks: never gives out a block, so nothing else changes.
     Chunk* existing(ChunkSlot chunk) {
         assert(has(chunk.slot));
         return records.at(indexOf(blockOf(chunk.slot), chunk));

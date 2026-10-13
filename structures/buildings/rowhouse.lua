@@ -1,4 +1,4 @@
-local kit = require("buildings.kit")
+local building = require("buildings.building")
 
 local rowhouse = {}
 
@@ -11,16 +11,33 @@ rowhouse.PALETTES = {
   { wall = "limestone", trim = "grey_brick", floor = "wood_planks", roof = "slate" },
 }
 
-local DESIGN = {
-  setbacks = 0,
-  facade = kit.grid,
-  roof = "wood_planks",
-  cap = kit.hip_roof,
-  crowns = { kit.chimney, kit.chimney, false },
-}
+local ROOF = "wood_planks"
+local PIER_SPACING = 2
+local CROWNS = { building.chimney, building.chimney, building.plain }
+
+local function hip_roof(part, palette, tier)
+  local rise = 1
+  local box = building.footprint(part, tier.shrink + rise, false, tier.high + rise, tier.high + rise)
+  while not building.is_empty(box) do
+    part.tower:paint(palette.roof, box)
+    rise = rise + 1
+    box = building.footprint(part, tier.shrink + rise, false, tier.high + rise, tier.high + rise)
+  end
+end
 
 function rowhouse.build(lots, spec)
-  kit.build(lots, spec, DESIGN)
+  local parts = building.parts(lots, spec)
+  for _, part in ipairs(parts) do
+    for _, tier in ipairs(building.tiers(part, spec, 0)) do
+      building.punched(part, spec.palette, building.shell(part, spec.palette, tier), tier, PIER_SPACING)
+      if tier.is_roofed then
+        building.roof(part, spec.palette, ROOF, tier)
+      end
+    end
+    hip_roof(part, spec.palette, part.top)
+  end
+  building.enter(parts, spec)
+  building.crown(parts, spec.palette, building.pick(parts, CROWNS))
 end
 
 return rowhouse

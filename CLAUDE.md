@@ -7,10 +7,10 @@ A voxel engine on the hyperbolic {5,3,4} honeycomb, written in D (betterC, LDC) 
 - Build: `dub build -q -b release --compiler=ldc2` (add `-c headless` for the headless tools)
 - Unit tests: `dub test -q --compiler=ldc2`
 - Behavior tests: `dub run -q -b release --compiler=ldc2 -c headless -- --out /dev/stdout tests`
-- Repaint check: `dub run -q -b release --compiler=ldc2 -c headless -- --worldgen structure city --check-repaint --out /dev/stdout` (also `planet`)
+- Repaint check: `dub run -q -b release --compiler=ldc2 -c headless -- --worldgen structure city --check-repaint --out /dev/stdout` (also `backrooms`)
 - Material census (cells of each material in the terrain world around the origin):
   `dub run -q -b release --compiler=ldc2 -c headless -- --material-census 5 --out /dev/stdout`
-- Structure slice (each quarter around the root at one height, `#` solid and `.` open):
+- Structure slice (generated voxels in each quarter around the root at one height, `#` solid and `.` open):
   `dub run -q -b release --compiler=ldc2 -c headless -- --worldgen structure backrooms --slice 1 --out /dev/stdout`
 - Load and flight benchmark: `dub run -q -b release --compiler=ldc2 -- --bench-load [--profile] --out /dev/stdout`
 - Screenshot: `dub run -q -b release --compiler=ldc2 -- --screenshot screenshots/<new name>.png --out /dev/stdout tests/visual/<script>.lua`
@@ -52,8 +52,9 @@ Layers depend only on the ones above them: `base` on nothing, `geometry` on `bas
   - `traversal.d`: the nearby search; `eviction.d`: unloading nodes, chunks and tiles.
   - `character/`: collision and movement; `raycast/`: ray casts.
   - `worldgen/`: `generation.d` (node state, chunk generation), `climate.d`, `plane.d`, `sky.d` (skies and the
-    worlds near each node), `structure.d` (sites and lines), `blueprint.d` (painted brushes), `store.d` (structure
-    per node, buildings), `building.d`, `spawn.d`.
+    worlds near each node), `structure.d` (sites and lines), `blueprint.d` (painted brushes), `strokes.d` (tapered
+    strokes along geodesics, drawn with a Lua pen and indexed by the nodes they reach), `store.d` (structure per
+    node, buildings), `building.d`, `spawn.d`.
 - `source/client/`
   - `game.d`: the player, movement modes and stepping the world.
   - `world.d`: `LocalWorld`, the per-frame update and its budget split between nearby search, streaming and eviction.
@@ -62,9 +63,11 @@ Layers depend only on the ones above them: `base` on nothing, `geometry` on `bas
   - `structures.d`: the Lua structure host on the main thread; `tiles.d`: tiles planned and painted on every thread.
   - `script.d`, `lua.d`: the test script API; `sampler.d`: the profiler; `meshing.d`, `graphics/`: rendering.
 - `source/shaders/`: GLSL, compiled into `spv/` by the windowed build.
-- `structures/`: embedded Lua structures. `planet.lua` is the terrain world's road and the skies it opens, whose
-  kinds are in `sky.lua`; `connector.lua` is the tower up to a sky. `town.lua` lays out city blocks, built by the
-  types in `buildings/` on `buildings/kit.lua`. `backrooms/layout.lua` lays out the backrooms' layers of rooms along
-  the same street network, painted by `backrooms/kit.lua` with the layers and biomes in `backrooms/levels.lua`;
-  `backrooms.lua` is a world of nothing else. `tests/`: behavior tests (`lib/` helpers, `visual/` screenshot scripts,
-  `live/` tests that load the world live).
+- `structures/`: embedded Lua. Every top-level file is a structure, a function of a site; the subdirectories hold
+  what they share. `bigtree.lua` is the terrain world's structure, a tree drawn with the pen. `tower.lua`, `crown.lua`
+  and `trail.lua` build on `tower/box.lua`; `road.lua` is a viaduct; `connector.lua` is the tower up to a sky, whose
+  kinds are the tiles in `skies/`. `city.lua` tiles the ground with `city/blocks.lua`, which lays out city blocks
+  built by the types in `buildings/` on `buildings/building.lua`. `backrooms/layout.lua` lays out the backrooms'
+  layers of rooms along the same street network, painted by `backrooms/rooms.lua` with the layers and biomes in
+  `backrooms/levels.lua`; `backrooms.lua` is a world of nothing else.
+- `tests/`: behavior tests (`lib/` helpers, `visual/` screenshot scripts, `live/` tests that load the world live).

@@ -4,7 +4,6 @@ local RISE = 0.7
 local AHEAD = 2.0
 local LOOK_DOWN_DEGREES = 25
 
--- Over the ground and well along it, looking out across it; any higher and the ground shrinks to a disc below.
 return function(world)
   world:mode("noclip")
   world:press(AHEAD / NOCLIP_SPEED, "fwd")

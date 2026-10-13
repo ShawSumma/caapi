@@ -98,14 +98,12 @@ struct RouteStop {
     ColumnSpot spot;
 }
 
-// A stretch of one painter's brushes that all lie on one line.
 struct LineRun {
     uint line;
     uint first;
     uint count;
 }
 
-// Brushes kept by whoever painted them, in runs by line.
 struct PaintedBrushes {
     Array!Brush brushes;
     Array!LineRun runs;
@@ -116,14 +114,11 @@ struct PaintedBrushes {
     }
 }
 
-// A run by its painter, a tile's record or PLACED_RECORD for placed structures, and its place among their runs.
 struct RunRef {
     uint record;
     uint run;
 }
 
-// A tile keeps the brushes it painted, so it can be dropped and painted again later: tiles decide everything from
-// site hashes, and the touches they recorded stay.
 struct TileRecord {
     PaintedBrushes painted;
     NodeId face;
@@ -164,8 +159,6 @@ enum PaintResult : ubyte {
     behind,
 }
 
-// Each line lists the runs painted on it, so the brushes a node needs are found from its lines alone, and dropping a
-// tile only takes its own runs off the lines it painted.
 struct Blueprint {
     Array!LineSpec lines;
     Array!(Array!RunRef) runsOn;
@@ -191,8 +184,6 @@ struct Blueprint {
         return blueprint;
     }
 
-    // The stored node is only read while painting, and painting finds the line's node again, so the slot is refreshed
-    // here instead of keeping the node alive for as long as the line exists.
     uint lineOf(LineSpec spec, NodeId node) {
         LineKey key = LineKey(node, spec.lower, spec.xSide, spec.ySide);
         const(uint)* found = lineIndex.find(key);
@@ -217,14 +208,12 @@ struct Blueprint {
         return record == PLACED_RECORD ? placed : tiles.ptr[record].painted;
     }
 
-    // Brushes paint over those with lower orders, so orders follow the order things were painted in.
     uint takeOrders(uint count) {
         uint first = brushCount;
         brushCount += count;
         return first;
     }
 
-    // A brush on the same line as its painter's last one joins that run.
     void addBrush(uint record, uint line, Brush brush) {
         PaintedBrushes* painted = &paintedBy(record);
         if (painted.runs.length == 0 || painted.runs.ptr[painted.runs.length - 1].line != line) {
@@ -250,7 +239,6 @@ struct Blueprint {
         record.isDropped = true;
     }
 
-    // The brushes on a line whose heights reach into an edge level, in no particular order.
     void collectBrushes(uint line, int level, ref Array!Brush into) const {
         foreach (listed; runsOn.ptr[line].slice()) {
             const(PaintedBrushes)* painted = &paintedBy(listed.record);
@@ -271,7 +259,6 @@ struct Blueprint {
         return total;
     }
 
-    // Paint numbers count from 1 in the order materials were first painted; 0 is no paint.
     ubyte paintOf(Material material) {
         if (paints[material] == 0) {
             materials.append(material);
@@ -367,7 +354,6 @@ struct BlueprintBuilder {
         }
     }
 
-    // Nodes only gain structure between calls, so levels found open stay open for the rest of a tile or growth step.
     bool isAhead(ref SiteLine found, int lowEdge, int highEdge) {
         if (found.open.contains(lowEdge, highEdge)) {
             return true;

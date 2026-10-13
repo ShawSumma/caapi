@@ -15,7 +15,6 @@ local CEILINGS = {
   concrete = true,
 }
 
--- The connector climbs from the planet into the backrooms, where the floor is carpet and the ceiling is low.
 return function(world)
   world:worldgen("structure", BACKROOMS)
   world:enter_route()

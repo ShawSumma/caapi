@@ -1,7 +1,5 @@
 local walk = require("lib.walk")
 
--- The nodes around the camera are drawn where a fresh search from the camera puts them, however far the camera has
--- flown since the set it draws from was last searched afresh.
 local CLIMB_SECONDS = 2
 local LEGS = 6
 local LEG_DISTANCE = 1.0

@@ -5,7 +5,6 @@ local BACKROOMS = "tests/lib/backrooms.lua"
 local TURN_DEGREES = 180
 local AHEAD_SECONDS = 1.5
 
--- Up the connector, then a few steps out into the rooms, looking back across the lobby.
 return function(world)
   world:worldgen("structure", BACKROOMS)
   world:enter_route()

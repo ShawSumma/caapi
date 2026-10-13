@@ -20,8 +20,6 @@ struct HashSlot(K, V) {
     V value;
 }
 
-// Linear probing over a separate byte per slot: EMPTY, REMOVED, or LIVE with seven more bits of the key's hash, so a
-// probe walks a dense byte array and compares keys only where those bits match.
 struct HashTable(K, V) {
     ubyte* controls;
     HashSlot!(K, V)* slots;
@@ -47,12 +45,10 @@ struct HashTable(K, V) {
         return key.toHash() * FIBONACCI_MULTIPLIER;
     }
 
-    // The tag comes from the bits just below the ones that pick the slot, which the multiply mixes as well.
     ubyte tagOf(size_t hash) const {
         return cast(ubyte)(LIVE | ((hash >> (shift - TAG_BITS)) & (LIVE - 1)));
     }
 
-    // The slot holding the key, or the empty slot that ends its probe.
     size_t probe(K key, size_t hash) const {
         size_t mask = capacity - 1;
         ubyte tag = tagOf(hash);
@@ -72,7 +68,6 @@ struct HashTable(K, V) {
         }
     }
 
-    // A new key takes the first removed slot on its probe, so removing and inserting keeps probes short.
     void assign(K key, V value, bool isKept) {
         size_t hash = hashOf(key);
         size_t mask = capacity - 1;
@@ -125,7 +120,6 @@ struct HashTable(K, V) {
     }
 }
 
-// Growing moves entries to the new table a few at a time over later inserts, so no single insert pays for all of them.
 struct HashMap(K, V) {
     HashTable!(K, V) current;
     HashTable!(K, V) previous;
@@ -149,7 +143,6 @@ struct HashMap(K, V) {
         previous.remove(key);
     }
 
-    // Keeps the current table's memory for the entries that come next.
     void clear() {
         current.clear();
         previous.release();

@@ -58,9 +58,6 @@ struct Run {
     uint length;
 }
 
-// Short lists that each belong to one owner, kept contiguous in a slab. A run takes the smallest power of two that
-// holds it, aligned to its own size so it never straddles two blocks, and goes back to its size's free list when
-// released, so no room is ever lost however runs come and go.
 struct RunPool(T) {
     Slab!T items;
     Array!uint[RUN_CLASSES] free;
@@ -96,7 +93,6 @@ struct RunPool(T) {
         }
     }
 
-    // The room skipped to align a run is cut into the largest aligned runs that fit it.
     void keepGap(uint from, uint to) {
         while (from < to) {
             uint size = bsf(from) < SLAB_SHIFT ? bsf(from) : SLAB_SHIFT;

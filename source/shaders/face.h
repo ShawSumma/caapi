@@ -14,8 +14,6 @@ const uint OCCLUSION_MASK = (1u << OCCLUSION_BITS) - 1u;
 const uint OCCLUSION_LEVELS = OCCLUSION_MASK;
 const float OCCLUSION_DARKEST = 0.05;
 
-// Packed by Quad in meshing.d: the cell, then the axis the face looks along, whether it faces down that axis and
-// whether its diagonal is flipped; the material, then two bits of shading for each corner.
 struct Face {
     uint pos_axis;
     uint occlusion_material;
@@ -33,7 +31,6 @@ uint face_material(Face face) {
     return face.occlusion_material & MATERIAL_MASK;
 }
 
-// Corners are numbered by their steps along the face's two in-plane axes, the first axis in the low bit.
 float face_occlusion(Face face, uvec2 corner) {
     uint index = corner.x | corner.y << 1;
     uint level = (face.occlusion_material >> (OCCLUSION_SHIFT + OCCLUSION_BITS * index)) & OCCLUSION_MASK;

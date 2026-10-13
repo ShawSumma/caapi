@@ -378,7 +378,6 @@ bool isNeighborPopulated(ref const Graph graph, ChunkSlot slot, Direction direct
     return neighbor.slot != NO_SLOT && graph.chunks.at(neighbor).state == ChunkState.populated;
 }
 
-// A chunk's cells and the ones just past its faces, which only the graph knows.
 struct ChunkCellsNear {
     const(Graph)* graph;
     ChunkSlot slot;

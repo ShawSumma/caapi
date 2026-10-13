@@ -135,7 +135,6 @@ struct CanonicalSite {
     LineTransform transform;
 }
 
-// Named for structure scripts, which pick a site's vertex, face or edge by these names.
 enum SitePart : ubyte {
     vertex,
     face,
@@ -200,7 +199,6 @@ Face crossingSide(Corner corner, ref const LineSpec spec) {
     return corner.faces[crossingAxis(corner, spec)];
 }
 
-// A node's lines are those waiting for it, and the endless ones its parents' lines carry across into it.
 void finalizeStructure(ref Graph graph, uint slot) {
     Array!LineTouch* found = &graph.structures.scratch;
     found.clear();
@@ -630,8 +628,6 @@ Motion!float nodeToNode(ref const GraphView view, uint from, uint to) {
     return transform.as!float();
 }
 
-// Faces of the right-angled dodecahedron generate a right-angled Coxeter group: a reflection cancels against the
-// last copy of itself that only commuting (adjacent) faces separate, which keeps the path as short as the true distance.
 void appendReduced(ref Array!Face path, Face side) {
     size_t index = path.length;
     while (index > 0 && path.ptr[index - 1] != side && path.ptr[index - 1].isAdjacentTo(side)) {
@@ -883,8 +879,6 @@ unittest {
     graph.release();
 }
 
-// Wherever a node is reached from, its neighbors are its reflections, and a node reached along two orders of the same
-// commuting faces is the same node.
 unittest {
     Graph graph = testGraph();
     uint deep = graph.anchorSlot;

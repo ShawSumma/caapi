@@ -23,9 +23,6 @@ layout(push_constant) uniform PushConstants {
 const uint VERTICES_PER_FACE = 6;
 const uint FIRST_SOLID_MATERIAL = 1;
 
-// A face's six vertices are two triangles over a cycle of its corners, 0 1 2 and 2 3 0, which run (0, 0), (0, 1),
-// (1, 1), (1, 0) along the face's two in-plane axes and meet along the diagonal from (0, 0) to (1, 1). Swapping the
-// axes reverses the winding; mirroring the second axis moves the diagonal and reverses the winding again.
 uvec2 face_corner(uint vertex, bool is_reversed, bool is_flipped) {
     uint step = vertex < 3 ? vertex : (vertex - 1) % 4;
     uvec2 corner = uvec2(step >> 1, ((step + 1) >> 1) & 1);

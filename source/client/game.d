@@ -68,7 +68,6 @@ float axisValue(bool isHeld) {
     }
 }
 
-// A fresh chunk of a node whose building is on its way has been asked for; it is only waiting.
 struct UnloadedCount {
     uint fresh;
     uint generating;
@@ -358,8 +357,6 @@ struct Game {
         time = time + dt;
     }
 
-    // How far the corners of the nodes within the radius are drawn from where a fresh search from the camera's node
-    // puts them, as seen from the camera.
     Length frameDrift(Length radius) {
         NearbyScratch scratch;
         NearbyNode[] fresh = scratch.collectAll(world.graph, world.cameraPosition, radius.value);

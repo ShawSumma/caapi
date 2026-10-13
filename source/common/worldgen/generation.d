@@ -13,9 +13,11 @@ import common.worldgen.building : Building;
 import common.worldgen.climate : Climate, CubeClimate, NodeClimate, SNOW_WARMTH, UniformRock, WATER_LEVEL, groundAt, isDesert, openAt, uniformRock;
 import common.worldgen.plane : Plane;
 import common.worldgen.sky : Ground, Grounds, PLANET, groundsAt;
+import common.worldgen.strokes : Stroke;
 import common.worldgen.structure : firstSideAmong, ringFaces;
 import geometry.cube : CELL_STEPS;
-import geometry.honeycomb : CUBE_GRID_RADIUS, Corner, FACE_COUNT, Face;
+import geometry.honeycomb : CUBE_GRID_RADIUS, CUBE_RADIUS, Corner, FACE_COUNT, Face, cubeCenter, cubeToNode;
+import geometry.lorentz : Mat4, Vec4;
 
 enum WorldgenKind : ubyte {
     terrain,
@@ -24,7 +26,7 @@ enum WorldgenKind : ubyte {
 }
 
 enum size_t STRUCTURE_NAME_CAPACITY = 256;
-enum string TERRAIN_STRUCTURE = "planet";
+enum string TERRAIN_STRUCTURE = "bigtree";
 
 struct PlaneWorld {
     float tiltRadians;
@@ -120,7 +122,6 @@ enum TreeKind : ubyte {
     cactus,
 }
 
-// How a tree's wood and leaves are laid out around its trunk.
 enum TreeShape : ubyte {
     round,
     cone,
@@ -177,6 +178,9 @@ enum float DEGREES_PER_HALF_TURN = 180.0f;
 enum ulong SPLITMIX_INCREMENT = 0x9e3779b97f4a7c15;
 enum ulong SPLITMIX_MULTIPLIER_1 = 0xbf58476d1ce4e5b9;
 enum ulong SPLITMIX_MULTIPLIER_2 = 0x94d049bb133111eb;
+enum uint CHUNK_ROLL_SHIFT = 32;
+enum uint ROLL_DISCARDED_BITS = 40;
+enum float ROLL_RANGE = 1 << 24;
 enum ubyte TEST_DIMENSION = 12;
 
 struct SplitMix {
@@ -191,8 +195,6 @@ struct SplitMix {
     }
 }
 
-// What a node knows about the world around it: where the planet's ground lies and a plane across it that tilted
-// worlds slope along, both carried from its first parent by reflection, and its climate, drawn from all its parents.
 struct NodeState {
     Plane surface;
     Plane reference;
@@ -281,6 +283,7 @@ struct ChunkStructure {
 
 struct ChunkParams {
     const(Building)* building;
+    const(Stroke)[] strokes;
     ulong nodeSpice;
     Grounds grounds;
     CubeClimate climate;
@@ -292,13 +295,13 @@ struct ChunkParams {
     bool hasStructure;
     bool isResolvingMaterials;
 
-    // Another thread's view can only make these once the node's structure is finished, which the caller checks first.
     static ChunkParams make(ref GraphView view, uint slot, Corner chunk) {
         ChunkStructure structure = view.chunkStructureAt(slot);
         assert(structure.isKnown);
         NodeState state = view.stateAt(slot);
         return ChunkParams(
             structure.building,
+            strokesNear(view.strokesAt(slot), chunk),
             view.idAt(slot).spice(),
             view.groundsAt(slot),
             CubeClimate.around(view, slot, chunk),
@@ -348,7 +351,6 @@ struct ChunkParams {
         return ValueRange(center - radius, center + radius);
     }
 
-    // Terrain that dips below the water level is covered by water up to it.
     float terrainCeiling(uint index) const {
         if (ground(index).isFlat) {
             return 0;
@@ -389,7 +391,7 @@ struct ChunkParams {
     }
 
     bool isProvenClear() const {
-        return !hasStructure && isClearOfAll();
+        return !hasStructure && strokes.length == 0 && isClearOfAll();
     }
 
     bool isProvenBelowTerrain(float highest) const {
@@ -397,7 +399,7 @@ struct ChunkParams {
     }
 
     Occupancy predictOccupancy() const {
-        if (hasStructure) {
+        if (hasStructure || strokes.length > 0) {
             return Occupancy.unknown;
         } else if (isClearOfAll()) {
             return Occupancy.empty;
@@ -422,10 +424,20 @@ struct ChunkParams {
                 generator.generateTrees(index);
             }
         }
+        generator.generateStrokes();
         generator.generateStructure();
         generator.voxels.compress(dimension);
         return GeneratedVoxels(generator.voxels, generator.hasDeferredMaterials);
     }
+}
+
+const(Stroke)[] strokesNear(const(Stroke)[] strokes, Corner chunk) {
+    Vec4!float center = cubeCenter(chunk).v;
+    size_t index = 0;
+    while (index < strokes.length && !strokes[index].isWithin(center, CUBE_RADIUS)) {
+        index += 1;
+    }
+    return index < strokes.length ? strokes : null;
 }
 
 struct GeneratedVoxels {
@@ -433,7 +445,6 @@ struct GeneratedVoxels {
     bool hasDeferredMaterials;
 }
 
-// Called between slices of a chunk, so the thread generating it can briefly do something more urgent.
 struct Yield {
     void function(void* context) call;
     void* context;
@@ -452,8 +463,6 @@ struct TerrainGenerator {
     Yield yield;
     bool hasDeferredMaterials;
 
-    // A chunk the ground fills entirely is one rock when the climate allows only one, and otherwise gets a stand-in
-    // until a neighbor opens it up, since nobody sees which rock fills it until then.
     void generateTerrain(uint ground) {
         ubyte dimension = params.dimension;
         ValueRange altitudes = params.altitudes(ground);
@@ -461,7 +470,7 @@ struct TerrainGenerator {
             UniformRock rock = params.provenUniformRock(altitudes);
             if (rock.isProven) {
                 fillEmpty(rock.material);
-            } else if (!params.isResolvingMaterials && !params.hasStructure && params.grounds.count == 1 && params.isProvenBelowTerrain(altitudes.high)) {
+            } else if (!params.isResolvingMaterials && !params.hasStructure && params.strokes.length == 0 && params.grounds.count == 1 && params.isProvenBelowTerrain(altitudes.high)) {
                 voxels = Voxels.filled(DEFERRED_STAND_IN_MATERIAL);
                 hasDeferredMaterials = true;
             } else {
@@ -530,6 +539,47 @@ struct TerrainGenerator {
         }
     }
 
+    void generateStrokes() {
+        if (params.strokes.length > 0) {
+            ubyte dimension = params.dimension;
+            Array!Stroke near;
+            Vec4!float center = cubeCenter(params.chunk).v;
+            foreach (stroke; params.strokes) {
+                if (stroke.isWithin(center, CUBE_RADIUS)) {
+                    near.append(stroke);
+                }
+            }
+            Mat4!float toNode = params.chunk.cubeToNode;
+            foreach (x; 0 .. dimension) {
+                foreach (y; 0 .. dimension) {
+                    foreach (z; 0 .. dimension) {
+                        float[3] cube = params.layout.cellCenter([x, y, z]);
+                        Vec4!float point = (toNode * Vec4!float([cube[0], cube[1], cube[2], 1.0f])).toPoint().v;
+                        size_t index = cellIndex(dimension, x, y, z);
+                        Material existing = voxels.at(index);
+                        Material material = existing;
+                        float roll = cellRoll(index);
+                        foreach (ref stroke; near.slice()) {
+                            if ((!stroke.isLeafy || material == Material.none) && stroke.holds(point, roll)) {
+                                material = stroke.material;
+                            }
+                        }
+                        if (material != existing) {
+                            voxels.toDense(dimension)[index] = material;
+                        }
+                    }
+                }
+                yield.now();
+            }
+            near.release();
+        }
+    }
+
+    float cellRoll(size_t index) const {
+        ulong bits = SplitMix(params.nodeSpice ^ (cast(ulong) params.chunk << CHUNK_ROLL_SHIFT) ^ index).next();
+        return cast(float)(bits >> ROLL_DISCARDED_BITS) / ROLL_RANGE;
+    }
+
     void generateTerrainVoxel(uint ground, float[3] center, size_t index) {
         Climate here = params.climate.at(center);
         float altitude = params.ground(ground).surface.distanceToChunk(params.chunk, center);
@@ -542,7 +592,6 @@ struct TerrainGenerator {
         }
     }
 
-    // Dry ground still gets a few trees, of the kinds that grow there.
     void generateTrees(uint ground) {
         ubyte dimension = params.dimension;
         if (!voxels.isUniform() && dimension > MIN_TREE_DIMENSION) {
@@ -632,7 +681,6 @@ struct TreeFrame {
     }
 }
 
-// How many levels above the trunk's last a shape still has leaves or wood on.
 int aboveTrunk(TreeShape shape) {
     final switch (shape) {
         case TreeShape.round:
@@ -654,9 +702,6 @@ bool isInChunk(int[3] cell, ubyte dimension) {
     return cell[0] >= 0 && cell[0] < dimension && cell[1] >= 0 && cell[1] < dimension && cell[2] >= 0 && cell[2] < dimension;
 }
 
-// Cold ground grows conifers and dead snags, deserts cacti, warm wet ground jungle, warm dry ground acacias, wet
-// ground willows, cool ground maples among birches and oaks, and everywhere else a mix of broadleaves. Shrubs grow
-// wherever trees do.
 TreeKind treeKind(float warmth, float wetness, ulong roll) {
     ulong choice = roll >> CHOICE_SHIFT;
     if (isDesert(warmth, wetness)) {
@@ -683,7 +728,6 @@ TreeKind treeKind(float warmth, float wetness, ulong roll) {
     }
 }
 
-// Levels count up from the cell on the ground; i and j step across from the trunk.
 bool isWood(TreeShape shape, int trunk, int level, int i, int j) {
     bool isTrunk = i == 0 && j == 0 && level < trunk;
     final switch (shape) {
@@ -741,7 +785,6 @@ bool roundLeaf(int trunk, int level, int spread, int span, bool isWide) {
     }
 }
 
-// A crown three cells across from the trunk at its widest.
 bool broadLeaf(int trunk, int level, int squared) {
     if (level == trunk - 3 || level == trunk) {
         return squared <= 5;
@@ -754,7 +797,6 @@ bool broadLeaf(int trunk, int level, int squared) {
     }
 }
 
-// A dome at the top with strands hanging from its rim nearly to the ground.
 bool weepingLeaf(int trunk, int level, int spread, int squared, int parity) {
     if (level == trunk - 1 || level == trunk) {
         return squared <= 5 - (level - trunk + 1) * 3;
@@ -763,7 +805,6 @@ bool weepingLeaf(int trunk, int level, int spread, int squared, int parity) {
     }
 }
 
-// A crown at the top of a long trunk and a tuft of leaves halfway up it.
 bool tallLeaf(int trunk, int level, int squared) {
     if (level == trunk - 2 || level == trunk - 1) {
         return squared <= 5;
@@ -802,7 +843,6 @@ bool isGroundMaterial(Material material) {
     return material == Material.dirt || material == Material.grass || material == Material.mudGrass || material == Material.lushGrass || material == Material.tanGrass || material == Material.coarseGrass;
 }
 
-// Cacti root in sand, willows and shrubs in mud too, and snags on any ground cold enough for them.
 bool isGroundFor(TreeKind kind, Material material) {
     if (kind == TreeKind.cactus) {
         return material == Material.sand || material == Material.redSand;

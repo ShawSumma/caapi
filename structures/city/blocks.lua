@@ -1,7 +1,7 @@
+local building = require("buildings.building")
 local connector = require("connector")
-local kit = require("buildings.kit")
 
-local town = {}
+local blocks = {}
 
 local TYPES = {
   brownstone = require("buildings.brownstone"),
@@ -14,10 +14,16 @@ local TYPES = {
   civic = require("buildings.civic"),
 }
 
-local STREET = kit.STREET
-local JOINED = kit.JOINED
-local BOUNDARY = kit.LOT
+local STREET = building.STREET
+local JOINED = building.JOINED
+local BOUNDARY = building.LOT
 
+local MIX = 0x2545F4914F6CDD1D
+local MIX_SHIFT = 24
+local PERCENT = 100
+local ISLAND_SALT = 0x51ED270B
+local DROPPED_SALT = 0x2C1B3C6D
+local TREES_SALT = 0x297A2D39
 local AROUND = 4
 local SIDES = 5
 local DROPPED_STREET = 0.5
@@ -30,7 +36,6 @@ local POND_PERCENT = 50
 local FOUNTAIN_PERCENT = 60
 local ALLEY_PERCENT = 20
 local MAX_INSET = 1
-local VARIANTS = 1024
 local KINDS = {
   {
     name = "corner",
@@ -54,7 +59,7 @@ local KINDS = {
   },
 }
 local ISLAND_TYPES = { "deco", "glass", "modern", "civic" }
-local ROUTE_SPEC = { type = "tenement", stories = 4, gap = 0, route_stories = 2, variant = 0 }
+local ROUTE_SPEC = { type = "tenement", stories = 4, gap = 0, route_stories = 2 }
 
 local ROAD = { -2, 1 }
 local SIDEWALK = { 2, 3 }
@@ -67,12 +72,15 @@ local PARKING_SPACING = 3
 local CITY_GROUND = 1
 local CROWN_ROOM = 10
 
-local function roll(site, part)
-  math.randomseed(site:hash(part))
-  return math.random()
+function blocks.mixed(hash, salt)
+  return ((hash ~ salt) * MIX) >> MIX_SHIFT
 end
 
-function town.corners_of(face)
+function blocks.roll(hash, salt)
+  return (blocks.mixed(hash, salt) % PERCENT) / PERCENT
+end
+
+local function corners_of(face)
   local corners = {}
   local corner = face
   for index = 1, SIDES do
@@ -82,7 +90,7 @@ function town.corners_of(face)
   return corners
 end
 
-function town.quarters_of(corner)
+local function quarters_of(corner)
   local quarters = {}
   local turtle = corner
   for index = 1, AROUND do
@@ -92,11 +100,11 @@ function town.quarters_of(corner)
   return quarters
 end
 
-function town.upright(site)
+local function upright(site)
   return site:pitch_up():roll_right()
 end
 
-function town.is_owner(quarters)
+local function is_owner(quarters)
   local mine = quarters[1]:hash("face")
   local index = 2
   while index <= AROUND and quarters[index]:hash("face") < mine do
@@ -105,16 +113,31 @@ function town.is_owner(quarters)
   return index > AROUND
 end
 
-local corners_of = town.corners_of
-local quarters_of = town.quarters_of
-local upright = town.upright
+local function is_foot(corner, sky)
+  return corner:hash("vertex") == sky.foot:hash("vertex")
+end
+
+local function owns_foot(face, sky)
+  local is_found = false
+  for _, corner in ipairs(corners_of(face)) do
+    is_found = is_found or (is_foot(corner, sky) and is_owner(quarters_of(corner)))
+  end
+  return is_found
+end
+
+blocks.corners_of = corners_of
+blocks.quarters_of = quarters_of
+blocks.upright = upright
+blocks.is_owner = is_owner
+blocks.is_foot = is_foot
+blocks.owns_foot = owns_foot
 
 local function is_root_vertex(site, root)
   return site:hash("vertex") == root.vertex
 end
 
 local function is_island(face, root)
-  if roll(face, "face") >= ISLAND then
+  if blocks.roll(face:hash("face"), ISLAND_SALT) >= ISLAND then
     return false
   else
     local index = 1
@@ -132,7 +155,7 @@ local function is_planned_street(edge, root)
   elseif is_island(edge, root) or is_island(edge:left(), root) then
     return true
   else
-    return roll(edge, "edge") >= DROPPED_STREET
+    return blocks.roll(edge:hash("edge"), DROPPED_SALT) >= DROPPED_STREET
   end
 end
 
@@ -155,13 +178,10 @@ local function is_street(edge, root)
   end
 end
 
--- Whether the edge a turtle faces along carries a street, the same from every turtle on that edge.
-town.is_street = is_street
+blocks.is_street = is_street
 
 local function has_trees(edge)
-  math.randomseed(edge:hash("edge"))
-  math.random()
-  return math.random() < STREET_TREES
+  return blocks.roll(edge:hash("edge"), TREES_SALT) < STREET_TREES
 end
 
 local function choose(site, list)
@@ -169,7 +189,7 @@ local function choose(site, list)
 end
 
 local function chance(site, percent)
-  return site:pick(100) <= percent
+  return site:pick(PERCENT) <= percent
 end
 
 local function between(site, span)
@@ -264,7 +284,6 @@ local function plant(parts)
   end
 end
 
--- A stone basin of water with a column in the middle that water spills from.
 local function fountain(tower, x, y)
   tower:paint("marble", { x = { x - 2, x + 2 }, y = { y - 2, y + 2 }, z = { 1, 1 } })
   tower:paint("water", { x = { x - 1, x + 1 }, y = { y - 1, y + 1 }, z = { 1, 1 } })
@@ -281,7 +300,6 @@ local function fountains(parts)
   end
 end
 
--- Water sunk into the lawn on a bed of sand, leaving a rim of grass.
 local function ponds(parts)
   for _, part in ipairs(parts) do
     local tower, area = ground_of(part)
@@ -305,8 +323,8 @@ end
 
 local function spec_of(site, kind, types)
   local name = choose(site, types)
-  local building = TYPES[name]
-  local stories = between(site, { building.STORIES[1], math.min(building.STORIES[2], kind.most) })
+  local chosen = TYPES[name]
+  local stories = between(site, { chosen.STORIES[1], math.min(chosen.STORIES[2], kind.most) })
   local gap = 0
   if kind.name ~= "corner" and chance(site, ALLEY_PERCENT) then
     gap = 1
@@ -315,17 +333,17 @@ local function spec_of(site, kind, types)
   if kind.name ~= "corner" then
     front = FRONT + site:pick(MAX_INSET + 1) - 1
   end
-  return { type = name, stories = stories, palette = choose(site, building.PALETTES), front = front, gap = gap, variant = site:pick(VARIANTS) }
+  return { type = name, stories = stories, palette = choose(site, chosen.PALETTES), front = front, gap = gap }
 end
 
-function town.fit(site, stories)
+function blocks.fit(site, stories)
   local room = CROWN_ROOM + 1
-  return math.min(stories, (site:balance(stories * kit.STORY + room) - room) // kit.STORY)
+  return math.min(stories, (site:balance(stories * building.STORY + room) - room) // building.STORY)
 end
 
 local function fitted(spec, site, root)
-  if root.sky then
-    spec.stories = town.fit(site, spec.stories)
+  if root.sky ~= nil then
+    spec.stories = blocks.fit(site, spec.stories)
   end
   return spec
 end
@@ -346,7 +364,7 @@ end
 local function lot(parts, is_route, is_root, root)
   local site = parts[1].site
   local kind = KINDS[#parts]
-  if is_root and root.sky then
+  if is_root and root.sky ~= nil then
     pave(parts, "granite")
     plant(parts)
   elseif is_route then
@@ -394,7 +412,6 @@ local function part_of(quarter, is_street_before, is_street_after, is_first)
   return { site = quarter, x_low = x_low, y_low = y_low, x_high = BOUNDARY, y_high = BOUNDARY, front = front, joins = {} }
 end
 
--- Quarters next to each other in a run share the edge between them, the first's x_low side and the next's y_low.
 local function join(run)
   for index, part in ipairs(run) do
     if part.x_low == JOINED then
@@ -415,8 +432,8 @@ local function lots_at(quarters, root)
     any = any or streets[index]
   end
   local is_root = is_root_vertex(quarters[1], root)
-  if is_root and root.sky then
-    connector.build(quarters[1], root.sky, CITY_GROUND, root.is_routed)
+  if is_root and root.sky ~= nil then
+    connector(quarters[1], root.sky, CITY_GROUND, root.is_routed)
   end
   local start = 1
   while start <= AROUND and not streets[start] do
@@ -460,11 +477,11 @@ local function island(corners, root)
   end
 end
 
-function town.root(site)
-  return { vertex = site:hash("vertex"), face = site:hash("face") }
+function blocks.root(site, sky, is_routed)
+  return { vertex = site:hash("vertex"), face = site:hash("face"), sky = sky, is_routed = is_routed }
 end
 
-function town.tile(face, root)
+function blocks.tile(face, root)
   local corners = corners_of(face)
   local mine = face:hash("face")
   for _, edge in ipairs(corners) do
@@ -474,7 +491,7 @@ function town.tile(face, root)
   end
   for _, corner in ipairs(corners) do
     local quarters = quarters_of(corner)
-    if town.is_owner(quarters) then
+    if is_owner(quarters) then
       lots_at(quarters, root)
     end
   end
@@ -483,4 +500,4 @@ function town.tile(face, root)
   end
 end
 
-return town
+return blocks

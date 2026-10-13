@@ -40,8 +40,6 @@ struct DrawTransform {
     float[POINT_FLOATS] reversed;
 }
 
-// Drawable records live in memory the GPU reads, which is slow to read back, so whether a record still waits for its
-// node is kept here.
 struct RenderChunk {
     uint faceOffset;
     uint faceCount;
@@ -72,8 +70,6 @@ struct MeshBatch {
     const(Graph)* graph;
 }
 
-// A chunk waits while a neighbor across a face is on its way, and asks for a dropped one back, since its border faces
-// come from that neighbor's cells.
 void meshJob(void* context, size_t index, uint worker) {
     MeshBatch* batch = cast(MeshBatch*) context;
     const(Graph)* graph = batch.graph;
@@ -206,8 +202,6 @@ struct ChunkMeshes {
         hasReplacedDrawBuffers = false;
     }
 
-    // A new nearby set renumbers every node and a set moved to another frame changes every transform, while a growing
-    // one only adds nodes, which only the drawables whose node was missing can be waiting for.
     void list(ref const NearbyScratch nearby, uint listVersion) {
         if (listVersion != listedVersion) {
             listedVersion = listVersion;

@@ -7,7 +7,6 @@ local TURN_DEGREES = 40
 local BACK_SECONDS = 1
 local SIDE_DEGREES = -60
 
--- Up the connector and on out of the lobby into the rooms as far as the walls allow, then back a little and aside.
 return function(world)
   world:worldgen("structure", BACKROOMS)
   world:enter_route()

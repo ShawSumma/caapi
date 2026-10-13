@@ -1,7 +1,7 @@
-local box = require("box")
+local box = require("tower.box")
 
 local CORNERS = 5
-local EDGES = 2
+local HEIGHT_EDGES = 2
 local HALL_ROOF = 2 * box.STORY
 local HALL_WINDOW_OFFSET = 2
 local FIRST_BALCONY_STORY = 3
@@ -25,7 +25,7 @@ end
 
 local function hall_wall(tower, palette, is_ahead, has_door)
   local _, far = tower:column()
-  local window = box.HALF + HALL_WINDOW_OFFSET
+  local window = box.HALF_WIDTH + HALL_WINDOW_OFFSET
   local function strip(from, to, low, high)
     if is_ahead then
       return { x = { from, to }, y = { 0, 0 }, z = { low, high } }
@@ -52,13 +52,13 @@ local function hall(tower, palette, has_door_ahead, has_door_behind)
 end
 
 local function open_to_hall(tower, palette)
-  local quarter = { 0, box.HALF - 1 }
+  local quarter = { 0, box.HALF_WIDTH - 1 }
   tower:paint(palette.floor, { x = quarter, y = quarter, z = { 0, HALL_ROOF } }, box.FLOORS)
   tower:paint("air", { x = quarter, y = quarter, z = { 0, HALL_ROOF - 1 } }, box.ROOMS)
 end
 
 local function doors(tower)
-  local face = { box.HALF - 1, box.HALF - 1 }
+  local face = { box.HALF_WIDTH - 1, box.HALF_WIDTH - 1 }
   local terrace = { HALL_ROOF + 1, HALL_ROOF + box.DOOR }
   local bridge = { tower:edge_cells() + 1, tower:edge_cells() + box.DOOR }
   tower:paint("air", { x = face, y = { 1, 2 }, z = terrace })
@@ -78,8 +78,8 @@ local function balcony(tower, palette, is_on_x_face, side_low, story, top)
       return { x = sideways, y = outward, z = heights }
     end
   end
-  local slab = place({ -box.HALF - BALCONY_DEPTH, -box.HALF - 1 }, { side_low, side_low + BALCONY_WIDTH - 1 })
-  local door = place({ -box.HALF, -box.HALF }, { side_low + 1, side_low + BALCONY_WIDTH - 2 })
+  local slab = place({ -box.HALF_WIDTH - BALCONY_DEPTH, -box.HALF_WIDTH - 1 }, { side_low, side_low + BALCONY_WIDTH - 1 })
+  local door = place({ -box.HALF_WIDTH, -box.HALF_WIDTH }, { side_low + 1, side_low + BALCONY_WIDTH - 2 })
   tower:paint(palette.floor, slab, { every = every_other_story, from = floor, span = 1 })
   tower:paint("air", door, { every = every_other_story, from = floor + 1, span = box.DOOR })
 end
@@ -98,13 +98,13 @@ local function bridge_behind(corner)
 end
 
 local function deck(bridge, palette)
-  bridge:paint(palette.floor, { x = { -1, 0 }, y = { 0, 0 }, z = { box.HALF, bridge:edge_cells() } })
+  bridge:paint(palette.floor, { x = { -1, 0 }, y = { 0, 0 }, z = { box.HALF_WIDTH, bridge:edge_cells() } })
 end
 
 local function arch_route(from, to)
   local apex = from:edge_cells() - 0.5
   local stops = {}
-  local along = box.HALF + 0.5
+  local along = box.HALF_WIDTH + 0.5
   while along < apex do
     stops[#stops + 1] = along
     along = along + ARCH_STOP_CELLS
@@ -120,7 +120,7 @@ end
 
 return function(site)
   local palette = box.palette(site)
-  local top = box.top(site, EDGES)
+  local top = box.top(site, HEIGHT_EDGES)
   local bridge_floor = site:edge_cells()
   local corners = corners_of(site)
   for index, corner in ipairs(corners) do
@@ -136,10 +136,10 @@ return function(site)
   local first = upright(corners[1])
   local second = upright(corners[2])
   box.stair_route(first, 0, bridge_floor)
-  first:stop(box.HALF - 1.5, box.ROUTE_LANE, bridge_floor + 1)
-  first:stop(box.HALF + 0.5, box.ROUTE_LANE, bridge_floor + 1)
+  first:stop(box.HALF_WIDTH - 1.5, box.ROUTE_LANE, bridge_floor + 1)
+  first:stop(box.HALF_WIDTH + 0.5, box.ROUTE_LANE, bridge_floor + 1)
   arch_route(bridge_ahead(corners[1]), bridge_behind(corners[2]))
-  second:stop(box.ROUTE_LANE, box.HALF - 1.5, bridge_floor + 1)
+  second:stop(box.ROUTE_LANE, box.HALF_WIDTH - 1.5, bridge_floor + 1)
   second:stop(box.ROUTE_LANE, box.ROUTE_LANE, bridge_floor + 1)
   box.stair_route(second, bridge_floor, top)
   corners[1]:entrance(0, 1, site:edge_cells() // 2)

@@ -31,9 +31,6 @@ struct ChunkSlot {
     }
 }
 
-// Where a cube's cell walls sit. Cube coordinates run from 0 at the corner to 1 at the node's center, and the corner
-// frame's Klein coordinates are those scaled by the cube size. Cells shrink geometrically toward the center, where
-// the Klein coordinates stretch space least, so that every cell holds about the same volume.
 struct ChunkLayout {
     float kleinToCube;
     float cellRatio;
@@ -130,8 +127,6 @@ size_t cellIndex(ubyte dimension, uint x, uint y, uint z) {
     return x + dimension * (y + cast(size_t) dimension * z);
 }
 
-// A chunk's cells: either a pointer to all of them, or the one material that fills the chunk. No allocation lives
-// below MATERIAL_COUNT, so a value that small is a fill material.
 struct Voxels {
     size_t bits;
 
@@ -147,8 +142,6 @@ struct Voxels {
         return bits == material;
     }
 
-    // Chunks filled with something opaque show no faces of their own: every face on their border is drawn by the
-    // see-through neighbor in front of it.
     bool isOpaqueFill() const {
         return isUniform() && !isSeeThrough(cast(Material) bits);
     }

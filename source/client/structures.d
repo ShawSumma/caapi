@@ -1,9 +1,10 @@
 module client.structures;
 
+import core.stdc.math : asin, asinh, atan2, cos, cosh, sin, sinh, sqrt;
 import core.stdc.stdio : snprintf;
 import core.stdc.stdlib : free, malloc;
 import core.stdc.string : memcpy, strlen;
-import bindings.lua : luaL_checkinteger, luaL_checklstring, luaL_checknumber, luaL_checktype, luaL_checkudata, luaL_error, luaL_loadbufferx, luaL_loadfilex, luaL_newmetatable, luaL_ref, luaL_setmetatable, luaL_testudata, luaL_unref, lua_CFunction, lua_Integer, lua_State, lua_close, lua_createtable, lua_getfield, lua_getglobal, lua_gettop, lua_newuserdatauv, lua_pcallk, lua_pushboolean, lua_pushcclosure, lua_pushinteger, lua_pushlightuserdata, lua_pushvalue, lua_rawgeti, lua_rawseti, lua_setfield, lua_settop, lua_tointegerx, lua_tolstring, lua_touserdata, lua_type;
+import bindings.lua : luaL_checkinteger, luaL_checklstring, luaL_checknumber, luaL_checktype, luaL_checkudata, luaL_error, luaL_loadbufferx, luaL_loadfilex, luaL_newmetatable, luaL_ref, luaL_setmetatable, luaL_testudata, luaL_unref, lua_CFunction, lua_Integer, lua_State, lua_close, lua_createtable, lua_getfield, lua_getglobal, lua_gettop, lua_newuserdatauv, lua_pcallk, lua_pushboolean, lua_pushcclosure, lua_pushinteger, lua_pushlightuserdata, lua_pushnumber, lua_pushvalue, lua_rawgeti, lua_rawseti, lua_setfield, lua_settop, lua_tointegerx, lua_tolstring, lua_touserdata, lua_type;
 import client.game : Game;
 import client.lua : LUA_BELOW_TOP, LUA_FIRST_UPVALUE, LUA_NO_REF, LUA_REGISTRY, LUA_SECOND_UPVALUE, LUA_STATUS_OK, LUA_TOP, LUA_TYPE_FUNCTION, LUA_TYPE_TABLE, LuaLookup, LuaName, SELF, TRACEBACK_INDEX, isNoneOrNil, luaTraceback, newSafeState, registerMethod, setPackagePath;
 import base.array : Array;
@@ -16,9 +17,12 @@ import common.worldgen.store : Grower;
 import common.worldgen.blueprint : BlueprintBuilder, CellBox, EVERY_HEIGHT, PaintResult, Rhythm, TileRecord;
 import common.worldgen.embedded : EMBEDDED_MODULES, EMBEDDED_STRUCTURES, EmbeddedLua, embeddedIndex, isLuaPath;
 import common.worldgen.generation : STRUCTURE_NAME_CAPACITY, SplitMix, StructureWorld, Worldgen;
+import common.worldgen.plane : Plane;
 import common.worldgen.sky : LOWEST_SKY_EDGES, PLANET, SkyChoice, SkyGround, SkyKind, Skies, World, balanceAlong, ensureWorldsAt, isPaintedBySky, measuredWorld, openSky, worldGroundNodeOf;
-import common.worldgen.structure : ClaimKey, ColumnSpot, GROUND_RING, PLACE_SLACK, RootedCorner, SiteFrame, SitePart, Turn, anchorBits, claimKeyOf, edgeCells, faceSite, forwarded, groundRing, rootSite, siteHash, siteOrigin, turned;
+import common.worldgen.strokes : Stroke;
+import common.worldgen.structure : ClaimKey, ColumnSpot, GROUND_RING, PLACE_SLACK, RootedCorner, SiteFrame, SitePart, Turn, anchorBits, claimKeyOf, edgeCells, edgeLength, faceSite, forwarded, groundRing, rootSite, siteHash, siteOrigin, sitePlacement, turned;
 import geometry.honeycomb : Face;
+import geometry.lorentz : Motion, Vec4;
 
 enum size_t MESSAGE_CAPACITY = 1024;
 enum int CHUNK_RESULTS = 1;
@@ -30,7 +34,76 @@ enum int PLACED_FUNCTION = 1;
 enum int SKY_TILE = SELF + 3;
 enum int SKY_FIELDS = 5;
 enum string SITE_TYPE = "mined.site";
+enum string PEN_TYPE = "mined.pen";
 enum string AIR = "air";
+enum double RADIANS_PER_DEGREE = 0.017453292519943295;
+enum double HALF_TURN = 3.141592653589793;
+enum double VERTICAL_TOLERANCE = 1e-9;
+enum uint RANDOM_DISCARDED_BITS = 11;
+enum double RANDOM_UNIT = 1.0 / (1UL << 53);
+enum size_t ACROSS = 0;
+enum size_t UP = 1;
+enum size_t AHEAD = 2;
+
+struct Pen {
+    Motion!double frame;
+    Vec4!double ground;
+    uint node;
+
+    double[3] up() const {
+        Vec4!double local = frame.inverse() * ground;
+        double length = sqrt(local.c[0] * local.c[0] + local.c[1] * local.c[1] + local.c[2] * local.c[2]);
+        return [local.c[0] / length, local.c[1] / length, local.c[2] / length];
+    }
+
+    Pen moved(double distance) const {
+        return Pen((frame * Motion!double.shift([0, 0, distance])).orthonormalized(), ground, node);
+    }
+
+    Pen turned(double[3] from, double[3] toward, double degrees) const {
+        return Pen(frame * planeRotation(from, toward, degrees * RADIANS_PER_DEGREE), ground, node);
+    }
+
+    Pen lifted(double degrees) const {
+        double[3] rising = up();
+        double side = sqrt(rising[0] * rising[0] + rising[1] * rising[1]);
+        if (side < VERTICAL_TOLERANCE) {
+            return this;
+        } else {
+            double toUp = atan2(side, rising[AHEAD]);
+            double angle = degrees * RADIANS_PER_DEGREE;
+            if (angle > toUp) {
+                angle = toUp;
+            } else if (angle < toUp - HALF_TURN) {
+                angle = toUp - HALF_TURN;
+            }
+            return Pen(frame * planeRotation(axisOf(AHEAD), [rising[0] / side, rising[1] / side, 0], angle), ground, node);
+        }
+    }
+}
+
+double[3] axisOf(size_t axis) {
+    double[3] unit = [0, 0, 0];
+    unit[axis] = 1;
+    return unit;
+}
+
+Motion!double planeRotation(double[3] from, double[3] toward, double angle) {
+    Motion!double rotation = Motion!double.identity();
+    double turn = sin(angle);
+    double shrink = cos(angle) - 1;
+    foreach (col; 0 .. 3) {
+        foreach (row; 0 .. 3) {
+            rotation.m.c[col][row] += turn * (toward[row] * from[col] - from[row] * toward[col]) + shrink * (from[row] * from[col] + toward[row] * toward[col]);
+        }
+    }
+    return rotation;
+}
+
+Vec4!double unitNormal(Plane plane) {
+    double stretch = cosh(plane.height);
+    return Vec4!double([plane.up[0] * stretch, plane.up[1] * stretch, plane.up[2] * stretch, -sinh(plane.height)]);
+}
 
 struct StructureProblem {
     char[MESSAGE_CAPACITY] text;
@@ -95,6 +168,7 @@ struct StructureHost {
         lua = newSafeState();
         registerModules(lua);
         registerSiteType();
+        registerPenType();
         lua_pushcclosure(lua, cast(lua_CFunction) &luaTraceback, 0);
         immutable int status = loadStructureChunk(lua, name.name());
         if (status != LUA_STATUS_OK) {
@@ -266,8 +340,35 @@ struct StructureHost {
         lua.registerMethod(&this, "open_sky", &luaSiteOpenSky);
         lua.registerMethod(&this, "balance", &luaSiteBalance);
         lua.registerMethod(&this, "hash", &luaSiteHash);
+        lua.registerMethod(&this, "pen", &luaSitePen);
         lua_setfield(lua, LUA_BELOW_TOP, "__index");
         lua_settop(lua, LUA_BELOW_TOP);
+    }
+
+    void registerPenType() {
+        luaL_newmetatable(lua, PEN_TYPE.ptr);
+        lua_createtable(lua, 0, 0);
+        lua.registerMethod(&this, "forward", &luaPenForward);
+        lua.registerMethod(&this, "turn", &luaPenTurn);
+        lua.registerMethod(&this, "roll", &luaPenRoll);
+        lua.registerMethod(&this, "lift", &luaPenLift);
+        lua.registerMethod(&this, "rise", &luaPenRise);
+        lua.registerMethod(&this, "height", &luaPenHeight);
+        lua.registerMethod(&this, "limb", &luaPenLimb);
+        lua.registerMethod(&this, "leaves", &luaPenLeaves);
+        lua.registerMethod(&this, "random", &luaPenRandom);
+        lua_setfield(lua, LUA_BELOW_TOP, "__index");
+        lua_settop(lua, LUA_BELOW_TOP);
+    }
+
+    double cellLength() const {
+        return edgeLength(builder.graph.layout).value / edgeCells(dimension());
+    }
+
+    void draw(Pen pen, double cells, double fromRadius, double toRadius, Material material, bool isLeafy) {
+        Graph* graph = builder.graph;
+        double cell = cellLength();
+        graph.structures.strokes.add(graph.view, pen.node, Stroke.make(pen.frame, cells * cell, cast(float)(fromRadius * cell), cast(float)(toRadius * cell), material, isLeafy));
     }
 
     void registerTurns() {
@@ -681,6 +782,104 @@ extern (C) int luaSiteHash(lua_State* lua) {
     StructureHost* host = structureHost(lua);
     lua_pushinteger(lua, cast(lua_Integer) host.builder.graph.view.siteHash(siteArgument(lua), partArgument(lua, SELF + 1)));
     return 1;
+}
+
+extern (C) int luaSitePen(lua_State* lua) {
+    StructureHost* host = structureHost(lua);
+    SiteFrame site = siteArgument(lua);
+    Graph* graph = host.builder.graph;
+    lua.pushPen(Pen(sitePlacement(site, graph.layout).as!double(), unitNormal(graph.ensureState(site.node).surface), site.node));
+    return 1;
+}
+
+void pushPen(lua_State* lua, Pen pen) {
+    *cast(Pen*) lua_newuserdatauv(lua, Pen.sizeof, 0) = pen;
+    luaL_setmetatable(lua, PEN_TYPE.ptr);
+}
+
+StructureHost* penHost(lua_State* lua) {
+    luaL_checkudata(lua, SELF, PEN_TYPE.ptr);
+    return cast(StructureHost*) lua_touserdata(lua, LUA_FIRST_UPVALUE);
+}
+
+Pen penArgument(lua_State* lua) {
+    return *cast(const(Pen)*) luaL_checkudata(lua, SELF, PEN_TYPE.ptr);
+}
+
+extern (C) int luaPenForward(lua_State* lua) {
+    StructureHost* host = penHost(lua);
+    Pen pen = penArgument(lua);
+    lua.pushPen(pen.moved(luaL_checknumber(lua, SELF + 1) * host.cellLength()));
+    return 1;
+}
+
+extern (C) int luaPenTurn(lua_State* lua) {
+    penHost(lua);
+    Pen pen = penArgument(lua);
+    double yaw = luaL_checknumber(lua, SELF + 1);
+    double pitch = luaL_checknumber(lua, SELF + 2);
+    lua.pushPen(pen.turned(axisOf(AHEAD), axisOf(ACROSS), yaw).turned(axisOf(AHEAD), axisOf(UP), pitch));
+    return 1;
+}
+
+extern (C) int luaPenRoll(lua_State* lua) {
+    penHost(lua);
+    lua.pushPen(penArgument(lua).turned(axisOf(ACROSS), axisOf(UP), luaL_checknumber(lua, SELF + 1)));
+    return 1;
+}
+
+extern (C) int luaPenLift(lua_State* lua) {
+    penHost(lua);
+    lua.pushPen(penArgument(lua).lifted(luaL_checknumber(lua, SELF + 1)));
+    return 1;
+}
+
+extern (C) int luaPenRise(lua_State* lua) {
+    penHost(lua);
+    lua_pushnumber(lua, asin(penArgument(lua).up()[AHEAD]) / RADIANS_PER_DEGREE);
+    return 1;
+}
+
+extern (C) int luaPenHeight(lua_State* lua) {
+    StructureHost* host = penHost(lua);
+    Pen pen = penArgument(lua);
+    lua_pushnumber(lua, asinh(pen.ground.minkowski(pen.frame.m.column(3))) / host.cellLength());
+    return 1;
+}
+
+extern (C) int luaPenLimb(lua_State* lua) {
+    StructureHost* host = penHost(lua);
+    Pen pen = penArgument(lua);
+    Material material = materialArgument(lua, SELF + 1);
+    double cells = luaL_checknumber(lua, SELF + 2);
+    double fromRadius = luaL_checknumber(lua, SELF + 3);
+    double toRadius = luaL_checknumber(lua, SELF + 4);
+    host.drawWith(lua, pen, cells, fromRadius, toRadius, material, false);
+    lua.pushPen(pen.moved(cells * host.cellLength()));
+    return 1;
+}
+
+extern (C) int luaPenLeaves(lua_State* lua) {
+    StructureHost* host = penHost(lua);
+    Pen pen = penArgument(lua);
+    Material material = materialArgument(lua, SELF + 1);
+    double radius = luaL_checknumber(lua, SELF + 2);
+    host.drawWith(lua, pen, 0, radius, radius, material, true);
+    return 0;
+}
+
+extern (C) int luaPenRandom(lua_State* lua) {
+    lua_pushnumber(lua, (penHost(lua).random.next() >> RANDOM_DISCARDED_BITS) * RANDOM_UNIT);
+    return 1;
+}
+
+void drawWith(StructureHost* host, lua_State* lua, Pen pen, double cells, double fromRadius, double toRadius, Material material, bool isLeafy) {
+    if (host.builder.isGrowing) {
+        luaL_error(lua, "only the world's own structure draws with a pen");
+    } else if (!(cells >= 0) || !(fromRadius > 0) || !(toRadius > 0)) {
+        luaL_error(lua, "a pen draws a length of at least zero with radii above zero");
+    }
+    host.draw(pen, cells, fromRadius, toRadius, material, isLeafy);
 }
 
 SitePart partArgument(lua_State* lua, int index) {

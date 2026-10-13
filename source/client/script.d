@@ -433,7 +433,6 @@ extern (C) int luaIsOnGround(lua_State* lua) {
     return 1;
 }
 
-// Steps from here on load the world the way the game does, a budget at a time, instead of generating on demand.
 extern (C) int luaLive(lua_State* lua) {
     methodHost(lua).game.isGeneratingOnDemand = false;
     return 0;
@@ -444,8 +443,6 @@ extern (C) int luaIsLoaded(lua_State* lua) {
     return 1;
 }
 
-// Returns how many chunks within the distance are fresh, generating and dropped, how many nodes are missing, and how
-// many fresh chunks wait for their node's building.
 extern (C) int luaUnloadedWithin(lua_State* lua) {
     ScriptHost* host = methodHost(lua);
     UnloadedCount counted = host.game.unloadedWithin(Length(cast(float) luaL_checknumber(lua, SELF + 1)));

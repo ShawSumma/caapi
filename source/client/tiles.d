@@ -23,8 +23,6 @@ enum uint NO_RECORD = uint.max;
 enum size_t TILE_TASK_BUDGET = 256;
 enum uint PLAN_ROUNDS = 4;
 
-// A tile paints from site hashes alone, so any thread can run it against a read-only view of the graph. What it
-// paints is kept here keyed by node and line identity, and the main thread applies it afterwards.
 struct LineOutput {
     LineKey key;
     LineSpec spec;
@@ -149,7 +147,6 @@ struct TilePainter {
         }
     }
 
-    // Nodes only gain structure on the main thread between phases, so levels found open stay open for the whole tile.
     bool isAhead(ref GraphView view, ref TileLine found, int lowEdge, int highEdge) {
         if (found.open.contains(lowEdge, highEdge)) {
             return true;
@@ -277,8 +274,6 @@ struct PlanOutputs {
     }
 }
 
-// One per thread that runs tiles: its own Lua state, which ran the world's structure once to register the same tile
-// functions. It reads the graph through the view of whichever thread runs its current call.
 struct TileHost {
     TilePainter painter;
     PlanOutputs plan;
@@ -406,7 +401,6 @@ struct TileHost {
         lua_setfield(lua, LUA_BELOW_TOP, "balance");
     }
 
-    // Works out which faces a node's cover needs painted, the same faces StructureHost.cover tiles on the main thread.
     void planCandidate(ref const Graph graph, GraphView* threadView, uint candidate, uint index) {
         view = threadView;
         uint faceStart = cast(uint) plan.faces.length;
@@ -431,7 +425,6 @@ struct TileHost {
         }
     }
 
-    // A sky's tiles read its measurements, which take many height samples, so they are taken here on any thread.
     void measureSkies(ref const Graph graph, uint faceStart) {
         foreach (index; faceStart .. plan.faces.length) {
             uint sky = plan.faces.ptr[index].sky;
@@ -667,8 +660,6 @@ struct TaskOutput {
     uint output;
 }
 
-// Runs tiles on every thread at once: tasks are planned and made on the main thread, run in a parallel job that only
-// reads the graph, and applied on the main thread in task order so a tile's brushes keep consecutive orders.
 struct TileWork {
     Array!(TileHost*) hosts;
     Array!TileTask tasks;
@@ -688,8 +679,6 @@ struct TileWork {
     bool hasFailed;
     char[MESSAGE_CAPACITY] failure;
 
-    // Every thread that can run a job gets a host before the first tile, built in parallel since each one runs the
-    // world's structure script.
     void ensureHosts(ref Graph target, Executor executor) {
         graph = &target;
         if (hosts.length < executor.workers) {
@@ -707,9 +696,6 @@ struct TileWork {
         }
     }
 
-    // Plans the cover of each candidate in parallel, makes tasks for the faces they need within the budget, and runs
-    // them; candidates whose faces all got painted are marked covered. A candidate whose plan needed a world that did
-    // not exist yet is planned again once this thread has made that world.
     void paintAhead(ref Graph target, const(uint)[] candidates, Executor executor) {
         ensureHosts(target, executor);
         covered.clear();
@@ -746,7 +732,6 @@ struct TileWork {
         }
     }
 
-    // Returns whether a world some plan stopped at was made, so planning it again can get further.
     bool planCandidates(ref Graph target, Executor executor) {
         foreach (host; hosts.slice()) {
             host.plan.clear();
@@ -814,7 +799,6 @@ struct TileWork {
         }
     }
 
-    // Returns false when a tile failed; the failure is kept for the structure's problem.
     bool runTasks(ref Graph target, Executor executor) {
         if (tasks.length > 0 && !hasFailed) {
             ensureHosts(target, executor);
@@ -862,7 +846,6 @@ struct TileWork {
             stored.highest = higherOf(stored.highest, line.highest);
             lines[local] = index;
         }
-        // Brushes keep the order they were painted in, but are stored a line at a time so each line gets one run.
         const(BrushOutput)[] painted = painter.brushes.ptr[output.brushStart .. output.brushStart + output.brushCount];
         uint first = blueprint.takeOrders(output.brushCount);
         blueprint.tiles.ptr[task.record].painted.brushes.reserve(output.brushCount);

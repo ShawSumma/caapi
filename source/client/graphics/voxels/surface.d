@@ -39,7 +39,6 @@ struct LayoutPush {
     float cellRatio;
 }
 
-// Laid out as Common in common.h.
 struct CommonUniforms {
     float[MATRIX_FLOATS] projection;
     float[MATRIX_FLOATS] cameraInverse;

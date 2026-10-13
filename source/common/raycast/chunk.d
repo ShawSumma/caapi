@@ -21,9 +21,6 @@ struct ChunkRayCastHit {
     }
 }
 
-// In a corner's frame the Klein coordinates make every geodesic a straight line and every cell wall an axis-aligned
-// plane, so the ray walks the grid cell by cell, crossing whichever wall comes first, until it enters a filled cell.
-// The ray's point at parameter t, start + heading * t, lies at tanh distance t, which is what the walls are found at.
 ChunkRayCastHit castThroughChunk(ref const Voxels voxels, ChunkLayout layout, Ray ray, float limit) {
     if (voxels.isFilledWith(Material.none)) {
         return ChunkRayCastHit.init;
@@ -52,8 +49,6 @@ struct GridWalk {
         }
     }
 
-    // Where the ray's Klein coordinate along the axis reaches the wall, or infinity if it never does. Only parameters
-    // from 0 up to 1, the tanh of an infinite distance, are on the ray; past 1 the projective line has wrapped around.
     float crossing(size_t axis, float wall) const {
         float t = (wall * start[3] - start[axis]) / (heading[axis] - wall * heading[3]);
         return t >= 0 && t < 1 ? t : float.infinity;
@@ -63,7 +58,6 @@ struct GridWalk {
         return crossing(axis, layout.gridToKlein(wall));
     }
 
-    // The next wall along a moving axis; rounding can put it a hair behind, and then it is never reached.
     float nextWall(size_t axis, int cell, float now) const {
         if (steps[axis] == 0) {
             return float.infinity;
@@ -151,7 +145,6 @@ struct GridWalk {
         return voxels.at(cellIndex(layout.dimension, cell[0], cell[1], cell[2])) != Material.none;
     }
 
-    // The face the ray came in through is on the side it came from.
     ChunkRayCastHit hitAt(float t, int[AXIS_COUNT] cell, size_t axis) const {
         Cell coords = Cell([cast(ubyte) cell[0], cast(ubyte) cell[1], cast(ubyte) cell[2]]);
         return ChunkRayCastHit(t, coords, cast(Axis) axis, steps[axis] > 0 ? Sign.minus : Sign.plus);
@@ -193,7 +186,6 @@ int[3] cellOn(ChunkLayout layout, Ray ray, float t) {
     return cell;
 }
 
-// Marching along the ray in small steps finds the first filled cell it enters the same way, just slowly.
 ChunkRayCastHit marched(ref const Voxels voxels, ChunkLayout layout, Ray ray, float limit) {
     ChunkRayCastHit hit;
     int[3] first = cellOn(layout, ray, 0);

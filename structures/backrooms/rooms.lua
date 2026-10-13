@@ -1,19 +1,9 @@
--- Painting one level of one quarter of the backrooms. A quarter is a square of cells with a vertex of the tiling at
--- (0, 0) and the middle of its face at (far, far); its low sides run along edges of the tiling and its high sides
--- across the face. A frame holds what painting it needs: the quarter's tower, the level's floor height and sizes, the
--- biome, and where hallways run along its low sides.
-local kit = {}
+local rooms = {}
 
--- The top level's floor sits a little below the ground's plane, so eye level is about on it: in hyperbolic space
--- only that plane looks flat, and surfaces any distance above or below it curve away.
-kit.TOP_FLOOR = -2
--- Cells of solid ground between one level's ceiling and the floor of the level below.
-kit.SEPARATION = 3
-kit.DOOR_LOW = 3
-kit.DOOR_HIGH = 8
--- A maze's passages are two cells wide with a wall between, so they repeat every three cells; a quarter holds four
--- along each side, the last reaching the middle of the face and running on into the next quarter's.
-kit.MAZE_CELLS = 4
+rooms.SEPARATION = 3
+rooms.MAZE_CELLS = 4
+
+local PERCENT = 100
 local MAZE_PITCH = 3
 local MAZE_WIDTH = 2
 local MAZE_LOOP_ODDS = 0.1
@@ -38,8 +28,21 @@ local CHAPEL_RISE = 3
 local PODIUMS = 5
 local HANGING = 2
 local PODIUM_SIZE = 2
-local MURAL_HALF = 2
+local MURAL_HALF_WIDTH = 2
 local STAIR_ROWS = 4
+local STAIR_DEPTH = STAIR_ROWS + 1
+
+local function chance(f, odds)
+  return f.tower:pick(PERCENT) <= odds * PERCENT
+end
+
+local function between(f, low, high)
+  return low + f.tower:pick(high - low + 1) - 1
+end
+
+local function choose(f, list)
+  return list[f.tower:pick(#list)]
+end
 
 local function width(span)
   return span[2] - span[1] + 1
@@ -49,7 +52,6 @@ local function middle(span)
   return (span[1] + span[2]) // 2
 end
 
--- The cells of a wall line: axis names the coordinate that stays at `at`, and span runs along the other.
 local function line(axis, at, span, z)
   if axis == "x" then
     return { x = { at, at }, y = span, z = z }
@@ -66,6 +68,18 @@ local function other(axis)
   end
 end
 
+local function axis_of(side)
+  if side == "x_low" or side == "x_high" then
+    return "x"
+  else
+    return "y"
+  end
+end
+
+local function is_low(side)
+  return side == "x_low" or side == "y_low"
+end
+
 local function room_z(f)
   return { f.base + 1, f.base + f.room }
 end
@@ -74,24 +88,16 @@ local function ceiling_z(f)
   return f.base + f.room + 1
 end
 
--- Where a quarter's rooms start on a level: past a hallway and its wall along a low side, or past the shared wall.
-function kit.origin(is_hall, level)
-  if is_hall then
+function rooms.origin(has_hall, level)
+  if has_hall then
     return level.hall_width + 1
   else
     return 1
   end
 end
 
--- How many rows from the quarter's y side a stairwell takes, with the wall round it on the level above.
-kit.STAIR_ROWS = STAIR_ROWS + 1
-
--- A lobby with a connector rising through it leaves the corner by the vertex to the shaft on every level: the shaft
--- above the top one and its footing below, which fills only open cells, so painting there would make what is built
--- depend on which tile ran first. Below the top level the corner stays solid ground. A lobby keeps the ring around
--- that corner clear of walls.
 local function outside_shaft(f, area)
-  if not f.shaft then
+  if not f.has_shaft then
     return { area }
   else
     local pieces = {}
@@ -106,7 +112,7 @@ local function outside_shaft(f, area)
 end
 
 local function outside_lobby(f, at, span)
-  if not f.lobby or at > LOBBY then
+  if not f.is_lobby or at > LOBBY then
     return { span }
   elseif span[2] > LOBBY then
     return { { math.max(span[1], LOBBY + 1), span[2] } }
@@ -119,8 +125,6 @@ local function cell_key(x, y)
   return x * 64 + y
 end
 
--- A doorway two wide and three tall, or as tall as the rooms where they are lower. The cells on both sides of it are
--- kept clear of anything later stood in a room.
 local function doorway(f, axis, at, door)
   f.tower:paint("air", line(axis, at, { door, door + DOOR_WIDTH - 1 }, { f.base + 1, f.base + f.door_height }))
   for along = door, door + DOOR_WIDTH - 1 do
@@ -134,15 +138,14 @@ local function doorway(f, axis, at, door)
   end
 end
 
--- A wall up to the ceiling with a doorway starting at each of the doors, now and then a vent up by the ceiling.
-function kit.wall(f, axis, at, span, doors)
+local function wall(f, axis, at, span, doors)
   for _, piece in ipairs(outside_lobby(f, at, span)) do
     f.tower:paint(f.biome.wall, line(axis, at, piece, room_z(f)))
-    if f.skirting then
+    if f.has_skirting then
       f.tower:paint(f.biome.trim, line(axis, at, piece, { f.base + 1, f.base + 1 }))
     end
-    if f.biome.vents and math.random() < VENT_ODDS then
-      local vent = math.random(piece[1], piece[2])
+    if f.biome.has_vents and chance(f, VENT_ODDS) then
+      local vent = between(f, piece[1], piece[2])
       f.tower:paint("steel", line(axis, at, { vent, vent }, { f.base + f.room, f.base + f.room }))
     end
   end
@@ -159,16 +162,16 @@ end
 
 local function bands(f)
   local list = {}
-  if f.path_y then
+  if f.has_hall_y then
     list[#list + 1] = { x = { 0, f.far }, y = { 0, f.hall_width - 1 } }
   end
-  if f.path_x then
+  if f.has_hall_x then
     list[#list + 1] = { x = { 0, f.hall_width - 1 }, y = { 0, f.far } }
   end
   return list
 end
 
-function kit.shell(f)
+local function shell(f)
   local whole = { x = { 0, f.far }, y = { 0, f.far } }
   slab(f, f.biome.floor, whole, f.base)
   for _, piece in ipairs(outside_shaft(f, whole)) do
@@ -184,28 +187,39 @@ function kit.shell(f)
   end
 end
 
--- The quarter's walls: a hallway's side wall where a hallway runs along a low side, otherwise the wall shared with
--- the next quarter with the doorways both sides agreed on, or no wall at all where they agreed on none. Walls stop
--- short of the hallways they meet. Returns the cells where a room's own wall may not meet these, since a doorway
--- opens there.
-function kit.walls(f, lines)
-  local hall = f.hall_width
-  local from_x = f.path_x and hall or 0
-  local from_y = f.path_y and hall or 0
-  local walls = {
-    y_low = { axis = "y", at = f.path_y and hall or 0, span = { from_x, f.far }, doors = f.path_y and {} or lines.y_low },
-    x_low = { axis = "x", at = f.path_x and hall or 0, span = { from_y, f.far }, doors = f.path_x and {} or lines.x_low },
+local function hall_edge(has_hall, hall_width)
+  if has_hall then
+    return hall_width
+  else
+    return 0
+  end
+end
+
+local function wall_doors(has_hall, doors)
+  if has_hall then
+    return {}
+  else
+    return doors
+  end
+end
+
+local function walls(f, lines)
+  local from_x = hall_edge(f.has_hall_x, f.hall_width)
+  local from_y = hall_edge(f.has_hall_y, f.hall_width)
+  local sides = {
+    y_low = { axis = "y", at = from_y, span = { from_x, f.far }, doors = wall_doors(f.has_hall_y, lines.y_low) },
+    x_low = { axis = "x", at = from_x, span = { from_y, f.far }, doors = wall_doors(f.has_hall_x, lines.x_low) },
     x_high = { axis = "x", at = f.far, span = { from_y, f.far }, doors = lines.x_high },
     y_high = { axis = "y", at = f.far, span = { from_x, f.far }, doors = lines.y_high },
   }
   local forbid = { x = {}, y = {} }
   for _, side in ipairs(SIDES) do
-    local wall = walls[side]
-    if wall.doors ~= "open" then
-      kit.wall(f, wall.axis, wall.at, wall.span, wall.doors)
-      for _, door in ipairs(wall.doors) do
-        forbid[other(wall.axis)][door] = true
-        forbid[other(wall.axis)][door + 1] = true
+    local planned = sides[side]
+    if planned.doors ~= "open" then
+      wall(f, planned.axis, planned.at, planned.span, planned.doors)
+      for _, door in ipairs(planned.doors) do
+        forbid[other(planned.axis)][door] = true
+        forbid[other(planned.axis)][door + 1] = true
       end
     end
   end
@@ -222,40 +236,39 @@ local function copy(forbid)
   return result
 end
 
--- Splits a region into rooms with walls across it, each with one doorway, until the rooms are small or the biome
--- likes them big. A wall never stands where it would meet a doorway in the wall it runs into. Some walls the biome
--- leaves out, joining two rooms into one.
-local function split(f, region, forbid, rooms, depth)
+local function split(f, region, forbid, found, depth)
   local axes = {}
   for _, axis in ipairs({ "x", "y" }) do
     if width(region[axis]) >= 2 * MIN_ROOM + 1 then
       axes[#axes + 1] = axis
     end
   end
-  local stops = math.random() < f.biome.big * math.min(depth, 1)
-  if #axes == 0 or stops then
-    rooms[#rooms + 1] = region
+  local is_stopped = chance(f, f.biome.big * math.min(depth, 1))
+  if #axes == 0 or is_stopped then
+    found[#found + 1] = region
   else
-    local axis = axes[math.random(#axes)]
-    if #axes == 2 and width(region.x) ~= width(region.y) then
-      axis = width(region.x) > width(region.y) and "x" or "y"
+    local axis = choose(f, axes)
+    if #axes == 2 and width(region.x) > width(region.y) then
+      axis = "x"
+    elseif #axes == 2 and width(region.x) < width(region.y) then
+      axis = "y"
     end
     local span = region[axis]
     local candidates = {}
     for at = span[1] + MIN_ROOM, span[2] - MIN_ROOM do
-      if not forbid[axis][at] then
+      if forbid[axis][at] ~= true then
         candidates[#candidates + 1] = at
       end
     end
     if #candidates == 0 then
-      rooms[#rooms + 1] = region
+      found[#found + 1] = region
     else
-      local at = candidates[math.random(#candidates)]
+      local at = choose(f, candidates)
       local along = region[other(axis)]
       local inner = copy(forbid)
-      if math.random() >= f.biome.open then
-        local door = math.random(along[1], along[2] - DOOR_WIDTH + 1)
-        kit.wall(f, axis, at, along, { door })
+      if not chance(f, f.biome.open) then
+        local door = between(f, along[1], along[2] - DOOR_WIDTH + 1)
+        wall(f, axis, at, along, { door })
         inner[other(axis)][door] = true
         inner[other(axis)][door + 1] = true
       end
@@ -263,41 +276,39 @@ local function split(f, region, forbid, rooms, depth)
       local high = { x = region.x, y = region.y }
       low[axis] = { span[1], at - 1 }
       high[axis] = { at + 1, span[2] }
-      split(f, low, inner, rooms, depth + 1)
-      split(f, high, inner, rooms, depth + 1)
+      split(f, low, inner, found, depth + 1)
+      split(f, high, inner, found, depth + 1)
     end
   end
 end
 
-function kit.rooms(f, forbid)
-  local rooms = {}
-  split(f, f.region, forbid, rooms, 0)
-  return rooms
+local function rooms_of(f, forbid)
+  local found = {}
+  split(f, f.region, forbid, found, 0)
+  return found
 end
 
--- Doorways from rooms out to the hallways beside them.
-local function hall_doors(f, rooms)
-  for _, room in ipairs(rooms) do
-    if f.path_y and room.y[1] == f.y0 and math.random() < f.biome.hall_doors then
-      doorway(f, "y", f.hall_width, math.random(room.x[1], room.x[2] - DOOR_WIDTH + 1))
+local function hall_doors(f, found)
+  for _, room in ipairs(found) do
+    if f.has_hall_y and room.y[1] == f.y0 and chance(f, f.biome.hall_doors) then
+      doorway(f, "y", f.hall_width, between(f, room.x[1], room.x[2] - DOOR_WIDTH + 1))
     end
-    if f.path_x and room.x[1] == f.x0 and math.random() < f.biome.hall_doors then
-      doorway(f, "x", f.hall_width, math.random(room.y[1], room.y[2] - DOOR_WIDTH + 1))
+    if f.has_hall_x and room.x[1] == f.x0 and chance(f, f.biome.hall_doors) then
+      doorway(f, "x", f.hall_width, between(f, room.y[1], room.y[2] - DOOR_WIDTH + 1))
     end
   end
 end
 
 local function is_shaft(f, x, y)
-  return f.shaft and x <= SHAFT and y <= SHAFT
+  return f.has_shaft and x <= SHAFT and y <= SHAFT
 end
 
 local function light(f, material, x, y)
-  if material and not is_shaft(f, x, y) then
+  if material ~= nil and not is_shaft(f, x, y) then
     f.tower:paint(material, { x = { x, x }, y = { y, y }, z = { ceiling_z(f), ceiling_z(f) } })
   end
 end
 
--- A pane through the ceiling and the roof above it, and the square of sunlight it lets onto the floor.
 local function skylight(f, x, y)
   if not is_shaft(f, x, y) then
     f.tower:paint("glass", { x = { x, x }, y = { y, y }, z = { ceiling_z(f), ceiling_z(f) + ROOF } })
@@ -305,27 +316,30 @@ local function skylight(f, x, y)
   end
 end
 
--- The top level lets daylight in through some of its lights; the levels below only have lights.
 local function lamp(f, material, odds, x, y)
-  if f.is_top and math.random() < odds then
+  if f.is_top and chance(f, odds) then
     skylight(f, x, y)
   else
     light(f, material, x, y)
   end
 end
 
--- The cells of a room along one of its walls, from the corner given, and whether any of them is by a doorway.
 local function along_wall(f, room, side, from, length)
   local cells = {}
   local is_blocked = false
   for step = 0, length - 1 do
-    local x, y
-    if side == "x_low" or side == "x_high" then
-      x = side == "x_low" and room.x[1] or room.x[2]
-      y = from + step
+    local x = from + step
+    local y = from + step
+    if axis_of(side) == "x" then
+      x = room.x[2]
+      if is_low(side) then
+        x = room.x[1]
+      end
     else
-      x = from + step
-      y = side == "y_low" and room.y[1] or room.y[2]
+      y = room.y[2]
+      if is_low(side) then
+        y = room.y[1]
+      end
     end
     cells[#cells + 1] = { x, y }
     is_blocked = is_blocked or f.near_doors[cell_key(x, y)] == true
@@ -334,21 +348,20 @@ local function along_wall(f, room, side, from, length)
 end
 
 local function side_span(room, side)
-  if side == "x_low" or side == "x_high" then
+  if axis_of(side) == "x" then
     return room.y
   else
     return room.x
   end
 end
 
--- Solid boxes built against a room's walls for no reason, never in front of a doorway.
 local function boxes(f, room)
-  local side = SIDES[math.random(#SIDES)]
+  local side = choose(f, SIDES)
   local span = side_span(room, side)
   if width(span) >= LEAST_ATTACHED_WALL then
-    local cells, is_blocked = along_wall(f, room, side, math.random(span[1], span[2] - 1), 2)
+    local cells, is_blocked = along_wall(f, room, side, between(f, span[1], span[2] - 1), 2)
     if not is_blocked then
-      local top = f.base + math.random(2, math.min(f.biome.box_height, f.room))
+      local top = f.base + between(f, 2, math.min(f.biome.box_height, f.room))
       for _, cell in ipairs(cells) do
         f.tower:paint(f.biome.boxes, { x = { cell[1], cell[1] }, y = { cell[2], cell[2] }, z = { f.base + 1, top } })
       end
@@ -356,7 +369,6 @@ local function boxes(f, room)
   end
 end
 
--- Rows of shelves across a room, clear of the cells along its walls so every doorway stays reachable.
 local function shelves(f, room)
   if width(room.x) >= 5 and width(room.y) >= 5 then
     for y = room.y[1] + 1, room.y[2] - 1, 2 do
@@ -365,21 +377,21 @@ local function shelves(f, room)
   end
 end
 
-function kit.furnish(f, rooms)
-  hall_doors(f, rooms)
-  for _, room in ipairs(rooms) do
-    if f.biome.room_floors then
-      f.tower:paint(f.biome.room_floors[math.random(#f.biome.room_floors)], { x = room.x, y = room.y, z = { f.base, f.base } })
+local function furnish(f, found)
+  hall_doors(f, found)
+  for _, room in ipairs(found) do
+    if f.biome.room_floors ~= nil then
+      f.tower:paint(choose(f, f.biome.room_floors), { x = room.x, y = room.y, z = { f.base, f.base } })
     end
     lamp(f, f.biome.light, f.biome.skylight, middle(room.x), middle(room.y))
-    if f.biome.damp and math.random() < DAMP_ODDS then
-      local x, y = math.random(room.x[1], room.x[2] - 1), math.random(room.y[1], room.y[2] - 1)
+    if f.biome.damp ~= nil and chance(f, DAMP_ODDS) then
+      local x, y = between(f, room.x[1], room.x[2] - 1), between(f, room.y[1], room.y[2] - 1)
       f.tower:paint(f.biome.damp, { x = { x, x + 1 }, y = { y, y + 1 }, z = { f.base, f.base } })
     end
-    if f.biome.shelf then
+    if f.biome.shelf ~= nil then
       shelves(f, room)
     end
-    if f.biome.boxes and math.random() < f.biome.box_odds then
+    if f.biome.boxes ~= nil and chance(f, f.biome.box_odds) then
       boxes(f, room)
     end
   end
@@ -395,13 +407,11 @@ function kit.furnish(f, rooms)
   end
 end
 
--- The span of a maze cell along one axis, the last running on to the quarter's far side.
 local function maze_span(f, index)
   local low = index * MAZE_PITCH + 1
   return { low, math.min(low + MAZE_WIDTH - 1, f.far) }
 end
 
--- Where a maze's passage crosses the wall between a cell and the next one along an axis.
 local function maze_gap(f, axis, i, j)
   local at = (i + 1) * MAZE_PITCH
   if axis == "x" then
@@ -412,20 +422,17 @@ local function maze_gap(f, axis, i, j)
 end
 
 local function maze_key(i, j)
-  return i * kit.MAZE_CELLS + j
+  return i * rooms.MAZE_CELLS + j
 end
 
--- A tight maze of passages two cells wide, carved out of solid wall with a depth-first walk so it winds with few
--- straight runs, a few walls knocked through to make loops, now and then four cells opened into a small room, and
--- steps to nowhere at some dead ends. Every cell is reached. The walls on the low sides are built back to back with
--- the next quarters' and let through at the passages both sides agreed on. Across a high side the next quarter's
--- last cells meet this one's, so only one of the two, the owner, builds a wall there, again with the agreed passages.
-function kit.maze(f, lines)
-  local cells = kit.MAZE_CELLS
+local function maze(f, lines)
+  local cells = rooms.MAZE_CELLS
   f.tower:paint(f.biome.wall, { x = { 0, f.far }, y = { 0, f.far }, z = room_z(f) })
+  local exits = {}
   for i = 0, cells - 1 do
     for j = 0, cells - 1 do
       f.tower:paint("air", { x = maze_span(f, i), y = maze_span(f, j), z = room_z(f) })
+      exits[maze_key(i, j)] = 0
     end
   end
   local openings = {}
@@ -436,23 +443,22 @@ function kit.maze(f, lines)
     local moves = {}
     for _, move in ipairs({ { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }) do
       local i, j = at[1] + move[1], at[2] + move[2]
-      if i >= 0 and i < cells and j >= 0 and j < cells and not visited[maze_key(i, j)] then
+      if i >= 0 and i < cells and j >= 0 and j < cells and visited[maze_key(i, j)] ~= true then
         moves[#moves + 1] = { i, j }
       end
     end
     if #moves == 0 then
       trail[#trail] = nil
     else
-      local chosen = moves[math.random(#moves)]
+      local chosen = choose(f, moves)
       visited[maze_key(chosen[1], chosen[2])] = true
       openings[#openings + 1] = { at, chosen }
       trail[#trail + 1] = chosen
     end
   end
-  local exits = {}
   local function open(a, b)
-    exits[maze_key(a[1], a[2])] = (exits[maze_key(a[1], a[2])] or 0) + 1
-    exits[maze_key(b[1], b[2])] = (exits[maze_key(b[1], b[2])] or 0) + 1
+    exits[maze_key(a[1], a[2])] = exits[maze_key(a[1], a[2])] + 1
+    exits[maze_key(b[1], b[2])] = exits[maze_key(b[1], b[2])] + 1
     if a[1] ~= b[1] then
       f.tower:paint("air", maze_gap(f, "x", math.min(a[1], b[1]), a[2]))
     else
@@ -464,24 +470,24 @@ function kit.maze(f, lines)
   end
   for i = 0, cells - 2 do
     for j = 0, cells - 1 do
-      if math.random() < MAZE_LOOP_ODDS then
+      if chance(f, MAZE_LOOP_ODDS) then
         open({ i, j }, { i + 1, j })
       end
-      if math.random() < MAZE_LOOP_ODDS then
+      if chance(f, MAZE_LOOP_ODDS) then
         open({ j, i }, { j, i + 1 })
       end
     end
   end
-  if math.random() < MAZE_ROOM_ODDS then
-    local i, j = math.random(0, cells - 2), math.random(0, cells - 2)
+  if chance(f, MAZE_ROOM_ODDS) then
+    local i, j = between(f, 0, cells - 2), between(f, 0, cells - 2)
     f.tower:paint("air", { x = { maze_span(f, i)[1], maze_span(f, i + 1)[2] }, y = { maze_span(f, j)[1], maze_span(f, j + 1)[2] }, z = room_z(f) })
   end
   for _, side in ipairs(SIDES) do
-    local axis = (side == "x_low" or side == "x_high") and "x" or "y"
-    local is_low = side == "x_low" or side == "y_low"
-    if is_low or f.owns[side] then
-      local at = is_low and 0 or f.far
-      if not is_low then
+    local axis = axis_of(side)
+    if is_low(side) or f.owns[side] then
+      local at = 0
+      if not is_low(side) then
+        at = f.far
         f.tower:paint(f.biome.wall, line(axis, at, { 0, f.far }, room_z(f)))
       end
       for _, slot in ipairs(lines[side]) do
@@ -492,10 +498,10 @@ function kit.maze(f, lines)
   for i = 0, cells - 1 do
     for j = 0, cells - 1 do
       local x, y = maze_span(f, i), maze_span(f, j)
-      if math.random() < MAZE_LIGHT_ODDS then
+      if chance(f, MAZE_LIGHT_ODDS) then
         light(f, f.biome.light, x[1], y[1])
       end
-      if exits[maze_key(i, j)] == 1 and math.random() < f.biome.nowhere then
+      if exits[maze_key(i, j)] == 1 and chance(f, f.biome.nowhere) then
         for step = 1, NOWHERE_STEPS do
           f.tower:paint(f.biome.stair, { x = { x[1] + step - 1, x[1] + step - 1 }, y = y, z = { f.base + 1, f.base + step } })
         end
@@ -504,11 +510,9 @@ function kit.maze(f, lines)
   end
 end
 
--- A chapel: the floor sunk into the ground below with steps down at one corner, the ceiling raised under a skylight,
--- square podiums of every height rising from the floor and hanging from the ceiling, and a map on the far wall.
-function kit.chapel(f)
+local function chapel(f)
   local region = f.region
-  local depth = kit.SEPARATION
+  local depth = rooms.SEPARATION
   local floor = f.base - depth
   local top = ceiling_z(f) + CHAPEL_RISE
   local around = { x = { region.x[1] - 1, region.x[2] + 1 }, y = { region.y[1] - 1, region.y[2] + 1 } }
@@ -524,37 +528,39 @@ function kit.chapel(f)
     f.tower:paint(f.biome.stair, { x = { x, x }, y = steps, z = { floor + 1, f.base - step } })
   end
   for _ = 1, PODIUMS do
-    local x = math.random(region.x[1] + depth, region.x[2] - PODIUM_SIZE + 1)
-    local y = math.random(region.y[1] + 2, region.y[2] - PODIUM_SIZE + 1)
-    f.tower:paint(f.biome.wall, { x = { x, x + PODIUM_SIZE - 1 }, y = { y, y + PODIUM_SIZE - 1 }, z = { floor + 1, floor + math.random(1, depth + 2) } })
+    local x = between(f, region.x[1] + depth, region.x[2] - PODIUM_SIZE + 1)
+    local y = between(f, region.y[1] + 2, region.y[2] - PODIUM_SIZE + 1)
+    f.tower:paint(f.biome.wall, { x = { x, x + PODIUM_SIZE - 1 }, y = { y, y + PODIUM_SIZE - 1 }, z = { floor + 1, floor + between(f, 1, depth + 2) } })
   end
   for _ = 1, HANGING do
-    local x = math.random(region.x[1] + 1, region.x[2] - PODIUM_SIZE + 1)
-    local y = math.random(region.y[1] + 2, region.y[2] - PODIUM_SIZE + 1)
-    f.tower:paint(f.biome.wall, { x = { x, x + PODIUM_SIZE - 1 }, y = { y, y + PODIUM_SIZE - 1 }, z = { top - math.random(1, CHAPEL_RISE), top - 1 } })
+    local x = between(f, region.x[1] + 1, region.x[2] - PODIUM_SIZE + 1)
+    local y = between(f, region.y[1] + 2, region.y[2] - PODIUM_SIZE + 1)
+    f.tower:paint(f.biome.wall, { x = { x, x + PODIUM_SIZE - 1 }, y = { y, y + PODIUM_SIZE - 1 }, z = { top - between(f, 1, CHAPEL_RISE), top - 1 } })
   end
   local x, y = middle(region.x), middle(region.y)
   f.tower:paint("glass", { x = { x, x + 1 }, y = { y, y + 1 }, z = { top, top + ROOF } })
   f.tower:paint("sunlight", { x = { x, x + 1 }, y = { y, y + 1 }, z = { floor, floor } })
-  local wall = region.y[2] + 1
-  local mural = { middle(region.x) - MURAL_HALF, middle(region.x) + MURAL_HALF }
-  f.tower:paint("slate", { x = mural, y = { wall, wall }, z = { f.base + 1, f.base + f.room } })
-  f.tower:paint("white_brick", { x = mural, y = { wall, wall }, z = { f.base + 2, f.base + 2 } })
-  f.tower:paint("white_brick", { x = { middle(region.x), middle(region.x) }, y = { wall, wall }, z = { f.base + 1, f.base + f.room } })
+  local far_wall = region.y[2] + 1
+  local mural = { middle(region.x) - MURAL_HALF_WIDTH, middle(region.x) + MURAL_HALF_WIDTH }
+  f.tower:paint("slate", { x = mural, y = { far_wall, far_wall }, z = { f.base + 1, f.base + f.room } })
+  f.tower:paint("white_brick", { x = mural, y = { far_wall, far_wall }, z = { f.base + 2, f.base + 2 } })
+  f.tower:paint("white_brick", { x = { middle(region.x), middle(region.x) }, y = { far_wall, far_wall }, z = { f.base + 1, f.base + f.room } })
 end
 
--- Rooms inside rooms, each with one doorway, down to one barely big enough to stand in.
-function kit.rings(f)
+local function rings(f)
   for _, inset in ipairs(RINGS) do
     local x = { f.region.x[1] + inset, f.region.x[2] - inset }
     local y = { f.region.y[1] + inset, f.region.y[2] - inset }
     if width(x) >= 3 and width(y) >= 3 then
       f.tower:paint(f.biome.wall, { x = x, y = y, z = room_z(f) })
       f.tower:paint("air", { x = { x[1] + 1, x[2] - 1 }, y = { y[1] + 1, y[2] - 1 }, z = room_z(f) })
-      local side = SIDES[math.random(#SIDES)]
-      local axis = (side == "x_low" or side == "x_high") and "x" or "y"
+      local side = choose(f, SIDES)
+      local axis = axis_of(side)
       local at = ({ x_low = x[1], x_high = x[2], y_low = y[1], y_high = y[2] })[side]
-      local along = axis == "x" and y or x
+      local along = x
+      if axis == "x" then
+        along = y
+      end
       if width(along) >= DOOR_WIDTH + 2 then
         f.tower:paint("air", line(axis, at, { along[1] + 1, along[1] + DOOR_WIDTH }, { f.base + 1, f.base + f.door_height }))
       end
@@ -562,12 +568,7 @@ function kit.rings(f)
   end
 end
 
--- Stairs from one level's floor up to the floor of the level above, in the corner of a quarter past both levels'
--- hallways: up a flight along two rows, round a landing and back up the next two rows, so it fits however far apart
--- the levels are. The steps are single treads with open space beneath them. On the level above, walls stand round the
--- hole the stairs leave, open where they arrive. A routed stairwell puts a stop on the floor below at its foot, one
--- on every step and on the landing, and one on the floor above past it.
-function kit.stairs(lower, upper, stair, is_routed)
+function rooms.stairs(lower, upper, stair, is_routed)
   local rise = upper.base - lower.base
   local x0, y0 = stair.x, stair.y
   local first = (rise + 2) // 2
@@ -579,7 +580,7 @@ function kit.stairs(lower, upper, stair, is_routed)
   local function tread(x, rows, height)
     lower.tower:paint(lower.biome.stair, { x = x, y = rows, z = { lower.base + height, lower.base + height } })
   end
-  local function wall(x, y)
+  local function enclose(x, y)
     upper.tower:paint(upper.biome.wall, { x = x, y = y, z = { upper.base + 1, upper.base + upper.room } })
   end
   lower.tower:paint("air", { x = { x0, x0 + first + 1 }, y = { y0, y0 + STAIR_ROWS - 1 }, z = { lower.base + 1, upper.base } })
@@ -600,9 +601,9 @@ function kit.stairs(lower, upper, stair, is_routed)
   if arrival >= x0 then
     upper.tower:paint(upper.biome.floor, { x = { x0, arrival }, y = high_rows, z = { upper.base, upper.base } })
   end
-  wall({ x0, x0 }, low_rows)
-  wall({ x0 + 1, x0 + first + 1 }, { y0 + STAIR_ROWS, y0 + STAIR_ROWS })
-  wall({ x0 + first + 2, x0 + first + 2 }, { y0, y0 + STAIR_ROWS - 1 })
+  enclose({ x0, x0 }, low_rows)
+  enclose({ x0 + 1, x0 + first + 1 }, { y0 + STAIR_ROWS, y0 + STAIR_ROWS })
+  enclose({ x0 + first + 2, x0 + first + 2 }, { y0, y0 + STAIR_ROWS - 1 })
   stop(x0 + 0.5, y0 + 3, upper.base + 1)
   stop(x0 + 0.5, y0 + STAIR_ROWS + 0.5, upper.base + 1)
   if is_routed then
@@ -612,17 +613,14 @@ function kit.stairs(lower, upper, stair, is_routed)
   end
 end
 
--- A frame for one level of a quarter, given where hallways run along its low sides on that level, the quarter's
--- stairwell, which keeps its rows clear of rooms on both levels it joins, whether it is a lobby on this level, and
--- which high sides it owns the wall on. A maze lies deep enough to pay no heed to a connector's shaft.
-function kit.frame(q, path, floor, biome, stair, is_lobby, owns)
+function rooms.frame(q, halls, floor, biome, stair, is_lobby, owns)
   local level = floor.level
   local _, far = q.tower:column()
-  local x0 = kit.origin(path.x, level)
-  local y0 = kit.origin(path.y, level)
+  local x0 = rooms.origin(halls.x, level)
+  local y0 = rooms.origin(halls.y, level)
   local region_y = y0
-  if stair then
-    region_y = stair.y + kit.STAIR_ROWS
+  if stair ~= nil then
+    region_y = stair.y + STAIR_DEPTH
   end
   local f = {
     tower = q.tower,
@@ -633,10 +631,10 @@ function kit.frame(q, path, floor, biome, stair, is_lobby, owns)
     far = far,
     biome = biome,
     hall = level.hall,
-    path_x = path.x,
-    path_y = path.y,
-    lobby = is_lobby,
-    shaft = q.shaft and not level.maze,
+    has_hall_x = halls.x,
+    has_hall_y = halls.y,
+    is_lobby = is_lobby,
+    has_shaft = q.has_shaft and not level.is_maze,
     is_top = floor.is_top,
     x0 = x0,
     y0 = y0,
@@ -644,31 +642,29 @@ function kit.frame(q, path, floor, biome, stair, is_lobby, owns)
     near_doors = {},
     owns = owns,
   }
-  f.skirting = biome.trim and math.random() < SKIRTING_ODDS
+  f.has_skirting = biome.trim ~= nil and chance(f, SKIRTING_ODDS)
   return f
 end
 
--- Paints one level of a quarter given the doorways of its shared walls: a maze, or its walls and then a solid block,
--- one of the level's rare rooms, or rooms split from its region.
-function kit.floor(f, lines, level, plan)
-  kit.shell(f)
+function rooms.floor(f, lines, plan)
+  shell(f)
   if plan == "maze" then
-    kit.maze(f, lines)
+    maze(f, lines)
   else
-    local forbid = kit.walls(f, lines)
+    local forbid = walls(f, lines)
     if plan == "lobby" then
       light(f, f.biome.light, f.far - 2, f.far - 2)
     elseif plan == "solid" then
       f.tower:paint(f.biome.wall, { x = f.region.x, y = f.region.y, z = room_z(f) })
     elseif plan == "rings" then
-      kit.rings(f)
-      kit.furnish(f, { f.region })
+      rings(f)
+      furnish(f, { f.region })
     elseif plan == "chapel" then
-      kit.chapel(f)
+      chapel(f)
     else
-      kit.furnish(f, kit.rooms(f, forbid))
+      furnish(f, rooms_of(f, forbid))
     end
   end
 end
 
-return kit
+return rooms

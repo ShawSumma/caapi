@@ -44,8 +44,6 @@ __gshared Sample* samples;
 __gshared pthread_t mainThread;
 shared uint sampleCount;
 
-// The process timer lands mostly on whichever threads are busiest, so the main thread has a timer of its own and the
-// process timer only samples the other threads.
 extern (C) void recordWorkerSample(int signal) {
     if (pthread_equal(pthread_self(), mainThread) == 0) {
         record(false);

@@ -10,7 +10,6 @@ enum uint CRASH_FRAMES = 64;
 enum int CRASH_STATUS = 128;
 immutable int[5] CRASH_SIGNALS = [SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT];
 
-// A crash in a release build otherwise says nothing about where it happened.
 void reportCrashes() {
     void*[1] warm;
     backtrace(warm.ptr, 1);
@@ -19,7 +18,6 @@ void reportCrashes() {
     }
 }
 
-// Prints where the process is if it is still running after the given time, for runs that must finish.
 void reportHangAfter(uint seconds) {
     reportOn(SIGALRM);
     alarm(seconds);

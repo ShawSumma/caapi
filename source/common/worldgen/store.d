@@ -8,12 +8,12 @@ import base.slab : Run, RunPool, Slab;
 import common.graph : Graph, NodeId;
 import common.worldgen.blueprint : Blueprint;
 import common.worldgen.building : Building;
+import common.worldgen.strokes : Strokes;
 import common.worldgen.structure : LineTouch, PendingTouch;
 
 enum uint NO_BUILDING = 0;
 enum uint NO_PENDING = 0;
 
-// The structure host behind the graph, which paints structure as nodes come to need it.
 struct Grower {
     void function(void* context, ref Graph graph, int through) grow;
     void function(void* context, ref Graph graph, uint slot) cover;
@@ -22,7 +22,6 @@ struct Grower {
     void* context;
 }
 
-// What one node knows about the structure through it. Buildings count from 1, so NO_BUILDING means none.
 struct NodeStructure {
     Run touches;
     uint building;
@@ -33,8 +32,6 @@ struct NodeStructure {
     bool isBuildingUrgent;
 }
 
-// Structure painted into the world, and what each node has taken from it: the lines through the node and the
-// building made from them. Touches wait for a node by its id, since a line may reach nodes that do not exist yet.
 struct StructureStore {
     Slab!NodeStructure nodes;
     RunPool!LineTouch touches;
@@ -45,6 +42,7 @@ struct StructureStore {
     Slab!Building buildings;
     Array!uint freeBuildings;
     Blueprint blueprint;
+    Strokes strokes;
     Grower grower;
     uint pendingCount;
     uint buildingCount;
@@ -127,6 +125,7 @@ struct StructureStore {
         buildings.release();
         freeBuildings.release();
         blueprint.release();
+        strokes.release();
         pendingCount = 0;
         buildingCount = 0;
     }

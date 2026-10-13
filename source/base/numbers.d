@@ -18,7 +18,6 @@ T higherOf(T)(T a, T b) {
     return a > b ? a : b;
 }
 
-// The C library's logarithms cannot run at compile time; these can, for constants derived from geometry.
 double logAtCompileTime(double x) {
     assert(x > 0);
     double scaled = x;

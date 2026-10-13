@@ -7,7 +7,6 @@ import geometry.lorentz : Normal, Vec4;
 
 enum uint FRUSTUM_PLANE_COUNT = 5;
 
-// A symmetric view frustum, kept as the tangents of its half angles. The camera looks down -z.
 struct Frustum {
     float tanHalfWidth;
     float tanHalfHeight;
@@ -17,8 +16,6 @@ struct Frustum {
         return Frustum(aspectRatio * tanHalfHeight, tanHalfHeight);
     }
 
-    // Inward unit normals of the four sides and of the plane behind the camera. They all pass through the camera,
-    // where Klein and hyperboloid coordinates agree on angles, so they hold in both.
     Normal!float[FRUSTUM_PLANE_COUNT] planes() const {
         Normal!float[FRUSTUM_PLANE_COUNT] found = [
             sidePlane(1, 0, tanHalfWidth),
@@ -30,10 +27,6 @@ struct Frustum {
         return found;
     }
 
-    // Takes a camera-space point (x, y, z, w) to clip space. Dividing by clip w = -z gives the perspective of its
-    // Klein position (x, y, z) / w, and the clip depth is depthScale (z + w), which divides to
-    // depthScale / kleinDepth - depthScale with kleinDepth = -z / w: 1 at the near plane and 0 at the ideal boundary,
-    // where the Klein depth reaches 1.
     float[16] projection(float near) const {
         float scale = kleinDepthScale(near);
         float[16] columns = 0;

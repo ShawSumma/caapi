@@ -3,7 +3,6 @@
 
 const float INFINITY = 1.0 / 0.0;
 
-// Laid out as CommonUniforms in surface.d.
 layout(set = 0, binding = 0) uniform Common {
     mat4 projection;
     mat4 camera_inverse;

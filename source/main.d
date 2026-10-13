@@ -794,8 +794,6 @@ void measureLoad(FILE* report, ref Renderer renderer, ref Game game) {
     breakdown.print(report);
 }
 
-// Meshes the settled world again and counts the chunks whose drawn faces differ from what they should be now. A chunk
-// beside a dropped one is left out, since its mesh was made while that neighbor's cells were still there.
 void checkMeshes(FILE* report, ref const Renderer renderer, ref const Graph graph) {
     Mesher mesher;
     mesher.setup(graph.layout.dimension);

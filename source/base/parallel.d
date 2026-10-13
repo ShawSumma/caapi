@@ -19,8 +19,6 @@ enum size_t GRAINS_PER_PARTICIPANT = 8;
 
 extern (C) long syscall(long number, ...) nothrow @nogc;
 
-// Sleeps while the word still holds the expected value; the kernel checks and sleeps atomically, so a wake that
-// changed the word first is never missed.
 void waitWhile(ref shared uint word, uint expected) {
     syscall(SYS_FUTEX, &word, FUTEX_WAIT_PRIVATE, expected, null, null, 0);
 }
@@ -38,8 +36,6 @@ struct ParallelJob {
     shared size_t claimed;
     shared bool isLate;
 
-    // Items are claimed in order a grain at a time and every claimed item runs, so after the join the items that ran
-    // are [0, count). A grain spreads the claims over several items, so threads rarely contend for the counter.
     void work(uint worker) {
         bool isDone = false;
         while (!isDone && !atomicLoad(isLate)) {
@@ -126,8 +122,6 @@ struct WorkerPool {
         }
     }
 
-    // A worker counts itself in before looking at the job, and run() unpublishes the job before waiting for the count
-    // to reach zero, so no worker can still be inside a job once run() returns.
     bool joinJob(uint worker) {
         atomicOp!"+="(active, 1);
         ParallelJob* current = cast(ParallelJob*) atomicLoad(job);
@@ -141,7 +135,6 @@ struct WorkerPool {
         return hasWork;
     }
 
-    // Long tasks call this between their steps, so a job never waits for its threads to finish whole tasks first.
     void helpWithJob(uint worker) {
         if (atomicLoad(job) != 0) {
             joinJob(worker);
@@ -181,7 +174,6 @@ struct WorkerPool {
     }
 }
 
-// Several grains per thread, so a thread that joins late or gets slow items still leaves work for the others.
 size_t grainFor(size_t count, uint participants) {
     size_t grain = count / (cast(size_t) participants * GRAINS_PER_PARTICIPANT);
     return grain > 0 ? grain : 1;
@@ -219,8 +211,6 @@ struct QueueCell(T) {
     T value;
 }
 
-// Bounded multi-producer multi-consumer queue (Vyukov): each cell's sequence number says whose turn it is, so a value
-// is only read after its writer published it and only overwritten after its reader released it.
 struct ConcurrentQueue(T) {
     QueueCell!T* cells;
     size_t mask;

@@ -11,6 +11,7 @@ import common.worldgen.building : Building;
 import common.worldgen.generation : ChunkStructure, NodeState, Worldgen;
 import common.worldgen.sky : CornerKey, GroundKey, PLANET, SkyChoice, SkyList, Skies, WorldRef, applyDiscoveries, makeWantedWorlds, makeWorld;
 import common.worldgen.store : NodeStructure;
+import common.worldgen.strokes : Stroke;
 import common.worldgen.structure : ClaimKey;
 import geometry.honeycomb : Corner, FACE_COUNT, Face, faceBit, mirror;
 import geometry.lorentz : Point;
@@ -49,7 +50,6 @@ struct WorldRange {
     uint count;
 }
 
-// A world a view needed but could not make, kept as a path from a graph slot so the main thread can make it.
 struct WantedWorld {
     uint start;
     uint pathStart;
@@ -58,10 +58,6 @@ struct WantedWorld {
     Corner corner;
 }
 
-// The one way worldgen reads the graph. The main thread's own view has an owner, and wherever it reads past what the
-// graph holds, the graph grows. Any other view leaves the graph alone, so threads can read it at once: a node the
-// graph lacks is worked out here the way the graph would make it, under a handle with the VIRTUAL bit, and what the
-// graph would store is kept here. Handles below VIRTUAL are graph slots.
 struct GraphView {
     const(Graph)* graph;
     Graph* owner;
@@ -87,8 +83,6 @@ struct GraphView {
         return view;
     }
 
-    // Virtual nodes keep graph slots as parents and the caches hold what the graph lacked, so a view is cleared
-    // whenever the graph may have changed. What it wanted stays until the main thread makes it.
     void forget() {
         nodes.clear();
         virtualIds.clear();
@@ -136,6 +130,10 @@ struct GraphView {
 
     ref const(Blueprint) blueprint() const {
         return graph.structures.blueprint;
+    }
+
+    const(Stroke)[] strokesAt(uint node) const {
+        return graph.structures.strokes.at(idAt(node));
     }
 
     static bool isVirtual(uint node) {
@@ -209,7 +207,6 @@ struct GraphView {
         }
     }
 
-    // Worked out as Graph.addChild makes it.
     uint virtualChild(uint node, Face face) {
         ushort parentFaces = childParentFaces(parentFacesOf(node), face);
         ParentList list;
@@ -250,7 +247,6 @@ struct GraphView {
         return Position(idAt(node), start.local);
     }
 
-    // The faces crossed from a node down to the root, nearest first.
     Array!Face sidesToRoot(uint start) const {
         Array!Face sides;
         uint node = start;
@@ -262,7 +258,6 @@ struct GraphView {
         return sides;
     }
 
-    // The faces that make a node from a graph slot, so another view or the graph itself can reach the same node.
     uint pathTo(uint node, ref Array!Face sides) const {
         if (!isVirtual(node)) {
             return node;
@@ -301,8 +296,6 @@ struct GraphView {
         return !isVirtual(node) && graph.isFinished(node);
     }
 
-    // The main thread finishes a node's structure and building as it asks; another view can only read what is
-    // finished, and says when it cannot know.
     ChunkStructure chunkStructureAt(uint slot) {
         if (owner !is null) {
             if (owner.ensureStructureAt(slot)) {
@@ -390,8 +383,6 @@ struct GraphView {
         return CornerKey(idAt(key.slot), cast(Corner) key.feature);
     }
 
-    // Only the main thread makes worlds. Another view that needs a new one stops being trusted until it is
-    // forgotten, and keeps what it wanted, which forgetting does not clear.
     uint ensureWorld(ClaimKey rooted, uint face, Corner corner, uint parent, SkyChoice choice) {
         const(uint)* known = graph.skies.worldOf.find(cornerKeyOf(rooted));
         if (known !is null) {
@@ -413,8 +404,6 @@ struct GraphView {
     }
 }
 
-// One view per thread for parallel jobs, cleared as each job begins. When it ends, what the views worked out is kept
-// and the worlds they stopped at are made.
 struct ThreadViews {
     Array!GraphView views;
 
@@ -432,7 +421,6 @@ struct ThreadViews {
         return views.ptr[worker];
     }
 
-    // Returns whether any world was made, after which work the views stopped at can run again.
     bool finish(ref Graph graph) {
         bool isMade = false;
         foreach (ref view; views.slice()) {

@@ -1,4 +1,3 @@
--- The terrain far from the root, where anything carried from the root by long chains of steps shows its errors.
 local walk = require("lib.walk")
 
 local CLIMB_SECONDS = 3

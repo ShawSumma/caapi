@@ -6,10 +6,6 @@ import base.numbers : acoshAtCompileTime, asinhAtCompileTime;
 import geometry.cube : AxisMap;
 import geometry.lorentz : Mat4, Motion, Normal, Point, Vec4;
 
-// The order-4 dodecahedral honeycomb: every cell is a dodecahedron whose faces meet at right angles, so four cells
-// share each edge and reflecting a cell in any of its faces gives the neighbor across that face. Each cell is cut into
-// twenty cubes, one at each corner, spanning from the corner to the cell's center.
-
 enum Face : ubyte {
     f0,
     f1,
@@ -143,7 +139,6 @@ struct Honeycomb {
         return (adjacent[a] & (1u << b)) != 0;
     }
 
-    // The corner sharing the two faces other than the given axis's: the next cube along that axis inside the cell.
     Corner cornerAcross(Face[3] faces, size_t axis) const {
         Face[3] swapped = acrossFaces(faces, axis);
         uint corner = 0;
@@ -154,7 +149,6 @@ struct Honeycomb {
         return cast(Corner) corner;
     }
 
-    // Built element by element: compile-time evaluation lets a copied static array alias its source.
     Face[3] acrossFaces(Face[3] faces, size_t axis) const {
         uint candidate = 0;
         while (candidate < FACE_COUNT && !(candidate != faces[axis] && isAdjacent(candidate, faces[(axis + 1) % 3]) && isAdjacent(candidate, faces[(axis + 2) % 3]))) {
@@ -180,10 +174,6 @@ struct Honeycomb {
 enum double ORTHOGONAL_TOLERANCE = 1e-12;
 enum double GOLDEN = 1.6180339887498948482;
 
-// The face directions are the icosahedron's vertices; scaling them out of the light cone until neighbors are
-// orthogonal gives the right-angled dodecahedron: a^2 cos - b^2 = 0 for neighbors at cos = 1/sqrt(5), and
-// a^2 - b^2 = 1 for a unit normal. Node ids, terrain and skies all derive from the face numbering, so it is part of
-// every world's content and stays fixed.
 Normal!double[FACE_COUNT] faceNormals() {
     double rootFive = sqrt(5.0);
     double a = sqrt(1 / (1 - 1 / rootFive));
@@ -216,8 +206,6 @@ Face mostAntiparallel(ref const Normal!double[FACE_COUNT] normals, size_t face) 
     return cast(Face) opposite;
 }
 
-// The corner lies on all three faces; since the normals are orthogonal and equally far from the origin, stepping from
-// the origin along their sum by that distance lands on each plane. The frame's axes point into the cell.
 Motion!double cornerFrame(Normal!double a, Normal!double b, Normal!double c) {
     double distance = a.v.c[3];
     Point!double corner = (Vec4!double.origin() + (a.v + b.v + c.v) * distance).toPoint();
@@ -262,7 +250,6 @@ bool isAdjacentTo(Face a, Face b) {
     return HONEYCOMB.isAdjacent(a, b);
 }
 
-// One bit per face that meets this one at an edge.
 ushort adjacentFaces(Face face) {
     return HONEYCOMB.adjacent[face];
 }
@@ -283,8 +270,6 @@ float[3] reference(Face face) {
     return HONEYCOMB.references[face];
 }
 
-// Whether the point is on the far side of the face, closer to the neighbor's center than this cell's. A point on the
-// face belongs to either cell; without the tolerance, rounding can bounce one between two faces forever.
 bool isBeyond(Face face, Point!float point) {
     return HONEYCOMB.normals[face].minkowski(point.v) > BEYOND_TOLERANCE * point.v.c[3];
 }
@@ -311,7 +296,6 @@ Motion!float nodeToCorner(Corner corner) {
     return HONEYCOMB.nodeToCorner[corner];
 }
 
-// Cube coordinates run from the corner at 0 to the cell's center at 1 along each axis.
 Mat4!float cubeToNode(Corner corner) {
     return HONEYCOMB.cornerToNode[corner].m * Mat4!float.scaling(HONEYCOMB.cubeScale);
 }
@@ -324,13 +308,9 @@ Point!float cubeCenter(Corner corner) {
     return HONEYCOMB.cubeCenters[corner];
 }
 
-// From the cell's center to its farthest point, a corner.
 enum float NODE_RADIUS = cast(float) acoshAtCompileTime(HONEYCOMB.coshNodeRadius);
-// From a cube's center, the midpoint of its corner and the cell's center, to its farthest point.
 enum float CUBE_RADIUS = cast(float) acoshAtCompileTime(HONEYCOMB.coshCubeRadius);
-// From the center of a cube's cell grid to its farthest point.
 enum float CUBE_GRID_RADIUS = cast(float) acoshAtCompileTime(HONEYCOMB.coshCubeGridRadius);
-// From the cell's center to the middle of a face.
 enum float FACE_DISTANCE = cast(float) asinhAtCompileTime(HONEYCOMB.sinhFaceDistance);
 
 enum float TABLE_TOLERANCE = 1e-5f;

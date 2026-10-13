@@ -1,8 +1,8 @@
-local sky = require("sky")
+local backrooms = require("skies.backrooms")
 
 local EDGES = 2
 
 return function(site)
-  local backrooms = site:sky(0, "flat", sky.backrooms, { route = true })
-  site:open_sky(backrooms, EDGES)
+  local kind = site:sky(0, "flat", backrooms, true)
+  site:open_sky(kind, EDGES)
 end

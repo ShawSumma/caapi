@@ -142,14 +142,11 @@ struct CornerKey {
     }
 }
 
-// Which worlds a node lies near, once it has been worked out.
 struct NodeWorlds {
     Run run;
     bool isKnown;
 }
 
-// The worlds stacked over the planet, numbered from 1, and what is known about where they are: which worlds each node
-// lies near, which sky each ground corner chose, and which skies rise from each ground node.
 struct Skies {
     Array!SkyKind kinds;
     Array!World worlds;
@@ -179,7 +176,6 @@ struct Skies {
         return index == PLANET ? isPlanetFlat : kinds.ptr[world(index).kind].ground == SkyGround.flat;
     }
 
-    // Planes over the planet and over terrain skies can hold more skies; flat skies hold none.
     bool opensSkies(uint index) const {
         return index == PLANET || !isFlat(index);
     }
@@ -271,7 +267,6 @@ float edgeOf(ref const GraphView view) {
     return edgeLength(view.layout).value;
 }
 
-// What a view worked out about graph nodes and sky caches is what the main thread would work out, so it is kept.
 void applyDiscoveries(ref Graph target, ref const GraphView view) {
     foreach (slot; view.storedSlots.slice()) {
         if (!target.skies.hasWorldsAt(slot)) {
@@ -290,7 +285,6 @@ void applyDiscoveries(ref Graph target, ref const GraphView view) {
     }
 }
 
-// Makes the worlds a view stopped at, so the work that needed them can run on any thread again.
 bool makeWantedWorlds(ref Graph target, ref GraphView view) {
     foreach (want; view.wanted.slice()) {
         uint face = want.start;
@@ -400,7 +394,6 @@ Plane inheritedPlaneOf(ref GraphView view, uint sky, uint slot) {
     return view.planeOfWorldIn(sky, slot);
 }
 
-// The returned list lives in a cache that the next store may move, so it is read before anything else is stored.
 const(uint)[] skiesRisingFrom(ref GraphView view, uint ground, uint world) {
     GroundKey key = GroundKey(view.idAt(ground), world);
     const(uint)[] known = view.knownRising(key);
@@ -507,9 +500,6 @@ Plane planeOfWorldIn(ref GraphView view, uint world, uint slot) {
     }
 }
 
-// Two planes that never meet are as far apart as the acosh of their normals' product. Skies stand whole edges apart,
-// so the separation is often exactly the clearance, and the nodes that ask must all get the same answer whatever
-// their rounding.
 bool isApart(Plane first, Plane second, float separation) {
     double product = fabs(first.scaledNormal().minkowski(second.scaledNormal()));
     return product > 0 && log(product) + logCosh(first.height) + logCosh(second.height) >= log(cosh(separation)) - APART_TOLERANCE;
@@ -673,7 +663,6 @@ ChunkPoint chunkPointOf(Point!float point) {
     return best;
 }
 
-// How far above a ground a point is: above its plane for a flat ground, and above its relief for terrain.
 float heightAbove(float relief, float altitude, bool isFlat) {
     if (isFlat) {
         return altitude;
@@ -755,7 +744,6 @@ float edgeLineDistance() {
     return acoshf(sqrtf(alongCorner * alongCorner - alongEdge * alongEdge));
 }
 
-// Whether a ground may cross a node, given the relief at the node's center.
 bool isInBand(Plane plane, bool isFlat, float relief) {
     float altitude = plane.distanceTo(Point!float.origin());
     float top = 0;
@@ -784,13 +772,11 @@ float worldHeightAt(ref GraphView view, uint world, Position position) {
     return heightAbove(relief, view.planeOfWorldIn(world, slot).distanceTo(point), view.skies.isFlat(world));
 }
 
-// The climate at a point in a node, from the cube holding it.
 Climate climateAt(ref GraphView view, uint slot, Point!float point) {
     ChunkPoint at = chunkPointOf(point);
     return CubeClimate.around(view, slot, at.corner).at(at.coords);
 }
 
-// For readers that must not work out missing nodes: a neighbor that is not loaded lends the node's own climate.
 Climate loadedClimateAt(ref const Graph graph, uint slot, Point!float point) {
     ChunkPoint at = chunkPointOf(point);
     Face[3] sides = at.corner.faces;

@@ -1,4 +1,4 @@
-local box = require("box")
+local box = require("tower.box")
 
 local HALF_WIDTH = 2
 local HUT_EVERY = 3
@@ -36,12 +36,12 @@ end
 
 local trail
 
-local function extend(segment, count)
+local function extend(segment)
   local ahead = segment:forward(1)
   if ahead:is_claimed() then
     return false
   else
-    local is_placed = segment:place(trail, count)
+    local is_placed = segment:place(trail)
     if is_placed then
       ahead:claim()
     end
@@ -49,10 +49,12 @@ local function extend(segment, count)
   end
 end
 
-trail = function(segment, count)
+trail = function(segment)
+  segment:claim()
+  segment:forward(1):claim()
   pave(segment)
   local tip = segment:forward(1)
-  if count % HUT_EVERY == 0 then
+  if segment:hash("edge") % HUT_EVERY == 0 then
     add_hut(tip)
   end
   local first = segment:pick(#TURNS)
@@ -60,13 +62,9 @@ trail = function(segment, count)
   local is_extended = false
   while tried < #TURNS and not is_extended do
     local turn = TURNS[(first + tried - 1) % #TURNS + 1]
-    is_extended = extend(turn(tip), count + 1)
+    is_extended = extend(turn(tip))
     tried = tried + 1
   end
 end
 
-return function(site)
-  site:claim()
-  site:forward(1):claim()
-  trail(site, 1)
-end
+return trail

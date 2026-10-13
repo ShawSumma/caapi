@@ -40,9 +40,6 @@ struct IntegrationJob {
     IntegrationOutput* outputs;
 }
 
-// Arrived chunks are stored on every thread in one pass, and in a second pass, which sees them all populated, each
-// works out what its arrival changes around it. A neighbor several arrivals share is claimed with an atomic swap of
-// one of its fields so exactly one thread takes it; what the main thread must still do lands in per-thread lists.
 struct Integrator {
     Array!GenResult arrivals;
     IntegrationOutput* outputs;
@@ -113,9 +110,6 @@ void settleArrival(void* context, size_t item, uint worker) {
     settle(*job.graph, job.arrivals[item], job.outputs[worker]);
 }
 
-// A new chunk is meshed, and so are the neighbors whose faces against it change; a dropped neighbor is made again so
-// the new chunk's border is never meshed against nothing. A restored chunk holds what it held before, so the meshes
-// around it still hold. Wherever a chunk with stand-in materials now borders an empty cell, it is resolved.
 void settle(ref Graph graph, GenResult arrival, ref IntegrationOutput output) {
     const(Chunk)* chunk = graph.chunks.at(arrival.chunk);
     if (!arrival.isRestoring) {
@@ -145,7 +139,6 @@ void settle(ref Graph graph, GenResult arrival, ref IntegrationOutput output) {
     }
 }
 
-// Whichever thread first marks a chunk queued queues it.
 void queueMesh(ref Graph graph, ChunkSlot target, ref IntegrationOutput output) {
     if (graph.needsMesh(target) && cas(cast(shared(bool)*) &graph.chunks.existing(target).isQueued, false, true)) {
         output.changed.append(target);
@@ -173,8 +166,6 @@ void resolveIfExposed(ref Graph graph, ChunkSlot chunk) {
     }
 }
 
-// Faces on a chunk's border are drawn by whichever side is see-through, so new materials there change the
-// neighbors' meshes as well as its own.
 void resolveMaterials(ref Graph graph, ChunkSlot chunk) {
     ChunkParams params = ChunkParams.make(graph.view, chunk.slot, chunk.corner);
     params.isResolvingMaterials = true;
@@ -228,7 +219,6 @@ bool isBesideArrivalIn(ref const Graph graph, ChunkSlot chunk, size_t batch) {
     return isBeside;
 }
 
-// Every chunk that shows faces must be waiting to be meshed, and a dropped chunk beside a new one must be coming back.
 unittest {
     Graph graph = Graph.make(TEST_DIMENSION, Worldgen.makeTerrain());
     uint root = graph.slotOf(ROOT_NODE);

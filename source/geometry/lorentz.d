@@ -3,10 +3,6 @@ module geometry.lorentz;
 import core.math : sqrt;
 import core.stdc.math : acosh, cosh, sinh;
 
-// Hyperbolic space as the upper sheet of the hyperboloid <p, p> = -1 in Minkowski space, with the time coordinate
-// last. Points, plane normals and motions are all plain 4-vectors and 4x4 matrices under the form
-// <a, b> = a.x b.x + a.y b.y + a.z b.z - a.w b.w.
-
 struct Vec4(T) {
     T[4] c = [0, 0, 0, 0];
 
@@ -18,7 +14,6 @@ struct Vec4(T) {
         return c[0] * other.c[0] + c[1] * other.c[1] + c[2] * other.c[2] - c[3] * other.c[3];
     }
 
-    // The point this timelike vector points at, on the sheet the time coordinate's sign picks.
     Point!T toPoint() const {
         T scale = 1 / sqrt(-minkowski(this));
         return Point!T(c[3] < 0 ? this * -scale : this * scale);
@@ -68,7 +63,6 @@ struct Point(T) {
         return v.minkowski(other);
     }
 
-    // The cosh of the distance, which is all most comparisons need.
     T coshDistance(Point other) const {
         T value = -v.minkowski(other.v);
         return value < 1 ? 1 : value;
@@ -87,7 +81,6 @@ struct Point(T) {
     }
 }
 
-// The unit spacelike normal of a plane; the plane is the set of points it is orthogonal to.
 struct Normal(T) {
     Vec4!T v;
 
@@ -104,7 +97,6 @@ struct Normal(T) {
     }
 }
 
-// Column-major: c[column][row].
 struct Mat4(T) {
     T[4][4] c = 0;
 
@@ -156,7 +148,6 @@ struct Mat4(T) {
         return result;
     }
 
-    // The 3x3 determinant left after removing the first row and the given column.
     T minor(size_t skipped) const {
         size_t[3] cols;
         size_t count = 0;
@@ -177,7 +168,6 @@ struct Mat4(T) {
     }
 }
 
-// An isometry of hyperbolic space: a matrix that keeps the Minkowski form and the upper sheet.
 struct Motion(T) {
     Mat4!T m;
 
@@ -185,7 +175,6 @@ struct Motion(T) {
         return Motion(Mat4!T.identity());
     }
 
-    // x - 2 <x, n> n, written out as a matrix.
     static Motion reflection(Normal!T normal) {
         Vec4!T n = normal.v;
         Motion result = identity();
@@ -198,7 +187,6 @@ struct Motion(T) {
         return result;
     }
 
-    // Moves the origin along the tangent vector by its length, turning nothing on the way.
     static Motion shift(T[3] v) {
         T length = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
         if (length == 0) {
@@ -220,7 +208,6 @@ struct Motion(T) {
         }
     }
 
-    // The shift that takes one point to the other along the line through them.
     static Motion carrying(Point!T from, Point!T to) {
         return shiftTo(to) * shiftTo(from).inverse();
     }
@@ -237,7 +224,6 @@ struct Motion(T) {
         }
     }
 
-    // A frame: three unit normals as the axes and a point as the origin.
     static Motion fromFrame(Normal!T[3] axes, Point!T origin) {
         Motion result;
         foreach (col; 0 .. 3) {
@@ -247,7 +233,6 @@ struct Motion(T) {
         return result;
     }
 
-    // For a matrix keeping the form J, the inverse is J M^T J.
     Motion inverse() const {
         Motion result;
         foreach (col; 0 .. 4) {
@@ -259,8 +244,6 @@ struct Motion(T) {
         return result;
     }
 
-    // Rounding drifts a composed matrix off the group; Gram-Schmidt in the Minkowski form brings it back, starting
-    // from the image of the origin so positions move least.
     Motion orthonormalized() const {
         Vec4!T[4] columns = [m.column(0), m.column(1), m.column(2), m.column(3)];
         columns[3] = columns[3].toPoint().v;
@@ -278,7 +261,6 @@ struct Motion(T) {
         return result;
     }
 
-    // Whether the motion reverses orientation, which mirrors winding order when drawing.
     bool isMirroring() const {
         return m.determinant() < 0;
     }

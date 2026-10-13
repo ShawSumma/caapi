@@ -20,8 +20,6 @@ enum float KEEP_RADIUS = 3.0f;
 enum float DROP_RADIUS = 3.5f;
 enum double TILE_IDLE_TRAVEL = 12.0;
 
-// Sweeps a share of the slots each frame. A node found in the nearby set is marked recent and skipped by the next
-// sweep, so it outlives a set that briefly loses it.
 struct Evictor {
     Array!uint stack;
     Array!bool isRecent;
@@ -86,8 +84,6 @@ struct Evictor {
         }
     }
 
-    // A tile's brushes are only read when a building is planned, which paints dropped tiles again first, so tiles
-    // nothing has asked for since the camera moved on are dropped unless their face is still in view.
     void dropIdleTiles(ref Graph graph, Near near) {
         size_t count = graph.structures.blueprint.tiles.length / SWEEP_CYCLE_FRAMES + 1;
         foreach (_; 0 .. count) {

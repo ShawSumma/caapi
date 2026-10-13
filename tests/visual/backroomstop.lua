@@ -6,7 +6,6 @@ local NOCLIP_SPEED = 0.6
 local RISE = 0.55
 local TURN_DEGREES = 120
 
--- Up the connector, then straight up through two floors into the top layer by the connector's shaft.
 return function(world)
   world:worldgen("structure", BACKROOMS)
   world:enter_route()

@@ -37,7 +37,6 @@ float minkowski(vec4 a, vec4 b) {
     return dot(a.xyz, b.xyz) - a.w * b.w;
 }
 
-// A frustum plane's unit normal against a point gives the sinh of the point's distance in front of the plane.
 bool is_in_frustum(vec4 center) {
     for (uint plane = 0; plane < FRUSTUM_PLANES; plane++) {
         if (minkowski(frustum_planes[plane], center) < -cull_sinh_radius) {

@@ -184,8 +184,6 @@ struct Renderer {
         return backlog;
     }
 
-    // Fog lets through e^-(distance / reach)^sharpness of what is behind it, which falls to the visibility threshold at
-    // the render radius.
     CommonUniforms commonUniforms(ref const LocalWorld world) const {
         VkExtent2D extent = swapchain.extent;
         Frustum frustum = Frustum.fromVerticalHalf(HALF_VERTICAL_FOV, cast(float) extent.width / cast(float) extent.height);

@@ -106,8 +106,6 @@ float[3] unitOrZero(float[3] axis) {
     }
 }
 
-// The view is a level heading, whose up is the visible up, pitched about its own x axis. Yaw and pitch are kept apart
-// so that neither is ever worked out from the other: looking straight down, the heading is still well defined.
 struct Camera {
     Position position;
     Motion!float eye;
@@ -137,7 +135,6 @@ struct Camera {
         return Angle(asinf(clamped(ahead[0] * viewUp[0] + ahead[1] * viewUp[1] + ahead[2] * viewUp[2], -1.0f, 1.0f)));
     }
 
-    // The heading turns the least that brings its up to the new one, from its own up so rounding never builds up.
     void follow(Position bodyPosition, Motion!float eyeFromBody, float[3] visibleUp) {
         position = bodyPosition;
         eye = eyeFromBody;
@@ -171,7 +168,6 @@ unittest {
     assert(fabsf(camera.elevation().value - 0.3f) < TEST_ANGLE_TOLERANCE.value);
 }
 
-// Looking straight down while the up wanders a little, the way it does while moving, leaves the heading where it was.
 unittest {
     Camera camera = Camera.make(Length(0));
     camera.turn(Angle(0), -PITCH_LIMIT);

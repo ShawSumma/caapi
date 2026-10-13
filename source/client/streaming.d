@@ -74,15 +74,12 @@ struct PlannedParams {
     bool isFailed;
 }
 
-// Jobs read the graph and write only the chunks they were given, through ChunkStore.existing.
 struct ParamsJob {
     Graph* graph;
     const(PlannedChunk)* chunks;
     PlannedParams* made;
 }
 
-// Runs on any thread while the graph only gets read: a view finishes what the main thread left undone, and anything
-// it cannot decide is made again on the main thread.
 void computeParams(void* context, size_t index, uint worker) {
     ParamsJob* job = cast(ParamsJob*) context;
     GraphView* view = &job.graph.threadViews[worker];
@@ -181,10 +178,6 @@ void sortIntoBand(void* context, size_t item, uint worker) {
     }
 }
 
-// Decides which chunks to load and when: it walks the nearby set asking for chunks in range, plans their parameters
-// on every thread, hands them to the workers and joins what comes back to the graph.
-// Buildings wait here as node slots until they are handed to the workers, a few at a time, so a node near the camera
-// can still go ahead of them.
 struct Streamer {
     Array!GenRequest requests;
     Array!GenRequest urgentRequests;
@@ -265,9 +258,6 @@ struct Streamer {
         return Executor(pool);
     }
 
-    // The scan walks the nearby set from its center outward and only starts over when a new set is published, which
-    // can be far behind a moving camera, so the chunks right around the camera are asked for first on every drive,
-    // whatever the budget.
     void requestAround(ref Graph graph, Position focus) {
         around.clear();
         visitCells(graph, focus, FOCUS_REACH, around);
@@ -349,7 +339,6 @@ struct Streamer {
         return slot < rescanAt.length && rescanAt.ptr[slot] <= travel;
     }
 
-    // Nodes the scan reaches next whose chunks need their structure first.
     void collectUnstructured(ref const Graph graph, const(NearbyNode)[] nearby, ref Array!uint into, size_t limit) const {
         size_t index = scanCursor;
         size_t end = index + limit * LOOKAHEAD_PER_CANDIDATE;
@@ -362,8 +351,6 @@ struct Streamer {
         }
     }
 
-    // Which chunks of the next nodes are in range is worked out on every thread a window at a time, and this thread
-    // then acts on those facts in order, so the request budget and the deadline still stop it at the same node.
     size_t scan(ref Graph graph, const(NearbyNode)[] nearby, ScanRange range, uint budget, double deadline) {
         uint scanned = 0;
         size_t index = scanCursor;
@@ -390,7 +377,6 @@ struct Streamer {
         return index;
     }
 
-    // Returns whether the request budget ran out partway, in which case the node is scanned again later.
     bool scanAt(ref Graph graph, const(NearbyNode)[] nearby, size_t index, ScanFacts found, ScanRange range, uint budget, bool isUrgent) {
         uint slot = nearby[index].slot;
         immutable ScanOutcome outcome = scanNode(graph, slot, found, budget, isUrgent);
@@ -403,8 +389,6 @@ struct Streamer {
         return outcome.isInterrupted;
     }
 
-    // The scan's order comes from where the nearby set was searched from, which a moving camera leaves behind, so the
-    // nodes near the camera are picked out on every thread, nearest band first, and scanned before the rest.
     void findNearCamera(const(NearbyNode)[] nearby, Point!float camera) {
         NearJob context = NearJob(nearby.ptr, bands, camera);
         foreach (band; 0 .. NEAR_BANDS) {
@@ -423,7 +407,6 @@ struct Streamer {
         nearTravel = travel;
     }
 
-    // Returns whether scanning stopped for the deadline. Chunks near the camera go out whatever is already in flight.
     bool scanNearCamera(ref Graph graph, const(NearbyNode)[] nearby, ScanRange range, double deadline) {
         bool isStopped = nowMilliseconds() >= deadline;
         while (nearHead < nearCamera.length && !isStopped) {
@@ -476,8 +459,6 @@ struct Streamer {
         planned.append(PlannedChunk(slot, isRestoring, isUrgent));
     }
 
-    // A node asked for near the camera is moved ahead of the waiting ones, unless its building is already with a
-    // worker, where it is never far behind.
     void scheduleBuilding(ref Graph graph, uint slot, bool isUrgent) {
         NodeStructure* node = &graph.structures.at(slot);
         if (graph.structures.buildingAt(slot) is null && !node.isBuildingQueued) {
@@ -500,9 +481,6 @@ struct Streamer {
         }
     }
 
-    // Requests that do not fit stay at the front of their array and go out on the next drive. Only as many go out as
-    // their results have room for, since a worker cannot hold on to a result it has no room to hand back. Buildings
-    // far from the camera go out only a few per worker at a time.
     void submitRequests(ref Graph graph) {
         size_t generations = pushedPrefix(queues.urgent, urgentRequests, QUEUE_CAPACITY - inFlight);
         generations += pushedPrefix(queues.generations, requests, QUEUE_CAPACITY - inFlight - generations);
@@ -518,7 +496,6 @@ struct Streamer {
         }
     }
 
-    // A building's plan is copied from the blueprint as it goes out, painting again any tiles dropped meanwhile.
     size_t submitBuildings(ref Graph graph, ref Array!uint slots, ref ConcurrentQueue!BuildingRequest queue, size_t room) {
         size_t pushed = 0;
         while (pushed < slots.length && pushed < room) {

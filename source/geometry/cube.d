@@ -2,8 +2,6 @@ module geometry.cube;
 
 import geometry.honeycomb : Face;
 
-// Cells inside one cube of a dodecahedron, addressed by their position along its three axes.
-
 enum Axis : ubyte {
     x,
     y,
@@ -52,7 +50,6 @@ ubyte boundaryOf(ubyte dimension, Sign sign) {
     return sign == Sign.plus ? cast(ubyte)(dimension - 1) : 0;
 }
 
-// How a neighboring cube's axes line up with this one's: axis i here is axis to[i] there.
 struct AxisMap {
     Axis[3] to = [Axis.x, Axis.y, Axis.z];
 

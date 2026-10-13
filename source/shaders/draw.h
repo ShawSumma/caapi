@@ -1,7 +1,6 @@
 #ifndef DRAW_H
 #define DRAW_H
 
-// Where one of a node's twenty cubes sits in the node, and the center its culling sphere is around.
 struct CubeFrame {
     mat4 cube_to_node;
     vec4 center;

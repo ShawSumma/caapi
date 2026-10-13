@@ -22,10 +22,7 @@ import geometry.ray : Ray;
 
 enum float NEARBY_PADDING = 0.05f;
 enum float NEARBY_REBUILD_DISTANCE = 0.25f;
-// The camera's node puts the camera within NODE_RADIUS of the origin, so a set moves at most once per this much travel.
 enum float REBASE_DISTANCE = NODE_RADIUS + 1.0f;
-// Nodes this near the camera's node have their transforms worked out afresh on every rebase, so whatever is within
-// this less REBASE_DISTANCE of the camera is always drawn from exact chains.
 enum float REDERIVE_RADIUS = 6.0f;
 enum double TELEPORT_TRAVEL = 1.0e3;
 enum float RENDER_RADIUS = 8.0f;
@@ -119,8 +116,6 @@ struct LocalWorld {
         return nearby[published].nodes.ptr[cameraNearbyIndex()].transform * cameraPosition.local;
     }
 
-    // The world's share of a frame is split by what each phase took last frame: the nearby search gets what the
-    // streamer and eviction leave, and every phase gets at least a little so none of them stalls.
     void update(bool isUnbudgeted) {
         double start = nowMilliseconds();
         double end = start + STEP_BUDGET_MILLISECONDS;
@@ -153,8 +148,6 @@ struct LocalWorld {
         phases.streamerCpu.add(streamedCpu - foundCpu);
     }
 
-    // Structure for the nodes the scan needs next is painted on every thread here, so the scan's structure checks on
-    // this thread only finish what is already painted.
     void paintAhead() {
         if (graph.structures.grower.paintAhead !is null) {
             candidates.clear();
@@ -174,8 +167,6 @@ struct LocalWorld {
         streamer.forget(unloaded.slice()[first .. $]);
     }
 
-    // Every set the camera is in holds the nodes right around it, so it never leaves the published set between
-    // searches, and whatever is meshed near it has a node to be drawn from.
     void keepCameraCollected() {
         uint cameraSlot = graph.slotOf(cameraPosition.node);
         nearby[published].collectAround(graph, cameraSlot, cameraInNearbyFrame() * Point!float.origin(), CAMERA_REACH);
@@ -250,7 +241,6 @@ struct LocalWorld {
         nearbyStats.slicedMilliseconds += nowMilliseconds() - start;
     }
 
-    // The next set grows out of the published one, whose frame follows the camera.
     void startNext(float distance, Point!float camera) {
         NearbyScratch* next = &nearby[1 - published];
         next.beginFrom(nearby[published], graph, camera, distance, FULL_RADIUS, streamer.executor());
@@ -260,8 +250,6 @@ struct LocalWorld {
         nearbyStats.reexpanded += next.nodes.length - next.front;
     }
 
-    // A search started before the camera jumped, or left behind by a recovery and resumed, may not reach the camera;
-    // publishing it would lose the camera, so it starts over from where the camera is.
     void publishOrRestart(float distance) {
         NearbyScratch* next = &nearby[1 - published];
         if (next.indexOf(graph.slotOf(cameraPosition.node)) != NOT_COLLECTED) {
@@ -281,8 +269,6 @@ struct LocalWorld {
         nearbyStats.publishes += 1;
     }
 
-    // A set's frame moves to the camera's node once the camera is far enough from its origin that float coordinates
-    // start to blur what is around it. The points kept in a set's frame move with it.
     void followCamera() {
         uint cameraSlot = graph.slotOf(cameraPosition.node);
         NearbyScratch* current = &nearby[published];

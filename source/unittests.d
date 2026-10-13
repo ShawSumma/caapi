@@ -4,7 +4,6 @@ import base.crash : reportCrashes, reportHangAfter;
 
 enum uint TEST_TIME_LIMIT_SECONDS = 300;
 
-// Lower layers come first, so the first failure points at the module that broke rather than one built on it.
 import baseNumbers = base.numbers;
 import baseArray = base.array;
 import baseHashmap = base.hashmap;
@@ -43,6 +42,7 @@ import worldgenBuilding = common.worldgen.building;
 import worldgenStructure = common.worldgen.structure;
 import worldgenSky = common.worldgen.sky;
 import worldgenSpawn = common.worldgen.spawn;
+import worldgenStrokes = common.worldgen.strokes;
 import worldgenEmbedded = common.worldgen.embedded;
 import clientArguments = client.arguments;
 import clientConfig = client.config;

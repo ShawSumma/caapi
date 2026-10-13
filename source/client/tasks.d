@@ -34,9 +34,6 @@ struct BuildingResult {
     uint slot;
 }
 
-// Worker threads take chunk and building tasks from lock-free queues and hand results back the same way; the main
-// thread alone touches the graph, applying results as it drains them. Work near the camera goes in its own queues,
-// which workers empty before the rest.
 struct TaskQueues {
     ConcurrentQueue!GenRequest generations;
     ConcurrentQueue!GenRequest urgent;
@@ -111,7 +108,6 @@ void yieldToJob(void* context) {
     help.pool.helpWithJob(help.worker);
 }
 
-// A building comes before the chunks of its node, and everything near the camera before anything farther.
 bool takeTask(void* context, uint worker) {
     TaskQueues* queues = cast(TaskQueues*) context;
     BuildingRequest building;
@@ -144,7 +140,6 @@ void generate(TaskQueues* queues, GenRequest request, uint worker) {
     assert(isPushed);
 }
 
-// Pushes what fits from the front of the pending list; the rest moves to the front and waits for the next push.
 size_t pushedPrefix(T)(ref ConcurrentQueue!T queue, ref Array!T pending, size_t room) {
     size_t pushed = 0;
     while (pushed < pending.length && pushed < room && queue.push(pending.ptr[pushed])) {

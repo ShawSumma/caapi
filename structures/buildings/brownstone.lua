@@ -1,4 +1,4 @@
-local kit = require("buildings.kit")
+local building = require("buildings.building")
 
 local brownstone = {}
 
@@ -11,15 +11,21 @@ brownstone.PALETTES = {
   { wall = "spruce_wood", trim = "diorite", floor = "wood_planks" },
 }
 
-local DESIGN = {
-  setbacks = 0,
-  facade = kit.masonry,
-  roof = "slate",
-  crowns = { kit.chimney, false },
-}
+local ROOF = "slate"
+local CROWNS = { building.chimney, building.plain }
 
 function brownstone.build(lots, spec)
-  kit.build(lots, spec, DESIGN)
+  local parts = building.parts(lots, spec)
+  for _, part in ipairs(parts) do
+    for _, tier in ipairs(building.tiers(part, spec, 0)) do
+      building.masonry(part, spec.palette, building.shell(part, spec.palette, tier), tier)
+      if tier.is_roofed then
+        building.roof(part, spec.palette, ROOF, tier)
+      end
+    end
+  end
+  building.enter(parts, spec)
+  building.crown(parts, spec.palette, building.pick(parts, CROWNS))
 end
 
 return brownstone

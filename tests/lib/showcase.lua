@@ -1,4 +1,4 @@
-local kit = require("buildings.kit")
+local building = require("buildings.building")
 
 local FRONT = 4
 local SHOWN = {
@@ -11,7 +11,7 @@ local SHOWN = {
 return function(site)
   local quarter = site
   for _, shown in ipairs(SHOWN) do
-    local part = { site = quarter, x_low = kit.STREET, y_low = kit.STREET, x_high = kit.LOT, y_high = kit.LOT, front = "y_low" }
+    local part = { site = quarter, x_low = building.STREET, y_low = building.STREET, x_high = building.LOT, y_high = building.LOT, front = "y_low" }
     shown.type.build({ part }, { stories = shown.stories, palette = shown.type.PALETTES[1], front = FRONT, gap = 0 })
     quarter = quarter:right()
   end

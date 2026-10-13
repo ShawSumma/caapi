@@ -1,14 +1,14 @@
 local walk = require("lib.walk")
 
--- Far from the root everything is still drawn and stands where it should: flying level keeps the altitude, the
--- ground stays loaded right below, and a ray straight down still hits it.
 local CLIMB_SECONDS = 2
 local LEGS = 8
 local LEG_DISTANCE = 4.0
 local ALTITUDE_DRIFT = 0.1
+local AWAY_FROM_TREE_DEGREES = 180
 
 return function(world)
   world:live()
+  world:look(AWAY_FROM_TREE_DEGREES, 0)
   world:mode("fly")
   world:press(CLIMB_SECONDS, "up")
   local start = world:altitude()

@@ -199,7 +199,6 @@ void dumpWorld(FILE* output, float radius, ubyte dimension) {
     graph.release();
 }
 
-// How many cells each material fills in the terrain world around the origin, to see what worldgen makes.
 void printMaterialCensus(FILE* output, float radius, ubyte dimension) {
     Graph graph = terrainGraph(dimension);
     graph.generateWorld(radius);
@@ -306,9 +305,6 @@ bool checkRepaint(FILE* output, ubyte dimension, Worldgen worldgen) {
     return !problem.isPresent && differing == 0;
 }
 
-// The structure's cells at one height in the quarters around the root's vertex and the next one along its edge, then
-// the quarters of the root's face, each printed with its vertex at the bottom left and the middle of its face at the top right: # is solid and
-// . is open. A quarter's left column and bottom row lie along edges of the tiling, its others across its face.
 bool printSlices(FILE* output, ubyte dimension, Worldgen worldgen, int height) {
     Graph graph = Graph.make(dimension, worldgen);
     StructureProblem problem = graph.placeWorldStructure();
@@ -343,23 +339,25 @@ void printQuarter(ref Graph graph, FILE* output, SiteFrame quarter, int height) 
     int far = graph.layout.dimension - 1;
     foreach_reverse (y; 0 .. far + 1) {
         foreach (x; 0 .. far + 1) {
-            fputc(graph.paintedAt(tower, [x, y, height]) == Material.none ? '.' : '#', output);
+            fputc(graph.generatedAt(tower, [x, y, height]) == Material.none ? '.' : '#', output);
         }
         fputc('\n', output);
     }
 }
 
-Material paintedAt(ref Graph graph, SiteFrame tower, int[3] cell) {
+Material generatedAt(ref Graph graph, SiteFrame tower, int[3] cell) {
     Point!float center = sitePlacement(tower, graph.layout) * columnPoint(graph.layout, ColumnSpot(cell[0] + 0.5f, cell[1] + 0.5f, cell[2] + 0.5f));
     Position at = graph.ensureNormalized(Position(graph.idAt(tower.node), Motion!float.shiftTo(center)));
     uint slot = graph.slotOf(at.node);
-    graph.ensureStructureAt(slot);
     ChunkPoint inChunk = chunkPointOf(at.local * Point!float.origin());
     int[3] voxel = void;
     foreach (axis; 0 .. 3) {
         voxel[axis] = cast(int) floorf(graph.layout.cubeToGrid(inChunk.coords[axis]));
     }
-    return graph.ensureBuildingAt(slot).materialAt(inChunk.corner, voxel, Material.none);
+    GeneratedVoxels generated = ChunkParams.make(graph.view, slot, inChunk.corner).generateVoxels();
+    Material material = generated.voxels.at(cellIndex(graph.layout.dimension, voxel[0], voxel[1], voxel[2]));
+    generated.voxels.release();
+    return material;
 }
 
 ulong generatedHash(ref Graph graph, uint slot) {

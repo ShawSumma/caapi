@@ -1,8 +1,6 @@
-local connector = {}
-
 local STORY = 4
-local HALF = 4
-local INNER = HALF - 1
+local HALF_WIDTH = 4
+local INNER = HALF_WIDTH - 1
 local CORE = 2 * INNER
 local TURN = 8
 local FLIP_CLEARANCE = 1
@@ -37,18 +35,18 @@ end
 
 local function windows(tower, z, rows)
   for _, run in ipairs(GLASS) do
-    tower:paint("glass", { x = { -HALF, -HALF }, y = run, z = z }, rows)
-    tower:paint("glass", { x = { HALF - 1, HALF - 1 }, y = run, z = z }, rows)
-    tower:paint("glass", { x = run, y = { -HALF, -HALF }, z = z }, rows)
-    tower:paint("glass", { x = run, y = { HALF - 1, HALF - 1 }, z = z }, rows)
+    tower:paint("glass", { x = { -HALF_WIDTH, -HALF_WIDTH }, y = run, z = z }, rows)
+    tower:paint("glass", { x = { HALF_WIDTH - 1, HALF_WIDTH - 1 }, y = run, z = z }, rows)
+    tower:paint("glass", { x = run, y = { -HALF_WIDTH, -HALF_WIDTH }, z = z }, rows)
+    tower:paint("glass", { x = run, y = { HALF_WIDTH - 1, HALF_WIDTH - 1 }, z = z }, rows)
   end
 end
 
 local function shell(tower, palette, layout)
   local base, top, split = layout.base, layout.top, layout.split
   local bands = { every = STORY, from = base % STORY, span = 1 }
-  tower:paint(palette.wall, { x = { -HALF, HALF - 1 }, y = { -HALF, HALF - 1 }, z = { base, base + top } })
-  tower:paint(palette.trim, { x = { -HALF, HALF - 1 }, y = { -HALF, HALF - 1 }, z = { base, base + top } }, bands)
+  tower:paint(palette.wall, { x = { -HALF_WIDTH, HALF_WIDTH - 1 }, y = { -HALF_WIDTH, HALF_WIDTH - 1 }, z = { base, base + top } })
+  tower:paint(palette.trim, { x = { -HALF_WIDTH, HALF_WIDTH - 1 }, y = { -HALF_WIDTH, HALF_WIDTH - 1 }, z = { base, base + top } }, bands)
   windows(tower, { base + 1, base + split }, { every = STORY, from = (base + 1) % STORY, span = 2 })
   windows(tower, { base + split + 1, base + top - 1 }, { every = STORY, from = (base + top - 2) % STORY, span = 2 })
   tower:paint(palette.floor, cells({ 0, CORE - 1 }, { 0, CORE - 1 }, { base, base }))
@@ -79,9 +77,9 @@ end
 
 local function planet_door(tower, palette, layout)
   local base, below = layout.base, layout.below
-  tower:paint("air", { x = { -HALF, -HALF }, y = DOOR, z = { base + 1, base + DOOR_TOP } })
+  tower:paint("air", { x = { -HALF_WIDTH, -HALF_WIDTH }, y = DOOR, z = { base + 1, base + DOOR_TOP } })
   for distance = 1, layout.stoop + 1 do
-    local x = { -HALF - distance, -HALF - distance }
+    local x = { -HALF_WIDTH - distance, -HALF_WIDTH - distance }
     local surface = math.max(below, base + 1 - distance)
     tower:fill(palette.trim, { x = x, y = STOOP, z = { below - FOOTING, below - 2 } })
     tower:paint(palette.trim, { x = x, y = STOOP, z = { below - 1, surface - 1 } })
@@ -91,8 +89,8 @@ end
 
 local function sky_door(tower, layout)
   local floor = layout.base + layout.top
-  local x = { -HALF - 1, -HALF - 1 }
-  tower:paint("air", { x = { -HALF, -HALF }, y = DOOR, z = { floor - DOOR_TOP, floor - 1 } })
+  local x = { -HALF_WIDTH - 1, -HALF_WIDTH - 1 }
+  tower:paint("air", { x = { -HALF_WIDTH, -HALF_WIDTH }, y = DOOR, z = { floor - DOOR_TOP, floor - 1 } })
   tower:fill(LANDING, { x = x, y = STOOP, z = { floor + 1, floor + FOOTING } })
   tower:paint(LANDING, { x = x, y = STOOP, z = { floor, floor } })
   tower:paint("air", { x = x, y = STOOP, z = { floor - DOOR_TOP, floor - 1 } })
@@ -105,7 +103,7 @@ end
 
 local function route(tower, layout)
   local base, top, flip = layout.base, layout.top, layout.flip
-  tower:stop(-HALF - layout.stoop - 0.5, 0, layout.below)
+  tower:stop(-HALF_WIDTH - layout.stoop - 0.5, 0, layout.below)
   tower:stop(0.5 - INNER, 0, base + 1)
   for layer = 1, flip - FLIP_SLACK do
     tread(tower, layer, base + layer + 1)
@@ -114,7 +112,7 @@ local function route(tower, layout)
     tread(tower, layer, base + layer)
   end
   tower:stop(0.5 - INNER, 0, base + top)
-  tower:stop(-HALF - 0.5, 0, base + top)
+  tower:stop(-HALF_WIDTH - 0.5, 0, base + top)
 end
 
 local function layout_of(site, sky, ground)
@@ -126,13 +124,13 @@ local function layout_of(site, sky, ground)
   return { below = sky.below, stoop = stoop, base = base, top = sky_floor - base, split = split, flip = split + 1 - FLIP_CLEARANCE }
 end
 
-function connector.build(site, sky, ground, is_routed)
+return function(site, sky, ground, is_routed)
   local layout = layout_of(site, sky, ground)
   if layout.split >= STORY and layout.top - layout.split > STORY and layout.top >= 2 * TURN then
     local palette = PALETTES[site:pick(#PALETTES)]
     local tower = site:pitch_up():roll_right():forward(sky.edges):pitch_up():pitch_up():roll_right()
-    tower:fill(palette.trim, { x = { -HALF, HALF - 1 }, y = { -HALF, HALF - 1 }, z = { layout.below - FOOTING, layout.base - 1 } })
-    tower:fill(palette.trim, { x = { -HALF, HALF - 1 }, y = { -HALF, HALF - 1 }, z = { layout.base + layout.top + 1, layout.base + layout.top + FOOTING } })
+    tower:fill(palette.trim, { x = { -HALF_WIDTH, HALF_WIDTH - 1 }, y = { -HALF_WIDTH, HALF_WIDTH - 1 }, z = { layout.below - FOOTING, layout.base - 1 } })
+    tower:fill(palette.trim, { x = { -HALF_WIDTH, HALF_WIDTH - 1 }, y = { -HALF_WIDTH, HALF_WIDTH - 1 }, z = { layout.base + layout.top + 1, layout.base + layout.top + FOOTING } })
     shell(tower, palette, layout)
     helix(tower, palette.floor, layout)
     planet_door(tower, palette, layout)
@@ -142,5 +140,3 @@ function connector.build(site, sky, ground, is_routed)
     end
   end
 end
-
-return connector

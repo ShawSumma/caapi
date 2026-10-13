@@ -8,9 +8,6 @@ import common.worldgen.generation : Worldgen;
 import geometry.cube : AXIS_COUNT, Axis, AxisMap, DIRECTIONS, Direction, Sign, boundaryOf;
 import geometry.honeycomb : CORNER_COUNT, Corner, FACE_COUNT, Face, across, axisMaps, faces;
 
-// Cells are named from a chunk with coordinates that may reach one step past its border, from -1 to the dimension;
-// a cell past the border belongs to the neighbor across it.
-
 enum ubyte TEST_DIMENSION = 4;
 enum int TEST_EDGE_CELL = 2;
 
@@ -36,8 +33,6 @@ ChunkSlot chunkNeighborSlot(ref const Graph graph, ChunkSlot chunk, Direction di
     }
 }
 
-// Across a minus border the neighbor is the same corner of the next node, mirrored onto the same axes; across a
-// plus border it is another corner of the same node, whose axes come in another order.
 AxisMap neighborAxisMap(Corner corner, Direction direction) {
     if (direction.sign == Sign.plus) {
         return corner.axisMaps[direction.axis];
@@ -46,7 +41,6 @@ AxisMap neighborAxisMap(Corner corner, Direction direction) {
     }
 }
 
-// Where a cell one step past the border along the axis lies in the neighbor's own coordinates.
 int[3] acrossBorder(ubyte dimension, Corner corner, int[3] cell, Direction direction) {
     int[3] moved = cell;
     moved[direction.axis] = boundaryOf(dimension, direction.sign);
@@ -80,7 +74,6 @@ CellHop hopCell(ref const Graph graph, ChunkSlot chunk, int[3] cell, size_t axis
     }
 }
 
-// Past one border, the cell's material, or none when the neighbor holding it is not loaded.
 Material materialNear(ref const Graph graph, ChunkSlot chunk, int[3] cell) {
     ubyte dimension = graph.layout.dimension;
     if (isInside(dimension, cell)) {
@@ -103,9 +96,6 @@ bool isOccupiedAcross(ref const Graph graph, ChunkSlot chunk, int[3] cell, size_
     return isOutside(graph.layout.dimension, cell[axis]) && graph.isHopOccupied(graph.hopCell(chunk, cell, axis));
 }
 
-// Whether something fills a cell past any number of borders, assuming what a chunk's prediction says while it is not
-// loaded. A cell past two borders is reached by crossing either first, which lands in different chunks where more than
-// four of them meet an edge, so it counts as filled when any route finds it filled.
 bool isCellOccupied(ref const Graph graph, ChunkSlot chunk, int[3] cell) {
     ubyte dimension = graph.layout.dimension;
     if (isInside(dimension, cell)) {
@@ -139,8 +129,6 @@ bool isPredictionContradicted(ref const Chunk chunk) {
     }
 }
 
-// A chunk draws the faces that border its see-through cells, its border included, so one filled with something opaque
-// draws nothing, and one filled with something see-through only draws what its neighbors show against it.
 bool needsMesh(ref const Graph graph, ChunkSlot chunk) {
     const(Chunk)* own = graph.chunks.at(chunk);
     if (own.state != ChunkState.populated || own.voxels.isOpaqueFill()) {
@@ -167,7 +155,6 @@ bool showsAgainst(ref const Graph graph, ChunkSlot chunk, Direction direction, M
     }
 }
 
-// Whether a loaded neighbor has an empty cell against this chunk's border, which would show what is inside it.
 bool isBorderingVoid(ref const Graph graph, ChunkSlot chunk) {
     ubyte dimension = graph.layout.dimension;
     bool isFound = false;
@@ -195,7 +182,6 @@ bool isBorderingVoid(ref const Graph graph, ChunkSlot chunk) {
     return isFound;
 }
 
-// Collects the chunks holding a cell past any number of borders, through every route that reaches it.
 void touchHolders(ref const Graph graph, ChunkSlot chunk, int[3] cell, ref Array!ChunkSlot holders) {
     ubyte dimension = graph.layout.dimension;
     if (isInside(dimension, cell)) {
@@ -212,8 +198,6 @@ void touchHolders(ref const Graph graph, ChunkSlot chunk, int[3] cell, ref Array
     }
 }
 
-// Collects the chunks whose meshes read a cell on this chunk's border: those that hold it one step past their own
-// border, for its faces, or past two or three, for the shading of nearby corners.
 void touchChunksReading(ref const Graph graph, ChunkSlot chunk, int[3] cell, ref Array!ChunkSlot holders) {
     ubyte dimension = graph.layout.dimension;
     int[AXIS_COUNT] outward;

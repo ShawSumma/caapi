@@ -144,8 +144,6 @@ struct BlockCounts {
     uint frontier;
 }
 
-// Nodes are sorted a block at a time on every thread, then each block copies its nodes to where the counts of the
-// blocks before it put them, kept nodes first and frontier nodes after, both in their old order.
 struct KeepJob {
     const(NearbyNode)* from;
     size_t count;
@@ -203,10 +201,6 @@ void rebaseBlock(void* context, size_t block, uint worker) {
     }
 }
 
-// A node that was expanded before has every neighbor within the old reach already, so it is expanded again only when
-// a neighbor has come within reach, or when it has come within the inner radius and may not have been expanded. A
-// neighbor's center lies two face distances away, so only nodes that near the new boundary need their neighbors
-// checked.
 void sortKept(void* context, size_t block, uint worker) {
     KeepJob* job = cast(KeepJob*) context;
     BlockCounts counts;
@@ -294,8 +288,6 @@ struct NearbyScratch {
         }
     }
 
-    // The next nodes to have their content checked need their structure, which is painted for them all at once here.
-    // Painting stops at a task budget, so the next batch starts at the first node this one left uncovered.
     void paintUnknownAhead(ref Graph graph, Executor executor) {
         candidates.clear();
         size_t index = unknownHead;
@@ -357,10 +349,6 @@ struct NearbyScratch {
         return atomicExchange(cast(shared(uint)*) &stamp.ptr[slot], generation) != generation;
     }
 
-    // Adds the camera node's neighbors and every node whose center is within reach of the camera, so the node the
-    // camera moves into next is always already in the set, however far the search has got. The camera point is in
-    // the set's frame. A finished set takes them as they are; one still being searched expands them too. Returns
-    // false when the camera's node is not in the set.
     bool collectAround(ref Graph graph, uint cameraSlot, Point!float camera, float reach) {
         uint first = indexOf(cameraSlot);
         if (first == NOT_COLLECTED) {
@@ -433,8 +421,6 @@ struct NearbyScratch {
         }
     }
 
-    // Returns false when a batch of structure would not fit before the deadline; every advance prepares at least one,
-    // so the search always moves on.
     bool drainSerial(ref Graph graph, double deadline, Executor executor) {
         bool isStalled = false;
         while (hasSerialWork() && nowMilliseconds() < deadline && !isStalled) {
@@ -506,9 +492,6 @@ struct NearbyScratch {
         }
     }
 
-    // Starts a search from where a finished one left off, in its frame, around a camera point given in that frame:
-    // nodes still within reach keep their place and transform, and only those whose neighbors may have come within
-    // reach, or which have come within the inner radius, are expanded again.
     void beginFrom(ref const NearbyScratch finished, ref Graph graph, Point!float camera, float distance, float inner, Executor executor) {
         float moved = camera.distance(finished.startPoint);
         float frontier = distance + NODE_RADIUS - 2 * FACE_DISTANCE - moved;
@@ -542,11 +525,6 @@ struct NearbyScratch {
         front = total.kept;
     }
 
-    // Moves the frame to the camera's node, so the frame can follow the camera: far from the frame's origin, float
-    // coordinates no longer tell nearby points apart. Within the radius, every transform is worked out again from that
-    // node through the set, as a fresh search would. Multiplying the old ones by toFrame instead would keep the
-    // rounding each got while it was far from the origin, which every later move makes worse. Nodes beyond the radius
-    // are only moved; whatever they gather that way is dropped when they come within it.
     void rebase(ref const Graph graph, uint cameraSlot, Motion!float toFrame, float radius, Executor executor) {
         float coshRadius = coshf(radius);
         uint first = indexOf(cameraSlot);

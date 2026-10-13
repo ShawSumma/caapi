@@ -52,11 +52,6 @@ enum NodeContent : ubyte {
     holding,
 }
 
-// Nodes are the honeycomb's cells. Reflections in a cell's faces generate a right-angled Coxeter group, since faces
-// that meet do so at right angles and their reflections commute, so each cell is one element of that group. A cell's
-// parent faces are those whose reflection brings it nearer the root; they meet pairwise, so there are at most three.
-// Every other face leads to a child. The graph keeps only where a node sits among the others; what else is known about
-// a node lives in the side tables of whatever owns it, under the same slot.
 struct Node {
     NodeId id;
     uint[FACE_COUNT] neighbors;
@@ -78,14 +73,10 @@ struct ParentList {
     uint count;
 }
 
-// The parent faces of the child across a face: that face, and each parent face of this node that meets it, since
-// crossing the two in either order reaches the same cell.
 ushort childParentFaces(ushort parentFaces, Face face) {
     return cast(ushort)((parentFaces & adjacentFaces(face)) | faceBit(face));
 }
 
-// A child is named after its first parent, the one across its lowest parent face, which is the same whichever of its
-// parents it is reached from.
 NodeId childId(NodeId firstParent, Face face) {
     ubyte[NODE_ID_BYTES + 1] hashInput;
     hashInput[0 .. NODE_ID_BYTES] = (cast(const(ubyte)*) firstParent.value.ptr)[0 .. NODE_ID_BYTES];
@@ -93,8 +84,6 @@ NodeId childId(NodeId firstParent, Face face) {
     return NodeId(murmurHash3(hashInput[]));
 }
 
-// Of the faces allowed, the one the point lies farthest beyond, or NO_FACE when it lies beyond none of them. A point
-// on a face belongs to either cell; without the tolerance, rounding could pass it back and forth between them.
 uint farthestFaceBeyond(Point!float point, ushort allowed) {
     uint farthest = NO_FACE;
     float most = BEYOND_TOLERANCE * point.v.c[3];
@@ -140,7 +129,6 @@ struct Graph {
         return graph;
     }
 
-    // The main thread's way to read the graph through worldgen: wherever it reads past the graph, the graph grows.
     ref GraphView view() return {
         ownView.graph = &this;
         ownView.owner = &this;
@@ -218,7 +206,6 @@ struct Graph {
         return slot;
     }
 
-    // Only for a node with no children left; its parents stop counting it.
     void removeNode(uint slot) {
         ParentList list = parents(slot);
         foreach (link; list.links[0 .. list.count]) {
@@ -237,8 +224,6 @@ struct Graph {
         return existing == NO_SLOT ? addChild(slot, face) : existing;
     }
 
-    // A missing neighbor is always a child: a node's parents exist as long as it does and are linked to it from the
-    // start. Its parents across faces other than this one are this node's parents' children across the same face.
     uint addChild(uint slot, Face face) {
         ushort parentFaces = childParentFaces(nodeAt(slot).parentFaces, face);
         ParentList list;
@@ -269,7 +254,6 @@ struct Graph {
         nodeAt(slot).references -= 1;
     }
 
-    // Crosses into neighbors that exist until the position lies inside its node or beyond only missing ones.
     Position normalized(Position start) const {
         uint slot = slotOf(start.node);
         Point!float point = start.local * Point!float.origin();
@@ -320,8 +304,6 @@ struct Graph {
         return structures.at(slot).isFinished;
     }
 
-    // Returns whether structure runs through the node, finishing its structure first: its parents', then whatever is
-    // painted up to its depth.
     bool ensureStructureAt(uint slot) {
         if (!isFinished(slot)) {
             ParentList list = parents(slot);
@@ -338,7 +320,6 @@ struct Graph {
         return structures.at(slot).isInStructure;
     }
 
-    // Paints on every thread the structure that these nodes' checks are about to need, so those checks only finish it.
     void paintAhead(const(uint)[] candidates, Executor executor) {
         if (structures.grower.paintAhead !is null && candidates.length > 0) {
             structures.grower.paintAhead(structures.grower.context, this, candidates, executor);
@@ -353,7 +334,6 @@ struct Graph {
         }
     }
 
-    // Tiles dropped since the node was covered are painted again, since its building is made from their brushes.
     void restoreBrushes(uint slot) {
         if (structures.grower.cover !is null) {
             structures.grower.cover(structures.grower.context, this, slot);
