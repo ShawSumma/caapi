@@ -7,12 +7,13 @@ struct EmbeddedLua {
     string source;
 }
 
-immutable EmbeddedLua[7] EMBEDDED_STRUCTURES = [
+immutable EmbeddedLua[8] EMBEDDED_STRUCTURES = [
     EmbeddedLua("tower", import("tower.lua")),
     EmbeddedLua("crown", import("crown.lua")),
     EmbeddedLua("road", import("road.lua")),
     EmbeddedLua("trail", import("trail.lua")),
     EmbeddedLua("city", import("city.lua")),
+    EmbeddedLua("planet", import("planet.lua")),
     EmbeddedLua("bigtree", import("bigtree.lua")),
     EmbeddedLua("backrooms", import("backrooms.lua")),
 ];

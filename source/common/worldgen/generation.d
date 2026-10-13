@@ -26,7 +26,7 @@ enum WorldgenKind : ubyte {
 }
 
 enum size_t STRUCTURE_NAME_CAPACITY = 256;
-enum string TERRAIN_STRUCTURE = "bigtree";
+enum string TERRAIN_STRUCTURE = "planet";
 
 struct PlaneWorld {
     float tiltRadians;

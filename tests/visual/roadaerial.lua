@@ -8,7 +8,7 @@ local TOWARD_ROAD_DEGREES = 90
 local LOOK_DOWN_DEGREES = 0
 
 return function(world)
-  world:worldgen("structure", "road")
+  world:worldgen("terrain")
   world:mode("noclip")
   world:enter_route()
   local yaw = world:route_waypoint(AHEAD_WAYPOINT)

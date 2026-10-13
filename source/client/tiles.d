@@ -2,9 +2,9 @@ module client.tiles;
 
 import core.stdc.stdlib : calloc, free;
 import core.stdc.string : memcpy, strlen;
-import bindings.lua : luaL_checkinteger, luaL_checklstring, luaL_checknumber, luaL_checktype, luaL_checkudata, luaL_error, luaL_newmetatable, lua_CFunction, lua_Integer, lua_State, lua_close, lua_createtable, lua_gettop, lua_pcallk, lua_pushboolean, lua_pushcclosure, lua_pushinteger, lua_pushlightuserdata, lua_rawgeti, lua_setfield, lua_settop, lua_tointegerx, lua_tolstring, lua_touserdata, lua_type;
+import bindings.lua : luaL_checkinteger, luaL_checklstring, luaL_checknumber, luaL_checktype, luaL_checkudata, luaL_error, luaL_newmetatable, luaL_setmetatable, lua_CFunction, lua_Integer, lua_State, lua_close, lua_createtable, lua_gettop, lua_newuserdatauv, lua_pcallk, lua_pushboolean, lua_pushcclosure, lua_pushinteger, lua_pushlightuserdata, lua_pushnumber, lua_pushvalue, lua_rawgeti, lua_setfield, lua_settop, lua_tointegerx, lua_tolstring, lua_touserdata, lua_type;
 import client.lua : LUA_BELOW_TOP, LUA_FIRST_UPVALUE, LUA_REGISTRY, LUA_SECOND_UPVALUE, LUA_STATUS_OK, LUA_TOP, LUA_TYPE_FUNCTION, LuaName, SELF, TRACEBACK_INDEX, isNoneOrNil, luaTraceback, newSafeState, registerMethod;
-import client.structures : AIR, CHUNK_RESULTS, COLUMN_RESULTS, MESSAGE_CAPACITY, PLACED_FUNCTION, SITE_TYPE, SKY_FIELDS, SKY_TILE, STRUCTURE_ARGUMENTS, StructureProblem, TURN_UPVALUES, TileCall, boxArgument, columnOf, loadStructureChunk, materialArgument, packedCall, partArgument, pushSite, registerModules, rhythmArgument, siteArgument, spotArgument;
+import client.structures : AIR, CHUNK_RESULTS, COLUMN_RESULTS, MESSAGE_CAPACITY, PEN_TYPE, PLACED_FUNCTION, SITE_TYPE, SKY_FIELDS, SKY_TILE, STRUCTURE_ARGUMENTS, StructureProblem, TURN_UPVALUES, TileCall, boxArgument, columnOf, loadStructureChunk, materialArgument, packedCall, partArgument, pushSite, registerModules, rhythmArgument, siteArgument, spotArgument;
 import base.array : Array;
 import base.hashmap : HashMap;
 import base.names : ENUM_NAMES;
@@ -346,6 +346,22 @@ struct TileHost {
         lua.registerMethod(&this, "open_sky", &tileOpenSky);
         lua.registerMethod(&this, "balance", &tileBalance);
         lua.registerMethod(&this, "hash", &tileHash);
+        lua.registerMethod(&this, "pen", &tilePen);
+        lua_setfield(lua, LUA_BELOW_TOP, "__index");
+        lua_settop(lua, LUA_BELOW_TOP);
+        registerPenType();
+    }
+
+    void registerPenType() {
+        luaL_newmetatable(lua, PEN_TYPE.ptr);
+        lua_createtable(lua, 0, 0);
+        static foreach (name; ["forward", "turn", "roll", "lift", "limb"]) {
+            lua.registerMethod(&this, name.ptr, &replayedPen);
+        }
+        static foreach (name; ["rise", "height", "random"]) {
+            lua.registerMethod(&this, name.ptr, &replayedNumber);
+        }
+        lua.registerMethod(&this, "leaves", &replayedNothing);
         lua_setfield(lua, LUA_BELOW_TOP, "__index");
         lua_settop(lua, LUA_BELOW_TOP);
     }
@@ -616,6 +632,30 @@ extern (C) int tileBalance(lua_State* lua) {
     return 1;
 }
 
+extern (C) int tilePen(lua_State* lua) {
+    refuseOutsideReplay(lua, tileHost(lua), "draw with a pen");
+    lua_newuserdatauv(lua, 1, 0);
+    luaL_setmetatable(lua, PEN_TYPE.ptr);
+    return 1;
+}
+
+extern (C) int replayedPen(lua_State* lua) {
+    luaL_checkudata(lua, SELF, PEN_TYPE.ptr);
+    lua_pushvalue(lua, SELF);
+    return 1;
+}
+
+extern (C) int replayedNumber(lua_State* lua) {
+    luaL_checkudata(lua, SELF, PEN_TYPE.ptr);
+    lua_pushnumber(lua, 0);
+    return 1;
+}
+
+extern (C) int replayedNothing(lua_State* lua) {
+    luaL_checkudata(lua, SELF, PEN_TYPE.ptr);
+    return 0;
+}
+
 extern (C) int tileHash(lua_State* lua) {
     TileHost* host = tileHost(lua);
     lua_pushinteger(lua, cast(lua_Integer)(*host.view).siteHash(siteArgument(lua), partArgument(lua, SELF + 1)));
@@ -802,6 +842,8 @@ struct TileWork {
     bool runTasks(ref Graph target, Executor executor) {
         if (tasks.length > 0 && !hasFailed) {
             ensureHosts(target, executor);
+        }
+        if (tasks.length > 0 && !hasFailed) {
             foreach (host; hosts.slice()) {
                 host.painter.clear();
             }

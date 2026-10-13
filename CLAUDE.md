@@ -15,6 +15,7 @@ A voxel engine on the hyperbolic {5,3,4} honeycomb, written in D (betterC, LDC) 
 - Load and flight benchmark: `dub run -q -b release --compiler=ldc2 -- --bench-load [--profile] --out /dev/stdout`
 - Screenshot: `dub run -q -b release --compiler=ldc2 -- --screenshot screenshots/<new name>.png --out /dev/stdout tests/visual/<script>.lua`
 - Run through `dub run`, never the built binaries directly.
+- `dub` does not notice changes to the embedded `structures/*.lua`; pass `--force` after editing them.
 - A debug build (no `-b release`) keeps asserts; release builds drop them.
 
 ## Testing
@@ -23,6 +24,16 @@ A voxel engine on the hyperbolic {5,3,4} honeycomb, written in D (betterC, LDC) 
   time the way the game does; anything about streaming, loading order or frame budgets needs a live test.
 - Benchmarks: repeat runs and compare against a baseline measured the same way. Never store the numbers.
 - Screenshots go to new filenames, compared by eye against earlier ones.
+
+## Lua
+
+- Booleans are named `is_` or `has_`. `and`, `or` and conditions take only booleans; write `~= nil` out.
+- No `math.random`. Inside a tile use `site:pick`; for choices neighboring tiles must agree on, use hashes with salts.
+
+## Geometry
+
+- Things more than about 2 units (about 45 cells) from the viewer shrink to specks, and vertical lines spread apart
+  with height. Anything meant to be seen whole stays within that.
 
 ## Threading
 
@@ -64,9 +75,9 @@ Layers depend only on the ones above them: `base` on nothing, `geometry` on `bas
   - `script.d`, `lua.d`: the test script API; `sampler.d`: the profiler; `meshing.d`, `graphics/`: rendering.
 - `source/shaders/`: GLSL, compiled into `spv/` by the windowed build.
 - `structures/`: embedded Lua. Every top-level file is a structure, a function of a site; the subdirectories hold
-  what they share. `bigtree.lua` is the terrain world's structure, a tree drawn with the pen. `tower.lua`, `crown.lua`
-  and `trail.lua` build on `tower/box.lua`; `road.lua` is a viaduct; `connector.lua` is the tower up to a sky, whose
-  kinds are the tiles in `skies/`. `city.lua` tiles the ground with `city/blocks.lua`, which lays out city blocks
+  what they share. `planet.lua` is the terrain world: the viaduct in `road.lua`, the big tree in `bigtree.lua`
+  (drawn with the pen) and the skies it opens, whose kinds are the tiles in `skies/`; `connector.lua` is the tower up
+  to a sky. `tower.lua`, `crown.lua` and `trail.lua` build on `tower/box.lua`. `city.lua` tiles the ground with `city/blocks.lua`, which lays out city blocks
   built by the types in `buildings/` on `buildings/building.lua`. `backrooms/layout.lua` lays out the backrooms'
   layers of rooms along the same street network, painted by `backrooms/rooms.lua` with the layers and biomes in
   `backrooms/levels.lua`; `backrooms.lua` is a world of nothing else.
