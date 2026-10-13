@@ -80,6 +80,8 @@ API, `client` on all.
     and painted on the worker threads, each with its own host of the API.
   - `plugins.d`: loads every library in `lib/`, calls its `plugin` entry point and keeps the worlds it registers.
   - `script.d`, `lua.d`: the test script API; `sampler.d`: the profiler; `meshing.d`, `graphics/`: rendering.
+  - `cocoa.d`: the macOS window (AppKit through the Objective-C runtime, a `CAMetalLayer` for MoltenVK), reporting
+    keys as X keysyms so `main.d` handles input the same way on both platforms.
 - `source/shaders/`: GLSL, compiled into `spv/` by the windowed build.
 - `plugins/`: dub sub-packages declared in `dub.sdl`. Source libraries are shared code compiled into each plugin that
   uses them; each plugin is a shared library built into `lib/` before the engine, whose `plugin` function (named by

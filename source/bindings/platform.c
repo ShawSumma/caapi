@@ -1,3 +1,10 @@
+#ifdef __APPLE__
+
+#define VK_USE_PLATFORM_METAL_EXT
+#include <vulkan/vulkan.h>
+
+#else
+
 #define VK_USE_PLATFORM_XLIB_KHR
 #include <vulkan/vulkan.h>
 #include <X11/XKBlib.h>
@@ -78,3 +85,5 @@ extern Status XIQueryVersion(Display *dpy, int *major_version_inout, int *minor_
 extern int XISelectEvents(Display *dpy, Window win, XIEventMask *masks, int num_masks);
 extern XIDeviceInfo *XIQueryDevice(Display *dpy, int deviceid, int *ndevices_return);
 extern void XIFreeDeviceInfo(XIDeviceInfo *info);
+
+#endif

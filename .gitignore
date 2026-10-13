@@ -13,3 +13,5 @@ mined-*test
 screenshots/
 export.py
 export.txt
+lib
+obj

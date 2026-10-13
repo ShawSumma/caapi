@@ -1,12 +1,10 @@
 module main;
 
 import core.stdc.stdio : FILE, fclose, fflush, fopen, fprintf, fscanf, snprintf;
-import core.sys.posix.unistd : _SC_PAGESIZE, sysconf;
 import core.stdc.stdlib : free, malloc;
 import core.stdc.string : strcmp;
-import core.sys.posix.sys.resource : RUSAGE_SELF, getrusage, rusage;
 import core.sys.posix.time : nanosleep, timespec;
-import bindings.platform : Atom, Button1, Button3, ButtonPress, ClientMessage, CurrentTime, Cursor, Display, False, FocusOut, GenericEvent, GrabModeAsync, GrabSuccess, KeyPress, KeyRelease, KeySym, Pixmap, Success, True, UnmapNotify, VkExtent2D, Window, XBlackPixel, XCloseDisplay, XColor, XCreateBitmapFromData, XCreatePixmapCursor, XCreateSimpleWindow, XDefaultScreen, XDestroyWindow, XDisplayHeight, XDisplayWidth, XEvent, XFlush, XFreeCursor, XFreeEventData, XFreePixmap, XGenericEventCookie, XGetEventData, XGrabPointer, XIAllMasterDevices, XIDeviceInfo, XIEventMask, XIFreeDeviceInfo, XIModeAbsolute, XIQueryDevice, XIQueryVersion, XIRawEvent, XISelectEvents, XIValuatorClass, XIValuatorClassInfo, XI_DeviceChanged, XI_RawMotion, XInternAtom, XK_1, XK_9, XK_Escape, XK_Down, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_n, XK_s, XK_space, XK_v, XK_w, XLookupKeysym, XMapWindow, XNextEvent, XOpenDisplay, XPending, XQueryExtension, XRootWindow, XSelectInput, XSetWMProtocols, XStoreName, XUngrabPointer, XkbSetDetectableAutoRepeat;
+import bindings.platform : VkExtent2D;
 import base.clock : MILLISECONDS_PER_SECOND, NANOSECONDS_PER_SECOND, PhaseTimes, nowSeconds, threadCpuMilliseconds;
 import base.crash : reportCrashes, reportHangAfter;
 import base.names : ENUM_NAMES;
@@ -14,6 +12,7 @@ import base.units : Angle, AngularSpeed, Time;
 import client.arguments : StartupError, FlagValue, NumberArgument, WorldgenArgument;
 import client.config : ClientConfig;
 import client.game : FrameInput, Game, KEY_COUNT, Key, MATERIAL_PALETTE, axisValue;
+import client.graphics.core : SurfaceSource;
 import client.graphics.renderer : FrameTimes, Renderer;
 import client.png : writePng;
 import client.sampler : Sampler;
@@ -47,26 +46,127 @@ enum uint STALE_MESHES_SHOWN = 8;
 enum uint BENCH_TIME_LIMIT_SECONDS = 300;
 enum double TITLE_INTERVAL_SECONDS = 1.0;
 enum size_t TEXT_CAPACITY = 256;
-enum uint KEYCODE_COUNT = 256;
-enum uint CURSOR_BITMAP_SIZE = 8;
 enum int EXIT_OK = 0;
 enum int EXIT_FAILED = 1;
 enum int EXIT_USAGE = 2;
-enum long KEY_PRESS_MASK = 1L << 0;
-enum long KEY_RELEASE_MASK = 1L << 1;
-enum long BUTTON_PRESS_MASK = 1L << 2;
-enum long STRUCTURE_NOTIFY_MASK = 1L << 17;
-enum long FOCUS_CHANGE_MASK = 1L << 21;
-enum long INPUT_EVENT_MASK = KEY_PRESS_MASK | KEY_RELEASE_MASK | BUTTON_PRESS_MASK | STRUCTURE_NOTIFY_MASK | FOCUS_CHANGE_MASK;
-enum uint POINTER_GRAB_MASK = cast(uint) BUTTON_PRESS_MASK;
-enum int XI_REQUIRED_MAJOR = 2;
-enum int XI_REQUIRED_MINOR = 1;
-enum size_t XI_MASK_BYTES = (XI_RawMotion >> 3) + 1;
-enum uint POINTER_AXES = 2;
-enum uint BITS_PER_BYTE = 8;
-enum int NO_DEVICE = -1;
-enum long KILOBYTES_PER_MEGABYTE = 1024;
 enum size_t BYTES_PER_MEGABYTE = 1024 * 1024;
+
+version (OSX) {
+    import client.cocoa : Button1, Button3, CocoaWindow, KeyEvent, KeySym, WindowEvents, XK_1, XK_9, XK_Escape, XK_Down, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_n, XK_s, XK_space, XK_v, XK_w;
+
+    enum string WINDOW_REQUIREMENT = "cannot open a window";
+    enum int MACH_TASK_BASIC_INFO = 20;
+
+    struct MachTaskBasicInfo {
+        ulong virtualSize;
+        ulong residentSize;
+        ulong residentSizeMax;
+        int[2] userTime;
+        int[2] systemTime;
+        int policy;
+        int suspendCount;
+    }
+
+    extern (C) nothrow @nogc {
+        extern __gshared uint mach_task_self_;
+        int task_info(uint task, int flavor, int* info, uint* count);
+    }
+
+    MachTaskBasicInfo taskInfo() {
+        MachTaskBasicInfo info;
+        uint count = MachTaskBasicInfo.sizeof / int.sizeof;
+        task_info(mach_task_self_, MACH_TASK_BASIC_INFO, cast(int*) &info, &count);
+        return info;
+    }
+
+    size_t residentBytes() {
+        return cast(size_t) taskInfo().residentSize;
+    }
+
+    size_t peakResidentBytes() {
+        return cast(size_t) taskInfo().residentSizeMax;
+    }
+} else {
+    import core.sys.posix.sys.resource : RUSAGE_SELF, getrusage, rusage;
+    import core.sys.posix.unistd : _SC_PAGESIZE, sysconf;
+    import bindings.platform : Atom, Button1, Button3, ButtonPress, ClientMessage, CurrentTime, Cursor, Display, False, FocusOut, GenericEvent, GrabModeAsync, GrabSuccess, KeyPress, KeyRelease, KeySym, Pixmap, Success, True, UnmapNotify, Window, XBlackPixel, XCloseDisplay, XColor, XCreateBitmapFromData, XCreatePixmapCursor, XCreateSimpleWindow, XDefaultScreen, XDestroyWindow, XDisplayHeight, XDisplayWidth, XEvent, XFlush, XFreeCursor, XFreeEventData, XFreePixmap, XGenericEventCookie, XGetEventData, XGrabPointer, XIAllMasterDevices, XIDeviceInfo, XIEventMask, XIFreeDeviceInfo, XIModeAbsolute, XIQueryDevice, XIQueryVersion, XIRawEvent, XISelectEvents, XIValuatorClass, XIValuatorClassInfo, XI_DeviceChanged, XI_RawMotion, XInternAtom, XK_1, XK_9, XK_Escape, XK_Down, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_n, XK_s, XK_space, XK_v, XK_w, XLookupKeysym, XMapWindow, XNextEvent, XOpenDisplay, XPending, XQueryExtension, XRootWindow, XSelectInput, XSetWMProtocols, XStoreName, XUngrabPointer, XkbSetDetectableAutoRepeat;
+
+    enum string WINDOW_REQUIREMENT = "cannot open a window: needs an X display with XInput 2.1";
+    enum size_t BYTES_PER_KILOBYTE = 1024;
+    enum uint KEYCODE_COUNT = 256;
+    enum uint CURSOR_BITMAP_SIZE = 8;
+    enum long KEY_PRESS_MASK = 1L << 0;
+    enum long KEY_RELEASE_MASK = 1L << 1;
+    enum long BUTTON_PRESS_MASK = 1L << 2;
+    enum long STRUCTURE_NOTIFY_MASK = 1L << 17;
+    enum long FOCUS_CHANGE_MASK = 1L << 21;
+    enum long INPUT_EVENT_MASK = KEY_PRESS_MASK | KEY_RELEASE_MASK | BUTTON_PRESS_MASK | STRUCTURE_NOTIFY_MASK | FOCUS_CHANGE_MASK;
+    enum uint POINTER_GRAB_MASK = cast(uint) BUTTON_PRESS_MASK;
+    enum int XI_REQUIRED_MAJOR = 2;
+    enum int XI_REQUIRED_MINOR = 1;
+    enum size_t XI_MASK_BYTES = (XI_RawMotion >> 3) + 1;
+    enum uint POINTER_AXES = 2;
+    enum uint BITS_PER_BYTE = 8;
+    enum int NO_DEVICE = -1;
+
+    struct PointerAxis {
+        double countsPerValue = 1;
+        double last = 0;
+        bool isAbsolute;
+        bool hasLast;
+
+        double delta(double value) {
+            if (isAbsolute) {
+                double previous = last;
+                bool hadLast = hasLast;
+                last = value;
+                hasLast = true;
+                if (hadLast) {
+                    return (value - previous) * countsPerValue;
+                } else {
+                    return 0;
+                }
+            } else {
+                return value * countsPerValue;
+            }
+        }
+    }
+
+    struct RawPointer {
+        PointerAxis[POINTER_AXES] axes;
+        int opcode;
+        int deviceId = NO_DEVICE;
+    }
+
+    bool isXInputVersionSufficient(int major, int minor) {
+        return major > XI_REQUIRED_MAJOR || (major == XI_REQUIRED_MAJOR && minor >= XI_REQUIRED_MINOR);
+    }
+
+    void setEventBit(ubyte[] mask, int event) {
+        mask[event / BITS_PER_BYTE] |= cast(ubyte)(1 << (event % BITS_PER_BYTE));
+    }
+
+    bool isEventBitSet(const(ubyte)* mask, int event) {
+        return (mask[event / BITS_PER_BYTE] & (1 << (event % BITS_PER_BYTE))) != 0;
+    }
+
+    size_t residentBytes() {
+        FILE* statm = fopen("/proc/self/statm", "r");
+        size_t total = 0;
+        size_t resident = 0;
+        if (statm !is null) {
+            fscanf(statm, "%zu %zu", &total, &resident);
+            fclose(statm);
+        }
+        return resident * sysconf(_SC_PAGESIZE);
+    }
+
+    size_t peakResidentBytes() {
+        rusage usage;
+        getrusage(RUSAGE_SELF, &usage);
+        return cast(size_t) usage.ru_maxrss * BYTES_PER_KILOBYTE;
+    }
+}
 
 struct Arguments {
     StartupError error;
@@ -215,50 +315,25 @@ immutable KeyBinding[10] KEY_BINDINGS = [
     KeyBinding(XK_Down, Key.pitchDown),
 ];
 
-struct PointerAxis {
-    double countsPerValue = 1;
-    double last = 0;
-    bool isAbsolute;
-    bool hasLast;
-
-    double delta(double value) {
-        if (isAbsolute) {
-            double previous = last;
-            bool hadLast = hasLast;
-            last = value;
-            hasLast = true;
-            if (hadLast) {
-                return (value - previous) * countsPerValue;
-            } else {
-                return 0;
-            }
-        } else {
-            return value * countsPerValue;
-        }
-    }
-}
-
-struct RawPointer {
-    PointerAxis[POINTER_AXES] axes;
-    int opcode;
-    int deviceId = NO_DEVICE;
-}
-
 struct Session {
     Game game;
     Renderer renderer;
     ScriptRecorder recorder;
-    Display* display;
-    Window window;
-    Cursor invisibleCursor;
-    Atom deleteAtom;
-    RawPointer pointer;
+    version (OSX) {
+        CocoaWindow window;
+    } else {
+        Display* display;
+        Window window;
+        Cursor invisibleCursor;
+        Atom deleteAtom;
+        RawPointer pointer;
+        int screen;
+        bool[KEYCODE_COUNT] isKeyDown;
+    }
     double mouseDx = 0;
     double mouseDy = 0;
     ClientConfig config;
     float fps = 0;
-    int screen;
-    bool[KEYCODE_COUNT] isKeyDown;
     bool[KEY_COUNT] isHeld;
     bool isCaptured;
     bool isRecording;
@@ -285,10 +360,10 @@ struct Session {
     int runWindow(Arguments arguments) {
         immutable bool isWindowOpen = openWindow();
         if (!isWindowOpen) {
-            StartupError(null, "cannot open a window: needs an X display with XInput 2.1", null).report(arguments.program);
+            StartupError(null, WINDOW_REQUIREMENT, null).report(arguments.program);
             return EXIT_FAILED;
         } else {
-            renderer.setup(display, window, CHUNK_DIMENSION);
+            renderer.setup(surfaceSource(), CHUNK_DIMENSION);
             game = Game.make(arguments.worldgen, config.reach);
             game.world.renderRadius = arguments.renderRadius;
             immutable bool isPlaced = isStructurePlaced(game, arguments);
@@ -303,133 +378,229 @@ struct Session {
         }
     }
 
-    bool openWindow() {
-        display = XOpenDisplay(null);
-        if (display is null) {
-            return false;
-        } else {
-            screen = XDefaultScreen(display);
-            window = XCreateSimpleWindow(display, XRootWindow(display, screen), 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT, 0, XBlackPixel(display, screen), XBlackPixel(display, screen));
-            XSelectInput(display, window, INPUT_EVENT_MASK);
-            deleteAtom = XInternAtom(display, "WM_DELETE_WINDOW", False);
-            XSetWMProtocols(display, window, &deleteAtom, 1);
-            XkbSetDetectableAutoRepeat(display, True, null);
-            char[CURSOR_BITMAP_SIZE] blank = 0;
-            Pixmap bitmap = XCreateBitmapFromData(display, window, blank.ptr, CURSOR_BITMAP_SIZE, CURSOR_BITMAP_SIZE);
-            XColor black;
-            invisibleCursor = XCreatePixmapCursor(display, bitmap, bitmap, &black, &black, 0, 0);
-            XFreePixmap(display, bitmap);
-            immutable bool isPointerSelected = selectRawPointer();
-            if (!isPointerSelected) {
-                closeWindow();
-                return false;
-            } else {
-                XMapWindow(display, window);
-                XFlush(display);
-                return true;
-            }
+    version (OSX) {
+        bool openWindow() {
+            return window.open(WINDOW_WIDTH, WINDOW_HEIGHT);
         }
-    }
 
-    bool selectRawPointer() {
-        int firstEvent;
-        int firstError;
-        immutable int hasExtension = XQueryExtension(display, "XInputExtension", &pointer.opcode, &firstEvent, &firstError);
-        if (hasExtension == 0) {
-            return false;
-        } else {
-            int major = XI_REQUIRED_MAJOR;
-            int minor = XI_REQUIRED_MINOR;
-            immutable int versionStatus = XIQueryVersion(display, &major, &minor);
-            if (versionStatus != Success || !isXInputVersionSufficient(major, minor)) {
-                return false;
-            } else {
-                ubyte[XI_MASK_BYTES] mask = 0;
-                setEventBit(mask[], XI_RawMotion);
-                setEventBit(mask[], XI_DeviceChanged);
-                XIEventMask eventMask = XIEventMask(XIAllMasterDevices, cast(int) mask.length, mask.ptr);
-                XISelectEvents(display, XRootWindow(display, screen), &eventMask, 1);
-                return true;
-            }
+        SurfaceSource surfaceSource() const {
+            return SurfaceSource(window.metalLayer());
         }
-    }
 
-    void closeWindow() {
-        XFreeCursor(display, invisibleCursor);
-        XDestroyWindow(display, window);
-        XCloseDisplay(display);
-    }
+        void closeWindow() {
+            releasePointer();
+            window.close();
+        }
 
-    void capturePointer() {
-        immutable int grab = XGrabPointer(display, window, True, POINTER_GRAB_MASK, GrabModeAsync, GrabModeAsync, window, invisibleCursor, CurrentTime);
-        if (grab == GrabSuccess) {
+        void capturePointer() {
+            window.capturePointer();
             isCaptured = true;
             isTitleDirty = true;
         }
-    }
 
-    void releasePointer() {
-        if (isCaptured) {
-            XUngrabPointer(display, CurrentTime);
-            isCaptured = false;
-            isTitleDirty = true;
+        void releasePointer() {
+            if (isCaptured) {
+                window.releasePointer();
+                isCaptured = false;
+                isTitleDirty = true;
+            }
+            isHeld[] = false;
         }
-        isHeld[] = false;
-    }
 
-    void loadPointerAxes(int deviceId) {
-        pointer.axes = PointerAxis.init;
-        pointer.deviceId = deviceId;
-        double[POINTER_AXES] screenExtent = [XDisplayWidth(display, screen), XDisplayHeight(display, screen)];
-        int count = 0;
-        XIDeviceInfo* devices = XIQueryDevice(display, deviceId, &count);
-        if (devices !is null) {
-            foreach (device; devices[0 .. count]) {
-                foreach (info; device.classes[0 .. device.num_classes]) {
-                    if (info.type == XIValuatorClass) {
-                        XIValuatorClassInfo* valuator = cast(XIValuatorClassInfo*) info;
-                        if (valuator.number >= 0 && valuator.number < POINTER_AXES && valuator.mode == XIModeAbsolute && valuator.max > valuator.min) {
-                            pointer.axes[valuator.number].isAbsolute = true;
-                            pointer.axes[valuator.number].countsPerValue = screenExtent[valuator.number] / (valuator.max - valuator.min);
+        void handleKey(KeyEvent key) {
+            if (key.isPressed) {
+                handleKeyPress(key.symbol, key.isRepeat);
+            } else {
+                setMovementKey(key.symbol, false);
+            }
+        }
+
+        void handleMotion(double dx, double dy) {
+            if (isCaptured) {
+                mouseDx += dx;
+                mouseDy += dy;
+            }
+        }
+
+        void pollEvents() {
+            window.poll(WindowEvents(&handleKey, &handleButton, &handleMotion));
+            if (!window.isOpen()) {
+                isRunning = false;
+            } else if (isCaptured && !window.isFocused()) {
+                releasePointer();
+            }
+        }
+
+        void storeTitle(const(char)* title) {
+            window.setTitle(title);
+        }
+    } else {
+        bool openWindow() {
+            display = XOpenDisplay(null);
+            if (display is null) {
+                return false;
+            } else {
+                screen = XDefaultScreen(display);
+                window = XCreateSimpleWindow(display, XRootWindow(display, screen), 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT, 0, XBlackPixel(display, screen), XBlackPixel(display, screen));
+                XSelectInput(display, window, INPUT_EVENT_MASK);
+                deleteAtom = XInternAtom(display, "WM_DELETE_WINDOW", False);
+                XSetWMProtocols(display, window, &deleteAtom, 1);
+                XkbSetDetectableAutoRepeat(display, True, null);
+                char[CURSOR_BITMAP_SIZE] blank = 0;
+                Pixmap bitmap = XCreateBitmapFromData(display, window, blank.ptr, CURSOR_BITMAP_SIZE, CURSOR_BITMAP_SIZE);
+                XColor black;
+                invisibleCursor = XCreatePixmapCursor(display, bitmap, bitmap, &black, &black, 0, 0);
+                XFreePixmap(display, bitmap);
+                immutable bool isPointerSelected = selectRawPointer();
+                if (!isPointerSelected) {
+                    closeWindow();
+                    return false;
+                } else {
+                    XMapWindow(display, window);
+                    XFlush(display);
+                    return true;
+                }
+            }
+        }
+
+        SurfaceSource surfaceSource() {
+            return SurfaceSource(display, window);
+        }
+
+        bool selectRawPointer() {
+            int firstEvent;
+            int firstError;
+            immutable int hasExtension = XQueryExtension(display, "XInputExtension", &pointer.opcode, &firstEvent, &firstError);
+            if (hasExtension == 0) {
+                return false;
+            } else {
+                int major = XI_REQUIRED_MAJOR;
+                int minor = XI_REQUIRED_MINOR;
+                immutable int versionStatus = XIQueryVersion(display, &major, &minor);
+                if (versionStatus != Success || !isXInputVersionSufficient(major, minor)) {
+                    return false;
+                } else {
+                    ubyte[XI_MASK_BYTES] mask = 0;
+                    setEventBit(mask[], XI_RawMotion);
+                    setEventBit(mask[], XI_DeviceChanged);
+                    XIEventMask eventMask = XIEventMask(XIAllMasterDevices, cast(int) mask.length, mask.ptr);
+                    XISelectEvents(display, XRootWindow(display, screen), &eventMask, 1);
+                    return true;
+                }
+            }
+        }
+
+        void closeWindow() {
+            XFreeCursor(display, invisibleCursor);
+            XDestroyWindow(display, window);
+            XCloseDisplay(display);
+        }
+
+        void capturePointer() {
+            immutable int grab = XGrabPointer(display, window, True, POINTER_GRAB_MASK, GrabModeAsync, GrabModeAsync, window, invisibleCursor, CurrentTime);
+            if (grab == GrabSuccess) {
+                isCaptured = true;
+                isTitleDirty = true;
+            }
+        }
+
+        void releasePointer() {
+            if (isCaptured) {
+                XUngrabPointer(display, CurrentTime);
+                isCaptured = false;
+                isTitleDirty = true;
+            }
+            isHeld[] = false;
+        }
+
+        void loadPointerAxes(int deviceId) {
+            pointer.axes = PointerAxis.init;
+            pointer.deviceId = deviceId;
+            double[POINTER_AXES] screenExtent = [XDisplayWidth(display, screen), XDisplayHeight(display, screen)];
+            int count = 0;
+            XIDeviceInfo* devices = XIQueryDevice(display, deviceId, &count);
+            if (devices !is null) {
+                foreach (device; devices[0 .. count]) {
+                    foreach (info; device.classes[0 .. device.num_classes]) {
+                        if (info.type == XIValuatorClass) {
+                            XIValuatorClassInfo* valuator = cast(XIValuatorClassInfo*) info;
+                            if (valuator.number >= 0 && valuator.number < POINTER_AXES && valuator.mode == XIModeAbsolute && valuator.max > valuator.min) {
+                                pointer.axes[valuator.number].isAbsolute = true;
+                                pointer.axes[valuator.number].countsPerValue = screenExtent[valuator.number] / (valuator.max - valuator.min);
+                            }
                         }
                     }
                 }
+                XIFreeDeviceInfo(devices);
             }
-            XIFreeDeviceInfo(devices);
         }
-    }
 
-    void handleRawMotion(const(XIRawEvent)* raw) {
-        if (raw.deviceid != pointer.deviceId) {
-            loadPointerAxes(raw.deviceid);
-        }
-        double[POINTER_AXES] delta = [0, 0];
-        int valueIndex = 0;
-        foreach (valuator; 0 .. raw.valuators.mask_len * BITS_PER_BYTE) {
-            if (isEventBitSet(raw.valuators.mask, valuator)) {
-                if (valuator < POINTER_AXES) {
-                    delta[valuator] = pointer.axes[valuator].delta(raw.raw_values[valueIndex]);
+        void handleRawMotion(const(XIRawEvent)* raw) {
+            if (raw.deviceid != pointer.deviceId) {
+                loadPointerAxes(raw.deviceid);
+            }
+            double[POINTER_AXES] delta = [0, 0];
+            int valueIndex = 0;
+            foreach (valuator; 0 .. raw.valuators.mask_len * BITS_PER_BYTE) {
+                if (isEventBitSet(raw.valuators.mask, valuator)) {
+                    if (valuator < POINTER_AXES) {
+                        delta[valuator] = pointer.axes[valuator].delta(raw.raw_values[valueIndex]);
+                    }
+                    valueIndex += 1;
                 }
-                valueIndex += 1;
+            }
+            if (isCaptured) {
+                mouseDx += delta[0];
+                mouseDy += delta[1];
             }
         }
-        if (isCaptured) {
-            mouseDx += delta[0];
-            mouseDy += delta[1];
-        }
-    }
 
-    void handleGenericEvent(XGenericEventCookie* cookie) {
-        if (cookie.extension == pointer.opcode) {
-            immutable int hasData = XGetEventData(display, cookie);
-            if (hasData != 0) {
-                if (cookie.evtype == XI_RawMotion) {
-                    handleRawMotion(cast(const(XIRawEvent)*) cookie.data);
-                } else if (cookie.evtype == XI_DeviceChanged) {
-                    pointer.deviceId = NO_DEVICE;
+        void handleGenericEvent(XGenericEventCookie* cookie) {
+            if (cookie.extension == pointer.opcode) {
+                immutable int hasData = XGetEventData(display, cookie);
+                if (hasData != 0) {
+                    if (cookie.evtype == XI_RawMotion) {
+                        handleRawMotion(cast(const(XIRawEvent)*) cookie.data);
+                    } else if (cookie.evtype == XI_DeviceChanged) {
+                        pointer.deviceId = NO_DEVICE;
+                    }
+                    XFreeEventData(display, cookie);
                 }
-                XFreeEventData(display, cookie);
             }
+        }
+
+        void processEvent(XEvent* event) {
+            if (event.type == KeyPress) {
+                uint keycode = event.xkey.keycode % KEYCODE_COUNT;
+                handleKeyPress(XLookupKeysym(&event.xkey, 0), isKeyDown[keycode]);
+                isKeyDown[keycode] = true;
+            } else if (event.type == KeyRelease) {
+                isKeyDown[event.xkey.keycode % KEYCODE_COUNT] = false;
+                setMovementKey(XLookupKeysym(&event.xkey, 0), false);
+            } else if (event.type == GenericEvent) {
+                handleGenericEvent(&event.xcookie);
+            } else if (event.type == ButtonPress) {
+                handleButton(event.xbutton.button);
+            } else if (event.type == FocusOut) {
+                releasePointer();
+                isKeyDown[] = false;
+            } else if (event.type == UnmapNotify) {
+                releasePointer();
+            } else if (event.type == ClientMessage && cast(Atom) event.xclient.data.l[0] == deleteAtom) {
+                isRunning = false;
+            }
+        }
+
+        void pollEvents() {
+            while (XPending(display) > 0) {
+                XEvent event;
+                XNextEvent(display, &event);
+                processEvent(&event);
+            }
+        }
+
+        void storeTitle(const(char)* title) {
+            XStoreName(display, window, title);
         }
     }
 
@@ -498,28 +669,6 @@ struct Session {
         }
     }
 
-    void processEvent(XEvent* event) {
-        if (event.type == KeyPress) {
-            uint keycode = event.xkey.keycode % KEYCODE_COUNT;
-            handleKeyPress(XLookupKeysym(&event.xkey, 0), isKeyDown[keycode]);
-            isKeyDown[keycode] = true;
-        } else if (event.type == KeyRelease) {
-            isKeyDown[event.xkey.keycode % KEYCODE_COUNT] = false;
-            setMovementKey(XLookupKeysym(&event.xkey, 0), false);
-        } else if (event.type == GenericEvent) {
-            handleGenericEvent(&event.xcookie);
-        } else if (event.type == ButtonPress) {
-            handleButton(event.xbutton.button);
-        } else if (event.type == FocusOut) {
-            releasePointer();
-            isKeyDown[] = false;
-        } else if (event.type == UnmapNotify) {
-            releasePointer();
-        } else if (event.type == ClientMessage && cast(Atom) event.xclient.data.l[0] == deleteAtom) {
-            isRunning = false;
-        }
-    }
-
     void updateWindowTitle() {
         char[TEXT_CAPACITY] title;
         string mode = ENUM_NAMES!MovementMode[game.mode];
@@ -530,7 +679,7 @@ struct Session {
         } else {
             snprintf(title.ptr, title.length, "mined - %s - click to capture mouse - FPS %.0f", modes.ptr, cast(double) fps);
         }
-        XStoreName(display, window, title.ptr);
+        storeTitle(title.ptr);
         isTitleDirty = false;
     }
 
@@ -552,11 +701,7 @@ struct Session {
             lastTime = now;
             mouseDx = 0;
             mouseDy = 0;
-            while (XPending(display) > 0) {
-                XEvent event;
-                XNextEvent(display, &event);
-                processEvent(&event);
-            }
+            pollEvents();
             if (isRunning) {
                 FrameInput frame = buildFrameInput(dt);
                 if (isRecording) {
@@ -579,24 +724,12 @@ struct Session {
     }
 }
 
-bool isXInputVersionSufficient(int major, int minor) {
-    return major > XI_REQUIRED_MAJOR || (major == XI_REQUIRED_MAJOR && minor >= XI_REQUIRED_MINOR);
-}
-
 float pitchSign(bool isYInverted) {
     if (isYInverted) {
         return -1.0f;
     } else {
         return 1.0f;
     }
-}
-
-void setEventBit(ubyte[] mask, int event) {
-    mask[event / BITS_PER_BYTE] |= cast(ubyte)(1 << (event % BITS_PER_BYTE));
-}
-
-bool isEventBitSet(const(ubyte)* mask, int event) {
-    return (mask[event / BITS_PER_BYTE] & (1 << (event % BITS_PER_BYTE))) != 0;
 }
 
 void pauseUntilFrameEnd(double frameStart) {
@@ -933,11 +1066,9 @@ void printMemory(FILE* report, ref const LocalWorld world) {
     }
     fprintf(report, "chunk blocks whose chunks are all settled and filled with something opaque: %zu\n", solidBlocks);
     fprintf(report, "nodes holding chunks=%zu with state=%zu, structure-touched=%zu referenced=%zu with children=%zu recent=%zu\n", holding, stated, touched, referenced, parents, recent);
-    rusage usage;
-    getrusage(RUSAGE_SELF, &usage);
     size_t nodeBytes = cast(size_t) graph.slotCount * (Node.sizeof + NodeState.sizeof + NodeStructure.sizeof + NodeWorlds.sizeof + uint.sizeof);
     size_t chunkBytes = cast(size_t) graph.chunks.blockCount * CORNER_COUNT * Chunk.sizeof;
-    fprintf(report, "memory: rss now=%zuMB peak=%ldMB nodes=%u of %u slots (%zuMB), %u chunk blocks (%zuMB) buildings=%zu (%zuMB) dense voxels %zuMB\n", residentBytes() / BYTES_PER_MEGABYTE, usage.ru_maxrss / KILOBYTES_PER_MEGABYTE, graph.liveCount, graph.slotCount, nodeBytes / BYTES_PER_MEGABYTE, graph.chunks.blockCount, chunkBytes / BYTES_PER_MEGABYTE, buildings, buildingBytes / BYTES_PER_MEGABYTE, denseBytes / BYTES_PER_MEGABYTE);
+    fprintf(report, "memory: rss now=%zuMB peak=%zuMB nodes=%u of %u slots (%zuMB), %u chunk blocks (%zuMB) buildings=%zu (%zuMB) dense voxels %zuMB\n", residentBytes() / BYTES_PER_MEGABYTE, peakResidentBytes() / BYTES_PER_MEGABYTE, graph.liveCount, graph.slotCount, nodeBytes / BYTES_PER_MEGABYTE, graph.chunks.blockCount, chunkBytes / BYTES_PER_MEGABYTE, buildings, buildingBytes / BYTES_PER_MEGABYTE, denseBytes / BYTES_PER_MEGABYTE);
     const(Blueprint)* blueprint = &graph.structures.blueprint;
     size_t brushBytes = blueprint.placed.brushes.capacity * Brush.sizeof + blueprint.placed.runs.capacity * LineRun.sizeof;
     foreach (ref tile; blueprint.tiles.slice()) {
@@ -948,17 +1079,6 @@ void printMemory(FILE* report, ref const LocalWorld world) {
         runBytes += listed.capacity * RunRef.sizeof;
     }
     fprintf(report, "blueprint: %zu lines, %zu brushes (%zuMB, line runs %zuMB), %zu tiles, %u painted again\n", blueprint.lines.length, blueprint.brushTotal(), brushBytes / BYTES_PER_MEGABYTE, runBytes / BYTES_PER_MEGABYTE, blueprint.tiles.length, blueprint.restoredTiles);
-}
-
-size_t residentBytes() {
-    FILE* statm = fopen("/proc/self/statm", "r");
-    size_t total = 0;
-    size_t resident = 0;
-    if (statm !is null) {
-        fscanf(statm, "%zu %zu", &total, &resident);
-        fclose(statm);
-    }
-    return resident * sysconf(_SC_PAGESIZE);
 }
 
 int exitStatus(bool isSucceeded) {

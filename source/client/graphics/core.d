@@ -1,11 +1,12 @@
 module client.graphics.core;
 
-import bindings.platform : Display, VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU, VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU, VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU, VK_QUEUE_GRAPHICS_BIT, VK_STRUCTURE_TYPE_APPLICATION_INFO, VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR, VK_SUCCESS, VkApplicationInfo, VkBool32, VkDevice, VkDeviceCreateInfo, VkDeviceQueueCreateInfo, VkInstance, VkInstanceCreateInfo, VkPhysicalDevice, VkPhysicalDeviceFeatures, VkPhysicalDeviceProperties, VkQueue, VkQueueFamilyProperties, VkResult, VkSurfaceKHR, VkXlibSurfaceCreateInfoKHR, Window, vkCreateDevice, vkCreateInstance, vkCreateXlibSurfaceKHR, vkDestroyDevice, vkDestroyInstance, vkDestroySurfaceKHR, vkDeviceWaitIdle, vkEnumeratePhysicalDevices, vkGetDeviceQueue, vkGetPhysicalDeviceFeatures, vkGetPhysicalDeviceProperties, vkGetPhysicalDeviceQueueFamilyProperties, vkGetPhysicalDeviceSurfaceSupportKHR;
+import bindings.platform : VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU, VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU, VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU, VK_QUEUE_GRAPHICS_BIT, VK_STRUCTURE_TYPE_APPLICATION_INFO, VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, VK_SUCCESS, VkApplicationInfo, VkBool32, VkDevice, VkDeviceCreateInfo, VkDeviceQueueCreateInfo, VkInstance, VkInstanceCreateFlags, VkInstanceCreateInfo, VkPhysicalDevice, VkPhysicalDeviceFeatures, VkPhysicalDeviceProperties, VkQueue, VkQueueFamilyProperties, VkResult, VkSurfaceKHR, vkCreateDevice, vkCreateInstance, vkDestroyDevice, vkDestroyInstance, vkDestroySurfaceKHR, vkDeviceWaitIdle, vkEnumeratePhysicalDevices, vkGetDeviceQueue, vkGetPhysicalDeviceFeatures, vkGetPhysicalDeviceProperties, vkGetPhysicalDeviceQueueFamilyProperties, vkGetPhysicalDeviceSurfaceSupportKHR;
 import client.graphics.pipeline : VULKAN_TRUE, expectSuccess;
 
 enum uint VULKAN_API_VERSION_1_1 = (1 << 22) | (1 << 12);
 enum uint MAX_PHYSICAL_DEVICES = 16;
 enum uint MAX_QUEUE_FAMILIES = 32;
+enum uint MAX_EXTENSIONS = 4;
 enum uint NO_QUEUE_FAMILY = uint.max;
 enum uint APPLICATION_VERSION = 1;
 enum uint RANK_UNUSABLE = 0;
@@ -13,6 +14,65 @@ enum uint RANK_OTHER = 1;
 enum uint RANK_VIRTUAL = 2;
 enum uint RANK_INTEGRATED = 3;
 enum uint RANK_DISCRETE = 4;
+immutable string[1] SWAPCHAIN_EXTENSIONS = ["VK_KHR_swapchain"];
+
+version (OSX) {
+    import bindings.platform : CAMetalLayer, VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR, VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT, VkMetalSurfaceCreateInfoEXT, vkCreateMetalSurfaceEXT;
+
+    struct SurfaceSource {
+        const(CAMetalLayer)* layer;
+    }
+
+    // MoltenVK is a portability driver: the loader lists it only when asked to, and its devices need the subset extension.
+    immutable string[1] INSTANCE_EXTENSIONS = ["VK_KHR_portability_enumeration"];
+    immutable string[2] SURFACE_EXTENSIONS = ["VK_KHR_surface", "VK_EXT_metal_surface"];
+    immutable string[1] DEVICE_EXTENSIONS = ["VK_KHR_portability_subset"];
+    enum VkInstanceCreateFlags INSTANCE_FLAGS = VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+
+    VkSurfaceKHR createSurface(VkInstance instance, SurfaceSource source) {
+        VkMetalSurfaceCreateInfoEXT info;
+        info.sType = VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT;
+        info.pLayer = source.layer;
+        VkSurfaceKHR surface;
+        expectSuccess(vkCreateMetalSurfaceEXT(instance, &info, null, &surface));
+        return surface;
+    }
+} else {
+    import bindings.platform : Display, VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR, VkXlibSurfaceCreateInfoKHR, Window, vkCreateXlibSurfaceKHR;
+
+    struct SurfaceSource {
+        Display* display;
+        Window window;
+    }
+
+    immutable string[0] INSTANCE_EXTENSIONS = [];
+    immutable string[2] SURFACE_EXTENSIONS = ["VK_KHR_surface", "VK_KHR_xlib_surface"];
+    immutable string[0] DEVICE_EXTENSIONS = [];
+    enum VkInstanceCreateFlags INSTANCE_FLAGS = 0;
+
+    VkSurfaceKHR createSurface(VkInstance instance, SurfaceSource source) {
+        VkXlibSurfaceCreateInfoKHR info;
+        info.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
+        info.dpy = source.display;
+        info.window = source.window;
+        VkSurfaceKHR surface;
+        expectSuccess(vkCreateXlibSurfaceKHR(instance, &info, null, &surface));
+        return surface;
+    }
+}
+
+struct ExtensionList {
+    const(char)*[MAX_EXTENSIONS] names;
+    uint count;
+
+    void add(const(string)[] added) {
+        foreach (name; added) {
+            assert(count < MAX_EXTENSIONS);
+            names[count] = name.ptr;
+            count += 1;
+        }
+    }
+}
 
 uint deviceTypeRank(VkPhysicalDevice device) {
     VkPhysicalDeviceProperties properties;
@@ -44,14 +104,10 @@ struct VulkanCore {
     uint maxDrawIndirectCount;
     bool isPresenting;
 
-    void setup(Display* display, Window window) {
+    void setup(SurfaceSource source) {
         isPresenting = true;
         createInstance();
-        VkXlibSurfaceCreateInfoKHR info;
-        info.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
-        info.dpy = display;
-        info.window = window;
-        expectSuccess(vkCreateXlibSurfaceKHR(instance, &info, null, &surface));
+        surface = createSurface(instance, source);
         pickPhysicalDevice();
         createDevice();
     }
@@ -64,10 +120,11 @@ struct VulkanCore {
     }
 
     void createInstance() {
-        const(char)*[2] extensions = [
-            "VK_KHR_surface",
-            "VK_KHR_xlib_surface",
-        ];
+        ExtensionList extensions;
+        extensions.add(INSTANCE_EXTENSIONS);
+        if (isPresenting) {
+            extensions.add(SURFACE_EXTENSIONS);
+        }
         VkApplicationInfo applicationInfo;
         applicationInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
         applicationInfo.pApplicationName = "mined";
@@ -77,11 +134,10 @@ struct VulkanCore {
         applicationInfo.apiVersion = VULKAN_API_VERSION_1_1;
         VkInstanceCreateInfo info;
         info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+        info.flags = INSTANCE_FLAGS;
         info.pApplicationInfo = &applicationInfo;
-        if (isPresenting) {
-            info.enabledExtensionCount = extensions.length;
-            info.ppEnabledExtensionNames = extensions.ptr;
-        }
+        info.enabledExtensionCount = extensions.count;
+        info.ppEnabledExtensionNames = extensions.names.ptr;
         expectSuccess(vkCreateInstance(&info, null, &instance));
     }
 
@@ -144,9 +200,11 @@ struct VulkanCore {
         queueInfo.queueFamilyIndex = graphicsQueueFamily;
         queueInfo.queueCount = 1;
         queueInfo.pQueuePriorities = &queuePriority;
-        const(char)*[1] extensions = [
-            "VK_KHR_swapchain",
-        ];
+        ExtensionList extensions;
+        extensions.add(DEVICE_EXTENSIONS);
+        if (isPresenting) {
+            extensions.add(SWAPCHAIN_EXTENSIONS);
+        }
         VkPhysicalDeviceFeatures features;
         features.multiDrawIndirect = VULKAN_TRUE;
         features.drawIndirectFirstInstance = VULKAN_TRUE;
@@ -155,10 +213,8 @@ struct VulkanCore {
         info.queueCreateInfoCount = 1;
         info.pQueueCreateInfos = &queueInfo;
         info.pEnabledFeatures = &features;
-        if (isPresenting) {
-            info.enabledExtensionCount = extensions.length;
-            info.ppEnabledExtensionNames = extensions.ptr;
-        }
+        info.enabledExtensionCount = extensions.count;
+        info.ppEnabledExtensionNames = extensions.names.ptr;
         expectSuccess(vkCreateDevice(physicalDevice, &info, null, &device));
         vkGetDeviceQueue(device, graphicsQueueFamily, 0, &graphicsQueue);
     }

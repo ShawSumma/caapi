@@ -2,13 +2,18 @@ module base.crash;
 
 import core.stdc.signal : SIGABRT, SIGFPE, SIGILL, SIGSEGV;
 import core.stdc.stdlib : _Exit;
-import core.sys.linux.execinfo : backtrace, backtrace_symbols_fd;
-import core.sys.posix.signal : SA_RESETHAND, SIGALRM, SIGBUS, sigaction, sigaction_t, sigemptyset;
+version (OSX) {
+    import core.sys.darwin.execinfo : backtrace, backtrace_symbols_fd;
+} else {
+    import core.sys.linux.execinfo : backtrace, backtrace_symbols_fd;
+}
+import core.sys.posix.signal : SA_RESETHAND, SIGALRM, SIGBUS, SIGTRAP, sigaction, sigaction_t, sigemptyset;
 import core.sys.posix.unistd : STDERR_FILENO, alarm, write;
 
 enum uint CRASH_FRAMES = 64;
 enum int CRASH_STATUS = 128;
-immutable int[5] CRASH_SIGNALS = [SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT];
+// A failed check halts with SIGILL on x86 and SIGTRAP on ARM.
+immutable int[6] CRASH_SIGNALS = [SIGSEGV, SIGBUS, SIGILL, SIGTRAP, SIGFPE, SIGABRT];
 
 void reportCrashes() {
     void*[1] warm;

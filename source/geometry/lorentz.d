@@ -311,11 +311,11 @@ unittest {
     }
     Point!double start = Motion!double.shift([1, 0, 0.5]) * Point!double.origin();
     Point!double end = Motion!double.shift([-0.4, 2, 0]) * Point!double.origin();
-    assert(isNear((Motion!double.carrying(start, end) * start).distance(end), 0));
+    assert(isNear((Motion!double.carrying(start, end) * start).coshDistance(end), 1));
     Normal!double plane = Vec4!double([1, 0.5, 0, 0.25]).toNormal();
     Motion!double mirror = Motion!double.reflection(plane);
     Point!double mirrored = mirror * start;
-    assert(isNear(start.distance(mirror * mirrored), 0));
+    assert(isNear(start.coshDistance(mirror * mirrored), 1));
     assert(isNear(plane.minkowski(start.v), -plane.minkowski(mirrored.v)));
     assert(mirror.isMirroring() && !moved.isMirroring());
     Motion!double drifted = moved;

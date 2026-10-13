@@ -1,6 +1,15 @@
 module base.clock;
 
-import core.sys.posix.time : CLOCK_MONOTONIC, CLOCK_THREAD_CPUTIME_ID, clock_gettime, timespec;
+version (OSX) {
+    import core.sys.posix.time : timespec;
+
+    enum int CLOCK_MONOTONIC = 6;
+    enum int CLOCK_THREAD_CPUTIME_ID = 16;
+
+    extern (C) int clock_gettime(int clock, timespec* time) nothrow @nogc;
+} else {
+    import core.sys.posix.time : CLOCK_MONOTONIC, CLOCK_THREAD_CPUTIME_ID, clock_gettime, timespec;
+}
 
 enum double NANOSECONDS_PER_SECOND = 1e9;
 enum double NANOSECONDS_PER_MILLISECOND = 1e6;

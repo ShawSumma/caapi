@@ -1,3 +1,4 @@
-#include "lua.h"
-#include "lauxlib.h"
-#include "lualib.h"
+__module bindings.lua;
+
+#define MAKE_LIB
+#include "onelua.c"

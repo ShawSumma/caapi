@@ -9,7 +9,11 @@ import plugins.api.api : ENTRY, Entry, Registry, Structure;
 enum size_t MAX_STRUCTURES = 64;
 enum size_t PATH_CAPACITY = 4096;
 enum string PLUGIN_DIRECTORY = "lib";
-enum string LIBRARY_SUFFIX = ".so";
+version (OSX) {
+    enum string LIBRARY_SUFFIX = ".dylib";
+} else {
+    enum string LIBRARY_SUFFIX = ".so";
+}
 
 struct Worlds {
     string[MAX_STRUCTURES] names;
