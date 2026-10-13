@@ -8,7 +8,7 @@ import base.units : Length, LocalBlock;
 import base.vector3 : cross, dot, magnitude, minus, plus, scaled;
 import common.character.chart : chunkPointInNode, gridJacobian, inverted;
 import common.graph : Graph, NO_SLOT;
-import common.material : Material;
+import plugins.api.api : Material;
 import common.neighbors : chunkNeighborSlot, indexIn, isInside, materialNear;
 import common.node : Chunk, ChunkLayout, ChunkSlot, ChunkState;
 import common.position : Position;

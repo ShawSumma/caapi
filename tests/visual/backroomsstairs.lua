@@ -1,6 +1,6 @@
 local walk = require("lib.walk")
 
-local STAIRS = "tests/lib/backroomsstairs.lua"
+local STAIRS = "backroomsstairs"
 local LOOK_DEGREES = -60
 local LOOK_UP_DEGREES = -20
 

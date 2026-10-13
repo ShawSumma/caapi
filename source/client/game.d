@@ -11,7 +11,7 @@ import common.character.controller : CharacterInput, CharacterState, MovementMod
 import common.character.features : CellOverlap, CellRange, Features, LocalFrame, RequiredChunks, visitCells;
 import common.character.sweep : Capsule, sectionCenters;
 import common.graph : Graph, NodeId;
-import common.material : Material;
+import plugins.api.api : Material;
 import common.node : ChunkSlot, ChunkState;
 import common.position : Position;
 import common.settings : CHUNK_DIMENSION, CharacterConfig;

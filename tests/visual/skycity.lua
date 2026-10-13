@@ -1,7 +1,7 @@
 local climb = require("lib.climb")
 local walk = require("lib.walk")
 
-local SKIES = "tests/lib/skies.lua"
+local SKIES = "skycity"
 local LOOK_UP_DEGREES = -20
 
 return function(world)

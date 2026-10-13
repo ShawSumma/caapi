@@ -1,7 +1,7 @@
 local climb = require("lib.climb")
 local walk = require("lib.walk")
 
-local BACKROOMS = "tests/lib/backrooms.lua"
+local BACKROOMS = "skybackrooms"
 local SKY_ALTITUDE = 1.5
 local FLOORS = {
   carpet = true,

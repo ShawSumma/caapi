@@ -1,6 +1,6 @@
 local climb = require("lib.climb")
 
-local STAIRS = "tests/lib/backroomsstairs.lua"
+local STAIRS = "backroomsstairs"
 local MIN_CLIMB = 0.25
 
 return function(world)

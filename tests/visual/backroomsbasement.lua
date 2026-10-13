@@ -1,6 +1,6 @@
 local walk = require("lib.walk")
 
-local BASEMENT = "tests/lib/backroomsbasement.lua"
+local BASEMENT = "basement"
 local LOOK_DEGREES = 150
 
 return function(world)

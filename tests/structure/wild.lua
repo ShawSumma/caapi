@@ -1,7 +1,7 @@
 local climb = require("lib.climb")
 local walk = require("lib.walk")
 
-local WILD = "tests/lib/wild.lua"
+local WILD = "skywild"
 local LANDING = "concrete"
 local COPY_ALTITUDE = 2.0
 

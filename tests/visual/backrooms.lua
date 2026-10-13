@@ -1,7 +1,7 @@
 local climb = require("lib.climb")
 local walk = require("lib.walk")
 
-local BACKROOMS = "tests/lib/backrooms.lua"
+local BACKROOMS = "skybackrooms"
 local TURN_DEGREES = 180
 local AHEAD_SECONDS = 1.5
 

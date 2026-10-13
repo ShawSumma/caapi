@@ -1,6 +1,6 @@
 local climb = require("lib.climb")
 
-local HUT = "tests/lib/hut.lua"
+local STEPS = "tests/lib/steps.lua"
 local REFUSED = {
   { path = "tests/lib/broken.lua", reason = "unknown material" },
   { path = "tests/lib/wide.lua", reason = "leaves the site's column" },
@@ -13,6 +13,6 @@ return function(world)
     assert(not is_built, string.format("%s is refused", refused.path))
     assert(string.find(message, refused.reason, 1, true), string.format("%s is refused for %s: %s", refused.path, refused.reason, tostring(message)))
   end
-  world:worldgen("structure", HUT)
+  world:worldgen("structure", STEPS)
   climb.route(world, MIN_CLIMB)
 end

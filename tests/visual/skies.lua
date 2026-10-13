@@ -1,4 +1,4 @@
-local WILD = "tests/lib/wild.lua"
+local WILD = "skywild"
 local NOCLIP_SPEED = 0.6
 local BACK = 1.2
 local LOOK_UP_DEGREES = -40

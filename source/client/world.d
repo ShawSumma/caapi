@@ -8,7 +8,7 @@ import client.camera : CAMERA_FORWARD;
 import client.streaming : Streamer;
 import common.eviction : Evictor, Unloaded;
 import common.graph : Graph, NO_NODE;
-import common.material : Material;
+import plugins.api.api : Material;
 import common.neighbors : chunkNeighborId, neighborAxisMap, touchChunksReading;
 import common.node : Chunk, ChunkId, ChunkSlot, ChunkState, cellIndex;
 import common.position : Position;

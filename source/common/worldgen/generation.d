@@ -6,7 +6,7 @@ import core.stdc.string : memcpy;
 import base.array : Array;
 import base.numbers : PI, clamped, higherOf;
 import common.graph : Graph, MAX_PARENTS, NO_SLOT, NodeId, ParentList;
-import common.material : Material;
+import plugins.api.api : Material;
 import common.node : ChunkLayout, Occupancy, Voxels, cellIndex;
 import common.view : GraphView;
 import common.worldgen.building : Building;

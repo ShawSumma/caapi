@@ -5,7 +5,8 @@ import bindings.platform : VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_B
 import client.graphics.frustum : FRUSTUM_PLANE_COUNT;
 import client.graphics.matrices : MATRIX_FLOATS;
 import client.graphics.pipeline : Blend, GpuBuffer, PipelineSettings, QUEUE_FAMILY_IGNORED, WHOLE_SIZE, bindDeviceLocalImage, bufferWrite, createGraphicsPipeline, createPipelineLayout, createSetLayout, createShader, expectSuccess, imageWrite, layoutBinding;
-import common.material : MATERIAL_COLORS, Material;
+import common.material : MATERIAL_COLORS;
+import plugins.api.api : Material;
 
 enum string VOXELS_VERT_SPV = import("voxels.vert.spv");
 enum string VOXELS_FRAG_SPV = import("voxels.frag.spv");

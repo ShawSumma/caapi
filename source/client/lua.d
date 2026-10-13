@@ -6,7 +6,6 @@ import base.names : ENUM_NAMES;
 
 enum int LUA_REGISTRY = -(int.max / 2 + 1000);
 enum int LUA_FIRST_UPVALUE = LUA_REGISTRY - 1;
-enum int LUA_SECOND_UPVALUE = LUA_REGISTRY - 2;
 enum int LUA_NO_REF = -2;
 enum int LUA_TOP = -1;
 enum int LUA_BELOW_TOP = -2;

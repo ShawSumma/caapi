@@ -4,7 +4,8 @@ import core.stdc.math : coshf, fabsf, floorf, logf, powf;
 import core.stdc.stdlib : free, malloc;
 import base.numbers : higherOf, lowerOf;
 import common.graph : NodeId;
-import common.material : MATERIAL_COUNT, Material, isSeeThrough;
+import common.material : MATERIAL_COUNT, isSeeThrough;
+import plugins.api.api : Material;
 import geometry.honeycomb : CORNER_COUNT, Corner, NODE_RADIUS, NODE_VOLUME, cubeScale;
 
 enum int OUTSIDE_GRID = -1;

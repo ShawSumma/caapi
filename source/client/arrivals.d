@@ -6,7 +6,7 @@ import base.array : Array;
 import base.parallel : Executor, ParallelJob;
 import client.tasks : GenResult;
 import common.graph : Graph, NODE_HASH_MULTIPLIER, NO_SLOT, ROOT_NODE;
-import common.material : Material;
+import plugins.api.api : Material;
 import common.neighbors : chunkNeighborSlot, isBorderingVoid, isPredictionContradicted, needsMesh, touchChunksAround;
 import common.node : Chunk, ChunkSlot, ChunkState, Voxels, cellCount;
 import common.worldgen.generation : ChunkParams, GeneratedVoxels, Worldgen;

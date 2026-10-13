@@ -1,7 +1,7 @@
 module common.worldgen.climate;
 
 import base.numbers : higherOf, lowerOf;
-import common.material : Material;
+import plugins.api.api : Material;
 import common.view : GraphView;
 import geometry.honeycomb : Corner, Face, faces;
 

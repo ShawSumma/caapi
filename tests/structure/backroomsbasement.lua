@@ -1,6 +1,6 @@
 local climb = require("lib.climb")
 
-local BASEMENT = "tests/lib/backroomsbasement.lua"
+local BASEMENT = "basement"
 local MIN_CLIMB = 0.2
 
 return function(world)

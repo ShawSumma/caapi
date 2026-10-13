@@ -2,7 +2,7 @@ module common.raycast.chunk;
 
 import core.stdc.math : fabsf;
 import base.numbers : isNan;
-import common.material : Material;
+import plugins.api.api : Material;
 import common.node : ChunkLayout, Voxels, cellIndex;
 import geometry.cube : AXIS_COUNT, Axis, Cell, Sign;
 import geometry.lorentz : Point, Vec4;

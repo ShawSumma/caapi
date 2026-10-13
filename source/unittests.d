@@ -43,7 +43,6 @@ import worldgenStructure = common.worldgen.structure;
 import worldgenSky = common.worldgen.sky;
 import worldgenSpawn = common.worldgen.spawn;
 import worldgenStrokes = common.worldgen.strokes;
-import worldgenEmbedded = common.worldgen.embedded;
 import clientArguments = client.arguments;
 import clientConfig = client.config;
 import clientCamera = client.camera;

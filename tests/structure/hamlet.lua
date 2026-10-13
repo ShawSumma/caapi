@@ -1,6 +1,6 @@
 local walk = require("lib.walk")
 
-local HAMLET = "tests/lib/hamlet.lua"
+local HAMLET = "hamlet"
 local HUTS = 5
 local STOPS_PER_HUT = 14
 local WALK_SECONDS = 6

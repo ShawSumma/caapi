@@ -2,26 +2,43 @@ module client.tiles;
 
 import core.stdc.stdlib : calloc, free;
 import core.stdc.string : memcpy, strlen;
-import bindings.lua : luaL_checkinteger, luaL_checklstring, luaL_checknumber, luaL_checktype, luaL_checkudata, luaL_error, luaL_newmetatable, luaL_setmetatable, lua_CFunction, lua_Integer, lua_State, lua_close, lua_createtable, lua_gettop, lua_newuserdatauv, lua_pcallk, lua_pushboolean, lua_pushcclosure, lua_pushinteger, lua_pushlightuserdata, lua_pushnumber, lua_pushvalue, lua_rawgeti, lua_setfield, lua_settop, lua_tointegerx, lua_tolstring, lua_touserdata, lua_type;
-import client.lua : LUA_BELOW_TOP, LUA_FIRST_UPVALUE, LUA_REGISTRY, LUA_SECOND_UPVALUE, LUA_STATUS_OK, LUA_TOP, LUA_TYPE_FUNCTION, LuaName, SELF, TRACEBACK_INDEX, isNoneOrNil, luaTraceback, newSafeState, registerMethod;
-import client.structures : AIR, CHUNK_RESULTS, COLUMN_RESULTS, MESSAGE_CAPACITY, PEN_TYPE, PLACED_FUNCTION, SITE_TYPE, SKY_FIELDS, SKY_TILE, STRUCTURE_ARGUMENTS, StructureProblem, TURN_UPVALUES, TileCall, boxArgument, columnOf, loadStructureChunk, materialArgument, packedCall, partArgument, pushSite, registerModules, rhythmArgument, siteArgument, spotArgument;
+import client.structures : MESSAGE_CAPACITY, RANDOM_DISCARDED_BITS, RANDOM_UNIT, boxRefusal, engineRhythm, worldNamed;
 import base.array : Array;
 import base.hashmap : HashMap;
-import base.names : ENUM_NAMES;
 import base.numbers : higherOf, lowerOf;
 import base.parallel : Executor, ParallelJob;
-import common.graph : Graph, NO_SLOT, NodeId, ROOT_NODE;
-import common.material : Material;
-import common.view : GraphView, VIRTUAL;
+import common.graph : Graph, NO_SLOT, NodeId;
+import common.view : GraphView;
 import common.worldgen.blueprint : Blueprint, Brush, CellBox, LevelRange, LineEdge, LineKey, LineSpec, Paint, PaintResult, Rhythm, RouteStop, TileRecord, canonicalBox, canonicalRhythm, edgeOf;
-import common.worldgen.generation : SplitMix, StructureWorld;
+import common.worldgen.generation : SplitMix;
 import common.worldgen.sky : PLANET, SkyMeasure, World, balanceAlong, ensureWorldsAt, isPaintedBySky, measureOf, measuredWorld, storeMeasure, worldGroundNodeOf;
-import common.worldgen.structure : CanonicalSite, ColumnSpot, EDGE_NODES, GROUND_RING, LineTouch, LineTransform, SiteFrame, SlotTouch, Turn, addPendingTouch, aroundEdge, canonicalOf, edgeCells, faceSite, forwarded, groundRing, seedTouch, siteHash, turned, walkedTouch;
+import common.worldgen.structure : CanonicalSite, ColumnSpot, EDGE_NODES, GROUND_RING, LineTouch, LineTransform, SiteFrame, SlotTouch, addPendingTouch, aroundEdge, canonicalOf, edgeCells, faceSite, forwarded, frameOf, groundRing, seedTouch, siteHash, siteOf, turned, walkedTouch;
 import geometry.honeycomb : Face;
+import plugins.api.api : Api, Box, Column, Material, Pen, Site, SitePart, Sky, SkyGround, Spot, Structure, Tile, Turn;
+import plugins.api.api : ApiRhythm = Rhythm;
 
 enum uint NO_RECORD = uint.max;
 enum size_t TILE_TASK_BUDGET = 256;
 enum uint PLAN_ROUNDS = 4;
+
+struct TileCall {
+    Tile tile;
+    Array!ubyte data;
+}
+
+struct TileCalls {
+    TileCall planet;
+    Array!TileCall skies;
+    bool hasPlanet;
+
+    void release() {
+        planet.data.release();
+        foreach (ref call; skies.slice()) {
+            call.data.release();
+        }
+        skies.release();
+    }
+}
 
 struct LineOutput {
     LineKey key;
@@ -278,96 +295,47 @@ struct TileHost {
     TilePainter painter;
     PlanOutputs plan;
     GraphView* view;
-    Array!TileCall skyTiles;
-    TileCall planetTile;
+    const(TileCalls)* calls;
+    Api api;
     SplitMix random;
-    lua_State* lua;
+    const(char)* refusal;
     uint sky;
-    bool isReplaying;
-    bool hasPlanetTile;
+    bool isTaskFailed;
     bool hasFailed;
     char[MESSAGE_CAPACITY] failure;
 
-    void build(GraphView* threadView, StructureWorld name, SiteFrame root, ulong seed) {
-        view = threadView;
-        lua = newSafeState();
-        registerModules(lua);
-        registerSiteType();
-        lua_pushcclosure(lua, cast(lua_CFunction) &luaTraceback, 0);
-        isReplaying = true;
-        random = SplitMix(seed);
-        if (loadStructureChunk(lua, name.name()) != LUA_STATUS_OK || lua_pcallk(lua, 0, CHUNK_RESULTS, TRACEBACK_INDEX, 0, null) != LUA_STATUS_OK) {
-            fail();
-        } else if (lua_type(lua, LUA_TOP) == LUA_TYPE_FUNCTION) {
-            lua.pushSite(root);
-            if (lua_pcallk(lua, STRUCTURE_ARGUMENTS, 0, TRACEBACK_INDEX, 0, null) != LUA_STATUS_OK) {
-                fail();
+    void fail(const(char)* message) {
+        isTaskFailed = true;
+        if (!hasFailed) {
+            hasFailed = true;
+            size_t length = strlen(message);
+            if (length >= failure.length) {
+                length = failure.length - 1;
             }
+            memcpy(failure.ptr, message, length);
+            failure[length] = 0;
         }
-        lua_settop(lua, TRACEBACK_INDEX);
-        isReplaying = false;
     }
 
-    void fail() {
-        hasFailed = true;
-        const(char)* message = lua_tolstring(lua, LUA_TOP, null);
-        size_t length = strlen(message);
-        if (length >= failure.length) {
-            length = failure.length - 1;
+    void refuse(const(char)* message) {
+        if (refusal is null) {
+            refusal = message;
         }
-        memcpy(failure.ptr, message, length);
-        failure[length] = 0;
     }
 
-    void registerSiteType() {
-        luaL_newmetatable(lua, SITE_TYPE.ptr);
-        lua_createtable(lua, 0, 0);
-        lua.registerMethod(&this, "forward", &tileForward);
-        foreach (index, member; ENUM_NAMES!Turn) {
-            LuaName turnName = LuaName.fromMember(member);
-            turnName.text[turnName.length] = 0;
-            lua_pushlightuserdata(lua, &this);
-            lua_pushinteger(lua, cast(lua_Integer) index);
-            lua_pushcclosure(lua, cast(lua_CFunction) &tileTurn, TURN_UPVALUES);
-            lua_setfield(lua, LUA_BELOW_TOP, turnName.text.ptr);
+    void takeRefusal() {
+        if (refusal !is null) {
+            fail(refusal);
+            refusal = null;
         }
-        lua.registerMethod(&this, "column", &tileColumn);
-        lua.registerMethod(&this, "edge_cells", &tileEdgeCells);
-        lua.registerMethod(&this, "pick", &tilePick);
-        lua.registerMethod(&this, "paint", &tilePaint);
-        lua.registerMethod(&this, "fill", &tileFill);
-        lua.registerMethod(&this, "stop", &tileStop);
-        lua.registerMethod(&this, "entrance", &tileEntrance);
-        lua.registerMethod(&this, "place", &tilePlace);
-        lua.registerMethod(&this, "claim", &tileClaim);
-        lua.registerMethod(&this, "is_claimed", &tileIsClaimed);
-        lua.registerMethod(&this, "tile", &tileTile);
-        lua.registerMethod(&this, "sky", &tileSky);
-        lua.registerMethod(&this, "open_sky", &tileOpenSky);
-        lua.registerMethod(&this, "balance", &tileBalance);
-        lua.registerMethod(&this, "hash", &tileHash);
-        lua.registerMethod(&this, "pen", &tilePen);
-        lua_setfield(lua, LUA_BELOW_TOP, "__index");
-        lua_settop(lua, LUA_BELOW_TOP);
-        registerPenType();
-    }
-
-    void registerPenType() {
-        luaL_newmetatable(lua, PEN_TYPE.ptr);
-        lua_createtable(lua, 0, 0);
-        static foreach (name; ["forward", "turn", "roll", "lift", "limb"]) {
-            lua.registerMethod(&this, name.ptr, &replayedPen);
-        }
-        static foreach (name; ["rise", "height", "random"]) {
-            lua.registerMethod(&this, name.ptr, &replayedNumber);
-        }
-        lua.registerMethod(&this, "leaves", &replayedNothing);
-        lua_setfield(lua, LUA_BELOW_TOP, "__index");
-        lua_settop(lua, LUA_BELOW_TOP);
     }
 
     ubyte dimension() const {
         return view.layout.dimension;
+    }
+
+    Column column() const {
+        return Column(-cast(int) dimension(), dimension() - 1);
     }
 
     void run(ref const Graph graph, GraphView* threadView, ref const TileTask task, const(Face)[] path, uint index) {
@@ -379,49 +347,44 @@ struct TileHost {
         painter.begin(index, task.isRestoring);
         random = SplitMix(task.face.spice());
         sky = task.sky;
-        TileCall call = planetTile;
+        isTaskFailed = false;
+        const(TileCall)* call = &calls.planet;
+        Sky over;
+        const(Sky)* skyOver = null;
         if (task.sky != PLANET) {
-            call = skyTiles.ptr[graph.skies.world(task.sky).kind];
+            const(World)* world = &graph.skies.world(task.sky);
+            call = &calls.skies.ptr[world.kind];
+            over = Sky(siteOf(world.foot), world.edges, world.ground, world.below, world.balance);
+            skyOver = &over;
         }
-        lua_rawgeti(lua, LUA_REGISTRY, call.reference);
-        int placed = lua_gettop(lua);
-        lua_rawgeti(lua, placed, PLACED_FUNCTION);
-        lua.pushSite(faceSite(face, task.label));
-        int pushed = STRUCTURE_ARGUMENTS;
-        if (task.sky != PLANET) {
-            pushSky(graph.skies.world(task.sky));
-            pushed += 1;
-        }
-        foreach (argument; 0 .. call.argumentCount) {
-            lua_rawgeti(lua, placed, PLACED_FUNCTION + 1 + argument);
-        }
-        bool isFailed = lua_pcallk(lua, pushed + call.argumentCount, 0, TRACEBACK_INDEX, 0, null) != LUA_STATUS_OK;
-        if (isFailed && !hasFailed) {
-            fail();
-        }
-        lua_settop(lua, TRACEBACK_INDEX);
-        painter.finish(isFailed);
+        call.tile(&api, siteOf(faceSite(face, task.label)), skyOver, call.data.ptr);
+        takeRefusal();
+        painter.finish(isTaskFailed);
     }
 
-    void pushSky(ref const World world) {
-        lua_createtable(lua, 0, SKY_FIELDS);
-        lua.pushSite(world.foot);
-        lua_setfield(lua, LUA_BELOW_TOP, "foot");
-        lua_pushinteger(lua, world.edges);
-        lua_setfield(lua, LUA_BELOW_TOP, "edges");
-        lua_pushinteger(lua, world.ground);
-        lua_setfield(lua, LUA_BELOW_TOP, "ground");
-        lua_pushinteger(lua, world.below);
-        lua_setfield(lua, LUA_BELOW_TOP, "below");
-        lua_pushinteger(lua, world.balance);
-        lua_setfield(lua, LUA_BELOW_TOP, "balance");
+    void paint(Site site, Material material, Box area, ApiRhythm rhythm, bool isIntoAirOnly) {
+        const(char)* wrong = boxRefusal(area, rhythm, column());
+        if (wrong !is null) {
+            refuse(wrong);
+        } else {
+            PaintResult result = painter.paint(*view, frameOf(site), CellBox(area.low, area.high), engineRhythm(rhythm), material, isIntoAirOnly);
+            if (result == PaintResult.endless) {
+                refuse("a placed structure paints bounded heights: give the box a z range");
+            } else if (result == PaintResult.behind) {
+                refuse("paints ground that is already built: a tile paints only near its face");
+            }
+        }
+    }
+
+    void stop(Site site, Spot spot, bool isEntrance) {
+        painter.stop(*view, frameOf(site), ColumnSpot(spot.x, spot.y, spot.z), isEntrance);
     }
 
     void planCandidate(ref const Graph graph, GraphView* threadView, uint candidate, uint index) {
         view = threadView;
         uint faceStart = cast(uint) plan.faces.length;
         if (!graph.isFinished(candidate)) {
-            if (hasPlanetTile) {
+            if (calls.hasPlanet) {
                 planRing(graph, (*view).groundRing((*view).worldGroundNodeOf(candidate, PLANET), Face.f0), Face.f0, PLANET);
             }
             foreach (near; (*view).ensureWorldsAt(candidate)) {
@@ -443,13 +406,13 @@ struct TileHost {
 
     void measureSkies(ref const Graph graph, uint faceStart) {
         foreach (index; faceStart .. plan.faces.length) {
-            uint sky = plan.faces.ptr[index].sky;
-            if (sky != PLANET && !graph.skies.world(sky).isMeasured && !plan.hasMeasure(sky)) {
-                SkyMeasure measure = (*view).measureOf(sky);
+            uint over = plan.faces.ptr[index].sky;
+            if (over != PLANET && !graph.skies.world(over).isMeasured && !plan.hasMeasure(over)) {
+                SkyMeasure measure = (*view).measureOf(over);
                 if (view.isBlocked) {
                     view.forget();
                 } else {
-                    plan.measures.append(MeasuredSky(sky, measure));
+                    plan.measures.append(MeasuredSky(over, measure));
                 }
             }
         }
@@ -473,193 +436,183 @@ struct TileHost {
     void release() {
         painter.release();
         plan.release();
-        skyTiles.release();
-        if (lua !is null) {
-            lua_close(lua);
-        }
     }
 }
 
-TileHost* tileHost(lua_State* lua) {
-    luaL_checkudata(lua, SELF, SITE_TYPE.ptr);
-    return cast(TileHost*) lua_touserdata(lua, LUA_FIRST_UPVALUE);
+TileHost* tileHost(const(Api)* api) {
+    return cast(TileHost*) api.host;
 }
 
-extern (C) int tileForward(lua_State* lua) {
-    tileHost(lua);
-    lua.pushSite(forwarded(siteArgument(lua), cast(int) luaL_checkinteger(lua, SELF + 1)));
-    return 1;
+Api tileApi(TileHost* host) {
+    Api api;
+    api.host = host;
+    api.failure = &tileFailure;
+    api.fail = &tileFail;
+    api.forward = &tileForward;
+    api.turned = &tileTurned;
+    api.column = &tileColumn;
+    api.edgeCells = &tileEdgeCells;
+    api.pick = &tilePick;
+    api.random = &tileRandom;
+    api.hash = &tileHash;
+    api.paint = &tilePaint;
+    api.fill = &tileFill;
+    api.stop = &tileStop;
+    api.entrance = &tileEntrance;
+    api.place = &tilePlace;
+    api.claim = &tileClaim;
+    api.isClaimed = &tileIsClaimed;
+    api.tile = &tileTile;
+    api.sky = &tileSky;
+    api.openSky = &tileOpenSky;
+    api.balance = &tileBalance;
+    api.pen = &tilePen;
+    api.penForward = &tilePenMoved;
+    api.penTurn = &tilePenTurn;
+    api.penRoll = &tilePenTurned;
+    api.penLift = &tilePenTurned;
+    api.penRise = &tilePenMeasure;
+    api.penHeight = &tilePenMeasure;
+    api.limb = &tileLimb;
+    api.leaves = &tileLeaves;
+    api.build = &tileBuild;
+    return api;
 }
 
-extern (C) int tileTurn(lua_State* lua) {
-    TileHost* host = tileHost(lua);
-    Turn turn = cast(Turn) lua_tointegerx(lua, LUA_SECOND_UPVALUE, null);
-    lua.pushSite((*host.view).turned(siteArgument(lua), turn));
-    return 1;
+const(char)* tileFailure(const(Api)* api) {
+    TileHost* host = tileHost(api);
+    const(char)* refusal = host.refusal;
+    host.refusal = null;
+    return refusal;
 }
 
-extern (C) int tileColumn(lua_State* lua) {
-    int[2] column = columnOf(tileHost(lua).dimension());
-    lua_pushinteger(lua, column[0]);
-    lua_pushinteger(lua, column[1]);
-    return COLUMN_RESULTS;
+void tileFail(const(Api)* api, const(char)* message) {
+    tileHost(api).refuse(message);
 }
 
-extern (C) int tileEdgeCells(lua_State* lua) {
-    lua_pushinteger(lua, edgeCells(tileHost(lua).dimension()));
-    return 1;
+Site tileForward(const(Api)* api, Site site, int edges) {
+    return siteOf(forwarded(frameOf(site), edges));
 }
 
-extern (C) int tilePick(lua_State* lua) {
-    TileHost* host = tileHost(lua);
-    lua_Integer count = luaL_checkinteger(lua, SELF + 1);
-    if (count < 1) {
-        luaL_error(lua, "pick needs at least one choice");
-    }
-    lua_pushinteger(lua, cast(lua_Integer)(host.random.next() % cast(ulong) count) + 1);
-    return 1;
+Site tileTurned(const(Api)* api, Site site, Turn turn) {
+    return siteOf((*tileHost(api).view).turned(frameOf(site), turn));
 }
 
-extern (C) int tilePaint(lua_State* lua) {
-    return lua.tilePaintWith(false);
+Column tileColumn(const(Api)* api) {
+    return tileHost(api).column();
 }
 
-extern (C) int tileFill(lua_State* lua) {
-    return lua.tilePaintWith(true);
+int tileEdgeCells(const(Api)* api) {
+    return edgeCells(tileHost(api).dimension());
 }
 
-int tilePaintWith(lua_State* lua, bool isIntoAirOnly) {
-    TileHost* host = tileHost(lua);
-    Material material = materialArgument(lua, SELF + 1);
-    CellBox box = boxArgument(lua, SELF + 2, host.dimension());
-    Rhythm rhythm = rhythmArgument(lua, SELF + 3);
-    if (!host.isReplaying) {
-        PaintResult result = host.painter.paint(*host.view, siteArgument(lua), box, rhythm, material, isIntoAirOnly);
-        if (result == PaintResult.endless) {
-            luaL_error(lua, "a placed structure paints bounded heights: give the box a z range");
-        } else if (result == PaintResult.behind) {
-            luaL_error(lua, "paints ground that is already built: a tile paints only near its face");
-        }
-    }
+uint tilePick(const(Api)* api, uint count) {
+    return cast(uint)(tileHost(api).random.next() % count);
+}
+
+double tileRandom(const(Api)* api) {
+    return (tileHost(api).random.next() >> RANDOM_DISCARDED_BITS) * RANDOM_UNIT;
+}
+
+ulong tileHash(const(Api)* api, Site site, SitePart part) {
+    return (*tileHost(api).view).siteHash(frameOf(site), part);
+}
+
+void tilePaint(const(Api)* api, Site site, Material material, Box area, ApiRhythm rhythm) {
+    tileHost(api).paint(site, material, area, rhythm, false);
+}
+
+void tileFill(const(Api)* api, Site site, Material material, Box area, ApiRhythm rhythm) {
+    tileHost(api).paint(site, material, area, rhythm, true);
+}
+
+void tileStop(const(Api)* api, Site site, Spot spot) {
+    tileHost(api).stop(site, spot, false);
+}
+
+void tileEntrance(const(Api)* api, Site site, Spot spot) {
+    tileHost(api).stop(site, spot, true);
+}
+
+bool tilePlace(const(Api)* api, Site site, Structure structure, const(void)* data, size_t size) {
+    tileHost(api).refuse("a tile cannot place: tiles run in any order, so decide from site:hash");
+    return true;
+}
+
+bool tileClaim(const(Api)* api, Site site, SitePart part) {
+    tileHost(api).refuse("a tile cannot claim: tiles run in any order, so decide from site:hash");
+    return true;
+}
+
+bool tileIsClaimed(const(Api)* api, Site site, SitePart part) {
+    tileHost(api).refuse("a tile cannot read claims: tiles run in any order, so decide from site:hash");
+    return false;
+}
+
+void tileTile(const(Api)* api, Tile tile, const(void)* data, size_t size) {
+    tileHost(api).refuse("only the world's own structure tiles the ground, and only once");
+}
+
+uint tileSky(const(Api)* api, double odds, SkyGround ground, Tile tile, const(void)* data, size_t size) {
+    tileHost(api).refuse("only the world's own structure opens skies");
     return 0;
 }
 
-extern (C) int tileStop(lua_State* lua) {
-    TileHost* host = tileHost(lua);
-    ColumnSpot spot = spotArgument(lua, SELF + 1);
-    if (!host.isReplaying) {
-        host.painter.stop(*host.view, siteArgument(lua), spot, false);
-    }
-    return 0;
+void tileOpenSky(const(Api)* api, Site site, uint kind, uint edges) {
+    tileHost(api).refuse("only the world's own structure opens skies");
 }
 
-extern (C) int tileEntrance(lua_State* lua) {
-    TileHost* host = tileHost(lua);
-    ColumnSpot spot = spotArgument(lua, SELF + 1);
-    if (!host.isReplaying) {
-        host.painter.stop(*host.view, siteArgument(lua), spot, true);
-    }
-    return 0;
-}
-
-void refuseOutsideReplay(lua_State* lua, TileHost* host, const(char)* what) {
-    if (!host.isReplaying) {
-        luaL_error(lua, "a tile cannot %s: tiles run in any order, so decide from site:hash", what);
-    }
-}
-
-extern (C) int tilePlace(lua_State* lua) {
-    TileHost* host = tileHost(lua);
-    luaL_checktype(lua, SELF + 1, LUA_TYPE_FUNCTION);
-    refuseOutsideReplay(lua, host, "place");
-    lua_pushboolean(lua, true);
-    return 1;
-}
-
-extern (C) int tileClaim(lua_State* lua) {
-    TileHost* host = tileHost(lua);
-    refuseOutsideReplay(lua, host, "claim");
-    lua_pushboolean(lua, true);
-    return 1;
-}
-
-extern (C) int tileIsClaimed(lua_State* lua) {
-    TileHost* host = tileHost(lua);
-    refuseOutsideReplay(lua, host, "read claims");
-    lua_pushboolean(lua, false);
-    return 1;
-}
-
-extern (C) int tileTile(lua_State* lua) {
-    TileHost* host = tileHost(lua);
-    luaL_checktype(lua, SELF + 1, LUA_TYPE_FUNCTION);
-    if (!host.isReplaying) {
-        luaL_error(lua, "only the world's own structure tiles the ground, and only once");
-    }
-    host.planetTile = TileCall(packedCall(lua, SELF + 1), lua_gettop(lua) - SELF - PLACED_FUNCTION);
-    host.hasPlanetTile = true;
-    return 0;
-}
-
-extern (C) int tileSky(lua_State* lua) {
-    TileHost* host = tileHost(lua);
-    luaL_checktype(lua, SKY_TILE, LUA_TYPE_FUNCTION);
-    if (!host.isReplaying) {
-        luaL_error(lua, "only the world's own structure opens skies");
-    }
-    host.skyTiles.append(TileCall(packedCall(lua, SKY_TILE), lua_gettop(lua) - SKY_TILE));
-    lua_pushinteger(lua, cast(lua_Integer) host.skyTiles.length);
-    return 1;
-}
-
-extern (C) int tileOpenSky(lua_State* lua) {
-    TileHost* host = tileHost(lua);
-    if (!host.isReplaying) {
-        luaL_error(lua, "only the world's own structure opens skies");
-    }
-    return 0;
-}
-
-extern (C) int tileBalance(lua_State* lua) {
-    TileHost* host = tileHost(lua);
-    lua_Integer most = luaL_checkinteger(lua, SELF + 1);
+int tileBalance(const(Api)* api, Site site, int most) {
+    TileHost* host = tileHost(api);
     if (host.sky == PLANET) {
-        luaL_error(lua, "only a sky's tiles have another world to balance against");
-    } else if (most < 1 || most > int.max) {
-        luaL_error(lua, "balance looks at least one cell up");
+        host.refuse("only a sky's tiles have another world to balance against");
+        return 0;
+    } else if (most < 1) {
+        host.refuse("balance looks at least one cell up");
+        return 0;
+    } else {
+        return (*host.view).balanceAlong((*host.view).turned(frameOf(site), Turn.pitchUp), host.sky, most);
     }
-    lua_pushinteger(lua, (*host.view).balanceAlong((*host.view).turned(siteArgument(lua), Turn.pitchUp), host.sky, cast(int) most));
-    return 1;
 }
 
-extern (C) int tilePen(lua_State* lua) {
-    refuseOutsideReplay(lua, tileHost(lua), "draw with a pen");
-    lua_newuserdatauv(lua, 1, 0);
-    luaL_setmetatable(lua, PEN_TYPE.ptr);
-    return 1;
+Pen tilePen(const(Api)* api, Site site) {
+    tileHost(api).refuse("only the world's own structure draws with a pen");
+    return Pen.init;
 }
 
-extern (C) int replayedPen(lua_State* lua) {
-    luaL_checkudata(lua, SELF, PEN_TYPE.ptr);
-    lua_pushvalue(lua, SELF);
-    return 1;
+Pen tilePenMoved(const(Api)* api, Pen pen, double amount) {
+    return pen;
 }
 
-extern (C) int replayedNumber(lua_State* lua) {
-    luaL_checkudata(lua, SELF, PEN_TYPE.ptr);
-    lua_pushnumber(lua, 0);
-    return 1;
+Pen tilePenTurn(const(Api)* api, Pen pen, double yaw, double pitch) {
+    return pen;
 }
 
-extern (C) int replayedNothing(lua_State* lua) {
-    luaL_checkudata(lua, SELF, PEN_TYPE.ptr);
+Pen tilePenTurned(const(Api)* api, Pen pen, double degrees) {
+    return pen;
+}
+
+double tilePenMeasure(const(Api)* api, Pen pen) {
     return 0;
 }
 
-extern (C) int tileHash(lua_State* lua) {
-    TileHost* host = tileHost(lua);
-    lua_pushinteger(lua, cast(lua_Integer)(*host.view).siteHash(siteArgument(lua), partArgument(lua, SELF + 1)));
-    return 1;
+void tileLimb(const(Api)* api, Pen pen, Material material, double cells, double fromRadius, double toRadius) {
+    tileHost(api).refuse("only the world's own structure draws with a pen");
+}
+
+void tileLeaves(const(Api)* api, Pen pen, Material material, double radius) {
+    tileHost(api).refuse("only the world's own structure draws with a pen");
+}
+
+bool tileBuild(const(Api)* api, const(char)* world, Site site) {
+    Structure found = worldNamed(world);
+    if (found is null) {
+        tileHost(api).refuse("builds a world no plugin has");
+        return false;
+    } else {
+        found(api, site, null);
+        return true;
+    }
 }
 
 struct TileJob {
@@ -681,20 +634,6 @@ void planCandidateTask(void* context, size_t index, uint worker) {
     job.hosts[worker].planCandidate(*job.graph, &job.graph.threadViews[worker], job.candidates[index], cast(uint) index);
 }
 
-struct HostBuild {
-    TileWork* work;
-    size_t first;
-}
-
-void buildTileHost(void* context, size_t index, uint worker) {
-    HostBuild* build = cast(HostBuild*) context;
-    TileWork* work = build.work;
-    TileHost* host = cast(TileHost*) calloc(1, TileHost.sizeof);
-    *host = TileHost.init;
-    host.build(&work.graph.threadViews[worker], work.name, work.root, work.seed);
-    work.hosts.ptr[build.first + index] = host;
-}
-
 struct TaskOutput {
     uint host;
     uint output;
@@ -710,40 +649,30 @@ struct TileWork {
     Array!uint planning;
     Array!uint blocked;
     HashMap!(NodeId, uint) taskOf;
-    Graph* graph;
-    StructureWorld name;
-    SiteFrame root;
-    ulong seed;
+    const(TileCalls)* calls;
     uint preparedTiles;
     uint fallbackTiles;
     bool hasFailed;
     char[MESSAGE_CAPACITY] failure;
 
-    void ensureHosts(ref Graph target, Executor executor) {
-        graph = &target;
-        if (hosts.length < executor.workers) {
-            HostBuild build = HostBuild(&this, hosts.length);
-            hosts.resize(executor.workers);
-            target.threadViews.begin(target, executor.workers);
-            ParallelJob job = ParallelJob(&buildTileHost, &build, double.infinity, hosts.length - build.first);
-            executor.run(&job);
-            target.threadViews.finish(target);
-            foreach (host; hosts.slice()) {
-                if (host.hasFailed && !hasFailed) {
-                    takeFailure(host);
-                }
-            }
+    void ensureHosts(uint workers) {
+        while (hosts.length < workers) {
+            TileHost* host = cast(TileHost*) calloc(1, TileHost.sizeof);
+            *host = TileHost.init;
+            host.api = tileApi(host);
+            host.calls = calls;
+            hosts.append(host);
         }
     }
 
     void paintAhead(ref Graph target, const(uint)[] candidates, Executor executor) {
-        ensureHosts(target, executor);
+        ensureHosts(executor.workers);
         covered.clear();
         planning.clear();
         planning.appendAll(candidates);
         bool isWorldMade = true;
         uint round = 0;
-        while (planning.length > 0 && isWorldMade && round < PLAN_ROUNDS && tasks.length < TILE_TASK_BUDGET) {
+        while (!hasFailed && planning.length > 0 && isWorldMade && round < PLAN_ROUNDS && tasks.length < TILE_TASK_BUDGET) {
             isWorldMade = planCandidates(target, executor);
             blocked.clear();
             size_t index = 0;
@@ -840,9 +769,7 @@ struct TileWork {
     }
 
     bool runTasks(ref Graph target, Executor executor) {
-        if (tasks.length > 0 && !hasFailed) {
-            ensureHosts(target, executor);
-        }
+        ensureHosts(executor.workers);
         if (tasks.length > 0 && !hasFailed) {
             foreach (host; hosts.slice()) {
                 host.painter.clear();

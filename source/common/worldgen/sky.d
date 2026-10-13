@@ -8,7 +8,6 @@ import base.hashmap : HashMap;
 import base.numbers : higherOf, lowerOf;
 import base.slab : Run, RunPool, Slab;
 import common.graph : Graph, NO_SLOT, NodeId, ParentList;
-import common.material : Material;
 import common.position : Position;
 import common.traversal : NearbyNode, NearbyScratch;
 import common.view : GraphView;
@@ -16,9 +15,10 @@ import common.worldgen.blueprint : BlueprintBuilder, CellBox, EVERY_HEIGHT, Pain
 import common.worldgen.climate : Climate, CubeClimate, NodeClimate, RELIEF_BOUND, RELIEF_SLACK;
 import common.worldgen.generation : ChunkParams, GeneratedVoxels, NodeState, StructureWorld, Worldgen;
 import common.worldgen.plane : Plane, logCosh;
-import common.worldgen.structure : ClaimKey, ColumnSpot, GROUND_RING, SiteFrame, SitePart, Turn, atLevel, columnPoint, edgeCells, edgeLength, forwarded, groundRing, groundSite, isCanonicalMatch, isSamePoint, nodeToNode, rootSite, rootedCorner, sideAxis, siteHash, siteOrigin, sitePlacement, siteToNode, turned;
+import common.worldgen.structure : ClaimKey, ColumnSpot, GROUND_RING, SiteFrame, atLevel, columnPoint, edgeCells, edgeLength, forwarded, groundRing, groundSite, isCanonicalMatch, isSamePoint, nodeToNode, rootSite, rootedCorner, sideAxis, siteHash, siteOrigin, sitePlacement, siteToNode, turned;
 import geometry.honeycomb : CORNER_COUNT, Corner, FACE_COUNT, FACE_DISTANCE, Face, NODE_RADIUS, across, cornerToNode, cubeScale, faces, mirror, nodeToCorner;
 import geometry.lorentz : Motion, Point, Vec4;
+import plugins.api.api : Material, SitePart, SkyGround, Turn;
 
 enum uint PLANET = 0;
 enum ubyte NO_SKY = 0;
@@ -51,11 +51,6 @@ immutable int[3][3] TEST_PAINTED_CELLS = [
     [8, 5, 3],
     [6, 9, 40],
 ];
-
-enum SkyGround : ubyte {
-    terrain,
-    flat,
-}
 
 struct SkyKind {
     double odds;

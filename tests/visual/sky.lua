@@ -1,4 +1,4 @@
-local SKIES = "tests/lib/skies.lua"
+local SKIES = "skycity"
 local NOCLIP_SPEED = 0.6
 local BACK = 1.2
 local LOOK_UP_DEGREES = -40

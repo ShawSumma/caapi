@@ -14,14 +14,15 @@ import client.structures : StructureProblem, growthProblem, placeWorldStructure;
 import client.world : FULL_RADIUS;
 import common.graph : Graph, NodeId;
 import base.names : ENUM_NAMES;
-import common.material : MATERIAL_COUNT, Material;
+import common.material : MATERIAL_COUNT;
 import common.neighbors : needsMesh;
 import common.node : Chunk, ChunkSlot, ChunkState, Voxels, cellIndex;
 import common.position : Position;
 import common.traversal : NO_DEADLINE, NearbyNode, NearbyScratch;
 import common.worldgen.generation : ChunkParams, GeneratedVoxels, Worldgen;
 import common.worldgen.sky : ChunkPoint, chunkPointOf;
-import common.worldgen.structure : ColumnSpot, SiteFrame, Turn, altitude, columnPoint, edgeLength, forwarded, rootSite, sitePlacement, turned;
+import common.worldgen.structure : ColumnSpot, SiteFrame, altitude, columnPoint, edgeLength, forwarded, rootSite, sitePlacement, turned;
+import plugins.api.api : Material, Turn;
 import geometry.honeycomb : CORNER_COUNT, CUBE_RADIUS, Corner, cubeCenter;
 import geometry.lorentz : Motion, Point;
 

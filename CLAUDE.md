@@ -1,6 +1,7 @@
 # mined
 
-A voxel engine on the hyperbolic {5,3,4} honeycomb, written in D (betterC, LDC) with Lua for structures.
+A voxel engine on the hyperbolic {5,3,4} honeycomb, written in D (betterC, LDC). Worlds are plugins, shared
+libraries loaded at startup that call the engine through a table of functions; Lua runs the test scripts.
 
 ## Commands
 
@@ -15,7 +16,6 @@ A voxel engine on the hyperbolic {5,3,4} honeycomb, written in D (betterC, LDC) 
 - Load and flight benchmark: `dub run -q -b release --compiler=ldc2 -- --bench-load [--profile] --out /dev/stdout`
 - Screenshot: `dub run -q -b release --compiler=ldc2 -- --screenshot screenshots/<new name>.png --out /dev/stdout tests/visual/<script>.lua`
 - Run through `dub run`, never the built binaries directly.
-- `dub` does not notice changes to the embedded `structures/*.lua`; pass `--force` after editing them.
 - A debug build (no `-b release`) keeps asserts; release builds drop them.
 
 ## Testing
@@ -28,7 +28,11 @@ A voxel engine on the hyperbolic {5,3,4} honeycomb, written in D (betterC, LDC) 
 ## Lua
 
 - Booleans are named `is_` or `has_`. `and`, `or` and conditions take only booleans; write `~= nil` out.
-- No `math.random`. Inside a tile use `site:pick`; for choices neighboring tiles must agree on, use hashes with salts.
+
+## Worlds
+
+- No randomness outside the API. Inside a tile use `pick`; for choices neighboring tiles must agree on, use hashes
+  with salts.
 
 ## Geometry
 
@@ -47,7 +51,8 @@ A voxel engine on the hyperbolic {5,3,4} honeycomb, written in D (betterC, LDC) 
 
 ## Code structure
 
-Layers depend only on the ones above them: `base` on nothing, `geometry` on `base`, `common` on both, `client` on all.
+Layers depend only on the ones above them: `base` on nothing, `geometry` on `base`, `common` on both and the plugin
+API, `client` on all.
 
 - `source/main.d`: windowed game, screenshots and the load/flight benchmark.
 - `source/headless.d`, `source/worldcheck.d`: script runner and world checks and benchmarks without a window.
@@ -64,21 +69,28 @@ Layers depend only on the ones above them: `base` on nothing, `geometry` on `bas
   - `character/`: collision and movement; `raycast/`: ray casts.
   - `worldgen/`: `generation.d` (node state, chunk generation), `climate.d`, `plane.d`, `sky.d` (skies and the
     worlds near each node), `structure.d` (sites and lines), `blueprint.d` (painted brushes), `strokes.d` (tapered
-    strokes along geodesics, drawn with a Lua pen and indexed by the nodes they reach), `store.d` (structure per
+    strokes along geodesics, drawn with the API's pen and indexed by the nodes they reach), `store.d` (structure per
     node, buildings), `building.d`, `spawn.d`.
 - `source/client/`
   - `game.d`: the player, movement modes and stepping the world.
   - `world.d`: `LocalWorld`, the per-frame update and its budget split between nearby search, streaming and eviction.
   - `streaming.d`: which chunks to load and when; `tasks.d`: worker queues for chunks and buildings; `arrivals.d`:
     joining arrived chunks to their neighbors in parallel passes.
-  - `structures.d`: the Lua structure host on the main thread; `tiles.d`: tiles planned and painted on every thread.
+  - `structures.d`: the main-thread host of the world API (the root and placed structures); `tiles.d`: tiles planned
+    and painted on the worker threads, each with its own host of the API.
+  - `plugins.d`: loads every library in `lib/`, calls its `plugin` entry point and keeps the worlds it registers.
   - `script.d`, `lua.d`: the test script API; `sampler.d`: the profiler; `meshing.d`, `graphics/`: rendering.
 - `source/shaders/`: GLSL, compiled into `spv/` by the windowed build.
-- `structures/`: embedded Lua. Every top-level file is a structure, a function of a site; the subdirectories hold
-  what they share. `planet.lua` is the terrain world: the viaduct in `road.lua`, the big tree in `bigtree.lua`
-  (drawn with the pen) and the skies it opens, whose kinds are the tiles in `skies/`; `connector.lua` is the tower up
-  to a sky. `tower.lua`, `crown.lua` and `trail.lua` build on `tower/box.lua`. `city.lua` tiles the ground with `city/blocks.lua`, which lays out city blocks
-  built by the types in `buildings/` on `buildings/building.lua`. `backrooms/layout.lua` lays out the backrooms'
-  layers of rooms along the same street network, painted by `backrooms/rooms.lua` with the layers and biomes in
-  `backrooms/levels.lua`; `backrooms.lua` is a world of nothing else.
+- `plugins/`: dub sub-packages declared in `dub.sdl`. Source libraries are shared code compiled into each plugin that
+  uses them; each plugin is a shared library built into `lib/` before the engine, whose `plugin` function (named by
+  `pragma(mangle, ENTRY)`) registers its worlds by name.
+  - `api/`: `plugins.api.api`, the world API: sites, boxes, materials, the pen, the `Api` table of functions a world
+    calls, and the `Registry` a plugin registers worlds with. The engine links it too.
+  - Source libraries: `turtle/` (a site and a pen wrapped around the API), `box/` (the square tower), `buildings/`
+    (building types on `building.d`, chosen through `types.d`), `connector/` (the tower up to a sky), `blocks/` (city
+    blocks and streets), `rooms/` (the backrooms' layers along the same streets, `levels.d` holding the layers and
+    biomes), `skies/` (the tiles of each kind of sky).
+  - Plugins, one world each: `planet` (the terrain world: builds `road` and `bigtree` and opens the skies), `road`
+    (the viaduct), `bigtree` (drawn with the pen), `city`, `backrooms`, `tower`, `crown`, `trail`; `fixtures` holds
+    the worlds the behavior tests load.
 - `tests/`: behavior tests (`lib/` helpers, `visual/` screenshot scripts, `live/` tests that load the world live).

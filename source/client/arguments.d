@@ -1,10 +1,10 @@
 module client.arguments;
 
-import core.stdc.stdio : FILE, fclose, fopen, fprintf, stderr;
+import core.stdc.stdio : fprintf, stderr;
 import core.stdc.stdlib : strtof;
-import core.stdc.string : memcpy, strlen;
+import core.stdc.string : strlen;
 import base.names : ENUM_NAMES, NameLookup;
-import common.worldgen.embedded : EMBEDDED_STRUCTURES, EMBEDDED_STRUCTURE_NAMES, embeddedIndex, isLuaPath;
+import client.plugins : registry;
 import common.worldgen.generation : PlaneWorld, STRUCTURE_NAME_CAPACITY, StructureWorld, Worldgen, WorldgenKind, degreesToRadians;
 
 struct StartupError {
@@ -132,32 +132,10 @@ struct StructureName {
     static StructureName fromText(const(char)[] text) {
         if (text.length > STRUCTURE_NAME_CAPACITY) {
             return StructureName(StructureWorld.init, null, "structure name is too long");
-        } else if (!isLuaPath(text)) {
-            return StructureName.fromEmbedded(text);
-        } else if (!isReadable(text)) {
-            return StructureName(StructureWorld.init, null, "cannot open the structure file");
+        } else if (registry().find(text) is null) {
+            return StructureName(StructureWorld.init, registry().allNames(), "unknown structure");
         } else {
             return StructureName(StructureWorld.fromName(text), null, null);
         }
-    }
-
-    static StructureName fromEmbedded(const(char)[] text) {
-        if (embeddedIndex(text) == EMBEDDED_STRUCTURES.length) {
-            return StructureName(StructureWorld.init, EMBEDDED_STRUCTURE_NAMES[], "unknown structure (or a path ending in .lua)");
-        } else {
-            return StructureName(StructureWorld.fromName(text), null, null);
-        }
-    }
-}
-
-bool isReadable(const(char)[] path) {
-    char[STRUCTURE_NAME_CAPACITY + 1] terminated = 0;
-    memcpy(terminated.ptr, path.ptr, path.length);
-    FILE* file = fopen(terminated.ptr, "r");
-    if (file is null) {
-        return false;
-    } else {
-        fclose(file);
-        return true;
     }
 }

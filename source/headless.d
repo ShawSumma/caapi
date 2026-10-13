@@ -13,7 +13,7 @@ import base.array : Array;
 import base.crash : reportCrashes;
 import client.structures : StructureProblem, placeStructure;
 import common.settings : CHUNK_DIMENSION;
-import common.worldgen.embedded : EMBEDDED_STRUCTURE_NAMES, isLuaPath;
+import client.plugins : registry;
 import common.worldgen.generation : Worldgen, WorldgenKind;
 import worldcheck : benchDrive, benchGen, benchMesh, benchNearby, checkRepaint, dumpStructure, dumpWorld, printMaterialCensus, printSlices, printWorldDigest;
 
@@ -27,6 +27,7 @@ enum uint DEFAULT_NEARBY_ITERATIONS = 50;
 enum int DEFAULT_SLICE_HEIGHT = 1;
 
 immutable string[2] SKIPPED_NAMES = ["lib", "visual"];
+enum string LUA_SUFFIX = ".lua";
 
 enum Command : ubyte {
     scripts,
@@ -156,11 +157,11 @@ struct HeadlessArguments {
         } else if (command != Command.scripts && scripts.length > 0) {
             return StartupError(null, "scripts and a command do not mix, unexpected", scripts.ptr[0]);
         } else if (command == Command.dumpStructure && worldgen.kind != WorldgenKind.structure) {
-            return StartupError(EMBEDDED_STRUCTURE_NAMES[], "needs --worldgen structure <name or file.lua>", "--dump-structure");
+            return StartupError(registry().allNames(), "needs --worldgen structure <name>", "--dump-structure");
         } else if (command == Command.checkRepaint && worldgen.kind != WorldgenKind.structure) {
-            return StartupError(EMBEDDED_STRUCTURE_NAMES[], "needs --worldgen structure <name or file.lua>", "--check-repaint");
+            return StartupError(registry().allNames(), "needs --worldgen structure <name>", "--check-repaint");
         } else if (command == Command.slices && worldgen.kind != WorldgenKind.structure) {
-            return StartupError(EMBEDDED_STRUCTURE_NAMES[], "needs --worldgen structure <name or file.lua>", "--slice");
+            return StartupError(registry().allNames(), "needs --worldgen structure <name>", "--slice");
         } else {
             return StartupError.init;
         }
@@ -311,6 +312,10 @@ extern (C) int main(int argc, char** argv) {
     int status = startCommand(arguments, argv[0]);
     arguments.release();
     return status;
+}
+
+bool isLuaPath(const(char)[] name) {
+    return name.length > LUA_SUFFIX.length && name[$ - LUA_SUFFIX.length .. $] == LUA_SUFFIX;
 }
 
 bool isDirectory(const(char)* path) {

@@ -4,7 +4,7 @@ import core.stdc.math : acoshf, atanhf, cosh, coshf, fabsf, sinh, sqrtf, tanh;
 import base.array : Array;
 import base.hashmap : HashMap;
 import common.graph : ALL_FACES, NO_FACE, NodeId, farthestFaceBeyond;
-import common.material : Material;
+import plugins.api.api : Material;
 import common.view : GraphView;
 import geometry.honeycomb : FACE_COUNT, Face, NODE_RADIUS, mirror;
 import geometry.lorentz : Motion, Point, Vec4;

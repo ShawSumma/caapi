@@ -23,7 +23,7 @@ import client.world : LocalWorld, RENDER_RADIUS, StepPhases;
 import common.character.controller : MovementMode;
 import client.meshing : Mesher;
 import common.graph : Graph, NO_SLOT, Node;
-import common.material : Material;
+import plugins.api.api : Material;
 import common.neighbors : chunkNeighborSlot, needsMesh;
 import common.node : Chunk, ChunkSlot, ChunkState, cellCount;
 import geometry.cube : DIRECTIONS;

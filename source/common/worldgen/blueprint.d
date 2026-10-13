@@ -4,7 +4,8 @@ import base.array : Array;
 import base.hashmap : HashMap;
 import base.numbers : higherOf, lowerOf;
 import common.graph : Graph, NodeId;
-import common.material : MATERIAL_COUNT, Material;
+import common.material : MATERIAL_COUNT;
+import plugins.api.api : Material;
 import common.worldgen.structure : CanonicalSite, ClaimKey, ColumnSpot, LineTransform, PAINT_REACH, SiteFrame, SlotTouch, addPendingTouch, aroundEdge, canonicalOf, edgeCells, isEndless, seedTouch, walkedTouch;
 import geometry.honeycomb : Corner, FACE_COUNT, Face;
 

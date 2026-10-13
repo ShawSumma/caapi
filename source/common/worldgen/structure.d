@@ -5,7 +5,6 @@ import core.stdc.math : atanhf, coshf, fabsf, floorf;
 import base.array : Array;
 import base.units : Length;
 import common.graph : Graph, NO_SLOT, NodeId, ParentList, ROOT_NODE;
-import common.material : Material;
 import common.node : ChunkLayout;
 import common.position : Position;
 import common.traversal : NearbyNode, NearbyScratch;
@@ -14,6 +13,7 @@ import common.worldgen.blueprint : BlueprintBuilder, CellBox, EVERY_HEIGHT, Line
 import common.worldgen.generation : NodeState, SplitMix, StructureWorld, Worldgen;
 import geometry.honeycomb : CORNER_COUNT, Corner, FACE_COUNT, FACE_DISTANCE, Face, across, cornerToNode, cubeToNode, faceBit, faces, isAdjacentTo, mirror;
 import geometry.lorentz : Mat4, Motion, Point, Vec4;
+import plugins.api.api : Material, Site, SitePart, Turn;
 
 enum int PAINT_REACH = 6;
 enum uint GROUND_RING = 11;
@@ -38,15 +38,6 @@ immutable int[3][4] TEST_CELLS = [
     [11, 5, 0],
     [2, 11, 9],
 ];
-
-enum Turn : ubyte {
-    left,
-    right,
-    pitchUp,
-    pitchDown,
-    rollLeft,
-    rollRight,
-}
 
 struct LineTouch {
     int level;
@@ -117,6 +108,14 @@ struct SiteFrame {
     }
 }
 
+Site siteOf(SiteFrame frame) {
+    return Site(frame.level, frame.node, frame.corner, frame.xSide, frame.ySide, frame.xSign, frame.ySign, frame.zSign);
+}
+
+SiteFrame frameOf(Site site) {
+    return SiteFrame(site.level, site.node, cast(Corner) site.corner, cast(Face) site.xSide, cast(Face) site.ySide, site.xSign, site.ySign, site.zSign);
+}
+
 struct FrameCrossing {
     SiteFrame site;
     bool isKept;
@@ -133,12 +132,6 @@ struct LineTransform {
 struct CanonicalSite {
     LineSpec line;
     LineTransform transform;
-}
-
-enum SitePart : ubyte {
-    vertex,
-    face,
-    edge,
 }
 
 struct ClaimKey {

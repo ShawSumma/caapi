@@ -1,7 +1,7 @@
 local climb = require("lib.climb")
 local walk = require("lib.walk")
 
-local WILD = "tests/lib/wild.lua"
+local WILD = "skywild"
 local LOOK_UP_DEGREES = -10
 
 return function(world)

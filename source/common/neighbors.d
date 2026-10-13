@@ -2,7 +2,8 @@ module common.neighbors;
 
 import base.array : Array;
 import common.graph : Graph, NO_SLOT, ROOT_NODE;
-import common.material : Material, isShownAgainst;
+import common.material : isShownAgainst;
+import plugins.api.api : Material;
 import common.node : Chunk, ChunkId, ChunkSlot, ChunkState, Occupancy, cellIndex;
 import common.worldgen.generation : Worldgen;
 import geometry.cube : AXIS_COUNT, Axis, AxisMap, DIRECTIONS, Direction, Sign, boundaryOf;
