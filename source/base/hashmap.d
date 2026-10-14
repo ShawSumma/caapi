@@ -3,10 +3,20 @@ module base.hashmap;
 import core.bitop : bsr;
 import core.stdc.stdlib : calloc, free, malloc;
 import core.stdc.string : memset;
+import core.sys.posix.unistd : _SC_PAGESIZE, sysconf;
+
+version (OSX) {
+    enum int MADV_DONTNEED = 4;
+
+    extern (C) int madvise(void* address, size_t length, int advice) nothrow @nogc;
+} else {
+    import core.sys.linux.sys.mman : MADV_DONTNEED, madvise;
+}
 
 enum size_t FIBONACCI_MULTIPLIER = 0x9E3779B97F4A7C15;
 enum size_t INITIAL_HASH_MAP_CAPACITY = 16;
-enum size_t MIGRATED_SLOTS_PER_INSERT = 8;
+enum size_t MIGRATED_SLOTS_PER_CHANGE = 8;
+enum size_t RELEASED_BYTES = 1 << 20;
 enum size_t LIVE_SPREAD = 2;
 enum uint TAG_BITS = 7;
 enum ubyte EMPTY = 0;
@@ -20,12 +30,13 @@ struct HashSlot(K, V) {
     V value;
 }
 
+// Control bytes live apart from the slots: a lookup that misses usually reads only them, and they stay in cache.
 struct HashTable(K, V) {
     ubyte* controls;
     HashSlot!(K, V)* slots;
     size_t capacity;
     size_t used;
-    size_t removed;
+    size_t released;
     uint shift;
 
     void allocate(size_t count) {
@@ -33,12 +44,8 @@ struct HashTable(K, V) {
         slots = cast(HashSlot!(K, V)*) malloc(count * HashSlot!(K, V).sizeof);
         capacity = count;
         used = 0;
-        removed = 0;
+        released = 0;
         shift = cast(uint)(size_t.sizeof * 8 - bsr(count));
-    }
-
-    size_t live() const {
-        return used - removed;
     }
 
     static size_t hashOf(K key) {
@@ -47,6 +54,10 @@ struct HashTable(K, V) {
 
     ubyte tagOf(size_t hash) const {
         return cast(ubyte)(LIVE | ((hash >> (shift - TAG_BITS)) & (LIVE - 1)));
+    }
+
+    size_t homeOf(K key) const {
+        return hashOf(key) >> shift;
     }
 
     size_t probe(K key, size_t hash) const {
@@ -70,38 +81,59 @@ struct HashTable(K, V) {
 
     void assign(K key, V value, bool isKept) {
         size_t hash = hashOf(key);
-        size_t mask = capacity - 1;
-        ubyte tag = tagOf(hash);
-        size_t index = hash >> shift;
-        size_t reusable = size_t.max;
-        while (controls[index] != EMPTY && !(controls[index] == tag && slots[index].key == key)) {
-            if (controls[index] == REMOVED && reusable == size_t.max) {
-                reusable = index;
-            }
-            index = (index + 1) & mask;
-        }
-        if (controls[index] != EMPTY) {
-            if (!isKept) {
-                slots[index].value = value;
-            }
-        } else if (reusable != size_t.max) {
-            controls[reusable] = tag;
-            slots[reusable] = HashSlot!(K, V)(key, value);
-            removed -= 1;
-        } else {
-            controls[index] = tag;
+        size_t index = probe(key, hash);
+        if (controls[index] == EMPTY) {
+            controls[index] = tagOf(hash);
             slots[index] = HashSlot!(K, V)(key, value);
             used += 1;
+        } else if (!isKept) {
+            slots[index].value = value;
         }
     }
 
-    void remove(K key) {
+    // Shifts the rest of the probe run back over the hole, so lookups never wade through tombstones.
+    void erase(K key) {
+        if (capacity > 0) {
+            size_t mask = capacity - 1;
+            size_t hole = probe(key, hashOf(key));
+            if (controls[hole] != EMPTY) {
+                size_t next = (hole + 1) & mask;
+                while (controls[next] != EMPTY) {
+                    if (((next - homeOf(slots[next].key)) & mask) >= ((next - hole) & mask)) {
+                        controls[hole] = controls[next];
+                        slots[hole] = slots[next];
+                        hole = next;
+                    }
+                    next = (next + 1) & mask;
+                }
+                controls[hole] = EMPTY;
+                used -= 1;
+            }
+        }
+    }
+
+    // A table being migrated keeps its layout, since shifting could move an entry behind the migration cursor.
+    void bury(K key) {
         if (capacity > 0) {
             size_t index = probe(key, hashOf(key));
             if (controls[index] != EMPTY) {
                 controls[index] = REMOVED;
-                removed += 1;
             }
+        }
+    }
+
+    // Gives back the pages of a draining table behind the migration cursor a megabyte at a time, so the final free of
+    // millions of slots does not stall a frame. Every probe still to come for a key at or past the cursor starts after
+    // the last empty slot before the cursor, so the slots up to that one may read back as zero.
+    void releaseBefore(size_t cursor) {
+        if ((cursor - released) * HashSlot!(K, V).sizeof >= RELEASED_BYTES) {
+            size_t edge = cursor;
+            while (edge > released && controls[edge - 1] != EMPTY) {
+                edge -= 1;
+            }
+            giveBack(slots, released * HashSlot!(K, V).sizeof, edge * HashSlot!(K, V).sizeof);
+            giveBack(controls, released, edge);
+            released = edge;
         }
     }
 
@@ -110,13 +142,21 @@ struct HashTable(K, V) {
             memset(controls, EMPTY, capacity);
         }
         used = 0;
-        removed = 0;
     }
 
     void release() {
         free(controls);
         free(slots);
         this = HashTable.init;
+    }
+}
+
+void giveBack(void* base, size_t from, size_t to) {
+    size_t page = sysconf(_SC_PAGESIZE);
+    size_t start = (cast(size_t) base + from + page - 1) & ~(page - 1);
+    size_t end = (cast(size_t) base + to) & ~(page - 1);
+    if (end > start) {
+        madvise(cast(void*) start, end - start, MADV_DONTNEED);
     }
 }
 
@@ -131,16 +171,17 @@ struct HashMap(K, V) {
     }
 
     void insert(K key, V value) {
-        if ((current.used + 1) * 2 > current.capacity) {
+        if ((current.used + 1) * LIVE_SPREAD > current.capacity) {
             grow();
         }
         current.assign(key, value, false);
-        migrate(MIGRATED_SLOTS_PER_INSERT);
+        migrate(MIGRATED_SLOTS_PER_CHANGE);
     }
 
     void remove(K key) {
-        current.remove(key);
-        previous.remove(key);
+        current.erase(key);
+        previous.bury(key);
+        migrate(MIGRATED_SLOTS_PER_CHANGE);
     }
 
     void clear() {
@@ -149,10 +190,11 @@ struct HashMap(K, V) {
         migrated = 0;
     }
 
+    // The old table drains into the new one a few slots per change, so no single change pays for moving everything.
     void grow() {
         migrate(previous.capacity);
         previous = current;
-        current.allocate(capacityFor(previous.live()));
+        current.allocate(previous.capacity == 0 ? INITIAL_HASH_MAP_CAPACITY : previous.capacity * 2);
         migrated = 0;
     }
 
@@ -170,6 +212,8 @@ struct HashMap(K, V) {
         if (previous.capacity > 0 && migrated == previous.capacity) {
             previous.release();
             migrated = 0;
+        } else {
+            previous.releaseBefore(migrated);
         }
     }
 
@@ -178,14 +222,6 @@ struct HashMap(K, V) {
         previous.release();
         migrated = 0;
     }
-}
-
-size_t capacityFor(size_t live) {
-    size_t capacity = INITIAL_HASH_MAP_CAPACITY;
-    while (capacity < live * LIVE_SPREAD) {
-        capacity *= 2;
-    }
-    return capacity;
 }
 
 struct TestKey {
@@ -228,4 +264,47 @@ unittest {
     churn.insert(TestKey(TEST_KEYS - 1), 1);
     assert(*churn.find(TestKey(TEST_KEYS - 1)) == 1);
     churn.release();
+    HashMap!(TestKey, size_t) emptied;
+    foreach (i; 0 .. TEST_KEYS) {
+        emptied.insert(TestKey(i * FIBONACCI_MULTIPLIER), i);
+    }
+    foreach (i; TEST_KEPT .. TEST_KEYS) {
+        emptied.remove(TestKey(i * FIBONACCI_MULTIPLIER));
+    }
+    foreach (i; 0 .. TEST_KEYS) {
+        size_t* found = emptied.find(TestKey(i * FIBONACCI_MULTIPLIER));
+        assert(i < TEST_KEPT ? found !is null && *found == i : found is null);
+    }
+    emptied.release();
+}
+
+enum size_t TEST_RANGE = 4096;
+enum size_t TEST_STEPS = 2_000_000;
+enum size_t TEST_SWING = 200_000;
+
+// Fills and empties while migrations are still running, checked against a plain presence table.
+unittest {
+    HashMap!(TestKey, size_t) map;
+    bool[TEST_RANGE] isPresent;
+    ulong state = 1;
+    foreach (step; 0 .. TEST_STEPS) {
+        state = state * 6364136223846793005UL + 1442695040888963407UL;
+        size_t key = (state >> 33) % TEST_RANGE;
+        bool isFilling = (step / TEST_SWING) % 2 == 0;
+        bool isInserting = (state >> 20) % 4 != 0 ? isFilling : !isFilling;
+        if (isInserting) {
+            map.insert(TestKey(key), key);
+            isPresent[key] = true;
+        } else {
+            map.remove(TestKey(key));
+            isPresent[key] = false;
+        }
+        size_t probed = (state >> 40) % TEST_RANGE;
+        size_t* found = map.find(TestKey(probed));
+        assert(isPresent[probed] ? found !is null && *found == probed : found is null);
+    }
+    foreach (key; 0 .. TEST_RANGE) {
+        assert((map.find(TestKey(key)) !is null) == isPresent[key]);
+    }
+    map.release();
 }

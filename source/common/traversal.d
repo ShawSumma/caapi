@@ -1,7 +1,7 @@
 module common.traversal;
 
 import core.atomic : atomicExchange;
-import core.stdc.math : acoshf, coshf;
+import core.stdc.math : acoshf, coshf, fabs;
 import base.array : Array;
 import base.clock : nowMilliseconds;
 import base.parallel : Executor, ParallelJob;
@@ -133,6 +133,8 @@ void expandBatch(void* context, size_t index, uint worker) {
     }
 }
 
+enum double SHELL_FLOOR = 0.01;
+enum double SHELL_ROUNDING = 64 * float.epsilon;
 enum ubyte DROPPED = 0;
 enum ubyte KEPT = 1;
 enum ubyte FRONTIER = 2;
@@ -173,6 +175,15 @@ struct KeepJob {
     }
 }
 
+// A transform made or moved while far from the frame origin carries float error of about cosh^2 of that distance
+// times float epsilon in its center's Minkowski norm, and later rebases keep that error exactly. Once the frame comes
+// near, the error is far more than rounding at the new distance allows, the center no longer places the node, and
+// expanding from it pulls a far region into the set.
+bool isOffHyperboloid(Vec4!float center) {
+    Vec4!double exact = center.as!double();
+    return fabs(-exact.minkowski(exact) - 1) > SHELL_FLOOR + SHELL_ROUNDING * exact.c[3] * exact.c[3];
+}
+
 immutable Vec4!float[FACE_COUNT] MIRRORED_ORIGINS = mirroredOrigins();
 
 Vec4!float[FACE_COUNT] mirroredOrigins() {
@@ -209,7 +220,7 @@ void sortKept(void* context, size_t block, uint worker) {
         float product = -job.camera.minkowski(center);
         bool isNewlyInner = !(product > job.coshInner) && -job.previous.minkowski(center) > job.coshInner;
         ubyte kind = KEPT;
-        if (product > job.coshReach) {
+        if (product > job.coshReach || isOffHyperboloid(center)) {
             kind = DROPPED;
         } else if (isNewlyInner || (product > job.coshFrontier && job.hasNeighborNewlyInReach(transform))) {
             kind = FRONTIER;

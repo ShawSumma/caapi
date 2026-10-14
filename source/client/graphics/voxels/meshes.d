@@ -116,6 +116,7 @@ struct ChunkMeshes {
     Array!uint renderBlocks;
     Array!uint freeRenderBlocks;
     Array!uint drawableChunks;
+    Array!DrawableRecord drawableRecords;
     Array!uint unlisted;
     Array!VkBufferCopy uploads;
     Array!BufferCopy growthCopies;
@@ -151,7 +152,7 @@ struct ChunkMeshes {
         staging = GpuBuffer.makeMapped(physicalDevice, device, cast(VkDeviceSize) INITIAL_STAGING_FACES * Quad.sizeof, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
         stagingCapacity = INITIAL_STAGING_FACES;
         growDrawBuffers(INITIAL_DRAWABLE_CAPACITY);
-        nodes = grownMapped(nodes, cast(VkDeviceSize) INITIAL_NODE_CAPACITY * MATRIX_FLOATS * float.sizeof, 0);
+        nodes = replacedMapped(nodes, cast(VkDeviceSize) INITIAL_NODE_CAPACITY * MATRIX_FLOATS * float.sizeof);
         nodeCapacity = INITIAL_NODE_CAPACITY;
     }
 
@@ -159,16 +160,16 @@ struct ChunkMeshes {
         return cast(uint) drawableChunks.length;
     }
 
-    GpuBuffer grownMapped(GpuBuffer old, VkDeviceSize size, size_t preservedBytes) {
-        GpuBuffer larger = GpuBuffer.makeMapped(physicalDevice, device, size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-        memcpy(larger.mapped, old.mapped, preservedBytes);
+    // Starts empty: mapped memory is slow to read back, so a caller refills it from what it keeps on the host.
+    GpuBuffer replacedMapped(GpuBuffer old, VkDeviceSize size) {
         retired.append(old);
         hasReplacedDrawBuffers = true;
-        return larger;
+        return GpuBuffer.makeMapped(physicalDevice, device, size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     }
 
     void growDrawBuffers(uint capacity) {
-        drawables = grownMapped(drawables, cast(VkDeviceSize) capacity * DrawableRecord.sizeof, drawableCount * DrawableRecord.sizeof);
+        drawables = replacedMapped(drawables, cast(VkDeviceSize) capacity * DrawableRecord.sizeof);
+        memcpy(drawables.mapped, drawableRecords.ptr, drawableRecords.length * DrawableRecord.sizeof);
         retired.append(transforms);
         retired.append(commands);
         transforms = GpuBuffer.makeDeviceLocal(physicalDevice, device, cast(VkDeviceSize) capacity * DrawTransform.sizeof, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
@@ -182,6 +183,7 @@ struct ChunkMeshes {
         freeRenderBlocks.clear();
         renderBlockCount = 0;
         drawableChunks.clear();
+        drawableRecords.clear();
         unlisted.clear();
         allocator.release();
         allocator.grow(cast(uint)(faces.size / Quad.sizeof));
@@ -217,8 +219,9 @@ struct ChunkMeshes {
     void writeNodes(const(NearbyNode)[] listed) {
         if (listed.length > nodeCapacity) {
             uint capacity = cast(uint) grownCapacity(nodeCapacity, listed.length);
-            nodes = grownMapped(nodes, cast(VkDeviceSize) capacity * MATRIX_FLOATS * float.sizeof, listedNodes * MATRIX_FLOATS * float.sizeof);
+            nodes = replacedMapped(nodes, cast(VkDeviceSize) capacity * MATRIX_FLOATS * float.sizeof);
             nodeCapacity = capacity;
+            listedNodes = 0;
         }
         float[MATRIX_FLOATS]* nodeMatrices = cast(float[MATRIX_FLOATS]*) nodes.mapped;
         foreach (index; listedNodes .. listed.length) {
@@ -228,16 +231,25 @@ struct ChunkMeshes {
     }
 
     void refreshDrawableNodes(ref const NearbyScratch nearby) {
-        DrawableRecord* records = cast(DrawableRecord*) drawables.mapped;
         foreach (chunkIndex; unlisted.slice()) {
             chunks.at(chunkIndex).isUnlisted = false;
         }
         unlisted.clear();
         foreach (drawable, chunkIndex; drawableChunks.slice()) {
             uint node = nearby.indexOf(chunks.at(chunkIndex).slot);
-            records[drawable].node = node;
+            setDrawableNode(cast(uint) drawable, node);
             noteNode(chunkIndex, node);
         }
+    }
+
+    void setDrawableNode(uint drawable, uint node) {
+        drawableRecords.ptr[drawable].node = node;
+        (cast(DrawableRecord*) drawables.mapped)[drawable].node = node;
+    }
+
+    void setDrawable(uint drawable, DrawableRecord record) {
+        drawableRecords.ptr[drawable] = record;
+        (cast(DrawableRecord*) drawables.mapped)[drawable] = record;
     }
 
     void noteNode(uint chunkIndex, uint node) {
@@ -250,14 +262,13 @@ struct ChunkMeshes {
     }
 
     void refreshUnlisted(ref const NearbyScratch nearby) {
-        DrawableRecord* records = cast(DrawableRecord*) drawables.mapped;
         size_t kept = 0;
         foreach (chunkIndex; unlisted.slice()) {
             RenderChunk* entry = chunks.at(chunkIndex);
             if (entry.hasDrawable && entry.isNodeMissing) {
                 uint node = nearby.indexOf(entry.slot);
                 if (node != NOT_COLLECTED) {
-                    records[entry.drawable].node = node;
+                    setDrawableNode(entry.drawable, node);
                     entry.isNodeMissing = false;
                 }
             }
@@ -299,7 +310,17 @@ struct ChunkMeshes {
         }
     }
 
+    // Staging is sized for the whole batch before anything is staged, so growing it never copies out of mapped memory.
     void applyBatch(ref const NearbyScratch nearby) {
+        size_t batchFaces = 0;
+        foreach (worker; batch.workers.slice()) {
+            batchFaces += worker.faces.length;
+        }
+        if (batchFaces > stagingCapacity) {
+            retired.append(staging);
+            stagingCapacity = cast(uint) grownCapacity(stagingCapacity, batchFaces);
+            staging = GpuBuffer.makeMapped(physicalDevice, device, cast(VkDeviceSize) stagingCapacity * Quad.sizeof, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+        }
         foreach (worker; batch.workers.slice()) {
             foreach (record; worker.records.slice()) {
                 apply(nearby, record, worker.faces.ptr[record.offset .. record.offset + record.count]);
@@ -391,39 +412,30 @@ struct ChunkMeshes {
             entry.drawable = drawableCount;
             entry.hasDrawable = true;
             drawableChunks.append(chunkIndex);
+            drawableRecords.append(DrawableRecord.init);
         }
-        DrawableRecord* records = cast(DrawableRecord*) drawables.mapped;
-        records[entry.drawable] = DrawableRecord(node, slot.corner, entry.faceOffset, entry.faceCount);
+        setDrawable(entry.drawable, DrawableRecord(node, slot.corner, entry.faceOffset, entry.faceCount));
         noteNode(chunkIndex, node);
     }
 
     void removeDrawable(uint chunkIndex) {
         RenderChunk* entry = chunks.at(chunkIndex);
         if (entry.hasDrawable) {
-            DrawableRecord* records = cast(DrawableRecord*) drawables.mapped;
             uint last = drawableCount - 1;
             uint movedChunk = drawableChunks.ptr[last];
-            records[entry.drawable] = records[last];
+            setDrawable(entry.drawable, drawableRecords.ptr[last]);
             drawableChunks.ptr[entry.drawable] = movedChunk;
             chunks.at(movedChunk).drawable = entry.drawable;
             drawableChunks.length = last;
+            drawableRecords.length = last;
             entry.hasDrawable = false;
         }
     }
 
     void stage(const(Quad)[] meshed, uint deviceOffset) {
-        uint needed = stagedFaces + cast(uint) meshed.length;
-        if (needed > stagingCapacity) {
-            uint capacity = cast(uint) grownCapacity(stagingCapacity, needed);
-            GpuBuffer larger = GpuBuffer.makeMapped(physicalDevice, device, cast(VkDeviceSize) capacity * Quad.sizeof, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
-            memcpy(larger.mapped, staging.mapped, stagedFaces * Quad.sizeof);
-            retired.append(staging);
-            staging = larger;
-            stagingCapacity = capacity;
-        }
         memcpy(cast(Quad*) staging.mapped + stagedFaces, meshed.ptr, meshed.length * Quad.sizeof);
         uploads.append(VkBufferCopy(cast(VkDeviceSize) stagedFaces * Quad.sizeof, cast(VkDeviceSize) deviceOffset * Quad.sizeof, meshed.length * Quad.sizeof));
-        stagedFaces = needed;
+        stagedFaces += cast(uint) meshed.length;
     }
 
     void growFaces(uint needed) {
@@ -473,6 +485,7 @@ struct ChunkMeshes {
         uploads.release();
         growthCopies.release();
         drawableChunks.release();
+        drawableRecords.release();
         unlisted.release();
         allocator.release();
         chunks.release();

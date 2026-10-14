@@ -22,10 +22,6 @@ struct ChunkStore {
         blocks.ensure(count);
     }
 
-    void trimSlots(uint count) {
-        blocks.trim(count);
-    }
-
     uint blockOf(uint slot) const {
         return *blocks.at(slot);
     }

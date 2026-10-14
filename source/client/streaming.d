@@ -33,8 +33,9 @@ enum uint FAR_BUILDINGS_PER_WORKER = 4;
 enum size_t INTEGRATION_BATCH = 4096;
 enum Length FOCUS_REACH = Length(0.75f);
 enum double NEAR_REFRESH_TRAVEL = 0.25;
-enum uint NEAR_BANDS = 2;
-immutable float[NEAR_BANDS] NEAR_BAND_RADII = [1.5f, 3.0f];
+enum uint NEAR_BANDS = 3;
+enum uint URGENT_BANDS = 2;
+immutable float[NEAR_BANDS] NEAR_BAND_RADII = [1.5f, 3.0f, 4.5f];
 
 struct ScanOutcome {
     float nearestOutOfRange;
@@ -197,6 +198,7 @@ struct Streamer {
     double travel = 0;
     double nearTravel = 0;
     size_t nearHead;
+    size_t nearUrgent;
     uint workerCount;
     uint inFlight;
     uint buildingsInFlight;
@@ -297,7 +299,7 @@ struct Streamer {
         requestAround(graph, focus);
         uint budget = requestBudget(isUnbudgeted);
         rescanBuilt(graph, nearby, range, budget);
-        bool isStopped = scanNearCamera(graph, nearby, range, deadline);
+        bool isStopped = scanNearCamera(graph, nearby, range, budget, deadline);
         if (!isStopped) {
             scanCursor = cast(uint) scan(graph, nearby, range, budget, deadline);
         }
@@ -402,20 +404,29 @@ struct Streamer {
                 nearCamera.appendAll(bands[worker].bands[band].slice());
                 bands[worker].bands[band].clear();
             }
+            if (band + 1 == URGENT_BANDS) {
+                nearUrgent = nearCamera.length;
+            }
         }
         nearHead = 0;
         nearTravel = travel;
     }
 
-    bool scanNearCamera(ref Graph graph, const(NearbyNode)[] nearby, ScanRange range, double deadline) {
+    // Nodes are scanned nearest band first: the list itself runs in the order nodes were found, and the shell at its
+    // edge is far larger than the one just inside it, so a scan in list order leaves the nearer shell waiting.
+    bool scanNearCamera(ref Graph graph, const(NearbyNode)[] nearby, ScanRange range, uint budget, double deadline) {
         bool isStopped = nowMilliseconds() >= deadline;
         while (nearHead < nearCamera.length && !isStopped) {
             uint index = nearCamera.ptr[nearHead];
+            bool isInterrupted = false;
             if (isScanPending(nearby[index].slot)) {
-                scanAt(graph, nearby, index, scanFacts(graph, nearby[index], range), range, uint.max, true);
-                isStopped = nowMilliseconds() >= deadline;
+                bool isUrgent = nearHead < nearUrgent;
+                isInterrupted = scanAt(graph, nearby, index, scanFacts(graph, nearby[index], range), range, isUrgent ? uint.max : budget, isUrgent);
+                isStopped = isInterrupted || nowMilliseconds() >= deadline;
             }
-            nearHead += 1;
+            if (!isInterrupted) {
+                nearHead += 1;
+            }
         }
         return isStopped;
     }

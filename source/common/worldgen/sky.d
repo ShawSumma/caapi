@@ -159,10 +159,6 @@ struct Skies {
         nodes.ensure(count);
     }
 
-    void trimSlots(uint count) {
-        nodes.trim(count);
-    }
-
     ref const(World) world(uint index) const {
         return worlds.ptr[index - 1];
     }

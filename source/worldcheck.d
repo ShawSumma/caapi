@@ -37,6 +37,7 @@ enum uint SLICE_QUARTERS_OF_FACE = 5;
 enum size_t BENCH_MAP_LIVE = 2_000_000;
 enum size_t BENCH_MAP_CHURN = 8_000_000;
 enum size_t BENCH_MAP_LOOKUPS = 4_000_000;
+enum size_t BENCH_MAP_BATCH = 1024;
 enum double NANOSECONDS_PER_MILLISECOND = 1.0e6;
 
 struct ContentHashes {
@@ -492,17 +493,37 @@ NodeId benchKey(ulong index) {
     return NodeId([SplitMix(index).next(), SplitMix(~index).next()]);
 }
 
-// Churns NodeId keys the way the graph's slot map churns while flying: a window of live keys sliding forward.
+struct WorstBatch {
+    double start = 0;
+    double worst = 0;
+
+    void after(size_t index) {
+        if (index % BENCH_MAP_BATCH == BENCH_MAP_BATCH - 1) {
+            double now = nowMilliseconds();
+            if (now - start > worst) {
+                worst = now - start;
+            }
+            start = now;
+        }
+    }
+}
+
+// Churns NodeId keys the way the graph's slot map churns while flying: a window of live keys sliding forward. The
+// slowest batch of changes shows stalls such as freeing a drained table.
 void benchHashMap(FILE* output) {
     HashMap!(NodeId, uint) map;
     double start = nowMilliseconds();
+    WorstBatch batch = WorstBatch(start);
     foreach (index; 0 .. BENCH_MAP_LIVE) {
         map.insert(benchKey(index), cast(uint) index);
+        batch.after(index);
     }
     double filled = nowMilliseconds();
+    batch.start = filled;
     foreach (index; 0 .. BENCH_MAP_CHURN) {
         map.insert(benchKey(BENCH_MAP_LIVE + index), cast(uint) index);
         map.remove(benchKey(index));
+        batch.after(index);
     }
     double churned = nowMilliseconds();
     size_t found = 0;
@@ -518,7 +539,7 @@ void benchHashMap(FILE* output) {
     size_t capacity = map.current.capacity;
     map.release();
     double released = nowMilliseconds();
-    fprintf(output, "bench-hashmap live=%zu: fill %.1fns/insert, churn %.1fns/insert+remove, hit %.1fns, miss %.1fns, found %zu of %zu, releasing %zu slots %.1fms\n", BENCH_MAP_LIVE, (filled - start) * NANOSECONDS_PER_MILLISECOND / BENCH_MAP_LIVE, (churned - filled) * NANOSECONDS_PER_MILLISECOND / BENCH_MAP_CHURN, (hit - churned) * NANOSECONDS_PER_MILLISECOND / BENCH_MAP_LOOKUPS, (missed - hit) * NANOSECONDS_PER_MILLISECOND / BENCH_MAP_LOOKUPS, found, BENCH_MAP_LOOKUPS, capacity, released - missed);
+    fprintf(output, "bench-hashmap live=%zu: fill %.1fns/insert, churn %.1fns/insert+remove, slowest %zu changes %.2fms, hit %.1fns, miss %.1fns, found %zu of %zu, releasing %zu slots %.1fms\n", BENCH_MAP_LIVE, (filled - start) * NANOSECONDS_PER_MILLISECOND / BENCH_MAP_LIVE, (churned - filled) * NANOSECONDS_PER_MILLISECOND / BENCH_MAP_CHURN, BENCH_MAP_BATCH, batch.worst, (hit - churned) * NANOSECONDS_PER_MILLISECOND / BENCH_MAP_LOOKUPS, (missed - hit) * NANOSECONDS_PER_MILLISECOND / BENCH_MAP_LOOKUPS, found, BENCH_MAP_LOOKUPS, capacity, released - missed);
 }
 
 NearbyNode[] collectPruned(ref NearbyScratch scratch, ref Graph graph, float radius) {

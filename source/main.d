@@ -1,5 +1,6 @@
 module main;
 
+import core.bitop : bsf;
 import core.stdc.math : coshf;
 import core.stdc.stdio : FILE, fclose, fflush, fopen, fprintf, fscanf, snprintf;
 import core.stdc.stdlib : free, malloc;
@@ -23,12 +24,11 @@ import client.structures : StructureProblem, growthProblem, placeStructure, tile
 import client.world : LocalWorld, RENDER_RADIUS, StepPhases;
 import common.character.controller : MovementMode;
 import client.meshing : Mesher;
-import common.graph : Graph, NO_SLOT, Node;
+import common.graph : Graph, NO_SLOT, Node, childParentFaces;
 import plugins.api.api : Material;
 import common.neighbors : chunkNeighborSlot, needsMesh;
 import common.node : Chunk, ChunkSlot, ChunkState, cellCount;
-import common.position : Position;
-import common.traversal : NearbyNode;
+import common.traversal : NOT_COLLECTED, NearbyNode;
 import geometry.cube : DIRECTIONS;
 import common.settings : CHUNK_DIMENSION;
 import common.worldgen.blueprint : Blueprint, Brush, LineRun, RunRef;
@@ -995,10 +995,19 @@ void measureSettle(FILE* report, ref Renderer renderer, ref Game game) {
         pauseUntilFrameEnd(frameStart);
     } while (frames < BENCH_SETTLE_FRAMES && (renderer.meshBacklog() > 0 || !game.world.isWorldgenSettled()));
     LoadedAround around;
-    around.count(game.world.graph, game.world.cameraPosition);
+    around.count(game.world);
     fprintf(report, "stopped after the flight for %u frames (at most %u): %s, nearby %zu nodes reaching %.2f\n", frames, BENCH_SETTLE_FRAMES, game.world.isWorldgenSettled() ? "settled".ptr : "still loading".ptr, game.world.cachedNodes.length, cast(double)(game.world.renderRadius - game.world.radiusCut));
     around.print(report);
     around.release();
+}
+
+enum Shortfall : ubyte {
+    generating,
+    building,
+    unscanned,
+    scanned,
+    unlisted,
+    unmade,
 }
 
 struct LoadedAround {
@@ -1007,39 +1016,54 @@ struct LoadedAround {
     uint generation;
     ulong[CENSUS_RADII.length] total;
     uint[CENSUS_RADII.length] least = uint.max;
+    ulong[Shortfall.max + 1] missed;
     uint samples;
 
-    void count(ref const Graph graph, Position camera) {
+    void count(ref const LocalWorld world) {
+        const(Graph)* graph = &world.graph;
         generation += 1;
         if (seen.length < graph.slotCount) {
             seen.resize(graph.slotCount);
         }
-        Point!float eye = camera.local * Point!float.origin();
+        Point!float eye = world.cameraPosition.local * Point!float.origin();
         float nodeReach = coshf(CENSUS_RADII[$ - 1] + NODE_RADIUS + CUBE_RADIUS);
+        float outer = coshf(CENSUS_RADII[$ - 1]);
         uint[CENSUS_RADII.length] loaded;
         queue.clear();
-        uint first = graph.slotOf(camera.node);
+        uint first = graph.slotOf(world.cameraPosition.node);
         queue.append(NearbyNode(Motion!float.identity(), first));
         seen.ptr[first] = generation;
         size_t head = 0;
         while (head < queue.length) {
             NearbyNode current = queue.ptr[head];
             head += 1;
-            if (graph.chunks.has(current.slot)) {
-                foreach (index; 0 .. CORNER_COUNT) {
-                    Corner corner = cast(Corner) index;
-                    ChunkState state = graph.chunks.at(ChunkSlot(current.slot, corner)).state;
-                    float product = eye.coshDistance(current.transform * corner.cubeCenter);
-                    foreach (radius, distance; CENSUS_RADII) {
-                        loaded[radius] += (state == ChunkState.populated || state == ChunkState.dropped) && !(product > coshf(distance));
-                    }
+            Shortfall waiting = Shortfall.unlisted;
+            if (graph.structures.at(current.slot).isBuildingQueued) {
+                waiting = Shortfall.building;
+            } else if (world.nearby[world.published].indexOf(current.slot) != NOT_COLLECTED) {
+                waiting = world.streamer.isScanPending(current.slot) ? Shortfall.unscanned : Shortfall.scanned;
+            }
+            foreach (index; 0 .. CORNER_COUNT) {
+                Corner corner = cast(Corner) index;
+                ChunkState state = graph.chunks.at(ChunkSlot(current.slot, corner)).state;
+                float product = eye.coshDistance(current.transform * corner.cubeCenter);
+                bool isLoaded = state == ChunkState.populated || state == ChunkState.dropped;
+                foreach (radius, distance; CENSUS_RADII) {
+                    loaded[radius] += isLoaded && !(product > coshf(distance));
+                }
+                if (!isLoaded && !(product > outer)) {
+                    missed[state == ChunkState.generating ? Shortfall.generating : waiting] += 1;
                 }
             }
             foreach (index; 0 .. FACE_COUNT) {
                 Face face = cast(Face) index;
                 uint neighbor = graph.neighborSlot(current.slot, face);
                 Motion!float transform = current.transform * face.mirror;
-                if (neighbor != NO_SLOT && seen.ptr[neighbor] != generation && !(eye.coshDistance(transform * Point!float.origin()) > nodeReach)) {
+                if (neighbor == NO_SLOT && bsf(childParentFaces(graph.nodeAt(current.slot).parentFaces, face)) == index) {
+                    foreach (corner; 0 .. CORNER_COUNT) {
+                        missed[Shortfall.unmade] += !(eye.coshDistance(transform * (cast(Corner) corner).cubeCenter) > outer);
+                    }
+                } else if (neighbor != NO_SLOT && seen.ptr[neighbor] != generation && !(eye.coshDistance(transform * Point!float.origin()) > nodeReach)) {
                     seen.ptr[neighbor] = generation;
                     queue.append(NearbyNode(transform, neighbor));
                 }
@@ -1058,6 +1082,10 @@ struct LoadedAround {
         fprintf(report, "  chunks loaded around the camera:");
         foreach (radius, distance; CENSUS_RADII) {
             fprintf(report, " within %.0f avg %.0f least %u", cast(double) distance, cast(double) total[radius] / samples, least[radius]);
+        }
+        fprintf(report, "\n  not loaded within %.0f avg:", cast(double) CENSUS_RADII[$ - 1]);
+        foreach (kind, name; ENUM_NAMES!Shortfall) {
+            fprintf(report, " %.*s %.0f", cast(int) name.length, name.ptr, cast(double) missed[kind] / samples);
         }
         fprintf(report, "\n");
     }
@@ -1095,7 +1123,7 @@ void measureLeg(FILE* report, ref Renderer renderer, ref Game game) {
             backloggedFrames += 1;
         }
         if (frame % CENSUS_INTERVAL == 0) {
-            around.count(game.world.graph, game.world.cameraPosition);
+            around.count(game.world);
         }
         pauseUntilFrameEnd(frameStart);
     }

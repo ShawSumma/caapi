@@ -215,19 +215,6 @@ struct Graph {
         *nodeAt(slot) = Node.init;
         freeSlots.add(slot);
         liveCount -= 1;
-        trimSlots();
-    }
-
-    void trimSlots() {
-        while (slotCount > 0 && freeSlots.contains(slotCount - 1)) {
-            freeSlots.drop(slotCount - 1);
-            slotCount -= 1;
-        }
-        nodes.trim(slotCount);
-        states.trim(slotCount);
-        chunks.trimSlots(slotCount);
-        structures.trimSlots(slotCount);
-        skies.trimSlots(slotCount);
     }
 
     uint ensureNeighborSlot(uint slot, Face face) {
