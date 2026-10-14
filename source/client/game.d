@@ -218,13 +218,10 @@ struct Game {
 
     Motion!float nodeTransform(NodeId node, float radius) {
         NearbyScratch scratch;
-        NearbyNode[] nearby = scratch.collectAll(world.graph, characterState.position, radius);
-        size_t index = 0;
-        while (index < nearby.length && nearby[index].id != node) {
-            index += 1;
-        }
-        assert(index < nearby.length);
-        Motion!float transform = nearby[index].transform;
+        scratch.collectAll(world.graph, characterState.position, radius);
+        uint index = scratch.indexOf(world.graph.slotOf(node));
+        assert(index != NOT_COLLECTED);
+        Motion!float transform = scratch.nodes.ptr[index].transform;
         scratch.release();
         return transform;
     }

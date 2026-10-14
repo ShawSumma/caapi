@@ -5,6 +5,7 @@ import core.stdc.stdio : FILE, fprintf, fputc;
 import core.stdc.stdlib : free, malloc;
 import base.array : Array;
 import base.clock : nowMilliseconds;
+import base.hashmap : HashMap;
 import base.murmur : murmurHash3;
 import base.parallel : Executor;
 import client.arrivals : populateChunk, resolveMaterials;
@@ -19,7 +20,7 @@ import common.neighbors : needsMesh;
 import common.node : Chunk, ChunkSlot, ChunkState, Voxels, cellIndex;
 import common.position : Position;
 import common.traversal : NO_DEADLINE, NearbyNode, NearbyScratch;
-import common.worldgen.generation : ChunkParams, GeneratedVoxels, Worldgen;
+import common.worldgen.generation : ChunkParams, GeneratedVoxels, SplitMix, Worldgen;
 import common.worldgen.sky : ChunkPoint, chunkPointOf;
 import common.worldgen.structure : ColumnSpot, SiteFrame, altitude, columnPoint, edgeLength, forwarded, rootSite, sitePlacement, turned;
 import plugins.api.api : Material, Turn;
@@ -33,6 +34,10 @@ enum size_t HASH_HEADER_BYTES = 2;
 enum float STRUCTURE_DUMP_RADIUS = 4.5f;
 enum uint SLICE_QUARTERS_AROUND = 4;
 enum uint SLICE_QUARTERS_OF_FACE = 5;
+enum size_t BENCH_MAP_LIVE = 2_000_000;
+enum size_t BENCH_MAP_CHURN = 8_000_000;
+enum size_t BENCH_MAP_LOOKUPS = 4_000_000;
+enum double NANOSECONDS_PER_MILLISECOND = 1.0e6;
 
 struct ContentHashes {
     ulong[2] materials;
@@ -481,6 +486,39 @@ void benchNearby(FILE* output, float radius, uint iterations, ubyte dimension) {
     fprintf(output, "bench-nearby dim=%u radius=%.1f nodes=%zu graph=%u iterations=%u cold=%.1fms collect=%.3fms\n", cast(uint) dimension, cast(double) radius, nodeCount, graph.slotCount, iterations, coldMs, (nowMilliseconds() - start) / iterations);
     scratch.release();
     graph.release();
+}
+
+NodeId benchKey(ulong index) {
+    return NodeId([SplitMix(index).next(), SplitMix(~index).next()]);
+}
+
+// Churns NodeId keys the way the graph's slot map churns while flying: a window of live keys sliding forward.
+void benchHashMap(FILE* output) {
+    HashMap!(NodeId, uint) map;
+    double start = nowMilliseconds();
+    foreach (index; 0 .. BENCH_MAP_LIVE) {
+        map.insert(benchKey(index), cast(uint) index);
+    }
+    double filled = nowMilliseconds();
+    foreach (index; 0 .. BENCH_MAP_CHURN) {
+        map.insert(benchKey(BENCH_MAP_LIVE + index), cast(uint) index);
+        map.remove(benchKey(index));
+    }
+    double churned = nowMilliseconds();
+    size_t found = 0;
+    SplitMix pick = SplitMix(BENCH_MAP_LIVE);
+    foreach (_; 0 .. BENCH_MAP_LOOKUPS) {
+        found += map.find(benchKey(BENCH_MAP_CHURN + pick.next() % BENCH_MAP_LIVE)) !is null;
+    }
+    double hit = nowMilliseconds();
+    foreach (index; 0 .. BENCH_MAP_LOOKUPS) {
+        found += map.find(benchKey(index)) !is null;
+    }
+    double missed = nowMilliseconds();
+    size_t capacity = map.current.capacity;
+    map.release();
+    double released = nowMilliseconds();
+    fprintf(output, "bench-hashmap live=%zu: fill %.1fns/insert, churn %.1fns/insert+remove, hit %.1fns, miss %.1fns, found %zu of %zu, releasing %zu slots %.1fms\n", BENCH_MAP_LIVE, (filled - start) * NANOSECONDS_PER_MILLISECOND / BENCH_MAP_LIVE, (churned - filled) * NANOSECONDS_PER_MILLISECOND / BENCH_MAP_CHURN, (hit - churned) * NANOSECONDS_PER_MILLISECOND / BENCH_MAP_LOOKUPS, (missed - hit) * NANOSECONDS_PER_MILLISECOND / BENCH_MAP_LOOKUPS, found, BENCH_MAP_LOOKUPS, capacity, released - missed);
 }
 
 NearbyNode[] collectPruned(ref NearbyScratch scratch, ref Graph graph, float radius) {

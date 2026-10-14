@@ -15,7 +15,7 @@ import common.worldgen.blueprint : BlueprintBuilder, CellBox, EVERY_HEIGHT, Pain
 import common.worldgen.climate : Climate, CubeClimate, NodeClimate, RELIEF_BOUND, RELIEF_SLACK;
 import common.worldgen.generation : ChunkParams, GeneratedVoxels, NodeState, StructureWorld, Worldgen;
 import common.worldgen.plane : Plane, logCosh;
-import common.worldgen.structure : ClaimKey, ColumnSpot, GROUND_RING, SiteFrame, atLevel, columnPoint, edgeCells, edgeLength, forwarded, groundRing, groundSite, isCanonicalMatch, isSamePoint, nodeToNode, rootSite, rootedCorner, sideAxis, siteHash, siteOrigin, sitePlacement, siteToNode, turned;
+import common.worldgen.structure : ClaimKey, ColumnSpot, GROUND_RING, SiteFrame, atLevel, columnPoint, edgeCells, edgeLength, forwarded, groundRing, groundSite, isCanonicalMatch, isSamePoint, pathBetween, rootSite, rootedCorner, sideAxis, siteHash, siteOrigin, sitePlacement, siteToNode, turned;
 import geometry.honeycomb : CORNER_COUNT, Corner, FACE_COUNT, FACE_DISTANCE, Face, NODE_RADIUS, across, cornerToNode, cubeScale, faces, mirror, nodeToCorner;
 import geometry.lorentz : Motion, Point, Vec4;
 import plugins.api.api : Material, SitePart, SkyGround, Turn;
@@ -157,6 +157,10 @@ struct Skies {
 
     void ensureSlots(uint count) {
         nodes.ensure(count);
+    }
+
+    void trimSlots(uint count) {
+        nodes.trim(count);
     }
 
     ref const(World) world(uint index) const {
@@ -491,7 +495,10 @@ Plane planeOfWorldIn(ref GraphView view, uint world, uint slot) {
         return view.stateAt(slot).surface;
     } else {
         const(World)* found = &view.skies.world(world);
-        return found.plane.transformBy(view.nodeToNode(found.footNode, slot)).snappedToFaces();
+        Array!Face path = view.pathBetween(found.footNode, slot);
+        Plane plane = found.plane.carriedAlong(path.slice());
+        path.release();
+        return plane;
     }
 }
 
@@ -719,13 +726,21 @@ bool isOnSkySide(ref GraphView view, uint slot, WorldRef sky) {
     return own - other <= SKY_SIDE_MARGIN;
 }
 
+// The foot line is where the foot corner's two faces other than the ground's meet, and cosh^2 of the distance to it
+// is 1 plus sinh^2 of the distance to each of those planes.
 bool isOnFootLine(ref const GraphView view, uint slot, uint sky) {
     const(World)* world = &view.skies.world(sky);
-    Vec4!float center = (view.nodeToNode(slot, world.footNode) * Point!float.origin()).v;
-    float alongFoot = center.minkowski((world.foot.corner.cornerToNode * Point!float.origin()).v);
-    float alongUp = cast(float)(center.as!double().minkowski(world.plane.scaledNormal()) * cosh(world.plane.height));
+    Array!Face path = view.pathBetween(world.footNode, slot);
+    float coshSquared = 1;
+    foreach (side; world.foot.corner.faces) {
+        if (side != world.label) {
+            float across = sinhf(Plane.ofFace(side).carriedAlong(path.slice()).distanceTo(Point!float.origin()));
+            coshSquared += across * across;
+        }
+    }
+    path.release();
     float reach = coshf(edgeLineDistance() + LINE_TOLERANCE);
-    return alongFoot * alongFoot - alongUp * alongUp <= reach * reach;
+    return coshSquared <= reach * reach;
 }
 
 float edgeLineDistance() {

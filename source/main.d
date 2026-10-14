@@ -1019,7 +1019,7 @@ struct LoadedAround {
         uint[CENSUS_RADII.length] loaded;
         queue.clear();
         uint first = graph.slotOf(camera.node);
-        queue.append(NearbyNode(camera.node, Motion!float.identity(), first));
+        queue.append(NearbyNode(Motion!float.identity(), first));
         seen.ptr[first] = generation;
         size_t head = 0;
         while (head < queue.length) {
@@ -1041,7 +1041,7 @@ struct LoadedAround {
                 Motion!float transform = current.transform * face.mirror;
                 if (neighbor != NO_SLOT && seen.ptr[neighbor] != generation && !(eye.coshDistance(transform * Point!float.origin()) > nodeReach)) {
                     seen.ptr[neighbor] = generation;
-                    queue.append(NearbyNode(graph.idAt(neighbor), transform, neighbor));
+                    queue.append(NearbyNode(transform, neighbor));
                 }
             }
         }
@@ -1120,7 +1120,8 @@ void printWorldStats(FILE* report, ref const LocalWorld world) {
     fprintf(report, "tiles painted ahead on all threads %u, painted when needed %u\n", tiles[0], tiles[1]);
     fprintf(report, "nearby %zu nodes, %u published, %u recoveries (%.0fms), %.0fms sliced\n", world.cachedNodes.length, world.nearbyStats.publishes, world.nearbyStats.recoveries, world.nearbyStats.recoveryMilliseconds, world.nearbyStats.slicedMilliseconds);
     fprintf(report, "nearby sets grown from the last %u, keeping %zu nodes as they were and expanding %zu again; %u moved to the camera\n", world.nearbyStats.grown, world.nearbyStats.kept, world.nearbyStats.reexpanded, world.nearbyStats.rebases);
-    fprintf(report, "nearby rebuilds restarted after the camera outran them %u, now reaching %.2f of %.2f\n", world.nearbyStats.restarts, cast(double)(world.renderRadius - world.radiusCut), cast(double) world.renderRadius);}
+    fprintf(report, "nearby rebuilds restarted after the camera outran them %u, now reaching %.2f of %.2f\n", world.nearbyStats.restarts, cast(double)(world.renderRadius - world.radiusCut), cast(double) world.renderRadius);
+}
 
 void printMemory(FILE* report, ref const LocalWorld world) {
     const(Graph)* graph = &world.graph;

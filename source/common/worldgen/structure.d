@@ -602,6 +602,16 @@ Motion!float lineToNode(ref const GraphView view, uint line, uint slot) {
 }
 
 Motion!float nodeToNode(ref const GraphView view, uint from, uint to) {
+    Array!Face path = view.pathBetween(from, to);
+    Motion!double transform = Motion!double.identity();
+    foreach (side; path.slice()) {
+        transform = transform * side.mirror.as!double();
+    }
+    path.release();
+    return transform.as!float();
+}
+
+Array!Face pathBetween(ref const GraphView view, uint from, uint to) {
     Array!Face toPath = view.sidesToRoot(to);
     Array!Face fromPath = view.sidesToRoot(from);
     Array!Face path;
@@ -611,14 +621,9 @@ Motion!float nodeToNode(ref const GraphView view, uint from, uint to) {
     foreach_reverse (side; fromPath.slice()) {
         path.appendReduced(side);
     }
-    Motion!double transform = Motion!double.identity();
-    foreach (side; path.slice()) {
-        transform = transform * side.mirror.as!double();
-    }
     toPath.release();
     fromPath.release();
-    path.release();
-    return transform.as!float();
+    return path;
 }
 
 void appendReduced(ref Array!Face path, Face side) {

@@ -1,11 +1,10 @@
 module common.graph;
 
 import core.bitop : bsf;
-import base.array : Array;
 import base.hashmap : HashMap;
 import base.murmur : murmurHash3;
 import base.parallel : Executor;
-import base.slab : Slab;
+import base.slab : FreeIndices, Slab;
 import common.chunks : ChunkStore;
 import common.neighbors : needsMesh;
 import common.node : ChunkLayout, ChunkSlot;
@@ -101,7 +100,7 @@ struct Graph {
     Slab!Node nodes;
     Slab!NodeState states;
     HashMap!(NodeId, uint) slots;
-    Array!uint freeSlots;
+    FreeIndices freeSlots;
     ChunkStore chunks;
     StructureStore structures;
     Skies skies;
@@ -184,9 +183,8 @@ struct Graph {
 
     uint addNode(NodeId id, uint depth, ushort parentFaces) {
         uint slot = slotCount;
-        if (freeSlots.length > 0) {
-            freeSlots.length -= 1;
-            slot = freeSlots.ptr[freeSlots.length];
+        if (!freeSlots.isEmpty()) {
+            slot = freeSlots.takeLowest();
         } else {
             slotCount += 1;
             nodes.ensure(slotCount);
@@ -215,8 +213,21 @@ struct Graph {
         }
         slots.remove(idAt(slot));
         *nodeAt(slot) = Node.init;
-        freeSlots.append(slot);
+        freeSlots.add(slot);
         liveCount -= 1;
+        trimSlots();
+    }
+
+    void trimSlots() {
+        while (slotCount > 0 && freeSlots.contains(slotCount - 1)) {
+            freeSlots.drop(slotCount - 1);
+            slotCount -= 1;
+        }
+        nodes.trim(slotCount);
+        states.trim(slotCount);
+        chunks.trimSlots(slotCount);
+        structures.trimSlots(slotCount);
+        skies.trimSlots(slotCount);
     }
 
     uint ensureNeighborSlot(uint slot, Face face) {

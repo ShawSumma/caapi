@@ -52,6 +52,10 @@ struct StructureStore {
         nodes.ensure(count);
     }
 
+    void trimSlots(uint count) {
+        nodes.trim(count);
+    }
+
     ref inout(NodeStructure) at(uint slot) inout return {
         return *nodes.at(slot);
     }

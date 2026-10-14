@@ -48,6 +48,15 @@ struct Plane {
         return snapped;
     }
 
+    // One mirror at a time: a far node's whole motion has entries too large for float to keep the plane's height.
+    Plane carriedAlong(const(Face)[] path) const {
+        Plane carried = this;
+        foreach_reverse (side; path) {
+            carried = carried.reflectAcross(side).snappedToFaces();
+        }
+        return carried;
+    }
+
     Plane transformBy(Motion!float motion) const {
         Vec4!double moved = motion.as!double() * scaledNormal();
         return Plane(unit(moved.spatial()), distanceTo(motion.inverse() * Point!float.origin()));

@@ -15,7 +15,7 @@ import client.structures : StructureProblem, placeStructure;
 import common.settings : CHUNK_DIMENSION;
 import client.plugins : registry;
 import common.worldgen.generation : Worldgen, WorldgenKind;
-import worldcheck : benchDrive, benchGen, benchMesh, benchNearby, checkRepaint, dumpStructure, dumpWorld, printMaterialCensus, printSlices, printWorldDigest;
+import worldcheck : benchDrive, benchGen, benchHashMap, benchMesh, benchNearby, checkRepaint, dumpStructure, dumpWorld, printMaterialCensus, printSlices, printWorldDigest;
 
 enum int EXIT_PASSED = 0;
 enum int EXIT_FAILED = 1;
@@ -41,6 +41,7 @@ enum Command : ubyte {
     benchDrive,
     benchNearby,
     benchMesh,
+    benchHashMap,
 }
 
 struct HeadlessArguments {
@@ -107,6 +108,9 @@ struct HeadlessArguments {
             return index + 1;
         } else if (strcmp(argument, "--bench-mesh") == 0) {
             command = Command.benchMesh;
+            return index + 1;
+        } else if (strcmp(argument, "--bench-hashmap") == 0) {
+            command = Command.benchHashMap;
             return index + 1;
         } else if (number.isPresent && !radius.isPresent) {
             radius = number;
@@ -267,6 +271,8 @@ void runMeasurement(ref const HeadlessArguments arguments, FILE* output) {
         benchDrive(output, radius, CHUNK_DIMENSION);
     } else if (arguments.command == Command.benchMesh) {
         benchMesh(output, radius, CHUNK_DIMENSION);
+    } else if (arguments.command == Command.benchHashMap) {
+        benchHashMap(output);
     } else {
         benchNearby(output, radius, arguments.iterationCount(), CHUNK_DIMENSION);
     }

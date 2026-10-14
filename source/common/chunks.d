@@ -1,7 +1,7 @@
 module common.chunks;
 
 import base.array : Array;
-import base.slab : Slab;
+import base.slab : FreeIndices, Slab;
 import common.node : Chunk, ChunkSlot;
 import geometry.honeycomb : CORNER_COUNT;
 
@@ -12,7 +12,7 @@ immutable Chunk FRESH_CHUNK = Chunk.init;
 struct ChunkStore {
     Slab!Chunk records;
     Slab!uint blocks;
-    Array!uint freeBlocks;
+    FreeIndices freeBlocks;
     Array!ChunkSlot changed;
     Array!ChunkSlot restores;
     size_t changedHead;
@@ -20,6 +20,10 @@ struct ChunkStore {
 
     void ensureSlots(uint count) {
         blocks.ensure(count);
+    }
+
+    void trimSlots(uint count) {
+        blocks.trim(count);
     }
 
     uint blockOf(uint slot) const {
@@ -43,9 +47,8 @@ struct ChunkStore {
     Chunk* writable(ChunkSlot chunk) {
         uint* block = blocks.at(chunk.slot);
         if (*block == NO_BLOCK) {
-            if (freeBlocks.length > 0) {
-                freeBlocks.length -= 1;
-                *block = freeBlocks.ptr[freeBlocks.length];
+            if (!freeBlocks.isEmpty()) {
+                *block = freeBlocks.takeLowest() + 1;
             } else {
                 blockCount += 1;
                 records.ensure(cast(size_t) blockCount * CORNER_COUNT);
@@ -62,8 +65,13 @@ struct ChunkStore {
             chunk.voxels.release();
             *chunk = Chunk.init;
         }
-        freeBlocks.append(*block);
+        freeBlocks.add(*block - 1);
         *block = NO_BLOCK;
+        while (blockCount > 0 && freeBlocks.contains(blockCount - 1)) {
+            freeBlocks.drop(blockCount - 1);
+            blockCount -= 1;
+        }
+        records.trim(cast(size_t) blockCount * CORNER_COUNT);
     }
 
     void queue(ChunkSlot chunk) {

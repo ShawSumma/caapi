@@ -2,7 +2,6 @@ local walk = require("lib.walk")
 
 local FLY_SECONDS = 40
 local NOCLIP_SECONDS = 30
-local NOCLIP_SPEED = 0.6
 local MIN_FRACTION = 0.9
 local CLOSE = 0.5
 local CLIMB_SECONDS = 3
@@ -32,7 +31,7 @@ return function(world)
   for second = 1, NOCLIP_SECONDS do
     local before = world:traveled()
     world:press(1, "fwd")
-    assert(world:traveled() - before >= MIN_FRACTION * NOCLIP_SPEED, string.format("noclip moved %.3f in second %d", world:traveled() - before, second))
+    assert(world:traveled() - before >= MIN_FRACTION * walk.NOCLIP_SPEED,string.format("noclip moved %.3f in second %d", world:traveled() - before, second))
     check_close(world, string.format("noclip, second %d", second))
   end
 end

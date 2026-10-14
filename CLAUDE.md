@@ -14,6 +14,7 @@ libraries loaded at startup that call the engine through a table of functions; L
 - Structure slice (generated voxels in each quarter around the root at one height, `#` solid and `.` open):
   `dub run -q -b release --compiler=ldc2 -c headless -- --worldgen structure backrooms --slice 1 --out /dev/stdout`
 - Load and flight benchmark: `dub run -q -b release --compiler=ldc2 -- --bench-load [--profile] --out /dev/stdout`
+  (reports chunks loaded within 2 and 4 units of the camera per leg; use those to judge loading while moving)
 - Screenshot: `dub run -q -b release --compiler=ldc2 -- --screenshot screenshots/<new name>.png --out /dev/stdout tests/visual/<script>.lua`
 - Run through `dub run`, never the built binaries directly.
 - A debug build (no `-b release`) keeps asserts; release builds drop them.
@@ -27,7 +28,7 @@ libraries loaded at startup that call the engine through a table of functions; L
 
 ## Lua
 
-- Booleans are named `is_` or `has_`. `and`, `or` and conditions take only booleans; write `~= nil` out.
+- Booleans are named `is_` or `has_gi`. `and`, `or` and conditions take only booleans; write `~= nil` out.
 
 ## Worlds
 
@@ -38,6 +39,9 @@ libraries loaded at startup that call the engine through a table of functions; L
 
 - Things more than about 2 units (about 45 cells) from the viewer shrink to specks, and vertical lines spread apart
   with height. Anything meant to be seen whole stays within that.
+- Node transforms are float32; a node more than about 8 units from the frame origin has almost no distance information
+  left, and moving the frame toward it turns that into garbage. Re-derive transforms from the camera node
+  (`NearbyScratch.rederive`) before using them near the camera.
 
 ## Threading
 
@@ -56,7 +60,7 @@ API, `client` on all.
 
 - `source/main.d`: windowed game, screenshots and the load/flight benchmark.
 - `source/headless.d`, `source/worldcheck.d`: script runner and world checks and benchmarks without a window.
-- `source/base/`: containers (`array.d`, `hashmap.d`, `slab.d` with `RunPool`, `allocator.d`), `parallel.d` (worker
+- `source/base/`: containers (`array.d`, `hashmap.d`, `slab.d` with `RunPool` and `FreeIndices`, `allocator.d`), `parallel.d` (worker
   pool, futex waits, lock-free queue), `clock.d`, `crash.d` (backtraces), `murmur.d`, `names.d`, `units.d`,
   `vector3.d`, `numbers.d`.
 - `source/geometry/`: `lorentz.d` (hyperboloid points and motions), `honeycomb.d` (the {5,3,4} cell, its faces and

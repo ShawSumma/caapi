@@ -52,6 +52,7 @@ struct CharacterState {
         bool isJumpPending = input.isJumping;
         Stepped stepped;
         Features features;
+        float[3] movement = input.movement;
         foreach (_; 0 .. substeps) {
             Gravity gravity = Gravity(up, 0);
             if (graph.nodeAt(graph.slotOf(position.node)).hasState) {
@@ -65,6 +66,11 @@ struct CharacterState {
             if (up.dot(gravity.up) < 0) {
                 pivot = pivot.negated;
             }
+            // The input was aimed against the old up. A straight step aimed level at its start climbs off a curved
+            // level surface, so aim it against the up halfway along, guessed from how up just turned.
+            movement = rotatedBetween(movement, up, turned);
+            float[3] halfway = turned.plus(turned.minus(up).scaled(0.5f));
+            input.movement = rotatedBetween(movement, turned, halfway.scaled(1.0f / halfway.magnitude));
             up = turned;
             pull = gravity.up.scaled(gravity.strength);
             float[3] offset = ZERO_VECTOR;
@@ -212,6 +218,18 @@ float[3] turnedToward(float[3] from, float[3] to, float most) {
         float[3] side = axis.scaled(1.0f / axis.magnitude).cross(from);
         float[3] rotated = from.scaled(cosf(most)).plus(side.scaled(sinf(most)));
         return rotated.scaled(1.0f / rotated.magnitude);
+    }
+}
+
+float[3] rotatedBetween(float[3] v, float[3] from, float[3] to) {
+    float[3] axis = from.cross(to);
+    float sine = axis.magnitude;
+    if (sine == 0) {
+        return v;
+    } else {
+        float[3] unitAxis = axis.scaled(1.0f / sine);
+        float cosine = from.dot(to);
+        return v.scaled(cosine).plus(unitAxis.cross(v).scaled(sine)).plus(unitAxis.scaled(unitAxis.dot(v) * (1.0f - cosine)));
     }
 }
 

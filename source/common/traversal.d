@@ -5,7 +5,7 @@ import core.stdc.math : acoshf, coshf;
 import base.array : Array;
 import base.clock : nowMilliseconds;
 import base.parallel : Executor, ParallelJob;
-import common.graph : Graph, NO_SLOT, NodeContent, NodeId;
+import common.graph : Graph, NO_SLOT, NodeContent;
 import common.position : Position;
 import common.worldgen.sky : mayHoldContent;
 import geometry.honeycomb : FACE_COUNT, FACE_DISTANCE, Face, NODE_RADIUS, mirror;
@@ -79,7 +79,6 @@ struct VisitQueue(uint capacity) {
 }
 
 struct NearbyNode {
-    NodeId id;
     Motion!float transform;
     uint slot;
 }
@@ -328,7 +327,7 @@ struct NearbyScratch {
         paintedHead = 0;
         generation += 1;
         startPoint = start.local * Point!float.origin();
-        collect(graph, NearbyNode(start.node, Motion!float.identity(), graph.slotOf(start.node)));
+        collect(graph, NearbyNode(Motion!float.identity(), graph.slotOf(start.node)));
     }
 
     void reserveStamps(ref const Graph graph) {
@@ -369,7 +368,7 @@ struct NearbyScratch {
                         uint position = indexOf(neighbor);
                         if (position == NOT_COLLECTED) {
                             position = cast(uint) nodes.length;
-                            collect(graph, NearbyNode(graph.idAt(neighbor), transform, neighbor));
+                            collect(graph, NearbyNode(transform, neighbor));
                         }
                         if (!isListed(around.slice(), position)) {
                             around.append(position);
@@ -430,7 +429,7 @@ struct NearbyScratch {
                 NearbyNode current = nodes.ptr[missing.index];
                 uint neighbor = graph.ensureNeighborSlot(current.slot, missing.side);
                 if (indexOf(neighbor) == NOT_COLLECTED) {
-                    collect(graph, NearbyNode(graph.idAt(neighbor), current.transform * missing.side.mirror, neighbor));
+                    collect(graph, NearbyNode(current.transform * missing.side.mirror, neighbor));
                 }
             } else if (unknownHead >= paintedHead && hasPainted && nowMilliseconds() + paintingMs > deadline) {
                 isStalled = true;
@@ -473,7 +472,7 @@ struct NearbyScratch {
                 if (existing == NO_SLOT) {
                     output.missing.append(MissingSide(index, side));
                 } else if (claim(existing)) {
-                    output.found.append(NearbyNode(graph.idAt(existing), current.transform * side.mirror, existing));
+                    output.found.append(NearbyNode(current.transform * side.mirror, existing));
                 }
             }
         }
@@ -486,7 +485,7 @@ struct NearbyScratch {
             if ((existing == NO_SLOT || indexOf(existing) == NOT_COLLECTED) && isWithinReach(current, side)) {
                 uint neighbor = graph.ensureNeighborSlot(current.slot, side);
                 if (indexOf(neighbor) == NOT_COLLECTED) {
-                    collect(graph, NearbyNode(graph.idAt(neighbor), current.transform * side.mirror, neighbor));
+                    collect(graph, NearbyNode(current.transform * side.mirror, neighbor));
                 }
             }
         }

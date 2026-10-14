@@ -8,6 +8,9 @@ enum uint SLAB_SHIFT = 12;
 enum uint SLAB_SIZE = 2 ^^ SLAB_SHIFT;
 enum uint SLAB_MASK = SLAB_SIZE - 1;
 enum uint RUN_CLASSES = SLAB_SHIFT + 1;
+enum size_t TRIMMED_BLOCKS_PER_CALL = 4;
+enum uint WORD_SHIFT = 6;
+enum uint WORD_MASK = (1u << WORD_SHIFT) - 1;
 
 struct Slab(T) {
     Array!(T*) blocks;
@@ -19,6 +22,18 @@ struct Slab(T) {
     void ensure(size_t count) {
         while (blocks.length * SLAB_SIZE < count) {
             blocks.append(allocateBlock());
+        }
+    }
+
+    // Gives back a few blocks per call, since freeing hundreds of megabytes at once stalls a frame; one spare block
+    // past the needed ones keeps a count wavering around a block boundary from churning memory.
+    void trim(size_t count) {
+        size_t kept = ((count + SLAB_SIZE - 1) >> SLAB_SHIFT) + 1;
+        size_t freed = 0;
+        while (blocks.length > kept && freed < TRIMMED_BLOCKS_PER_CALL) {
+            free(blocks.ptr[blocks.length - 1]);
+            blocks.length -= 1;
+            freed += 1;
         }
     }
 
@@ -113,6 +128,68 @@ struct RunPool(T) {
     }
 }
 
+// Free indices handed out lowest first, so live ones pack toward zero and the top of a pool can be given back.
+struct FreeIndices {
+    Array!ulong words;
+    Array!ulong summary;
+    size_t lowestWord;
+    size_t count;
+
+    bool isEmpty() const {
+        return count == 0;
+    }
+
+    bool contains(uint index) const {
+        size_t word = index >> WORD_SHIFT;
+        return word < words.length && (words.ptr[word] & (1UL << (index & WORD_MASK))) != 0;
+    }
+
+    void add(uint index) {
+        size_t word = index >> WORD_SHIFT;
+        if (words.length <= word) {
+            words.resize(word + 1);
+        }
+        if (summary.length <= word >> WORD_SHIFT) {
+            summary.resize((word >> WORD_SHIFT) + 1);
+        }
+        words.ptr[word] |= 1UL << (index & WORD_MASK);
+        summary.ptr[word >> WORD_SHIFT] |= 1UL << (word & WORD_MASK);
+        if (word < lowestWord) {
+            lowestWord = word;
+        }
+        count += 1;
+    }
+
+    void drop(uint index) {
+        size_t word = index >> WORD_SHIFT;
+        words.ptr[word] &= ~(1UL << (index & WORD_MASK));
+        if (words.ptr[word] == 0) {
+            summary.ptr[word >> WORD_SHIFT] &= ~(1UL << (word & WORD_MASK));
+        }
+        count -= 1;
+    }
+
+    uint takeLowest() {
+        assert(count > 0);
+        size_t group = lowestWord >> WORD_SHIFT;
+        while (summary.ptr[group] == 0) {
+            group += 1;
+        }
+        size_t word = (group << WORD_SHIFT) + bsf(summary.ptr[group]);
+        uint index = cast(uint)((word << WORD_SHIFT) + bsf(words.ptr[word]));
+        lowestWord = word;
+        drop(index);
+        return index;
+    }
+
+    void release() {
+        words.release();
+        summary.release();
+        lowestWord = 0;
+        count = 0;
+    }
+}
+
 uint runClass(uint length) {
     return length <= 1 ? 0 : bsr(length - 1) + 1;
 }
@@ -162,4 +239,24 @@ unittest {
     assert(pool.end == end);
     runs.release();
     pool.release();
+}
+
+enum uint TEST_INDICES = 10000;
+enum uint TEST_INDEX_STRIDE = 7;
+
+unittest {
+    FreeIndices free;
+    foreach (step; 0 .. TEST_INDICES) {
+        free.add(step * TEST_INDEX_STRIDE % TEST_INDICES);
+    }
+    foreach (expected; 0 .. TEST_INDICES / 2) {
+        assert(free.takeLowest() == expected);
+    }
+    free.add(TEST_INDEX_STRIDE);
+    assert(free.contains(TEST_INDEX_STRIDE) && !free.contains(TEST_INDEX_STRIDE + 1));
+    assert(free.takeLowest() == TEST_INDEX_STRIDE);
+    free.drop(TEST_INDICES / 2);
+    assert(free.takeLowest() == TEST_INDICES / 2 + 1);
+    assert(free.count == TEST_INDICES / 2 - 2);
+    free.release();
 }
