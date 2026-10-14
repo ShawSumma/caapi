@@ -1,10 +1,12 @@
 module main;
 
+import core.stdc.math : coshf;
 import core.stdc.stdio : FILE, fclose, fflush, fopen, fprintf, fscanf, snprintf;
 import core.stdc.stdlib : free, malloc;
 import core.stdc.string : strcmp;
 import core.sys.posix.time : nanosleep, timespec;
 import bindings.platform : VkExtent2D;
+import base.array : Array;
 import base.clock : MILLISECONDS_PER_SECOND, NANOSECONDS_PER_SECOND, PhaseTimes, nowSeconds, threadCpuMilliseconds;
 import base.crash : reportCrashes, reportHangAfter;
 import base.names : ENUM_NAMES;
@@ -25,6 +27,8 @@ import common.graph : Graph, NO_SLOT, Node;
 import plugins.api.api : Material;
 import common.neighbors : chunkNeighborSlot, needsMesh;
 import common.node : Chunk, ChunkSlot, ChunkState, cellCount;
+import common.position : Position;
+import common.traversal : NearbyNode;
 import geometry.cube : DIRECTIONS;
 import common.settings : CHUNK_DIMENSION;
 import common.worldgen.blueprint : Blueprint, Brush, LineRun, RunRef;
@@ -32,7 +36,8 @@ import common.worldgen.building : Building;
 import common.worldgen.generation : NodeState, Worldgen;
 import common.worldgen.sky : NodeWorlds;
 import common.worldgen.store : NodeStructure;
-import geometry.honeycomb : CORNER_COUNT, Corner;
+import geometry.honeycomb : CORNER_COUNT, CUBE_RADIUS, Corner, FACE_COUNT, Face, NODE_RADIUS, cubeCenter, mirror;
+import geometry.lorentz : Motion, Point;
 
 enum uint WINDOW_WIDTH = 1280;
 enum uint WINDOW_HEIGHT = 720;
@@ -41,7 +46,10 @@ enum uint SCREENSHOT_HEIGHT = 360;
 enum double BENCH_FRAME_SECONDS = 1.0 / 60.0;
 enum uint BENCH_MOVE_FRAMES = 300;
 enum uint BENCH_FLIGHT_LEGS = 6;
+enum uint BENCH_SETTLE_FRAMES = 3600;
 enum uint BENCH_PROGRESS_FRAMES = 600;
+immutable float[2] CENSUS_RADII = [2.0f, 4.0f];
+enum uint CENSUS_INTERVAL = 10;
 enum uint STALE_MESHES_SHOWN = 8;
 enum uint BENCH_TIME_LIMIT_SECONDS = 300;
 enum double TITLE_INTERVAL_SECONDS = 1.0;
@@ -974,6 +982,90 @@ void measureFlight(FILE* report, ref Renderer renderer, ref Game game) {
         measureLeg(report, renderer, game);
         fflush(report);
     }
+    measureSettle(report, renderer, game);
+}
+
+void measureSettle(FILE* report, ref Renderer renderer, ref Game game) {
+    uint frames = 0;
+    do {
+        double frameStart = nowSeconds();
+        game.step(FrameInput.init, Time(cast(float) BENCH_FRAME_SECONDS));
+        renderer.render(game.world);
+        frames += 1;
+        pauseUntilFrameEnd(frameStart);
+    } while (frames < BENCH_SETTLE_FRAMES && (renderer.meshBacklog() > 0 || !game.world.isWorldgenSettled()));
+    LoadedAround around;
+    around.count(game.world.graph, game.world.cameraPosition);
+    fprintf(report, "stopped after the flight for %u frames (at most %u): %s, nearby %zu nodes reaching %.2f\n", frames, BENCH_SETTLE_FRAMES, game.world.isWorldgenSettled() ? "settled".ptr : "still loading".ptr, game.world.cachedNodes.length, cast(double)(game.world.renderRadius - game.world.radiusCut));
+    around.print(report);
+    around.release();
+}
+
+struct LoadedAround {
+    Array!NearbyNode queue;
+    Array!uint seen;
+    uint generation;
+    ulong[CENSUS_RADII.length] total;
+    uint[CENSUS_RADII.length] least = uint.max;
+    uint samples;
+
+    void count(ref const Graph graph, Position camera) {
+        generation += 1;
+        if (seen.length < graph.slotCount) {
+            seen.resize(graph.slotCount);
+        }
+        Point!float eye = camera.local * Point!float.origin();
+        float nodeReach = coshf(CENSUS_RADII[$ - 1] + NODE_RADIUS + CUBE_RADIUS);
+        uint[CENSUS_RADII.length] loaded;
+        queue.clear();
+        uint first = graph.slotOf(camera.node);
+        queue.append(NearbyNode(camera.node, Motion!float.identity(), first));
+        seen.ptr[first] = generation;
+        size_t head = 0;
+        while (head < queue.length) {
+            NearbyNode current = queue.ptr[head];
+            head += 1;
+            if (graph.chunks.has(current.slot)) {
+                foreach (index; 0 .. CORNER_COUNT) {
+                    Corner corner = cast(Corner) index;
+                    ChunkState state = graph.chunks.at(ChunkSlot(current.slot, corner)).state;
+                    float product = eye.coshDistance(current.transform * corner.cubeCenter);
+                    foreach (radius, distance; CENSUS_RADII) {
+                        loaded[radius] += (state == ChunkState.populated || state == ChunkState.dropped) && !(product > coshf(distance));
+                    }
+                }
+            }
+            foreach (index; 0 .. FACE_COUNT) {
+                Face face = cast(Face) index;
+                uint neighbor = graph.neighborSlot(current.slot, face);
+                Motion!float transform = current.transform * face.mirror;
+                if (neighbor != NO_SLOT && seen.ptr[neighbor] != generation && !(eye.coshDistance(transform * Point!float.origin()) > nodeReach)) {
+                    seen.ptr[neighbor] = generation;
+                    queue.append(NearbyNode(graph.idAt(neighbor), transform, neighbor));
+                }
+            }
+        }
+        foreach (radius; 0 .. CENSUS_RADII.length) {
+            total[radius] += loaded[radius];
+            if (loaded[radius] < least[radius]) {
+                least[radius] = loaded[radius];
+            }
+        }
+        samples += 1;
+    }
+
+    void print(FILE* report) const {
+        fprintf(report, "  chunks loaded around the camera:");
+        foreach (radius, distance; CENSUS_RADII) {
+            fprintf(report, " within %.0f avg %.0f least %u", cast(double) distance, cast(double) total[radius] / samples, least[radius]);
+        }
+        fprintf(report, "\n");
+    }
+
+    void release() {
+        queue.release();
+        seen.release();
+    }
 }
 
 void measureLeg(FILE* report, ref Renderer renderer, ref Game game) {
@@ -981,12 +1073,13 @@ void measureLeg(FILE* report, ref Renderer renderer, ref Game game) {
     PhaseTimes movingStep;
     PhaseTimes movingRender;
     RenderBreakdown breakdown;
+    LoadedAround around;
     uint backloggedFrames = 0;
     FrameInput forward;
     forward.isHeld[Key.fwd] = true;
     game.world.phases = StepPhases.init;
     PhaseTimes stepCpu;
-    foreach (_; 0 .. BENCH_MOVE_FRAMES) {
+    foreach (frame; 0 .. BENCH_MOVE_FRAMES) {
         double frameStart = nowSeconds();
         double cpuStart = threadCpuMilliseconds();
         game.step(forward, Time(cast(float) BENCH_FRAME_SECONDS));
@@ -1001,10 +1094,15 @@ void measureLeg(FILE* report, ref Renderer renderer, ref Game game) {
         if (renderer.meshBacklog() > 0 || !game.world.isWorldgenSettled()) {
             backloggedFrames += 1;
         }
+        if (frame % CENSUS_INTERVAL == 0) {
+            around.count(game.world.graph, game.world.cameraPosition);
+        }
         pauseUntilFrameEnd(frameStart);
     }
     fprintf(report, "moving noclip: frame avg=%.2fms worst=%.2fms, %u of %u frames with loading pending\n", moving.averageMs(), moving.worstMs, backloggedFrames, BENCH_MOVE_FRAMES);
     fprintf(report, "moving step avg=%.2fms worst=%.2fms (main thread cpu avg=%.2fms), render avg=%.2fms worst=%.2fms\n", movingStep.averageMs(), movingStep.worstMs, stepCpu.averageMs(), movingRender.averageMs(), movingRender.worstMs);
+    around.print(report);
+    around.release();
     breakdown.print(report);
     fprintf(report, "  drawable chunks %u, %zu of them waiting for their node\n", renderer.meshes.drawableCount, renderer.meshes.unlisted.length);
     printMemory(report, game.world);
@@ -1022,7 +1120,7 @@ void printWorldStats(FILE* report, ref const LocalWorld world) {
     fprintf(report, "tiles painted ahead on all threads %u, painted when needed %u\n", tiles[0], tiles[1]);
     fprintf(report, "nearby %zu nodes, %u published, %u recoveries (%.0fms), %.0fms sliced\n", world.cachedNodes.length, world.nearbyStats.publishes, world.nearbyStats.recoveries, world.nearbyStats.recoveryMilliseconds, world.nearbyStats.slicedMilliseconds);
     fprintf(report, "nearby sets grown from the last %u, keeping %zu nodes as they were and expanding %zu again; %u moved to the camera\n", world.nearbyStats.grown, world.nearbyStats.kept, world.nearbyStats.reexpanded, world.nearbyStats.rebases);
-}
+    fprintf(report, "nearby rebuilds restarted after the camera outran them %u, now reaching %.2f of %.2f\n", world.nearbyStats.restarts, cast(double)(world.renderRadius - world.radiusCut), cast(double) world.renderRadius);}
 
 void printMemory(FILE* report, ref const LocalWorld world) {
     const(Graph)* graph = &world.graph;

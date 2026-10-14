@@ -1,8 +1,9 @@
 module client.world;
 
-import core.stdc.math : coshf;
+import core.stdc.math : coshf, logf;
 import base.array : Array;
 import base.clock : PhaseTimes, nowMilliseconds, threadCpuMilliseconds;
+import base.numbers : higherOf, lowerOf;
 import client.arrivals : resolveIfExposed, resolveMaterials;
 import client.camera : CAMERA_FORWARD;
 import client.streaming : Streamer;
@@ -22,6 +23,8 @@ import geometry.ray : Ray;
 
 enum float NEARBY_PADDING = 0.05f;
 enum float NEARBY_REBUILD_DISTANCE = 0.25f;
+enum double REBUILD_RESTART_TRAVEL = 4 * NEARBY_REBUILD_DISTANCE;
+enum float REBUILD_GROWTH = 0.25f;
 enum float REBASE_DISTANCE = NODE_RADIUS + 1.0f;
 enum float REDERIVE_RADIUS = 6.0f;
 enum double TELEPORT_TRAVEL = 1.0e3;
@@ -48,6 +51,7 @@ struct NearbyStats {
     uint publishes;
     uint recoveries;
     uint grown;
+    uint restarts;
     uint rebases;
 }
 
@@ -77,7 +81,11 @@ struct LocalWorld {
     NearbyNode[] cachedNodes;
     Array!Unloaded unloaded;
     Array!uint candidates;
+    double rebuildTravel = 0;
     float renderRadius;
+    float radiusCut = 0;
+    float publishedCut = 0;
+    float pendingCut = 0;
     float tanhReach;
     uint published;
     uint nearbyVersion;
@@ -122,14 +130,13 @@ struct LocalWorld {
         paintAhead();
         double painted = nowMilliseconds();
         double paintedCpu = threadCpuMilliseconds();
-        float distance = renderRadius + NEARBY_PADDING;
         double deadline = phaseDeadline(isUnbudgeted, end - phases.streamer.lastMs - phases.evict.lastMs, NEARBY_LEAST_MILLISECONDS);
         if (!hasNearby) {
-            buildInitialNearby(distance, deadline);
+            buildInitialNearby(deadline);
         } else if (cameraNearbyIndex() == NOT_COLLECTED) {
-            recoverNearby(distance);
+            recoverNearby();
         } else {
-            refreshNearby(distance, deadline);
+            refreshNearby(deadline);
         }
         followCamera();
         keepCameraCollected();
@@ -191,11 +198,12 @@ struct LocalWorld {
         trackedVersion = nearbyVersion;
     }
 
-    void buildInitialNearby(float distance, double deadline) {
+    void buildInitialNearby(double deadline) {
         NearbyScratch* current = &nearby[published];
         if (!current.isBuilding() || cameraNearbyIndex() == NOT_COLLECTED) {
-            current.begin(graph, cameraPosition, distance, FULL_RADIUS);
+            current.begin(graph, cameraPosition, rebuildDistance(), FULL_RADIUS);
             publishedPoint = cameraPosition.local * Point!float.origin();
+            publishedCut = radiusCut;
             nearbyVersion += 1;
             listVersion += 1;
             streamer.travel += TELEPORT_TRAVEL;
@@ -205,12 +213,13 @@ struct LocalWorld {
         cachedNodes = current.nodes.slice();
     }
 
-    void recoverNearby(float distance) {
+    void recoverNearby() {
         double start = nowMilliseconds();
         NearbyScratch* next = &nearby[1 - published];
         if (!next.isBuilding() || next.indexOf(graph.slotOf(cameraPosition.node)) == NOT_COLLECTED) {
-            next.begin(graph, cameraPosition, distance, FULL_RADIUS);
+            next.begin(graph, cameraPosition, rebuildDistance(), FULL_RADIUS);
             pendingPoint = cameraPosition.local * Point!float.origin();
+            pendingCut = radiusCut;
             next.advance(graph, start + RECOVERY_BUDGET_MILLISECONDS, streamer.executor());
         }
         nearbyStats.recoveries += 1;
@@ -219,7 +228,7 @@ struct LocalWorld {
         publish(pendingPoint);
     }
 
-    void refreshNearby(float distance, double deadline) {
+    void refreshNearby(double deadline) {
         double start = nowMilliseconds();
         NearbyScratch* current = &nearby[published];
         NearbyScratch* next = &nearby[1 - published];
@@ -228,40 +237,66 @@ struct LocalWorld {
             current.advance(graph, deadline, streamer.executor());
             cachedNodes = current.nodes.slice();
         } else {
-            if (!next.isBuilding() && publishedPoint.coshDistance(camera) > coshf(NEARBY_REBUILD_DISTANCE)) {
-                startNext(distance, camera);
+            double traveled = streamer.travel - rebuildTravel;
+            if (next.isBuilding() && traveled > REBUILD_RESTART_TRAVEL) {
+                cutRadius(traveled);
+                startNext(camera);
+                nearbyStats.restarts += 1;
+            } else if (!next.isBuilding() && (publishedPoint.coshDistance(camera) > coshf(NEARBY_REBUILD_DISTANCE) || publishedCut > 0)) {
+                startNext(camera);
             }
             if (next.isBuilding()) {
                 next.advance(graph, deadline, streamer.executor());
                 if (!next.isBuilding()) {
-                    publishOrRestart(distance);
+                    publishOrRestart();
                 }
             }
         }
         nearbyStats.slicedMilliseconds += nowMilliseconds() - start;
     }
 
-    void startNext(float distance, Point!float camera) {
+    float rebuildDistance() const {
+        return renderRadius - radiusCut + NEARBY_PADDING;
+    }
+
+    void cutRadius(double traveled) {
+        if (traveled > NEARBY_REBUILD_DISTANCE) {
+            // A rebuild's work grows like e^(2 radius), so this cut scales the next one's work down by how far the camera outran this one.
+            radiusCut += 0.5f * logf(cast(float)(traveled / NEARBY_REBUILD_DISTANCE));
+        } else if (traveled < NEARBY_REBUILD_DISTANCE / 2) {
+            radiusCut -= REBUILD_GROWTH;
+        }
+        radiusCut = higherOf(lowerOf(radiusCut, renderRadius - FULL_RADIUS), 0.0f);
+    }
+
+    void startNext(Point!float camera) {
+        NearbyScratch* current = &nearby[published];
         NearbyScratch* next = &nearby[1 - published];
-        next.beginFrom(nearby[published], graph, camera, distance, FULL_RADIUS, streamer.executor());
+        current.rederive(graph, graph.slotOf(cameraPosition.node), camera, FULL_RADIUS + NODE_RADIUS);
+        next.beginFrom(*current, graph, camera, rebuildDistance(), FULL_RADIUS, streamer.executor());
         pendingPoint = camera;
+        pendingCut = radiusCut;
+        rebuildTravel = streamer.travel;
         nearbyStats.grown += 1;
         nearbyStats.kept += next.front;
         nearbyStats.reexpanded += next.nodes.length - next.front;
     }
 
-    void publishOrRestart(float distance) {
+    void publishOrRestart() {
         NearbyScratch* next = &nearby[1 - published];
         if (next.indexOf(graph.slotOf(cameraPosition.node)) != NOT_COLLECTED) {
+            cutRadius(streamer.travel - rebuildTravel);
             publish(pendingPoint);
         } else {
-            next.begin(graph, cameraPosition, distance, FULL_RADIUS);
+            next.begin(graph, cameraPosition, rebuildDistance(), FULL_RADIUS);
             pendingPoint = cameraPosition.local * Point!float.origin();
+            pendingCut = radiusCut;
         }
     }
 
     void publish(Point!float point) {
         published = 1 - published;
+        publishedCut = pendingCut;
         cachedNodes = nearby[published].nodes.slice();
         publishedPoint = point;
         nearbyVersion += 1;
@@ -291,7 +326,7 @@ struct LocalWorld {
     }
 
     bool isWorldgenSettled() const {
-        return hasNearby && !nearby[published].isBuilding() && streamer.isIdle() && streamer.waiting.length == 0 && streamer.scanCursor >= cachedNodes.length;
+        return hasNearby && !nearby[published].isBuilding() && radiusCut == 0 && publishedCut == 0 && streamer.isIdle() && streamer.waiting.length == 0 && streamer.scanCursor >= cachedNodes.length;
     }
 
     GraphCastHit castCenterRay() const {

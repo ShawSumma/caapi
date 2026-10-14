@@ -1,7 +1,7 @@
 module common.traversal;
 
 import core.atomic : atomicExchange;
-import core.stdc.math : coshf;
+import core.stdc.math : acoshf, coshf;
 import base.array : Array;
 import base.clock : nowMilliseconds;
 import base.parallel : Executor, ParallelJob;
@@ -494,7 +494,7 @@ struct NearbyScratch {
 
     void beginFrom(ref const NearbyScratch finished, ref Graph graph, Point!float camera, float distance, float inner, Executor executor) {
         float moved = camera.distance(finished.startPoint);
-        float frontier = distance + NODE_RADIUS - 2 * FACE_DISTANCE - moved;
+        float frontier = acoshf(finished.coshThreshold) - 2 * FACE_DISTANCE - moved;
         size_t blockCount = (finished.nodes.length + KEEP_BLOCK - 1) / KEEP_BLOCK;
         kinds.resize(finished.nodes.length);
         blocks.resize(blockCount);
@@ -525,15 +525,14 @@ struct NearbyScratch {
         front = total.kept;
     }
 
-    void rebase(ref const Graph graph, uint cameraSlot, Motion!float toFrame, float radius, Executor executor) {
+    void rederive(ref const Graph graph, uint firstSlot, Point!float center, float radius) {
         float coshRadius = coshf(radius);
-        uint first = indexOf(cameraSlot);
+        uint first = indexOf(firstSlot);
         isRederived.clear();
         isRederived.resize(nodes.length);
         chain.clear();
         chain.append(first);
         isRederived.ptr[first] = true;
-        nodes.ptr[first].transform = Motion!float.identity();
         size_t head = 0;
         while (head < chain.length) {
             NearbyNode current = nodes.ptr[chain.ptr[head]];
@@ -543,7 +542,7 @@ struct NearbyScratch {
                 uint index = neighbor == NO_SLOT ? NOT_COLLECTED : indexOf(neighbor);
                 if (index != NOT_COLLECTED && !isRederived.ptr[index]) {
                     Motion!float transform = current.transform * side.mirror;
-                    if (!((transform * Point!float.origin()).v.c[3] > coshRadius)) {
+                    if (!(-center.minkowski(transform * Vec4!float.origin()) > coshRadius)) {
                         nodes.ptr[index].transform = transform;
                         isRederived.ptr[index] = true;
                         chain.append(index);
@@ -552,6 +551,11 @@ struct NearbyScratch {
             }
             head += 1;
         }
+    }
+
+    void rebase(ref const Graph graph, uint cameraSlot, Motion!float toFrame, float radius, Executor executor) {
+        nodes.ptr[indexOf(cameraSlot)].transform = Motion!float.identity();
+        rederive(graph, cameraSlot, Point!float.origin(), radius);
         RebaseJob job = RebaseJob(nodes.ptr, isRederived.ptr, nodes.length, toFrame);
         ParallelJob rebasing = ParallelJob(&rebaseBlock, &job, NO_DEADLINE, (nodes.length + KEEP_BLOCK - 1) / KEEP_BLOCK);
         executor.run(&rebasing);

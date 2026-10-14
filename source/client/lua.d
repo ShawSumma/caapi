@@ -1,6 +1,6 @@
 module client.lua;
 
-import bindings.lua : luaL_newstate, luaL_openselectedlibs, luaL_traceback, lua_CFunction, lua_State, lua_getglobal, lua_pushcclosure, lua_pushlightuserdata, lua_pushlstring, lua_pushnil, lua_setfield, lua_setglobal, lua_settop, lua_tolstring, lua_type;
+import lua : luaL_newstate, luaL_openselectedlibs, luaL_traceback, lua_CFunction, lua_State, lua_getglobal, lua_pushcclosure, lua_pushlightuserdata, lua_pushlstring, lua_pushnil, lua_setfield, lua_setglobal, lua_settop, lua_tolstring, lua_type;
 import base.array : Array;
 import base.names : ENUM_NAMES;
 

@@ -3,7 +3,7 @@ module client.script;
 import core.stdc.math : floor;
 import core.stdc.stdio : FILE, fclose, fopen, fprintf;
 import core.stdc.string : strlen;
-import bindings.lua : luaL_checkinteger, luaL_checklstring, luaL_checknumber, luaL_checktype, luaL_error, luaL_loadfilex, luaL_optnumber, luaL_ref, luaL_unref, lua_CFunction, lua_Integer, lua_State, lua_callk, lua_close, lua_createtable, lua_gettop, lua_pcallk, lua_pushboolean, lua_pushcclosure, lua_pushinteger, lua_pushnil, lua_pushnumber, lua_pushvalue, lua_rawgeti, lua_tolstring, lua_touserdata, lua_type;
+import lua : luaL_checkinteger, luaL_checklstring, luaL_checknumber, luaL_checktype, luaL_error, luaL_loadfilex, luaL_optnumber, luaL_ref, luaL_unref, lua_CFunction, lua_Integer, lua_State, lua_callk, lua_close, lua_createtable, lua_gettop, lua_pcallk, lua_pushboolean, lua_pushcclosure, lua_pushinteger, lua_pushnil, lua_pushnumber, lua_pushvalue, lua_rawgeti, lua_tolstring, lua_touserdata, lua_type;
 import client.arguments : StructureName;
 import client.game : FrameInput, Game, KEY_COUNT, Key, MATERIAL_PALETTE, RouteWaypoint, UnloadedCount;
 import client.lua : LUA_FIRST_UPVALUE, LUA_NO_REF, LUA_REGISTRY, LUA_STATUS_OK, LUA_TOP, LUA_TYPE_FUNCTION, LUA_TYPE_TABLE, LuaLookup, LuaName, SELF, TRACEBACK_INDEX, isNoneOrNil, luaTraceback, newSafeState, pushLuaName, registerMethod, setPackagePath;
