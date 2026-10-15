@@ -1,5 +1,6 @@
 module common.node;
 
+import core.atomic : atomicLoad, cas;
 import core.stdc.math : coshf, fabsf, floorf, logf, powf;
 import core.stdc.stdlib : free, malloc;
 import base.numbers : higherOf, lowerOf;
@@ -225,13 +226,112 @@ enum Occupancy : ubyte {
     empty,
 }
 
+enum uint FLAG_SHIFT = 56;
+enum ulong VOXEL_MASK = (1UL << FLAG_SHIFT) - 1;
+enum uint STATE_SHIFT = FLAG_SHIFT;
+enum uint PREDICTED_SHIFT = FLAG_SHIFT + 2;
+enum ulong FIELD_MASK = 3;
+enum ulong DEFERRED_BIT = 1UL << (FLAG_SHIFT + 4);
+enum ulong QUEUED_BIT = 1UL << (FLAG_SHIFT + 5);
+enum ulong EDITED_BIT = 1UL << (FLAG_SHIFT + 6);
+
+// One word per chunk, since there is a record for every chunk out to the render radius: the voxels, a material or a
+// pointer, which never reaches the top byte, and the state and flags in that byte. Parallel passes change the state
+// and the queued flag of neighbors they share, so those go through compare-and-swap on the whole word.
 struct Chunk {
-    Voxels voxels;
-    ChunkState state;
-    Occupancy predicted;
-    bool hasDeferredMaterials;
-    bool isQueued;
-    bool isEdited;
+    ulong word;
+
+    const(Voxels) voxels() const {
+        return Voxels(word & VOXEL_MASK);
+    }
+
+    void voxels(Voxels value) {
+        assert((value.bits & ~VOXEL_MASK) == 0);
+        word = (word & ~VOXEL_MASK) | value.bits;
+    }
+
+    // Frees dense voxels and leaves no material, as Voxels.release does.
+    void releaseVoxels() {
+        Voxels held = voxels;
+        held.release();
+        voxels = held;
+    }
+
+    Material[] denseVoxels(ubyte dimension) {
+        Voxels held = voxels;
+        Material[] cells = held.toDense(dimension);
+        voxels = held;
+        return cells;
+    }
+
+    ChunkState state() const {
+        return cast(ChunkState)((word >> STATE_SHIFT) & FIELD_MASK);
+    }
+
+    void state(ChunkState value) {
+        word = (word & ~(FIELD_MASK << STATE_SHIFT)) | (cast(ulong) value << STATE_SHIFT);
+    }
+
+    ChunkState loadState() const {
+        return cast(ChunkState)((atomicLoad(*cast(const(shared(ulong))*) &word) >> STATE_SHIFT) & FIELD_MASK);
+    }
+
+    bool casState(ChunkState expected, ChunkState wanted) {
+        ulong seen = atomicLoad(*cast(shared(ulong)*) &word);
+        bool isSwapped = false;
+        while (!isSwapped && ((seen >> STATE_SHIFT) & FIELD_MASK) == expected) {
+            ulong changed = (seen & ~(FIELD_MASK << STATE_SHIFT)) | (cast(ulong) wanted << STATE_SHIFT);
+            isSwapped = cas(cast(shared(ulong)*) &word, seen, changed);
+            if (!isSwapped) {
+                seen = atomicLoad(*cast(shared(ulong)*) &word);
+            }
+        }
+        return isSwapped;
+    }
+
+    Occupancy predicted() const {
+        return cast(Occupancy)((word >> PREDICTED_SHIFT) & FIELD_MASK);
+    }
+
+    void predicted(Occupancy value) {
+        word = (word & ~(FIELD_MASK << PREDICTED_SHIFT)) | (cast(ulong) value << PREDICTED_SHIFT);
+    }
+
+    bool hasDeferredMaterials() const {
+        return (word & DEFERRED_BIT) != 0;
+    }
+
+    void hasDeferredMaterials(bool value) {
+        word = value ? word | DEFERRED_BIT : word & ~DEFERRED_BIT;
+    }
+
+    bool isQueued() const {
+        return (word & QUEUED_BIT) != 0;
+    }
+
+    void isQueued(bool value) {
+        word = value ? word | QUEUED_BIT : word & ~QUEUED_BIT;
+    }
+
+    bool claimQueued() {
+        ulong seen = atomicLoad(*cast(shared(ulong)*) &word);
+        bool isSwapped = false;
+        while (!isSwapped && (seen & QUEUED_BIT) == 0) {
+            isSwapped = cas(cast(shared(ulong)*) &word, seen, seen | QUEUED_BIT);
+            if (!isSwapped) {
+                seen = atomicLoad(*cast(shared(ulong)*) &word);
+            }
+        }
+        return isSwapped;
+    }
+
+    bool isEdited() const {
+        return (word & EDITED_BIT) != 0;
+    }
+
+    void isEdited(bool value) {
+        word = value ? word | EDITED_BIT : word & ~EDITED_BIT;
+    }
 }
 
-static assert(Chunk.sizeof == 16);
+static assert(Chunk.sizeof == 8);

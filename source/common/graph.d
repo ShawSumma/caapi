@@ -44,6 +44,7 @@ enum uint NO_SLOT = uint.max;
 enum uint MAX_PARENTS = 3;
 enum uint NO_FACE = FACE_COUNT;
 enum ushort ALL_FACES = (1u << FACE_COUNT) - 1;
+enum uint DISCARDS_PER_FRAME = 256;
 
 enum NodeContent : ubyte {
     unknown,
@@ -214,7 +215,24 @@ struct Graph {
         slots.remove(idAt(slot));
         *nodeAt(slot) = Node.init;
         freeSlots.add(slot);
+        nodes.note(slot, 1);
+        states.note(slot, 1);
+        chunks.blocks.note(slot, 1);
+        structures.nodes.note(slot, 1);
+        skies.nodes.note(slot, 1);
         liveCount -= 1;
+    }
+
+    // An evicted slot's records are reset to their all-zero init, except its state, which is only read once hasState
+    // is set again, so pages of slots that are all free can go back.
+    void discardFreed() {
+        uint calls = DISCARDS_PER_FRAME;
+        chunks.discardFreed(calls);
+        nodes.discardNoted(freeSlots, slotCount, 1, calls);
+        states.discardNoted(freeSlots, slotCount, 1, calls);
+        chunks.blocks.discardNoted(freeSlots, slotCount, 1, calls);
+        structures.nodes.discardNoted(freeSlots, slotCount, 1, calls);
+        skies.nodes.discardNoted(freeSlots, slotCount, 1, calls);
     }
 
     uint ensureNeighborSlot(uint slot, Face face) {

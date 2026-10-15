@@ -1,8 +1,8 @@
 module base.slab;
 
 import core.bitop : bsf, bsr;
-import core.stdc.stdlib : calloc, free, malloc;
 import base.array : Array;
+import base.pages : giveBack, mapPages, pageSize, unmapPages;
 
 enum uint SLAB_SHIFT = 12;
 enum uint SLAB_SIZE = 2 ^^ SLAB_SHIFT;
@@ -11,9 +11,14 @@ enum uint RUN_CLASSES = SLAB_SHIFT + 1;
 enum size_t TRIMMED_BLOCKS_PER_CALL = 4;
 enum uint WORD_SHIFT = 6;
 enum uint WORD_MASK = (1u << WORD_SHIFT) - 1;
+enum size_t NOTED_PAGES_PER_DISCARD = 512;
 
 struct Slab(T) {
     Array!(T*) blocks;
+    Array!ulong noted;
+    size_t notedCount;
+    size_t notedCursor;
+    bool isDiscarding;
 
     inout(T)* at(size_t index) inout {
         return blocks.ptr[index >> SLAB_SHIFT] + (index & SLAB_MASK);
@@ -31,10 +36,89 @@ struct Slab(T) {
         size_t kept = ((count + SLAB_SIZE - 1) >> SLAB_SHIFT) + 1;
         size_t freed = 0;
         while (blocks.length > kept && freed < TRIMMED_BLOCKS_PER_CALL) {
-            free(blocks.ptr[blocks.length - 1]);
+            unmapBlock(blocks.ptr[blocks.length - 1]);
             blocks.length -= 1;
             freed += 1;
         }
+    }
+
+    // Gives back the whole pages between two indices, which may read back as zero bytes, so the items there must be all
+    // zero already or ones nothing reads before writing them again.
+    void discard(size_t from, size_t to) {
+        while (from < to) {
+            size_t block = from >> SLAB_SHIFT;
+            size_t end = (block + 1) << SLAB_SHIFT;
+            if (end > to) {
+                end = to;
+            }
+            if (block < blocks.length && blocks.ptr[block] !is null) {
+                giveBack(blocks.ptr[block], (from & SLAB_MASK) * T.sizeof, (end - (block << SLAB_SHIFT)) * T.sizeof);
+            }
+            from = end;
+        }
+    }
+
+    // Marks the pages holding items freed under one index of a pool that hands out `per` items per index, to be
+    // checked by discardNoted.
+    void note(size_t index, size_t per) {
+        size_t page = pageSize();
+        foreach (candidate; index * per * T.sizeof / page .. ((index + 1) * per * T.sizeof - 1) / page + 1) {
+            size_t word = candidate >> WORD_SHIFT;
+            if (noted.length <= word) {
+                noted.resize(word + 1);
+            }
+            ulong bit = 1UL << (candidate & WORD_MASK);
+            notedCount += (noted.ptr[word] & bit) == 0;
+            noted.ptr[word] |= bit;
+        }
+    }
+
+    // Once enough pages are noted, gives back those whose items all belong to free indices, counting indices from
+    // `limit` on as free. Each give-back makes every thread flush its address cache, so pages wait to go back in runs
+    // of neighbors, and a pass spends at most `calls` give-backs before carrying on in a later call. Pages are checked
+    // now rather than when noted, since an index may have been taken again since.
+    void discardNoted(ref const FreeIndices free, size_t limit, size_t per, ref uint calls) {
+        isDiscarding = isDiscarding || notedCount >= NOTED_PAGES_PER_DISCARD;
+        size_t page = pageSize();
+        size_t runStart = 0;
+        size_t runEnd = 0;
+        while (isDiscarding && calls > 0) {
+            ulong* bits = &noted.ptr[notedCursor];
+            while (*bits != 0 && calls > 0) {
+                size_t candidate = (notedCursor << WORD_SHIFT) + bsf(*bits);
+                *bits &= *bits - 1;
+                notedCount -= 1;
+                if (isPageFree(candidate, page, free, limit, per)) {
+                    if (candidate != runEnd) {
+                        calls -= discardPages(runStart, runEnd, page);
+                        runStart = candidate;
+                    }
+                    runEnd = candidate + 1;
+                }
+            }
+            if (*bits == 0) {
+                notedCursor += 1;
+            }
+            if (notedCursor == noted.length) {
+                notedCursor = 0;
+                isDiscarding = false;
+            }
+        }
+        uint spent = discardPages(runStart, runEnd, page);
+        calls = calls > spent ? calls - spent : 0;
+    }
+
+    bool isPageFree(size_t candidate, size_t page, ref const FreeIndices free, size_t limit, size_t per) const {
+        size_t first = candidate * page / T.sizeof / per;
+        size_t end = (((candidate + 1) * page + T.sizeof - 1) / T.sizeof + per - 1) / per;
+        return first >= limit || free.containsAll(first, end < limit ? end : limit);
+    }
+
+    uint discardPages(size_t first, size_t end, size_t page) {
+        if (end > first) {
+            discard(first * page / T.sizeof, (end * page + T.sizeof - 1) / T.sizeof);
+        }
+        return end > first;
     }
 
     T* touch(size_t index) {
@@ -49,22 +133,30 @@ struct Slab(T) {
     }
 
     T* allocateBlock() {
-        static if (__traits(isZeroInit, T)) {
-            return cast(T*) calloc(SLAB_SIZE, T.sizeof);
-        } else {
-            T* block = cast(T*) malloc(SLAB_SIZE * T.sizeof);
+        T* block = cast(T*) mapPages(SLAB_SIZE * T.sizeof);
+        static if (!__traits(isZeroInit, T)) {
             foreach (i; 0 .. SLAB_SIZE) {
                 block[i] = T.init;
             }
-            return block;
+        }
+        return block;
+    }
+
+    void unmapBlock(T* block) {
+        if (block !is null) {
+            unmapPages(block, SLAB_SIZE * T.sizeof);
         }
     }
 
     void release() {
         foreach (block; blocks.slice()) {
-            free(block);
+            unmapBlock(block);
         }
         blocks.release();
+        noted.release();
+        notedCount = 0;
+        notedCursor = 0;
+        isDiscarding = false;
     }
 }
 
@@ -144,6 +236,22 @@ struct FreeIndices {
         return word < words.length && (words.ptr[word] & (1UL << (index & WORD_MASK))) != 0;
     }
 
+    bool containsAll(size_t from, size_t to) const {
+        bool isAll = true;
+        while (isAll && from < to) {
+            size_t word = from >> WORD_SHIFT;
+            size_t end = (word + 1) << WORD_SHIFT;
+            if (end > to) {
+                end = to;
+            }
+            size_t span = end - from;
+            ulong mask = (span == WORD_MASK + 1 ? ulong.max : (1UL << span) - 1) << (from & WORD_MASK);
+            isAll = word < words.length && (words.ptr[word] & mask) == mask;
+            from = end;
+        }
+        return isAll;
+    }
+
     void add(uint index) {
         size_t word = index >> WORD_SHIFT;
         if (words.length <= word) {
@@ -211,6 +319,41 @@ unittest {
     sparse.release();
 }
 
+struct TestRecord {
+    uint[3] values;
+}
+
+// Records straddle pages; a page shared with a live record must stay.
+unittest {
+    Slab!TestRecord slab;
+    FreeIndices free;
+    size_t count = (NOTED_PAGES_PER_DISCARD + 2) * pageSize() / TestRecord.sizeof;
+    size_t straddling = pageSize() / TestRecord.sizeof;
+    size_t inside = count / 2;
+    slab.ensure(count);
+    foreach (index; 0 .. count) {
+        slab.at(index).values[0] = cast(uint) index + 1;
+    }
+    foreach (index; 0 .. count) {
+        if (index != straddling && index != inside) {
+            *slab.at(index) = TestRecord.init;
+            free.add(cast(uint) index);
+            slab.note(index, 1);
+        }
+    }
+    do {
+        uint calls = 1;
+        slab.discardNoted(free, count, 1, calls);
+    } while (slab.isDiscarding);
+    assert(slab.notedCount == 0);
+    assert(slab.at(straddling).values[0] == straddling + 1 && slab.at(inside).values[0] == inside + 1);
+    foreach (index; 0 .. count) {
+        assert(index == straddling || index == inside || slab.at(index).values[0] == 0);
+    }
+    slab.release();
+    free.release();
+}
+
 enum uint TEST_RUNS = 3000;
 
 unittest {
@@ -254,6 +397,8 @@ unittest {
     }
     free.add(TEST_INDEX_STRIDE);
     assert(free.contains(TEST_INDEX_STRIDE) && !free.contains(TEST_INDEX_STRIDE + 1));
+    assert(free.containsAll(TEST_INDICES / 2, TEST_INDICES) && !free.containsAll(TEST_INDICES / 2 - 1, TEST_INDICES));
+    assert(free.containsAll(TEST_INDEX_STRIDE, TEST_INDEX_STRIDE + 1) && !free.containsAll(0, TEST_INDEX_STRIDE + 1));
     assert(free.takeLowest() == TEST_INDEX_STRIDE);
     free.drop(TEST_INDICES / 2);
     assert(free.takeLowest() == TEST_INDICES / 2 + 1);

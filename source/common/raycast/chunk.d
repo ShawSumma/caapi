@@ -21,7 +21,7 @@ struct ChunkRayCastHit {
     }
 }
 
-ChunkRayCastHit castThroughChunk(ref const Voxels voxels, ChunkLayout layout, Ray ray, float limit) {
+ChunkRayCastHit castThroughChunk(const Voxels voxels, ChunkLayout layout, Ray ray, float limit) {
     if (voxels.isFilledWith(Material.none)) {
         return ChunkRayCastHit.init;
     } else {

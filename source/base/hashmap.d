@@ -3,21 +3,15 @@ module base.hashmap;
 import core.bitop : bsr;
 import core.stdc.stdlib : calloc, free, malloc;
 import core.stdc.string : memset;
-import core.sys.posix.unistd : _SC_PAGESIZE, sysconf;
-
-version (OSX) {
-    enum int MADV_DONTNEED = 4;
-
-    extern (C) int madvise(void* address, size_t length, int advice) nothrow @nogc;
-} else {
-    import core.sys.linux.sys.mman : MADV_DONTNEED, madvise;
-}
+import base.pages : giveBack;
 
 enum size_t FIBONACCI_MULTIPLIER = 0x9E3779B97F4A7C15;
 enum size_t INITIAL_HASH_MAP_CAPACITY = 16;
 enum size_t MIGRATED_SLOTS_PER_CHANGE = 8;
 enum size_t RELEASED_BYTES = 1 << 20;
-enum size_t LIVE_SPREAD = 2;
+enum size_t FULLEST_EIGHTHS = 6;
+enum size_t EMPTIEST_EIGHTHS = 1;
+enum size_t EIGHTHS = 8;
 enum uint TAG_BITS = 7;
 enum ubyte EMPTY = 0;
 enum ubyte REMOVED = 1;
@@ -151,15 +145,6 @@ struct HashTable(K, V) {
     }
 }
 
-void giveBack(void* base, size_t from, size_t to) {
-    size_t page = sysconf(_SC_PAGESIZE);
-    size_t start = (cast(size_t) base + from + page - 1) & ~(page - 1);
-    size_t end = (cast(size_t) base + to) & ~(page - 1);
-    if (end > start) {
-        madvise(cast(void*) start, end - start, MADV_DONTNEED);
-    }
-}
-
 struct HashMap(K, V) {
     HashTable!(K, V) current;
     HashTable!(K, V) previous;
@@ -171,8 +156,8 @@ struct HashMap(K, V) {
     }
 
     void insert(K key, V value) {
-        if ((current.used + 1) * LIVE_SPREAD > current.capacity) {
-            grow();
+        if ((current.used + 1) * EIGHTHS > current.capacity * FULLEST_EIGHTHS) {
+            resize(current.capacity == 0 ? INITIAL_HASH_MAP_CAPACITY : current.capacity * 2);
         }
         current.assign(key, value, false);
         migrate(MIGRATED_SLOTS_PER_CHANGE);
@@ -182,6 +167,14 @@ struct HashMap(K, V) {
         current.erase(key);
         previous.bury(key);
         migrate(MIGRATED_SLOTS_PER_CHANGE);
+        shrinkIfSparse();
+    }
+
+    // Kept out of line: inlined into remove, it made the benchmark's insert and remove a quarter slower.
+    pragma(inline, false) void shrinkIfSparse() {
+        if (previous.capacity == 0 && current.capacity > INITIAL_HASH_MAP_CAPACITY && current.used * EIGHTHS < current.capacity * EMPTIEST_EIGHTHS) {
+            resize(current.capacity / 2);
+        }
     }
 
     void clear() {
@@ -191,10 +184,12 @@ struct HashMap(K, V) {
     }
 
     // The old table drains into the new one a few slots per change, so no single change pays for moving everything.
-    void grow() {
+    // A table only shrinks once the last migration is done, and the changes it takes to fill the new one past its
+    // limit migrate far more slots than the old one has, so neither table ever fills up.
+    void resize(size_t capacity) {
         migrate(previous.capacity);
         previous = current;
-        current.allocate(previous.capacity == 0 ? INITIAL_HASH_MAP_CAPACITY : previous.capacity * 2);
+        current.allocate(capacity);
         migrated = 0;
     }
 

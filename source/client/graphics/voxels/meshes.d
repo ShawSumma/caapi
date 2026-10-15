@@ -12,7 +12,7 @@ import common.eviction : Unloaded;
 import common.graph : Graph, NO_SLOT;
 import common.neighbors : chunkNeighborSlot;
 import common.node : Chunk, ChunkSlot, ChunkState;
-import common.traversal : NOT_COLLECTED, NearbyNode, NearbyScratch;
+import common.traversal : NOT_COLLECTED, NearbyScratch;
 import geometry.cube : DIRECTIONS;
 import geometry.honeycomb : CORNER_COUNT, Corner, cubeCenter, cubeToNode;
 
@@ -117,6 +117,7 @@ struct ChunkMeshes {
     Array!uint freeRenderBlocks;
     Array!uint drawableChunks;
     Array!DrawableRecord drawableRecords;
+    Array!uint placedVersions;
     Array!uint unlisted;
     Array!VkBufferCopy uploads;
     Array!BufferCopy growthCopies;
@@ -152,8 +153,16 @@ struct ChunkMeshes {
         staging = GpuBuffer.makeMapped(physicalDevice, device, cast(VkDeviceSize) INITIAL_STAGING_FACES * Quad.sizeof, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
         stagingCapacity = INITIAL_STAGING_FACES;
         growDrawBuffers(INITIAL_DRAWABLE_CAPACITY);
-        nodes = replacedMapped(nodes, cast(VkDeviceSize) INITIAL_NODE_CAPACITY * MATRIX_FLOATS * float.sizeof);
-        nodeCapacity = INITIAL_NODE_CAPACITY;
+        replaceNodes(INITIAL_NODE_CAPACITY);
+    }
+
+    // The node buffer holds one transform per render block, so it only covers nodes with something meshed rather than
+    // the whole nearby set.
+    void replaceNodes(uint capacity) {
+        nodes = replacedMapped(nodes, cast(VkDeviceSize) capacity * MATRIX_FLOATS * float.sizeof);
+        nodeCapacity = capacity;
+        placedVersions.resize(capacity);
+        placedVersions.slice()[] = NO_VERSION;
     }
 
     uint drawableCount() const {
@@ -184,6 +193,7 @@ struct ChunkMeshes {
         renderBlockCount = 0;
         drawableChunks.clear();
         drawableRecords.clear();
+        placedVersions.slice()[] = NO_VERSION;
         unlisted.clear();
         allocator.release();
         allocator.grow(cast(uint)(faces.size / Quad.sizeof));
@@ -207,27 +217,27 @@ struct ChunkMeshes {
     void list(ref const NearbyScratch nearby, uint listVersion) {
         if (listVersion != listedVersion) {
             listedVersion = listVersion;
-            listedNodes = 0;
-            writeNodes(nearby.nodes.slice());
             refreshDrawableNodes(nearby);
         } else if (nearby.nodes.length > listedNodes) {
-            writeNodes(nearby.nodes.slice());
             refreshUnlisted(nearby);
         }
+        listedNodes = cast(uint) nearby.nodes.length;
     }
 
-    void writeNodes(const(NearbyNode)[] listed) {
-        if (listed.length > nodeCapacity) {
-            uint capacity = cast(uint) grownCapacity(nodeCapacity, listed.length);
-            nodes = replacedMapped(nodes, cast(VkDeviceSize) capacity * MATRIX_FLOATS * float.sizeof);
-            nodeCapacity = capacity;
-            listedNodes = 0;
+    // Writes the transform of the chunk's node once per list version, and returns where, or NOT_COLLECTED while the
+    // node is not in the nearby set.
+    uint placeNode(ref const NearbyScratch nearby, uint chunkIndex) {
+        uint render = chunkIndex / CORNER_COUNT;
+        uint node = nearby.indexOf(chunks.at(chunkIndex).slot);
+        if (node == NOT_COLLECTED) {
+            return NOT_COLLECTED;
+        } else {
+            if (placedVersions.ptr[render] != listedVersion) {
+                (cast(float[MATRIX_FLOATS]*) nodes.mapped)[render] = flatten(nearby.nodes.ptr[node].transform.m);
+                placedVersions.ptr[render] = listedVersion;
+            }
+            return render;
         }
-        float[MATRIX_FLOATS]* nodeMatrices = cast(float[MATRIX_FLOATS]*) nodes.mapped;
-        foreach (index; listedNodes .. listed.length) {
-            nodeMatrices[index] = flatten(listed[index].transform.m);
-        }
-        listedNodes = cast(uint) listed.length;
     }
 
     void refreshDrawableNodes(ref const NearbyScratch nearby) {
@@ -236,7 +246,7 @@ struct ChunkMeshes {
         }
         unlisted.clear();
         foreach (drawable, chunkIndex; drawableChunks.slice()) {
-            uint node = nearby.indexOf(chunks.at(chunkIndex).slot);
+            uint node = placeNode(nearby, chunkIndex);
             setDrawableNode(cast(uint) drawable, node);
             noteNode(chunkIndex, node);
         }
@@ -266,7 +276,7 @@ struct ChunkMeshes {
         foreach (chunkIndex; unlisted.slice()) {
             RenderChunk* entry = chunks.at(chunkIndex);
             if (entry.hasDrawable && entry.isNodeMissing) {
-                uint node = nearby.indexOf(entry.slot);
+                uint node = placeNode(nearby, chunkIndex);
                 if (node != NOT_COLLECTED) {
                     setDrawableNode(entry.drawable, node);
                     entry.isNodeMissing = false;
@@ -356,6 +366,10 @@ struct ChunkMeshes {
 
     void apply(ref const NearbyScratch nearby, MeshRecord record, const(Quad)[] meshed) {
         uint chunkIndex = renderIndexFor(record.block, record.slot.corner);
+        if (renderBlockCount > nodeCapacity) {
+            replaceNodes(cast(uint) grownCapacity(nodeCapacity, renderBlockCount));
+            refreshDrawableNodes(nearby);
+        }
         RenderChunk* entry = chunks.at(chunkIndex);
         if (entry.faceCount > 0) {
             allocator.release(entry.faceOffset, entry.faceCount);
@@ -368,7 +382,7 @@ struct ChunkMeshes {
         } else {
             entry.faceOffset = allocateFaces(entry.faceCount);
             stage(meshed, entry.faceOffset);
-            writeDrawable(chunkIndex, record.slot, nearby.indexOf(record.slot.slot));
+            writeDrawable(chunkIndex, record.slot, placeNode(nearby, chunkIndex));
         }
     }
 
@@ -388,6 +402,7 @@ struct ChunkMeshes {
                     entry.isUnlisted = isUnlisted;
                 }
                 freeRenderBlocks.append(render);
+                placedVersions.ptr[render] = NO_VERSION;
                 renderBlocks.ptr[released.block] = 0;
             }
         }
@@ -486,6 +501,7 @@ struct ChunkMeshes {
         growthCopies.release();
         drawableChunks.release();
         drawableRecords.release();
+        placedVersions.release();
         unlisted.release();
         allocator.release();
         chunks.release();

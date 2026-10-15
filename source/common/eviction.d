@@ -66,6 +66,7 @@ struct Evictor {
                 graph.unloadNode(slot, unloaded);
             }
         }
+        graph.discardFreed();
     }
 
     void evictFrom(ref Graph graph, uint slot, Near near, ref Array!Unloaded unloaded) {
@@ -127,7 +128,7 @@ uint dropFarChunks(ref Graph graph, NearbyNode node, Point!float camera, float t
         const(Chunk)* current = graph.chunks.at(chunk);
         if (current.state == ChunkState.populated && !current.voxels.isUniform() && !current.isEdited && !current.isQueued && camera.coshDistance(node.transform * corner.cubeCenter) > threshold && graph.areFaceNeighborsSettled(chunk)) {
             Chunk* target = graph.chunks.existing(chunk);
-            target.voxels.release();
+            target.releaseVoxels();
             target.state = ChunkState.dropped;
             count += 1;
         }
@@ -184,7 +185,7 @@ void unloadNode(ref Graph graph, uint slot, ref Array!Unloaded unloaded) {
         foreach (corner; 0 .. CORNER_COUNT) {
             Chunk* chunk = graph.chunks.existing(ChunkSlot(slot, cast(Corner) corner));
             if ((chunk.state == ChunkState.populated || chunk.state == ChunkState.dropped) && !chunk.isEdited) {
-                chunk.voxels.release();
+                chunk.releaseVoxels();
                 *chunk = Chunk.init;
                 isReleased = true;
             }

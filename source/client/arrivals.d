@@ -1,6 +1,5 @@
 module client.arrivals;
 
-import core.atomic : atomicLoad, cas;
 import core.stdc.stdlib : calloc, free;
 import base.array : Array;
 import base.parallel : Executor, ParallelJob;
@@ -125,9 +124,9 @@ void settle(ref Graph graph, GenResult arrival, ref IntegrationOutput output) {
         ChunkSlot neighbor = graph.chunkNeighborSlot(arrival.chunk, direction);
         if (neighbor.slot != NO_SLOT && graph.chunks.has(neighbor.slot)) {
             Chunk* other = graph.chunks.existing(neighbor);
-            if (!arrival.isRestoring && cas(cast(shared(ChunkState)*) &other.state, ChunkState.dropped, ChunkState.generating)) {
+            if (!arrival.isRestoring && other.casState(ChunkState.dropped, ChunkState.generating)) {
                 output.restored.append(neighbor);
-            } else if (atomicLoad(*cast(shared(ChunkState)*) &other.state) == ChunkState.populated) {
+            } else if (other.loadState() == ChunkState.populated) {
                 if (!arrival.isRestoring) {
                     queueMesh(graph, neighbor, output);
                 }
@@ -140,7 +139,7 @@ void settle(ref Graph graph, GenResult arrival, ref IntegrationOutput output) {
 }
 
 void queueMesh(ref Graph graph, ChunkSlot target, ref IntegrationOutput output) {
-    if (graph.needsMesh(target) && cas(cast(shared(bool)*) &graph.chunks.existing(target).isQueued, false, true)) {
+    if (graph.needsMesh(target) && graph.chunks.existing(target).claimQueued()) {
         output.changed.append(target);
     }
 }
@@ -171,7 +170,7 @@ void resolveMaterials(ref Graph graph, ChunkSlot chunk) {
     params.isResolvingMaterials = true;
     GeneratedVoxels generated = params.generateVoxels();
     Chunk* target = graph.chunks.existing(chunk);
-    target.voxels.release();
+    target.releaseVoxels();
     target.voxels = generated.voxels;
     target.hasDeferredMaterials = false;
     graph.markChanged(chunk);
@@ -243,7 +242,7 @@ unittest {
         integrator.run(graph, Executor(null));
         if (batch == 0) {
             Chunk* chunk = graph.chunks.existing(dropped);
-            chunk.voxels.release();
+            chunk.releaseVoxels();
             chunk.state = ChunkState.dropped;
         }
     }

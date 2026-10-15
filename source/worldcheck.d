@@ -44,7 +44,7 @@ struct ContentHashes {
     ulong[2] materials;
     ulong[2] occupancy;
 
-    static ContentHashes fromVoxels(Corner corner, ref const Voxels voxels, ubyte dimension) {
+    static ContentHashes fromVoxels(Corner corner, const Voxels voxels, ubyte dimension) {
         size_t cells = cast(size_t) dimension * dimension * dimension;
         ubyte* materialBytes = cast(ubyte*) malloc(HASH_HEADER_BYTES + cells * Material.sizeof);
         ubyte* occupancy = cast(ubyte*) malloc(HASH_HEADER_BYTES + cells);

@@ -56,18 +56,26 @@ struct ChunkStore {
 
     void releaseBlock(uint slot) {
         uint* block = blocks.at(slot);
+        uint index = *block - 1;
         foreach (corner; 0 .. CORNER_COUNT) {
-            Chunk* chunk = records.at(cast(size_t)(*block - 1) * CORNER_COUNT + corner);
-            chunk.voxels.release();
+            Chunk* chunk = records.at(cast(size_t) index * CORNER_COUNT + corner);
+            chunk.releaseVoxels();
             *chunk = Chunk.init;
         }
-        freeBlocks.add(*block - 1);
+        freeBlocks.add(index);
         *block = NO_BLOCK;
         while (blockCount > 0 && freeBlocks.contains(blockCount - 1)) {
             freeBlocks.drop(blockCount - 1);
             blockCount -= 1;
         }
         records.trim(cast(size_t) blockCount * CORNER_COUNT);
+        records.note(index, CORNER_COUNT);
+    }
+
+    // Released blocks are reset to Chunk.init, which is all zero, so their pages can go back once no block on them is
+    // in use.
+    void discardFreed(ref uint calls) {
+        records.discardNoted(freeBlocks, blockCount, CORNER_COUNT, calls);
     }
 
     void queue(ChunkSlot chunk) {
@@ -98,7 +106,7 @@ struct ChunkStore {
 
     void release() {
         foreach (index; 0 .. cast(size_t) blockCount * CORNER_COUNT) {
-            records.at(index).voxels.release();
+            records.at(index).releaseVoxels();
         }
         records.release();
         blocks.release();

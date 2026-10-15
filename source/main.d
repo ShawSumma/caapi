@@ -94,6 +94,21 @@ version (OSX) {
     size_t peakResidentBytes() {
         return cast(size_t) taskInfo().residentSizeMax;
     }
+
+    struct MallocStatistics {
+        uint blocksInUse;
+        size_t sizeInUse;
+        size_t maxSizeInUse;
+        size_t sizeAllocated;
+    }
+
+    extern (C) void malloc_zone_statistics(void* zone, MallocStatistics* statistics) nothrow @nogc;
+
+    HeapBytes heapBytes() {
+        MallocStatistics statistics;
+        malloc_zone_statistics(null, &statistics);
+        return HeapBytes(statistics.sizeInUse, statistics.sizeAllocated - statistics.sizeInUse);
+    }
 } else {
     import core.sys.posix.sys.resource : RUSAGE_SELF, getrusage, rusage;
     import core.sys.posix.unistd : _SC_PAGESIZE, sysconf;
@@ -174,6 +189,31 @@ version (OSX) {
         getrusage(RUSAGE_SELF, &usage);
         return cast(size_t) usage.ru_maxrss * BYTES_PER_KILOBYTE;
     }
+
+    struct MallInfo2 {
+        size_t arena;
+        size_t ordblks;
+        size_t smblks;
+        size_t hblks;
+        size_t hblkhd;
+        size_t usmblks;
+        size_t fsmblks;
+        size_t uordblks;
+        size_t fordblks;
+        size_t keepcost;
+    }
+
+    extern (C) MallInfo2 mallinfo2() nothrow @nogc;
+
+    HeapBytes heapBytes() {
+        MallInfo2 info = mallinfo2();
+        return HeapBytes(info.uordblks + info.hblkhd, info.fordblks);
+    }
+}
+
+struct HeapBytes {
+    size_t used;
+    size_t held;
 }
 
 struct Arguments {
@@ -999,6 +1039,7 @@ void measureSettle(FILE* report, ref Renderer renderer, ref Game game) {
     fprintf(report, "stopped after the flight for %u frames (at most %u): %s, nearby %zu nodes reaching %.2f\n", frames, BENCH_SETTLE_FRAMES, game.world.isWorldgenSettled() ? "settled".ptr : "still loading".ptr, game.world.cachedNodes.length, cast(double)(game.world.renderRadius - game.world.radiusCut));
     around.print(report);
     around.release();
+    printMemory(report, game.world);
 }
 
 enum Shortfall : ubyte {
@@ -1147,7 +1188,7 @@ void printWorldStats(FILE* report, ref const LocalWorld world) {
     uint[2] tiles = tileCounts(world.graph);
     fprintf(report, "tiles painted ahead on all threads %u, painted when needed %u\n", tiles[0], tiles[1]);
     fprintf(report, "nearby %zu nodes, %u published, %u recoveries (%.0fms), %.0fms sliced\n", world.cachedNodes.length, world.nearbyStats.publishes, world.nearbyStats.recoveries, world.nearbyStats.recoveryMilliseconds, world.nearbyStats.slicedMilliseconds);
-    fprintf(report, "nearby sets grown from the last %u, keeping %zu nodes as they were and expanding %zu again; %u moved to the camera\n", world.nearbyStats.grown, world.nearbyStats.kept, world.nearbyStats.reexpanded, world.nearbyStats.rebases);
+    fprintf(report, "nearby sets grown from the last %u, keeping %zu nodes as they were and expanding %zu again; %u moved to the camera\n", world.nearbyStats.grown, world.nearby[0].keptNodes + world.nearby[1].keptNodes, world.nearby[0].reexpandedNodes + world.nearby[1].reexpandedNodes, world.nearbyStats.rebases);
     fprintf(report, "nearby rebuilds restarted after the camera outran them %u, now reaching %.2f of %.2f\n", world.nearbyStats.restarts, cast(double)(world.renderRadius - world.radiusCut), cast(double) world.renderRadius);
 }
 
@@ -1195,7 +1236,8 @@ void printMemory(FILE* report, ref const LocalWorld world) {
     fprintf(report, "nodes holding chunks=%zu with state=%zu, structure-touched=%zu referenced=%zu with children=%zu recent=%zu\n", holding, stated, touched, referenced, parents, recent);
     size_t nodeBytes = cast(size_t) graph.slotCount * (Node.sizeof + NodeState.sizeof + NodeStructure.sizeof + NodeWorlds.sizeof + uint.sizeof);
     size_t chunkBytes = cast(size_t) graph.chunks.blockCount * CORNER_COUNT * Chunk.sizeof;
-    fprintf(report, "memory: rss now=%zuMB peak=%zuMB nodes=%u of %u slots (%zuMB), %u chunk blocks (%zuMB) buildings=%zu (%zuMB) dense voxels %zuMB\n", residentBytes() / BYTES_PER_MEGABYTE, peakResidentBytes() / BYTES_PER_MEGABYTE, graph.liveCount, graph.slotCount, nodeBytes / BYTES_PER_MEGABYTE, graph.chunks.blockCount, chunkBytes / BYTES_PER_MEGABYTE, buildings, buildingBytes / BYTES_PER_MEGABYTE, denseBytes / BYTES_PER_MEGABYTE);
+    HeapBytes heap = heapBytes();
+    fprintf(report, "memory: rss now=%zuMB peak=%zuMB, malloc in use %zuMB and free but held %zuMB, nodes=%u of %u slots (%zuMB), %u chunk blocks (%zuMB) buildings=%zu (%zuMB) dense voxels %zuMB\n", residentBytes() / BYTES_PER_MEGABYTE, peakResidentBytes() / BYTES_PER_MEGABYTE, heap.used / BYTES_PER_MEGABYTE, heap.held / BYTES_PER_MEGABYTE, graph.liveCount, graph.slotCount, nodeBytes / BYTES_PER_MEGABYTE, graph.chunks.blockCount, chunkBytes / BYTES_PER_MEGABYTE, buildings, buildingBytes / BYTES_PER_MEGABYTE, denseBytes / BYTES_PER_MEGABYTE);
     const(Blueprint)* blueprint = &graph.structures.blueprint;
     size_t brushBytes = blueprint.placed.brushes.capacity * Brush.sizeof + blueprint.placed.runs.capacity * LineRun.sizeof;
     foreach (ref tile; blueprint.tiles.slice()) {

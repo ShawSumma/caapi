@@ -15,6 +15,7 @@ enum double NO_DEADLINE = double.infinity;
 enum uint NOT_COLLECTED = uint.max;
 enum size_t EXPAND_BATCH = 256;
 enum size_t PAINT_BATCH = 256;
+enum size_t DERIVE_BATCH = 64;
 
 struct NodeVisit {
     uint slot;
@@ -145,9 +146,16 @@ struct BlockCounts {
     uint frontier;
 }
 
+enum KeepPass : ubyte {
+    none,
+    sorting,
+    copying,
+}
+
 struct KeepJob {
     const(NearbyNode)* from;
     size_t count;
+    size_t base;
     NearbyScratch* scratch;
     BlockCounts* blocks;
     Point!float camera;
@@ -162,16 +170,24 @@ struct KeepJob {
         return (block + 1) * KEEP_BLOCK < count ? (block + 1) * KEEP_BLOCK : count;
     }
 
+    // Most of a set lies near its edge, so this runs for most nodes. The products with each column are taken once,
+    // leaving four multiplications per neighbor instead of a matrix product.
     bool hasNeighborNewlyInReach(Motion!float transform) const {
+        Vec4!float toCamera;
+        Vec4!float toPrevious;
+        foreach (column; 0 .. 4) {
+            toCamera.c[column] = -camera.minkowski(transform.m.column(column));
+            toPrevious.c[column] = -previous.minkowski(transform.m.column(column));
+        }
         uint face = 0;
-        while (face < FACE_COUNT && !isNewlyInReach(transform * MIRRORED_ORIGINS[face])) {
+        while (face < FACE_COUNT && !isNewlyInReach(dot(toCamera, MIRRORED_ORIGINS[face]), dot(toPrevious, MIRRORED_ORIGINS[face]))) {
             face += 1;
         }
         return face < FACE_COUNT;
     }
 
-    bool isNewlyInReach(Vec4!float center) const {
-        return !(-camera.minkowski(center) > coshReach) && -previous.minkowski(center) > coshPreviousReach;
+    bool isNewlyInReach(float coshToCamera, float coshToPrevious) const {
+        return !(coshToCamera > coshReach) && coshToPrevious > coshPreviousReach;
     }
 }
 
@@ -182,6 +198,10 @@ struct KeepJob {
 bool isOffHyperboloid(Vec4!float center) {
     Vec4!double exact = center.as!double();
     return fabs(-exact.minkowski(exact) - 1) > SHELL_FLOOR + SHELL_ROUNDING * exact.c[3] * exact.c[3];
+}
+
+float dot(Vec4!float a, Vec4!float b) {
+    return a.c[0] * b.c[0] + a.c[1] * b.c[1] + a.c[2] * b.c[2] + a.c[3] * b.c[3];
 }
 
 immutable Vec4!float[FACE_COUNT] MIRRORED_ORIGINS = mirroredOrigins();
@@ -211,8 +231,9 @@ void rebaseBlock(void* context, size_t block, uint worker) {
     }
 }
 
-void sortKept(void* context, size_t block, uint worker) {
+void sortKept(void* context, size_t item, uint worker) {
     KeepJob* job = cast(KeepJob*) context;
+    size_t block = job.base + item;
     BlockCounts counts;
     foreach (index; block * KEEP_BLOCK .. job.end(block)) {
         Motion!float transform = job.from[index].transform;
@@ -233,8 +254,9 @@ void sortKept(void* context, size_t block, uint worker) {
     job.blocks[block] = counts;
 }
 
-void copyKept(void* context, size_t block, uint worker) {
+void copyKept(void* context, size_t item, uint worker) {
     KeepJob* job = cast(KeepJob*) context;
+    size_t block = job.base + item;
     NearbyScratch* scratch = job.scratch;
     uint kept = job.blocks[block].kept;
     uint frontier = job.keptTotal + job.blocks[block].frontier;
@@ -244,16 +266,64 @@ void copyKept(void* context, size_t block, uint worker) {
             uint at = kind == KEPT ? kept++ : frontier++;
             NearbyNode node = job.from[index];
             scratch.nodes.ptr[at] = node;
-            scratch.stamp.ptr[node.slot] = scratch.generation;
-            scratch.position.ptr[node.slot] = at;
+            scratch.collected.ptr[node.slot] = Collected(scratch.generation, at);
         }
     }
 }
 
+struct DeriveStep {
+    uint index;
+    uint from;
+    Face side;
+}
+
+struct DeriveJob {
+    NearbyScratch* scratch;
+    const(Graph)* graph;
+    Point!float center;
+    float coshRadius;
+    size_t first;
+    size_t end;
+}
+
+// The shell just outside the radius is as large as everything inside it, so its neighbors are turned away on their
+// center alone before the whole transform is worked out.
+void findDerived(void* context, size_t batch, uint worker) {
+    DeriveJob* job = cast(DeriveJob*) context;
+    NearbyScratch* scratch = job.scratch;
+    Array!DeriveStep* found = &scratch.derived.ptr[batch];
+    found.clear();
+    size_t start = job.first + batch * DERIVE_BATCH;
+    size_t end = start + DERIVE_BATCH < job.end ? start + DERIVE_BATCH : job.end;
+    foreach (position; start .. end) {
+        uint from = scratch.chain.ptr[position];
+        NearbyNode current = scratch.nodes.ptr[from];
+        foreach (sideIndex; 0 .. FACE_COUNT) {
+            uint neighbor = job.graph.neighborSlot(current.slot, cast(Face) sideIndex);
+            uint index = neighbor == NO_SLOT ? NOT_COLLECTED : scratch.indexOf(neighbor);
+            if (index != NOT_COLLECTED && !scratch.isRederived.ptr[index] && !(-job.center.minkowski(current.transform * MIRRORED_ORIGINS[sideIndex]) > job.coshRadius)) {
+                found.append(DeriveStep(index, from, cast(Face) sideIndex));
+            }
+        }
+    }
+}
+
+void applyDerived(void* context, size_t item, uint worker) {
+    NearbyScratch* scratch = (cast(DeriveJob*) context).scratch;
+    DeriveStep step = scratch.claimed.ptr[item];
+    scratch.nodes.ptr[step.index].transform = scratch.nodes.ptr[step.from].transform * step.side.mirror;
+}
+
+// Where a slot sits in the set, valid while its stamp is the set's generation; the two are read together on every
+// lookup, so they share a cache line.
+struct Collected {
+    uint stamp;
+    uint position;
+}
+
 struct NearbyScratch {
     Array!NearbyNode nodes;
-    Array!uint stamp;
-    Array!uint position;
+    Array!Collected collected;
     Array!ExpandOutput outputs;
     ExpandOutput serial;
     Array!uint candidates;
@@ -261,22 +331,28 @@ struct NearbyScratch {
     Array!BlockCounts blocks;
     Array!uint around;
     Array!uint chain;
+    Array!(Array!DeriveStep) derived;
+    Array!DeriveStep claimed;
     Array!bool isRederived;
+    KeepJob keeping;
     Point!float startPoint;
     size_t front;
     size_t missingHead;
     size_t unknownHead;
     size_t paintedHead;
+    size_t keptBlocks;
+    size_t keptNodes;
+    size_t reexpandedNodes;
     float coshThreshold = 0;
     float coshInner = 0;
     double paintingMs = 0;
     uint generation;
+    KeepPass keepPass;
     bool hasPainted;
 
     void release() {
         nodes.release();
-        stamp.release();
-        position.release();
+        collected.release();
         foreach (ref output; outputs.slice()) {
             output.release();
         }
@@ -287,12 +363,17 @@ struct NearbyScratch {
         blocks.release();
         around.release();
         chain.release();
+        foreach (ref batch; derived.slice()) {
+            batch.release();
+        }
+        derived.release();
+        claimed.release();
         isRederived.release();
     }
 
     uint indexOf(uint slot) const {
-        if (slot < stamp.length && stamp.ptr[slot] == generation) {
-            return position.ptr[slot];
+        if (slot < collected.length && collected.ptr[slot].stamp == generation) {
+            return collected.ptr[slot].position;
         } else {
             return NOT_COLLECTED;
         }
@@ -324,12 +405,17 @@ struct NearbyScratch {
     }
 
     bool isBuilding() const {
-        return front < nodes.length || hasSerialWork();
+        return isKeeping() || front < nodes.length || hasSerialWork();
+    }
+
+    bool isKeeping() const {
+        return keepPass != KeepPass.none;
     }
 
     void begin(ref Graph graph, Position start, float distance, float inner) {
         coshThreshold = coshf(distance + NODE_RADIUS);
         coshInner = coshf(inner);
+        keepPass = KeepPass.none;
         nodes.clear();
         serial.clear();
         front = 0;
@@ -342,21 +428,19 @@ struct NearbyScratch {
     }
 
     void reserveStamps(ref const Graph graph) {
-        if (stamp.length < graph.slotCount) {
-            stamp.resize(graph.slotCount);
-            position.resize(graph.slotCount);
+        if (collected.length < graph.slotCount) {
+            collected.resize(graph.slotCount);
         }
     }
 
     void collect(ref Graph graph, NearbyNode node) {
         reserveStamps(graph);
-        stamp.ptr[node.slot] = generation;
-        position.ptr[node.slot] = cast(uint) nodes.length;
+        collected.ptr[node.slot] = Collected(generation, cast(uint) nodes.length);
         nodes.append(node);
     }
 
     bool claim(uint slot) {
-        return atomicExchange(cast(shared(uint)*) &stamp.ptr[slot], generation) != generation;
+        return atomicExchange(cast(shared(uint)*) &collected.ptr[slot].stamp, generation) != generation;
     }
 
     bool collectAround(ref Graph graph, uint cameraSlot, Point!float camera, float reach) {
@@ -401,7 +485,7 @@ struct NearbyScratch {
         }
         bool isLate = false;
         hasPainted = false;
-        while (isBuilding() && !isLate) {
+        while (!isKeeping() && isBuilding() && !isLate) {
             if (hasSerialWork()) {
                 isLate = !drainSerial(graph, deadline, executor);
             } else {
@@ -422,7 +506,7 @@ struct NearbyScratch {
     void gather() {
         foreach (ref output; outputs.slice()) {
             foreach (found; output.found.slice()) {
-                position.ptr[found.slot] = cast(uint) nodes.length;
+                collected.ptr[found.slot].position = cast(uint) nodes.length;
                 nodes.append(found);
             }
             serial.missing.appendAll(output.missing.slice());
@@ -479,7 +563,7 @@ struct NearbyScratch {
         foreach (sideIndex; 0 .. FACE_COUNT) {
             Face side = cast(Face) sideIndex;
             uint existing = graph.neighborSlot(current.slot, side);
-            if ((existing == NO_SLOT || stamp.ptr[existing] != generation) && isWithinReach(current, side)) {
+            if ((existing == NO_SLOT || collected.ptr[existing].stamp != generation) && isWithinReach(current, side)) {
                 if (existing == NO_SLOT) {
                     output.missing.append(MissingSide(index, side));
                 } else if (claim(existing)) {
@@ -502,70 +586,108 @@ struct NearbyScratch {
         }
     }
 
-    void beginFrom(ref const NearbyScratch finished, ref Graph graph, Point!float camera, float distance, float inner, Executor executor) {
+    // Starts a set from the finished one, keeping its nodes still in reach; continueKeeping sorts and copies them.
+    void beginFrom(ref const NearbyScratch finished, ref Graph graph, Point!float camera, float distance, float inner) {
         float moved = camera.distance(finished.startPoint);
         float frontier = acoshf(finished.coshThreshold) - 2 * FACE_DISTANCE - moved;
-        size_t blockCount = (finished.nodes.length + KEEP_BLOCK - 1) / KEEP_BLOCK;
         kinds.resize(finished.nodes.length);
-        blocks.resize(blockCount);
+        blocks.resize((finished.nodes.length + KEEP_BLOCK - 1) / KEEP_BLOCK);
+        nodes.clear();
         serial.clear();
+        front = 0;
         missingHead = 0;
         unknownHead = 0;
         paintedHead = 0;
         generation += 1;
         reserveStamps(graph);
-        KeepJob keeping = KeepJob(finished.nodes.ptr, finished.nodes.length, &this, blocks.ptr, camera, finished.startPoint, coshf(distance + NODE_RADIUS), finished.coshThreshold, frontier > 0 ? coshf(frontier) : 1, coshf(inner));
-        ParallelJob sorting = ParallelJob(&sortKept, &keeping, NO_DEADLINE, blockCount);
-        executor.run(&sorting);
-        BlockCounts total;
-        foreach (ref counts; blocks.slice()) {
-            BlockCounts own = counts;
-            counts = total;
-            total.kept += own.kept;
-            total.frontier += own.frontier;
-        }
-        keeping.keptTotal = total.kept;
-        nodes.reserve(total.kept + total.frontier);
-        nodes.length = total.kept + total.frontier;
-        ParallelJob copying = ParallelJob(&copyKept, &keeping, NO_DEADLINE, blockCount);
-        executor.run(&copying);
-        coshThreshold = keeping.coshReach;
-        coshInner = keeping.coshInner;
-        startPoint = camera;
-        front = total.kept;
+        keeping = KeepJob(null, finished.nodes.length, 0, null, null, camera, finished.startPoint, coshf(distance + NODE_RADIUS), finished.coshThreshold, frontier > 0 ? coshf(frontier) : 1, coshf(inner));
+        keepPass = KeepPass.sorting;
+        keptBlocks = 0;
     }
 
-    void rederive(ref const Graph graph, uint firstSlot, Point!float center, float radius) {
-        float coshRadius = coshf(radius);
+    // At full reach the finished set holds millions of nodes, too many to sort and copy in one frame, so it goes a
+    // slice of blocks per call. Until it is done the finished set must keep its transforms and order; it may grow, so
+    // its nodes are found again on each call.
+    void continueKeeping(ref const NearbyScratch finished, double deadline, Executor executor) {
+        while (isKeeping()) {
+            keeping.from = finished.nodes.ptr;
+            keeping.scratch = &this;
+            keeping.blocks = blocks.ptr;
+            keeping.base = keptBlocks;
+            ParallelJob job = ParallelJob(keepPass == KeepPass.sorting ? &sortKept : &copyKept, &keeping, deadline, blocks.length - keptBlocks);
+            executor.run(&job);
+            keptBlocks += job.count;
+            if (keptBlocks == blocks.length) {
+                finishPass();
+            } else {
+                break;
+            }
+        }
+    }
+
+    void finishPass() {
+        if (keepPass == KeepPass.sorting) {
+            BlockCounts total;
+            foreach (ref counts; blocks.slice()) {
+                BlockCounts own = counts;
+                counts = total;
+                total.kept += own.kept;
+                total.frontier += own.frontier;
+            }
+            keeping.keptTotal = total.kept;
+            nodes.reserve(total.kept + total.frontier);
+            nodes.length = total.kept + total.frontier;
+            keepPass = KeepPass.copying;
+            keptBlocks = 0;
+        } else {
+            coshThreshold = keeping.coshReach;
+            coshInner = keeping.coshInner;
+            startPoint = keeping.camera;
+            front = keeping.keptTotal;
+            keptNodes += front;
+            reexpandedNodes += nodes.length - front;
+            keepPass = KeepPass.none;
+        }
+    }
+
+    // A breadth-first walk out from the first slot that works each transform out again from the one it was reached
+    // from. Each level's neighbors are found in parallel, then claimed in the order of the level, which picks the same
+    // node each was reached from as a walk one node at a time would.
+    void rederive(ref const Graph graph, uint firstSlot, Point!float center, float radius, Executor executor) {
         uint first = indexOf(firstSlot);
         isRederived.clear();
         isRederived.resize(nodes.length);
         chain.clear();
         chain.append(first);
         isRederived.ptr[first] = true;
-        size_t head = 0;
-        while (head < chain.length) {
-            NearbyNode current = nodes.ptr[chain.ptr[head]];
-            foreach (sideIndex; 0 .. FACE_COUNT) {
-                Face side = cast(Face) sideIndex;
-                uint neighbor = graph.neighborSlot(current.slot, side);
-                uint index = neighbor == NO_SLOT ? NOT_COLLECTED : indexOf(neighbor);
-                if (index != NOT_COLLECTED && !isRederived.ptr[index]) {
-                    Motion!float transform = current.transform * side.mirror;
-                    if (!(-center.minkowski(transform * Vec4!float.origin()) > coshRadius)) {
-                        nodes.ptr[index].transform = transform;
-                        isRederived.ptr[index] = true;
-                        chain.append(index);
+        size_t levelStart = 0;
+        while (levelStart < chain.length) {
+            DeriveJob job = DeriveJob(&this, &graph, center, coshf(radius), levelStart, chain.length);
+            size_t batches = (job.end - job.first + DERIVE_BATCH - 1) / DERIVE_BATCH;
+            while (derived.length < batches) {
+                derived.append(Array!DeriveStep.init);
+            }
+            ParallelJob finding = ParallelJob(&findDerived, &job, NO_DEADLINE, batches);
+            executor.run(&finding);
+            claimed.clear();
+            foreach (batch; derived.slice()[0 .. batches]) {
+                foreach (step; batch.slice()) {
+                    if (!isRederived.ptr[step.index]) {
+                        isRederived.ptr[step.index] = true;
+                        chain.append(step.index);
+                        claimed.append(step);
                     }
                 }
             }
-            head += 1;
+            ParallelJob applying = ParallelJob(&applyDerived, &job, NO_DEADLINE, claimed.length);
+            executor.run(&applying);
+            levelStart = job.end;
         }
     }
 
     void rebase(ref const Graph graph, uint cameraSlot, Motion!float toFrame, float radius, Executor executor) {
         nodes.ptr[indexOf(cameraSlot)].transform = Motion!float.identity();
-        rederive(graph, cameraSlot, Point!float.origin(), radius);
+        rederive(graph, cameraSlot, Point!float.origin(), radius, executor);
         RebaseJob job = RebaseJob(nodes.ptr, isRederived.ptr, nodes.length, toFrame);
         ParallelJob rebasing = ParallelJob(&rebaseBlock, &job, NO_DEADLINE, (nodes.length + KEEP_BLOCK - 1) / KEEP_BLOCK);
         executor.run(&rebasing);
@@ -585,4 +707,62 @@ NodeContent contentAt(ref Graph graph, uint slot) {
         graph.nodeAt(slot).content = holds ? NodeContent.holding : NodeContent.empty;
     }
     return graph.nodeAt(slot).content;
+}
+
+enum ubyte TEST_DIMENSION = 4;
+enum float TEST_SET_RADIUS = 3.0f;
+enum float TEST_DERIVE_RADIUS = 2.5f;
+enum uint TEST_WORKERS = 3;
+immutable float[3] TEST_DRIFT = [0.3f, -0.2f, 0.1f];
+
+bool takesNoTask(void* context, uint worker) {
+    return false;
+}
+
+bool isSameMotion(Motion!float a, Motion!float b) {
+    bool isSame = true;
+    foreach (column; 0 .. 4) {
+        foreach (row; 0 .. 4) {
+            isSame = isSame && a.m.c[column][row] == b.m.c[column][row];
+        }
+    }
+    return isSame;
+}
+
+// Rederiving on every worker has to work each transform out from the same node as one thread does.
+unittest {
+    import core.stdc.stdlib : free;
+    import base.parallel : TaskSource, WorkerPool;
+    import common.worldgen.generation : Worldgen;
+
+    Graph graph = Graph.make(TEST_DIMENSION, Worldgen.makeTerrain());
+    NearbyScratch scratch;
+    scratch.collectAll(graph, Position.origin(), TEST_SET_RADIUS);
+    Motion!float drift = Motion!float.shift(TEST_DRIFT);
+    foreach (ref node; scratch.nodes.slice()) {
+        node.transform = drift * node.transform;
+    }
+    scratch.nodes.ptr[0].transform = Motion!float.identity();
+    Array!NearbyNode drifted;
+    drifted.appendAll(scratch.nodes.slice());
+    uint first = scratch.nodes.ptr[0].slot;
+    scratch.rederive(graph, first, Point!float.origin(), TEST_DERIVE_RADIUS, Executor.init);
+    Array!NearbyNode alone;
+    alone.appendAll(scratch.nodes.slice());
+    scratch.nodes.clear();
+    scratch.nodes.appendAll(drifted.slice());
+    WorkerPool* pool = WorkerPool.make(TEST_WORKERS, TaskSource(&takesNoTask, null));
+    scratch.rederive(graph, first, Point!float.origin(), TEST_DERIVE_RADIUS, Executor(pool));
+    pool.release();
+    free(pool);
+    size_t changed = 0;
+    foreach (index, node; scratch.nodes.slice()) {
+        assert(isSameMotion(node.transform, alone.ptr[index].transform));
+        changed += !isSameMotion(node.transform, drifted.ptr[index].transform);
+    }
+    assert(changed > FACE_COUNT);
+    drifted.release();
+    alone.release();
+    scratch.release();
+    graph.release();
 }

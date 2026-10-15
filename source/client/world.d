@@ -46,8 +46,6 @@ struct Placement {
 struct NearbyStats {
     double slicedMilliseconds = 0;
     double recoveryMilliseconds = 0;
-    size_t kept;
-    size_t reexpanded;
     uint publishes;
     uint recoveries;
     uint grown;
@@ -95,6 +93,7 @@ struct LocalWorld {
     StepPhases phases;
     NearbyStats nearbyStats;
     bool hasNearby;
+    bool isPending;
 
     static LocalWorld make(ubyte dimension, Worldgen worldgen, float tanhReach) {
         LocalWorld world;
@@ -179,7 +178,7 @@ struct LocalWorld {
         nearby[published].collectAround(graph, cameraSlot, cameraInNearbyFrame() * Point!float.origin(), CAMERA_REACH);
         NearbyScratch* next = &nearby[1 - published];
         uint index = next.indexOf(cameraSlot);
-        if (next.isBuilding() && index != NOT_COLLECTED) {
+        if (next.isBuilding() && !next.isKeeping() && index != NOT_COLLECTED) {
             next.collectAround(graph, cameraSlot, next.nodes.ptr[index].transform * cameraPosition.local * Point!float.origin(), CAMERA_REACH);
         }
         cachedNodes = nearby[published].nodes.slice();
@@ -216,7 +215,7 @@ struct LocalWorld {
     void recoverNearby() {
         double start = nowMilliseconds();
         NearbyScratch* next = &nearby[1 - published];
-        if (!next.isBuilding() || next.indexOf(graph.slotOf(cameraPosition.node)) == NOT_COLLECTED) {
+        if (!next.isBuilding() || next.isKeeping() || next.indexOf(graph.slotOf(cameraPosition.node)) == NOT_COLLECTED) {
             next.begin(graph, cameraPosition, rebuildDistance(), FULL_RADIUS);
             pendingPoint = cameraPosition.local * Point!float.origin();
             pendingCut = radiusCut;
@@ -238,14 +237,17 @@ struct LocalWorld {
             cachedNodes = current.nodes.slice();
         } else {
             double traveled = streamer.travel - rebuildTravel;
-            if (next.isBuilding() && traveled > REBUILD_RESTART_TRAVEL) {
+            if (next.isBuilding() && !next.isKeeping() && traveled > REBUILD_RESTART_TRAVEL) {
                 cutRadius(traveled);
                 startNext(camera);
                 nearbyStats.restarts += 1;
-            } else if (!next.isBuilding() && (publishedPoint.coshDistance(camera) > coshf(NEARBY_REBUILD_DISTANCE) || publishedCut > 0)) {
+            } else if (!isPending && (publishedPoint.coshDistance(camera) > coshf(NEARBY_REBUILD_DISTANCE) || publishedCut > 0)) {
                 startNext(camera);
             }
-            if (next.isBuilding()) {
+            // A rebuild that finds nothing new to expand is finished as soon as it starts, and still has to be published
+            // for the reach to grow.
+            if (isPending) {
+                next.continueKeeping(*current, deadline, streamer.executor());
                 next.advance(graph, deadline, streamer.executor());
                 if (!next.isBuilding()) {
                     publishOrRestart();
@@ -272,14 +274,13 @@ struct LocalWorld {
     void startNext(Point!float camera) {
         NearbyScratch* current = &nearby[published];
         NearbyScratch* next = &nearby[1 - published];
-        current.rederive(graph, graph.slotOf(cameraPosition.node), camera, FULL_RADIUS + NODE_RADIUS);
-        next.beginFrom(*current, graph, camera, rebuildDistance(), FULL_RADIUS, streamer.executor());
+        current.rederive(graph, graph.slotOf(cameraPosition.node), camera, FULL_RADIUS + NODE_RADIUS, streamer.executor());
+        next.beginFrom(*current, graph, camera, rebuildDistance(), FULL_RADIUS);
         pendingPoint = camera;
         pendingCut = radiusCut;
         rebuildTravel = streamer.travel;
+        isPending = true;
         nearbyStats.grown += 1;
-        nearbyStats.kept += next.front;
-        nearbyStats.reexpanded += next.nodes.length - next.front;
     }
 
     void publishOrRestart() {
@@ -296,6 +297,7 @@ struct LocalWorld {
 
     void publish(Point!float point) {
         published = 1 - published;
+        isPending = false;
         publishedCut = pendingCut;
         cachedNodes = nearby[published].nodes.slice();
         publishedPoint = point;
@@ -307,8 +309,11 @@ struct LocalWorld {
     void followCamera() {
         uint cameraSlot = graph.slotOf(cameraPosition.node);
         NearbyScratch* current = &nearby[published];
+        NearbyScratch* next = &nearby[1 - published];
         Motion!float toCamera = current.nodes.ptr[current.indexOf(cameraSlot)].transform;
-        if (isFarFromOrigin(toCamera * cameraPosition.local)) {
+        // A rebuild still copying from the published set needs its transforms to stay as they are, so moving the frame
+        // waits a few frames for it.
+        if (!next.isKeeping() && isFarFromOrigin(toCamera * cameraPosition.local)) {
             Motion!float toFrame = toCamera.inverse();
             current.rebase(graph, cameraSlot, toFrame, REDERIVE_RADIUS, streamer.executor());
             publishedPoint = toFrame * publishedPoint;
@@ -316,9 +321,8 @@ struct LocalWorld {
             listVersion += 1;
             nearbyStats.rebases += 1;
         }
-        NearbyScratch* next = &nearby[1 - published];
         uint index = next.indexOf(cameraSlot);
-        if (next.isBuilding() && index != NOT_COLLECTED && isFarFromOrigin(next.nodes.ptr[index].transform * cameraPosition.local)) {
+        if (next.isBuilding() && !next.isKeeping() && index != NOT_COLLECTED && isFarFromOrigin(next.nodes.ptr[index].transform * cameraPosition.local)) {
             Motion!float toFrame = next.nodes.ptr[index].transform.inverse();
             next.rebase(graph, cameraSlot, toFrame, REDERIVE_RADIUS, streamer.executor());
             pendingPoint = toFrame * pendingPoint;
@@ -390,7 +394,7 @@ struct LocalWorld {
             if (chunk.hasDeferredMaterials) {
                 graph.resolveMaterials(slot);
             }
-            chunk.voxels.toDense(dimension)[cellIndex(dimension, coords.c[0], coords.c[1], coords.c[2])] = material;
+            chunk.denseVoxels(dimension)[cellIndex(dimension, coords.c[0], coords.c[1], coords.c[2])] = material;
             chunk.isEdited = true;
             graph.markChanged(slot);
             Array!ChunkSlot holders;
