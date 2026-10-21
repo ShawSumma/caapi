@@ -3,6 +3,7 @@ module base.vector3;
 import core.math : sqrt;
 
 immutable float[3] ZERO_VECTOR = [0.0f, 0.0f, 0.0f];
+enum float TEST_TOLERANCE = 1e-4f;
 
 float dot(float[3] a, float[3] b) {
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
@@ -64,13 +65,13 @@ float[3] projectedOntoPlane(float[3] subject, float[3] normal, float[3] directio
 
 unittest {
     float[3] v = [3, 4, 0];
-    assert(v.cappedTo(1).magnitude < 1.0001f);
+    assert(v.cappedTo(1).magnitude < 1 + TEST_TOLERANCE);
     float[3] z = [0, 0, 1];
     assert(v.cross(z).dot(v) == 0);
     float[3] reached = ZERO_VECTOR.movedToward(v, 10);
     assert(reached[0] == 3 && reached[1] == 4);
     float[3] partial = ZERO_VECTOR.movedToward(v, 1);
-    assert(partial.magnitude < 1.0001f && partial.magnitude > 0.9999f);
+    assert(partial.magnitude < 1 + TEST_TOLERANCE && partial.magnitude > 1 - TEST_TOLERANCE);
     float[3] xAxis = [1, 0, 0];
     assert(v.rejectAlong(xAxis).dot(xAxis) == 0);
 }

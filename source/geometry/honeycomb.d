@@ -2,7 +2,7 @@ module geometry.honeycomb;
 
 import core.math : sqrt;
 import core.stdc.math : acosh;
-import base.numbers : acoshAtCompileTime, asinhAtCompileTime;
+import base.numbers : acoshAtCompileTime, asinhAtCompileTime, higherOf;
 import geometry.cube : AxisMap;
 import geometry.lorentz : Mat4, Motion, Normal, Point, Vec4;
 
@@ -47,6 +47,11 @@ enum Corner : ubyte {
 enum uint FACE_COUNT = 12;
 enum uint CORNER_COUNT = 20;
 enum ubyte NO_CORNER = ubyte.max;
+enum double ORTHOGONAL_TOLERANCE = 1e-12;
+enum double GOLDEN = 1.6180339887498948482;
+enum float BEYOND_TOLERANCE = 1e-6f;
+enum float NODE_VOLUME = 4.3062076f;
+enum float TABLE_TOLERANCE = 1e-5f;
 
 struct Honeycomb {
     Normal!float[FACE_COUNT] normals;
@@ -127,8 +132,8 @@ struct Honeycomb {
         foreach (cubeCorner; 0 .. 8) {
             double[3] at = [(cubeCorner & 1) * toCube, ((cubeCorner >> 1) & 1) * toCube, ((cubeCorner >> 2) & 1) * toCube];
             Point!double point = (frames[0] * Vec4!double([at[0], at[1], at[2], 1])).toPoint();
-            farthest = higher(farthest, center.coshDistance(point));
-            farthestFromGrid = higher(farthestFromGrid, gridCenter.coshDistance(point));
+            farthest = higherOf(farthest, center.coshDistance(point));
+            farthestFromGrid = higherOf(farthestFromGrid, gridCenter.coshDistance(point));
         }
         h.coshCubeRadius = cast(float) farthest;
         h.coshCubeGridRadius = cast(float) farthestFromGrid;
@@ -155,10 +160,8 @@ struct Honeycomb {
             candidate += 1;
         }
         assert(candidate < FACE_COUNT);
-        Face[3] swapped;
-        foreach (i; 0 .. 3) {
-            swapped[i] = i == axis ? cast(Face) candidate : faces[i];
-        }
+        Face[3] swapped = [faces[0], faces[1], faces[2]];
+        swapped[axis] = cast(Face) candidate;
         return swapped;
     }
 
@@ -171,9 +174,6 @@ struct Honeycomb {
     }
 }
 
-enum double ORTHOGONAL_TOLERANCE = 1e-12;
-enum double GOLDEN = 1.6180339887498948482;
-
 Normal!double[FACE_COUNT] faceNormals() {
     double rootFive = sqrt(5.0);
     double a = sqrt(1 / (1 - 1 / rootFive));
@@ -183,8 +183,14 @@ Normal!double[FACE_COUNT] faceNormals() {
     foreach (face; 0 .. FACE_COUNT) {
         size_t placement = (5 - face % 3) % 3;
         size_t signs = face / 3;
-        double first = signs & 1 ? -1 : 1;
-        double second = signs & 2 ? -GOLDEN : GOLDEN;
+        double first = 1;
+        if ((signs & 1) != 0) {
+            first = -1;
+        }
+        double second = GOLDEN;
+        if ((signs & 2) != 0) {
+            second = -GOLDEN;
+        }
         double[3] direction = [0, 0, 0];
         direction[(placement + 1) % 3] = first / length;
         direction[(placement + 2) % 3] = second / length;
@@ -230,13 +236,12 @@ bool isSameFaceSet(Face[3] a, Face[3] b) {
     return matched == 3;
 }
 
-double higher(double a, double b) {
-    return a > b ? a : b;
-}
-
 immutable Honeycomb HONEYCOMB = Honeycomb.make();
 
-enum float NODE_VOLUME = 4.3062076f;
+enum float NODE_RADIUS = cast(float) acoshAtCompileTime(HONEYCOMB.coshNodeRadius);
+enum float CUBE_RADIUS = cast(float) acoshAtCompileTime(HONEYCOMB.coshCubeRadius);
+enum float CUBE_GRID_RADIUS = cast(float) acoshAtCompileTime(HONEYCOMB.coshCubeGridRadius);
+enum float FACE_DISTANCE = cast(float) asinhAtCompileTime(HONEYCOMB.sinhFaceDistance);
 
 Normal!float normal(Face face) {
     return HONEYCOMB.normals[face];
@@ -274,8 +279,6 @@ bool isBeyond(Face face, Point!float point) {
     return HONEYCOMB.normals[face].minkowski(point.v) > BEYOND_TOLERANCE * point.v.c[3];
 }
 
-enum float BEYOND_TOLERANCE = 1e-6f;
-
 Face[3] faces(Corner corner) {
     return HONEYCOMB.cornerFaces[corner];
 }
@@ -308,20 +311,15 @@ Point!float cubeCenter(Corner corner) {
     return HONEYCOMB.cubeCenters[corner];
 }
 
-enum float NODE_RADIUS = cast(float) acoshAtCompileTime(HONEYCOMB.coshNodeRadius);
-enum float CUBE_RADIUS = cast(float) acoshAtCompileTime(HONEYCOMB.coshCubeRadius);
-enum float CUBE_GRID_RADIUS = cast(float) acoshAtCompileTime(HONEYCOMB.coshCubeGridRadius);
-enum float FACE_DISTANCE = cast(float) asinhAtCompileTime(HONEYCOMB.sinhFaceDistance);
-
-enum float TABLE_TOLERANCE = 1e-5f;
-
 unittest {
     foreach (index; 0 .. FACE_COUNT) {
         Face face = cast(Face) index;
         assert(face.opposite != face && !face.isAdjacentTo(face.opposite) && face.opposite.opposite == face);
         uint neighbors = 0;
         foreach (other; 0 .. FACE_COUNT) {
-            neighbors += face.isAdjacentTo(cast(Face) other);
+            if (face.isAdjacentTo(cast(Face) other)) {
+                neighbors += 1;
+            }
         }
         assert(neighbors == 5);
         Point!float mirrored = face.mirror * Point!float.origin();

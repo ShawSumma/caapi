@@ -1,11 +1,11 @@
 module plugins.blocks.blocks;
 
 import plugins.api.api : Api, Material, Rhythm, Site, SitePart, Sky;
-import plugins.buildings.building : Bound, Join, Lot, Lots, Palette, STORY, Side, Spec, upright;
+import plugins.buildings.building : Bound, Join, Lot, Lots, Palette, STORY, Side, Spec;
 import plugins.buildings.types : Type, palettes, stories;
 import types = plugins.buildings.types;
 import plugins.connector.connector : connect;
-import plugins.turtle.turtle : PERCENT, Turtle, boxOf, floorDiv;
+import plugins.turtle.turtle : FACE_CORNERS, PERCENT, Turtle, boxOf, cornersOf, floorDiv, lowerOf, upright;
 
 enum ulong MIX = 0x2545F4914F6CDD1D;
 enum uint MIX_SHIFT = 24;
@@ -13,7 +13,6 @@ enum ulong ISLAND_SALT = 0x51ED270B;
 enum ulong DROPPED_SALT = 0x2C1B3C6D;
 enum ulong TREES_SALT = 0x297A2D39;
 enum uint AROUND = 4;
-enum uint SIDES = 5;
 enum double DROPPED_STREET = 0.5;
 enum double ISLAND = 0.05;
 enum double STREET_TREES = 0.5;
@@ -78,16 +77,6 @@ double roll(ulong hash, ulong salt) {
     return (mixed(hash, salt) % PERCENT) / cast(double) PERCENT;
 }
 
-Turtle[SIDES] cornersOf(Turtle face) {
-    Turtle[SIDES] corners;
-    Turtle corner = face;
-    foreach (index; 0 .. SIDES) {
-        corners[index] = corner;
-        corner = corner.forward(1).right();
-    }
-    return corners;
-}
-
 Turtle[AROUND] quartersOf(Turtle corner) {
     Turtle[AROUND] quarters;
     Turtle turtle = corner;
@@ -129,11 +118,11 @@ bool isIsland(Turtle face, ref const Root root) {
         return false;
     } else {
         uint index = 0;
-        Turtle[SIDES] corners = cornersOf(face);
-        while (index < SIDES && !isRootVertex(corners[index], root)) {
+        Turtle[FACE_CORNERS] corners = cornersOf(face);
+        while (index < FACE_CORNERS && !isRootVertex(corners[index], root)) {
             index += 1;
         }
-        return index == SIDES;
+        return index == FACE_CORNERS;
     }
 }
 
@@ -308,7 +297,7 @@ struct Chosen {
 Chosen chosenFor(Turtle site, ref const Kind kind, immutable(Type)[] choices) {
     Type type = choices[site.pick(cast(uint) choices.length)];
     int[2] range = stories(type);
-    int most = range[1] < kind.most ? range[1] : kind.most;
+    int most = lowerOf(range[1], kind.most);
     int count = between(site, range[0], most);
     int gap = 0;
     if (!kind.isCorner && site.chance(ALLEY_PERCENT)) {
@@ -325,7 +314,7 @@ Chosen chosenFor(Turtle site, ref const Kind kind, immutable(Type)[] choices) {
 int fit(Turtle site, int stories) {
     int room = CROWN_ROOM + 1;
     int fitting = floorDiv(site.balance(stories * STORY + room) - room, STORY);
-    return stories < fitting ? stories : fitting;
+    return lowerOf(stories, fitting);
 }
 
 Chosen fitted(Chosen chosen, Turtle site, ref const Root root) {
@@ -365,7 +354,7 @@ void lotAt(ref const Lots lots, bool isRoute, bool isRoot, ref const Root root) 
     } else if (site.chance(PARKING_PERCENT)) {
         parking(lots);
     } else {
-        immutable Kind kind = KINDS[lots.count - 1];
+        Kind kind = KINDS[lots.count - 1];
         Chosen chosen = fitted(chosenFor(site, kind, kind.types), site, root);
         if (chosen.spec.stories >= 1) {
             build(lots, chosen);
@@ -443,7 +432,7 @@ void lotsAt(ref const Turtle[AROUND] quarters, ref const Root root) {
     }
 }
 
-void island(ref const Turtle[SIDES] corners, ref const Root root) {
+void island(ref const Turtle[FACE_CORNERS] corners, ref const Root root) {
     Lots parts;
     foreach (corner; corners) {
         Lot lot;
@@ -471,7 +460,7 @@ void tile(const(Api)* api, Site site, const(Sky)* sky, const(void)* data) {
 }
 
 void tileAt(Turtle face, ref const Root root) {
-    Turtle[SIDES] corners = cornersOf(face);
+    Turtle[FACE_CORNERS] corners = cornersOf(face);
     ulong mine = face.hash(SitePart.face);
     foreach (edge; corners) {
         if (isStreet(edge, root) && mine > edge.left().hash(SitePart.face)) {

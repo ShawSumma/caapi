@@ -12,12 +12,12 @@ local function rise_to(world, altitude)
 end
 
 local function fall(world, key)
-  if key then
+  if key ~= nil then
     world:hold(key)
     world:step()
   end
   world:mode("walk")
-  if key then
+  if key ~= nil then
     world:release(key)
   end
   local altitude = world:altitude()

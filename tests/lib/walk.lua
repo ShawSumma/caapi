@@ -23,6 +23,10 @@ walk.SETTLE_SECONDS = 0.48
 walk.LANDING_SECONDS = 2
 walk.MIN_BLOCK_EDGE = 0.035
 walk.MAX_BLOCK_EDGE = 0.077
+walk.STREET_MATERIALS = { basalt = true, white_brick = true }
+walk.TOWER_MATERIALS = { concrete = true, white_brick = true, grey_brick = true, sandstone = true, wood_planks = true, steel = true, marble = true }
+walk.BACKROOMS_FLOORS = { carpet = true, damp_carpet = true, red_carpet = true, concrete = true }
+walk.BACKROOMS_CEILINGS = { ceiling_tile = true, light_panel = true, concrete = true }
 
 function walk.spawn(world)
   assert(world:mode() == "walk", "spawned walking")
@@ -55,11 +59,14 @@ function walk.is_on_step(world, standing)
 end
 
 function walk.climb_forward(world, seconds, dt, is_done)
-  local step = dt or world:timestep()
+  local step = dt
+  if step == nil then
+    step = world:timestep()
+  end
   local deadline = world:time() + seconds
   world:hold("fwd")
   world:step(step)
-  while world:time() < deadline and not (is_done and is_done()) do
+  while world:time() < deadline and not (is_done ~= nil and is_done()) do
     walk.jump_if_blocked(world)
     world:step(step)
   end

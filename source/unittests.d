@@ -1,9 +1,6 @@
 module unittests;
 
 import base.crash : reportCrashes, reportHangAfter;
-
-enum uint TEST_TIME_LIMIT_SECONDS = 300;
-
 import baseNumbers = base.numbers;
 import baseArray = base.array;
 import baseHashmap = base.hashmap;
@@ -52,6 +49,8 @@ import clientArrivals = client.arrivals;
 import clientStreaming = client.streaming;
 import clientWorld = client.world;
 import clientGame = client.game;
+
+enum uint TEST_TIME_LIMIT_SECONDS = 300;
 
 alias TESTED_MODULES = __traits(allMembers, unittests);
 

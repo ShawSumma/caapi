@@ -1,7 +1,7 @@
 module common.graph;
 
 import core.bitop : bsf;
-import base.hashmap : HashMap;
+import base.hashmap : FIBONACCI_MULTIPLIER, HashMap;
 import base.murmur : murmurHash3;
 import base.parallel : Executor;
 import base.slab : FreeIndices, Slab;
@@ -19,7 +19,6 @@ import common.worldgen.structure : PAINT_REACH, anchorSlotOf, finalizeStructure;
 import geometry.honeycomb : BEYOND_TOLERANCE, FACE_COUNT, Face, adjacentFaces, faceBit, mirror, normal;
 import geometry.lorentz : Point;
 
-enum ulong NODE_HASH_MULTIPLIER = 0x9E3779B97F4A7C15;
 enum size_t NODE_ID_BYTES = 16;
 
 struct NodeId {
@@ -30,7 +29,7 @@ struct NodeId {
     }
 
     size_t toHash() const {
-        return cast(size_t)(value[0] + value[1] * NODE_HASH_MULTIPLIER);
+        return cast(size_t)(value[0] + value[1] * FIBONACCI_MULTIPLIER);
     }
 
     ulong spice() const {
@@ -145,7 +144,11 @@ struct Graph {
 
     uint slotOf(NodeId id) const {
         const(uint)* found = slots.find(id);
-        return found is null ? NO_SLOT : *found;
+        if (found is null) {
+            return NO_SLOT;
+        } else {
+            return *found;
+        }
     }
 
     NodeId idAt(uint slot) const {
@@ -162,7 +165,11 @@ struct Graph {
 
     NodeId neighbor(NodeId node, Face face) const {
         uint found = neighborSlot(slotOf(node), face);
-        return found == NO_SLOT ? NO_NODE : idAt(found);
+        if (found == NO_SLOT) {
+            return NO_NODE;
+        } else {
+            return idAt(found);
+        }
     }
 
     bool isParentFace(uint slot, Face face) const {
@@ -223,8 +230,6 @@ struct Graph {
         liveCount -= 1;
     }
 
-    // An evicted slot's records are reset to their all-zero init, except its state, which is only read once hasState
-    // is set again, so pages of slots that are all free can go back.
     void discardFreed() {
         uint calls = DISCARDS_PER_FRAME;
         chunks.discardFreed(calls);
@@ -237,7 +242,11 @@ struct Graph {
 
     uint ensureNeighborSlot(uint slot, Face face) {
         uint existing = neighborSlot(slot, face);
-        return existing == NO_SLOT ? addChild(slot, face) : existing;
+        if (existing == NO_SLOT) {
+            return addChild(slot, face);
+        } else {
+            return existing;
+        }
     }
 
     uint addChild(uint slot, Face face) {
@@ -247,7 +256,10 @@ struct Graph {
         while (remaining != 0) {
             Face through = cast(Face) bsf(remaining);
             remaining &= remaining - 1;
-            uint parent = through == face ? slot : ensureNeighborSlot(neighborSlot(slot, through), face);
+            uint parent = slot;
+            if (through != face) {
+                parent = ensureNeighborSlot(neighborSlot(slot, through), face);
+            }
             list.links[list.count] = ParentEntry(parent, through);
             list.count += 1;
         }

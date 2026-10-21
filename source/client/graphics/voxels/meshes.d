@@ -2,11 +2,11 @@ module client.graphics.voxels.meshes;
 
 import core.stdc.string : memcpy;
 import bindings.platform : VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, VK_STRUCTURE_TYPE_MEMORY_BARRIER, VkBuffer, VkBufferCopy, VkBufferUsageFlags, VkCommandBuffer, VkDevice, VkDeviceSize, VkDrawIndirectCommand, VkMemoryBarrier, VkPhysicalDevice, vkCmdCopyBuffer, vkCmdPipelineBarrier;
-import client.graphics.matrices : MATRIX_FLOATS, flatten;
-import client.graphics.pipeline : GpuBuffer;
 import base.allocator : Allocation, RangeAllocator;
 import base.array : Array, grownCapacity;
 import base.slab : Slab;
+import client.graphics.matrices : MATRIX_FLOATS, flatten;
+import client.graphics.pipeline : GpuBuffer;
 import client.meshing : Mesher, Quad;
 import common.eviction : Unloaded;
 import common.graph : Graph, NO_SLOT;
@@ -156,8 +156,6 @@ struct ChunkMeshes {
         replaceNodes(INITIAL_NODE_CAPACITY);
     }
 
-    // The node buffer holds one transform per render block, so it only covers nodes with something meshed rather than
-    // the whole nearby set.
     void replaceNodes(uint capacity) {
         nodes = replacedMapped(nodes, cast(VkDeviceSize) capacity * MATRIX_FLOATS * float.sizeof);
         nodeCapacity = capacity;
@@ -169,7 +167,6 @@ struct ChunkMeshes {
         return cast(uint) drawableChunks.length;
     }
 
-    // Starts empty: mapped memory is slow to read back, so a caller refills it from what it keeps on the host.
     GpuBuffer replacedMapped(GpuBuffer old, VkDeviceSize size) {
         retired.append(old);
         hasReplacedDrawBuffers = true;
@@ -224,8 +221,6 @@ struct ChunkMeshes {
         listedNodes = cast(uint) nearby.nodes.length;
     }
 
-    // Writes the transform of the chunk's node once per list version, and returns where, or NOT_COLLECTED while the
-    // node is not in the nearby set.
     uint placeNode(ref const NearbyScratch nearby, uint chunkIndex) {
         uint render = chunkIndex / CORNER_COUNT;
         uint node = nearby.indexOf(chunks.at(chunkIndex).slot);
@@ -320,7 +315,6 @@ struct ChunkMeshes {
         }
     }
 
-    // Staging is sized for the whole batch before anything is staged, so growing it never copies out of mapped memory.
     void applyBatch(ref const NearbyScratch nearby) {
         size_t batchFaces = 0;
         foreach (worker; batch.workers.slice()) {
@@ -409,7 +403,7 @@ struct ChunkMeshes {
     }
 
     uint allocateFaces(uint count) {
-        immutable Allocation allocation = allocator.allocate(count);
+        Allocation allocation = allocator.allocate(count);
         if (allocation.isFound) {
             return allocation.offset;
         } else {

@@ -1,11 +1,10 @@
 local climb = require("lib.climb")
 local walk = require("lib.walk")
 
-local WILD = "skywild"
 local LOOK_UP_DEGREES = -10
 
 return function(world)
-  world:worldgen("structure", WILD)
+  world:worldgen("structure", "skywild")
   world:enter_route()
   world:wait(walk.SETTLE_SECONDS)
   climb.follow(world, math.huge)

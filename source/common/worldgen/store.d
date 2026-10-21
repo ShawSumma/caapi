@@ -68,15 +68,23 @@ struct StructureStore {
 
     void addPending(NodeId id, LineTouch touch) {
         const(uint)* head = pendingHeads.find(id);
+        uint next = NO_PENDING;
+        if (head !is null) {
+            next = *head;
+        }
         pendingCount += 1;
         pending.ensure(pendingCount);
-        *pending.at(pendingCount - 1) = PendingTouch(touch, head is null ? NO_PENDING : *head);
+        *pending.at(pendingCount - 1) = PendingTouch(touch, next);
         pendingHeads.insert(id, pendingCount);
     }
 
     const(Building)* buildingAt(uint slot) const {
         uint building = at(slot).building;
-        return building == NO_BUILDING ? null : buildings.at(building - 1);
+        if (building == NO_BUILDING) {
+            return null;
+        } else {
+            return buildings.at(building - 1);
+        }
     }
 
     void storeBuilding(uint slot, Building building) {

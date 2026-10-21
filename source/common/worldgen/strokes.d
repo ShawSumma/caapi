@@ -3,11 +3,12 @@ module common.worldgen.strokes;
 import core.stdc.math : acoshf, atanhf, cosh, coshf, fabsf, sinh, sqrtf, tanh;
 import base.array : Array;
 import base.hashmap : HashMap;
+import base.numbers : higherOf;
 import common.graph : ALL_FACES, NO_FACE, NodeId, farthestFaceBeyond;
-import plugins.api.api : Material;
 import common.view : GraphView;
 import geometry.honeycomb : FACE_COUNT, Face, NODE_RADIUS, mirror;
 import geometry.lorentz : Motion, Point, Vec4;
+import plugins.api.api : Material;
 
 enum float LEAF_CORE = 0.5f;
 enum float LEAF_CORE_DENSITY = 0.95f;
@@ -30,7 +31,7 @@ struct Stroke {
     bool isLeafy;
 
     static Stroke make(Motion!double frame, double length, float startRadius, float endRadius, Material material, bool isLeafy) {
-        float widest = startRadius > endRadius ? startRadius : endRadius;
+        float widest = higherOf(startRadius, endRadius);
         return Stroke(frame.m.column(3).as!float(), frame.m.column(2).as!float(), cast(float) length, cast(float) cosh(length), cast(float) sinh(length), cast(float) tanh(length), startRadius, endRadius, coshf(widest), material, isLeafy);
     }
 
@@ -47,7 +48,7 @@ struct Stroke {
     }
 
     float reach() const {
-        return startRadius > endRadius ? startRadius : endRadius;
+        return higherOf(startRadius, endRadius);
     }
 
     bool isWithin(Vec4!float point, float distance) const {
@@ -83,7 +84,7 @@ struct Stroke {
             if (!isLeafy) {
                 return found.coshDistance <= coshf(radius);
             } else {
-                float depth = acoshf(found.coshDistance < 1 ? 1 : found.coshDistance) / radius;
+                float depth = acoshf(higherOf(1.0f, found.coshDistance)) / radius;
                 return depth <= 1 && roll < leafDensity(depth);
             }
         }
@@ -116,7 +117,11 @@ struct Strokes {
 
     const(Stroke)[] at(NodeId id) const {
         const(uint)* found = lists.find(id);
-        return found is null ? null : strokes.ptr[*found].slice();
+        if (found is null) {
+            return null;
+        } else {
+            return strokes.ptr[*found].slice();
+        }
     }
 
     void add(ref GraphView view, uint node, Stroke stroke) {

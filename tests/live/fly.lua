@@ -21,7 +21,11 @@ return function(world)
     local before = world:traveled()
     world:press(1, "fwd")
     local flown = world:traveled() - before
-    assert(flown >= MIN_FRACTION * walk.FLY_SPEED, string.format("flew %.3f in second %d, %s at altitude %.3f", flown, second, world:is_loaded() and "loaded" or "not loaded", world:altitude()))
+    local loading = "not loaded"
+    if world:is_loaded() then
+      loading = "loaded"
+    end
+    assert(flown >= MIN_FRACTION * walk.FLY_SPEED, string.format("flew %.3f in second %d, %s at altitude %.3f", flown, second, loading, world:altitude()))
     check_close(world, string.format("flying, second %d", second))
   end
   world:mode("walk")
@@ -31,7 +35,7 @@ return function(world)
   for second = 1, NOCLIP_SECONDS do
     local before = world:traveled()
     world:press(1, "fwd")
-    assert(world:traveled() - before >= MIN_FRACTION * walk.NOCLIP_SPEED,string.format("noclip moved %.3f in second %d", world:traveled() - before, second))
+    assert(world:traveled() - before >= MIN_FRACTION * walk.NOCLIP_SPEED, string.format("noclip moved %.3f in second %d", world:traveled() - before, second))
     check_close(world, string.format("noclip, second %d", second))
   end
 end

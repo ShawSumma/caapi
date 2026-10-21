@@ -173,7 +173,10 @@ unittest {
     camera.turn(Angle(0), -PITCH_LIMIT);
     float[3] before = camera.heading.rotate(CAMERA_FORWARD);
     foreach (step; 0 .. 100) {
-        float wobble = (step % 2 == 0 ? 1e-3f : -1e-3f);
+        float wobble = 1e-3f;
+        if (step % 2 != 0) {
+            wobble = -wobble;
+        }
         float[3] up = [wobble, 1, wobble * 0.5f];
         float length = sqrt(up[0] * up[0] + up[1] * up[1] + up[2] * up[2]);
         camera.follow(camera.position, Motion!float.identity(), [up[0] / length, up[1] / length, up[2] / length]);

@@ -10,7 +10,7 @@ function climb.follow(world, last)
   local index = 1
   local steps = 0
   world:hold("fwd")
-  while index <= last and world:route_waypoint(index) do
+  while index <= last and world:route_waypoint(index) ~= nil do
     local yaw, horizontal, rise = world:route_waypoint(index)
     if world:is_on_ground() and horizontal < REACHED_DISTANCE and math.abs(rise) < REACHED_RISE then
       index = index + 1

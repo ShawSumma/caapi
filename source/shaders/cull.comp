@@ -56,7 +56,11 @@ void main() {
             CubeFrame frame = cube_frames[drawable.corner];
             mat4 transform = node * frame.cube_to_node;
             transforms[index].transform = transform;
-            transforms[index].reversed = vec4(float(view_parity * determinant(transform) < 0.0));
+            float reversed = 0.0;
+            if (view_parity * determinant(transform) < 0.0) {
+                reversed = 1.0;
+            }
+            transforms[index].reversed = vec4(reversed);
             if (is_in_frustum(camera_inverse * (node * frame.center))) {
                 command = DrawCommand(drawable.face_count * VERTICES_PER_FACE, 1, drawable.face_offset * VERTICES_PER_FACE, index);
             }

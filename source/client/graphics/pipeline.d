@@ -158,7 +158,7 @@ VkShaderModule createShader(VkDevice device, const(char)[] spirv) {
     info.codeSize = spirv.length;
     info.pCode = code;
     VkShaderModule result;
-    immutable VkResult created = vkCreateShaderModule(device, &info, null, &result);
+    VkResult created = vkCreateShaderModule(device, &info, null, &result);
     free(code);
     expectSuccess(created);
     return result;

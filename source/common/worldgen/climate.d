@@ -1,9 +1,25 @@
 module common.worldgen.climate;
 
 import base.numbers : higherOf, lowerOf;
-import plugins.api.api : Material;
+import base.splitmix : SplitMix;
 import common.view : GraphView;
 import geometry.honeycomb : Corner, Face, faces;
+import plugins.api.api : Material;
+
+enum float RUGGED_THRESHOLD = 0.4f;
+enum float MOUNTAIN_HEIGHT = 2.5f;
+enum float LAPSE_RATE = 0.3f;
+enum float COVER_DEPTH = 0.06f;
+enum float SOIL_DEPTH = 0.4f;
+enum float SNOW_WARMTH = -0.45f;
+enum float WATER_LEVEL = -0.6f;
+enum float BEACH_HEIGHT = 0.08f;
+enum float DEEP_WATER = 0.5f;
+enum float ROCKY_RELIEF = 2.2f;
+enum float WARMTH_CLASS_LIMIT = 0.35f;
+enum uint TEST_SAMPLES = 50;
+enum uint TEST_GENERATIONS = 2000;
+enum float TEST_TOLERANCE = 1e-4f;
 
 struct Process {
     float keep;
@@ -17,8 +33,15 @@ immutable Process HEAT = Process(0.94f, 0.3f, 0x2B992DD3);
 immutable Process WETNESS = Process(0.94f, 0.3f, 0x6C8E9CF5);
 immutable Process STRATA = Process(0.8f, 0.25f, 0x3C6EF372);
 immutable Process RUGGEDNESS = Process(0.9f, 0.2f, 0x1F83D9AB);
-enum float RUGGED_THRESHOLD = 0.4f;
-enum float MOUNTAIN_HEIGHT = 2.5f;
+immutable float[3] ROCK_BAND_DEPTHS = [1.2f, 2.6f, 4.5f];
+immutable float[2] WETNESS_CLASS_LIMITS = [-0.2f, 0.3f];
+
+immutable Material[2][3][4] ROCKS = [
+    [[Material.sandstone, Material.redSandstone], [Material.shale, Material.shale], [Material.limestone, Material.limestone]],
+    [[Material.slate, Material.slate], [Material.dolomite, Material.marble], [Material.marble, Material.marble]],
+    [[Material.granite, Material.granite], [Material.diorite, Material.diorite], [Material.andesite, Material.andesite]],
+    [[Material.gabbro, Material.olivine], [Material.basalt, Material.basalt], [Material.gabbro, Material.gabbro]],
+];
 
 float boundOf(Process process) {
     return process.spread / (1 - process.keep);
@@ -62,11 +85,7 @@ float stepped(float mean, Process process, ulong spice) {
 }
 
 float noiseOf(ulong seed) {
-    ulong z = seed + 0x9E3779B97F4A7C15;
-    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9;
-    z = (z ^ (z >> 27)) * 0x94D049BB133111EB;
-    z ^= z >> 31;
-    return cast(float)(z >> 40) / cast(float)(1 << 23) - 1;
+    return SplitMix(seed).roll() * 2 - 1;
 }
 
 struct Climate {
@@ -150,15 +169,6 @@ struct CubeClimate {
     }
 }
 
-enum float LAPSE_RATE = 0.3f;
-enum float COVER_DEPTH = 0.06f;
-enum float SOIL_DEPTH = 0.4f;
-enum float SNOW_WARMTH = -0.45f;
-enum float WATER_LEVEL = -0.6f;
-enum float BEACH_HEIGHT = 0.08f;
-enum float DEEP_WATER = 0.5f;
-enum float ROCKY_RELIEF = 2.2f;
-
 Material groundAt(float depth, Climate climate) {
     float warmth = climate.warmth();
     if (depth < COVER_DEPTH) {
@@ -201,14 +211,20 @@ Material coverOf(float warmth, float wetness, float relief) {
         return Material.gravel;
     } else if (isShore(relief)) {
         return Material.sand;
+    } else if (warmth < -0.15f && wetness < -0.2f) {
+        return Material.gravel;
     } else if (warmth < -0.15f) {
-        return wetness < -0.2f ? Material.gravel : Material.coarseGrass;
+        return Material.coarseGrass;
+    } else if (isRedDesert(warmth, wetness)) {
+        return Material.redSand;
     } else if (isDesert(warmth, wetness)) {
-        return isRedDesert(warmth, wetness) ? Material.redSand : Material.sand;
+        return Material.sand;
     } else if (wetness > 0.75f && warmth > 0.1f) {
         return Material.mud;
+    } else if (wetness > 0.45f && warmth > 0.1f) {
+        return Material.lushGrass;
     } else if (wetness > 0.45f) {
-        return warmth > 0.1f ? Material.lushGrass : Material.mudGrass;
+        return Material.mudGrass;
     } else if (warmth > 0.25f && wetness < -0.05f) {
         return Material.tanGrass;
     } else {
@@ -236,17 +252,6 @@ Material soilOf(float warmth, float wetness, float relief) {
     }
 }
 
-immutable float[3] ROCK_BAND_DEPTHS = [1.2f, 2.6f, 4.5f];
-immutable float[2] WETNESS_CLASS_LIMITS = [-0.2f, 0.3f];
-enum float WARMTH_CLASS_LIMIT = 0.35f;
-
-immutable Material[2][3][4] ROCKS = [
-    [[Material.sandstone, Material.redSandstone], [Material.shale, Material.shale], [Material.limestone, Material.limestone]],
-    [[Material.slate, Material.slate], [Material.dolomite, Material.marble], [Material.marble, Material.marble]],
-    [[Material.granite, Material.granite], [Material.diorite, Material.diorite], [Material.andesite, Material.andesite]],
-    [[Material.gabbro, Material.olivine], [Material.basalt, Material.basalt], [Material.gabbro, Material.gabbro]],
-];
-
 uint rockBand(float depth) {
     uint band = 0;
     while (band < ROCK_BAND_DEPTHS.length && depth >= ROCK_BAND_DEPTHS[band]) {
@@ -264,7 +269,11 @@ uint wetnessClass(float wetness) {
 }
 
 uint warmthClass(float warmth) {
-    return warmth >= WARMTH_CLASS_LIMIT;
+    if (warmth >= WARMTH_CLASS_LIMIT) {
+        return 1;
+    } else {
+        return 0;
+    }
 }
 
 struct UniformRock {
@@ -285,10 +294,6 @@ UniformRock uniformRock(float shallowest, float deepest, Climate lowest, Climate
         return UniformRock(Material.none, false);
     }
 }
-
-enum uint TEST_SAMPLES = 50;
-enum uint TEST_GENERATIONS = 2000;
-enum float TEST_TOLERANCE = 1e-4f;
 
 unittest {
     NodeClimate[8] around;

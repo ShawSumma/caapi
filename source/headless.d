@@ -5,27 +5,23 @@ import core.stdc.stdlib : free, malloc;
 import core.stdc.string : strcmp, strlen;
 import core.sys.posix.dirent : DIR, closedir, dirent, opendir, readdir;
 import core.sys.posix.sys.stat : S_IFDIR, S_IFMT, stat, stat_t;
-import client.arguments : StartupError, FlagValue, NumberArgument, WorldgenArgument;
-import client.config : ClientConfig;
-import client.game : Game;
-import client.script : ScriptHost;
 import base.array : Array;
 import base.crash : reportCrashes;
+import client.arguments : EXIT_FAILED, EXIT_USAGE, FlagValue, NumberArgument, StartupError, WorldgenArgument, exitStatus;
+import client.config : ClientConfig;
+import client.game : Game;
+import client.plugins : registry;
+import client.script : ScriptHost;
 import client.structures : StructureProblem, placeStructure;
 import common.settings : CHUNK_DIMENSION;
-import client.plugins : registry;
 import common.worldgen.generation : Worldgen, WorldgenKind;
 import worldcheck : benchDrive, benchGen, benchHashMap, benchMesh, benchNearby, checkRepaint, dumpStructure, dumpWorld, printMaterialCensus, printSlices, printWorldDigest;
 
-enum int EXIT_PASSED = 0;
-enum int EXIT_FAILED = 1;
-enum int EXIT_USAGE = 2;
 enum float DEFAULT_DUMP_RADIUS = 3.0f;
 enum float DEFAULT_GEN_RADIUS = 2.5f;
 enum float DEFAULT_NEARBY_RADIUS = 4.5f;
 enum uint DEFAULT_NEARBY_ITERATIONS = 50;
 enum int DEFAULT_SLICE_HEIGHT = 1;
-
 immutable string[2] SKIPPED_NAMES = ["lib", "visual"];
 enum string LUA_SUFFIX = ".lua";
 
@@ -198,7 +194,6 @@ struct HeadlessArguments {
             return DEFAULT_NEARBY_ITERATIONS;
         }
     }
-
 }
 
 bool runScriptFile(const(char)* path, Worldgen worldgen, FILE* report) {
@@ -231,17 +226,13 @@ immutable(char)* sessionSuffix(bool isCompleted) {
 int runScripts(ref const HeadlessArguments arguments, FILE* report) {
     uint failed = 0;
     foreach (path; arguments.scripts.slice()) {
-        immutable bool isPassed = runScriptFile(path, arguments.worldgen, report);
+        bool isPassed = runScriptFile(path, arguments.worldgen, report);
         if (!isPassed) {
             failed += 1;
         }
     }
     fprintf(report, "%u passed, %u failed\n", cast(uint) arguments.scripts.length - failed, failed);
-    if (failed > 0) {
-        return EXIT_FAILED;
-    } else {
-        return EXIT_PASSED;
-    }
+    return exitStatus(failed == 0);
 }
 
 bool runWorldCommand(ref const HeadlessArguments arguments, FILE* output) {
@@ -282,12 +273,7 @@ int runCommand(ref const HeadlessArguments arguments, FILE* output) {
     if (arguments.command == Command.scripts) {
         return runScripts(arguments, output);
     } else {
-        immutable bool isSucceeded = runWorldCommand(arguments, output);
-        if (isSucceeded) {
-            return EXIT_PASSED;
-        } else {
-            return EXIT_FAILED;
-        }
+        return exitStatus(runWorldCommand(arguments, output));
     }
 }
 
@@ -326,7 +312,7 @@ bool isLuaPath(const(char)[] name) {
 
 bool isDirectory(const(char)* path) {
     stat_t status;
-    immutable int result = stat(path, &status);
+    int result = stat(path, &status);
     return result == 0 && (status.st_mode & S_IFMT) == S_IFDIR;
 }
 

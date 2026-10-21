@@ -6,8 +6,8 @@ import core.stdc.stdlib : free, malloc;
 import base.numbers : higherOf, lowerOf;
 import common.graph : NodeId;
 import common.material : MATERIAL_COUNT, isSeeThrough;
-import plugins.api.api : Material;
 import geometry.honeycomb : CORNER_COUNT, Corner, NODE_RADIUS, NODE_VOLUME, cubeScale;
+import plugins.api.api : Material;
 
 enum int OUTSIDE_GRID = -1;
 enum float DENSITY_EXPONENT = -4.0f / 3.0f;
@@ -18,6 +18,14 @@ enum float VOLUME_TOLERANCE = 1e-3f;
 immutable float[3] GAUSS_POINTS = [-0.7745967f, 0.0f, 0.7745967f];
 immutable float[3] GAUSS_WEIGHTS = [5.0f / 9.0f, 8.0f / 9.0f, 5.0f / 9.0f];
 enum ubyte TEST_DIMENSION = 4;
+enum uint FLAG_SHIFT = 56;
+enum ulong VOXEL_MASK = (1UL << FLAG_SHIFT) - 1;
+enum uint STATE_SHIFT = FLAG_SHIFT;
+enum uint PREDICTED_SHIFT = FLAG_SHIFT + 2;
+enum ulong FIELD_MASK = 3;
+enum ulong DEFERRED_BIT = 1UL << (FLAG_SHIFT + 4);
+enum ulong QUEUED_BIT = 1UL << (FLAG_SHIFT + 5);
+enum ulong EDITED_BIT = 1UL << (FLAG_SHIFT + 6);
 
 struct ChunkId {
     NodeId node;
@@ -226,18 +234,6 @@ enum Occupancy : ubyte {
     empty,
 }
 
-enum uint FLAG_SHIFT = 56;
-enum ulong VOXEL_MASK = (1UL << FLAG_SHIFT) - 1;
-enum uint STATE_SHIFT = FLAG_SHIFT;
-enum uint PREDICTED_SHIFT = FLAG_SHIFT + 2;
-enum ulong FIELD_MASK = 3;
-enum ulong DEFERRED_BIT = 1UL << (FLAG_SHIFT + 4);
-enum ulong QUEUED_BIT = 1UL << (FLAG_SHIFT + 5);
-enum ulong EDITED_BIT = 1UL << (FLAG_SHIFT + 6);
-
-// One word per chunk, since there is a record for every chunk out to the render radius: the voxels, a material or a
-// pointer, which never reaches the top byte, and the state and flags in that byte. Parallel passes change the state
-// and the queued flag of neighbors they share, so those go through compare-and-swap on the whole word.
 struct Chunk {
     ulong word;
 
@@ -250,7 +246,6 @@ struct Chunk {
         word = (word & ~VOXEL_MASK) | value.bits;
     }
 
-    // Frees dense voxels and leaves no material, as Voxels.release does.
     void releaseVoxels() {
         Voxels held = voxels;
         held.release();
@@ -302,7 +297,7 @@ struct Chunk {
     }
 
     void hasDeferredMaterials(bool value) {
-        word = value ? word | DEFERRED_BIT : word & ~DEFERRED_BIT;
+        setFlag(DEFERRED_BIT, value);
     }
 
     bool isQueued() const {
@@ -310,7 +305,7 @@ struct Chunk {
     }
 
     void isQueued(bool value) {
-        word = value ? word | QUEUED_BIT : word & ~QUEUED_BIT;
+        setFlag(QUEUED_BIT, value);
     }
 
     bool claimQueued() {
@@ -330,7 +325,15 @@ struct Chunk {
     }
 
     void isEdited(bool value) {
-        word = value ? word | EDITED_BIT : word & ~EDITED_BIT;
+        setFlag(EDITED_BIT, value);
+    }
+
+    void setFlag(ulong bit, bool isSet) {
+        if (isSet) {
+            word |= bit;
+        } else {
+            word &= ~bit;
+        }
     }
 }
 

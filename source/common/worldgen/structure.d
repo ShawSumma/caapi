@@ -3,6 +3,9 @@ module common.worldgen.structure;
 import core.math : sqrt;
 import core.stdc.math : atanhf, coshf, fabsf, floorf;
 import base.array : Array;
+import base.hashmap : FIBONACCI_MULTIPLIER;
+import base.numbers : lowerOf;
+import base.splitmix : SplitMix;
 import base.units : Length;
 import common.graph : Graph, NO_SLOT, NodeId, ParentList, ROOT_NODE;
 import common.node : ChunkLayout;
@@ -10,14 +13,13 @@ import common.position : Position;
 import common.traversal : NearbyNode, NearbyScratch;
 import common.view : GraphView;
 import common.worldgen.blueprint : BlueprintBuilder, CellBox, EVERY_HEIGHT, LineSpec, PaintResult, canonicalBox, floorDivision;
-import common.worldgen.generation : NodeState, SplitMix, StructureWorld, Worldgen;
+import common.worldgen.generation : NodeState, StructureWorld, Worldgen;
 import geometry.honeycomb : CORNER_COUNT, Corner, FACE_COUNT, FACE_DISTANCE, Face, across, cornerToNode, cubeToNode, faceBit, faces, isAdjacentTo, mirror;
 import geometry.lorentz : Mat4, Motion, Point, Vec4;
 import plugins.api.api : Material, Site, SitePart, Turn;
 
 enum int PAINT_REACH = 6;
 enum uint GROUND_RING = 11;
-enum ulong HASH_MULTIPLIER = 0x9E3779B97F4A7C15;
 enum ulong LEVEL_MULTIPLIER = 0xBF58476D1CE4E5B9;
 enum int PLACE_SLACK = 2;
 enum float TOUCHING_FACTOR = 1.5f;
@@ -196,7 +198,10 @@ void finalizeStructure(ref Graph graph, uint slot) {
     Array!LineTouch* found = &graph.structures.scratch;
     found.clear();
     const(uint)* head = graph.structures.pendingHeads.find(graph.idAt(slot));
-    uint pending = head is null ? 0 : *head;
+    uint pending = 0;
+    if (head !is null) {
+        pending = *head;
+    }
     while (pending != 0) {
         PendingTouch record = *graph.structures.pending.at(pending - 1);
         (*found).addUnique(record.touch);
@@ -399,7 +404,7 @@ ulong siteHash(ref GraphView view, SiteFrame site, SitePart part) {
 }
 
 ulong mixedSeed(ulong spice, uint feature, SitePart part) {
-    return spice ^ ((cast(ulong) feature * (SitePart.max + 1) + part + 1) * HASH_MULTIPLIER);
+    return spice ^ ((cast(ulong) feature * (SitePart.max + 1) + part + 1) * FIBONACCI_MULTIPLIER);
 }
 
 ulong edgeSeed(ref GraphView view, SiteFrame site) {
@@ -475,11 +480,7 @@ CanonicalSite canonicalOf(ref const GraphView view, SiteFrame site) {
         isLowest = lower.node == entry.node;
         entry = lower;
     }
-    Corner next = entry.nextCorner();
-    Corner lower = entry.corner;
-    if (next < lower) {
-        lower = next;
-    }
+    Corner lower = lowerOf(entry.nextCorner(), entry.corner);
     Face first = entry.xSide;
     Face second = entry.ySide;
     if (second < first) {

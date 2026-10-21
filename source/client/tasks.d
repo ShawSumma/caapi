@@ -3,6 +3,7 @@ module client.tasks;
 import core.atomic : atomicLoad, atomicOp, atomicStore;
 import core.stdc.stdlib : calloc;
 import base.array : Array;
+import base.numbers : higherOf;
 import base.parallel : ConcurrentQueue, WorkerPool, waitWhile, wake;
 import common.node : ChunkSlot;
 import common.worldgen.building : Building, BuildingPlan;
@@ -153,9 +154,5 @@ size_t pushedPrefix(T)(ref ConcurrentQueue!T queue, ref Array!T pending, size_t 
 }
 
 uint workerThreadCount(long cores) {
-    if (cores > RESERVED_CORES) {
-        return cast(uint)(cores - RESERVED_CORES);
-    } else {
-        return 1;
-    }
+    return cast(uint) higherOf(cores - RESERVED_CORES, 1L);
 }

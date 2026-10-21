@@ -2,9 +2,8 @@ module plugins.crown.plugin;
 
 import plugins.api.api : Api, Box, ENTRY, Material, Registry, Rhythm, Site;
 import box = plugins.box.box;
-import plugins.turtle.turtle : Turtle, boxOf;
+import plugins.turtle.turtle : FACE_CORNERS, Turtle, boxOf, cornersOf, upright;
 
-enum int CORNERS = 5;
 enum int HEIGHT_EDGES = 2;
 enum int HALL_ROOF = 2 * box.STORY;
 enum int HALL_WINDOW_OFFSET = 2;
@@ -13,20 +12,6 @@ enum int BALCONY_DEPTH = 2;
 enum int BALCONY_WIDTH = 4;
 enum float ARCH_STOP_CELLS = box.STORY;
 enum size_t MOST_ARCH_STOPS = 16;
-
-Turtle[CORNERS] cornersOf(Turtle site) {
-    Turtle[CORNERS] corners;
-    Turtle corner = site;
-    foreach (index; 0 .. CORNERS) {
-        corners[index] = corner;
-        corner = corner.forward(1).right();
-    }
-    return corners;
-}
-
-Turtle upright(Turtle corner) {
-    return corner.pitchUp().rollRight();
-}
 
 Box strip(bool isAhead, int from, int to, int low, int high) {
     if (isAhead) {
@@ -132,7 +117,7 @@ void world(const(Api)* api, Site root, const(void)* data) {
     box.Palette palette = box.palette(site);
     int top = box.top(site, HEIGHT_EDGES);
     int bridgeFloor = site.edgeCells();
-    Turtle[CORNERS] corners = cornersOf(site);
+    Turtle[FACE_CORNERS] corners = cornersOf(site);
     foreach (index, corner; corners) {
         Turtle tower = upright(corner);
         hall(tower, palette, index == 0, index == 1);

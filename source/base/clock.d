@@ -1,5 +1,7 @@
 module base.clock;
 
+import base.numbers : higherOf;
+
 version (OSX) {
     import core.sys.posix.time : timespec;
 
@@ -31,9 +33,7 @@ struct PhaseTimes {
         totalMs += ms;
         lastMs = ms;
         count += 1;
-        if (ms > worstMs) {
-            worstMs = ms;
-        }
+        worstMs = higherOf(ms, worstMs);
     }
 
     double averageMs() const {

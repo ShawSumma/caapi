@@ -2,6 +2,10 @@ module client.graphics.renderer;
 
 import core.stdc.math : logf, powf, sinhf;
 import bindings.platform : VK_ACCESS_HOST_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_ERROR_OUT_OF_DATE_KHR, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_BIND_POINT_GRAPHICS, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_QUERY_RESULT_64_BIT, VK_QUERY_TYPE_TIMESTAMP, VK_SHADER_STAGE_VERTEX_BIT, VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, VK_STRUCTURE_TYPE_MEMORY_BARRIER, VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, VK_STRUCTURE_TYPE_SUBMIT_INFO, VK_SUBOPTIMAL_KHR, VK_SUBPASS_CONTENTS_INLINE, VK_SUCCESS, VkBufferImageCopy, VkClearValue, VkCommandBuffer, VkCommandBufferBeginInfo, VkDescriptorSet, VkDevice, VkDeviceSize, VkDrawIndirectCommand, VkExtent2D, VkExtent3D, VkImageSubresourceLayers, VkMemoryBarrier, VkPhysicalDevice, VkPhysicalDeviceProperties, VkPipelineStageFlags, VkPresentInfoKHR, VkQueryPool, VkQueryPoolCreateInfo, VkRect2D, VkRenderPassBeginInfo, VkResult, VkSubmitInfo, VkViewport, vkAcquireNextImageKHR, vkBeginCommandBuffer, vkCmdBeginRenderPass, vkCmdBindDescriptorSets, vkCmdBindPipeline, vkCmdCopyImageToBuffer, vkCmdDrawIndirect, vkCmdEndRenderPass, vkCmdNextSubpass, vkCmdPipelineBarrier, vkCmdPushConstants, vkCmdResetQueryPool, vkCmdSetScissor, vkCmdSetViewport, vkCmdWriteTimestamp, vkCreateQueryPool, vkDestroyQueryPool, vkDeviceWaitIdle, vkEndCommandBuffer, vkGetPhysicalDeviceProperties, vkGetQueryPoolResults, vkQueuePresentKHR, vkQueueSubmit, vkResetCommandBuffer, vkResetFences, vkWaitForFences;
+import base.clock : NANOSECONDS_PER_MILLISECOND, nowMilliseconds;
+import base.numbers : RADIANS_PER_DEGREE, lowerOf;
+import base.parallel : ParallelJob;
+import base.units : Angle;
 import client.graphics.base : SwapchainState;
 import client.graphics.core : SurfaceSource, VulkanCore;
 import client.graphics.crosshair : CrosshairPipeline;
@@ -12,19 +16,15 @@ import client.graphics.matrices : MATRIX_FLOATS, determinant, flatten, matrixMul
 import client.graphics.pipeline : GpuBuffer, VULKAN_TRUE, expectSuccess;
 import client.graphics.voxels.cull : CullPipeline;
 import client.graphics.voxels.meshes : ChunkMeshes, meshJob;
-import client.graphics.voxels.surface : CommonUniforms, FACES_BINDING, LayoutPush, SurfacePipeline, TRANSFORMS_BINDING;
+import client.graphics.voxels.surface : COLOR_CHANNELS, CommonUniforms, FACES_BINDING, LayoutPush, SurfacePipeline, TRANSFORMS_BINDING;
 import client.world : LocalWorld;
-import base.clock : NANOSECONDS_PER_MILLISECOND, nowMilliseconds;
-import base.numbers : PI;
-import base.parallel : ParallelJob;
-import base.units : Angle;
 import common.node : ChunkLayout;
 import common.raycast.graph : GraphCastHit;
 import common.traversal : NOT_COLLECTED;
 import geometry.honeycomb : CUBE_RADIUS, cubeToNode;
 import geometry.lorentz : Normal;
 
-enum Angle HALF_VERTICAL_FOV = Angle(45.0f * (PI / 180.0f));
+enum Angle HALF_VERTICAL_FOV = Angle(cast(float)(45 * RADIANS_PER_DEGREE));
 enum float NEAR_PLANE = 1.0e-4f;
 enum float FOG_VISIBILITY_THRESHOLD = 1e-3f;
 enum float FOG_SHARPNESS = 4.0f;
@@ -43,7 +43,6 @@ enum float SRGB_LINEAR_LIMIT = 0.04045f;
 enum float SRGB_LINEAR_SLOPE = 12.92f;
 enum float SRGB_OFFSET = 0.055f;
 enum float SRGB_GAMMA = 2.4f;
-enum uint COLOR_CHANNELS = 3;
 
 immutable float[4] SKY_SRGB = [
     0.55f,
@@ -100,7 +99,7 @@ struct GpuTimer {
 
     GpuTimes read(VkDevice device, GpuTimes previous) {
         ulong[TIMESTAMP_COUNT] stamps;
-        immutable VkResult result = vkGetQueryPoolResults(device, pool, 0, TIMESTAMP_COUNT, stamps.sizeof, stamps.ptr, ulong.sizeof, VK_QUERY_RESULT_64_BIT);
+        VkResult result = vkGetQueryPoolResults(device, pool, 0, TIMESTAMP_COUNT, stamps.sizeof, stamps.ptr, ulong.sizeof, VK_QUERY_RESULT_64_BIT);
         if (result == VK_SUCCESS) {
             return GpuTimes((stamps[FRAME_END_STAMP] - stamps[FRAME_START_STAMP]) * millisecondsPerTick, (stamps[CULL_END_STAMP] - stamps[FRAME_START_STAMP]) * millisecondsPerTick);
         } else {
@@ -226,7 +225,7 @@ struct Renderer {
             submit(false);
         } else {
             uint imageIndex;
-            immutable VkResult acquired = vkAcquireNextImageKHR(core.device, swapchain.swapchain, NO_TIMEOUT, swapchain.imageAvailableSemaphore, null, &imageIndex);
+            VkResult acquired = vkAcquireNextImageKHR(core.device, swapchain.swapchain, NO_TIMEOUT, swapchain.imageAvailableSemaphore, null, &imageIndex);
             if (acquired == VK_ERROR_OUT_OF_DATE_KHR) {
                 recreateSwapchain();
             } else {
@@ -318,7 +317,7 @@ struct Renderer {
         vkCmdPushConstants(commands, voxels.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, LayoutPush.sizeof, &layoutPush);
         uint drawn = 0;
         while (drawn < meshes.drawableCount) {
-            uint batch = drawBatch(meshes.drawableCount - drawn, core.maxDrawIndirectCount);
+            uint batch = lowerOf(meshes.drawableCount - drawn, core.maxDrawIndirectCount);
             vkCmdDrawIndirect(commands, meshes.commands.buffer, cast(VkDeviceSize) drawn * VkDrawIndirectCommand.sizeof, batch, VkDrawIndirectCommand.sizeof);
             drawn += batch;
         }
@@ -372,7 +371,7 @@ struct Renderer {
         presentInfo.swapchainCount = 1;
         presentInfo.pSwapchains = &swapchain.swapchain;
         presentInfo.pImageIndices = &imageIndex;
-        immutable VkResult presented = vkQueuePresentKHR(core.graphicsQueue, &presentInfo);
+        VkResult presented = vkQueuePresentKHR(core.graphicsQueue, &presentInfo);
         if (presented == VK_ERROR_OUT_OF_DATE_KHR || presented == VK_SUBOPTIMAL_KHR) {
             recreateSwapchain();
         } else {
@@ -410,14 +409,6 @@ struct Renderer {
 void expectAcquired(VkResult acquired) {
     if (acquired != VK_SUBOPTIMAL_KHR) {
         expectSuccess(acquired);
-    }
-}
-
-uint drawBatch(uint remaining, uint limit) {
-    if (remaining > limit) {
-        return limit;
-    } else {
-        return remaining;
     }
 }
 

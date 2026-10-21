@@ -2,7 +2,7 @@ module plugins.buildings.civic;
 
 import core.stdc.math : floor, sqrt;
 import plugins.api.api : Box, Material;
-import plugins.buildings.building : Bound, Lots, Palette, Part, Parts, SIDES, STORY, Spec, Tier, along, crown, enter, faceOf, footprint, makeParts, masonry, middle, movedOut, pick, pyramid, roof, setbacks, shell, strips, tiers, width, withAlong;
+import plugins.buildings.building : Bound, Lots, Palette, Part, Parts, SIDES, STORY, Spec, Tier, along, crown, enter, faceOf, footprint, makeParts, masonry, middle, movedOut, narrowestOf, pick, pyramid, roof, setbacks, shell, strips, tiers, withAlong;
 import plugins.turtle.turtle : boxOf, floorDiv;
 
 enum int[2] STORIES = [3, 6];
@@ -35,11 +35,7 @@ void arcade(ref const Part part, Palette palette) {
 
 void dome(ref const Part part, Palette palette, Tier tier) {
     Box roofBox = footprint(part, tier.shrink + 1, false, tier.high, tier.high);
-    int narrowest = width(roofBox.low[0], roofBox.high[0]);
-    if (width(roofBox.low[1], roofBox.high[1]) < narrowest) {
-        narrowest = width(roofBox.low[1], roofBox.high[1]);
-    }
-    int reach = floorDiv(narrowest - 1, 2);
+    int reach = floorDiv(narrowestOf(roofBox) - 1, 2);
     int x = middle(roofBox.low[0], roofBox.high[0]);
     int y = middle(roofBox.low[1], roofBox.high[1]);
     foreach (level; 0 .. reach + 1) {

@@ -12,6 +12,9 @@ void main() {
     vec2 slope = (screen * 2.0 - 1.0) * half_tangents;
     float klein_depth = depth_scale / (subpassLoad(depth_input).x + depth_scale);
     float radius = klein_depth * sqrt(1.0 + dot(slope, slope));
-    float away = radius < 1.0 ? atanh(radius) : INFINITY;
+    float away = INFINITY;
+    if (radius < 1.0) {
+        away = atanh(radius);
+    }
     fog = vec4(fog_color.rgb, exp(-pow(away / fog_reach, fog_sharpness)));
 }

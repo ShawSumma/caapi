@@ -4,10 +4,14 @@ import core.atomic : atomicFetchAdd, atomicLoad, atomicOp, atomicStore, cas;
 import core.stdc.stdlib : calloc, free;
 import core.sys.posix.pthread : pthread_create, pthread_join, pthread_t;
 import base.clock : nowMilliseconds;
+import base.numbers : higherOf, lowerOf;
 
 enum uint MAIN_WORKER = 0;
 enum size_t CACHE_LINE = 64;
 enum size_t GRAINS_PER_PARTICIPANT = 8;
+enum uint TEST_WORKERS = 3;
+enum size_t TEST_ITEMS = 10000;
+enum uint TEST_ROUNDS = 50;
 
 version (OSX) {
     enum uint OS_SYNC_NONE = 0;
@@ -58,7 +62,7 @@ struct ParallelJob {
             size_t first = atomicFetchAdd(claimed, grain);
             isDone = first >= count;
             if (!isDone) {
-                size_t end = first + grain < count ? first + grain : count;
+                size_t end = lowerOf(first + grain, count);
                 foreach (index; first .. end) {
                     run(context, index, worker);
                 }
@@ -70,10 +74,7 @@ struct ParallelJob {
     }
 
     void finish() {
-        size_t taken = atomicLoad(claimed);
-        if (taken < count) {
-            count = taken;
-        }
+        count = lowerOf(count, atomicLoad(claimed));
     }
 }
 
@@ -191,8 +192,7 @@ struct WorkerPool {
 }
 
 size_t grainFor(size_t count, uint participants) {
-    size_t grain = count / (cast(size_t) participants * GRAINS_PER_PARTICIPANT);
-    return grain > 0 ? grain : 1;
+    return higherOf(count / (cast(size_t) participants * GRAINS_PER_PARTICIPANT), size_t(1));
 }
 
 extern (C) void* workerMain(void* argument) {
@@ -293,10 +293,6 @@ struct ConcurrentQueue(T) {
     }
 }
 
-enum uint TEST_WORKERS = 3;
-enum size_t TEST_ITEMS = 10000;
-enum uint TEST_ROUNDS = 50;
-
 struct TestCounts {
     shared uint[TEST_ITEMS] seen;
 }
@@ -324,7 +320,11 @@ unittest {
     pool.run(&late);
     assert(late.count >= 1 && late.count < TEST_ITEMS);
     foreach (index; 0 .. TEST_ITEMS) {
-        assert(atomicLoad(counts.seen[index]) == TEST_ROUNDS + (index < late.count));
+        uint expected = TEST_ROUNDS;
+        if (index < late.count) {
+            expected += 1;
+        }
+        assert(atomicLoad(counts.seen[index]) == expected);
     }
     free(counts);
     pool.release();

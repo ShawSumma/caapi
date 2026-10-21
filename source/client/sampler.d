@@ -7,7 +7,8 @@ import core.sys.posix.pthread : pthread_equal, pthread_self, pthread_t;
 import core.sys.posix.signal : SA_RESTART, SIGPROF, sigaction, sigaction_t, sigemptyset;
 import core.sys.posix.sys.time : itimerval, setitimer, timeval;
 import base.array : Array;
-import base.hashmap : HashMap;
+import base.hashmap : FIBONACCI_MULTIPLIER, HashMap;
+import base.numbers : lowerOf;
 
 enum uint SAMPLE_FRAMES = 48;
 enum uint SAMPLE_CAPACITY = 1 << 18;
@@ -18,15 +19,14 @@ enum uint LISTED_CALLEES = 30;
 enum uint LISTED_CALLERS = 4;
 enum double SHARED_FRAME_PERCENT = 90.0;
 enum size_t NAME_CAPACITY = 160;
-enum size_t ADDRESS_HASH_MULTIPLIER = 0x9E3779B97F4A7C15;
+enum long NANOSECONDS_PER_MICROSECOND = 1000;
 
 version (OSX) {
     import core.sys.darwin.dlfcn : Dl_info, dladdr;
     import core.sys.darwin.execinfo : backtrace;
 
     enum int ITIMER_PROF = 2;
-    // Without per-thread cpu timers the main thread is sampled by the same process timer as the workers.
-    enum long MAIN_SAMPLE_NANOSECONDS = SAMPLE_MICROSECONDS * 1000;
+    enum long MAIN_SAMPLE_NANOSECONDS = SAMPLE_MICROSECONDS * NANOSECONDS_PER_MICROSECOND;
 
     extern (C) int* __error() nothrow @nogc;
 
@@ -92,7 +92,7 @@ struct AddressKey {
     size_t address;
 
     size_t toHash() const {
-        return address * ADDRESS_HASH_MULTIPLIER;
+        return address * FIBONACCI_MULTIPLIER;
     }
 }
 
@@ -110,7 +110,7 @@ struct CallKey {
     uint caller;
 
     size_t toHash() const {
-        return (cast(size_t) callee << 32 | caller) * ADDRESS_HASH_MULTIPLIER;
+        return (cast(size_t) callee << 32 | caller) * FIBONACCI_MULTIPLIER;
     }
 }
 
@@ -174,7 +174,7 @@ struct Sampler {
     void report(FILE* output, const(char)* title) {
         stop();
         uint taken = atomicLoad(sampleCount);
-        uint count = taken < SAMPLE_CAPACITY ? taken : SAMPLE_CAPACITY;
+        uint count = lowerOf(taken, SAMPLE_CAPACITY);
         HashMap!(AddressKey, uint) byAddress;
         HashMap!(AddressKey, uint) byStart;
         HashMap!(CallKey, uint) callIndex;
@@ -197,19 +197,27 @@ struct Sampler {
                 bool isFirst = counts.lastSample != index + 1;
                 counts.lastSample = index + 1;
                 if (sample.isMain) {
-                    counts.selfMain += isSelf;
-                    counts.totalMain += isFirst;
+                    if (isSelf) {
+                        counts.selfMain += 1;
+                    }
+                    if (isFirst) {
+                        counts.totalMain += 1;
+                    }
                     if (callee != uint.max && callee != current) {
                         countCall(CallKey(callee, current), index, callIndex, calls);
                     }
                 } else {
-                    counts.selfWorker += isSelf;
-                    counts.totalWorker += isFirst;
+                    if (isSelf) {
+                        counts.selfWorker += 1;
+                    }
+                    if (isFirst) {
+                        counts.totalWorker += 1;
+                    }
                 }
                 callee = current;
             }
         }
-        fprintf(output, "profile %s: main %u samples of %ldus of its cpu, workers %u samples of %dus of process cpu (%u dropped)\n", title, mainSamples, MAIN_SAMPLE_NANOSECONDS / 1000, workerSamples, SAMPLE_MICROSECONDS, taken - count);
+        fprintf(output, "profile %s: main %u samples of %ldus of its cpu, workers %u samples of %dus of process cpu (%u dropped)\n", title, mainSamples, MAIN_SAMPLE_NANOSECONDS / NANOSECONDS_PER_MICROSECOND, workerSamples, SAMPLE_MICROSECONDS, taken - count);
         listTop(output, "main by total", functions, mainSamples, Column.totalMain, Column.selfMain, Column.totalMain);
         listTop(output, "main by self", functions, mainSamples, Column.selfMain, Column.selfMain, Column.totalMain);
         listTop(output, "workers by total", functions, workerSamples, Column.totalWorker, Column.selfWorker, Column.totalWorker);
@@ -277,7 +285,10 @@ void readableName(const(char)* symbol, size_t start, ref char[NAME_CAPACITY] nam
                 cursor += 1;
             }
             if (written > 0) {
-                name[written] = isTemplate ? '!' : '.';
+                name[written] = '.';
+                if (isTemplate) {
+                    name[written] = '!';
+                }
                 written += 1;
             }
             foreach (_; 0 .. length) {

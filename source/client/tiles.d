@@ -2,17 +2,17 @@ module client.tiles;
 
 import core.stdc.stdlib : calloc, free;
 import core.stdc.string : memcpy, strlen;
-import client.structures : MESSAGE_CAPACITY, RANDOM_DISCARDED_BITS, RANDOM_UNIT, boxRefusal, engineRhythm, worldNamed;
 import base.array : Array;
 import base.hashmap : HashMap;
 import base.numbers : higherOf, lowerOf;
 import base.parallel : Executor, ParallelJob;
+import base.splitmix : SplitMix;
+import client.structures : MESSAGE_CAPACITY, boxRefusal, engineRhythm, worldNamed;
 import common.graph : Graph, NO_SLOT, NodeId;
 import common.view : GraphView;
-import common.worldgen.blueprint : Blueprint, Brush, CellBox, LevelRange, LineEdge, LineKey, LineSpec, Paint, PaintResult, Rhythm, RouteStop, TileRecord, canonicalBox, canonicalRhythm, edgeOf;
-import common.worldgen.generation : SplitMix;
+import common.worldgen.blueprint : Blueprint, Brush, CellBox, LineEdge, LineKey, LineSpec, Paint, PaintResult, Rhythm, RouteStop, SiteLine, TileRecord, canonicalBox, canonicalRhythm, edgeOf;
 import common.worldgen.sky : PLANET, SkyMeasure, World, balanceAlong, ensureWorldsAt, isPaintedBySky, measureOf, measuredWorld, storeMeasure, worldGroundNodeOf;
-import common.worldgen.structure : CanonicalSite, ColumnSpot, EDGE_NODES, GROUND_RING, LineTouch, LineTransform, SiteFrame, SlotTouch, addPendingTouch, aroundEdge, canonicalOf, edgeCells, faceSite, forwarded, frameOf, groundRing, seedTouch, siteHash, siteOf, turned, walkedTouch;
+import common.worldgen.structure : CanonicalSite, ColumnSpot, EDGE_NODES, GROUND_RING, LineTouch, SiteFrame, SlotTouch, addPendingTouch, aroundEdge, canonicalOf, edgeCells, faceSite, forwarded, frameOf, groundRing, seedTouch, siteHash, siteOf, turned, walkedTouch;
 import geometry.honeycomb : Face;
 import plugins.api.api : Api, Box, Column, Material, Pen, Site, SitePart, Sky, SkyGround, Spot, Structure, Tile, Turn;
 import plugins.api.api : ApiRhythm = Rhythm;
@@ -82,16 +82,8 @@ struct TileOutput {
     bool isFailed;
 }
 
-struct TileLine {
-    SiteFrame site;
-    LineTransform transform;
-    uint line;
-    LevelRange open;
-    LevelRange touched;
-}
-
 struct TilePainter {
-    Array!TileLine known;
+    Array!SiteLine known;
     Array!LineOutput lines;
     Array!BrushOutput brushes;
     Array!TouchOutput touches;
@@ -125,7 +117,7 @@ struct TilePainter {
         outputs.append(current);
     }
 
-    TileLine* lineOf(ref GraphView view, SiteFrame site) {
+    SiteLine* lineOf(ref GraphView view, SiteFrame site) {
         uint index = 0;
         while (index < known.length && known.ptr[index].site != site) {
             index += 1;
@@ -140,13 +132,13 @@ struct TilePainter {
             if (line == lines.length) {
                 lines.append(LineOutput(key, canonical.line));
             }
-            known.append(TileLine(site, canonical.transform, line));
+            known.append(SiteLine(site, canonical.transform, line));
         }
         return &known.ptr[index];
     }
 
     PaintResult paint(ref GraphView view, SiteFrame site, CellBox box, Rhythm rhythm, Material material, bool isIntoAirOnly) {
-        TileLine* found = lineOf(view, site);
+        SiteLine* found = lineOf(view, site);
         ubyte dimension = view.layout.dimension;
         CellBox canonical = canonicalBox(box, found.transform, dimension);
         int lowEdge = edgeOf(canonical.low[2], dimension);
@@ -164,7 +156,7 @@ struct TilePainter {
         }
     }
 
-    bool isAhead(ref GraphView view, ref TileLine found, int lowEdge, int highEdge) {
+    bool isAhead(ref GraphView view, ref SiteLine found, int lowEdge, int highEdge) {
         if (found.open.contains(lowEdge, highEdge)) {
             return true;
         } else {
@@ -186,7 +178,7 @@ struct TilePainter {
         }
     }
 
-    void record(ref GraphView view, ref TileLine found, int lowEdge, int highEdge) {
+    void record(ref GraphView view, ref SiteLine found, int lowEdge, int highEdge) {
         LineOutput* line = &lines.ptr[found.line];
         if (!found.touched.contains(lowEdge, highEdge)) {
             const(uint)* existing = view.blueprint.lineIndex.find(line.key);
@@ -308,10 +300,7 @@ struct TileHost {
         isTaskFailed = true;
         if (!hasFailed) {
             hasFailed = true;
-            size_t length = strlen(message);
-            if (length >= failure.length) {
-                length = failure.length - 1;
-            }
+            size_t length = lowerOf(strlen(message), failure.length - 1);
             memcpy(failure.ptr, message, length);
             failure[length] = 0;
         }
@@ -511,7 +500,7 @@ uint tilePick(const(Api)* api, uint count) {
 }
 
 double tileRandom(const(Api)* api) {
-    return (tileHost(api).random.next() >> RANDOM_DISCARDED_BITS) * RANDOM_UNIT;
+    return tileHost(api).random.unit();
 }
 
 ulong tileHash(const(Api)* api, Site site, SitePart part) {

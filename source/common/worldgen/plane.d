@@ -9,6 +9,8 @@ import geometry.lorentz : Motion, Point, Vec4;
 enum double LARGEST_DIRECT_SCALE = 600;
 enum float SNAP_TOLERANCE = 0.05f;
 enum float SNAP_ALIGNMENT = 0.99f;
+enum float TEST_TOLERANCE = 1e-3f;
+enum uint TEST_STEPS = 8;
 
 struct Plane {
     float[3] up;
@@ -48,7 +50,6 @@ struct Plane {
         return snapped;
     }
 
-    // One mirror at a time: a far node's whole motion has entries too large for float to keep the plane's height.
     Plane carriedAlong(const(Face)[] path) const {
         Plane carried = this;
         foreach_reverse (side; path) {
@@ -96,7 +97,10 @@ struct Plane {
         foreach (axis; 0 .. 3) {
             if (fabsf(up[axis]) > steepest) {
                 steepest = fabsf(up[axis]);
-                rising = cast(int)(2 * axis) + (up[axis] > 0);
+                rising = cast(int)(2 * axis);
+                if (up[axis] > 0) {
+                    rising += 1;
+                }
             }
         }
         return rising;
@@ -113,7 +117,11 @@ double scaledAsinh(double value, double logScale) {
         return asinh(value * exp(logScale));
     } else {
         double magnitude = logScale + log(2 * fabs(value));
-        return value < 0 ? -magnitude : magnitude;
+        if (value < 0) {
+            return -magnitude;
+        } else {
+            return magnitude;
+        }
     }
 }
 
@@ -122,8 +130,13 @@ float[3] unit(double[3] v) {
     return [cast(float)(v[0] / length), cast(float)(v[1] / length), cast(float)(v[2] / length)];
 }
 
-enum float TEST_TOLERANCE = 1e-3f;
-enum uint TEST_STEPS = 8;
+Face alternatingFace(uint step) {
+    if (step % 2 == 0) {
+        return Face.f0;
+    } else {
+        return Face.f0.opposite;
+    }
+}
 
 unittest {
     Plane ground = Plane.ofFace(Face.f0);
@@ -133,12 +146,12 @@ unittest {
     Point!float point = Motion!float.shift([0.3f, -0.2f, 0.4f]) * Point!float.origin();
     Plane far = ground;
     foreach (step; 0 .. TEST_STEPS) {
-        far = far.reflectAcross(step % 2 == 0 ? Face.f0 : Face.f0.opposite);
+        far = far.reflectAcross(alternatingFace(step));
     }
     assert(far.height > TEST_STEPS / 2);
     Plane back = far;
     foreach_reverse (step; 0 .. TEST_STEPS) {
-        back = back.reflectAcross(step % 2 == 0 ? Face.f0 : Face.f0.opposite);
+        back = back.reflectAcross(alternatingFace(step));
     }
     assert(fabsf(back.distanceTo(point) - ground.distanceTo(point)) < TEST_TOLERANCE);
     Plane nudged = Plane([ground.up[0] + 1e-3f, ground.up[1], ground.up[2]], ground.height + 1e-3f);

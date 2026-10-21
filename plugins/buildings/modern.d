@@ -2,7 +2,7 @@ module plugins.buildings.modern;
 
 import plugins.api.api : Box, Material, Rhythm;
 import plugins.buildings.building : Bound, FLOORS, Lots, Palette, Part, Parts, SIDES, STORY, Spec, Tier, WINDOW_ROWS, along, banded, crown, enter, faceOf, footprint, helipad, isEmpty, makeParts, masts, middle, movedOut, pick, roof, setbacks, shell, storefront, tiers, width, withAlong;
-import plugins.turtle.turtle : boxOf;
+import plugins.turtle.turtle : boxOf, higherOf;
 
 enum int[2] STORIES = [6, 20];
 enum int SETBACKS = 1;
@@ -19,7 +19,7 @@ immutable Palette[4] PALETTES = [
 
 void balconied(ref const Part part, Palette palette, Box box, Tier tier) {
     banded(part, box, tier, WINDOW_ROWS);
-    int low = tier.low > STORY ? tier.low : STORY;
+    int low = higherOf(tier.low, STORY);
     if (low < tier.high) {
         foreach (side; SIDES) {
             if (part.kinds[side] == Bound.street) {

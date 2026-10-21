@@ -1,8 +1,11 @@
-#version 460
+#version 450
 
 #include "common.h"
 #include "draw.h"
 #include "face.h"
+
+const uint VERTICES_PER_FACE = 6;
+const uint FIRST_SOLID_MATERIAL = 1;
 
 layout(location = 0) out vec3 texcoords;
 layout(location = 1) out float occlusion;
@@ -20,11 +23,11 @@ layout(push_constant) uniform PushConstants {
     float cell_ratio;
 };
 
-const uint VERTICES_PER_FACE = 6;
-const uint FIRST_SOLID_MATERIAL = 1;
-
 uvec2 face_corner(uint vertex, bool is_reversed, bool is_flipped) {
-    uint step = vertex < 3 ? vertex : (vertex - 1) % 4;
+    uint step = vertex;
+    if (vertex >= 3) {
+        step = (vertex - 1) % 4;
+    }
     uvec2 corner = uvec2(step >> 1, ((step + 1) >> 1) & 1);
     if (is_reversed != is_flipped) {
         corner = corner.yx;

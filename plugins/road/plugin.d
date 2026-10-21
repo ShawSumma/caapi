@@ -2,7 +2,7 @@ module plugins.road.plugin;
 
 import core.stdc.math : fabs, floor, sqrt;
 import plugins.api.api : Api, Column, ENTRY, Material, Registry, Rhythm, Site;
-import plugins.turtle.turtle : ENDLESS_HIGH, ENDLESS_LOW, Turtle, boxOf;
+import plugins.turtle.turtle : ENDLESS_HIGH, ENDLESS_LOW, Turtle, boxOf, higherOf;
 
 enum int HALF_WIDTH = 6;
 enum int DECK = 2;
@@ -57,7 +57,7 @@ ArchRows archRows(int edge, int below) {
             inner = offset - 1;
         }
         int soffit = heights[offset];
-        int ring = soffit > heights[inner] ? soffit : heights[inner];
+        int ring = higherOf(soffit, heights[inner]);
         if (found.count > 0 && found.rows[found.count - 1].soffit == soffit && found.rows[found.count - 1].ring == ring) {
             found.rows[found.count - 1].span += 1;
         } else {

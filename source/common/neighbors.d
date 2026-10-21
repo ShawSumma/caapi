@@ -3,11 +3,11 @@ module common.neighbors;
 import base.array : Array;
 import common.graph : Graph, NO_SLOT, ROOT_NODE;
 import common.material : isShownAgainst;
-import plugins.api.api : Material;
 import common.node : Chunk, ChunkId, ChunkSlot, ChunkState, Occupancy, cellIndex;
 import common.worldgen.generation : Worldgen;
-import geometry.cube : AXIS_COUNT, Axis, AxisMap, DIRECTIONS, Direction, Sign, boundaryOf;
+import geometry.cube : AXIS_COUNT, Axis, AxisMap, DIRECTIONS, Direction, Sign, beyondBoundary, boundaryOf;
 import geometry.honeycomb : CORNER_COUNT, Corner, FACE_COUNT, Face, across, axisMaps, faces;
+import plugins.api.api : Material;
 
 enum ubyte TEST_DIMENSION = 4;
 enum int TEST_EDGE_CELL = 2;
@@ -27,10 +27,10 @@ ChunkId chunkNeighborId(ref const Graph graph, ChunkId chunk, Direction directio
 }
 
 ChunkSlot chunkNeighborSlot(ref const Graph graph, ChunkSlot chunk, Direction direction) {
-    if (direction.sign == Sign.minus) {
-        return ChunkSlot(graph.neighborSlot(chunk.slot, chunk.corner.faces[direction.axis]), chunk.corner);
-    } else {
+    if (direction.sign == Sign.plus) {
         return ChunkSlot(chunk.slot, chunk.corner.across[direction.axis]);
+    } else {
+        return ChunkSlot(graph.neighborSlot(chunk.slot, chunk.corner.faces[direction.axis]), chunk.corner);
     }
 }
 
@@ -49,7 +49,11 @@ int[3] acrossBorder(ubyte dimension, Corner corner, int[3] cell, Direction direc
 }
 
 Direction borderCrossed(int[3] cell, size_t axis) {
-    return Direction(cast(Axis) axis, cell[axis] < 0 ? Sign.minus : Sign.plus);
+    if (cell[axis] < 0) {
+        return Direction(cast(Axis) axis, Sign.minus);
+    } else {
+        return Direction(cast(Axis) axis, Sign.plus);
+    }
 }
 
 bool isOutside(ubyte dimension, int coordinate) {
@@ -169,7 +173,7 @@ bool isBorderingVoid(ref const Graph graph, ChunkSlot chunk) {
                 size_t u = (direction.axis + 1) % AXIS_COUNT;
                 size_t v = (direction.axis + 2) % AXIS_COUNT;
                 int[3] cell;
-                cell[direction.axis] = direction.sign == Sign.plus ? dimension : -1;
+                cell[direction.axis] = beyondBoundary(dimension, direction.sign);
                 foreach (j; 0 .. dimension) {
                     foreach (i; 0 .. dimension) {
                         cell[u] = i;
@@ -205,10 +209,10 @@ void touchChunksReading(ref const Graph graph, ChunkSlot chunk, int[3] cell, ref
     uint borderAxes = 0;
     foreach (axis; 0 .. AXIS_COUNT) {
         if (cell[axis] == 0) {
-            outward[axis] = -1;
+            outward[axis] = beyondBoundary(dimension, Sign.minus);
             borderAxes |= 1u << axis;
         } else if (cell[axis] == dimension - 1) {
-            outward[axis] = dimension;
+            outward[axis] = beyondBoundary(dimension, Sign.plus);
             borderAxes |= 1u << axis;
         }
     }
@@ -230,7 +234,9 @@ void touchChunksAround(ref const Graph graph, ChunkSlot chunk, ref Array!ChunkSl
     foreach (corner; 0 .. 2 ^^ AXIS_COUNT) {
         int[3] cell;
         foreach (axis; 0 .. AXIS_COUNT) {
-            cell[axis] = (corner & (1u << axis)) != 0 ? last : 0;
+            if ((corner & (1u << axis)) != 0) {
+                cell[axis] = last;
+            }
         }
         graph.touchChunksReading(chunk, cell, holders);
     }
@@ -267,8 +273,14 @@ unittest {
                     bool isPlusA = (signs & 1) != 0;
                     bool isPlusB = (signs & 2) != 0;
                     int[3] edge = [TEST_EDGE_CELL, TEST_EDGE_CELL, TEST_EDGE_CELL];
-                    edge[a] = isPlusA ? TEST_DIMENSION : -1;
-                    edge[b] = isPlusB ? TEST_DIMENSION : -1;
+                    edge[a] = -1;
+                    if (isPlusA) {
+                        edge[a] = TEST_DIMENSION;
+                    }
+                    edge[b] = -1;
+                    if (isPlusB) {
+                        edge[b] = TEST_DIMENSION;
+                    }
                     CellHop viaA = graph.hopRemaining(graph.hopCell(chunk, edge, a));
                     CellHop viaB = graph.hopRemaining(graph.hopCell(chunk, edge, b));
                     bool isSame = viaA.chunk == viaB.chunk && viaA.cell == viaB.cell;
@@ -284,11 +296,11 @@ unittest {
         }
         foreach (direction; DIRECTIONS) {
             int[3] past = [TEST_EDGE_CELL, 1, 0];
-            past[direction.axis] = direction.sign == Sign.plus ? TEST_DIMENSION : -1;
+            past[direction.axis] = beyondBoundary(TEST_DIMENSION, direction.sign);
             CellHop there = graph.hopCell(chunk, past, direction.axis);
             Axis back = neighborAxisMap(chunk.corner, direction).to[direction.axis];
             int[3] stepped = there.cell;
-            stepped[back] = direction.sign == Sign.plus ? TEST_DIMENSION : -1;
+            stepped[back] = beyondBoundary(TEST_DIMENSION, direction.sign);
             CellHop home = graph.hopCell(there.chunk, stepped, back);
             int[3] expected = past;
             expected[direction.axis] = boundaryOf(TEST_DIMENSION, direction.sign);

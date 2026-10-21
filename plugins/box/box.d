@@ -17,6 +17,8 @@ enum Rhythm ROOMS = Rhythm(STORY, 1, STORY - 1);
 enum Rhythm WINDOW_ROW = Rhythm(STORY, STORY / 2, 1);
 enum int LOW = -HALF_WIDTH;
 enum int HIGH = HALF_WIDTH - 1;
+enum int HUT_STORIES = 2;
+enum int HUT_TOP = HUT_STORIES * STORY;
 
 struct Palette {
     Material wall;
@@ -31,7 +33,10 @@ immutable Palette[4] PALETTES = [
     Palette(Material.greyBrick, Material.concrete, Material.marble),
 ];
 
+immutable Palette TIMBER = Palette(Material.oakWood, Material.woodPlanks, Material.spruceWood);
+
 immutable int[2] SIDES = [LOW, HIGH];
+immutable int[2] WINDOW_STARTS = [LOW + 1 + WINDOW_INSET, HIGH - WINDOW_INSET - WINDOW_WIDTH];
 
 Palette palette(Turtle site) {
     return PALETTES[site.pick(PALETTES.length)];
@@ -65,8 +70,7 @@ void floors(Turtle tower, int top, Palette palette) {
 }
 
 void windows(Turtle tower, int top) {
-    immutable int[2] starts = [LOW + 1 + WINDOW_INSET, HIGH - WINDOW_INSET - WINDOW_WIDTH];
-    foreach (start; starts) {
+    foreach (start; WINDOW_STARTS) {
         int[2] window = [start, start + WINDOW_WIDTH - 1];
         tower.paint(Material.none, boxOf([LOW, LOW], window, [0, top - 1]), WINDOW_ROW);
         tower.paint(Material.none, boxOf([HIGH, HIGH], window, [0, top - 1]), WINDOW_ROW);
@@ -109,6 +113,11 @@ void tower(Turtle at, int top, Palette palette) {
 
 void door(Turtle tower) {
     tower.paint(Material.none, boxOf([LOW, LOW], [-1, 0], [1, DOOR]));
+}
+
+void hut(Turtle at) {
+    tower(at, HUT_TOP, TIMBER);
+    door(at);
 }
 
 void stairRoute(Turtle tower, int firstFloor, int top) {

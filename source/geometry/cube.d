@@ -39,7 +39,11 @@ immutable int[3][6] CELL_STEPS = [
 ];
 
 size_t directionIndex(Direction direction) {
-    return direction.sign == Sign.plus ? direction.axis : direction.axis + AXIS_COUNT;
+    if (direction.sign == Sign.plus) {
+        return direction.axis;
+    } else {
+        return direction.axis + AXIS_COUNT;
+    }
 }
 
 struct Cell {
@@ -47,7 +51,19 @@ struct Cell {
 }
 
 ubyte boundaryOf(ubyte dimension, Sign sign) {
-    return sign == Sign.plus ? cast(ubyte)(dimension - 1) : 0;
+    if (sign == Sign.plus) {
+        return cast(ubyte)(dimension - 1);
+    } else {
+        return 0;
+    }
+}
+
+int beyondBoundary(ubyte dimension, Sign sign) {
+    if (sign == Sign.plus) {
+        return dimension;
+    } else {
+        return -1;
+    }
 }
 
 struct AxisMap {

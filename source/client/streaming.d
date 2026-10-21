@@ -6,10 +6,10 @@ import core.stdc.stdlib : calloc, free;
 import core.sys.posix.unistd : _SC_NPROCESSORS_ONLN, sysconf;
 import base.array : Array;
 import base.clock : nowMilliseconds;
-import base.parallel : Executor, ParallelJob, TaskSource, WorkerPool;
+import base.numbers : lowerOf;
+import base.parallel : ConcurrentQueue, Executor, ParallelJob, TaskSource, WorkerPool;
 import base.units : Length;
 import client.arrivals : Integrator;
-import base.parallel : ConcurrentQueue;
 import client.tasks : BuildingRequest, BuildingResult, GenRequest, GenResult, QUEUE_CAPACITY, TaskQueues, pushedPrefix, takeTask, workerThreadCount;
 import common.character.features : RequiredChunks, visitCells;
 import common.eviction : KEEP_RADIUS, Unloaded;
@@ -19,8 +19,8 @@ import common.position : Position;
 import common.traversal : NearbyNode;
 import common.view : GraphView;
 import common.worldgen.building : BuildingPlan;
-import common.worldgen.store : NodeStructure;
 import common.worldgen.generation : ChunkParams, GeneratedVoxels;
+import common.worldgen.store : NodeStructure;
 import geometry.honeycomb : CORNER_COUNT, CUBE_RADIUS, Corner, cubeCenter;
 import geometry.lorentz : Motion, Point;
 
@@ -56,9 +56,15 @@ struct ScanRange {
     }
 
     double margin(ScanOutcome outcome) const {
-        float fresh = outcome.nearestOutOfRange == float.infinity ? float.infinity : acoshf(outcome.nearestOutOfRange) - range;
-        float dropped = outcome.nearestDropped == float.infinity ? float.infinity : acoshf(outcome.nearestDropped) - keepRange;
-        return fresh < dropped ? fresh : dropped;
+        float fresh = float.infinity;
+        if (outcome.nearestOutOfRange != float.infinity) {
+            fresh = acoshf(outcome.nearestOutOfRange) - range;
+        }
+        float dropped = float.infinity;
+        if (outcome.nearestDropped != float.infinity) {
+            dropped = acoshf(outcome.nearestDropped) - keepRange;
+        }
+        return lowerOf(fresh, dropped);
     }
 }
 
@@ -119,7 +125,11 @@ ScanFacts scanFacts(ref const Graph graph, NearbyNode nearbyNode, ScanRange rang
         if (state == ChunkState.fresh || state == ChunkState.dropped) {
             float product = range.camera.coshDistance(nearbyNode.transform * corner.cubeCenter);
             bool isFresh = state == ChunkState.fresh;
-            bool isOutOfRange = product > (isFresh ? range.threshold : range.keepThreshold);
+            float threshold = range.keepThreshold;
+            if (isFresh) {
+                threshold = range.threshold;
+            }
+            bool isOutOfRange = product > threshold;
             if (!isOutOfRange && isFresh) {
                 found.freshInRange |= 1u << index;
             } else if (!isOutOfRange) {
@@ -313,7 +323,7 @@ struct Streamer {
             NearbyNode nearbyNode = nearby[index];
             bool isDone = false;
             if (!graph.structures.at(nearbyNode.slot).isBuildingQueued) {
-                immutable ScanOutcome outcome = scanNode(graph, nearbyNode.slot, scanFacts(graph, nearbyNode, range), budget, false);
+                ScanOutcome outcome = scanNode(graph, nearbyNode.slot, scanFacts(graph, nearbyNode, range), budget, false);
                 isDone = !outcome.isInterrupted && !outcome.isWaitingOnBuilding;
                 if (isDone) {
                     rescanAt.ptr[nearbyNode.slot] = travel + range.margin(outcome);
@@ -359,7 +369,7 @@ struct Streamer {
         bool isStopped = nowMilliseconds() >= deadline;
         while (index < nearby.length && !isStopped) {
             size_t first = index;
-            size_t end = first + SCAN_WINDOW < nearby.length ? first + SCAN_WINDOW : nearby.length;
+            size_t end = lowerOf(first + SCAN_WINDOW, nearby.length);
             facts.resize(end - first);
             ScanJob context = ScanJob(&graph, &this, nearby.ptr + first, facts.ptr, range);
             ParallelJob job = ParallelJob(&gatherScanFacts, &context, double.infinity, end - first);
@@ -381,7 +391,7 @@ struct Streamer {
 
     bool scanAt(ref Graph graph, const(NearbyNode)[] nearby, size_t index, ScanFacts found, ScanRange range, uint budget, bool isUrgent) {
         uint slot = nearby[index].slot;
-        immutable ScanOutcome outcome = scanNode(graph, slot, found, budget, isUrgent);
+        ScanOutcome outcome = scanNode(graph, slot, found, budget, isUrgent);
         if (!outcome.isInterrupted && outcome.isWaitingOnBuilding) {
             rescanAt.ptr[slot] = RESCAN;
             waiting.append(cast(uint) index);
@@ -412,8 +422,6 @@ struct Streamer {
         nearTravel = travel;
     }
 
-    // Nodes are scanned nearest band first: the list itself runs in the order nodes were found, and the shell at its
-    // edge is far larger than the one just inside it, so a scan in list order leaves the nearer shell waiting.
     bool scanNearCamera(ref Graph graph, const(NearbyNode)[] nearby, ScanRange range, uint budget, double deadline) {
         bool isStopped = nowMilliseconds() >= deadline;
         while (nearHead < nearCamera.length && !isStopped) {
@@ -421,7 +429,11 @@ struct Streamer {
             bool isInterrupted = false;
             if (isScanPending(nearby[index].slot)) {
                 bool isUrgent = nearHead < nearUrgent;
-                isInterrupted = scanAt(graph, nearby, index, scanFacts(graph, nearby[index], range), range, isUrgent ? uint.max : budget, isUrgent);
+                uint allowed = budget;
+                if (isUrgent) {
+                    allowed = uint.max;
+                }
+                isInterrupted = scanAt(graph, nearby, index, scanFacts(graph, nearby[index], range), range, allowed, isUrgent);
                 isStopped = isInterrupted || nowMilliseconds() >= deadline;
             }
             if (!isInterrupted) {
@@ -475,7 +487,11 @@ struct Streamer {
         if (graph.structures.buildingAt(slot) is null && !node.isBuildingQueued) {
             node.isBuildingQueued = true;
             node.isBuildingUrgent = isUrgent;
-            (isUrgent ? urgentBuildingSlots : buildingSlots).append(slot);
+            if (isUrgent) {
+                urgentBuildingSlots.append(slot);
+            } else {
+                buildingSlots.append(slot);
+            }
         } else if (isUrgent && node.isBuildingQueued && !node.isBuildingUrgent) {
             node.isBuildingUrgent = true;
             size_t index = 0;

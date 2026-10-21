@@ -8,7 +8,7 @@ enum string HIGHLIGHT_FRAG_SPV = import("highlight.frag.spv");
 enum uint MODEL_FLOATS = 16;
 enum uint CORNER_FLOATS = 4;
 enum uint HIGHLIGHT_PUSH_FLOATS = MODEL_FLOATS + 2 * CORNER_FLOATS;
-enum uint HIGHLIGHT_PUSH_BYTES = HIGHLIGHT_PUSH_FLOATS * 4;
+enum uint HIGHLIGHT_PUSH_BYTES = HIGHLIGHT_PUSH_FLOATS * float.sizeof;
 enum uint CUBE_EDGE_VERTICES = 24;
 
 struct HighlightPipeline {

@@ -1,16 +1,16 @@
 module common.worldgen.blueprint;
 
 import base.array : Array;
-import base.hashmap : HashMap;
+import base.hashmap : FIBONACCI_MULTIPLIER, HashMap;
 import base.numbers : higherOf, lowerOf;
 import common.graph : Graph, NodeId;
 import common.material : MATERIAL_COUNT;
-import plugins.api.api : Material;
 import common.worldgen.structure : CanonicalSite, ClaimKey, ColumnSpot, LineTransform, PAINT_REACH, SiteFrame, SlotTouch, addPendingTouch, aroundEdge, canonicalOf, edgeCells, isEndless, seedTouch, walkedTouch;
 import geometry.honeycomb : Corner, FACE_COUNT, Face;
+import plugins.api.api : Material;
 
-enum ulong LINE_HASH_MULTIPLIER = 0x9E3779B97F4A7C15;
 enum uint PLACED_RECORD = uint.max;
+enum ubyte TEST_DIMENSION = 12;
 
 struct Paint {
     ubyte material;
@@ -90,7 +90,7 @@ struct LineEdge {
     int level;
 
     size_t toHash() const {
-        return cast(size_t)(line * LINE_HASH_MULTIPLIER) ^ cast(uint) level;
+        return cast(size_t)(line * FIBONACCI_MULTIPLIER) ^ cast(uint) level;
     }
 }
 
@@ -206,7 +206,11 @@ struct Blueprint {
     }
 
     ref inout(PaintedBrushes) paintedBy(uint record) inout return {
-        return record == PLACED_RECORD ? placed : tiles.ptr[record].painted;
+        if (record == PLACED_RECORD) {
+            return placed;
+        } else {
+            return tiles.ptr[record].painted;
+        }
     }
 
     uint takeOrders(uint count) {
@@ -420,7 +424,7 @@ struct BlueprintBuilder {
     }
 
     bool claim(ClaimKey key) {
-        immutable bool isNewlyClaimed = blueprint.claim(key);
+        bool isNewlyClaimed = blueprint.claim(key);
         if (isNewlyClaimed) {
             graph.reference(key.slot);
         }
@@ -506,14 +510,15 @@ int floorDivision(int value, int divisor) {
 }
 
 unittest {
-    assert(edgeOf(-3, 12) == -1 && edgeOf(0, 12) == 0);
-    assert(edgeOf(23, 12) == 0 && edgeOf(24, 12) == 1);
-    assert(edgeOf(-24, 12) == -1 && edgeOf(-25, 12) == -2);
-    assert(edgeOf(int.min, 12) == int.min && edgeOf(int.max, 12) == int.max);
+    int edge = edgeCells(TEST_DIMENSION);
+    assert(edgeOf(-3, TEST_DIMENSION) == -1 && edgeOf(0, TEST_DIMENSION) == 0);
+    assert(edgeOf(edge - 1, TEST_DIMENSION) == 0 && edgeOf(edge, TEST_DIMENSION) == 1);
+    assert(edgeOf(-edge, TEST_DIMENSION) == -1 && edgeOf(-edge - 1, TEST_DIMENSION) == -2);
+    assert(edgeOf(int.min, TEST_DIMENSION) == int.min && edgeOf(int.max, TEST_DIMENSION) == int.max);
     LineTransform mirrored = LineTransform(2, 1, 1, -1, false);
     Rhythm local = Rhythm(8, 1, 3);
-    Rhythm moved = canonicalRhythm(local, mirrored, 12);
+    Rhythm moved = canonicalRhythm(local, mirrored, TEST_DIMENSION);
     foreach (height; -20 .. 20) {
-        assert(local.includes(height) == moved.includes(2 * 24 - 1 - height));
+        assert(local.includes(height) == moved.includes(mirrored.offsetLevels * edge - 1 - height));
     }
 }

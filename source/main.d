@@ -11,33 +11,34 @@ import base.array : Array;
 import base.clock : MILLISECONDS_PER_SECOND, NANOSECONDS_PER_SECOND, PhaseTimes, nowSeconds, threadCpuMilliseconds;
 import base.crash : reportCrashes, reportHangAfter;
 import base.names : ENUM_NAMES;
+import base.numbers : lowerOf;
 import base.units : Angle, AngularSpeed, Time;
-import client.arguments : StartupError, FlagValue, NumberArgument, WorldgenArgument;
+import client.arguments : EXIT_FAILED, EXIT_USAGE, FlagValue, NumberArgument, StartupError, WorldgenArgument, exitStatus;
 import client.config : ClientConfig;
 import client.game : FrameInput, Game, KEY_COUNT, Key, MATERIAL_PALETTE, axisValue;
 import client.graphics.core : SurfaceSource;
 import client.graphics.renderer : FrameTimes, Renderer;
+import client.meshing : Mesher;
 import client.png : writePng;
 import client.sampler : Sampler;
 import client.script : ScriptHost, ScriptRecorder;
 import client.structures : StructureProblem, growthProblem, placeStructure, tileCounts;
 import client.world : LocalWorld, RENDER_RADIUS, StepPhases;
 import common.character.controller : MovementMode;
-import client.meshing : Mesher;
 import common.graph : Graph, NO_SLOT, Node, childParentFaces;
-import plugins.api.api : Material;
 import common.neighbors : chunkNeighborSlot, needsMesh;
 import common.node : Chunk, ChunkSlot, ChunkState, cellCount;
-import common.traversal : NOT_COLLECTED, NearbyNode;
-import geometry.cube : DIRECTIONS;
 import common.settings : CHUNK_DIMENSION;
+import common.traversal : NOT_COLLECTED, NearbyNode;
 import common.worldgen.blueprint : Blueprint, Brush, LineRun, RunRef;
 import common.worldgen.building : Building;
 import common.worldgen.generation : NodeState, Worldgen;
 import common.worldgen.sky : NodeWorlds;
 import common.worldgen.store : NodeStructure;
+import geometry.cube : DIRECTIONS;
 import geometry.honeycomb : CORNER_COUNT, CUBE_RADIUS, Corner, FACE_COUNT, Face, NODE_RADIUS, cubeCenter, mirror;
 import geometry.lorentz : Motion, Point;
+import plugins.api.api : Material;
 
 enum uint WINDOW_WIDTH = 1280;
 enum uint WINDOW_HEIGHT = 720;
@@ -53,10 +54,8 @@ enum uint CENSUS_INTERVAL = 10;
 enum uint STALE_MESHES_SHOWN = 8;
 enum uint BENCH_TIME_LIMIT_SECONDS = 300;
 enum double TITLE_INTERVAL_SECONDS = 1.0;
+enum double MAX_STEP_SECONDS = 0.1;
 enum size_t TEXT_CAPACITY = 256;
-enum int EXIT_OK = 0;
-enum int EXIT_FAILED = 1;
-enum int EXIT_USAGE = 2;
 enum size_t BYTES_PER_MEGABYTE = 1024 * 1024;
 
 version (OSX) {
@@ -111,8 +110,8 @@ version (OSX) {
     }
 } else {
     import core.sys.posix.sys.resource : RUSAGE_SELF, getrusage, rusage;
-    import core.sys.posix.unistd : _SC_PAGESIZE, sysconf;
     import bindings.platform : Atom, Button1, Button3, ButtonPress, ClientMessage, CurrentTime, Cursor, Display, False, FocusOut, GenericEvent, GrabModeAsync, GrabSuccess, KeyPress, KeyRelease, KeySym, Pixmap, Success, True, UnmapNotify, Window, XBlackPixel, XCloseDisplay, XColor, XCreateBitmapFromData, XCreatePixmapCursor, XCreateSimpleWindow, XDefaultScreen, XDestroyWindow, XDisplayHeight, XDisplayWidth, XEvent, XFlush, XFreeCursor, XFreeEventData, XFreePixmap, XGenericEventCookie, XGetEventData, XGrabPointer, XIAllMasterDevices, XIDeviceInfo, XIEventMask, XIFreeDeviceInfo, XIModeAbsolute, XIQueryDevice, XIQueryVersion, XIRawEvent, XISelectEvents, XIValuatorClass, XIValuatorClassInfo, XI_DeviceChanged, XI_RawMotion, XInternAtom, XK_1, XK_9, XK_Escape, XK_Down, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_n, XK_s, XK_space, XK_v, XK_w, XLookupKeysym, XMapWindow, XNextEvent, XOpenDisplay, XPending, XQueryExtension, XRootWindow, XSelectInput, XSetWMProtocols, XStoreName, XUngrabPointer, XkbSetDetectableAutoRepeat;
+    import base.pages : pageSize;
 
     enum string WINDOW_REQUIREMENT = "cannot open a window: needs an X display with XInput 2.1";
     enum size_t BYTES_PER_KILOBYTE = 1024;
@@ -181,7 +180,7 @@ version (OSX) {
             fscanf(statm, "%zu %zu", &total, &resident);
             fclose(statm);
         }
-        return resident * sysconf(_SC_PAGESIZE);
+        return resident * pageSize();
     }
 
     size_t peakResidentBytes() {
@@ -392,7 +391,7 @@ struct Session {
         if (arguments.recordPath is null) {
             return runWindow(arguments);
         } else {
-            immutable bool isOpened = recorder.open(arguments.recordPath);
+            bool isOpened = recorder.open(arguments.recordPath);
             if (!isOpened) {
                 StartupError(null, "cannot open the recording file", arguments.recordPath).report(arguments.program);
                 return EXIT_FAILED;
@@ -406,7 +405,7 @@ struct Session {
     }
 
     int runWindow(Arguments arguments) {
-        immutable bool isWindowOpen = openWindow();
+        bool isWindowOpen = openWindow();
         if (!isWindowOpen) {
             StartupError(null, WINDOW_REQUIREMENT, null).report(arguments.program);
             return EXIT_FAILED;
@@ -414,11 +413,11 @@ struct Session {
             renderer.setup(surfaceSource(), CHUNK_DIMENSION);
             game = Game.make(arguments.worldgen, config.reach);
             game.world.renderRadius = arguments.renderRadius;
-            immutable bool isPlaced = isStructurePlaced(game, arguments);
+            bool isPlaced = isStructurePlaced(game, arguments);
             if (isPlaced) {
                 runLoop();
             }
-            immutable bool isGrown = isPlaced && isStructureGrown(game, arguments);
+            bool isGrown = isPlaced && isStructureGrown(game, arguments);
             game.release();
             renderer.cleanup();
             closeWindow();
@@ -499,7 +498,7 @@ struct Session {
                 XColor black;
                 invisibleCursor = XCreatePixmapCursor(display, bitmap, bitmap, &black, &black, 0, 0);
                 XFreePixmap(display, bitmap);
-                immutable bool isPointerSelected = selectRawPointer();
+                bool isPointerSelected = selectRawPointer();
                 if (!isPointerSelected) {
                     closeWindow();
                     return false;
@@ -518,13 +517,13 @@ struct Session {
         bool selectRawPointer() {
             int firstEvent;
             int firstError;
-            immutable int hasExtension = XQueryExtension(display, "XInputExtension", &pointer.opcode, &firstEvent, &firstError);
+            int hasExtension = XQueryExtension(display, "XInputExtension", &pointer.opcode, &firstEvent, &firstError);
             if (hasExtension == 0) {
                 return false;
             } else {
                 int major = XI_REQUIRED_MAJOR;
                 int minor = XI_REQUIRED_MINOR;
-                immutable int versionStatus = XIQueryVersion(display, &major, &minor);
+                int versionStatus = XIQueryVersion(display, &major, &minor);
                 if (versionStatus != Success || !isXInputVersionSufficient(major, minor)) {
                     return false;
                 } else {
@@ -545,7 +544,7 @@ struct Session {
         }
 
         void capturePointer() {
-            immutable int grab = XGrabPointer(display, window, True, POINTER_GRAB_MASK, GrabModeAsync, GrabModeAsync, window, invisibleCursor, CurrentTime);
+            int grab = XGrabPointer(display, window, True, POINTER_GRAB_MASK, GrabModeAsync, GrabModeAsync, window, invisibleCursor, CurrentTime);
             if (grab == GrabSuccess) {
                 isCaptured = true;
                 isTitleDirty = true;
@@ -605,7 +604,7 @@ struct Session {
 
         void handleGenericEvent(XGenericEventCookie* cookie) {
             if (cookie.extension == pointer.opcode) {
-                immutable int hasData = XGetEventData(display, cookie);
+                int hasData = XGetEventData(display, cookie);
                 if (hasData != 0) {
                     if (cookie.evtype == XI_RawMotion) {
                         handleRawMotion(cast(const(XIRawEvent)*) cookie.data);
@@ -745,7 +744,7 @@ struct Session {
         uint framesSinceTitle = 0;
         while (isRunning) {
             double now = nowSeconds();
-            Time dt = Time(cast(float)(now - lastTime));
+            Time dt = Time(cast(float) lowerOf(now - lastTime, MAX_STEP_SECONDS));
             lastTime = now;
             mouseDx = 0;
             mouseDy = 0;
@@ -796,6 +795,14 @@ immutable(char)* writtenText(bool isWritten) {
     }
 }
 
+immutable(char)* settledText(bool isSettled) {
+    if (isSettled) {
+        return "settled";
+    } else {
+        return "still loading";
+    }
+}
+
 bool renderScreenshot(Arguments arguments) {
     FILE* report = fopen(arguments.reportPath, "w");
     if (report is null) {
@@ -809,7 +816,7 @@ bool renderScreenshot(Arguments arguments) {
         Game game = Game.make(arguments.worldgen, config.reach);
         game.world.renderRadius = arguments.renderRadius;
         game.isGeneratingOnDemand = true;
-        immutable bool isPlaced = isStructurePlaced(game, arguments);
+        bool isPlaced = isStructurePlaced(game, arguments);
         bool isWritten = isPlaced && captureScreenshot(arguments, report, *renderer, game);
         renderer.cleanup();
         free(renderer);
@@ -821,7 +828,7 @@ bool renderScreenshot(Arguments arguments) {
 
 bool captureScreenshot(Arguments arguments, FILE* report, ref Renderer renderer, ref Game game) {
     ScriptHost host = ScriptHost.make(&game, report);
-    immutable bool isCompleted = host.run(arguments.scriptPath);
+    bool isCompleted = host.run(arguments.scriptPath);
     host.close();
     if (!isCompleted) {
         fprintf(report, "screenshot: not taken, the script failed\n");
@@ -877,7 +884,7 @@ bool benchLoad(Arguments arguments) {
         renderer.setupOffscreen(VkExtent2D(SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT), CHUNK_DIMENSION);
         Game game = Game.make(arguments.worldgen, config.reach);
         game.world.renderRadius = arguments.renderRadius;
-        immutable bool isPlaced = isStructurePlaced(game, arguments);
+        bool isPlaced = isStructurePlaced(game, arguments);
         Sampler sampler;
         if (isPlaced) {
             if (arguments.isProfiled) {
@@ -896,7 +903,7 @@ bool benchLoad(Arguments arguments) {
             }
         }
         sampler.release();
-        immutable bool isGrown = isPlaced && isStructureGrown(game, arguments);
+        bool isGrown = isPlaced && isStructureGrown(game, arguments);
         renderer.cleanup();
         free(renderer);
         game.release();
@@ -985,7 +992,10 @@ void checkMeshes(FILE* report, ref const Renderer renderer, ref const Graph grap
             foreach (index; 0 .. CORNER_COUNT) {
                 ChunkSlot chunk = ChunkSlot(slot, cast(Corner) index);
                 if (graph.chunks.at(chunk).state == ChunkState.populated && !graph.isBesideDropped(chunk)) {
-                    size_t expected = graph.needsMesh(chunk) ? mesher.mesh(graph, chunk).length : 0;
+                    size_t expected = 0;
+                    if (graph.needsMesh(chunk)) {
+                        expected = mesher.mesh(graph, chunk).length;
+                    }
                     uint drawn = renderer.meshes.faceCountOf(graph.chunks.blockOf(slot), chunk.corner);
                     checked += 1;
                     if (drawn != expected) {
@@ -1036,7 +1046,7 @@ void measureSettle(FILE* report, ref Renderer renderer, ref Game game) {
     } while (frames < BENCH_SETTLE_FRAMES && (renderer.meshBacklog() > 0 || !game.world.isWorldgenSettled()));
     LoadedAround around;
     around.count(game.world);
-    fprintf(report, "stopped after the flight for %u frames (at most %u): %s, nearby %zu nodes reaching %.2f\n", frames, BENCH_SETTLE_FRAMES, game.world.isWorldgenSettled() ? "settled".ptr : "still loading".ptr, game.world.cachedNodes.length, cast(double)(game.world.renderRadius - game.world.radiusCut));
+    fprintf(report, "stopped after the flight for %u frames (at most %u): %s, nearby %zu nodes reaching %.2f\n", frames, BENCH_SETTLE_FRAMES, settledText(game.world.isWorldgenSettled()), game.world.cachedNodes.length, cast(double)(game.world.renderRadius - game.world.radiusCut));
     around.print(report);
     around.release();
     printMemory(report, game.world);
@@ -1082,7 +1092,10 @@ struct LoadedAround {
             if (graph.structures.at(current.slot).isBuildingQueued) {
                 waiting = Shortfall.building;
             } else if (world.nearby[world.published].indexOf(current.slot) != NOT_COLLECTED) {
-                waiting = world.streamer.isScanPending(current.slot) ? Shortfall.unscanned : Shortfall.scanned;
+                waiting = Shortfall.scanned;
+                if (world.streamer.isScanPending(current.slot)) {
+                    waiting = Shortfall.unscanned;
+                }
             }
             foreach (index; 0 .. CORNER_COUNT) {
                 Corner corner = cast(Corner) index;
@@ -1090,10 +1103,16 @@ struct LoadedAround {
                 float product = eye.coshDistance(current.transform * corner.cubeCenter);
                 bool isLoaded = state == ChunkState.populated || state == ChunkState.dropped;
                 foreach (radius, distance; CENSUS_RADII) {
-                    loaded[radius] += isLoaded && !(product > coshf(distance));
+                    if (isLoaded && !(product > coshf(distance))) {
+                        loaded[radius] += 1;
+                    }
                 }
                 if (!isLoaded && !(product > outer)) {
-                    missed[state == ChunkState.generating ? Shortfall.generating : waiting] += 1;
+                    Shortfall reason = waiting;
+                    if (state == ChunkState.generating) {
+                        reason = Shortfall.generating;
+                    }
+                    missed[reason] += 1;
                 }
             }
             foreach (index; 0 .. FACE_COUNT) {
@@ -1102,7 +1121,9 @@ struct LoadedAround {
                 Motion!float transform = current.transform * face.mirror;
                 if (neighbor == NO_SLOT && bsf(childParentFaces(graph.nodeAt(current.slot).parentFaces, face)) == index) {
                     foreach (corner; 0 .. CORNER_COUNT) {
-                        missed[Shortfall.unmade] += !(eye.coshDistance(transform * (cast(Corner) corner).cubeCenter) > outer);
+                        if (!(eye.coshDistance(transform * (cast(Corner) corner).cubeCenter) > outer)) {
+                            missed[Shortfall.unmade] += 1;
+                        }
                     }
                 } else if (neighbor != NO_SLOT && seen.ptr[neighbor] != generation && !(eye.coshDistance(transform * Point!float.origin()) > nodeReach)) {
                     seen.ptr[neighbor] = generation;
@@ -1112,9 +1133,7 @@ struct LoadedAround {
         }
         foreach (radius; 0 .. CENSUS_RADII.length) {
             total[radius] += loaded[radius];
-            if (loaded[radius] < least[radius]) {
-                least[radius] = loaded[radius];
-            }
+            least[radius] = lowerOf(loaded[radius], least[radius]);
         }
         samples += 1;
     }
@@ -1209,12 +1228,24 @@ void printMemory(FILE* report, ref const LocalWorld world) {
             buildings += 1;
             buildingBytes += building.paintBytes();
         }
-        holding += graph.chunks.has(slot);
-        stated += node.hasState;
-        touched += graph.structures.touchesAt(slot).length > 0;
-        referenced += node.references > 0;
-        parents += node.liveChildren > 0;
-        recent += slot < world.evictor.isRecent.length && world.evictor.isRecent.ptr[slot];
+        if (graph.chunks.has(slot)) {
+            holding += 1;
+        }
+        if (node.hasState) {
+            stated += 1;
+        }
+        if (graph.structures.touchesAt(slot).length > 0) {
+            touched += 1;
+        }
+        if (node.references > 0) {
+            referenced += 1;
+        }
+        if (node.liveChildren > 0) {
+            parents += 1;
+        }
+        if (slot < world.evictor.isRecent.length && world.evictor.isRecent.ptr[slot]) {
+            recent += 1;
+        }
     }
     size_t denseBytes = 0;
     foreach (index; 0 .. cast(size_t) graph.chunks.blockCount * CORNER_COUNT) {
@@ -1229,7 +1260,9 @@ void printMemory(FILE* report, ref const LocalWorld world) {
             while (corner < CORNER_COUNT && isSettledSolid(graph.chunks.at(ChunkSlot(slot, cast(Corner) corner)))) {
                 corner += 1;
             }
-            solidBlocks += corner == CORNER_COUNT;
+            if (corner == CORNER_COUNT) {
+                solidBlocks += 1;
+            }
         }
     }
     fprintf(report, "chunk blocks whose chunks are all settled and filled with something opaque: %zu\n", solidBlocks);
@@ -1248,14 +1281,6 @@ void printMemory(FILE* report, ref const LocalWorld world) {
         runBytes += listed.capacity * RunRef.sizeof;
     }
     fprintf(report, "blueprint: %zu lines, %zu brushes (%zuMB, line runs %zuMB), %zu tiles, %u painted again\n", blueprint.lines.length, blueprint.brushTotal(), brushBytes / BYTES_PER_MEGABYTE, runBytes / BYTES_PER_MEGABYTE, blueprint.tiles.length, blueprint.restoredTiles);
-}
-
-int exitStatus(bool isSucceeded) {
-    if (isSucceeded) {
-        return EXIT_OK;
-    } else {
-        return EXIT_FAILED;
-    }
 }
 
 int runWindowed(Arguments arguments) {

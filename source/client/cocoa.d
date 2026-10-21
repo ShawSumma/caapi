@@ -8,7 +8,6 @@ alias id = void*;
 alias SEL = void*;
 alias KeySym = uint;
 
-// Keys are named by their X keysyms, the same values the X11 client reads.
 enum KeySym XK_space = 0x20;
 enum KeySym XK_1 = 0x31;
 enum KeySym XK_9 = 0x39;
@@ -67,7 +66,6 @@ struct KeyCode {
     KeySym symbol;
 }
 
-// macOS virtual key codes are positions on an ANSI keyboard.
 immutable KeyCode[21] KEY_CODES = [
     KeyCode(0x0D, XK_w),
     KeyCode(0x00, XK_a),
@@ -102,7 +100,6 @@ extern (C) nothrow @nogc {
     extern __gshared id NSDefaultRunLoopMode;
 }
 
-// objc_msgSend has no signature of its own: every call casts it to the method's.
 R send(R = id, Args...)(id receiver, const(char)* selector, Args args) {
     alias Method = extern (C) R function(id, SEL, Args) nothrow @nogc;
     return (cast(Method) &objc_msgSend)(receiver, sel_registerName(selector), args);
@@ -113,7 +110,11 @@ KeySym keySymOf(ushort code) {
     while (index < KEY_CODES.length && KEY_CODES[index].code != code) {
         index += 1;
     }
-    return index < KEY_CODES.length ? KEY_CODES[index].symbol : NO_KEY;
+    if (index < KEY_CODES.length) {
+        return KEY_CODES[index].symbol;
+    } else {
+        return NO_KEY;
+    }
 }
 
 struct KeyEvent {
@@ -191,7 +192,7 @@ struct CocoaWindow {
         id past = send(objc_getClass("NSDate"), "distantPast");
         id event = send(application, "nextEventMatchingMask:untilDate:inMode:dequeue:", NS_EVENT_MASK_ANY, past, NSDefaultRunLoopMode, true);
         while (event !is null) {
-            immutable bool isHandled = handle(event, events);
+            bool isHandled = handle(event, events);
             if (!isHandled) {
                 send!void(application, "sendEvent:", event);
             }
@@ -201,9 +202,8 @@ struct CocoaWindow {
         objc_autoreleasePoolPop(pool);
     }
 
-    // Key events stay here: passed on, the window has no responder for them and beeps.
     bool handle(id event, WindowEvents events) {
-        immutable ulong type = send!ulong(event, "type");
+        ulong type = send!ulong(event, "type");
         if (type == NS_EVENT_KEY_DOWN || type == NS_EVENT_KEY_UP) {
             KeySym symbol = keySymOf(send!ushort(event, "keyCode"));
             if (symbol != NO_KEY) {
@@ -212,12 +212,15 @@ struct CocoaWindow {
             return true;
         } else if (type == NS_EVENT_FLAGS_CHANGED) {
             if (send!ushort(event, "keyCode") == LEFT_SHIFT_KEYCODE) {
-                immutable bool isPressed = (send!ulong(event, "modifierFlags") & LEFT_SHIFT_DEVICE_MASK) != 0;
+                bool isPressed = (send!ulong(event, "modifierFlags") & LEFT_SHIFT_DEVICE_MASK) != 0;
                 events.onKey(KeyEvent(XK_Shift_L, isPressed, false));
             }
             return false;
-        } else if ((type == NS_EVENT_LEFT_MOUSE_DOWN || type == NS_EVENT_RIGHT_MOUSE_DOWN) && isInContent(event)) {
-            events.onButton(type == NS_EVENT_LEFT_MOUSE_DOWN ? Button1 : Button3);
+        } else if (type == NS_EVENT_LEFT_MOUSE_DOWN && isInContent(event)) {
+            events.onButton(Button1);
+            return false;
+        } else if (type == NS_EVENT_RIGHT_MOUSE_DOWN && isInContent(event)) {
+            events.onButton(Button3);
             return false;
         } else if (type == NS_EVENT_MOUSE_MOVED || type == NS_EVENT_LEFT_MOUSE_DRAGGED || type == NS_EVENT_RIGHT_MOUSE_DRAGGED || type == NS_EVENT_OTHER_MOUSE_DRAGGED) {
             events.onMotion(send!double(event, "deltaX"), send!double(event, "deltaY"));

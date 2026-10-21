@@ -4,9 +4,10 @@ import core.math : sqrt;
 import core.stdc.math : acoshf, cosh, coshf, expf, fabs, fabsf, floorf, log, sinh, sinhf, sqrtf;
 import core.stdc.string : memcpy;
 import base.array : Array;
-import base.hashmap : HashMap;
+import base.hashmap : FIBONACCI_MULTIPLIER, HashMap;
 import base.numbers : higherOf, lowerOf;
 import base.slab : Run, RunPool, Slab;
+import base.splitmix : unitOf;
 import common.graph : Graph, NO_SLOT, NodeId, ParentList;
 import common.position : Position;
 import common.traversal : NearbyNode, NearbyScratch;
@@ -26,8 +27,6 @@ enum uint MAX_GROUNDS = 4;
 enum float SKY_REACH = 7.0f;
 enum float GROUND_REACH = 3.0f;
 enum uint GROUND_EDGES = 4;
-enum ulong ROLL_SHIFT = 11;
-enum double ROLL_SCALE = 1.0 / (1UL << 53);
 enum ubyte LOWEST_SKY_EDGES = 2;
 enum ubyte SKY_EDGE_CHOICES = 3;
 enum float CLEARANCE_EDGES = 2.0f;
@@ -40,7 +39,6 @@ enum double APART_TOLERANCE = 1e-3;
 enum float GROUND_LIFT_FACTOR = 0.1f;
 enum float DESCENT_ALTITUDE = 2.0f;
 enum float DESCENT_TOLERANCE = 1e-3f;
-enum size_t CORNER_KEY_MULTIPLIER = 0x9E3779B97F4A7C15;
 enum ubyte TEST_DIMENSION = 12;
 enum float TEST_RADIUS = 3.0f;
 enum float TEST_PLANE_TOLERANCE = 1e-2f;
@@ -133,7 +131,7 @@ struct CornerKey {
     Corner corner;
 
     size_t toHash() const {
-        return node.toHash() ^ (cast(size_t) corner * CORNER_KEY_MULTIPLIER);
+        return node.toHash() ^ (cast(size_t) corner * FIBONACCI_MULTIPLIER);
     }
 }
 
@@ -164,11 +162,19 @@ struct Skies {
     }
 
     Face labelOf(uint index) const {
-        return index == PLANET ? Face.f0 : world(index).label;
+        if (index == PLANET) {
+            return Face.f0;
+        } else {
+            return world(index).label;
+        }
     }
 
     bool isFlat(uint index) const {
-        return index == PLANET ? isPlanetFlat : kinds.ptr[world(index).kind].ground == SkyGround.flat;
+        if (index == PLANET) {
+            return isPlanetFlat;
+        } else {
+            return kinds.ptr[world(index).kind].ground == SkyGround.flat;
+        }
     }
 
     bool opensSkies(uint index) const {
@@ -202,7 +208,11 @@ struct Skies {
 
     const(uint)[] knownRising(GroundKey key) const {
         const(SkyList)* known = risingFrom.find(key);
-        return known is null ? null : risingSkies.ptr[known.start .. known.start + known.count];
+        if (known is null) {
+            return null;
+        } else {
+            return risingSkies.ptr[known.start .. known.start + known.count];
+        }
     }
 
     const(uint)[] storeRising(GroundKey key, const(uint)[] rising) {
@@ -230,7 +240,7 @@ struct Skies {
     }
 
     SkyChoice rolled(ulong hash) const {
-        double roll = cast(double)(hash >> ROLL_SHIFT) * ROLL_SCALE;
+        double roll = unitOf(hash);
         double below = 0;
         uint index = 0;
         while (index < kinds.length && roll >= below + kinds.ptr[index].odds) {
@@ -646,12 +656,8 @@ ChunkPoint chunkPointOf(Point!float point) {
         float outside = 0;
         foreach (axis; 0 .. 3) {
             coords[axis] = dual.c[axis] / dual.c[3] * (1 / cubeScale());
-            if (coords[axis] < 0 && -coords[axis] > outside) {
-                outside = -coords[axis];
-            }
-            if (coords[axis] > 1 && coords[axis] - 1 > outside) {
-                outside = coords[axis] - 1;
-            }
+            outside = higherOf(-coords[axis], outside);
+            outside = higherOf(coords[axis] - 1, outside);
         }
         if (outside < leastOutside) {
             leastOutside = outside;
@@ -702,11 +708,7 @@ Gravity blendedGravity(const(float)[] heights, const(float[3])[] ups) {
         along += weight * (ups[index][0] * up[0] + ups[index][1] * up[1] + ups[index][2] * up[2]);
         total += weight;
     }
-    float strength = along / total;
-    if (strength < 0) {
-        strength = 0;
-    }
-    return Gravity(up, strength);
+    return Gravity(up, higherOf(0.0f, along / total));
 }
 
 bool isPaintedBySky(ref GraphView view, uint slot, WorldRef sky) {
@@ -722,8 +724,6 @@ bool isOnSkySide(ref GraphView view, uint slot, WorldRef sky) {
     return own - other <= SKY_SIDE_MARGIN;
 }
 
-// The foot line is where the foot corner's two faces other than the ground's meet, and cosh^2 of the distance to it
-// is 1 plus sinh^2 of the distance to each of those planes.
 bool isOnFootLine(ref const GraphView view, uint slot, uint sky) {
     const(World)* world = &view.skies.world(sky);
     Array!Face path = view.pathBetween(world.footNode, slot);
@@ -795,7 +795,10 @@ Climate loadedClimateAt(ref const Graph graph, uint slot, Point!float point) {
                 node = graph.neighborSlot(node, sides[axis]);
             }
         }
-        around[crossed] = node != NO_SLOT && graph.nodeAt(node).hasState ? graph.stateAt(node).climate : own;
+        around[crossed] = own;
+        if (node != NO_SLOT && graph.nodeAt(node).hasState) {
+            around[crossed] = graph.stateAt(node).climate;
+        }
     }
     return CubeClimate.fromAround(around).at(at.coords);
 }

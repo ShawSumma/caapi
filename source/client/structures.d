@@ -5,13 +5,15 @@ import core.stdc.stdio : snprintf;
 import core.stdc.stdlib : free, malloc;
 import core.stdc.string : memcpy, strlen;
 import base.array : Array;
+import base.numbers : RADIANS_PER_DEGREE, clamped, higherOf;
 import base.parallel : Executor;
+import base.splitmix : SplitMix;
 import client.game : Game;
 import client.plugins : registry;
 import client.tiles : TileCall, TileCalls, TileWork;
 import common.graph : Graph;
 import common.worldgen.blueprint : BlueprintBuilder, CellBox, PaintResult, Rhythm;
-import common.worldgen.generation : SplitMix, StructureWorld, Worldgen;
+import common.worldgen.generation : StructureWorld, Worldgen;
 import common.worldgen.plane : Plane;
 import common.worldgen.sky : LOWEST_SKY_EDGES, PLANET, SkyChoice, SkyKind, Skies, ensureWorldsAt, isPaintedBySky, openSky, worldGroundNodeOf;
 import common.worldgen.store : Grower;
@@ -23,11 +25,8 @@ import plugins.api.api : Api, Box, Column, Material, Pen, Site, SitePart, SkyGro
 import plugins.api.api : ApiRhythm = Rhythm;
 
 enum size_t MESSAGE_CAPACITY = 1024;
-enum double RADIANS_PER_DEGREE = 0.017453292519943295;
 enum double HALF_TURN = 3.141592653589793;
 enum double VERTICAL_TOLERANCE = 1e-9;
-enum uint RANDOM_DISCARDED_BITS = 11;
-enum double RANDOM_UNIT = 1.0 / (1UL << 53);
 enum size_t ACROSS = 0;
 enum size_t UP = 1;
 enum size_t AHEAD = 2;
@@ -101,12 +100,7 @@ struct PenFrame {
             return this;
         } else {
             double toUp = atan2(side, rising[AHEAD]);
-            double angle = degrees * RADIANS_PER_DEGREE;
-            if (angle > toUp) {
-                angle = toUp;
-            } else if (angle < toUp - HALF_TURN) {
-                angle = toUp - HALF_TURN;
-            }
+            double angle = clamped(degrees * RADIANS_PER_DEGREE, toUp - HALF_TURN, toUp);
             return PenFrame(frame * planeRotation(axisOf(AHEAD), [rising[0] / side, rising[1] / side, 0], angle), ground, node);
         }
     }
@@ -343,13 +337,9 @@ struct StructureHost {
     bool place(Site site, Structure structure, const(void)* data, size_t size) {
         SiteFrame frame = frameOf(site);
         RootedCorner origin = builder.graph.view.siteOrigin(frame);
-        immutable bool isAhead = cast(int) origin.depth + PLACE_SLACK >= cast(int) key;
+        bool isAhead = cast(int) origin.depth + PLACE_SLACK >= cast(int) key;
         if (isAhead) {
-            uint queuedKey = key;
-            if (origin.depth > queuedKey) {
-                queuedKey = origin.depth;
-            }
-            enqueue(QueuedStructure(frame, Array!uint.init, copied(data, size), structure, queuedKey));
+            enqueue(QueuedStructure(frame, Array!uint.init, copied(data, size), structure, higherOf(origin.depth, key)));
         }
         return isAhead;
     }
@@ -518,7 +508,7 @@ uint mainPick(const(Api)* api, uint count) {
 }
 
 double mainRandom(const(Api)* api) {
-    return (mainHost(api).random.next() >> RANDOM_DISCARDED_BITS) * RANDOM_UNIT;
+    return mainHost(api).random.unit();
 }
 
 ulong mainHash(const(Api)* api, Site site, SitePart part) {

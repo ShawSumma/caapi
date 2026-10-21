@@ -175,8 +175,8 @@ bool writePng(const(char)* path, uint width, uint height, const(ubyte)[] rgba) {
         free(bytes);
         return false;
     } else {
-        immutable size_t written = fwrite(bytes, 1, fileBytes, file);
-        immutable int closeStatus = fclose(file);
+        size_t written = fwrite(bytes, 1, fileBytes, file);
+        int closeStatus = fclose(file);
         free(bytes);
         return written == fileBytes && closeStatus == 0;
     }

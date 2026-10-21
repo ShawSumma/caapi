@@ -1,14 +1,21 @@
 module common.raycast.chunk;
 
 import core.stdc.math : fabsf;
-import base.numbers : isNan;
-import plugins.api.api : Material;
+import base.numbers : isNan, lowerOf;
 import common.node : ChunkLayout, Voxels, cellIndex;
 import geometry.cube : AXIS_COUNT, Axis, Cell, Sign;
 import geometry.lorentz : Point, Vec4;
 import geometry.ray : Ray;
+import plugins.api.api : Material;
 
 enum float PARALLEL_TOLERANCE = 1e-6f;
+enum ubyte TEST_DIMENSION = 4;
+immutable int[3] TEST_TARGET = [1, 2, 3];
+enum float TEST_START_KLEIN = -0.2f;
+enum float TEST_TOLERANCE = 1e-4f;
+enum uint TEST_RAYS = 200;
+enum uint TEST_MARCH_STEPS = 20000;
+enum ulong TEST_SEED = 0x2545F4914F6CDD1D;
 
 struct ChunkRayCastHit {
     float tanhDistance = float.nan;
@@ -45,13 +52,23 @@ struct GridWalk {
             float drift = start[axis] * heading[3];
             float rate = along - drift;
             bool isParallel = fabsf(rate) <= PARALLEL_TOLERANCE * (fabsf(along) + fabsf(drift));
-            steps[axis] = isParallel ? 0 : (rate > 0 ? 1 : -1);
+            if (isParallel) {
+                steps[axis] = 0;
+            } else if (rate > 0) {
+                steps[axis] = 1;
+            } else {
+                steps[axis] = -1;
+            }
         }
     }
 
     float crossing(size_t axis, float wall) const {
         float t = (wall * start[3] - start[axis]) / (heading[axis] - wall * heading[3]);
-        return t >= 0 && t < 1 ? t : float.infinity;
+        if (t >= 0 && t < 1) {
+            return t;
+        } else {
+            return float.infinity;
+        }
     }
 
     float wallCrossing(size_t axis, int wall) const {
@@ -62,16 +79,27 @@ struct GridWalk {
         if (steps[axis] == 0) {
             return float.infinity;
         } else {
-            float t = wallCrossing(axis, cell + (steps[axis] > 0 ? 1 : 0));
-            return t >= now ? t : float.infinity;
+            int wall = cell;
+            if (steps[axis] > 0) {
+                wall += 1;
+            }
+            float t = wallCrossing(axis, wall);
+            if (t >= now) {
+                return t;
+            } else {
+                return float.infinity;
+            }
         }
     }
 
     int cellAlong(size_t axis, float t) const {
         float klein = (start[axis] + t * heading[axis]) / (start[3] + t * heading[3]);
         float grid = layout.kleinToGrid(klein);
-        int cell = grid < 0 ? 0 : cast(int) grid;
-        return cell < layout.dimension ? cell : layout.dimension - 1;
+        if (grid < 0) {
+            return 0;
+        } else {
+            return lowerOf(cast(int) grid, layout.dimension - 1);
+        }
     }
 
     ChunkRayCastHit run(ref const Voxels voxels, float limit) const {
@@ -85,20 +113,25 @@ struct GridWalk {
             float klein = start[axis] / start[3];
             bool isBelow = klein < 0;
             bool isAbove = klein > size;
-            if (steps[axis] == 0 || (steps[axis] > 0 ? isAbove : isBelow)) {
+            bool isPast = isBelow;
+            int nearWall = dimension;
+            int farWall = 0;
+            if (steps[axis] > 0) {
+                isPast = isAbove;
+                nearWall = 0;
+                farWall = dimension;
+            }
+            if (steps[axis] == 0 || isPast) {
                 isMissed = isMissed || isBelow || isAbove;
             } else {
                 if (isBelow || isAbove) {
-                    float near = wallCrossing(axis, steps[axis] > 0 ? 0 : dimension);
+                    float near = wallCrossing(axis, nearWall);
                     if (!(near <= entry)) {
                         entry = near;
                         entryAxis = axis;
                     }
                 }
-                float far = wallCrossing(axis, steps[axis] > 0 ? dimension : 0);
-                if (far < exit) {
-                    exit = far;
-                }
+                exit = lowerOf(wallCrossing(axis, farWall), exit);
             }
         }
         if (isMissed || !(entry < exit)) {
@@ -109,7 +142,11 @@ struct GridWalk {
                 cell[axis] = cellAlong(axis, entry);
             }
             if (entryAxis >= 0) {
-                cell[entryAxis] = steps[entryAxis] > 0 ? 0 : dimension - 1;
+                if (steps[entryAxis] > 0) {
+                    cell[entryAxis] = 0;
+                } else {
+                    cell[entryAxis] = dimension - 1;
+                }
                 if (isFilled(voxels, cell)) {
                     return hitAt(entry, cell, entryAxis);
                 }
@@ -147,14 +184,13 @@ struct GridWalk {
 
     ChunkRayCastHit hitAt(float t, int[AXIS_COUNT] cell, size_t axis) const {
         Cell coords = Cell([cast(ubyte) cell[0], cast(ubyte) cell[1], cast(ubyte) cell[2]]);
-        return ChunkRayCastHit(t, coords, cast(Axis) axis, steps[axis] > 0 ? Sign.minus : Sign.plus);
+        Sign face = Sign.plus;
+        if (steps[axis] > 0) {
+            face = Sign.minus;
+        }
+        return ChunkRayCastHit(t, coords, cast(Axis) axis, face);
     }
 }
-
-enum ubyte TEST_DIMENSION = 4;
-immutable int[3] TEST_TARGET = [1, 2, 3];
-enum float TEST_START_KLEIN = -0.2f;
-enum float TEST_TOLERANCE = 1e-4f;
 
 unittest {
     ChunkLayout layout = ChunkLayout.make(TEST_DIMENSION);
@@ -172,10 +208,6 @@ unittest {
     assert(!castThroughChunk(voxels, layout, ray, hit.tanhDistance).isHit());
     voxels.release();
 }
-
-enum uint TEST_RAYS = 200;
-enum uint TEST_MARCH_STEPS = 20000;
-enum ulong TEST_SEED = 0x2545F4914F6CDD1D;
 
 int[3] cellOn(ChunkLayout layout, Ray ray, float t) {
     Vec4!float at = ray.at(t);
@@ -216,7 +248,10 @@ unittest {
     Material[] cells = voxels.toDense(TEST_DIMENSION);
     ulong state = TEST_SEED;
     foreach (index; 0 .. cells.length) {
-        cells[index] = testRandom(state) < 0.15f ? Material.granite : Material.none;
+        cells[index] = Material.none;
+        if (testRandom(state) < 0.15f) {
+            cells[index] = Material.granite;
+        }
     }
     uint hits = 0;
     foreach (_; 0 .. TEST_RAYS) {

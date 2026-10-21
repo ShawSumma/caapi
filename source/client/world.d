@@ -9,7 +9,6 @@ import client.camera : CAMERA_FORWARD;
 import client.streaming : Streamer;
 import common.eviction : Evictor, Unloaded;
 import common.graph : Graph, NO_NODE;
-import plugins.api.api : Material;
 import common.neighbors : chunkNeighborId, neighborAxisMap, touchChunksReading;
 import common.node : Chunk, ChunkId, ChunkSlot, ChunkState, cellIndex;
 import common.position : Position;
@@ -20,6 +19,7 @@ import geometry.cube : Cell, Direction, boundaryOf;
 import geometry.honeycomb : NODE_RADIUS;
 import geometry.lorentz : Motion, Point, Vec4;
 import geometry.ray : Ray;
+import plugins.api.api : Material;
 
 enum float NEARBY_PADDING = 0.05f;
 enum float NEARBY_REBUILD_DISTANCE = 0.25f;
@@ -244,8 +244,6 @@ struct LocalWorld {
             } else if (!isPending && (publishedPoint.coshDistance(camera) > coshf(NEARBY_REBUILD_DISTANCE) || publishedCut > 0)) {
                 startNext(camera);
             }
-            // A rebuild that finds nothing new to expand is finished as soon as it starts, and still has to be published
-            // for the reach to grow.
             if (isPending) {
                 next.continueKeeping(*current, deadline, streamer.executor());
                 next.advance(graph, deadline, streamer.executor());
@@ -263,7 +261,6 @@ struct LocalWorld {
 
     void cutRadius(double traveled) {
         if (traveled > NEARBY_REBUILD_DISTANCE) {
-            // A rebuild's work grows like e^(2 radius), so this cut scales the next one's work down by how far the camera outran this one.
             radiusCut += 0.5f * logf(cast(float)(traveled / NEARBY_REBUILD_DISTANCE));
         } else if (traveled < NEARBY_REBUILD_DISTANCE / 2) {
             radiusCut -= REBUILD_GROWTH;
@@ -311,8 +308,6 @@ struct LocalWorld {
         NearbyScratch* current = &nearby[published];
         NearbyScratch* next = &nearby[1 - published];
         Motion!float toCamera = current.nodes.ptr[current.indexOf(cameraSlot)].transform;
-        // A rebuild still copying from the published set needs its transforms to stay as they are, so moving the frame
-        // waits a few frames for it.
         if (!next.isKeeping() && isFarFromOrigin(toCamera * cameraPosition.local)) {
             Motion!float toFrame = toCamera.inverse();
             current.rebase(graph, cameraSlot, toFrame, REDERIVE_RADIUS, streamer.executor());
@@ -414,12 +409,9 @@ bool isFarFromOrigin(Motion!float camera) {
 }
 
 double phaseDeadline(bool isUnbudgeted, double planned, double leastMilliseconds) {
-    double earliest = nowMilliseconds() + leastMilliseconds;
     if (isUnbudgeted) {
         return NO_DEADLINE;
-    } else if (planned > earliest) {
-        return planned;
     } else {
-        return earliest;
+        return higherOf(planned, nowMilliseconds() + leastMilliseconds);
     }
 }

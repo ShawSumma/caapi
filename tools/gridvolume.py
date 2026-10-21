@@ -28,7 +28,7 @@ def volumes(knots: Knots) -> list[float]:
     scale = corner_coordinate()
     planes = [scale * k for k in knots]
     cells = len(knots) - 1
-    result = []
+    result: list[float] = []
     for x in range(cells):
         for y in range(cells):
             for z in range(cells):
@@ -100,7 +100,7 @@ def edge_lengths(knots: Knots) -> tuple[float, float, float]:
                 low = [planes[x], planes[y], planes[z]]
                 high = [planes[x + 1], planes[y + 1], planes[z + 1]]
                 center = [(low[axis] + high[axis]) / 2 for axis in range(3)]
-                edges = []
+                edges: list[float] = []
                 for axis in range(3):
                     a = list(center)
                     b = list(center)

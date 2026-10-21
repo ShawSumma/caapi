@@ -1,14 +1,13 @@
 local walk = require("lib.walk")
 
-local HAMLET = "hamlet"
 local HUTS = 5
 local STOPS_PER_HUT = 14
 local WALK_SECONDS = 6
 
 return function(world)
-  world:worldgen("structure", HAMLET)
-  assert(world:route_waypoint(HUTS * STOPS_PER_HUT), "every hut added its stair route")
-  assert(not world:route_waypoint(HUTS * STOPS_PER_HUT + 1), "and nothing else did")
+  world:worldgen("structure", "hamlet")
+  assert(world:route_waypoint(HUTS * STOPS_PER_HUT) ~= nil, "every hut added its stair route")
+  assert(world:route_waypoint(HUTS * STOPS_PER_HUT + 1) == nil, "and nothing else did")
   walk.spawn(world)
   local ground = world:altitude()
   world:press(WALK_SECONDS, "fwd")

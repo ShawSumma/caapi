@@ -4,13 +4,14 @@ import core.stdc.math : floor;
 import core.stdc.stdio : FILE, fclose, fopen, fprintf;
 import core.stdc.string : strlen;
 import lua : luaL_checkinteger, luaL_checklstring, luaL_checknumber, luaL_checktype, luaL_error, luaL_loadfilex, luaL_optnumber, luaL_ref, luaL_unref, lua_CFunction, lua_Integer, lua_State, lua_callk, lua_close, lua_createtable, lua_gettop, lua_pcallk, lua_pushboolean, lua_pushcclosure, lua_pushinteger, lua_pushnil, lua_pushnumber, lua_pushvalue, lua_rawgeti, lua_tolstring, lua_touserdata, lua_type;
+import base.names : ENUM_NAMES;
+import base.numbers : RADIANS_PER_DEGREE;
+import base.units : Angle, AngularSpeed, Length, Time;
+import base.vector3 : dot, magnitude, rejectAlong;
 import client.arguments : StructureName;
 import client.game : FrameInput, Game, KEY_COUNT, Key, MATERIAL_PALETTE, RouteWaypoint, UnloadedCount;
 import client.lua : LUA_FIRST_UPVALUE, LUA_NO_REF, LUA_REGISTRY, LUA_STATUS_OK, LUA_TOP, LUA_TYPE_FUNCTION, LUA_TYPE_TABLE, LuaLookup, LuaName, SELF, TRACEBACK_INDEX, isNoneOrNil, luaTraceback, newSafeState, pushLuaName, registerMethod, setPackagePath;
 import client.structures : StructureProblem, growthProblem, restartGame;
-import base.names : ENUM_NAMES;
-import base.units : Angle, AngularSpeed, Length, Time;
-import base.vector3 : dot, magnitude, rejectAlong;
 import client.world : TargetMaterial;
 import common.character.controller : MovementMode;
 import common.worldgen.generation : PlaneWorld, StructureWorld, Worldgen, WorldgenKind;
@@ -19,7 +20,6 @@ enum int CHUNK_RESULTS = 1;
 enum int SCRIPT_ARGUMENTS = 1;
 enum Time DEFAULT_TIMESTEP = Time(0.016f);
 enum Time ONE_SECOND = Time(1.0f);
-enum double RADIANS_PER_DEGREE = 0.017453292519943295;
 enum int UNLOADED_RESULTS = 5;
 
 struct ScriptHost {
@@ -44,7 +44,7 @@ struct ScriptHost {
         lua.setPackagePath(path[0 .. strlen(path)]);
         createWorld();
         lua_pushcclosure(lua, cast(lua_CFunction) &luaTraceback, 0);
-        immutable int status = luaL_loadfilex(lua, path, null);
+        int status = luaL_loadfilex(lua, path, null);
         if (status != LUA_STATUS_OK) {
             reportError();
             return false;
@@ -54,7 +54,7 @@ struct ScriptHost {
     }
 
     bool runChunk(const(char)* path) {
-        immutable int status = lua_pcallk(lua, 0, CHUNK_RESULTS, TRACEBACK_INDEX, 0, null);
+        int status = lua_pcallk(lua, 0, CHUNK_RESULTS, TRACEBACK_INDEX, 0, null);
         if (status != LUA_STATUS_OK) {
             reportError();
             return false;
@@ -68,7 +68,7 @@ struct ScriptHost {
 
     bool runScript() {
         lua_rawgeti(lua, LUA_REGISTRY, worldRef);
-        immutable int status = lua_pcallk(lua, SCRIPT_ARGUMENTS, 0, TRACEBACK_INDEX, 0, null);
+        int status = lua_pcallk(lua, SCRIPT_ARGUMENTS, 0, TRACEBACK_INDEX, 0, null);
         if (status != LUA_STATUS_OK) {
             reportError();
             return false;

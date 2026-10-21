@@ -63,7 +63,11 @@ struct Worlds {
         while (index < count && names[index] != name) {
             index += 1;
         }
-        return index < count ? structures[index] : null;
+        if (index < count) {
+            return structures[index];
+        } else {
+            return null;
+        }
     }
 }
 

@@ -6,7 +6,7 @@ local MAX_STRAIGHTNESS = 0.8
 
 local function stop_count(world)
   local count = 0
-  while world:route_waypoint(count + 1) do
+  while world:route_waypoint(count + 1) ~= nil do
     count = count + 1
   end
   return count

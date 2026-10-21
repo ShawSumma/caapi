@@ -1,14 +1,13 @@
 module common.character.features;
 
 import core.math : sqrt;
-import core.stdc.math : coshf, floorf;
+import core.stdc.math : coshf, fabsf, floorf;
 import base.array : Array;
-import base.numbers : clamped, isNan;
+import base.numbers : clamped, higherOf, isNan, lowerOf;
 import base.units : Length, LocalBlock;
 import base.vector3 : cross, dot, magnitude, minus, plus, scaled;
 import common.character.chart : chunkPointInNode, gridJacobian, inverted;
 import common.graph : Graph, NO_SLOT;
-import plugins.api.api : Material;
 import common.neighbors : chunkNeighborSlot, indexIn, isInside, materialNear;
 import common.node : Chunk, ChunkLayout, ChunkSlot, ChunkState;
 import common.position : Position;
@@ -16,6 +15,7 @@ import common.traversal : NodeVisit, VisitQueue;
 import geometry.cube : Cell, DIRECTIONS, Direction, Sign;
 import geometry.honeycomb : CORNER_COUNT, CUBE_RADIUS, Corner, FACE_COUNT, Face, NODE_RADIUS, cubeCenter, faces, mirror, nodeToCorner;
 import geometry.lorentz : Motion, Point, Vec4;
+import plugins.api.api : Material;
 
 enum uint FEATURE_MAX_NODES = 64;
 enum int RANGE_MARGIN_CELLS = 1;
@@ -43,14 +43,11 @@ struct Quad {
     float distanceTo(float[3] point) const {
         float[3] projected = point.minus(normal.scaled(separation(point)));
         if (isAbove(projected)) {
-            return absolute(separation(point));
+            return fabsf(separation(point));
         } else {
             float nearest = float.infinity;
             foreach (index; 0 .. QUAD_CORNERS) {
-                float distance = segmentDistance(corners[index], corners[(index + 1) % QUAD_CORNERS], point);
-                if (distance < nearest) {
-                    nearest = distance;
-                }
+                nearest = lowerOf(segmentDistance(corners[index], corners[(index + 1) % QUAD_CORNERS], point), nearest);
             }
             return nearest;
         }
@@ -102,10 +99,7 @@ struct Hexahedron {
                 Quad candidate = face(axis, sideSign(side));
                 if (candidate.separation(point) > 0) {
                     isInside = false;
-                    float distance = candidate.distanceTo(point);
-                    if (distance < nearest) {
-                        nearest = distance;
-                    }
+                    nearest = lowerOf(candidate.distanceTo(point), nearest);
                 }
             }
         }
@@ -252,7 +246,7 @@ struct BlockProbe {
             float[3][3] absolutePerGrid = inverted(gridJacobian(graph.layout, toCorner));
             float height = 0;
             foreach (axis; 0 .. 3) {
-                height += absolute(absolutePerGrid[0][axis] * up[0] + absolutePerGrid[1][axis] * up[1] + absolutePerGrid[2][axis] * up[2]);
+                height += fabsf(absolutePerGrid[0][axis] * up[0] + absolutePerGrid[1][axis] * up[1] + absolutePerGrid[2][axis] * up[2]);
             }
             block = LocalBlock(Length(height));
             isFound = true;
@@ -348,21 +342,15 @@ CellRange cellRange(ref const ChunkLayout layout, Corner corner, Vec4!float loca
             range.low[axis] = 0;
             range.high[axis] = -1;
         } else {
-            range.low[axis] = clampedCell(grid[axis] - span, layout.dimension) - RANGE_MARGIN_CELLS;
-            range.high[axis] = clampedCell(grid[axis] + span, layout.dimension) + RANGE_MARGIN_CELLS;
-            if (range.low[axis] < 0) {
-                range.low[axis] = 0;
-            }
-            if (range.high[axis] > layout.dimension - 1) {
-                range.high[axis] = layout.dimension - 1;
-            }
+            range.low[axis] = higherOf(clampedCell(grid[axis] - span, layout.dimension) - RANGE_MARGIN_CELLS, 0);
+            range.high[axis] = lowerOf(clampedCell(grid[axis] + span, layout.dimension) + RANGE_MARGIN_CELLS, layout.dimension - 1);
         }
     }
     return range;
 }
 
 int clampedCell(float grid, ubyte dimension) {
-    return cast(int) floorf(clamped(grid, -RANGE_MARGIN_CELLS - 1, dimension + RANGE_MARGIN_CELLS));
+    return cast(int) floorf(clamped!float(grid, -RANGE_MARGIN_CELLS - 1, dimension + RANGE_MARGIN_CELLS));
 }
 
 bool areNeighborsPopulated(ref const Graph graph, ChunkSlot slot, CellRange range) {
@@ -432,21 +420,13 @@ int sideSign(int side) {
     }
 }
 
-float absolute(float value) {
-    if (value < 0) {
-        return -value;
-    } else {
-        return value;
-    }
-}
-
 float[3] unit(float[3] v) {
     return v.scaled(1.0f / v.magnitude);
 }
 
 float segmentDistance(float[3] start, float[3] end, float[3] point) {
     float[3] along = end.minus(start);
-    float t = clamped(point.minus(start).dot(along) / along.dot(along), 0, 1);
+    float t = clamped(point.minus(start).dot(along) / along.dot(along), 0.0f, 1.0f);
     return point.minus(start.plus(along.scaled(t))).magnitude;
 }
 
@@ -465,7 +445,7 @@ unittest {
     assert(bottom.normal[1] < -1 + TEST_TOLERANCE);
     float[3] inside = [0.5f, 0.5f, 0.5f];
     assert(cube.distanceTo(inside) == 0);
-    assert(absolute(cube.distanceTo(above) - 1) < TEST_TOLERANCE);
+    assert(fabsf(cube.distanceTo(above) - 1) < TEST_TOLERANCE);
     float[3] diagonal = [2.0f, 2.0f, 0.5f];
-    assert(absolute(cube.distanceTo(diagonal) - sqrt(2.0f)) < TEST_TOLERANCE);
+    assert(fabsf(cube.distanceTo(diagonal) - sqrt(2.0f)) < TEST_TOLERANCE);
 }

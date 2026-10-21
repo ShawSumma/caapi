@@ -1,7 +1,7 @@
 module plugins.connector.connector;
 
 import plugins.api.api : Box, Material, Rhythm, Sky;
-import plugins.turtle.turtle : Turtle, boxOf, floorMod;
+import plugins.turtle.turtle : Turtle, boxOf, floorMod, higherOf;
 
 enum int STORY = 4;
 enum int HALF_WIDTH = 4;
@@ -107,7 +107,7 @@ void planetDoor(Turtle tower, Palette palette, Layout layout) {
     tower.paint(Material.none, boxOf([-HALF_WIDTH, -HALF_WIDTH], DOOR, [base + 1, base + DOOR_TOP]));
     foreach (distance; 1 .. layout.stoop + 2) {
         int[2] x = [-HALF_WIDTH - distance, -HALF_WIDTH - distance];
-        int surface = below > base + 1 - distance ? below : base + 1 - distance;
+        int surface = higherOf(below, base + 1 - distance);
         tower.fill(palette.trim, boxOf(x, STOOP, [below - FOOTING, below - 2]));
         tower.paint(palette.trim, boxOf(x, STOOP, [below - 1, surface - 1]));
         tower.paint(Material.none, boxOf(x, STOOP, [surface, base + DOOR_TOP]));
@@ -124,7 +124,7 @@ void skyDoor(Turtle tower, Layout layout) {
 }
 
 void tread(Turtle tower, int layer, int z) {
-    immutable int[2] segment = SEGMENTS[floorMod(layer, TURN)];
+    int[2] segment = SEGMENTS[floorMod(layer, TURN)];
     tower.stop(segment[0] + 1 - INNER, segment[1] + 1 - INNER, z);
 }
 

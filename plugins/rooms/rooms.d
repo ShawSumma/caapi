@@ -1,8 +1,9 @@
 module plugins.rooms.rooms;
 
 import plugins.api.api : Box, Material;
+import plugins.buildings.building : SIDES, Side;
 import plugins.rooms.levels : Biome, Hall, LAYERS, Level;
-import plugins.turtle.turtle : PERCENT, Turtle, boxOf, floorDiv;
+import plugins.turtle.turtle : PERCENT, Turtle, boxOf, floorDiv, higherOf, lowerOf;
 
 enum int SEPARATION = 3;
 enum uint MAZE_CELLS = 4;
@@ -42,15 +43,8 @@ enum Axis : ubyte {
     y,
 }
 
-enum Side : ubyte {
-    xLow,
-    yLow,
-    xHigh,
-    yHigh,
-}
-
-immutable Side[4] SIDES = [Side.xLow, Side.yLow, Side.xHigh, Side.yHigh];
 immutable Axis[2] AXES = [Axis.x, Axis.y];
+immutable int[2][4] MOVES = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 
 enum Plan : ubyte {
     maze,
@@ -234,6 +228,14 @@ bool isLow(Side side) {
     return side == Side.xLow || side == Side.yLow;
 }
 
+int edgeOn(int[2] span, Side side) {
+    if (isLow(side)) {
+        return span[0];
+    } else {
+        return span[1];
+    }
+}
+
 int[2] roomZ(ref const Frame f) {
     return [f.base + 1, f.base + f.room];
 }
@@ -270,10 +272,10 @@ Pieces outsideShaft(ref const Frame f, Region area) {
         pieces.add(area);
     } else {
         if (area.x[1] > SHAFT) {
-            pieces.add(Region([area.x[0] > SHAFT + 1 ? area.x[0] : SHAFT + 1, area.x[1]], area.y));
+            pieces.add(Region([higherOf(area.x[0], SHAFT + 1), area.x[1]], area.y));
         }
         if (area.x[0] <= SHAFT && area.y[1] > SHAFT) {
-            pieces.add(Region([area.x[0], area.x[1] < SHAFT ? area.x[1] : SHAFT], [area.y[0] > SHAFT + 1 ? area.y[0] : SHAFT + 1, area.y[1]]));
+            pieces.add(Region([area.x[0], lowerOf(area.x[1], SHAFT)], [higherOf(area.y[0], SHAFT + 1), area.y[1]]));
         }
     }
     return pieces;
@@ -294,7 +296,7 @@ Spans outsideLobby(ref const Frame f, int at, int[2] span) {
         spans.items[0] = span;
         spans.count = 1;
     } else if (span[1] > LOBBY) {
-        spans.items[0] = [span[0] > LOBBY + 1 ? span[0] : LOBBY + 1, span[1]];
+        spans.items[0] = [higherOf(span[0], LOBBY + 1), span[1]];
         spans.count = 1;
     }
     return spans;
@@ -416,7 +418,7 @@ void split(ref Frame f, Region region, Forbid forbid, ref Found found, int depth
             axisCount += 1;
         }
     }
-    bool isStopped = chance(f, f.biome.big * (depth < 1 ? depth : 1));
+    bool isStopped = chance(f, f.biome.big * lowerOf(depth, 1));
     if (axisCount == 0 || isStopped) {
         found.add(region);
     } else {
@@ -513,15 +515,15 @@ void boxes(ref const Frame f, Region room) {
             int x = from + step;
             int y = from + step;
             if (axisOf(side) == Axis.x) {
-                x = isLow(side) ? room.x[0] : room.x[1];
+                x = edgeOn(room.x, side);
             } else {
-                y = isLow(side) ? room.y[0] : room.y[1];
+                y = edgeOn(room.y, side);
             }
             cells[step] = [x, y];
             isBlocked = isBlocked || f.nearDoors[x, y];
         }
         if (!isBlocked) {
-            int top = f.base + between(f, 2, f.biome.boxHeight < f.room ? f.biome.boxHeight : f.room);
+            int top = f.base + between(f, 2, lowerOf(f.biome.boxHeight, f.room));
             foreach (cell; cells) {
                 f.tower.paint(f.biome.boxes, boxOf([cell[0], cell[0]], [cell[1], cell[1]], [f.base + 1, top]));
             }
@@ -571,7 +573,7 @@ void furnish(ref Frame f, ref const Found found) {
 int[2] mazeSpan(ref const Frame f, int index) {
     int low = index * MAZE_PITCH + 1;
     int high = low + MAZE_WIDTH - 1;
-    return [low, high < f.far ? high : f.far];
+    return [low, lowerOf(high, f.far)];
 }
 
 Box mazeGap(ref const Frame f, Axis axis, int i, int j) {
@@ -594,9 +596,9 @@ struct Maze {
         exits[mazeKey(a[0], a[1])] += 1;
         exits[mazeKey(b[0], b[1])] += 1;
         if (a[0] != b[0]) {
-            f.tower.paint(Material.none, mazeGap(f, Axis.x, a[0] < b[0] ? a[0] : b[0], a[1]));
+            f.tower.paint(Material.none, mazeGap(f, Axis.x, lowerOf(a[0], b[0]), a[1]));
         } else {
-            f.tower.paint(Material.none, mazeGap(f, Axis.y, a[1] < b[1] ? a[1] : b[1], a[0]));
+            f.tower.paint(Material.none, mazeGap(f, Axis.y, lowerOf(a[1], b[1]), a[0]));
         }
     }
 }
@@ -614,7 +616,6 @@ void maze(ref Frame f, ref const Doors[4] lines) {
     visited[mazeKey(0, 0)] = true;
     int[2][MAZE_CELLS * MAZE_CELLS] trail;
     size_t depth = 1;
-    immutable int[2][4] MOVES = [[1, 0], [-1, 0], [0, 1], [0, -1]];
     while (depth > 0) {
         int[2] at = trail[depth - 1];
         int[2][4] moves;
@@ -810,7 +811,7 @@ Frame frameOf(ref const Quarter q, Halls halls, Floor floor, const(Biome)* biome
     f.tower = q.tower;
     f.base = floor.base;
     f.room = level.room;
-    f.doorHeight = MOST_DOOR_HEIGHT < level.room ? MOST_DOOR_HEIGHT : level.room;
+    f.doorHeight = lowerOf(MOST_DOOR_HEIGHT, level.room);
     f.hallWidth = level.hallWidth;
     f.far = far;
     f.biome = biome;

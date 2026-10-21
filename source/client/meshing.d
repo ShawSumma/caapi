@@ -4,10 +4,10 @@ import core.stdc.stdlib : free, malloc;
 import core.stdc.string : memcpy;
 import common.graph : Graph, NO_SLOT;
 import common.material : isShownAgainst;
-import plugins.api.api : Material;
 import common.neighbors : acrossBorder, chunkNeighborSlot, indexIn, isCellOccupied, isOutside;
 import common.node : Chunk, ChunkSlot, ChunkState, cellIndex;
-import geometry.cube : AXIS_COUNT, DIRECTIONS, Sign, boundaryOf;
+import geometry.cube : AXIS_COUNT, DIRECTIONS, beyondBoundary, boundaryOf;
+import plugins.api.api : Material;
 
 enum uint CORNERS_PER_FACE = 4;
 enum uint OCCLUSION_LEVELS = 3;
@@ -25,7 +25,13 @@ struct Quad {
     uint occlusionMaterial;
 
     static Quad fromVoxel(int[3] voxel, size_t axis, bool isInward, Material material, uint[CORNERS_PER_FACE] occlusion) {
-        uint axisCode = cast(uint) axis | (isInward ? REVERSED_BIT : 0) | (isDiagonalFlipped(occlusion) ? FLIPPED_BIT : 0);
+        uint axisCode = cast(uint) axis;
+        if (isInward) {
+            axisCode |= REVERSED_BIT;
+        }
+        if (isDiagonalFlipped(occlusion)) {
+            axisCode |= FLIPPED_BIT;
+        }
         uint packed = material;
         foreach (corner; 0 .. CORNERS_PER_FACE) {
             packed |= occlusion[corner] << (OCCLUSION_SHIFT + OCCLUSION_BITS * corner);
@@ -76,7 +82,10 @@ struct ChunkCells {
     uint extractQuads(Quad* quads) const {
         size_t side = dimension + 2;
         size_t[AXIS_COUNT] strides = [1, side, side * side];
-        uint stride = isUniform ? dimension : 1;
+        uint stride = 1;
+        if (isUniform) {
+            stride = dimension;
+        }
         uint count = 0;
         foreach (axis; 0 .. AXIS_COUNT) {
             size_t bAxis = (axis + 1) % AXIS_COUNT;
@@ -159,7 +168,7 @@ struct Mesher {
             size_t u = (direction.axis + 1) % AXIS_COUNT;
             size_t v = (direction.axis + 2) % AXIS_COUNT;
             int[3] past;
-            past[direction.axis] = direction.sign == Sign.plus ? dimension : -1;
+            past[direction.axis] = beyondBoundary(dimension, direction.sign);
             int[3] inside;
             inside[direction.axis] = boundaryOf(dimension, direction.sign);
             foreach (j; 0 .. dimension) {
@@ -197,7 +206,17 @@ uint cornerOcclusion(bool isEdgeBOccupied, bool isEdgeCOccupied, bool isDiagonal
     if (isEdgeBOccupied && isEdgeCOccupied) {
         return 0;
     } else {
-        return OCCLUSION_LEVELS - isEdgeBOccupied - isEdgeCOccupied - isDiagonalOccupied;
+        uint level = OCCLUSION_LEVELS;
+        if (isEdgeBOccupied) {
+            level -= 1;
+        }
+        if (isEdgeCOccupied) {
+            level -= 1;
+        }
+        if (isDiagonalOccupied) {
+            level -= 1;
+        }
+        return level;
     }
 }
 

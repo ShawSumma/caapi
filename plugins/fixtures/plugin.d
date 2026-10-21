@@ -1,21 +1,18 @@
 module plugins.fixtures.plugin;
 
-import plugins.api.api : Api, ENTRY, Material, Registry, Site, SitePart, SkyGround, Tile;
+import plugins.api.api : Api, ENTRY, Registry, Site, SitePart, SkyGround, Tile;
 import box = plugins.box.box;
-import layout = plugins.rooms.layout;
 import plugins.buildings.building : Bound, Lot, Lots, Side, Spec;
 import plugins.buildings.types : Type, build, palettes;
+import layout = plugins.rooms.layout;
 import plugins.skies.skies : backroomsSky, citySky, wildSky;
-import plugins.turtle.turtle : Turtle;
+import plugins.turtle.turtle : Turtle, cornersOf;
 
 enum uint SKY_EDGES = 2;
 enum uint HOUSE_FLOOR = 1;
 enum uint TOP_FLOOR = 0;
 enum int SHOWCASE_FRONT = 4;
-enum uint HUTS = 5;
-enum int HUT_STORIES = 2;
 immutable bool ROUTED = true;
-immutable box.Palette TIMBER = box.Palette(Material.oakWood, Material.woodPlanks, Material.spruceWood);
 
 void openRoutedSky(const(Api)* api, Site site, SkyGround ground, Tile tile) {
     uint kind = api.sky(api, 0, ground, tile, &ROUTED, bool.sizeof);
@@ -72,18 +69,14 @@ void showcase(const(Api)* api, Site site, const(void)* data) {
 
 void hut(Turtle site) {
     Turtle tower = site.pitchUp();
-    int top = HUT_STORIES * box.STORY;
-    box.tower(tower, top, TIMBER);
-    box.door(tower);
-    box.stairRoute(tower, 0, top);
+    box.hut(tower);
+    box.stairRoute(tower, 0, box.HUT_TOP);
     tower.entrance(-box.HALF_WIDTH, 0, 1);
 }
 
 void hamlet(const(Api)* api, Site site, const(void)* data) {
-    Turtle corner = Turtle(api, site);
-    foreach (_; 0 .. HUTS) {
+    foreach (corner; cornersOf(Turtle(api, site))) {
         hut(corner);
-        corner = corner.forward(1).right();
     }
 }
 

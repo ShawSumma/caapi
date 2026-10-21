@@ -23,7 +23,6 @@ version (OSX) {
         const(CAMetalLayer)* layer;
     }
 
-    // MoltenVK is a portability driver: the loader lists it only when asked to, and its devices need the subset extension.
     immutable string[1] INSTANCE_EXTENSIONS = ["VK_KHR_portability_enumeration"];
     immutable string[2] SURFACE_EXTENSIONS = ["VK_KHR_surface", "VK_EXT_metal_surface"];
     immutable string[1] DEVICE_EXTENSIONS = ["VK_KHR_portability_subset"];
@@ -171,7 +170,7 @@ struct VulkanCore {
     bool isPresentable(VkPhysicalDevice candidate, uint family) {
         if (isPresenting) {
             VkBool32 presentSupport = 0;
-            immutable VkResult queried = vkGetPhysicalDeviceSurfaceSupportKHR(candidate, family, surface, &presentSupport);
+            VkResult queried = vkGetPhysicalDeviceSurfaceSupportKHR(candidate, family, surface, &presentSupport);
             return queried == VK_SUCCESS && presentSupport != 0;
         } else {
             return true;

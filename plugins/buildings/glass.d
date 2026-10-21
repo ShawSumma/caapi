@@ -1,7 +1,7 @@
 module plugins.buildings.glass;
 
 import plugins.api.api : Box, Material, Rhythm;
-import plugins.buildings.building : Bound, Lots, Palette, Part, PartJoin, Parts, STORY, Spec, Tier, crown, enter, footprint, helipad, makeParts, masts, middle, narrowing, pick, roof, setbacks, shell, strips, tiers, walls;
+import plugins.buildings.building : ANTENNA, Bound, Lots, Palette, Part, PartJoin, Parts, STORY, Spec, Tier, crown, enter, footprint, helipad, makeParts, masts, middle, narrowing, pick, roof, setbacks, shell, strips, tiers, walls;
 import plugins.turtle.turtle : boxOf;
 
 enum int[2] STORIES = [12, 38];
@@ -11,7 +11,6 @@ enum Rhythm SPANDRELS = Rhythm(STORY, STORY - 1, 1);
 enum int MULLION_SPACING = 3;
 enum int PENTHOUSE_SETBACK = 2;
 enum int LEAST_WIDTH = 3;
-enum int ANTENNA = 6;
 
 immutable Palette[4] PALETTES = [
     Palette(Material.glass, Material.steel, Material.concrete, Material.concrete),

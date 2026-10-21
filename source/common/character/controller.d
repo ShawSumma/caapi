@@ -47,7 +47,7 @@ struct CharacterState {
     bool isOnGround;
 
     Stepped runStep(ref const CharacterConfig character, ref const Graph graph, CharacterInput input, Time step) {
-        uint substeps = atLeastOne(cast(uint) ceilf((speedBound(character, input.mode, step) * step / character.radius).value));
+        uint substeps = higherOf(cast(uint) ceilf((speedBound(character, input.mode, step) * step / character.radius).value), 1u);
         Time dt = step / cast(float) substeps;
         bool isJumpPending = input.isJumping;
         Stepped stepped;
@@ -66,8 +66,6 @@ struct CharacterState {
             if (up.dot(gravity.up) < 0) {
                 pivot = pivot.negated;
             }
-            // The input was aimed against the old up. A straight step aimed level at its start climbs off a curved
-            // level surface, so aim it against the up halfway along, guessed from how up just turned.
             movement = rotatedBetween(movement, up, turned);
             float[3] halfway = turned.plus(turned.minus(up).scaled(0.5f));
             input.movement = rotatedBetween(movement, turned, halfway.scaled(1.0f / halfway.magnitude));
@@ -374,14 +372,6 @@ struct Slide {
     bool hasLanded;
     bool isObstructed;
     bool isClimbing;
-}
-
-uint atLeastOne(uint count) {
-    if (count < 1) {
-        return 1;
-    } else {
-        return count;
-    }
 }
 
 float target(ContactPlane plane, bool isRestoringSkin) {

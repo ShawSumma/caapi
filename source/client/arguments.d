@@ -7,6 +7,18 @@ import base.names : ENUM_NAMES, NameLookup;
 import client.plugins : registry;
 import common.worldgen.generation : PlaneWorld, STRUCTURE_NAME_CAPACITY, StructureWorld, Worldgen, WorldgenKind, degreesToRadians;
 
+enum int EXIT_OK = 0;
+enum int EXIT_FAILED = 1;
+enum int EXIT_USAGE = 2;
+
+int exitStatus(bool isSucceeded) {
+    if (isSucceeded) {
+        return EXIT_OK;
+    } else {
+        return EXIT_FAILED;
+    }
+}
+
 struct StartupError {
     const(string)[] choices;
     const(char)* message;

@@ -2,11 +2,11 @@ module plugins.bigtree.plugin;
 
 import core.stdc.math : ceil, exp;
 import plugins.api.api : Api, ENTRY, Material, Registry, Site;
-import plugins.turtle.turtle : Drawing, Turtle;
+import plugins.turtle.turtle : Drawing, Turtle, clamped, higherOf;
 
 enum Material BARK = Material.oakWood;
 enum Material LEAVES = Material.oakLeaves;
-enum double GOLDEN = 137.5;
+enum double GOLDEN_ANGLE = 137.5;
 enum double STEP = 3;
 enum double THINNEST = 0.7;
 
@@ -66,34 +66,20 @@ immutable Order[4] ORDERS = [
     Order(0, 0, 0, 0, 0, 15, 25, 5, 0.6),
 ];
 
-double clampedTo(double value, double rate) {
-    if (value > rate) {
-        return rate;
-    } else if (value < -rate) {
-        return -rate;
-    } else {
-        return value;
-    }
-}
-
-double higher(double a, double b) {
-    return a > b ? a : b;
-}
-
 Drawing wandered(Drawing pen, double degrees) {
     return pen.turn(pen.between(-degrees, degrees), pen.between(-degrees, degrees));
 }
 
 Drawing steered(Drawing pen, double elevation, double rate) {
-    return pen.lift(clampedTo(elevation - pen.rise(), rate));
+    return pen.lift(clamped(elevation - pen.rise(), -rate, rate));
 }
 
 void branch(Drawing start, double length, double radius, size_t order) {
-    immutable Order shape = ORDERS[order];
+    Order shape = ORDERS[order];
     Drawing pen = start;
-    uint steps = cast(uint) higher(1, ceil(length / STEP));
+    uint steps = cast(uint) higherOf(1.0, ceil(length / STEP));
     double step = length / steps;
-    double tip = higher(THINNEST, radius * shape.tip);
+    double tip = higherOf(THINNEST, radius * shape.tip);
     double roll = pen.between(0, 360);
     double[MOST_CHILDREN] places;
     uint count = 0;
@@ -111,9 +97,9 @@ void branch(Drawing start, double length, double radius, size_t order) {
         double to = radius + (tip - radius) * done;
         pen = pen.limb(BARK, step, from, to);
         while (child < count && places[child] <= done) {
-            Drawing fork = pen.roll(roll + (child + 1) * GOLDEN).turn(0, pen.between(shape.angle - SPREAD, shape.angle + SPREAD));
+            Drawing fork = pen.roll(roll + (child + 1) * GOLDEN_ANGLE).turn(0, pen.between(shape.angle - SPREAD, shape.angle + SPREAD));
             double reach = length * shape.length * (1 - LATER_SHORTER * places[child]);
-            branch(fork, reach, higher(THINNEST, to * shape.width), order + 1);
+            branch(fork, reach, higherOf(THINNEST, to * shape.width), order + 1);
             child += 1;
         }
         if (order + 1 == ORDERS.length && done >= LEAF_START) {
@@ -127,7 +113,7 @@ void branch(Drawing start, double length, double radius, size_t order) {
 }
 
 double trunkRadius(double height) {
-    double above = higher(0, height);
+    double above = higherOf(0.0, height);
     double taper = TRUNK_TOP + (TRUNK_RADIUS - TRUNK_TOP) * (1 - above / TRUNK_HEIGHT);
     return taper + TRUNK_FLARE * exp(-above / TRUNK_FLARE_HEIGHT);
 }
@@ -158,7 +144,7 @@ struct Limbs {
             isDue = along * TRUNK_HEIGHT <= height;
             if (isDue) {
                 double angle = LOWEST_LIMB_ANGLE + (HIGHEST_LIMB_ANGLE - LOWEST_LIMB_ANGLE) * share;
-                Drawing pen = trunk.roll(roll + (next + 1) * GOLDEN).turn(0, trunk.between(angle - LIMB_SPREAD, angle + LIMB_SPREAD));
+                Drawing pen = trunk.roll(roll + (next + 1) * GOLDEN_ANGLE).turn(0, trunk.between(angle - LIMB_SPREAD, angle + LIMB_SPREAD));
                 branch(pen, LIMB_LENGTH * (1 - LIMB_SHORTENING * along), radius * LIMB_WIDTH, 0);
                 next += 1;
             }

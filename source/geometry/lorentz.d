@@ -2,6 +2,9 @@ module geometry.lorentz;
 
 import core.math : sqrt;
 import core.stdc.math : acosh, cosh, sinh;
+import base.numbers : higherOf;
+
+enum double TEST_TOLERANCE = 1e-9;
 
 struct Vec4(T) {
     T[4] c = [0, 0, 0, 0];
@@ -16,7 +19,10 @@ struct Vec4(T) {
 
     Point!T toPoint() const {
         T scale = 1 / sqrt(-minkowski(this));
-        return Point!T(c[3] < 0 ? this * -scale : this * scale);
+        if (c[3] < 0) {
+            scale = -scale;
+        }
+        return Point!T(this * scale);
     }
 
     Normal!T toNormal() const {
@@ -64,8 +70,7 @@ struct Point(T) {
     }
 
     T coshDistance(Point other) const {
-        T value = -v.minkowski(other.v);
-        return value < 1 ? 1 : value;
+        return higherOf(T(1), -v.minkowski(other.v));
     }
 
     T distance(Point other) const {
@@ -142,8 +147,11 @@ struct Mat4(T) {
     T determinant() const {
         T result = 0;
         foreach (col; 0 .. 4) {
-            T sign = col % 2 == 0 ? 1 : -1;
-            result += sign * c[col][0] * minor(col);
+            if (col % 2 == 0) {
+                result += c[col][0] * minor(col);
+            } else {
+                result -= c[col][0] * minor(col);
+            }
         }
         return result;
     }
@@ -179,7 +187,10 @@ struct Motion(T) {
         Vec4!T n = normal.v;
         Motion result = identity();
         foreach (col; 0 .. 4) {
-            T lowered = col == 3 ? -n.c[col] : n.c[col];
+            T lowered = n.c[col];
+            if (col == 3) {
+                lowered = -lowered;
+            }
             foreach (row; 0 .. 4) {
                 result.m.c[col][row] -= 2 * n.c[row] * lowered;
             }
@@ -218,7 +229,7 @@ struct Motion(T) {
         if (length == 0) {
             return identity();
         } else {
-            T distance = cast(T) acosh(target.v.c[3] < 1 ? 1 : target.v.c[3]);
+            T distance = target.distance(Point!T.origin());
             T scale = distance / length;
             return shift([spatial[0] * scale, spatial[1] * scale, spatial[2] * scale]);
         }
@@ -237,8 +248,10 @@ struct Motion(T) {
         Motion result;
         foreach (col; 0 .. 4) {
             foreach (row; 0 .. 4) {
-                T sign = (col == 3) == (row == 3) ? 1 : -1;
-                result.m.c[col][row] = sign * m.c[row][col];
+                result.m.c[col][row] = m.c[row][col];
+                if ((col == 3) != (row == 3)) {
+                    result.m.c[col][row] = -result.m.c[col][row];
+                }
             }
         }
         return result;
@@ -292,8 +305,6 @@ struct Motion(T) {
     }
 }
 
-enum double TEST_TOLERANCE = 1e-9;
-
 bool isNear(double a, double b) {
     double difference = a - b;
     return difference < TEST_TOLERANCE && difference > -TEST_TOLERANCE;
@@ -306,7 +317,7 @@ unittest {
     Motion!double back = moved.inverse() * moved;
     foreach (col; 0 .. 4) {
         foreach (row; 0 .. 4) {
-            assert(isNear(back.m.c[col][row], col == row ? 1 : 0));
+            assert(isNear(back.m.c[col][row], Mat4!double.identity().c[col][row]));
         }
     }
     Point!double start = Motion!double.shift([1, 0, 0.5]) * Point!double.origin();
@@ -324,7 +335,12 @@ unittest {
     Motion!double repaired = drifted.orthonormalized();
     foreach (col; 0 .. 4) {
         foreach (other; 0 .. 4) {
-            double expected = col == other ? (col == 3 ? -1 : 1) : 0;
+            double expected = 0;
+            if (col == other && col == 3) {
+                expected = -1;
+            } else if (col == other) {
+                expected = 1;
+            }
             assert(isNear(repaired.m.column(col).minkowski(repaired.m.column(other)), expected));
         }
     }

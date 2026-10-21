@@ -1,14 +1,14 @@
-local NOCLIP_SPEED = 0.6
-local UP_DEGREES = 89
+local walk = require("lib.walk")
+
 local RISE = 0.7
 local AHEAD = 2.0
 local LOOK_DOWN_DEGREES = 25
 
 return function(world)
   world:mode("noclip")
-  world:press(AHEAD / NOCLIP_SPEED, "fwd")
-  world:look(0, -UP_DEGREES)
-  world:press(RISE / NOCLIP_SPEED, "fwd")
-  world:look(0, UP_DEGREES + LOOK_DOWN_DEGREES)
+  world:press(AHEAD / walk.NOCLIP_SPEED, "fwd")
+  world:look(0, -walk.STRAIGHT_DOWN_DEGREES)
+  world:press(RISE / walk.NOCLIP_SPEED, "fwd")
+  world:look(0, walk.STRAIGHT_DOWN_DEGREES + LOOK_DOWN_DEGREES)
   world:step()
 end

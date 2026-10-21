@@ -75,7 +75,7 @@ Position clearSpawnPosition(ref Graph graph, float bodyReach) {
 
 Position clearPositionFrom(ref Graph graph, float[3] up, float rootAltitude, float altitude, float bodyReach) {
     Position candidate = graph.positionAtRise(up, altitude - rootAltitude);
-    immutable bool isClear = graph.isRegionProvenClear(candidate, bodyReach);
+    bool isClear = graph.isRegionProvenClear(candidate, bodyReach);
     if (isClear) {
         return candidate;
     } else {

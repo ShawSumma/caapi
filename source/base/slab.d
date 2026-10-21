@@ -2,6 +2,7 @@ module base.slab;
 
 import core.bitop : bsf, bsr;
 import base.array : Array;
+import base.numbers : lowerOf;
 import base.pages : giveBack, mapPages, pageSize, unmapPages;
 
 enum uint SLAB_SHIFT = 12;
@@ -12,6 +13,9 @@ enum size_t TRIMMED_BLOCKS_PER_CALL = 4;
 enum uint WORD_SHIFT = 6;
 enum uint WORD_MASK = (1u << WORD_SHIFT) - 1;
 enum size_t NOTED_PAGES_PER_DISCARD = 512;
+enum uint TEST_RUNS = 3000;
+enum uint TEST_INDICES = 10000;
+enum uint TEST_INDEX_STRIDE = 7;
 
 struct Slab(T) {
     Array!(T*) blocks;
@@ -30,8 +34,6 @@ struct Slab(T) {
         }
     }
 
-    // Gives back a few blocks per call, since freeing hundreds of megabytes at once stalls a frame; one spare block
-    // past the needed ones keeps a count wavering around a block boundary from churning memory.
     void trim(size_t count) {
         size_t kept = ((count + SLAB_SIZE - 1) >> SLAB_SHIFT) + 1;
         size_t freed = 0;
@@ -42,15 +44,10 @@ struct Slab(T) {
         }
     }
 
-    // Gives back the whole pages between two indices, which may read back as zero bytes, so the items there must be all
-    // zero already or ones nothing reads before writing them again.
     void discard(size_t from, size_t to) {
         while (from < to) {
             size_t block = from >> SLAB_SHIFT;
-            size_t end = (block + 1) << SLAB_SHIFT;
-            if (end > to) {
-                end = to;
-            }
+            size_t end = lowerOf((block + 1) << SLAB_SHIFT, to);
             if (block < blocks.length && blocks.ptr[block] !is null) {
                 giveBack(blocks.ptr[block], (from & SLAB_MASK) * T.sizeof, (end - (block << SLAB_SHIFT)) * T.sizeof);
             }
@@ -58,8 +55,6 @@ struct Slab(T) {
         }
     }
 
-    // Marks the pages holding items freed under one index of a pool that hands out `per` items per index, to be
-    // checked by discardNoted.
     void note(size_t index, size_t per) {
         size_t page = pageSize();
         foreach (candidate; index * per * T.sizeof / page .. ((index + 1) * per * T.sizeof - 1) / page + 1) {
@@ -68,15 +63,13 @@ struct Slab(T) {
                 noted.resize(word + 1);
             }
             ulong bit = 1UL << (candidate & WORD_MASK);
-            notedCount += (noted.ptr[word] & bit) == 0;
-            noted.ptr[word] |= bit;
+            if ((noted.ptr[word] & bit) == 0) {
+                notedCount += 1;
+                noted.ptr[word] |= bit;
+            }
         }
     }
 
-    // Once enough pages are noted, gives back those whose items all belong to free indices, counting indices from
-    // `limit` on as free. Each give-back makes every thread flush its address cache, so pages wait to go back in runs
-    // of neighbors, and a pass spends at most `calls` give-backs before carrying on in a later call. Pages are checked
-    // now rather than when noted, since an index may have been taken again since.
     void discardNoted(ref const FreeIndices free, size_t limit, size_t per, ref uint calls) {
         isDiscarding = isDiscarding || notedCount >= NOTED_PAGES_PER_DISCARD;
         size_t page = pageSize();
@@ -104,21 +97,22 @@ struct Slab(T) {
                 isDiscarding = false;
             }
         }
-        uint spent = discardPages(runStart, runEnd, page);
-        calls = calls > spent ? calls - spent : 0;
+        calls -= lowerOf(calls, discardPages(runStart, runEnd, page));
     }
 
     bool isPageFree(size_t candidate, size_t page, ref const FreeIndices free, size_t limit, size_t per) const {
         size_t first = candidate * page / T.sizeof / per;
         size_t end = (((candidate + 1) * page + T.sizeof - 1) / T.sizeof + per - 1) / per;
-        return first >= limit || free.containsAll(first, end < limit ? end : limit);
+        return first >= limit || free.containsAll(first, lowerOf(end, limit));
     }
 
     uint discardPages(size_t first, size_t end, size_t page) {
         if (end > first) {
             discard(first * page / T.sizeof, (end * page + T.sizeof - 1) / T.sizeof);
+            return 1;
+        } else {
+            return 0;
         }
-        return end > first;
     }
 
     T* touch(size_t index) {
@@ -171,7 +165,11 @@ struct RunPool(T) {
     uint end;
 
     inout(T)[] slice(Run run) inout {
-        return run.length == 0 ? null : items.at(run.start)[0 .. run.length];
+        if (run.length == 0) {
+            return null;
+        } else {
+            return items.at(run.start)[0 .. run.length];
+        }
     }
 
     Run reserve(uint length) {
@@ -202,7 +200,7 @@ struct RunPool(T) {
 
     void keepGap(uint from, uint to) {
         while (from < to) {
-            uint size = bsf(from) < SLAB_SHIFT ? bsf(from) : SLAB_SHIFT;
+            uint size = lowerOf(SLAB_SHIFT, cast(uint) bsf(from));
             while ((1u << size) > to - from) {
                 size -= 1;
             }
@@ -220,7 +218,6 @@ struct RunPool(T) {
     }
 }
 
-// Free indices handed out lowest first, so live ones pack toward zero and the top of a pool can be given back.
 struct FreeIndices {
     Array!ulong words;
     Array!ulong summary;
@@ -240,12 +237,13 @@ struct FreeIndices {
         bool isAll = true;
         while (isAll && from < to) {
             size_t word = from >> WORD_SHIFT;
-            size_t end = (word + 1) << WORD_SHIFT;
-            if (end > to) {
-                end = to;
-            }
+            size_t end = lowerOf((word + 1) << WORD_SHIFT, to);
             size_t span = end - from;
-            ulong mask = (span == WORD_MASK + 1 ? ulong.max : (1UL << span) - 1) << (from & WORD_MASK);
+            ulong mask = ulong.max;
+            if (span <= WORD_MASK) {
+                mask = (1UL << span) - 1;
+            }
+            mask <<= from & WORD_MASK;
             isAll = word < words.length && (words.ptr[word] & mask) == mask;
             from = end;
         }
@@ -299,7 +297,11 @@ struct FreeIndices {
 }
 
 uint runClass(uint length) {
-    return length <= 1 ? 0 : bsr(length - 1) + 1;
+    if (length <= 1) {
+        return 0;
+    } else {
+        return bsr(length - 1) + 1;
+    }
 }
 
 unittest {
@@ -323,7 +325,6 @@ struct TestRecord {
     uint[3] values;
 }
 
-// Records straddle pages; a page shared with a live record must stay.
 unittest {
     Slab!TestRecord slab;
     FreeIndices free;
@@ -354,8 +355,6 @@ unittest {
     free.release();
 }
 
-enum uint TEST_RUNS = 3000;
-
 unittest {
     RunPool!uint pool;
     Array!Run runs;
@@ -383,9 +382,6 @@ unittest {
     runs.release();
     pool.release();
 }
-
-enum uint TEST_INDICES = 10000;
-enum uint TEST_INDEX_STRIDE = 7;
 
 unittest {
     FreeIndices free;

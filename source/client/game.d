@@ -2,6 +2,7 @@ module client.game;
 
 import core.stdc.math : acoshf, atan2f, atanhf, coshf, fabs, fabsf, sinhf, sqrt, tanhf;
 import base.array : Array;
+import base.numbers : higherOf;
 import base.units : Acceleration, Angle, Length, Speed, Time;
 import base.vector3 : ZERO_VECTOR, cross, dot, magnitude, negated, plus, rejectAlong, scaled;
 import client.arrivals : generateNow;
@@ -11,7 +12,6 @@ import common.character.controller : CharacterInput, CharacterState, MovementMod
 import common.character.features : CellOverlap, CellRange, Features, LocalFrame, RequiredChunks, visitCells;
 import common.character.sweep : Capsule, sectionCenters;
 import common.graph : Graph, NodeId;
-import plugins.api.api : Material;
 import common.node : ChunkSlot, ChunkState;
 import common.position : Position;
 import common.settings : CHUNK_DIMENSION, CharacterConfig;
@@ -23,6 +23,7 @@ import common.worldgen.spawn : clearSpawnPosition, collectChunksNear;
 import common.worldgen.structure : SiteFrame, columnPoint, rootSite, siteToNode, sitePlacement, spawnBefore;
 import geometry.honeycomb : CORNER_COUNT, Corner, Face, cornerToNode;
 import geometry.lorentz : Motion, Point, Vec4;
+import plugins.api.api : Material;
 
 enum float STRUCTURE_SEARCH_RADIUS = 4.0f;
 enum uint MAX_BODY_SECTIONS = 64;
@@ -369,10 +370,7 @@ struct Game {
                 foreach (corner; 0 .. CORNER_COUNT) {
                     Motion!float toNode = (cast(Corner) corner).cornerToNode;
                     Vec4!double apart = (drawnToCamera * toNode * Point!float.origin()).v.as!double() - (freshToCamera * toNode * Point!float.origin()).v.as!double();
-                    double chord = sqrt(fabs(apart.minkowski(apart)));
-                    if (chord > most) {
-                        most = chord;
-                    }
+                    most = higherOf(sqrt(fabs(apart.minkowski(apart))), most);
                 }
             }
         }

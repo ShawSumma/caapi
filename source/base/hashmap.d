@@ -3,6 +3,7 @@ module base.hashmap;
 import core.bitop : bsr;
 import core.stdc.stdlib : calloc, free, malloc;
 import core.stdc.string : memset;
+import base.numbers : lowerOf;
 import base.pages : giveBack;
 
 enum size_t FIBONACCI_MULTIPLIER = 0x9E3779B97F4A7C15;
@@ -18,13 +19,15 @@ enum ubyte REMOVED = 1;
 enum ubyte LIVE = 0x80;
 enum size_t TEST_KEYS = 100000;
 enum size_t TEST_KEPT = 3;
+enum size_t TEST_RANGE = 4096;
+enum size_t TEST_STEPS = 2_000_000;
+enum size_t TEST_SWING = 200_000;
 
 struct HashSlot(K, V) {
     K key;
     V value;
 }
 
-// Control bytes live apart from the slots: a lookup that misses usually reads only them, and they stay in cache.
 struct HashTable(K, V) {
     ubyte* controls;
     HashSlot!(K, V)* slots;
@@ -69,7 +72,11 @@ struct HashTable(K, V) {
             return null;
         } else {
             size_t index = probe(key, hashOf(key));
-            return controls[index] == EMPTY ? null : &slots[index].value;
+            if (controls[index] == EMPTY) {
+                return null;
+            } else {
+                return &slots[index].value;
+            }
         }
     }
 
@@ -85,7 +92,6 @@ struct HashTable(K, V) {
         }
     }
 
-    // Shifts the rest of the probe run back over the hole, so lookups never wade through tombstones.
     void erase(K key) {
         if (capacity > 0) {
             size_t mask = capacity - 1;
@@ -106,7 +112,6 @@ struct HashTable(K, V) {
         }
     }
 
-    // A table being migrated keeps its layout, since shifting could move an entry behind the migration cursor.
     void bury(K key) {
         if (capacity > 0) {
             size_t index = probe(key, hashOf(key));
@@ -116,9 +121,6 @@ struct HashTable(K, V) {
         }
     }
 
-    // Gives back the pages of a draining table behind the migration cursor a megabyte at a time, so the final free of
-    // millions of slots does not stall a frame. Every probe still to come for a key at or past the cursor starts after
-    // the last empty slot before the cursor, so the slots up to that one may read back as zero.
     void releaseBefore(size_t cursor) {
         if ((cursor - released) * HashSlot!(K, V).sizeof >= RELEASED_BYTES) {
             size_t edge = cursor;
@@ -152,12 +154,18 @@ struct HashMap(K, V) {
 
     inout(V)* find(K key) inout {
         inout(V)* found = current.find(key);
-        return found !is null ? found : previous.find(key);
+        if (found !is null) {
+            return found;
+        } else {
+            return previous.find(key);
+        }
     }
 
     void insert(K key, V value) {
-        if ((current.used + 1) * EIGHTHS > current.capacity * FULLEST_EIGHTHS) {
-            resize(current.capacity == 0 ? INITIAL_HASH_MAP_CAPACITY : current.capacity * 2);
+        if (current.capacity == 0) {
+            resize(INITIAL_HASH_MAP_CAPACITY);
+        } else if ((current.used + 1) * EIGHTHS > current.capacity * FULLEST_EIGHTHS) {
+            resize(current.capacity * 2);
         }
         current.assign(key, value, false);
         migrate(MIGRATED_SLOTS_PER_CHANGE);
@@ -170,7 +178,6 @@ struct HashMap(K, V) {
         shrinkIfSparse();
     }
 
-    // Kept out of line: inlined into remove, it made the benchmark's insert and remove a quarter slower.
     pragma(inline, false) void shrinkIfSparse() {
         if (previous.capacity == 0 && current.capacity > INITIAL_HASH_MAP_CAPACITY && current.used * EIGHTHS < current.capacity * EMPTIEST_EIGHTHS) {
             resize(current.capacity / 2);
@@ -183,9 +190,6 @@ struct HashMap(K, V) {
         migrated = 0;
     }
 
-    // The old table drains into the new one a few slots per change, so no single change pays for moving everything.
-    // A table only shrinks once the last migration is done, and the changes it takes to fill the new one past its
-    // limit migrate far more slots than the old one has, so neither table ever fills up.
     void resize(size_t capacity) {
         migrate(previous.capacity);
         previous = current;
@@ -194,10 +198,7 @@ struct HashMap(K, V) {
     }
 
     void migrate(size_t count) {
-        size_t end = migrated + count;
-        if (end > previous.capacity) {
-            end = previous.capacity;
-        }
+        size_t end = lowerOf(migrated + count, previous.capacity);
         foreach (index; migrated .. end) {
             if ((previous.controls[index] & LIVE) != 0) {
                 current.assign(previous.slots[index].key, previous.slots[index].value, true);
@@ -268,16 +269,15 @@ unittest {
     }
     foreach (i; 0 .. TEST_KEYS) {
         size_t* found = emptied.find(TestKey(i * FIBONACCI_MULTIPLIER));
-        assert(i < TEST_KEPT ? found !is null && *found == i : found is null);
+        if (i < TEST_KEPT) {
+            assert(found !is null && *found == i);
+        } else {
+            assert(found is null);
+        }
     }
     emptied.release();
 }
 
-enum size_t TEST_RANGE = 4096;
-enum size_t TEST_STEPS = 2_000_000;
-enum size_t TEST_SWING = 200_000;
-
-// Fills and empties while migrations are still running, checked against a plain presence table.
 unittest {
     HashMap!(TestKey, size_t) map;
     bool[TEST_RANGE] isPresent;
@@ -286,7 +286,10 @@ unittest {
         state = state * 6364136223846793005UL + 1442695040888963407UL;
         size_t key = (state >> 33) % TEST_RANGE;
         bool isFilling = (step / TEST_SWING) % 2 == 0;
-        bool isInserting = (state >> 20) % 4 != 0 ? isFilling : !isFilling;
+        bool isInserting = isFilling;
+        if ((state >> 20) % 4 == 0) {
+            isInserting = !isFilling;
+        }
         if (isInserting) {
             map.insert(TestKey(key), key);
             isPresent[key] = true;
@@ -296,7 +299,11 @@ unittest {
         }
         size_t probed = (state >> 40) % TEST_RANGE;
         size_t* found = map.find(TestKey(probed));
-        assert(isPresent[probed] ? found !is null && *found == probed : found is null);
+        if (isPresent[probed]) {
+            assert(found !is null && *found == probed);
+        } else {
+            assert(found is null);
+        }
     }
     foreach (key; 0 .. TEST_RANGE) {
         assert((map.find(TestKey(key)) !is null) == isPresent[key]);

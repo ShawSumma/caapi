@@ -4,9 +4,9 @@ import core.stdc.math : asinhf, atanf, cosf, coshf, sinhf, tanf;
 import core.stdc.stdlib : abs;
 import core.stdc.string : memcpy;
 import base.array : Array;
-import base.numbers : PI, clamped, higherOf;
+import base.numbers : RADIANS_PER_DEGREE, clamped, higherOf;
+import base.splitmix : SplitMix;
 import common.graph : Graph, MAX_PARENTS, NO_SLOT, NodeId, ParentList;
-import plugins.api.api : Material;
 import common.node : ChunkLayout, Occupancy, Voxels, cellIndex;
 import common.view : GraphView;
 import common.worldgen.building : Building;
@@ -18,6 +18,7 @@ import common.worldgen.structure : firstSideAmong, ringFaces;
 import geometry.cube : CELL_STEPS;
 import geometry.honeycomb : CUBE_GRID_RADIUS, CUBE_RADIUS, Corner, FACE_COUNT, Face, cubeCenter, cubeToNode;
 import geometry.lorentz : Mat4, Vec4;
+import plugins.api.api : Material;
 
 enum WorldgenKind : ubyte {
     terrain,
@@ -27,6 +28,24 @@ enum WorldgenKind : ubyte {
 
 enum size_t STRUCTURE_NAME_CAPACITY = 256;
 enum string TERRAIN_STRUCTURE = "planet";
+enum Material DEFERRED_STAND_IN_MATERIAL = Material.dirt;
+enum float BASE_TREE_DENSITY = 0.05f;
+enum float WETNESS_PER_TREE_DENSITY = 4.0f;
+enum float MIN_TREE_DENSITY = 0.01f;
+enum float MAX_TREE_DENSITY = 0.3f;
+enum ubyte MIN_TREE_DIMENSION = 4;
+enum int CANOPY_RADIUS = 2;
+enum int CANOPY_CORNER_SPAN = 3;
+enum int SPRUCE_LOWEST_LEAVES = 2;
+enum float SPRUCE_WARMTH = -0.2f;
+enum float MAPLE_WARMTH = 0.05f;
+enum float TROPICAL_WARMTH = 0.25f;
+enum float WET = 0.45f;
+enum float DRY = -0.05f;
+enum ulong SHRUB_ODDS = 8;
+enum ulong CHOICE_SHIFT = 8;
+enum uint CHUNK_ROLL_SHIFT = 32;
+enum ubyte TEST_DIMENSION = 12;
 
 struct PlaneWorld {
     float tiltRadians;
@@ -104,7 +123,7 @@ struct Worldgen {
 }
 
 float degreesToRadians(float degrees) {
-    return degrees * PI / DEGREES_PER_HALF_TURN;
+    return cast(float)(degrees * RADIANS_PER_DEGREE);
 }
 
 enum TreeKind : ubyte {
@@ -158,42 +177,9 @@ immutable TreeSpecies[TreeKind.max + 1] TREE_SPECIES = [
     TreeKind.cactus: TreeSpecies(Material.cactus, Material.none, TreeShape.column, 2, 3, 1),
 ];
 
-enum Material DEFERRED_STAND_IN_MATERIAL = Material.dirt;
-enum float BASE_TREE_DENSITY = 0.05f;
-enum float WETNESS_PER_TREE_DENSITY = 4.0f;
-enum float MIN_TREE_DENSITY = 0.01f;
-enum float MAX_TREE_DENSITY = 0.3f;
-enum ubyte MIN_TREE_DIMENSION = 4;
-enum int CANOPY_RADIUS = 2;
-enum int CANOPY_CORNER_SPAN = 3;
-enum int SPRUCE_LOWEST_LEAVES = 2;
-enum float SPRUCE_WARMTH = -0.2f;
-enum float MAPLE_WARMTH = 0.05f;
-enum float TROPICAL_WARMTH = 0.25f;
-enum float WET = 0.45f;
-enum float DRY = -0.05f;
-enum ulong SHRUB_ODDS = 8;
-enum ulong CHOICE_SHIFT = 8;
-enum float DEGREES_PER_HALF_TURN = 180.0f;
-enum ulong SPLITMIX_INCREMENT = 0x9e3779b97f4a7c15;
-enum ulong SPLITMIX_MULTIPLIER_1 = 0xbf58476d1ce4e5b9;
-enum ulong SPLITMIX_MULTIPLIER_2 = 0x94d049bb133111eb;
-enum uint CHUNK_ROLL_SHIFT = 32;
-enum uint ROLL_DISCARDED_BITS = 40;
-enum float ROLL_RANGE = 1 << 24;
-enum ubyte TEST_DIMENSION = 12;
-
-struct SplitMix {
-    ulong state;
-
-    ulong next() {
-        state += SPLITMIX_INCREMENT;
-        ulong z = state;
-        z = (z ^ (z >> 30)) * SPLITMIX_MULTIPLIER_1;
-        z = (z ^ (z >> 27)) * SPLITMIX_MULTIPLIER_2;
-        return z ^ (z >> 31);
-    }
-}
+immutable TreeKind[3] WET_TREES = [TreeKind.willow, TreeKind.bigOak, TreeKind.oak];
+immutable TreeKind[4] COOL_TREES = [TreeKind.maple, TreeKind.maple, TreeKind.birch, TreeKind.oak];
+immutable TreeKind[6] MILD_TREES = [TreeKind.oak, TreeKind.oak, TreeKind.birch, TreeKind.bigOak, TreeKind.cherry, TreeKind.maple];
 
 struct NodeState {
     Plane surface;
@@ -437,7 +423,11 @@ const(Stroke)[] strokesNear(const(Stroke)[] strokes, Corner chunk) {
     while (index < strokes.length && !strokes[index].isWithin(center, CUBE_RADIUS)) {
         index += 1;
     }
-    return index < strokes.length ? strokes : null;
+    if (index < strokes.length) {
+        return strokes;
+    } else {
+        return null;
+    }
 }
 
 struct GeneratedVoxels {
@@ -576,8 +566,7 @@ struct TerrainGenerator {
     }
 
     float cellRoll(size_t index) const {
-        ulong bits = SplitMix(params.nodeSpice ^ (cast(ulong) params.chunk << CHUNK_ROLL_SHIFT) ^ index).next();
-        return cast(float)(bits >> ROLL_DISCARDED_BITS) / ROLL_RANGE;
+        return SplitMix(params.nodeSpice ^ (cast(ulong) params.chunk << CHUNK_ROLL_SHIFT) ^ index).roll();
     }
 
     void generateTerrainVoxel(uint ground, float[3] center, size_t index) {
@@ -585,7 +574,12 @@ struct TerrainGenerator {
         float altitude = params.ground(ground).surface.distanceToChunk(params.chunk, center);
         float depth = here.relief - altitude;
         if (voxels.at(index) == Material.none) {
-            Material material = depth >= 0.0f ? groundAt(depth, here) : openAt(altitude, here);
+            Material material;
+            if (depth >= 0.0f) {
+                material = groundAt(depth, here);
+            } else {
+                material = openAt(altitude, here);
+            }
             if (material != Material.none) {
                 voxels.toDense(params.dimension)[index] = material;
             }
@@ -706,25 +700,28 @@ TreeKind treeKind(float warmth, float wetness, ulong roll) {
     ulong choice = roll >> CHOICE_SHIFT;
     if (isDesert(warmth, wetness)) {
         return TreeKind.cactus;
+    } else if (warmth < SNOW_WARMTH && choice % 3 == 0) {
+        return TreeKind.snag;
     } else if (warmth < SNOW_WARMTH) {
-        return choice % 3 == 0 ? TreeKind.snag : TreeKind.spruce;
+        return TreeKind.spruce;
+    } else if (warmth < SPRUCE_WARMTH && choice % 6 == 0) {
+        return TreeKind.birch;
     } else if (warmth < SPRUCE_WARMTH) {
-        return choice % 6 == 0 ? TreeKind.birch : TreeKind.spruce;
+        return TreeKind.spruce;
     } else if (roll % SHRUB_ODDS == 0) {
         return TreeKind.shrub;
+    } else if (warmth > TROPICAL_WARMTH && wetness > WET && choice % 3 == 0) {
+        return TreeKind.bigOak;
     } else if (warmth > TROPICAL_WARMTH && wetness > WET) {
-        return choice % 3 == 0 ? TreeKind.bigOak : TreeKind.jungle;
+        return TreeKind.jungle;
     } else if (warmth > TROPICAL_WARMTH && wetness < DRY) {
         return TreeKind.acacia;
     } else if (wetness > WET) {
-        immutable TreeKind[3] wet = [TreeKind.willow, TreeKind.bigOak, TreeKind.oak];
-        return wet[choice % wet.length];
+        return WET_TREES[choice % WET_TREES.length];
     } else if (warmth < MAPLE_WARMTH) {
-        immutable TreeKind[4] cool = [TreeKind.maple, TreeKind.maple, TreeKind.birch, TreeKind.oak];
-        return cool[choice % cool.length];
+        return COOL_TREES[choice % COOL_TREES.length];
     } else {
-        immutable TreeKind[6] mild = [TreeKind.oak, TreeKind.oak, TreeKind.birch, TreeKind.bigOak, TreeKind.cherry, TreeKind.maple];
-        return mild[choice % mild.length];
+        return MILD_TREES[choice % MILD_TREES.length];
     }
 }
 
@@ -832,11 +829,7 @@ bool spruceLeaf(int trunk, int level, int span, bool isWide) {
 }
 
 int chebyshevLength(int i, int j) {
-    if (abs(i) > abs(j)) {
-        return abs(i);
-    } else {
-        return abs(j);
-    }
+    return higherOf(abs(i), abs(j));
 }
 
 bool isGroundMaterial(Material material) {

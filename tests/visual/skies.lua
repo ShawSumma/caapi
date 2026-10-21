@@ -1,13 +1,13 @@
-local WILD = "skywild"
-local NOCLIP_SPEED = 0.6
+local walk = require("lib.walk")
+
 local BACK = 1.2
 local LOOK_UP_DEGREES = -40
 
 return function(world)
-  world:worldgen("structure", WILD)
+  world:worldgen("structure", "skywild")
   world:enter_route()
   world:mode("noclip")
-  world:press(BACK / NOCLIP_SPEED, "back")
+  world:press(BACK / walk.NOCLIP_SPEED, "back")
   world:look(0, LOOK_UP_DEGREES)
   world:step()
 end

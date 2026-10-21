@@ -12,7 +12,6 @@ import core.sys.posix.unistd : STDERR_FILENO, alarm, write;
 
 enum uint CRASH_FRAMES = 64;
 enum int CRASH_STATUS = 128;
-// A failed check halts with SIGILL on x86 and SIGTRAP on ARM.
 immutable int[6] CRASH_SIGNALS = [SIGSEGV, SIGBUS, SIGILL, SIGTRAP, SIGFPE, SIGABRT];
 
 void reportCrashes() {
@@ -37,7 +36,7 @@ void reportOn(int signal) {
 }
 
 extern (C) void printCrash(int signal) nothrow @nogc {
-    immutable string heading = "crashed, backtrace:\n";
+    string heading ="crashed, backtrace:\n";
     write(STDERR_FILENO, heading.ptr, heading.length);
     void*[CRASH_FRAMES] frames;
     int depth = backtrace(frames.ptr, CRASH_FRAMES);

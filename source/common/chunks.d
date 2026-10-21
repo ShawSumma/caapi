@@ -32,7 +32,11 @@ struct ChunkStore {
 
     const(Chunk)* at(ChunkSlot chunk) const {
         uint block = blockOf(chunk.slot);
-        return block == NO_BLOCK ? &FRESH_CHUNK : records.at(indexOf(block, chunk));
+        if (block == NO_BLOCK) {
+            return &FRESH_CHUNK;
+        } else {
+            return records.at(indexOf(block, chunk));
+        }
     }
 
     Chunk* existing(ChunkSlot chunk) {
@@ -72,8 +76,6 @@ struct ChunkStore {
         records.note(index, CORNER_COUNT);
     }
 
-    // Released blocks are reset to Chunk.init, which is all zero, so their pages can go back once no block on them is
-    // in use.
     void discardFreed(ref uint calls) {
         records.discardNoted(freeBlocks, blockCount, CORNER_COUNT, calls);
     }

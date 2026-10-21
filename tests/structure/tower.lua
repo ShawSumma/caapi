@@ -2,15 +2,6 @@ local walk = require("lib.walk")
 
 local WALK_SECONDS = 20
 local MAX_WALKED_FRACTION = 0.8
-local TOWER_MATERIALS = {
-  concrete = true,
-  white_brick = true,
-  grey_brick = true,
-  sandstone = true,
-  wood_planks = true,
-  steel = true,
-  marble = true,
-}
 
 return function(world)
   world:worldgen("structure", "tower")
@@ -31,5 +22,5 @@ return function(world)
   assert(world:altitude() - ground > walk.MIN_BLOCK_EDGE / 2, string.format("rose %.3f, not onto the ground floor through the door", world:altitude() - ground))
   assert(highest - ground < walk.MAX_BLOCK_EDGE, string.format("climbed %.3f, more than the door's threshold", highest - ground))
   assert(walked < MAX_WALKED_FRACTION * free, string.format("walked %.3f of %.3f without reaching the far wall", walked, free))
-  assert(TOWER_MATERIALS[below], string.format("standing on %s instead of the ground floor", tostring(below)))
+  assert(walk.TOWER_MATERIALS[below] ~= nil, string.format("standing on %s instead of the ground floor", tostring(below)))
 end

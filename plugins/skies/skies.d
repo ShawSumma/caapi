@@ -2,11 +2,11 @@ module plugins.skies.skies;
 
 import plugins.api.api : Api, Material, Site, SitePart, Sky;
 import blocks = plugins.blocks.blocks;
-import layout = plugins.rooms.layout;
-import plugins.buildings.building : Bound, Lot, Lots, Palette, Side, Spec, upright;
+import plugins.buildings.building : Bound, Lot, Lots, Palette, Side, Spec;
 import plugins.buildings.types : Type, build, palettes, stories;
 import plugins.connector.connector : connect;
-import plugins.turtle.turtle : Turtle, boxOf;
+import layout = plugins.rooms.layout;
+import plugins.turtle.turtle : Turtle, boxOf, cornersOf, upright;
 
 enum uint SPIRE_PERCENT = 30;
 enum int LOT_FRONT = 4;
@@ -67,7 +67,7 @@ void spire(Turtle corner) {
 }
 
 void spiresSky(const(Api)* api, Site face, const(Sky)* sky, const(void)* data) {
-    foreach (corner; blocks.cornersOf(Turtle(api, face))) {
+    foreach (corner; cornersOf(Turtle(api, face))) {
         Turtle[blocks.AROUND] quarters = blocks.quartersOf(corner);
         if (blocks.isOwner(quarters)) {
             meadow(quarters);

@@ -209,7 +209,6 @@ void unloadNode(ref Graph graph, uint slot, ref Array!Unloaded unloaded) {
     }
 }
 
-// Every evicted slot is listed, chunks or not, so per-slot state elsewhere is reset before the slot is reused.
 void evictNode(ref Graph graph, uint slot, ref Array!Unloaded unloaded) {
     unloaded.append(Unloaded(slot, graph.chunks.blockOf(slot)));
     if (graph.chunks.has(slot)) {

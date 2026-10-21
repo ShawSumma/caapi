@@ -6,10 +6,8 @@ import plugins.turtle.turtle : Turtle, boxOf;
 
 enum int HALF_WIDTH = 2;
 enum uint HUT_EVERY = 3;
-enum int HUT_STORIES = 2;
 enum float ROUTE_LANE = 0.5f;
 enum uint TURNS = 3;
-immutable box.Palette TIMBER = box.Palette(Material.oakWood, Material.woodPlanks, Material.spruceWood);
 
 void pave(Turtle segment) {
     int length = segment.edgeCells();
@@ -18,9 +16,7 @@ void pave(Turtle segment) {
 }
 
 void hut(const(Api)* api, Site site, const(void)* data) {
-    Turtle tower = Turtle(api, site).pitchUp();
-    box.tower(tower, HUT_STORIES * box.STORY, TIMBER);
-    box.door(tower);
+    box.hut(Turtle(api, site).pitchUp());
 }
 
 void addHut(Turtle tip) {
@@ -45,7 +41,7 @@ bool extend(Turtle segment) {
     if (ahead.isClaimed(SitePart.vertex)) {
         return false;
     } else {
-        immutable bool isPlaced = segment.place(&world, null, 0);
+        bool isPlaced = segment.place(&world, null, 0);
         if (isPlaced) {
             ahead.claim(SitePart.vertex);
         }

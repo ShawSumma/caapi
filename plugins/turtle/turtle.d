@@ -6,6 +6,7 @@ enum Rhythm EVERY_HEIGHT = Rhythm(0, 0, 0);
 enum int ENDLESS_LOW = int.min;
 enum int ENDLESS_HIGH = int.max;
 enum uint PERCENT = 100;
+enum uint FACE_CORNERS = 5;
 
 Box boxOf(int[2] x, int[2] y, int[2] z) {
     return Box([x[0], y[0], z[0]], [x[1], y[1], z[1]]);
@@ -27,6 +28,46 @@ int floorMod(int value, int divisor) {
     } else {
         return remainder;
     }
+}
+
+T lowerOf(T)(T a, T b) {
+    if (a < b) {
+        return a;
+    } else {
+        return b;
+    }
+}
+
+T higherOf(T)(T a, T b) {
+    if (a > b) {
+        return a;
+    } else {
+        return b;
+    }
+}
+
+T clamped(T)(T value, T low, T high) {
+    if (value < low) {
+        return low;
+    } else if (value > high) {
+        return high;
+    } else {
+        return value;
+    }
+}
+
+Turtle upright(Turtle site) {
+    return site.pitchUp().rollRight();
+}
+
+Turtle[FACE_CORNERS] cornersOf(Turtle face) {
+    Turtle[FACE_CORNERS] corners;
+    Turtle corner = face;
+    foreach (index; 0 .. FACE_CORNERS) {
+        corners[index] = corner;
+        corner = corner.forward(1).right();
+    }
+    return corners;
 }
 
 struct Turtle {

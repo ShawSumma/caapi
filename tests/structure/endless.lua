@@ -1,6 +1,5 @@
 local walk = require("lib.walk")
 
-local NOCLIP_SPEED = 0.6
 local FLIGHT = 5
 local SAMPLES = 10
 
@@ -8,7 +7,7 @@ return function(world)
   world:worldgen("structure", "city")
   world:mode("noclip")
   for sample = 1, SAMPLES do
-    world:press(FLIGHT / SAMPLES / NOCLIP_SPEED, "fwd")
+    world:press(FLIGHT / SAMPLES / walk.NOCLIP_SPEED, "fwd")
     world:look(0, walk.STRAIGHT_DOWN_DEGREES)
     world:step()
     local below = world:target_material()

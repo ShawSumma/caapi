@@ -4,10 +4,10 @@ import core.stdc.stdlib : calloc, free, malloc;
 import base.array : Array;
 import base.numbers : higherOf, lowerOf;
 import common.graph : Graph;
-import plugins.api.api : Material;
 import common.worldgen.blueprint : Brush, CellBox, LineSpec, Paint;
 import common.worldgen.structure : ColumnChunk, LineTouch, isOnTouch, isTouchInRange;
 import geometry.honeycomb : CORNER_COUNT, Corner;
+import plugins.api.api : Material;
 
 enum uint MAX_LINES_AT_CORNER = 3;
 

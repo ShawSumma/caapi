@@ -1,10 +1,10 @@
 module common.character.sweep;
 
 import core.math : sqrt;
-import core.stdc.math : ceilf;
-import base.numbers : isNan;
+import core.stdc.math : ceilf, fabsf;
+import base.numbers : higherOf, isNan;
 import base.vector3 : ZERO_VECTOR, cross, dot, magnitude, minus, plus, scaled;
-import common.character.features : Edge, Features, Quad, absolute, unit;
+import common.character.features : Edge, Features, Quad, unit;
 
 enum double MIN_DISPLACEMENT_SQUARED = 1e-16;
 enum float MIN_CREASE_SINE = 1e-3f;
@@ -17,11 +17,7 @@ struct Capsule {
     float skin;
 
     float capOffset() const {
-        if (halfHeight > radius) {
-            return halfHeight - radius;
-        } else {
-            return 0;
-        }
+        return higherOf(halfHeight - radius, 0.0f);
     }
 
     float sectionSpacing() const {
@@ -235,7 +231,7 @@ unittest {
     Section section = Section(null, [0.5f, 2.0f, 0.5f], 0.4f, 0.41f, true);
     float[3] down = [0, -1, 0];
     Contact landing = section.quadContact(floor, down, 2.0f, Contact.init);
-    assert(landing.isHit() && absolute(landing.stop - 0.59f) < TEST_TOLERANCE);
+    assert(landing.isHit() && fabsf(landing.stop - 0.59f) < TEST_TOLERANCE);
     float[3] along = [1, 0, 0];
     assert(!section.quadContact(floor, along, 2.0f, Contact.init).isHit());
     Section resting = Section(null, [0.5f, 1.405f, 0.5f], 0.4f, 0.41f, true);

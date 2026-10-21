@@ -1,7 +1,7 @@
 module common.raycast.graph;
 
-import core.stdc.math : atanhf, coshf, fminf;
-import base.numbers : isNan;
+import core.stdc.math : atanhf, coshf;
+import base.numbers : isNan, lowerOf;
 import common.graph : Graph;
 import common.node : Chunk, ChunkId, ChunkSlot, ChunkState;
 import common.position : Position;
@@ -28,7 +28,7 @@ struct GraphCastHit {
 GraphCastHit rayCast(ref const Graph graph, Position position, Ray ray, float tanhDistance) {
     GraphCastHit hit;
     Ray nodeRay = ray.movedBy(position.local);
-    float reach = atanhf(fminf(tanhDistance, MAX_TANH_DISTANCE));
+    float reach = atanhf(lowerOf(tanhDistance, MAX_TANH_DISTANCE));
     float nodeThreshold = coshf(reach + NODE_RADIUS + CUBE_RADIUS);
     float chunkThreshold = coshf(reach + CUBE_RADIUS);
     VisitQueue!RAY_CAST_MAX_NODES queue = VisitQueue!RAY_CAST_MAX_NODES.fromSlot(graph.slotOf(position.node));

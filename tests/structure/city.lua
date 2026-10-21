@@ -5,16 +5,12 @@ local ENTRY_STOPS = 2
 local STOPS_PER_STORY = 7
 local ROUTE_STORIES = 2
 local MIN_CLIMB = 0.25
-local STREET = {
-  basalt = true,
-  white_brick = true,
-}
 
 return function(world)
   world:worldgen("structure", "city")
   walk.spawn(world)
   world:look(0, walk.STRAIGHT_DOWN_DEGREES)
-  assert(STREET[world:target_material()], string.format("spawned on %s instead of the street", tostring(world:target_material())))
+  assert(walk.STREET_MATERIALS[world:target_material()] ~= nil, string.format("spawned on %s instead of the street", tostring(world:target_material())))
   world:look(0, -walk.STRAIGHT_DOWN_DEGREES)
   world:enter_route()
   world:wait(walk.SETTLE_SECONDS)

@@ -1,16 +1,17 @@
 local DEFAULT_TIMESTEP = 0.016
 local CHOSEN_TIMESTEP = 0.02
+local TIMESTEP_TOLERANCE = 1e-6
 local CLOCK_TOLERANCE = 1e-4
 local REST_TOLERANCE = 5e-5
 
 return function(world)
   local is_unbound_call_accepted, unbound_message = pcall(world.wait, 1)
-  assert(not is_unbound_call_accepted and string.find(unbound_message, "table expected", 1, true), "calling a method without its object is an error")
+  assert(not is_unbound_call_accepted and string.find(unbound_message, "table expected", 1, true) ~= nil, "calling a method without its object is an error")
   assert(not pcall(world.hold, world, "sideways"), "unknown keys are an error")
   assert(not pcall(world.mode, world, "swim"), "unknown modes are an error")
   assert(not pcall(world.material, world, 10), "material slots past the palette are an error")
 
-  assert(math.abs(world:timestep() - DEFAULT_TIMESTEP) < 1e-6, "default timestep is 0.016 s")
+  assert(math.abs(world:timestep() - DEFAULT_TIMESTEP) < TIMESTEP_TOLERANCE, "default timestep is 0.016 s")
   world:timestep(CHOSEN_TIMESTEP)
   world:worldgen("plane")
   assert(world:mode() == "walk" and world:is_on_ground(), "the player starts walking, standing on the ground")

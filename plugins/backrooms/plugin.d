@@ -2,8 +2,7 @@ module plugins.backrooms.plugin;
 
 import plugins.api.api : Api, ENTRY, Registry, Site, SitePart;
 import layout = plugins.rooms.layout;
-import plugins.buildings.building : upright;
-import plugins.turtle.turtle : Turtle;
+import plugins.turtle.turtle : Turtle, upright;
 
 immutable float[3] SPAWN = [14, 4.5, layout.GROUND];
 

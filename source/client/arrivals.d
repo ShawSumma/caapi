@@ -2,15 +2,22 @@ module client.arrivals;
 
 import core.stdc.stdlib : calloc, free;
 import base.array : Array;
+import base.hashmap : FIBONACCI_MULTIPLIER;
 import base.parallel : Executor, ParallelJob;
 import client.tasks : GenResult;
-import common.graph : Graph, NODE_HASH_MULTIPLIER, NO_SLOT, ROOT_NODE;
-import plugins.api.api : Material;
+import common.graph : Graph, NO_SLOT, ROOT_NODE;
 import common.neighbors : chunkNeighborSlot, isBorderingVoid, isPredictionContradicted, needsMesh, touchChunksAround;
 import common.node : Chunk, ChunkSlot, ChunkState, Voxels, cellCount;
 import common.worldgen.generation : ChunkParams, GeneratedVoxels, Worldgen;
 import geometry.cube : DIRECTIONS;
 import geometry.honeycomb : CORNER_COUNT, FACE_COUNT, Face;
+import plugins.api.api : Material;
+
+enum ubyte TEST_DIMENSION = 4;
+enum ulong TEST_MIX = 0xBF58476D1CE4E5B9;
+enum size_t TEST_KINDS = 4;
+enum size_t TEST_VOID_ODDS = 3;
+enum size_t TEST_BATCH_STRIDE = 3;
 
 struct IntegrationOutput {
     Array!ChunkSlot restored;
@@ -182,12 +189,6 @@ void resolveMaterials(ref Graph graph, ChunkSlot chunk) {
     }
 }
 
-enum ubyte TEST_DIMENSION = 4;
-enum ulong TEST_MIX = 0xBF58476D1CE4E5B9;
-enum size_t TEST_KINDS = 4;
-enum size_t TEST_VOID_ODDS = 3;
-enum size_t TEST_BATCH_STRIDE = 3;
-
 GeneratedVoxels testVoxels(size_t chunk) {
     if (chunk % TEST_KINDS == 0) {
         return GeneratedVoxels(Voxels.filled(Material.granite), false);
@@ -197,7 +198,7 @@ GeneratedVoxels testVoxels(size_t chunk) {
         Voxels voxels = Voxels.filled(Material.granite);
         Material[] cells = voxels.toDense(TEST_DIMENSION);
         foreach (cell; 0 .. cellCount(TEST_DIMENSION)) {
-            if (((chunk * NODE_HASH_MULTIPLIER + cell) * TEST_MIX >> 32) % TEST_VOID_ODDS == 0) {
+            if (((chunk * FIBONACCI_MULTIPLIER + cell) * TEST_MIX >> 32) % TEST_VOID_ODDS == 0) {
                 cells[cell] = Material.none;
             }
         }

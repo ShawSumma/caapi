@@ -145,19 +145,35 @@ struct GraphView {
     }
 
     NodeId idAt(uint node) const {
-        return isVirtual(node) ? virtualAt(node).id : graph.idAt(node);
+        if (isVirtual(node)) {
+            return virtualAt(node).id;
+        } else {
+            return graph.idAt(node);
+        }
     }
 
     uint depthOf(uint node) const {
-        return isVirtual(node) ? virtualAt(node).depth : graph.depthOf(node);
+        if (isVirtual(node)) {
+            return virtualAt(node).depth;
+        } else {
+            return graph.depthOf(node);
+        }
     }
 
     ushort parentFacesOf(uint node) const {
-        return isVirtual(node) ? virtualAt(node).parentFaces : graph.nodeAt(node).parentFaces;
+        if (isVirtual(node)) {
+            return virtualAt(node).parentFaces;
+        } else {
+            return graph.nodeAt(node).parentFaces;
+        }
     }
 
     ParentList parents(uint node) const {
-        return isVirtual(node) ? virtualAt(node).parents : graph.parents(node);
+        if (isVirtual(node)) {
+            return virtualAt(node).parents;
+        } else {
+            return graph.parents(node);
+        }
     }
 
     uint slotOf(NodeId id) const {
@@ -166,7 +182,11 @@ struct GraphView {
             return slot;
         } else {
             const(uint)* known = virtualIds.find(id);
-            return known is null ? NO_SLOT : *known;
+            if (known is null) {
+                return NO_SLOT;
+            } else {
+                return *known;
+            }
         }
     }
 
@@ -187,10 +207,10 @@ struct GraphView {
 
     uint ensureNeighborSlot(uint node, Face face) {
         uint existing = neighborSlot(node, face);
-        if (owner !is null) {
-            return existing == NO_SLOT ? owner.addChild(node, face) : existing;
-        } else if (existing != NO_SLOT) {
+        if (existing != NO_SLOT) {
             return existing;
+        } else if (owner !is null) {
+            return owner.addChild(node, face);
         } else if (isVirtual(node)) {
             uint child = virtualChild(node, face);
             virtualAt(node).children[face] = child;
@@ -214,7 +234,10 @@ struct GraphView {
         while (remaining != 0) {
             Face through = cast(Face) bsf(remaining);
             remaining &= remaining - 1;
-            uint parent = through == face ? node : ensureNeighborSlot(neighborSlot(node, through), face);
+            uint parent = node;
+            if (through != face) {
+                parent = ensureNeighborSlot(neighborSlot(node, through), face);
+            }
             list.links[list.count] = ParentEntry(parent, through);
             list.count += 1;
         }
@@ -367,7 +390,11 @@ struct GraphView {
 
     const(SkyChoice)* knownChoice(CornerKey key) const {
         const(SkyChoice)* global = graph.skies.choices.find(key);
-        return global !is null ? global : choices.find(key);
+        if (global !is null) {
+            return global;
+        } else {
+            return choices.find(key);
+        }
     }
 
     void storeChoice(CornerKey key, SkyChoice choice) {

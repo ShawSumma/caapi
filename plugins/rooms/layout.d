@@ -1,11 +1,11 @@
 module plugins.rooms.layout;
 
 import plugins.api.api : Api, Site, SitePart, Sky;
-import plugins.rooms.levels : Biome, HallLayout, LAYERS, Level;
-import plugins.rooms.rooms : Doors, Floor, Frame, Halls, MAZE_CELLS, Owns, Plan, Quarter, SEPARATION, SIDES, Side, Stair, frameOf, origin, paintFloor, stairs;
 import blocks = plugins.blocks.blocks;
-import plugins.buildings.building : upright;
-import plugins.turtle.turtle : Turtle;
+import plugins.buildings.building : SIDES, Side;
+import plugins.rooms.levels : Biome, HallLayout, LAYERS, Level;
+import plugins.rooms.rooms : Doors, Floor, Frame, Halls, MAZE_CELLS, Owns, Plan, Quarter, SEPARATION, Stair, frameOf, origin, paintFloor, stairs;
+import plugins.turtle.turtle : FACE_CORNERS, Turtle, cornersOf, higherOf, upright;
 
 enum int TOP_FLOOR = -2;
 enum int GROUND = TOP_FLOOR + 1;
@@ -124,14 +124,14 @@ bool stairOf(Turtle corner, ref const Root root, ref const Halls[FLOOR_COUNT] ha
         int otherX = origin(halls[lower].x, FLOORS[lower].level);
         int y = origin(halls[upper].y, FLOORS[upper].level);
         int otherY = origin(halls[lower].y, FLOORS[lower].level);
-        stair = Stair(upper, lower, x > otherX ? x : otherX, y > otherY ? y : otherY, isForced);
+        stair = Stair(upper, lower, higherOf(x, otherX), higherOf(y, otherY), isForced);
         return true;
     }
 }
 
 Plan planOf(Turtle corner, ref const Quarter q, ref const Floor floor, size_t index, bool isSolidBlock, bool hasStair, Halls halls) {
     immutable(Level)* level = &floor.level();
-    double chance =blocks.roll(corner.hash(SitePart.vertex) ^ corner.hash(SitePart.face), PLAN_SALT + index);
+    double chance = blocks.roll(corner.hash(SitePart.vertex) ^ corner.hash(SitePart.face), PLAN_SALT + index);
     if (level.isMaze) {
         return Plan.maze;
     } else if (q.isLobby && (floor.isTop || q.hasShaft)) {
@@ -167,7 +167,7 @@ void quarter(Turtle corner, ref const Root root, ref const(Biome)*[FLOOR_COUNT] 
     }
     Frame[FLOOR_COUNT] frames;
     foreach_reverse (index; 0 .. FLOOR_COUNT) {
-        immutable Floor floor = FLOORS[index];
+        Floor floor = FLOORS[index];
         immutable(Level)* level = &floor.level();
         bool isMineSolid = isSolid(face, *level, index + 1);
         Doors[4] doors;
@@ -193,13 +193,10 @@ void tile(const(Api)* api, Site site, const(Sky)* sky, const(void)* data) {
 }
 
 void tileAt(Turtle face, ref const Root root) {
-    Turtle[blocks.SIDES] corners = blocks.cornersOf(face);
+    Turtle[FACE_CORNERS] corners = cornersOf(face);
     ulong strongest = face.hash(SitePart.face);
     foreach (corner; corners) {
-        ulong beside = corner.left().hash(SitePart.face);
-        if (beside > strongest) {
-            strongest = beside;
-        }
+        strongest = higherOf(corner.left().hash(SitePart.face), strongest);
     }
     const(Biome)*[FLOOR_COUNT] biomes;
     foreach (index; 0 .. FLOOR_COUNT) {

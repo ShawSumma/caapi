@@ -4,28 +4,30 @@ import core.stdc.math : coshf, floorf;
 import core.stdc.stdio : FILE, fprintf, fputc;
 import core.stdc.stdlib : free, malloc;
 import base.array : Array;
-import base.clock : nowMilliseconds;
+import base.clock : NANOSECONDS_PER_MILLISECOND, nowMilliseconds;
 import base.hashmap : HashMap;
 import base.murmur : murmurHash3;
+import base.names : ENUM_NAMES;
+import base.numbers : higherOf;
 import base.parallel : Executor;
+import base.splitmix : SplitMix;
 import client.arrivals : populateChunk, resolveMaterials;
 import client.meshing : Mesher;
 import client.streaming : Streamer;
 import client.structures : StructureProblem, growthProblem, placeWorldStructure;
 import client.world : FULL_RADIUS;
 import common.graph : Graph, NodeId;
-import base.names : ENUM_NAMES;
 import common.material : MATERIAL_COUNT;
 import common.neighbors : needsMesh;
 import common.node : Chunk, ChunkSlot, ChunkState, Voxels, cellIndex;
 import common.position : Position;
 import common.traversal : NO_DEADLINE, NearbyNode, NearbyScratch;
-import common.worldgen.generation : ChunkParams, GeneratedVoxels, SplitMix, Worldgen;
+import common.worldgen.generation : ChunkParams, GeneratedVoxels, Worldgen;
 import common.worldgen.sky : ChunkPoint, chunkPointOf;
 import common.worldgen.structure : ColumnSpot, SiteFrame, altitude, columnPoint, edgeLength, forwarded, rootSite, sitePlacement, turned;
-import plugins.api.api : Material, Turn;
 import geometry.honeycomb : CORNER_COUNT, CUBE_RADIUS, Corner, cubeCenter;
 import geometry.lorentz : Motion, Point;
+import plugins.api.api : Material, Turn;
 
 enum uint DRIVE_NEARBY_VERSION = 1;
 enum uint DRIVE_IDLE_ITERATIONS = 200;
@@ -38,7 +40,6 @@ enum size_t BENCH_MAP_LIVE = 2_000_000;
 enum size_t BENCH_MAP_CHURN = 8_000_000;
 enum size_t BENCH_MAP_LOOKUPS = 4_000_000;
 enum size_t BENCH_MAP_BATCH = 1024;
-enum double NANOSECONDS_PER_MILLISECOND = 1.0e6;
 
 struct ContentHashes {
     ulong[2] materials;
@@ -58,7 +59,10 @@ struct ContentHashes {
             foreach (y; 0 .. dimension) {
                 foreach (z; 0 .. dimension) {
                     materials[cell] = voxels.at(cellIndex(dimension, x, y, z));
-                    occupancy[HASH_HEADER_BYTES + cell] = materials[cell] != Material.none;
+                    occupancy[HASH_HEADER_BYTES + cell] = 0;
+                    if (materials[cell] != Material.none) {
+                        occupancy[HASH_HEADER_BYTES + cell] = 1;
+                    }
                     cell += 1;
                 }
             }
@@ -296,7 +300,9 @@ bool checkRepaint(FILE* output, ubyte dimension, Worldgen worldgen) {
         size_t index = 0;
         foreach (node; nearby) {
             if (graph.ensureStructureAt(node.slot)) {
-                differing += graph.generatedHash(node.slot) != painted.ptr[index];
+                if (graph.generatedHash(node.slot) != painted.ptr[index]) {
+                    differing += 1;
+                }
                 index += 1;
             }
         }
@@ -346,7 +352,11 @@ void printQuarter(ref Graph graph, FILE* output, SiteFrame quarter, int height) 
     int far = graph.layout.dimension - 1;
     foreach_reverse (y; 0 .. far + 1) {
         foreach (x; 0 .. far + 1) {
-            fputc(graph.generatedAt(tower, [x, y, height]) == Material.none ? '.' : '#', output);
+            char mark = '#';
+            if (graph.generatedAt(tower, [x, y, height]) == Material.none) {
+                mark = '.';
+            }
+            fputc(mark, output);
         }
         fputc('\n', output);
     }
@@ -371,7 +381,7 @@ ulong generatedHash(ref Graph graph, uint slot) {
     ulong hash = 0;
     foreach (cornerIndex; 0 .. CORNER_COUNT) {
         GeneratedVoxels generated = ChunkParams.make(graph.view, slot, cast(Corner) cornerIndex).generateVoxels();
-        hash +=ContentHashes.fromVoxels(cast(Corner) cornerIndex, generated.voxels, graph.layout.dimension).materials[0];
+        hash += ContentHashes.fromVoxels(cast(Corner) cornerIndex, generated.voxels, graph.layout.dimension).materials[0];
         generated.voxels.release();
     }
     return hash;
@@ -423,12 +433,8 @@ void benchMesh(FILE* output, float radius, ubyte dimension) {
             size_t count = mesher.mesh(graph, ChunkSlot.fromIndex(index)).length;
             double elapsed = nowMilliseconds() - start;
             totalMs += elapsed;
-            if (elapsed > slowestMs) {
-                slowestMs = elapsed;
-            }
-            if (count > mostFaces) {
-                mostFaces = count;
-            }
+            slowestMs = higherOf(elapsed, slowestMs);
+            mostFaces = higherOf(count, mostFaces);
             faces += count;
             meshed += 1;
         }
@@ -500,16 +506,12 @@ struct WorstBatch {
     void after(size_t index) {
         if (index % BENCH_MAP_BATCH == BENCH_MAP_BATCH - 1) {
             double now = nowMilliseconds();
-            if (now - start > worst) {
-                worst = now - start;
-            }
+            worst = higherOf(now - start, worst);
             start = now;
         }
     }
 }
 
-// Churns NodeId keys the way the graph's slot map churns while flying: a window of live keys sliding forward. The
-// slowest batch of changes shows stalls such as freeing a drained table.
 void benchHashMap(FILE* output) {
     HashMap!(NodeId, uint) map;
     double start = nowMilliseconds();
@@ -529,11 +531,15 @@ void benchHashMap(FILE* output) {
     size_t found = 0;
     SplitMix pick = SplitMix(BENCH_MAP_LIVE);
     foreach (_; 0 .. BENCH_MAP_LOOKUPS) {
-        found += map.find(benchKey(BENCH_MAP_CHURN + pick.next() % BENCH_MAP_LIVE)) !is null;
+        if (map.find(benchKey(BENCH_MAP_CHURN + pick.next() % BENCH_MAP_LIVE)) !is null) {
+            found += 1;
+        }
     }
     double hit = nowMilliseconds();
     foreach (index; 0 .. BENCH_MAP_LOOKUPS) {
-        found += map.find(benchKey(index)) !is null;
+        if (map.find(benchKey(index)) !is null) {
+            found += 1;
+        }
     }
     double missed = nowMilliseconds();
     size_t capacity = map.current.capacity;

@@ -52,16 +52,28 @@ libraries loaded at startup that call the engine through a table of functions; L
 - Rebasing keeps a transform's float error in its center's Minkowski norm, about cosh^2(d) x epsilon from wherever it
   was made. Anything that keeps old transforms checks them against the rounding allowed at their current distance
   (`isOffHyperboloid`).
+- A nearby rebuild copies the kept part of the old set a slice per frame (`continueKeeping`). Until it finishes, the
+  published set's transforms must not change, so rebases wait.
 
 ## Threading
 
 - Only the main thread changes the graph. Parallel jobs (`WorkerPool.run`) read it through `graph.threadViews`, one
   `GraphView` per thread that works out missing nodes as virtual ones, and write only their own outputs or the chunk
   they were given. Something several threads may claim is claimed with one atomic swap. No mutexes.
+- A chunk record is one 64-bit word with its state and flags in the top byte. A parallel pass changes a neighbor's
+  state or queued flag only through `casState` / `claimQueued`.
 - Background tasks (chunk voxels, buildings) work from snapshots (`ChunkParams`, `BuildingPlan`) and hand results back
   through lock-free queues. A task may only be submitted while its result has room in the result queue.
 - Long tasks call a yield between slices so a waiting job gets every thread quickly.
 - Never read GPU-mapped buffers back on the CPU; keep what the CPU needs on the host side.
+
+## Memory
+
+- Per-slot and per-block stores are slabs mapped from the system. The eviction sweep gives back the pages of freed
+  records (`Slab.note`, `discardNoted`, a budget of `DISCARDS_PER_FRAME`), so a freed record must be reset to its
+  all-zero init or never read before it is written again.
+- The bench memory line's "free but held" is memory malloc keeps after frees. `malloc_trim` returns it but takes about
+  80-90 ms with malloc's locks held, so it isn't called.
 
 ## Code structure
 
@@ -70,15 +82,19 @@ API, `client` on all.
 
 - `source/main.d`: windowed game, screenshots and the load/flight benchmark.
 - `source/headless.d`, `source/worldcheck.d`: script runner and world checks and benchmarks without a window.
+- `source/unittests.d`: the unit test runner; it imports every module with tests, in layer order.
+- `source/bindings/`: `lua.c` (all of Lua as one ImportC module) and `platform.c` (Vulkan with its Xlib or Metal surface, X11 and the XInput 2 calls).
 - `source/base/`: containers (`array.d`, `hashmap.d`, `slab.d` with `RunPool` and `FreeIndices`, `allocator.d`),
   `pages.d` (memory mapped from the system, given back a page at a time), `parallel.d` (worker pool, futex waits,
-  lock-free queue), `clock.d`, `crash.d` (backtraces), `murmur.d`, `names.d`, `units.d`, `vector3.d`, `numbers.d`.
+  lock-free queue), `clock.d`, `crash.d` (backtraces), `murmur.d`, `splitmix.d` (the seeded mixer behind worldgen
+  rolls and the API's `pick`), `names.d`, `units.d`, `vector3.d`, `numbers.d` (`lowerOf`, `higherOf`, `clamped`).
 - `source/geometry/`: `lorentz.d` (hyperboloid points and motions), `honeycomb.d` (the {5,3,4} cell, its faces and
   corner cubes), `cube.d` (cells and axis maps), `ray.d`.
 - `source/common/`
   - `graph.d`: node topology and the parts it is made of; `chunks.d`: chunk blocks and the mesh queue;
     `view.d`: `GraphView` and the per-thread views.
-  - `node.d`: chunk layout and voxels; `neighbors.d`: cells across chunk borders; `material.d`, `settings.d`.
+  - `node.d`: chunk layout and voxels; `neighbors.d`: cells across chunk borders; `material.d`, `settings.d`;
+    `position.d`: a node and the motion within it.
   - `traversal.d`: the nearby search; `eviction.d`: unloading nodes, chunks and tiles.
   - `character/`: collision and movement; `raycast/`: ray casts.
   - `worldgen/`: `generation.d` (node state, chunk generation), `climate.d`, `plane.d`, `sky.d` (skies and the
@@ -86,7 +102,9 @@ API, `client` on all.
     strokes along geodesics, drawn with the API's pen and indexed by the nodes they reach), `store.d` (structure per
     node, buildings), `building.d`, `spawn.d`.
 - `source/client/`
-  - `game.d`: the player, movement modes and stepping the world.
+  - `game.d`: the player, movement modes and stepping the world; `camera.d`: the view's heading and pitch.
+  - `arguments.d`: command line values and exit statuses shared by both programs; `config.d`: the settings file;
+    `png.d`: screenshots.
   - `world.d`: `LocalWorld`, the per-frame update and its budget split between nearby search, streaming and eviction.
   - `streaming.d`: which chunks to load and when; `tasks.d`: worker queues for chunks and buildings; `arrivals.d`:
     joining arrived chunks to their neighbors in parallel passes.
@@ -102,11 +120,14 @@ API, `client` on all.
   `pragma(mangle, ENTRY)`) registers its worlds by name.
   - `api/`: `plugins.api.api`, the world API: sites, boxes, materials, the pen, the `Api` table of functions a world
     calls, and the `Registry` a plugin registers worlds with. The engine links it too.
-  - Source libraries: `turtle/` (a site and a pen wrapped around the API), `box/` (the square tower), `buildings/`
+  - Source libraries: `turtle/` (a site and a pen wrapped around the API, and the helpers every plugin shares:
+    `lowerOf`, `higherOf`, `clamped`, `upright`, `cornersOf`), `box/` (the square tower and the hut), `buildings/`
     (building types on `building.d`, chosen through `types.d`), `connector/` (the tower up to a sky), `blocks/` (city
     blocks and streets), `rooms/` (the backrooms' layers along the same streets, `levels.d` holding the layers and
     biomes), `skies/` (the tiles of each kind of sky).
   - Plugins, one world each: `planet` (the terrain world: builds `road` and `bigtree` and opens the skies), `road`
     (the viaduct), `bigtree` (drawn with the pen), `city`, `backrooms`, `tower`, `crown`, `trail`; `fixtures` holds
     the worlds the behavior tests load.
-- `tests/`: behavior tests (`lib/` helpers, `visual/` screenshot scripts, `live/` tests that load the world live).
+- `tests/`: behavior tests (`lib/` helpers and shared constants, `visual/` screenshot scripts, `live/` tests that
+  load the world live).
+- `tools/gridvolume.py`: compares the volumes of chunk cells for uniform and geometric grid spacings.

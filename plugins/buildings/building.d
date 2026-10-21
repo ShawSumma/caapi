@@ -1,7 +1,7 @@
 module plugins.buildings.building;
 
 import plugins.api.api : Box, Material, Rhythm;
-import plugins.turtle.turtle : Turtle, boxOf, floorDiv;
+import plugins.turtle.turtle : Turtle, boxOf, floorDiv, higherOf, lowerOf, upright;
 
 enum int STORY = 4;
 enum size_t MOST_PARTS = 5;
@@ -148,10 +148,6 @@ struct Boxes {
 
 alias Crown = void function(ref const Part part, Palette palette, Tier tier);
 
-Turtle upright(Turtle site) {
-    return site.pitchUp().rollRight();
-}
-
 int boundLow(Bound kind, Spec spec) {
     if (kind == Bound.street) {
         return spec.front;
@@ -232,6 +228,14 @@ bool isAlongY(Side side) {
     return side == Side.xLow || side == Side.xHigh;
 }
 
+size_t axisIndex(bool isX) {
+    if (isX) {
+        return 0;
+    } else {
+        return 1;
+    }
+}
+
 size_t alongAxis(Side side) {
     if (isAlongY(side)) {
         return 1;
@@ -273,12 +277,10 @@ Boxes uncovered(ref const Part part, Box box, Side side, Tier tier) {
         int[2] mine = along(box, side);
         Box face = faceOf(box, side);
         if (mine[0] < theirs[0]) {
-            int high = mine[1] < theirs[0] - 1 ? mine[1] : theirs[0] - 1;
-            pieces.add(withAlong(face, side, [mine[0], high]));
+            pieces.add(withAlong(face, side, [mine[0], lowerOf(mine[1], theirs[0] - 1)]));
         }
         if (mine[1] > theirs[1]) {
-            int low = mine[0] > theirs[1] + 1 ? mine[0] : theirs[1] + 1;
-            pieces.add(withAlong(face, side, [low, mine[1]]));
+            pieces.add(withAlong(face, side, [higherOf(mine[0], theirs[1] + 1), mine[1]]));
         }
     }
     return pieces;
@@ -299,8 +301,7 @@ Boxes walls(ref const Part part, Box box, Tier tier) {
 }
 
 Boxes strips(Box face, int spacing) {
-    bool isAlongX = face.low[0] != face.high[0];
-    size_t axis = isAlongX ? 0 : 1;
+    size_t axis = axisIndex(face.low[0] != face.high[0]);
     int first = face.low[axis];
     int last = face.high[axis];
     Boxes list;
@@ -321,14 +322,13 @@ Boxes strips(Box face, int spacing) {
     return list;
 }
 
+int narrowestOf(Box box) {
+    return lowerOf(width(box.low[1], box.high[1]), width(box.low[0], box.high[0]));
+}
+
 int narrowing(int[2] x, int[2] y, int wanted, int least) {
-    int narrowest = width(x[0], x[1]);
-    if (width(y[0], y[1]) < narrowest) {
-        narrowest = width(y[0], y[1]);
-    }
-    int room = floorDiv(narrowest - least, 2);
-    int chosen = wanted < room ? wanted : room;
-    return chosen > 0 ? chosen : 0;
+    int room = floorDiv(lowerOf(width(y[0], y[1]), width(x[0], x[1])) - least, 2);
+    return higherOf(lowerOf(wanted, room), 0);
 }
 
 Part partOf(ref const Lot lot, Spec spec) {
@@ -363,10 +363,7 @@ void makeParts(ref Parts parts, ref const Lots lots, Spec spec) {
 int setbacks(ref const Parts parts, int wanted) {
     int chosen = wanted;
     foreach (ref part; parts.slice()) {
-        int room = narrowing(part.x, part.y, wanted, CORE_ROOM);
-        if (room < chosen) {
-            chosen = room;
-        }
+        chosen = lowerOf(narrowing(part.x, part.y, wanted, CORE_ROOM), chosen);
     }
     return chosen;
 }
@@ -374,7 +371,7 @@ int setbacks(ref const Parts parts, int wanted) {
 Tiers tiers(ref Part part, Spec spec, int setbacks) {
     int top = spec.stories * STORY;
     Tiers found;
-    int belowTop = top < part.split - 1 ? top : part.split - 1;
+    int belowTop = lowerOf(top, part.split - 1);
     found.items[0] = Tier(0, belowTop, 0, true);
     found.count = 1;
     int low = part.split;
@@ -487,7 +484,7 @@ void masts(ref const Part part, Palette palette, Tier tier) {
         int x = middle(roofBox.low[0], roofBox.high[0]);
         int y = middle(roofBox.low[1], roofBox.high[1]);
         bool isAlongX = width(roofBox.low[0], roofBox.high[0]) >= width(roofBox.low[1], roofBox.high[1]);
-        size_t axis = isAlongX ? 0 : 1;
+        size_t axis = axisIndex(isAlongX);
         int height = ANTENNA + STORY;
         for (int cell = roofBox.low[axis] + 1; cell <= roofBox.high[axis] - 1; cell += MAST_SPACING) {
             Box mast = boxOf([x, x], [cell, cell], [tier.high + 1, tier.high + height]);
@@ -495,18 +492,14 @@ void masts(ref const Part part, Palette palette, Tier tier) {
                 mast = boxOf([cell, cell], [y, y], [tier.high + 1, tier.high + height]);
             }
             part.tower.paint(palette.trim, mast);
-            height = height - 2 > 2 ? height - 2 : 2;
+            height = higherOf(height - 2, 2);
         }
     }
 }
 
 void pyramid(ref const Part part, Palette palette, Tier tier) {
     Box roofBox = footprint(part, tier.shrink + 1, false, tier.high, tier.high);
-    int narrowest = width(roofBox.low[0], roofBox.high[0]);
-    if (width(roofBox.low[1], roofBox.high[1]) < narrowest) {
-        narrowest = width(roofBox.low[1], roofBox.high[1]);
-    }
-    int reach = floorDiv(narrowest - 1, 2);
+    int reach = floorDiv(narrowestOf(roofBox) - 1, 2);
     int x = middle(roofBox.low[0], roofBox.high[0]);
     int y = middle(roofBox.low[1], roofBox.high[1]);
     foreach (level; 1 .. reach + 2) {
@@ -557,7 +550,7 @@ struct Core {
 Core coreOf(ref const Part part, Box interior) {
     Side side = part.front;
     bool isX = side == Side.xLow || side == Side.xHigh;
-    size_t alongIndex = isX ? 0 : 1;
+    size_t alongIndex = axisIndex(isX);
     size_t acrossIndex = 1 - alongIndex;
     int[2] alongSpan = [interior.low[alongIndex], interior.high[alongIndex]];
     int[2] acrossSpan = [interior.low[acrossIndex], interior.high[acrossIndex]];
@@ -574,7 +567,7 @@ Core coreOf(ref const Part part, Box interior) {
 Box coreBox(Core core, int alongLow, int alongHigh, int acrossLow, int acrossHigh, int[2] z) {
     int a = core.first + core.sign * alongLow;
     int b = core.first + core.sign * alongHigh;
-    int[2] alongSpan = [a < b ? a : b, a < b ? b : a];
+    int[2] alongSpan = [lowerOf(a, b), higherOf(a, b)];
     int[2] acrossSpan = [core.across + acrossLow, core.across + acrossHigh];
     if (core.isX) {
         return boxOf(alongSpan, acrossSpan, z);
@@ -596,7 +589,7 @@ void coreStairs(ref const Part part, Core core, int top, Material material) {
 }
 
 int wallAlong(Core core, Box ground) {
-    size_t axis = core.isX ? 0 : 1;
+    size_t axis = axisIndex(core.isX);
     if (core.sign > 0) {
         return ground.low[axis];
     } else {
@@ -607,9 +600,9 @@ int wallAlong(Core core, Box ground) {
 void coreDoor(ref const Part part, Core core, Box ground) {
     int wall = wallAlong(core, ground);
     Box door = coreBox(core, 0, 0, WALKWAY, WALKWAY + DOOR_WIDTH - 1, [1, DOOR_TOP]);
-    size_t axis = core.isX ? 0 : 1;
-    door.low[axis] = wall < wall + core.sign ? wall : wall + core.sign;
-    door.high[axis] = wall < wall + core.sign ? wall + core.sign : wall;
+    size_t axis = axisIndex(core.isX);
+    door.low[axis] = lowerOf(wall, wall + core.sign);
+    door.high[axis] = higherOf(wall, wall + core.sign);
     part.tower.paint(Material.none, door);
 }
 
