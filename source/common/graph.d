@@ -13,7 +13,7 @@ import common.view : GraphView, ThreadViews;
 import common.worldgen.blueprint : Blueprint;
 import common.worldgen.building : Building, BuildingPlan;
 import common.worldgen.generation : NodeState, Worldgen;
-import common.worldgen.sky : Skies;
+import common.worldgen.horospheres : Fill, Horospheres;
 import common.worldgen.store : StructureStore;
 import common.worldgen.structure : PAINT_REACH, anchorSlotOf, finalizeStructure;
 import geometry.honeycomb : BEYOND_TOLERANCE, FACE_COUNT, Face, adjacentFaces, faceBit, mirror, normal;
@@ -103,7 +103,7 @@ struct Graph {
     FreeIndices freeSlots;
     ChunkStore chunks;
     StructureStore structures;
-    Skies skies;
+    Horospheres horospheres;
     GraphView ownView;
     ThreadViews threadViews;
     Worldgen worldgen;
@@ -116,7 +116,7 @@ struct Graph {
         Graph graph;
         graph.layout = ChunkLayout.make(dimension);
         graph.worldgen = chosen;
-        graph.skies.isPlanetFlat = chosen.hasPlaneGround();
+        graph.horospheres.rootFill = chosen.hasPlaneGround() ? Fill.flat : Fill.terrain;
         graph.structures.blueprint = Blueprint.make(dimension);
         uint root = graph.addNode(ROOT_NODE, 0, 0);
         graph.anchorSlot = root;
@@ -199,7 +199,7 @@ struct Graph {
             states.ensure(slotCount);
             chunks.ensureSlots(slotCount);
             structures.ensureSlots(slotCount);
-            skies.ensureSlots(slotCount);
+            horospheres.ensureSlots(slotCount);
         }
         Node* added = nodeAt(slot);
         *added = Node.init;
@@ -226,7 +226,7 @@ struct Graph {
         states.note(slot, 1);
         chunks.blocks.note(slot, 1);
         structures.nodes.note(slot, 1);
-        skies.nodes.note(slot, 1);
+        horospheres.nodes.note(slot, 1);
         liveCount -= 1;
     }
 
@@ -237,7 +237,7 @@ struct Graph {
         states.discardNoted(freeSlots, slotCount, 1, calls);
         chunks.blocks.discardNoted(freeSlots, slotCount, 1, calls);
         structures.nodes.discardNoted(freeSlots, slotCount, 1, calls);
-        skies.nodes.discardNoted(freeSlots, slotCount, 1, calls);
+        horospheres.nodes.discardNoted(freeSlots, slotCount, 1, calls);
     }
 
     uint ensureNeighborSlot(uint slot, Face face) {
@@ -382,7 +382,7 @@ struct Graph {
     void release() {
         structures.release();
         chunks.release();
-        skies.release();
+        horospheres.release();
         nodes.release();
         states.release();
         slots.release();

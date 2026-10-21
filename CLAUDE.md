@@ -41,11 +41,15 @@ libraries loaded at startup that call the engine through a table of functions; L
 
 - No randomness outside the API. Inside a tile use `pick`; for choices neighboring tiles must agree on, use hashes
   with salts.
+- Every plane rolls rises from its vertices with its world's odds, so horospheres stack on horospheres. Trees are
+  endless columns that must clear every plane below them; keep their odds low.
 
 ## Geometry
 
 - Things more than about 2 units (about 45 cells) from the viewer shrink to specks, and vertical lines spread apart
   with height. Anything meant to be seen whole stays within that.
+- From altitude h the ground fills only 2*atan(e^-h) around straight down, and an endless column at distance d shows
+  within that angle above its foot. Aim screenshots accordingly.
 - Node transforms are float32; a node more than about 8 units from the frame origin has almost no distance information
   left, and moving the frame toward it turns that into garbage. Re-derive transforms from the camera node
   (`NearbyScratch.rederive`) before using them near the camera.
@@ -97,8 +101,9 @@ API, `client` on all.
     `position.d`: a node and the motion within it.
   - `traversal.d`: the nearby search; `eviction.d`: unloading nodes, chunks and tiles.
   - `character/`: collision and movement; `raycast/`: ray casts.
-  - `worldgen/`: `generation.d` (node state, chunk generation), `climate.d`, `plane.d`, `sky.d` (skies and the
-    worlds near each node), `structure.d` (sites and lines), `blueprint.d` (painted brushes), `strokes.d` (tapered
+  - `worldgen/`: `generation.d` (node state, chunk generation), `climate.d`, `plane.d`, `horospheres.d` (the root's
+    plane and what rises from every plane, as planes or upright columns, which of them reach each node, and the
+    grounds and gravity they give), `structure.d` (sites and lines), `blueprint.d` (painted brushes), `strokes.d` (tapered
     strokes along geodesics, drawn with the API's pen and indexed by the nodes they reach), `store.d` (structure per
     node, buildings), `building.d`, `spawn.d`.
 - `source/client/`
@@ -109,7 +114,8 @@ API, `client` on all.
   - `streaming.d`: which chunks to load and when; `tasks.d`: worker queues for chunks and buildings; `arrivals.d`:
     joining arrived chunks to their neighbors in parallel passes.
   - `structures.d`: the main-thread host of the world API (the root and placed structures); `tiles.d`: tiles planned
-    and painted on the worker threads, each with its own host of the API.
+    and painted on the worker threads, each with its own host of the API: faces of planes, and segments of upright
+    horospheres drawn with the pen.
   - `plugins.d`: loads every library in `lib/`, calls its `plugin` entry point and keeps the worlds it registers.
   - `script.d`, `lua.d`: the test script API; `sampler.d`: the profiler; `meshing.d`, `graphics/`: rendering.
   - `cocoa.d`: the macOS window (AppKit through the Objective-C runtime, a `CAMetalLayer` for MoltenVK), reporting
@@ -122,12 +128,14 @@ API, `client` on all.
     calls, and the `Registry` a plugin registers worlds with. The engine links it too.
   - Source libraries: `turtle/` (a site and a pen wrapped around the API, and the helpers every plugin shares:
     `lowerOf`, `higherOf`, `clamped`, `upright`, `cornersOf`), `box/` (the square tower and the hut), `buildings/`
-    (building types on `building.d`, chosen through `types.d`), `connector/` (the tower up to a sky), `blocks/` (city
-    blocks and streets), `rooms/` (the backrooms' layers along the same streets, `levels.d` holding the layers and
-    biomes), `skies/` (the tiles of each kind of sky).
-  - Plugins, one world each: `planet` (the terrain world: builds `road` and `bigtree` and opens the skies), `road`
-    (the viaduct), `bigtree` (drawn with the pen), `city`, `backrooms`, `tower`, `crown`, `trail`; `fixtures` holds
-    the worlds the behavior tests load.
+    (building types on `building.d`, chosen through `types.d`), `connector/` (the tower from a lower surface up to
+    the horosphere risen from it, meeting each at its own kind of floor), `blocks/` (city blocks and streets),
+    `rooms/` (the backrooms' layers along the same streets, `levels.d` holding the layers and biomes),
+    `horospheres/` (the kinds of horosphere with their tags and tiles: wild terrain, city, backrooms and the tree,
+    which `tree.d` draws a segment at a time without end).
+  - Plugins, one world each: `planet` (the terrain world: wild terrain at the root with every kind rising, `road`,
+    and a tree beside the spawn), `road` (the viaduct), `city`, `backrooms`, `tower`, `crown`, `trail`; `fixtures`
+    holds the worlds the behavior tests load.
 - `tests/`: behavior tests (`lib/` helpers and shared constants, `visual/` screenshot scripts, `live/` tests that
   load the world live).
 - `tools/gridvolume.py`: compares the volumes of chunk cells for uniform and geometric grid spacings.

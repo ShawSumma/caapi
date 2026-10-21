@@ -4,7 +4,7 @@ local walk = require("lib.walk")
 local LOOK_UP_DEGREES = -20
 
 return function(world)
-  world:worldgen("structure", "skycity")
+  world:worldgen("structure", "risencity")
   world:enter_route()
   world:wait(walk.SETTLE_SECONDS)
   climb.follow(world, math.huge)

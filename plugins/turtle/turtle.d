@@ -166,6 +166,10 @@ struct Turtle {
         return api.balance(api, site, most);
     }
 
+    uint rising() const {
+        return api.rising(api, site);
+    }
+
     bool build(const(char)* world) const {
         return api.build(api, world, site);
     }

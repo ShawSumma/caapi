@@ -12,7 +12,7 @@ import common.view : GraphView;
 import common.worldgen.building : Building;
 import common.worldgen.climate : Climate, CubeClimate, NodeClimate, SNOW_WARMTH, UniformRock, WATER_LEVEL, groundAt, isDesert, openAt, uniformRock;
 import common.worldgen.plane : Plane;
-import common.worldgen.sky : Ground, Grounds, PLANET, groundsAt;
+import common.worldgen.horospheres : Fill, Ground, Grounds, ROOT, groundsAt;
 import common.worldgen.strokes : Stroke;
 import common.worldgen.structure : firstSideAmong, ringFaces;
 import geometry.cube : CELL_STEPS;
@@ -315,7 +315,27 @@ struct ChunkParams {
     }
 
     bool isTilted(uint index) const {
-        return index == PLANET && slopeTangent != 0;
+        return index == ROOT && slopeTangent != 0;
+    }
+
+    // Whether a point belongs to a ground: every point belongs to the horosphere whose plane it is nearest, so one
+    // horosphere's terrain never reaches into the space of another.
+    bool isNearest(uint index, float[3] coord) const {
+        float own = ground(index).surface.distanceToChunk(chunk, coord);
+        uint other = 0;
+        while (other < grounds.count && (other == index || ground(other).surface.distanceToChunk(chunk, coord) >= own)) {
+            other += 1;
+        }
+        return other == grounds.count;
+    }
+
+    bool isNearestThroughout(uint index) const {
+        float highest = altitudes(index).high;
+        uint other = 0;
+        while (other < grounds.count && (other == index || altitudes(other).low >= highest)) {
+            other += 1;
+        }
+        return other == grounds.count;
     }
 
     float groundLevelAt(uint index, float[3] coord) const {
@@ -338,7 +358,7 @@ struct ChunkParams {
     }
 
     float terrainCeiling(uint index) const {
-        if (ground(index).isFlat) {
+        if (ground(index).fill == Fill.flat) {
             return 0;
         } else if (climate.lowest.relief < WATER_LEVEL) {
             return higherOf(climate.highest.relief, WATER_LEVEL);
@@ -348,15 +368,18 @@ struct ChunkParams {
     }
 
     bool isClearOf(uint index) const {
-        return groundRange(index).low > terrainCeiling(index);
+        return ground(index).fill == Fill.none || groundRange(index).low > terrainCeiling(index);
     }
 
     bool isFullOf(uint index) const {
         float highest = groundRange(index).high;
-        if (ground(index).isFlat) {
-            return highest < 0;
-        } else {
-            return isProvenBelowTerrain(highest);
+        final switch (ground(index).fill) {
+            case Fill.none:
+                return false;
+            case Fill.flat:
+                return highest < 0;
+            case Fill.terrain:
+                return isProvenBelowTerrain(highest) && isNearestThroughout(index);
         }
     }
 
@@ -403,11 +426,16 @@ struct ChunkParams {
     GeneratedVoxels generateVoxels(Yield yield = Yield.init) const {
         TerrainGenerator generator = TerrainGenerator(Voxels.filled(Material.none), this, SplitMix(nodeSpice ^ chunk), yield, false);
         foreach (index; 0 .. grounds.count) {
-            if (ground(index).isFlat) {
-                generator.generateFlat(index);
-            } else {
-                generator.generateTerrain(index);
-                generator.generateTrees(index);
+            final switch (ground(index).fill) {
+                case Fill.none:
+                    break;
+                case Fill.flat:
+                    generator.generateFlat(index);
+                    break;
+                case Fill.terrain:
+                    generator.generateTerrain(index);
+                    generator.generateTrees(index);
+                    break;
             }
         }
         generator.generateStrokes();
@@ -458,7 +486,8 @@ struct TerrainGenerator {
         ValueRange altitudes = params.altitudes(ground);
         if (altitudes.low <= params.terrainCeiling(ground)) {
             UniformRock rock = params.provenUniformRock(altitudes);
-            if (rock.isProven) {
+            bool isAlone = params.isNearestThroughout(ground);
+            if (rock.isProven && isAlone) {
                 fillEmpty(rock.material);
             } else if (!params.isResolvingMaterials && !params.hasStructure && params.strokes.length == 0 && params.grounds.count == 1 && params.isProvenBelowTerrain(altitudes.high)) {
                 voxels = Voxels.filled(DEFERRED_STAND_IN_MATERIAL);
@@ -467,7 +496,10 @@ struct TerrainGenerator {
                 foreach (x; 0 .. dimension) {
                     foreach (y; 0 .. dimension) {
                         foreach (z; 0 .. dimension) {
-                            generateTerrainVoxel(ground, params.layout.cellCenter([x, y, z]), cellIndex(dimension, x, y, z));
+                            float[3] center = params.layout.cellCenter([x, y, z]);
+                            if (isAlone || params.isNearest(ground, center)) {
+                                generateTerrainVoxel(ground, center, cellIndex(dimension, x, y, z));
+                            }
                         }
                     }
                     yield.now();

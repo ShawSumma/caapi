@@ -85,10 +85,15 @@ enum SitePart : ubyte {
     edge,
 }
 
-enum SkyGround : ubyte {
+// How a horosphere stands: a plane over terrain, a bare plane holding only what its tiles paint, or upright on the
+// vertex it rises from, reaching up without end.
+enum HorosphereForm : ubyte {
     terrain,
-    flat,
+    bare,
+    upright,
 }
+
+enum uint NO_KIND = uint.max;
 
 struct Site {
     int level;
@@ -129,16 +134,24 @@ struct Pen {
     uint node;
 }
 
-struct Sky {
+// The horosphere a tile paints and what it rose from. foot is the vertex it rose from, edges how far its plane
+// stands from there, ground and below the cells where its own surface and the lower one are found along the way,
+// and balance the cells up from its plane that are still nearer to it than to the lower one. lower is the tag of
+// the lower horosphere's kind, NO_KIND where it has none. The root rose from nothing: its edges are 0. An upright
+// horosphere's tiles each draw one segment, an edge long, of its column, from a site at the segment's base with z up
+// the column.
+struct Risen {
     Site foot;
     int edges;
     int ground;
     int below;
     int balance;
+    uint lower;
+    int segment;
 }
 
 alias Structure = void function(const(Api)* api, Site site, const(void)* data);
-alias Tile = void function(const(Api)* api, Site face, const(Sky)* sky, const(void)* data);
+alias Tile = void function(const(Api)* api, Site face, const(Risen)* risen, const(void)* data);
 
 struct Api {
     void* host;
@@ -159,8 +172,10 @@ struct Api {
     bool function(const(Api)* api, Site site, SitePart part) claim;
     bool function(const(Api)* api, Site site, SitePart part) isClaimed;
     void function(const(Api)* api, Tile tile, const(void)* data, size_t size) tile;
-    uint function(const(Api)* api, double odds, SkyGround ground, Tile tile, const(void)* data, size_t size) sky;
-    void function(const(Api)* api, Site site, uint kind, uint edges) openSky;
+    uint function(const(Api)* api, double odds, HorosphereForm form, uint tag, Tile tile, const(void)* data, size_t size) horosphere;
+    void function(const(Api)* api, Site site, uint kind, uint edges) openHorosphere;
+    void function(const(Api)* api, uint kind) rooted;
+    uint function(const(Api)* api, Site site) rising;
     int function(const(Api)* api, Site site, int most) balance;
     Pen function(const(Api)* api, Site site) pen;
     Pen function(const(Api)* api, Pen pen, double cells) penForward;

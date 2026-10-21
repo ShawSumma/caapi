@@ -8,7 +8,7 @@ import common.node : ChunkSlot;
 import common.position : Position;
 import common.traversal : NodeVisit, isVisited;
 import common.worldgen.generation : ChunkParams, PlaneWorld, Worldgen;
-import common.worldgen.sky : gravityAt;
+import common.worldgen.horospheres : gravityAt;
 import geometry.honeycomb : CORNER_COUNT, CUBE_RADIUS, Corner, FACE_COUNT, Face, NODE_RADIUS, cubeCenter, mirror;
 import geometry.lorentz : Motion, Point, Vec4;
 

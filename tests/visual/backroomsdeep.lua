@@ -7,7 +7,7 @@ local BACK_SECONDS = 1
 local SIDE_DEGREES = -60
 
 return function(world)
-  world:worldgen("structure", "skybackrooms")
+  world:worldgen("structure", "risenbackrooms")
   world:enter_route()
   world:wait(walk.SETTLE_SECONDS)
   climb.follow(world, math.huge)

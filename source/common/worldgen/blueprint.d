@@ -120,11 +120,13 @@ struct RunRef {
     uint run;
 }
 
+// A painted tile. One that drew with the pen is kept, since its strokes stay with the nodes they reach.
 struct TileRecord {
     PaintedBrushes painted;
     NodeId face;
     double lastUse = 0;
     bool isDropped;
+    bool isKept;
 }
 
 struct SiteLine {
@@ -201,7 +203,7 @@ struct Blueprint {
     }
 
     uint addTile(NodeId face) {
-        tiles.append(TileRecord(PaintedBrushes.init, face, travel, false));
+        tiles.append(TileRecord(PaintedBrushes.init, face, travel, false, false));
         return cast(uint)(tiles.length - 1);
     }
 

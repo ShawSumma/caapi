@@ -33,7 +33,7 @@ import common.traversal : NOT_COLLECTED, NearbyNode;
 import common.worldgen.blueprint : Blueprint, Brush, LineRun, RunRef;
 import common.worldgen.building : Building;
 import common.worldgen.generation : NodeState, Worldgen;
-import common.worldgen.sky : NodeWorlds;
+import common.worldgen.horospheres : NodeHorospheres;
 import common.worldgen.store : NodeStructure;
 import geometry.cube : DIRECTIONS;
 import geometry.honeycomb : CORNER_COUNT, CUBE_RADIUS, Corner, FACE_COUNT, Face, NODE_RADIUS, cubeCenter, mirror;
@@ -1267,7 +1267,7 @@ void printMemory(FILE* report, ref const LocalWorld world) {
     }
     fprintf(report, "chunk blocks whose chunks are all settled and filled with something opaque: %zu\n", solidBlocks);
     fprintf(report, "nodes holding chunks=%zu with state=%zu, structure-touched=%zu referenced=%zu with children=%zu recent=%zu\n", holding, stated, touched, referenced, parents, recent);
-    size_t nodeBytes = cast(size_t) graph.slotCount * (Node.sizeof + NodeState.sizeof + NodeStructure.sizeof + NodeWorlds.sizeof + uint.sizeof);
+    size_t nodeBytes = cast(size_t) graph.slotCount * (Node.sizeof + NodeState.sizeof + NodeStructure.sizeof + NodeHorospheres.sizeof + uint.sizeof);
     size_t chunkBytes = cast(size_t) graph.chunks.blockCount * CORNER_COUNT * Chunk.sizeof;
     HeapBytes heap = heapBytes();
     fprintf(report, "memory: rss now=%zuMB peak=%zuMB, malloc in use %zuMB and free but held %zuMB, nodes=%u of %u slots (%zuMB), %u chunk blocks (%zuMB) buildings=%zu (%zuMB) dense voxels %zuMB\n", residentBytes() / BYTES_PER_MEGABYTE, peakResidentBytes() / BYTES_PER_MEGABYTE, heap.used / BYTES_PER_MEGABYTE, heap.held / BYTES_PER_MEGABYTE, graph.liveCount, graph.slotCount, nodeBytes / BYTES_PER_MEGABYTE, graph.chunks.blockCount, chunkBytes / BYTES_PER_MEGABYTE, buildings, buildingBytes / BYTES_PER_MEGABYTE, denseBytes / BYTES_PER_MEGABYTE);

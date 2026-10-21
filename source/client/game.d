@@ -18,14 +18,13 @@ import common.settings : CHUNK_DIMENSION, CharacterConfig;
 import common.traversal : NOT_COLLECTED, NearbyNode, NearbyScratch;
 import common.worldgen.blueprint : RouteStop;
 import common.worldgen.generation : NodeState, Worldgen;
-import common.worldgen.sky : ensureWorldsAt, gravityAt;
+import common.worldgen.horospheres : ensureHorospheresAt, gravityAt;
 import common.worldgen.spawn : clearSpawnPosition, collectChunksNear;
 import common.worldgen.structure : SiteFrame, columnPoint, rootSite, siteToNode, sitePlacement, spawnBefore;
 import geometry.honeycomb : CORNER_COUNT, Corner, Face, cornerToNode;
 import geometry.lorentz : Motion, Point, Vec4;
 import plugins.api.api : Material;
 
-enum float STRUCTURE_SEARCH_RADIUS = 4.0f;
 enum uint MAX_BODY_SECTIONS = 64;
 
 immutable Material[9] MATERIAL_PALETTE = [
@@ -217,21 +216,10 @@ struct Game {
         return Length(world.graph.ensureState(world.graph.slotOf(position.node)).surface.distanceTo(position.local * Point!float.origin()));
     }
 
-    Motion!float nodeTransform(NodeId node, float radius) {
-        NearbyScratch scratch;
-        scratch.collectAll(world.graph, characterState.position, radius);
-        uint index = scratch.indexOf(world.graph.slotOf(node));
-        assert(index != NOT_COLLECTED);
-        Motion!float transform = scratch.nodes.ptr[index].transform;
-        scratch.release();
-        return transform;
-    }
-
     float[3] directionToDoor() {
         RouteStop entrance = world.graph.structures.blueprint.entrance;
-        Point!float door = sitePlacement(entrance.site, world.graph.layout) * columnPoint(world.graph.layout, entrance.spot);
-        Motion!float siteToBody = characterState.position.local.inverse() * nodeTransform(world.graph.idAt(entrance.site.node), STRUCTURE_SEARCH_RADIUS);
-        return (siteToBody * door).v.spatial();
+        Motion!float siteToBody = characterState.position.local.inverse() * world.graph.view.siteToNode(entrance.site, world.graph.slotOf(characterState.position.node));
+        return (siteToBody * columnPoint(world.graph.layout, entrance.spot)).v.spatial();
     }
 
     float[3] uphillDirection() const {
@@ -279,11 +267,11 @@ struct Game {
 
     void placeAt(Position target, Length lift) {
         world.graph.ensureState(world.graph.slotOf(target.node));
-        world.graph.view.ensureWorldsAt(world.graph.slotOf(target.node));
+        world.graph.view.ensureHorospheresAt(world.graph.slotOf(target.node));
         float[3] up = world.graph.gravityAt(target).up;
         Position lifted = world.graph.ensureNormalized(Position(target.node, (target.local * Motion!float.shift(up.scaled(lift.value))).orthonormalized()));
         world.graph.ensureState(world.graph.slotOf(lifted.node));
-        world.graph.view.ensureWorldsAt(world.graph.slotOf(lifted.node));
+        world.graph.view.ensureHorospheresAt(world.graph.slotOf(lifted.node));
         float[3] liftedUp = world.graph.gravityAt(lifted).up;
         characterState = CharacterState(lifted, ZERO_VECTOR, characterState.groundNormal, liftedUp, liftedUp, false);
         resetView();

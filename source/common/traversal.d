@@ -10,7 +10,7 @@ import base.parallel : Executor, ParallelJob, TaskSource, WorkerPool;
 import common.graph : Graph, NO_SLOT, NodeContent;
 import common.position : Position;
 import common.worldgen.generation : Worldgen;
-import common.worldgen.sky : mayHoldContent;
+import common.worldgen.horospheres : mayHoldContent;
 import geometry.honeycomb : FACE_COUNT, FACE_DISTANCE, Face, NODE_RADIUS, mirror;
 import geometry.lorentz : Motion, Point, Vec4;
 

@@ -1,10 +1,10 @@
 module plugins.blocks.blocks;
 
-import plugins.api.api : Api, Material, Rhythm, Site, SitePart, Sky;
+import plugins.api.api : Api, Material, NO_KIND, Rhythm, Risen, Site, SitePart;
 import plugins.buildings.building : Bound, Join, Lot, Lots, Palette, STORY, Side, Spec;
 import plugins.buildings.types : Type, palettes, stories;
 import types = plugins.buildings.types;
-import plugins.connector.connector : connect;
+import plugins.connector.connector : Floor, connect, slabFloor;
 import plugins.turtle.turtle : FACE_CORNERS, PERCENT, Turtle, boxOf, cornersOf, floorDiv, lowerOf, upright;
 
 enum ulong MIX = 0x2545F4914F6CDD1D;
@@ -55,11 +55,14 @@ immutable Kind[4] KINDS = [
     Kind(false, AROUND_TYPES[], 38),
 ];
 
+// What the streets are planned around: the vertex a city rose from, if it rose, with what it rose from and the
+// floor of that.
 struct Root {
     ulong vertex;
     ulong face;
-    Sky sky;
-    bool hasSky;
+    Risen risen;
+    Floor lower;
+    bool isRisen;
     bool isRouted;
 }
 
@@ -96,17 +99,21 @@ bool isOwner(ref const Turtle[AROUND] quarters) {
     return index == AROUND;
 }
 
-bool isFoot(Turtle corner, ref const Sky sky) {
-    return corner.hash(SitePart.vertex) == Turtle(corner.api, sky.foot).hash(SitePart.vertex);
+bool isFoot(Turtle corner, ref const Risen risen) {
+    return corner.hash(SitePart.vertex) == Turtle(corner.api, risen.foot).hash(SitePart.vertex);
 }
 
-bool ownsFoot(Turtle face, ref const Sky sky) {
+bool ownsFoot(Turtle face, ref const Risen risen) {
     bool isFound = false;
     foreach (corner; cornersOf(face)) {
         Turtle[AROUND] quarters = quartersOf(corner);
-        isFound = isFound || (isFoot(corner, sky) && isOwner(quarters));
+        isFound = isFound || (isFoot(corner, risen) && isOwner(quarters));
     }
     return isFound;
+}
+
+bool isRisingFrom(Turtle corner) {
+    return corner.rising() != NO_KIND;
 }
 
 bool isRootVertex(Turtle site, ref const Root root) {
@@ -319,7 +326,7 @@ int fit(Turtle site, int stories) {
 
 Chosen fitted(Chosen chosen, Turtle site, ref const Root root) {
     Chosen result = chosen;
-    if (root.hasSky) {
+    if (root.isRisen) {
         result.spec.stories = fit(site, chosen.spec.stories);
     }
     return result;
@@ -330,9 +337,9 @@ void build(ref const Lots lots, Chosen chosen) {
     types.build(chosen.type, lots, chosen.spec);
 }
 
-void lotAt(ref const Lots lots, bool isRoute, bool isRoot, ref const Root root) {
+void lotAt(ref const Lots lots, bool isRoute, bool isPlaza, ref const Root root) {
     Turtle site = lots.items[0].site;
-    if (isRoot && root.hasSky) {
+    if (isPlaza) {
         pave(lots, Material.granite);
         plant(lots);
     } else if (isRoute) {
@@ -402,9 +409,11 @@ void lotsAt(ref const Turtle[AROUND] quarters, ref const Root root) {
         isAny = isAny || streets[index];
     }
     bool isRoot = isRootVertex(quarters[0], root);
-    if (isRoot && root.hasSky) {
-        connect(quarters[0], root.sky, CITY_GROUND, root.isRouted);
+    bool isFootOfRisen = isRoot && root.isRisen;
+    if (isFootOfRisen) {
+        connect(quarters[0], root.risen, slabFloor(CITY_GROUND), root.lower, root.isRouted);
     }
+    bool isPlaza = isFootOfRisen || isRisingFrom(quarters[0]);
     uint start = 0;
     while (start < AROUND && !streets[start]) {
         start += 1;
@@ -424,7 +433,7 @@ void lotsAt(ref const Turtle[AROUND] quarters, ref const Root root) {
         if (streets[after] || step == AROUND - 1) {
             if (run.count > 0) {
                 join(run);
-                lotAt(run, isRoute, isRoot, root);
+                lotAt(run, isRoute, isPlaza, root);
             }
             run = Lots.init;
             isRoute = false;
@@ -451,11 +460,15 @@ void island(ref const Turtle[FACE_CORNERS] corners, ref const Root root) {
     }
 }
 
-Root rootAt(Turtle site, Sky sky, bool hasSky, bool isRouted) {
-    return Root(site.hash(SitePart.vertex), site.hash(SitePart.face), sky, hasSky, isRouted);
+Root rootAt(Turtle site, bool isRouted) {
+    return Root(site.hash(SitePart.vertex), site.hash(SitePart.face), Risen.init, Floor.init, false, isRouted);
 }
 
-void tile(const(Api)* api, Site site, const(Sky)* sky, const(void)* data) {
+Root risenRootAt(Turtle foot, ref const Risen risen, Floor lower, bool isRouted) {
+    return Root(foot.hash(SitePart.vertex), foot.hash(SitePart.face), risen, lower, true, isRouted);
+}
+
+void tile(const(Api)* api, Site site, const(Risen)* risen, const(void)* data) {
     tileAt(Turtle(api, site), *cast(const(Root)*) data);
 }
 

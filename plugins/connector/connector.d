@@ -1,6 +1,6 @@
 module plugins.connector.connector;
 
-import plugins.api.api : Box, Material, Rhythm, Sky;
+import plugins.api.api : Box, Material, Rhythm, Risen;
 import plugins.turtle.turtle : Turtle, boxOf, floorMod, higherOf;
 
 enum int STORY = 4;
@@ -101,24 +101,26 @@ void helix(Turtle tower, Material material, Layout layout) {
     }
 }
 
-void planetDoor(Turtle tower, Palette palette, Layout layout) {
+void lowerDoor(Turtle tower, Palette palette, Layout layout, int footing) {
     int base = layout.base;
     int below = layout.below;
     tower.paint(Material.none, boxOf([-HALF_WIDTH, -HALF_WIDTH], DOOR, [base + 1, base + DOOR_TOP]));
     foreach (distance; 1 .. layout.stoop + 2) {
         int[2] x = [-HALF_WIDTH - distance, -HALF_WIDTH - distance];
         int surface = higherOf(below, base + 1 - distance);
-        tower.fill(palette.trim, boxOf(x, STOOP, [below - FOOTING, below - 2]));
+        if (footing > 1) {
+            tower.fill(palette.trim, boxOf(x, STOOP, [below - footing, below - 2]));
+        }
         tower.paint(palette.trim, boxOf(x, STOOP, [below - 1, surface - 1]));
         tower.paint(Material.none, boxOf(x, STOOP, [surface, base + DOOR_TOP]));
     }
 }
 
-void skyDoor(Turtle tower, Layout layout) {
+void upperDoor(Turtle tower, Layout layout, int footing) {
     int floor = layout.base + layout.top;
     int[2] x = [-HALF_WIDTH - 1, -HALF_WIDTH - 1];
     tower.paint(Material.none, boxOf([-HALF_WIDTH, -HALF_WIDTH], DOOR, [floor - DOOR_TOP, floor - 1]));
-    tower.fill(LANDING, boxOf(x, STOOP, [floor + 1, floor + FOOTING]));
+    tower.fill(LANDING, boxOf(x, STOOP, [floor + 1, floor + footing]));
     tower.paint(LANDING, boxOf(x, STOOP, [floor, floor]));
     tower.paint(Material.none, boxOf(x, STOOP, [floor - DOOR_TOP, floor - 1]));
 }
@@ -144,27 +146,45 @@ void route(Turtle tower, Layout layout) {
     tower.stop(-HALF_WIDTH - 0.5f, 0, base + top);
 }
 
-Layout layoutOf(Turtle site, ref const Sky sky, int ground) {
-    int length = sky.edges * site.edgeCells();
-    int skyFloor = length - ground;
-    int stoop = floorMod(skyFloor - sky.below + 1, TURN);
-    int base = sky.below - 1 + stoop;
-    int split = length - sky.balance - base - 1;
-    return Layout(sky.below, stoop, base, skyFloor - base, split, split + 1 - FLIP_CLEARANCE);
+// Where the tower meets a surface: its first open cell, counted up from the surface's own plane, and how deep the
+// footing reaches past it, deep into terrain but only into the slab of a surface that holds only what is painted.
+struct Floor {
+    int open;
+    int footing;
 }
 
-void connect(Turtle site, ref const Sky sky, int ground, bool isRouted) {
-    Layout layout = layoutOf(site, sky, ground);
+Floor terrainFloor(int open) {
+    return Floor(open, FOOTING);
+}
+
+Floor slabFloor(int open) {
+    return Floor(open, 1);
+}
+
+Layout layoutOf(Turtle site, ref const Risen risen, Floor upper, Floor lower) {
+    int length = risen.edges * site.edgeCells();
+    int upperFloor = length - upper.open;
+    int stoop = floorMod(upperFloor - lower.open + 1, TURN);
+    int base = lower.open - 1 + stoop;
+    int split = length - risen.balance - base - 1;
+    return Layout(lower.open, stoop, base, upperFloor - base, split, split + 1 - FLIP_CLEARANCE);
+}
+
+// A tower from the lower surface up to the risen one's floor at its foot.
+void connect(Turtle site, ref const Risen risen, Floor upper, Floor lower, bool isRouted) {
+    Layout layout = layoutOf(site, risen, upper, lower);
     if (layout.split >= STORY && layout.top - layout.split > STORY && layout.top >= 2 * TURN) {
         Palette palette = PALETTES[site.pick(PALETTES.length)];
-        Turtle tower = site.pitchUp().rollRight().forward(sky.edges).pitchUp().pitchUp().rollRight();
+        Turtle tower = site.pitchUp().rollRight().forward(risen.edges).pitchUp().pitchUp().rollRight();
         int[2] square = [-HALF_WIDTH, HALF_WIDTH - 1];
-        tower.fill(palette.trim, boxOf(square, square, [layout.below - FOOTING, layout.base - 1]));
-        tower.fill(palette.trim, boxOf(square, square, [layout.base + layout.top + 1, layout.base + layout.top + FOOTING]));
+        if (layout.below - lower.footing < layout.base) {
+            tower.fill(palette.trim, boxOf(square, square, [layout.below - lower.footing, layout.base - 1]));
+        }
+        tower.fill(palette.trim, boxOf(square, square, [layout.base + layout.top + 1, layout.base + layout.top + upper.footing]));
         shell(tower, palette, layout);
         helix(tower, palette.floor, layout);
-        planetDoor(tower, palette, layout);
-        skyDoor(tower, layout);
+        lowerDoor(tower, palette, layout, lower.footing);
+        upperDoor(tower, layout, upper.footing);
         if (isRouted) {
             route(tower, layout);
         }

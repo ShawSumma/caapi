@@ -8,7 +8,7 @@ import common.neighbors : chunkNeighborSlot;
 import common.node : Chunk, ChunkSlot, ChunkState;
 import common.traversal : NOT_COLLECTED, NearbyNode, NearbyScratch;
 import common.worldgen.blueprint : TileRecord;
-import common.worldgen.sky : releaseIdleWorlds;
+import common.worldgen.horospheres : releaseIdleHorospheres;
 import geometry.cube : DIRECTIONS;
 import geometry.honeycomb : CORNER_COUNT, CUBE_RADIUS, Corner, cubeCenter;
 import geometry.lorentz : Point;
@@ -42,7 +42,7 @@ struct Evictor {
         while (examined < graph.slotCount && !isDone) {
             if (cursor >= graph.slotCount) {
                 cursor = 0;
-                graph.releaseIdleWorlds();
+                graph.releaseIdleHorospheres();
             }
             uint slot = cursor;
             cursor += 1;
@@ -93,7 +93,7 @@ struct Evictor {
             }
             if (tileCursor < graph.structures.blueprint.tiles.length) {
                 const(TileRecord)* record = &graph.structures.blueprint.tiles.ptr[tileCursor];
-                if (!record.isDropped && graph.structures.blueprint.travel - record.lastUse > TILE_IDLE_TRAVEL) {
+                if (!record.isDropped && !record.isKept && graph.structures.blueprint.travel - record.lastUse > TILE_IDLE_TRAVEL) {
                     uint face = graph.slotOf(record.face);
                     if (face == NO_SLOT || !near.contains(face)) {
                         graph.structures.blueprint.dropTile(tileCursor);
@@ -215,6 +215,6 @@ void evictNode(ref Graph graph, uint slot, ref Array!Unloaded unloaded) {
         graph.chunks.releaseBlock(slot);
     }
     graph.structures.forget(slot);
-    graph.skies.forget(slot);
+    graph.horospheres.forget(slot);
     graph.removeNode(slot);
 }

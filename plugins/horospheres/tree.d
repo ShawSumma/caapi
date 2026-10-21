@@ -1,7 +1,7 @@
-module plugins.bigtree.plugin;
+module plugins.horospheres.tree;
 
 import core.stdc.math : ceil, exp;
-import plugins.api.api : Api, ENTRY, Material, Registry, Site;
+import plugins.api.api : Material;
 import plugins.turtle.turtle : Drawing, Turtle, clamped, higherOf;
 
 enum Material BARK = Material.oakWood;
@@ -10,15 +10,10 @@ enum double GOLDEN_ANGLE = 137.5;
 enum double STEP = 3;
 enum double THINNEST = 0.7;
 
-enum double TRUNK_HEIGHT = 48;
 enum double TRUNK_SINK = 12;
-enum double TRUNK_RADIUS = 5;
-enum double TRUNK_TOP = 2.5;
-enum double TRUNK_FLARE = 3;
+enum double TRUNK_RADIUS = 4;
+enum double TRUNK_FLARE = 4;
 enum double TRUNK_FLARE_HEIGHT = 4;
-enum double TRUNK_WANDER = 2;
-enum double TRUNK_STEER = 2;
-enum double UPRIGHT = 90;
 
 enum uint ROOT_COUNT = 7;
 enum double ROOT_HEIGHT = 3;
@@ -29,22 +24,20 @@ enum double ROOT_DIP = 20;
 enum double ROOT_DROOP = 5;
 enum double ROOT_WANDER = 10;
 
-enum uint LIMB_COUNT = 12;
-enum double LIMB_LOW = 0.3;
-enum double LIMB_HIGH = 0.97;
-enum double LOWEST_LIMB_ANGLE = 80;
-enum double HIGHEST_LIMB_ANGLE = 25;
-enum double LIMB_SPREAD = 8;
-enum double LIMB_LENGTH = 36;
-enum double LIMB_SHORTENING = 0.45;
-enum double LIMB_WIDTH = 0.65;
+// Limbs per segment, the share of the first segment kept bare above the ground, and how far a limb reaches as a
+// share of an edge: with its forks it stays within the edge and a half around the column the engine plans for.
+enum uint SEGMENT_LIMBS = 4;
+enum double BARE_SHARE = 0.4;
+enum double LOWEST_LIMB_ANGLE = 85;
+enum double HIGHEST_LIMB_ANGLE = 45;
+enum double LIMB_SHARE = 0.5;
+enum double LIMB_WIDTH = 0.6;
 
 enum double SPREAD = 10;
 enum double LATER_SHORTER = 0.5;
 enum double LEAF_START = 0.4;
 immutable double[2] TWIG_LEAVES = [3, 4];
 immutable double[2] TIP_LEAVES = [3.5, 5];
-immutable float[3] SPAWN = [-14, 12, 0];
 enum uint MOST_CHILDREN = 8;
 
 struct Order {
@@ -113,9 +106,7 @@ void branch(Drawing start, double length, double radius, size_t order) {
 }
 
 double trunkRadius(double height) {
-    double above = higherOf(0.0, height);
-    double taper = TRUNK_TOP + (TRUNK_RADIUS - TRUNK_TOP) * (1 - above / TRUNK_HEIGHT);
-    return taper + TRUNK_FLARE * exp(-above / TRUNK_FLARE_HEIGHT);
+    return TRUNK_RADIUS + TRUNK_FLARE * exp(-higherOf(0.0, height) / TRUNK_FLARE_HEIGHT);
 }
 
 void roots(Drawing base) {
@@ -132,47 +123,34 @@ void roots(Drawing base) {
     }
 }
 
-struct Limbs {
-    uint next;
-    double roll;
-
-    void grow(Drawing trunk, double height, double radius) {
-        bool isDue = true;
-        while (next < LIMB_COUNT && isDue) {
-            double share = cast(double) next / (LIMB_COUNT - 1);
-            double along = LIMB_LOW + (LIMB_HIGH - LIMB_LOW) * share;
-            isDue = along * TRUNK_HEIGHT <= height;
-            if (isDue) {
-                double angle = LOWEST_LIMB_ANGLE + (HIGHEST_LIMB_ANGLE - LOWEST_LIMB_ANGLE) * share;
-                Drawing pen = trunk.roll(roll + (next + 1) * GOLDEN_ANGLE).turn(0, trunk.between(angle - LIMB_SPREAD, angle + LIMB_SPREAD));
-                branch(pen, LIMB_LENGTH * (1 - LIMB_SHORTENING * along), radius * LIMB_WIDTH, 0);
-                next += 1;
-            }
-        }
+// One edge of the trunk from its base, which stands on the column with z up it. The trunk runs straight so the
+// segments meet; the first also sinks its roots into the ground the tree rose from.
+void segment(Turtle base, int index) {
+    double edge = base.edgeCells();
+    double start = 0;
+    if (index == 0) {
+        start = -TRUNK_SINK;
     }
-}
-
-void grow(Turtle site) {
-    Drawing pen = site.pitchUp().pen().forward(-TRUNK_SINK);
-    Limbs limbs = Limbs(0, pen.between(0, 360));
-    uint steps = cast(uint) ceil((TRUNK_HEIGHT + TRUNK_SINK) / STEP);
-    foreach (index; 0 .. steps) {
-        double height = index * STEP - TRUNK_SINK;
-        if (height == ROOT_HEIGHT) {
+    Drawing pen = base.pen().forward(start);
+    uint steps = cast(uint) ceil((edge - start) / STEP);
+    double step = (edge - start) / steps;
+    double roll = pen.between(0, 360);
+    uint limb = 0;
+    foreach (stepIndex; 0 .. steps) {
+        double height = start + stepIndex * step;
+        if (index == 0 && height <= ROOT_HEIGHT && height + step > ROOT_HEIGHT) {
             roots(pen);
         }
-        pen = pen.limb(BARK, STEP, trunkRadius(height), trunkRadius(height + STEP));
-        limbs.grow(pen, height + STEP, trunkRadius(height + STEP));
-        pen = steered(wandered(pen, TRUNK_WANDER), UPRIGHT, TRUNK_STEER);
+        double low = index * edge + height;
+        pen = pen.limb(BARK, step, trunkRadius(low), trunkRadius(low + step));
+        while (limb < SEGMENT_LIMBS && (limb + 1.0) / (SEGMENT_LIMBS + 1) * edge <= height + step) {
+            double along = (limb + 1.0) / (SEGMENT_LIMBS + 1);
+            if (index > 0 || along >= BARE_SHARE) {
+                double angle = LOWEST_LIMB_ANGLE + (HIGHEST_LIMB_ANGLE - LOWEST_LIMB_ANGLE) * pen.random();
+                Drawing fork = pen.roll(roll + (limb + 1) * GOLDEN_ANGLE).turn(0, pen.between(angle - SPREAD, angle + SPREAD));
+                branch(fork, LIMB_SHARE * edge * (1 - LATER_SHORTER * pen.random()), trunkRadius(low + step) * LIMB_WIDTH, 0);
+            }
+            limb += 1;
+        }
     }
-    pen.leaves(LEAVES, TIP_LEAVES[1]);
-    site.entrance(SPAWN[0], SPAWN[1], SPAWN[2]);
-}
-
-void world(const(Api)* api, Site site, const(void)* data) {
-    grow(Turtle(api, site));
-}
-
-pragma(mangle, ENTRY) void plugin(const(Registry)* registry) {
-    registry.add(registry, "bigtree", &world);
 }

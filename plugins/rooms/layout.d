@@ -1,6 +1,6 @@
 module plugins.rooms.layout;
 
-import plugins.api.api : Api, Site, SitePart, Sky;
+import plugins.api.api : Api, Risen, Site, SitePart;
 import blocks = plugins.blocks.blocks;
 import plugins.buildings.building : SIDES, Side;
 import plugins.rooms.levels : Biome, HallLayout, LAYERS, Level;
@@ -152,8 +152,9 @@ Plan planOf(Turtle corner, ref const Quarter q, ref const Floor floor, size_t in
 void quarter(Turtle corner, ref const Root root, ref const(Biome)*[FLOOR_COUNT] biomes) {
     ulong vertex = corner.hash(SitePart.vertex);
     ulong face = corner.hash(SitePart.face);
-    bool isLobby = vertex == root.vertex;
-    Quarter q = Quarter(upright(corner), isLobby, isLobby && root.hasShaft);
+    bool isRoot = vertex == root.vertex;
+    bool isLobby = isRoot || blocks.isRisingFrom(corner);
+    Quarter q = Quarter(upright(corner), isLobby, isRoot && root.hasShaft);
     Owns owns = Owns(vertex > corner.forward(1).hash(SitePart.vertex), vertex > corner.right().forward(1).hash(SitePart.vertex));
     Halls[FLOOR_COUNT] halls;
     foreach (index; 0 .. FLOOR_COUNT) {
@@ -188,7 +189,7 @@ void quarter(Turtle corner, ref const Root root, ref const(Biome)*[FLOOR_COUNT] 
     }
 }
 
-void tile(const(Api)* api, Site site, const(Sky)* sky, const(void)* data) {
+void tile(const(Api)* api, Site site, const(Risen)* risen, const(void)* data) {
     tileAt(Turtle(api, site), *cast(const(Root)*) data);
 }
 

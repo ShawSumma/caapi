@@ -23,7 +23,7 @@ import common.node : Chunk, ChunkSlot, ChunkState, Voxels, cellIndex;
 import common.position : Position;
 import common.traversal : NO_DEADLINE, NearbyNode, NearbyScratch;
 import common.worldgen.generation : ChunkParams, GeneratedVoxels, Worldgen;
-import common.worldgen.sky : ChunkPoint, chunkPointOf;
+import common.worldgen.horospheres : ChunkPoint, chunkPointOf;
 import common.worldgen.structure : ColumnSpot, SiteFrame, altitude, columnPoint, edgeLength, forwarded, rootSite, sitePlacement, turned;
 import geometry.honeycomb : CORNER_COUNT, CUBE_RADIUS, Corner, cubeCenter;
 import geometry.lorentz : Motion, Point;

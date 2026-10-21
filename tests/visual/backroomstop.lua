@@ -5,7 +5,7 @@ local RISE = 0.55
 local TURN_DEGREES = 120
 
 return function(world)
-  world:worldgen("structure", "skybackrooms")
+  world:worldgen("structure", "risenbackrooms")
   world:enter_route()
   world:wait(walk.SETTLE_SECONDS)
   climb.follow(world, math.huge)

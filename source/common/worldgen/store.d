@@ -22,6 +22,17 @@ struct Grower {
     void* context;
 }
 
+// A tile by the node it is painted from and what of that node: the face of a horosphere's plane it lies on, or a
+// corner where a segment of an upright horosphere's column starts, counted after the faces.
+struct TileKey {
+    NodeId node;
+    ubyte feature;
+
+    size_t toHash() const {
+        return node.toHash() ^ feature;
+    }
+}
+
 struct NodeStructure {
     Run touches;
     uint building;
@@ -37,7 +48,7 @@ struct StructureStore {
     RunPool!LineTouch touches;
     Slab!PendingTouch pending;
     HashMap!(NodeId, uint) pendingHeads;
-    HashMap!(NodeId, uint) tiledFaces;
+    HashMap!(TileKey, uint) tiledFaces;
     Array!LineTouch scratch;
     Slab!Building buildings;
     Array!uint freeBuildings;

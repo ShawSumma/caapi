@@ -4,7 +4,7 @@ local BACK = 1.2
 local LOOK_UP_DEGREES = -40
 
 return function(world)
-  world:worldgen("structure", "skycity")
+  world:worldgen("structure", "risencity")
   world:enter_route()
   world:mode("noclip")
   world:press(BACK / walk.NOCLIP_SPEED, "back")

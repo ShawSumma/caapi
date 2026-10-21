@@ -9,7 +9,7 @@ import common.position : Position;
 import common.worldgen.blueprint : Blueprint;
 import common.worldgen.building : Building;
 import common.worldgen.generation : ChunkStructure, NodeState, Worldgen;
-import common.worldgen.sky : CornerKey, GroundKey, PLANET, SkyChoice, SkyList, Skies, WorldRef, applyDiscoveries, makeWantedWorlds, makeWorld;
+import common.worldgen.horospheres : CornerKey, GroundKey, HorosphereRef, Horospheres, ROOT, Rise, RisingList, applyDiscoveries, makeHorosphere, makeWantedHorospheres;
 import common.worldgen.store : NodeStructure;
 import common.worldgen.strokes : Stroke;
 import common.worldgen.structure : ClaimKey;
@@ -45,12 +45,12 @@ struct SlotKey {
     }
 }
 
-struct WorldRange {
+struct RefRange {
     uint start;
     uint count;
 }
 
-struct WantedWorld {
+struct WantedHorosphere {
     uint start;
     uint pathStart;
     uint pathLength;
@@ -62,16 +62,16 @@ struct GraphView {
     const(Graph)* graph;
     Graph* owner;
     Array!ViewNode nodes;
-    Array!WantedWorld wanted;
+    Array!WantedHorosphere wanted;
     Array!Face wantedPaths;
     HashMap!(NodeId, uint) virtualIds;
     HashMap!(SideKey, uint) missingChildren;
     HashMap!(SlotKey, NodeState) statesOfSlots;
-    Array!WorldRef worldRefs;
-    HashMap!(SlotKey, WorldRange) worldsOfNodes;
-    Array!uint risingSkies;
-    HashMap!(GroundKey, SkyList) rising;
-    HashMap!(CornerKey, SkyChoice) choices;
+    Array!HorosphereRef refs;
+    HashMap!(SlotKey, RefRange) refsOfNodes;
+    Array!uint risingFound;
+    HashMap!(GroundKey, RisingList) rising;
+    HashMap!(CornerKey, Rise) choices;
     Array!uint storedSlots;
     Array!GroundKey risingKeys;
     Array!CornerKey choiceKeys;
@@ -88,9 +88,9 @@ struct GraphView {
         virtualIds.clear();
         missingChildren.clear();
         statesOfSlots.clear();
-        worldRefs.clear();
-        worldsOfNodes.clear();
-        risingSkies.clear();
+        refs.clear();
+        refsOfNodes.clear();
+        risingFound.clear();
         rising.clear();
         choices.clear();
         storedSlots.clear();
@@ -106,9 +106,9 @@ struct GraphView {
         virtualIds.release();
         missingChildren.release();
         statesOfSlots.release();
-        worldRefs.release();
-        worldsOfNodes.release();
-        risingSkies.release();
+        refs.release();
+        refsOfNodes.release();
+        risingFound.release();
         rising.release();
         choices.release();
         storedSlots.release();
@@ -124,8 +124,8 @@ struct GraphView {
         return graph.worldgen;
     }
 
-    ref const(Skies) skies() const {
-        return graph.skies;
+    ref const(Horospheres) horospheres() const {
+        return graph.horospheres;
     }
 
     ref const(Blueprint) blueprint() const {
@@ -337,29 +337,29 @@ struct GraphView {
         }
     }
 
-    bool hasWorldsAt(uint node) const {
-        return (!isVirtual(node) && graph.skies.hasWorldsAt(node)) || worldsOfNodes.find(SlotKey(node)) !is null;
+    bool hasHorospheresAt(uint node) const {
+        return (!isVirtual(node) && graph.horospheres.hasHorospheresAt(node)) || refsOfNodes.find(SlotKey(node)) !is null;
     }
 
-    const(WorldRef)[] worldsAt(uint node) const {
-        if (!isVirtual(node) && graph.skies.hasWorldsAt(node)) {
-            return graph.skies.worldsAt(node);
+    const(HorosphereRef)[] horospheresAt(uint node) const {
+        if (!isVirtual(node) && graph.horospheres.hasHorospheresAt(node)) {
+            return graph.horospheres.horospheresAt(node);
         } else {
-            const(WorldRange)* range = worldsOfNodes.find(SlotKey(node));
+            const(RefRange)* range = refsOfNodes.find(SlotKey(node));
             if (range is null || range.count == 0) {
                 return null;
             } else {
-                return worldRefs.ptr[range.start .. range.start + range.count];
+                return refs.ptr[range.start .. range.start + range.count];
             }
         }
     }
 
-    void storeWorlds(uint node, const(WorldRef)[] found) {
+    void storeHorospheres(uint node, const(HorosphereRef)[] found) {
         if (owner !is null) {
-            owner.skies.storeWorlds(node, found);
+            owner.horospheres.storeHorospheres(node, found);
         } else {
-            worldsOfNodes.insert(SlotKey(node), WorldRange(cast(uint) worldRefs.length, cast(uint) found.length));
-            worldRefs.appendAll(found);
+            refsOfNodes.insert(SlotKey(node), RefRange(cast(uint) refs.length, cast(uint) found.length));
+            refs.appendAll(found);
             if (!isVirtual(node)) {
                 storedSlots.append(node);
             }
@@ -367,29 +367,29 @@ struct GraphView {
     }
 
     const(uint)[] knownRising(GroundKey key) const {
-        const(uint)[] global = graph.skies.knownRising(key);
-        const(SkyList)* local = rising.find(key);
+        const(uint)[] global = graph.horospheres.knownRising(key);
+        const(RisingList)* local = rising.find(key);
         if (global !is null || local is null) {
             return global;
         } else {
-            return risingSkies.ptr[local.start .. local.start + local.count];
+            return risingFound.ptr[local.start .. local.start + local.count];
         }
     }
 
-    const(uint)[] storeRising(GroundKey key, const(uint)[] skies) {
+    const(uint)[] storeRising(GroundKey key, const(uint)[] found) {
         if (owner !is null) {
-            return owner.skies.storeRising(key, skies);
+            return owner.horospheres.storeRising(key, found);
         } else {
-            SkyList list = SkyList(cast(uint) risingSkies.length, cast(uint) skies.length);
-            risingSkies.appendAll(skies);
+            RisingList list = RisingList(cast(uint) risingFound.length, cast(uint) found.length);
+            risingFound.appendAll(found);
             rising.insert(key, list);
             risingKeys.append(key);
-            return risingSkies.ptr[list.start .. list.start + list.count];
+            return risingFound.ptr[list.start .. list.start + list.count];
         }
     }
 
-    const(SkyChoice)* knownChoice(CornerKey key) const {
-        const(SkyChoice)* global = graph.skies.choices.find(key);
+    const(Rise)* knownChoice(CornerKey key) const {
+        const(Rise)* global = graph.horospheres.choices.find(key);
         if (global !is null) {
             return global;
         } else {
@@ -397,11 +397,11 @@ struct GraphView {
         }
     }
 
-    void storeChoice(CornerKey key, SkyChoice choice) {
+    void storeChoice(CornerKey key, Rise rise) {
         if (owner !is null) {
-            owner.skies.choices.insert(key, choice);
+            owner.horospheres.choices.insert(key, rise);
         } else {
-            choices.insert(key, choice);
+            choices.insert(key, rise);
             choiceKeys.append(key);
         }
     }
@@ -410,18 +410,18 @@ struct GraphView {
         return CornerKey(idAt(key.slot), cast(Corner) key.feature);
     }
 
-    uint ensureWorld(ClaimKey rooted, uint face, Corner corner, uint parent, SkyChoice choice) {
-        const(uint)* known = graph.skies.worldOf.find(cornerKeyOf(rooted));
+    uint ensureHorosphere(ClaimKey rooted, uint face, Corner corner, uint parent, Rise rise) {
+        const(uint)* known = graph.horospheres.horosphereOf.find(cornerKeyOf(rooted));
         if (known !is null) {
             return *known;
         } else if (owner !is null) {
-            return (*owner).makeWorld(rooted, face, corner, parent, choice);
+            return (*owner).makeHorosphere(rooted, face, corner, parent, rise);
         } else {
             isBlocked = true;
             uint pathStart = cast(uint) wantedPaths.length;
             uint start = pathTo(face, wantedPaths);
-            wanted.append(WantedWorld(start, pathStart, cast(uint) wantedPaths.length - pathStart, parent, corner));
-            return PLANET;
+            wanted.append(WantedHorosphere(start, pathStart, cast(uint) wantedPaths.length - pathStart, parent, corner));
+            return ROOT;
         }
     }
 
@@ -452,7 +452,7 @@ struct ThreadViews {
         bool isMade = false;
         foreach (ref view; views.slice()) {
             graph.applyDiscoveries(view);
-            isMade = graph.makeWantedWorlds(view) || isMade;
+            isMade = graph.makeWantedHorospheres(view) || isMade;
         }
         return isMade;
     }

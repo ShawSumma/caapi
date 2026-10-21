@@ -1,34 +1,55 @@
 module plugins.fixtures.plugin;
 
-import plugins.api.api : Api, ENTRY, Registry, Site, SitePart, SkyGround, Tile;
+import plugins.api.api : Api, ENTRY, HorosphereForm, Registry, Site, SitePart;
 import box = plugins.box.box;
 import plugins.buildings.building : Bound, Lot, Lots, Side, Spec;
 import plugins.buildings.types : Type, build, palettes;
 import layout = plugins.rooms.layout;
-import plugins.skies.skies : backroomsSky, citySky, wildSky;
+import plugins.horospheres.horospheres : Kinds, Tag, addKinds, cityTile;
 import plugins.turtle.turtle : Turtle, cornersOf;
 
-enum uint SKY_EDGES = 2;
+enum uint RISE_EDGES = 2;
+enum int CHAIN_EDGES = 4;
+immutable float[3] CHAIN_SPAWN = [0, 4, 0];
+immutable bool UNROUTED = false;
 enum uint HOUSE_FLOOR = 1;
 enum uint TOP_FLOOR = 0;
 enum int SHOWCASE_FRONT = 4;
 immutable bool ROUTED = true;
 
-void openRoutedSky(const(Api)* api, Site site, SkyGround ground, Tile tile) {
-    uint kind = api.sky(api, 0, ground, tile, &ROUTED, bool.sizeof);
-    api.openSky(api, site, kind, SKY_EDGES);
+// The kinds, none of which rise by chance, with their connectors routed.
+Kinds routedKinds(const(Api)* api) {
+    return addKinds(api, 0, 0, &ROUTED);
 }
 
-void skyCity(const(Api)* api, Site site, const(void)* data) {
-    openRoutedSky(api, site, SkyGround.flat, &citySky);
+void risenCity(const(Api)* api, Site site, const(void)* data) {
+    api.openHorosphere(api, site, routedKinds(api).city, RISE_EDGES);
 }
 
-void skyWild(const(Api)* api, Site site, const(void)* data) {
-    openRoutedSky(api, site, SkyGround.terrain, &wildSky);
+void risenWild(const(Api)* api, Site site, const(void)* data) {
+    api.openHorosphere(api, site, routedKinds(api).wild, RISE_EDGES);
 }
 
-void skyBackrooms(const(Api)* api, Site site, const(void)* data) {
-    openRoutedSky(api, site, SkyGround.flat, &backroomsSky);
+void risenBackrooms(const(Api)* api, Site site, const(void)* data) {
+    api.openHorosphere(api, site, routedKinds(api).backrooms, RISE_EDGES);
+}
+
+// Backrooms at the root with a city rising from them, reached from the lobby under the city's foot.
+void stacked(const(Api)* api, Site site, const(void)* data) {
+    Kinds kinds = routedKinds(api);
+    api.rooted(api, kinds.backrooms);
+    api.openHorosphere(api, site, kinds.city, RISE_EDGES);
+}
+
+// A city rising from the ground and a second rising from the first, a few edges along it, where the two planes are
+// far enough apart; only the second's connector is routed, and the spawn stands on the first by its foot.
+void chain(const(Api)* api, Site site, const(void)* data) {
+    Kinds kinds = addKinds(api, 0, 0, &UNROUTED);
+    uint upper = api.horosphere(api, 0, HorosphereForm.bare, Tag.city, &cityTile, &ROUTED, bool.sizeof);
+    api.openHorosphere(api, site, kinds.city, RISE_EDGES);
+    Turtle along = Turtle(api, site).pitchUp().forward(RISE_EDGES).pitchUp().forward(CHAIN_EDGES);
+    api.openHorosphere(api, along.site, upper, RISE_EDGES);
+    along.entrance(CHAIN_SPAWN[0], CHAIN_SPAWN[1], CHAIN_SPAWN[2]);
 }
 
 void forcedStair(const(Api)* api, Site site, uint upper) {
@@ -81,9 +102,11 @@ void hamlet(const(Api)* api, Site site, const(void)* data) {
 }
 
 pragma(mangle, ENTRY) void plugin(const(Registry)* registry) {
-    registry.add(registry, "skycity", &skyCity);
-    registry.add(registry, "skywild", &skyWild);
-    registry.add(registry, "skybackrooms", &skyBackrooms);
+    registry.add(registry, "risencity", &risenCity);
+    registry.add(registry, "risenwild", &risenWild);
+    registry.add(registry, "risenbackrooms", &risenBackrooms);
+    registry.add(registry, "stacked", &stacked);
+    registry.add(registry, "chain", &chain);
     registry.add(registry, "basement", &basement);
     registry.add(registry, "backroomsstairs", &backroomsStairs);
     registry.add(registry, "showcase", &showcase);

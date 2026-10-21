@@ -10,18 +10,18 @@ import base.parallel : Executor;
 import base.splitmix : SplitMix;
 import client.game : Game;
 import client.plugins : registry;
-import client.tiles : TileCall, TileCalls, TileWork;
+import client.tiles : TileCall, TileCalls, TileWork, faceKey, isRootTiled, segmentKey;
 import common.graph : Graph;
 import common.worldgen.blueprint : BlueprintBuilder, CellBox, PaintResult, Rhythm;
 import common.worldgen.generation : StructureWorld, Worldgen;
+import common.worldgen.horospheres : HorosphereKind, HorosphereRef, Horospheres, LOWEST_RISE_EDGES, NO_RISE, ROOT, Rise, ensureHorospheresAt, groundNodeOf, isPaintedBy, openHorosphere, riseAt, segmentSite, segmentsNear;
 import common.worldgen.plane : Plane;
-import common.worldgen.sky : LOWEST_SKY_EDGES, PLANET, SkyChoice, SkyKind, Skies, ensureWorldsAt, isPaintedBySky, openSky, worldGroundNodeOf;
-import common.worldgen.store : Grower;
+import common.worldgen.store : Grower, TileKey;
 import common.worldgen.strokes : Stroke;
-import common.worldgen.structure : ClaimKey, ColumnSpot, GROUND_RING, PLACE_SLACK, RootedCorner, SiteFrame, anchorBits, claimKeyOf, edgeCells, edgeLength, forwarded, frameOf, groundRing, rootSite, siteHash, siteOf, siteOrigin, sitePlacement, turned;
+import common.worldgen.structure : ClaimKey, ColumnSpot, GROUND_RING, PLACE_SLACK, RootedCorner, SiteFrame, anchorBits, atLevel, claimKeyOf, edgeCells, edgeLength, faceSite, forwarded, frameOf, groundRing, rootSite, siteHash, siteOf, siteOrigin, sitePlacement, turned;
 import geometry.honeycomb : Face;
 import geometry.lorentz : Motion, Vec4;
-import plugins.api.api : Api, Box, Column, Material, Pen, Site, SitePart, SkyGround, Spot, Structure, Tile, Turn;
+import plugins.api.api : Api, Box, Column, HorosphereForm, Material, NO_KIND, Pen, Site, SitePart, Spot, Structure, Tile, Turn;
 import plugins.api.api : ApiRhythm = Rhythm;
 
 enum size_t MESSAGE_CAPACITY = 1024;
@@ -193,7 +193,7 @@ struct StructureHost {
     }
 
     bool hasCover() const {
-        return calls.hasPlanet || calls.skies.length > 0;
+        return calls.hasRoot || calls.kinds.length > 0;
     }
 
     void build(SiteFrame root) {
@@ -257,27 +257,41 @@ struct StructureHost {
     void cover(ref Graph graph, uint slot) {
         builder.graph = &graph;
         if (!problem.isPresent && hasCover()) {
-            if (calls.hasPlanet) {
-                coverRing(graph, graph.view.groundRing(graph.view.worldGroundNodeOf(slot, PLANET), Face.f0), Face.f0, PLANET);
+            if (isRootTiled(graph, calls)) {
+                coverRing(graph, graph.view.groundRing(graph.view.groundNodeOf(slot, ROOT), Face.f0), Face.f0, ROOT);
             }
-            foreach (sky; graph.view.ensureWorldsAt(slot)) {
-                if (graph.view.isPaintedBySky(slot, sky)) {
-                    Face label = graph.skies.world(sky.world).label;
-                    coverRing(graph, graph.view.groundRing(graph.view.worldGroundNodeOf(slot, sky.world), label), label, sky.world);
+            foreach (near; graph.view.ensureHorospheresAt(slot)) {
+                if (graph.horospheres.isUpright(near.horosphere)) {
+                    coverSegments(graph, near);
+                } else if (graph.view.isPaintedBy(slot, near)) {
+                    Face label = graph.horospheres.horosphere(near.horosphere).label;
+                    coverRing(graph, graph.view.groundRing(graph.view.groundNodeOf(slot, near.horosphere), label), label, near.horosphere);
                 }
             }
             runTiles(graph);
         }
     }
 
-    void coverRing(ref Graph graph, uint[GROUND_RING] ring, Face label, uint sky) {
+    void coverTile(ref Graph graph, TileKey key, SiteFrame site, uint over, int segment) {
+        const(uint)* known = graph.structures.tiledFaces.find(key);
+        if (known !is null && !graph.structures.blueprint.tiles.ptr[*known].isDropped) {
+            graph.structures.blueprint.tiles.ptr[*known].lastUse = graph.structures.blueprint.travel;
+        } else {
+            tiles.addTask(graph, key, site.node, null, over, site, segment);
+        }
+    }
+
+    void coverRing(ref Graph graph, uint[GROUND_RING] ring, Face label, uint over) {
         foreach (face; ring) {
-            const(uint)* known = graph.structures.tiledFaces.find(graph.idAt(face));
-            if (known !is null && !graph.structures.blueprint.tiles.ptr[*known].isDropped) {
-                graph.structures.blueprint.tiles.ptr[*known].lastUse = graph.structures.blueprint.travel;
-            } else {
-                tiles.addTask(graph, graph.idAt(face), face, null, label, sky);
-            }
+            coverTile(graph, graph.view.faceKey(face, label), faceSite(face, label), over, 0);
+        }
+    }
+
+    void coverSegments(ref Graph graph, ref const HorosphereRef near) {
+        int[2] segments = graph.view.segmentsNear(near);
+        foreach (segment; segments[0] .. segments[1] + 1) {
+            SiteFrame site = graph.view.segmentSite(near.horosphere, segment);
+            coverTile(graph, graph.view.segmentKey(site), site, near.horosphere, segment);
         }
     }
 
@@ -367,38 +381,69 @@ struct StructureHost {
     }
 
     void tile(Tile tile, const(void)* data, size_t size) {
-        if (builder.isGrowing || calls.hasPlanet) {
+        if (builder.isGrowing || calls.hasRoot) {
             refuse("only the world's own structure tiles the ground, and only once");
         } else {
-            calls.planet = TileCall(tile, copied(data, size));
-            calls.hasPlanet = true;
+            calls.root = TileCall(tile, copied(data, size));
+            calls.hasRoot = true;
         }
     }
 
-    uint sky(double odds, SkyGround ground, Tile tile, const(void)* data, size_t size) {
-        Skies* skies = &builder.graph.skies;
+    uint horosphere(double odds, HorosphereForm form, uint tag, Tile tile, const(void)* data, size_t size) {
+        Horospheres* horospheres = &builder.graph.horospheres;
         if (builder.isGrowing) {
-            refuse("only the world's own structure opens skies");
+            refuse("only the world's own structure gives horospheres their kinds");
             return 0;
-        } else if (!(odds >= 0) || skies.totalOdds() + odds > 1) {
-            refuse("sky odds are chances per ground vertex, and all kinds together add up to at most 1");
+        } else if (!(odds >= 0) || horospheres.totalOdds() + odds > 1) {
+            refuse("horosphere odds are chances per vertex, and all kinds together add up to at most 1");
+            return 0;
+        } else if (horospheres.kinds.length == ubyte.max) {
+            refuse("too many kinds of horosphere");
             return 0;
         } else {
-            skies.kinds.append(SkyKind(odds, ground));
-            calls.skies.append(TileCall(tile, copied(data, size)));
-            return cast(uint) skies.kinds.length;
+            horospheres.kinds.append(HorosphereKind(odds, form, tag));
+            calls.kinds.append(TileCall(tile, copied(data, size)));
+            return cast(uint) horospheres.kinds.length;
         }
     }
 
-    void openSkyAt(Site site, uint kind, uint edges) {
+    bool isKnownKind(uint kind) const {
+        return kind >= 1 && kind <= builder.graph.horospheres.kinds.length;
+    }
+
+    void openHorosphereAt(Site site, uint kind, uint edges) {
         if (builder.isGrowing) {
-            refuse("only the world's own structure opens skies");
-        } else if (kind < 1 || kind > builder.graph.skies.kinds.length) {
-            refuse("unknown sky kind");
-        } else if (edges < LOWEST_SKY_EDGES || edges > ubyte.max) {
-            refuse("a sky stands at least two edges up");
-        } else if (!(*builder.graph).openSky(frameOf(site), SkyChoice(cast(ubyte) kind, cast(ubyte) edges))) {
-            refuse("a sky beside another sky would cross it");
+            refuse("only the world's own structure opens horospheres");
+        } else if (!isKnownKind(kind)) {
+            refuse("unknown kind of horosphere");
+        } else if (edges < LOWEST_RISE_EDGES || edges > ubyte.max) {
+            refuse("a horosphere rises at least two edges");
+        } else if (!(*builder.graph).openHorosphere(frameOf(site), Rise(cast(ubyte) kind, cast(ubyte) edges))) {
+            refuse("a horosphere beside another one would cross it");
+        }
+    }
+
+    void rooted(uint kind) {
+        Horospheres* horospheres = &builder.graph.horospheres;
+        if (builder.isGrowing || horospheres.rootKind != NO_RISE) {
+            refuse("only the world's own structure gives the root its kind, and only once");
+        } else if (!isKnownKind(kind)) {
+            refuse("unknown kind of horosphere");
+        } else if (horospheres.isUprightKind(cast(ubyte) kind)) {
+            refuse("the root is a plane, so it cannot be an upright kind");
+        } else {
+            horospheres.rootKind = cast(ubyte) kind;
+        }
+    }
+
+    uint rising(Site site) {
+        Graph* graph = builder.graph;
+        SiteFrame at = graph.view.atLevel(frameOf(site), 0);
+        Rise rise = graph.view.riseAt(at.node, at.corner, ROOT);
+        if (rise.kind == NO_RISE) {
+            return NO_KIND;
+        } else {
+            return graph.horospheres.kinds.ptr[rise.kind - 1].tag;
         }
     }
 
@@ -460,8 +505,10 @@ Api mainApi(StructureHost* host) {
     api.claim = &mainClaim;
     api.isClaimed = &mainIsClaimed;
     api.tile = &mainTile;
-    api.sky = &mainSky;
-    api.openSky = &mainOpenSky;
+    api.horosphere = &mainHorosphere;
+    api.openHorosphere = &mainOpenHorosphere;
+    api.rooted = &mainRooted;
+    api.rising = &mainRising;
     api.balance = &mainBalance;
     api.pen = &mainPen;
     api.penForward = &mainPenForward;
@@ -547,16 +594,24 @@ void mainTile(const(Api)* api, Tile tile, const(void)* data, size_t size) {
     mainHost(api).tile(tile, data, size);
 }
 
-uint mainSky(const(Api)* api, double odds, SkyGround ground, Tile tile, const(void)* data, size_t size) {
-    return mainHost(api).sky(odds, ground, tile, data, size);
+uint mainHorosphere(const(Api)* api, double odds, HorosphereForm form, uint tag, Tile tile, const(void)* data, size_t size) {
+    return mainHost(api).horosphere(odds, form, tag, tile, data, size);
 }
 
-void mainOpenSky(const(Api)* api, Site site, uint kind, uint edges) {
-    mainHost(api).openSkyAt(site, kind, edges);
+void mainOpenHorosphere(const(Api)* api, Site site, uint kind, uint edges) {
+    mainHost(api).openHorosphereAt(site, kind, edges);
+}
+
+void mainRooted(const(Api)* api, uint kind) {
+    mainHost(api).rooted(kind);
+}
+
+uint mainRising(const(Api)* api, Site site) {
+    return mainHost(api).rising(site);
 }
 
 int mainBalance(const(Api)* api, Site site, int most) {
-    mainHost(api).refuse("only a sky's tiles have another world to balance against");
+    mainHost(api).refuse("only a horosphere's tiles have a plane below to balance against");
     return 0;
 }
 

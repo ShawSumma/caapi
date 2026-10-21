@@ -9,7 +9,7 @@ import common.character.sweep : Capsule, ContactPlane, MIN_CREASE_SINE, Sweep, i
 import common.graph : Graph;
 import common.position : Position;
 import common.settings : CharacterConfig;
-import common.worldgen.sky : Gravity, gravityAt;
+import common.worldgen.horospheres : Gravity, gravityAt;
 import geometry.lorentz : Motion;
 
 enum uint MAX_CONTACT_PLANES = 5;
