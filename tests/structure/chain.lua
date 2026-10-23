@@ -5,8 +5,6 @@ local LANDING = "concrete"
 local LOWER_ALTITUDE = 1.5
 local LEAST_MOVED = 0.5
 
--- From a risen city up the connector of a city risen from it. Far from the first city's foot its plane leans away from
--- the ground, so the second stands at a different height above the ground, not necessarily a lower one.
 return function(world)
   world:worldgen("structure", "chain")
   world:enter_route()

@@ -12,7 +12,7 @@ import client.game : Game;
 import client.plugins : registry;
 import client.tiles : TileCall, TileCalls, TileWork, faceKey, isRootTiled, segmentKey;
 import common.graph : Graph;
-import common.worldgen.blueprint : BlueprintBuilder, CellBox, PaintResult, Rhythm;
+import common.worldgen.blueprint : BlueprintBuilder, CellBox, PLACED_RECORD, PaintResult, Rhythm;
 import common.worldgen.generation : StructureWorld, Worldgen;
 import common.worldgen.horospheres : HorosphereKind, HorosphereRef, Horospheres, LOWEST_RISE_EDGES, NO_RISE, ROOT, Rise, ensureHorospheresAt, groundNodeOf, isPaintedBy, openHorosphere, riseAt, segmentSite, segmentsNear;
 import common.worldgen.plane : Plane;
@@ -275,7 +275,7 @@ struct StructureHost {
     void coverTile(ref Graph graph, TileKey key, SiteFrame site, uint over, int segment) {
         const(uint)* known = graph.structures.tiledFaces.find(key);
         if (known !is null && !graph.structures.blueprint.tiles.ptr[*known].isDropped) {
-            graph.structures.blueprint.tiles.ptr[*known].lastUse = graph.structures.blueprint.travel;
+            graph.structures.blueprint.tiles.ptr[*known].lastUse = graph.structures.blueprint.sweep;
         } else {
             tiles.addTask(graph, key, site.node, null, over, site, segment);
         }
@@ -462,7 +462,7 @@ struct StructureHost {
             Graph* graph = builder.graph;
             double cell = cellLength();
             PenFrame frame = PenFrame.fromPen(pen);
-            graph.structures.strokes.add(graph.view, frame.node, Stroke.make(frame.frame, cells * cell, cast(float)(fromRadius * cell), cast(float)(toRadius * cell), material, isLeafy));
+            graph.structures.addStroke(graph.view, PLACED_RECORD, frame.node, Stroke.make(frame.frame, cells * cell, cast(float)(fromRadius * cell), cast(float)(toRadius * cell), material, isLeafy));
         }
     }
 

@@ -6,7 +6,6 @@ sourcePaths "source"
 importPaths "source"
 dependency "mined:api" version="*"
 
-// All of Lua as one ImportC module: one copy of the C library's inline header functions.
 sourceFiles "source/bindings/lua.c"
 dflags "-betterC" "-checkaction=halt" "-P-Ilua" "-P-DLUA_USE_JUMPTABLE=0"
 dflags "-P-DLUA_USE_LINUX" platform="linux"

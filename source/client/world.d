@@ -1,6 +1,6 @@
 module client.world;
 
-import core.stdc.math : coshf, logf;
+import core.stdc.math : coshf, expf, logf, powf;
 import base.array : Array;
 import base.clock : PhaseTimes, nowMilliseconds, threadCpuMilliseconds;
 import base.numbers : higherOf, lowerOf;
@@ -29,6 +29,9 @@ enum float REBASE_DISTANCE = NODE_RADIUS + 1.0f;
 enum float REDERIVE_RADIUS = 6.0f;
 enum double TELEPORT_TRAVEL = 1.0e3;
 enum float RENDER_RADIUS = 8.0f;
+enum float FOG_VISIBILITY_THRESHOLD = 1e-3f;
+enum float FOG_LOAD_THRESHOLD = 1.0f / 256;
+enum float FOG_SHARPNESS = 4.0f;
 enum float FULL_RADIUS = 4.5f;
 enum float CAMERA_REACH = 2.0f;
 enum double STEP_BUDGET_MILLISECONDS = 5.0;
@@ -123,6 +126,10 @@ struct LocalWorld {
         return nearby[published].nodes.ptr[cameraNearbyIndex()].transform * cameraPosition.local;
     }
 
+    float loadRadius() const {
+        return fogReach(renderRadius) * powf(logf(1.0f / FOG_LOAD_THRESHOLD), 1.0f / FOG_SHARPNESS);
+    }
+
     void update(bool isUnbudgeted) {
         double start = nowMilliseconds();
         double end = start + STEP_BUDGET_MILLISECONDS;
@@ -142,7 +149,7 @@ struct LocalWorld {
         trackTravel();
         double found = nowMilliseconds();
         double foundCpu = threadCpuMilliseconds();
-        streamer.drive(graph, cachedNodes, cameraPosition, cameraInNearbyFrame(), renderRadius, nearbyVersion, isUnbudgeted, phaseDeadline(isUnbudgeted, end - phases.evict.lastMs, STREAMER_LEAST_MILLISECONDS));
+        streamer.drive(graph, cachedNodes, cameraPosition, cameraInNearbyFrame(), loadRadius(), nearbyVersion, isUnbudgeted, phaseDeadline(isUnbudgeted, end - phases.evict.lastMs, STREAMER_LEAST_MILLISECONDS));
         double streamed = nowMilliseconds();
         double streamedCpu = threadCpuMilliseconds();
         evict();
@@ -187,9 +194,7 @@ struct LocalWorld {
     void trackTravel() {
         Point!float camera = cameraInNearbyFrame() * Point!float.origin();
         if (trackedVersion == nearbyVersion) {
-            float moved = trackedCamera.distance(camera);
-            streamer.travel += moved;
-            graph.structures.blueprint.travel += moved;
+            streamer.travel += trackedCamera.distance(camera);
         } else {
             streamer.travel += NEARBY_PADDING;
         }
@@ -256,7 +261,7 @@ struct LocalWorld {
     }
 
     float rebuildDistance() const {
-        return renderRadius - radiusCut + NEARBY_PADDING;
+        return loadRadius() - radiusCut + NEARBY_PADDING;
     }
 
     void cutRadius(double traveled) {
@@ -265,7 +270,7 @@ struct LocalWorld {
         } else if (traveled < NEARBY_REBUILD_DISTANCE / 2) {
             radiusCut -= REBUILD_GROWTH;
         }
-        radiusCut = higherOf(lowerOf(radiusCut, renderRadius - FULL_RADIUS), 0.0f);
+        radiusCut = higherOf(lowerOf(radiusCut, loadRadius() - FULL_RADIUS), 0.0f);
     }
 
     void startNext(Point!float camera) {
@@ -402,6 +407,14 @@ struct LocalWorld {
             return true;
         }
     }
+}
+
+float fogReach(float renderRadius) {
+    return renderRadius / powf(logf(1.0f / FOG_VISIBILITY_THRESHOLD), 1.0f / FOG_SHARPNESS);
+}
+
+float fogVisibility(float distance, float renderRadius) {
+    return expf(-powf(distance / fogReach(renderRadius), FOG_SHARPNESS));
 }
 
 bool isFarFromOrigin(Motion!float camera) {

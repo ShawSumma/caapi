@@ -14,7 +14,6 @@ local function look_down(world)
   return below
 end
 
--- Sinks until the ground is within reach, then rises the same number of steps back to the flight altitude.
 local function ground_below(world)
   local most_steps = math.ceil(MOST_PROBE_DEPTH / (walk.NOCLIP_SPEED * world:timestep()))
   local below = look_down(world)
@@ -34,7 +33,6 @@ local function ground_below(world)
   return below, steps * walk.NOCLIP_SPEED * world:timestep()
 end
 
--- Noclip, because the world may build a tower in the way and fly mode would climb its wall.
 return function(world)
   world:live()
   world:look(AWAY_FROM_TREE_DEGREES, 0)

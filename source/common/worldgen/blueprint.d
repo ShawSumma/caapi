@@ -5,6 +5,7 @@ import base.hashmap : FIBONACCI_MULTIPLIER, HashMap;
 import base.numbers : higherOf, lowerOf;
 import common.graph : Graph, NodeId;
 import common.material : MATERIAL_COUNT;
+import common.worldgen.strokes : Stroke, StrokeRun;
 import common.worldgen.structure : CanonicalSite, ClaimKey, ColumnSpot, LineTransform, PAINT_REACH, SiteFrame, SlotTouch, addPendingTouch, aroundEdge, canonicalOf, edgeCells, isEndless, seedTouch, walkedTouch;
 import geometry.honeycomb : Corner, FACE_COUNT, Face;
 import plugins.api.api : Material;
@@ -105,13 +106,19 @@ struct LineRun {
     uint count;
 }
 
-struct PaintedBrushes {
+struct Painted {
     Array!Brush brushes;
     Array!LineRun runs;
+    Array!Stroke strokes;
+    Array!StrokeRun strokeRuns;
+    Array!NodeId reached;
 
     void release() {
         brushes.release();
         runs.release();
+        strokes.release();
+        strokeRuns.release();
+        reached.release();
     }
 }
 
@@ -120,13 +127,11 @@ struct RunRef {
     uint run;
 }
 
-// A painted tile. One that drew with the pen is kept, since its strokes stay with the nodes they reach.
 struct TileRecord {
-    PaintedBrushes painted;
+    Painted painted;
     NodeId face;
-    double lastUse = 0;
+    uint lastUse;
     bool isDropped;
-    bool isKept;
 }
 
 struct SiteLine {
@@ -165,7 +170,8 @@ enum PaintResult : ubyte {
 struct Blueprint {
     Array!LineSpec lines;
     Array!(Array!RunRef) runsOn;
-    PaintedBrushes placed;
+    Array!uint linePins;
+    Painted placed;
     Array!TileRecord tiles;
     Array!RouteStop route;
     Array!Material materials;
@@ -174,7 +180,7 @@ struct Blueprint {
     HashMap!(LineEdge, bool) touchedEdges;
     HashMap!(ClaimKey, bool) claims;
     RouteStop entrance;
-    double travel = 0;
+    uint sweep;
     uint brushCount;
     uint claimCount;
     uint restoredTiles;
@@ -194,6 +200,7 @@ struct Blueprint {
             uint index = cast(uint) lines.length;
             lines.append(spec);
             runsOn.append(Array!RunRef.init);
+            linePins.append(0);
             lineIndex.insert(key, index);
             return index;
         } else {
@@ -203,11 +210,11 @@ struct Blueprint {
     }
 
     uint addTile(NodeId face) {
-        tiles.append(TileRecord(PaintedBrushes.init, face, travel, false, false));
+        tiles.append(TileRecord(Painted.init, face, sweep, false));
         return cast(uint)(tiles.length - 1);
     }
 
-    ref inout(PaintedBrushes) paintedBy(uint record) inout return {
+    ref inout(Painted) paintedBy(uint record) inout return {
         if (record == PLACED_RECORD) {
             return placed;
         } else {
@@ -221,8 +228,18 @@ struct Blueprint {
         return first;
     }
 
+    uint addStroke(uint record, NodeId node, Stroke stroke) {
+        Painted* painted = &paintedBy(record);
+        if (painted.strokeRuns.length == 0 || painted.strokeRuns.ptr[painted.strokeRuns.length - 1].node != node) {
+            painted.strokeRuns.append(StrokeRun(node, cast(uint) painted.strokes.length, 0));
+        }
+        painted.strokeRuns.ptr[painted.strokeRuns.length - 1].count += 1;
+        painted.strokes.append(stroke);
+        return cast(uint)(painted.strokeRuns.length - 1);
+    }
+
     void addBrush(uint record, uint line, Brush brush) {
-        PaintedBrushes* painted = &paintedBy(record);
+        Painted* painted = &paintedBy(record);
         if (painted.runs.length == 0 || painted.runs.ptr[painted.runs.length - 1].line != line) {
             painted.runs.append(LineRun(line, cast(uint) painted.brushes.length, 0));
             runsOn.ptr[line].append(RunRef(record, cast(uint)(painted.runs.length - 1)));
@@ -248,7 +265,7 @@ struct Blueprint {
 
     void collectBrushes(uint line, int level, ref Array!Brush into) const {
         foreach (listed; runsOn.ptr[line].slice()) {
-            const(PaintedBrushes)* painted = &paintedBy(listed.record);
+            const(Painted)* painted = &paintedBy(listed.record);
             LineRun run = painted.runs.ptr[listed.run];
             foreach (brush; painted.brushes.ptr[run.first .. run.first + run.count]) {
                 if (edgeOf(brush.box.low[2], dimension) <= level && edgeOf(brush.box.high[2], dimension) >= level) {
@@ -297,6 +314,7 @@ struct Blueprint {
         }
         lines.release();
         runsOn.release();
+        linePins.release();
         placed.release();
         tiles.release();
         route.release();

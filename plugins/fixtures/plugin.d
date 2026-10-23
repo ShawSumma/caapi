@@ -17,7 +17,6 @@ enum uint TOP_FLOOR = 0;
 enum int SHOWCASE_FRONT = 4;
 immutable bool ROUTED = true;
 
-// The kinds, none of which rise by chance, with their connectors routed.
 Kinds routedKinds(const(Api)* api) {
     return addKinds(api, 0, 0, &ROUTED);
 }
@@ -34,15 +33,12 @@ void risenBackrooms(const(Api)* api, Site site, const(void)* data) {
     api.openHorosphere(api, site, routedKinds(api).backrooms, RISE_EDGES);
 }
 
-// Backrooms at the root with a city rising from them, reached from the lobby under the city's foot.
 void stacked(const(Api)* api, Site site, const(void)* data) {
     Kinds kinds = routedKinds(api);
     api.rooted(api, kinds.backrooms);
     api.openHorosphere(api, site, kinds.city, RISE_EDGES);
 }
 
-// A city rising from the ground and a second rising from the first, a few edges along it, where the two planes are
-// far enough apart; only the second's connector is routed, and the spawn stands on the first by its foot.
 void chain(const(Api)* api, Site site, const(void)* data) {
     Kinds kinds = addKinds(api, 0, 0, &UNROUTED);
     uint upper = api.horosphere(api, 0, HorosphereForm.bare, Tag.city, &cityTile, &ROUTED, bool.sizeof);

@@ -4,9 +4,11 @@ import core.stdc.stdlib : calloc, free, malloc;
 import base.array : Array;
 import base.numbers : higherOf, lowerOf;
 import common.graph : Graph;
-import common.worldgen.blueprint : Brush, CellBox, LineSpec, Paint;
+import common.worldgen.blueprint : Brush, CellBox, LineSpec, Paint, Painted;
+import common.worldgen.strokes : Stroke, StrokeRun;
 import common.worldgen.structure : ColumnChunk, LineTouch, isOnTouch, isTouchInRange;
-import geometry.honeycomb : CORNER_COUNT, Corner;
+import geometry.honeycomb : CORNER_COUNT, Corner, NODE_RADIUS;
+import geometry.lorentz : Vec4;
 import plugins.api.api : Material;
 
 enum uint MAX_LINES_AT_CORNER = 3;
@@ -34,10 +36,12 @@ struct BuildingPlan {
     Array!PlanLine lines;
     Array!Brush brushes;
     Array!Material materials;
+    Array!Stroke strokes;
     ubyte dimension;
 
     static BuildingPlan make(ref const Graph graph, uint slot) {
-        BuildingPlan plan = BuildingPlan(Array!PlanLine.init, Array!Brush.init, Array!Material.init, graph.layout.dimension);
+        BuildingPlan plan;
+        plan.dimension = graph.layout.dimension;
         foreach (touch; graph.structures.touchesAt(slot)) {
             LineSpec spec = graph.structures.blueprint.lines.ptr[touch.line];
             if (isTouchInRange(touch, spec)) {
@@ -47,6 +51,7 @@ struct BuildingPlan {
             }
         }
         plan.materials.appendAll(graph.structures.blueprint.materials.slice());
+        graph.collectStrokes(slot, plan.strokes);
         return plan;
     }
 
@@ -54,6 +59,23 @@ struct BuildingPlan {
         lines.release();
         brushes.release();
         materials.release();
+        strokes.release();
+    }
+}
+
+void collectStrokes(ref const Graph graph, uint slot, ref Array!Stroke into) {
+    foreach (reach; graph.structures.strokes.reachesAt(graph.idAt(slot))) {
+        const(Painted)* painted = &graph.structures.blueprint.paintedBy(reach.record);
+        StrokeRun run = painted.strokeRuns.ptr[reach.run];
+        Vec4!float center = (reach.motion.inverse() * Vec4!double.origin()).as!float();
+        foreach (stroke; painted.strokes.ptr[run.first .. run.first + run.count]) {
+            if (stroke.mayBeWithin(center, NODE_RADIUS)) {
+                Stroke moved = stroke.moved(reach.motion);
+                if (moved.isWithin(Vec4!float.origin(), NODE_RADIUS)) {
+                    into.append(moved);
+                }
+            }
+        }
     }
 }
 
@@ -87,12 +109,14 @@ struct BrushUse {
 struct Building {
     Paint** chunkPaints;
     Array!Material materials;
+    Array!Stroke strokes;
     NodeCells cells;
 
     static Building make(ref const BuildingPlan plan) {
         Building building;
         building.cells = NodeCells(plan.dimension);
         building.materials.appendAll(plan.materials.slice());
+        building.strokes.appendAll(plan.strokes.slice());
         building.stamp(plan);
         return building;
     }
@@ -166,6 +190,7 @@ struct Building {
             chunkPaints = null;
         }
         materials.release();
+        strokes.release();
     }
 
     Material materialAt(Corner corner, int[3] cell, Material existing) const {

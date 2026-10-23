@@ -1,6 +1,6 @@
 module client.graphics.renderer;
 
-import core.stdc.math : logf, powf, sinhf;
+import core.stdc.math : powf, sinhf;
 import bindings.platform : VK_ACCESS_HOST_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_ERROR_OUT_OF_DATE_KHR, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_BIND_POINT_GRAPHICS, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_QUERY_RESULT_64_BIT, VK_QUERY_TYPE_TIMESTAMP, VK_SHADER_STAGE_VERTEX_BIT, VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, VK_STRUCTURE_TYPE_MEMORY_BARRIER, VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, VK_STRUCTURE_TYPE_SUBMIT_INFO, VK_SUBOPTIMAL_KHR, VK_SUBPASS_CONTENTS_INLINE, VK_SUCCESS, VkBufferImageCopy, VkClearValue, VkCommandBuffer, VkCommandBufferBeginInfo, VkDescriptorSet, VkDevice, VkDeviceSize, VkDrawIndirectCommand, VkExtent2D, VkExtent3D, VkImageSubresourceLayers, VkMemoryBarrier, VkPhysicalDevice, VkPhysicalDeviceProperties, VkPipelineStageFlags, VkPresentInfoKHR, VkQueryPool, VkQueryPoolCreateInfo, VkRect2D, VkRenderPassBeginInfo, VkResult, VkSubmitInfo, VkViewport, vkAcquireNextImageKHR, vkBeginCommandBuffer, vkCmdBeginRenderPass, vkCmdBindDescriptorSets, vkCmdBindPipeline, vkCmdCopyImageToBuffer, vkCmdDrawIndirect, vkCmdEndRenderPass, vkCmdNextSubpass, vkCmdPipelineBarrier, vkCmdPushConstants, vkCmdResetQueryPool, vkCmdSetScissor, vkCmdSetViewport, vkCmdWriteTimestamp, vkCreateQueryPool, vkDestroyQueryPool, vkDeviceWaitIdle, vkEndCommandBuffer, vkGetPhysicalDeviceProperties, vkGetQueryPoolResults, vkQueuePresentKHR, vkQueueSubmit, vkResetCommandBuffer, vkResetFences, vkWaitForFences;
 import base.clock : NANOSECONDS_PER_MILLISECOND, nowMilliseconds;
 import base.numbers : RADIANS_PER_DEGREE, lowerOf;
@@ -17,7 +17,7 @@ import client.graphics.pipeline : GpuBuffer, VULKAN_TRUE, expectSuccess;
 import client.graphics.voxels.cull : CullPipeline;
 import client.graphics.voxels.meshes : ChunkMeshes, meshJob;
 import client.graphics.voxels.surface : COLOR_CHANNELS, CommonUniforms, FACES_BINDING, LayoutPush, SurfacePipeline, TRANSFORMS_BINDING;
-import client.world : LocalWorld;
+import client.world : FOG_SHARPNESS, LocalWorld, fogReach;
 import common.node : ChunkLayout;
 import common.raycast.graph : GraphCastHit;
 import common.traversal : NOT_COLLECTED;
@@ -26,8 +26,6 @@ import geometry.lorentz : Normal;
 
 enum Angle HALF_VERTICAL_FOV = Angle(cast(float)(45 * RADIANS_PER_DEGREE));
 enum float NEAR_PLANE = 1.0e-4f;
-enum float FOG_VISIBILITY_THRESHOLD = 1e-3f;
-enum float FOG_SHARPNESS = 4.0f;
 enum float CLEAR_DEPTH = 0.0f;
 enum ulong NO_TIMEOUT = ulong.max;
 enum double MESH_BUDGET_MILLISECONDS = 2.0;
@@ -200,7 +198,7 @@ struct Renderer {
             skyLinear,
             [frustum.tanHalfWidth, frustum.tanHalfHeight],
             kleinDepthScale(NEAR_PLANE),
-            world.renderRadius / powf(logf(1.0f / FOG_VISIBILITY_THRESHOLD), 1.0f / FOG_SHARPNESS),
+            fogReach(world.renderRadius),
             FOG_SHARPNESS,
             parityOf(determinant(matrixMultiply(projection, cameraInverse))),
             sinhf(CUBE_RADIUS),

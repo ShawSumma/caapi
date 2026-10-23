@@ -11,13 +11,13 @@ import common.node : ChunkLayout, Occupancy, Voxels, cellIndex;
 import common.view : GraphView;
 import common.worldgen.building : Building;
 import common.worldgen.climate : Climate, CubeClimate, NodeClimate, SNOW_WARMTH, UniformRock, WATER_LEVEL, groundAt, isDesert, openAt, uniformRock;
-import common.worldgen.plane : Plane;
-import common.worldgen.horospheres : Fill, Ground, Grounds, ROOT, groundsAt;
+import common.worldgen.plane : Plane, PlaneMeasure, chunkPoint, cubePoint;
+import common.worldgen.horospheres : Fill, Ground, Grounds, MAX_GROUNDS, ROOT, groundsAt;
 import common.worldgen.strokes : Stroke;
 import common.worldgen.structure : firstSideAmong, ringFaces;
 import geometry.cube : CELL_STEPS;
 import geometry.honeycomb : CUBE_GRID_RADIUS, CUBE_RADIUS, Corner, FACE_COUNT, Face, cubeCenter, cubeToNode;
-import geometry.lorentz : Mat4, Vec4;
+import geometry.lorentz : Mat4, Point, Vec4;
 import plugins.api.api : Material;
 
 enum WorldgenKind : ubyte {
@@ -287,7 +287,7 @@ struct ChunkParams {
         NodeState state = view.stateAt(slot);
         return ChunkParams(
             structure.building,
-            strokesNear(view.strokesAt(slot), chunk),
+            strokesNear(strokesIn(structure.building), chunk),
             view.idAt(slot).spice(),
             view.groundsAt(slot),
             CubeClimate.around(view, slot, chunk),
@@ -318,17 +318,6 @@ struct ChunkParams {
         return index == ROOT && slopeTangent != 0;
     }
 
-    // Whether a point belongs to a ground: every point belongs to the horosphere whose plane it is nearest, so one
-    // horosphere's terrain never reaches into the space of another.
-    bool isNearest(uint index, float[3] coord) const {
-        float own = ground(index).surface.distanceToChunk(chunk, coord);
-        uint other = 0;
-        while (other < grounds.count && (other == index || ground(other).surface.distanceToChunk(chunk, coord) >= own)) {
-            other += 1;
-        }
-        return other == grounds.count;
-    }
-
     bool isNearestThroughout(uint index) const {
         float highest = altitudes(index).high;
         uint other = 0;
@@ -338,18 +327,18 @@ struct ChunkParams {
         return other == grounds.count;
     }
 
-    float groundLevelAt(uint index, float[3] coord) const {
-        float height = ground(index).surface.distanceToChunk(chunk, coord);
+    float levelFrom(uint index, float height, Point!float point) const {
         if (!isTilted(index)) {
             return height;
         } else {
-            float across = asinhf(sinhf(reference.distanceToChunk(chunk, coord)) / coshf(height));
+            float across = asinhf(sinhf(reference.distanceTo(point)) / coshf(height));
             return atanf(sinhf(height)) + slopeTangent * across;
         }
     }
 
     ValueRange groundRange(uint index) const {
-        float center = groundLevelAt(index, [0.5f, 0.5f, 0.5f]);
+        Point!float middle = chunkPoint(chunk, [0.5f, 0.5f, 0.5f]);
+        float center = levelFrom(index, ground(index).surface.distanceTo(middle), middle);
         float radius = CUBE_GRID_RADIUS;
         if (isTilted(index)) {
             radius = radius * slopeSecant;
@@ -419,6 +408,10 @@ struct ChunkParams {
         }
     }
 
+    bool isUniformlyFilled(Occupancy predicted) const {
+        return predicted == Occupancy.empty || (predicted == Occupancy.full && grounds.count == 1);
+    }
+
     UniformRock provenUniformRock(ValueRange altitudes) const {
         return uniformRock(climate.lowest.relief - altitudes.high, climate.highest.relief - altitudes.low, climate.lowest, climate.highest);
     }
@@ -442,6 +435,14 @@ struct ChunkParams {
         generator.generateStructure();
         generator.voxels.compress(dimension);
         return GeneratedVoxels(generator.voxels, generator.hasDeferredMaterials);
+    }
+}
+
+const(Stroke)[] strokesIn(const(Building)* building) {
+    if (building is null) {
+        return null;
+    } else {
+        return building.strokes.slice();
     }
 }
 
@@ -480,6 +481,35 @@ struct TerrainGenerator {
     SplitMix rng;
     Yield yield;
     bool hasDeferredMaterials;
+    bool hasCells;
+    Mat4!float toNode;
+    PlaneMeasure[MAX_GROUNDS] surfaces;
+    float[ubyte.max] centers;
+
+    void prepareCells() {
+        if (!hasCells) {
+            toNode = params.chunk.cubeToNode;
+            foreach (index; 0 .. params.grounds.count) {
+                surfaces[index] = params.ground(index).surface.measure();
+            }
+            foreach (cell; 0 .. params.dimension) {
+                centers[cell] = params.layout.cellCenterAlong(cell);
+            }
+            hasCells = true;
+        }
+    }
+
+    float[3] centerOf(uint x, uint y, uint z) const {
+        return [centers[x], centers[y], centers[z]];
+    }
+
+    bool isNearest(uint ground, float own, Point!float point) const {
+        uint other = 0;
+        while (other < params.grounds.count && (other == ground || surfaces[other].distanceTo(point) >= own)) {
+            other += 1;
+        }
+        return other == params.grounds.count;
+    }
 
     void generateTerrain(uint ground) {
         ubyte dimension = params.dimension;
@@ -493,12 +523,18 @@ struct TerrainGenerator {
                 voxels = Voxels.filled(DEFERRED_STAND_IN_MATERIAL);
                 hasDeferredMaterials = true;
             } else {
+                prepareCells();
                 foreach (x; 0 .. dimension) {
                     foreach (y; 0 .. dimension) {
                         foreach (z; 0 .. dimension) {
-                            float[3] center = params.layout.cellCenter([x, y, z]);
-                            if (isAlone || params.isNearest(ground, center)) {
-                                generateTerrainVoxel(ground, center, cellIndex(dimension, x, y, z));
+                            size_t index = cellIndex(dimension, x, y, z);
+                            if (voxels.at(index) == Material.none) {
+                                float[3] center = centerOf(x, y, z);
+                                Point!float point = cubePoint(toNode, center);
+                                float altitude = surfaces[ground].distanceTo(point);
+                                if (isAlone || isNearest(ground, altitude, point)) {
+                                    generateTerrainVoxel(center, altitude, index);
+                                }
                             }
                         }
                     }
@@ -529,10 +565,12 @@ struct TerrainGenerator {
         if (range.high < 0) {
             fillEmpty(Material.dirt);
         } else if (range.low <= 0) {
+            prepareCells();
             foreach (x; 0 .. dimension) {
                 foreach (y; 0 .. dimension) {
                     foreach (z; 0 .. dimension) {
-                        if (params.groundLevelAt(ground, params.layout.cellCenter([x, y, z])) < 0) {
+                        Point!float point = cubePoint(toNode, centerOf(x, y, z));
+                        if (params.levelFrom(ground, surfaces[ground].distanceTo(point), point) < 0) {
                             setIfEmpty([x, y, z], Material.dirt);
                         }
                     }
@@ -571,12 +609,11 @@ struct TerrainGenerator {
                     near.append(stroke);
                 }
             }
-            Mat4!float toNode = params.chunk.cubeToNode;
+            prepareCells();
             foreach (x; 0 .. dimension) {
                 foreach (y; 0 .. dimension) {
                     foreach (z; 0 .. dimension) {
-                        float[3] cube = params.layout.cellCenter([x, y, z]);
-                        Vec4!float point = (toNode * Vec4!float([cube[0], cube[1], cube[2], 1.0f])).toPoint().v;
+                        Vec4!float point = cubePoint(toNode, centerOf(x, y, z)).v;
                         size_t index = cellIndex(dimension, x, y, z);
                         Material existing = voxels.at(index);
                         Material material = existing;
@@ -601,20 +638,17 @@ struct TerrainGenerator {
         return SplitMix(params.nodeSpice ^ (cast(ulong) params.chunk << CHUNK_ROLL_SHIFT) ^ index).roll();
     }
 
-    void generateTerrainVoxel(uint ground, float[3] center, size_t index) {
+    void generateTerrainVoxel(float[3] center, float altitude, size_t index) {
         Climate here = params.climate.at(center);
-        float altitude = params.ground(ground).surface.distanceToChunk(params.chunk, center);
         float depth = here.relief - altitude;
-        if (voxels.at(index) == Material.none) {
-            Material material;
-            if (depth >= 0.0f) {
-                material = groundAt(depth, here);
-            } else {
-                material = openAt(altitude, here);
-            }
-            if (material != Material.none) {
-                voxels.toDense(params.dimension)[index] = material;
-            }
+        Material material;
+        if (depth >= 0.0f) {
+            material = groundAt(depth, here);
+        } else {
+            material = openAt(altitude, here);
+        }
+        if (material != Material.none) {
+            voxels.toDense(params.dimension)[index] = material;
         }
     }
 
@@ -637,16 +671,17 @@ struct TerrainGenerator {
 
     void placeTree(uint ground, int[3] base, TreeKind kind) {
         ubyte dimension = params.dimension;
-        int upDirection = params.ground(ground).surface.risingNeighbor(params.chunk, params.layout, base);
-        int[3] up = CELL_STEPS[upDirection];
-        bool isBaseEmpty = voxels.at(cellIndex(dimension, base[0], base[1], base[2])) == Material.none;
-        bool isAboveEmpty = voxels.at(cellIndex(dimension, base[0] + up[0], base[1] + up[1], base[2] + up[2])) == Material.none;
-        if (isBaseEmpty && isAboveEmpty && isGroundFor(kind, voxels.at(cellIndex(dimension, base[0] - up[0], base[1] - up[1], base[2] - up[2])))) {
-            TreeSpecies species = TREE_SPECIES[kind];
-            ulong roll = rng.next();
-            TreeFrame frame = TreeFrame.fromUp(base, upDirection, cast(int)(species.minTrunk + roll % species.trunkChoices), species.shape, species.reach);
-            if (frame.fitsWithin(dimension)) {
-                growTree(frame, species);
+        if (voxels.at(cellIndex(dimension, base[0], base[1], base[2])) == Material.none) {
+            int upDirection = params.ground(ground).surface.risingNeighbor(params.chunk, params.layout, base);
+            int[3] up = CELL_STEPS[upDirection];
+            bool isAboveEmpty = voxels.at(cellIndex(dimension, base[0] + up[0], base[1] + up[1], base[2] + up[2])) == Material.none;
+            if (isAboveEmpty && isGroundFor(kind, voxels.at(cellIndex(dimension, base[0] - up[0], base[1] - up[1], base[2] - up[2])))) {
+                TreeSpecies species = TREE_SPECIES[kind];
+                ulong roll = rng.next();
+                TreeFrame frame = TreeFrame.fromUp(base, upDirection, cast(int)(species.minTrunk + roll % species.trunkChoices), species.shape, species.reach);
+                if (frame.fitsWithin(dimension)) {
+                    growTree(frame, species);
+                }
             }
         }
     }

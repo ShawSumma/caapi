@@ -7,7 +7,6 @@ import layout = plugins.rooms.layout;
 import plugins.horospheres.tree : segment;
 import plugins.turtle.turtle : Turtle;
 
-// The kinds of horosphere, told apart where one meets another.
 enum Tag : uint {
     wild,
     city,
@@ -26,12 +25,10 @@ bool isRoutedBy(const(void)* data) {
     return *cast(const(bool)*) data;
 }
 
-// The root has no foot and rose from nothing.
 bool hasRisen(ref const Risen risen) {
     return risen.edges > 0;
 }
 
-// Where a tower meets the surface of a kind: terrain where it was measured, the others at their own slabs.
 Floor floorOf(uint tag, int measured) {
     if (tag == Tag.city) {
         return slabFloor(blocks.CITY_GROUND);
@@ -76,7 +73,6 @@ void treeTile(const(Api)* api, Site base, const(Risen)* risen, const(void)* data
     segment(Turtle(api, base), risen.segment);
 }
 
-// Every kind, the planes rising at odds per vertex and trees, which never end, at their own.
 Kinds addKinds(const(Api)* api, double odds, double treeOdds, const(bool)* isRouted) {
     Kinds kinds;
     kinds.wild = api.horosphere(api, odds, HorosphereForm.terrain, Tag.wild, &wildTile, isRouted, bool.sizeof);

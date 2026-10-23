@@ -14,7 +14,7 @@ import common.worldgen.blueprint : Blueprint;
 import common.worldgen.building : Building, BuildingPlan;
 import common.worldgen.generation : NodeState, Worldgen;
 import common.worldgen.horospheres : Fill, Horospheres;
-import common.worldgen.store : StructureStore;
+import common.worldgen.store : StructureStore, unpin;
 import common.worldgen.structure : PAINT_REACH, anchorSlotOf, finalizeStructure;
 import geometry.honeycomb : BEYOND_TOLERANCE, FACE_COUNT, Face, adjacentFaces, faceBit, mirror, normal;
 import geometry.lorentz : Point;
@@ -227,6 +227,7 @@ struct Graph {
         chunks.blocks.note(slot, 1);
         structures.nodes.note(slot, 1);
         horospheres.nodes.note(slot, 1);
+        horospheres.rises.note(slot, 1);
         liveCount -= 1;
     }
 
@@ -238,6 +239,7 @@ struct Graph {
         chunks.blocks.discardNoted(freeSlots, slotCount, 1, calls);
         structures.nodes.discardNoted(freeSlots, slotCount, 1, calls);
         horospheres.nodes.discardNoted(freeSlots, slotCount, 1, calls);
+        horospheres.rises.discardNoted(freeSlots, slotCount, 1, calls);
     }
 
     uint ensureNeighborSlot(uint slot, Face face) {
@@ -345,7 +347,7 @@ struct Graph {
             this.finalizeStructure(slot);
             structures.at(slot).isFinished = true;
         }
-        return structures.at(slot).isInStructure;
+        return structures.at(slot).needsBuilding();
     }
 
     void paintAhead(const(uint)[] candidates, Executor executor) {
@@ -371,12 +373,18 @@ struct Graph {
     const(Building)* ensureBuildingAt(uint slot) {
         if (structures.buildingAt(slot) is null) {
             ensureStructureAt(slot);
-            restoreBrushes(slot);
-            BuildingPlan plan = BuildingPlan.make(this, slot);
+            BuildingPlan plan = planBuilding(slot);
             structures.storeBuilding(slot, Building.make(plan));
             plan.release();
         }
         return structures.buildingAt(slot);
+    }
+
+    BuildingPlan planBuilding(uint slot) {
+        restoreBrushes(slot);
+        BuildingPlan plan = BuildingPlan.make(this, slot);
+        this.unpin(slot);
+        return plan;
     }
 
     void release() {

@@ -11,11 +11,11 @@ import base.splitmix : unitOf;
 import common.graph : Graph, NO_SLOT, NodeId, ParentList;
 import common.position : Position;
 import common.traversal : NearbyNode, NearbyScratch;
-import common.view : GraphView;
+import common.view : GraphView, SlotCorner;
 import common.worldgen.blueprint : BlueprintBuilder, CellBox, EVERY_HEIGHT, PaintResult;
 import common.worldgen.climate : Climate, CubeClimate, NodeClimate, RELIEF_BOUND, RELIEF_SLACK;
 import common.worldgen.generation : ChunkParams, GeneratedVoxels, NodeState, StructureWorld, Worldgen;
-import common.worldgen.plane : Plane, logCosh;
+import common.worldgen.plane : Plane, PlaneMeasure, logCosh;
 import common.worldgen.structure : ClaimKey, ColumnSpot, GROUND_RING, SiteFrame, atLevel, columnPoint, edgeCells, edgeLength, forwarded, groundRing, groundSite, isCanonicalMatch, isSamePoint, pathBetween, rootSite, rootedCorner, sideAxis, siteHash, siteOrigin, sitePlacement, siteToNode, turned;
 import geometry.honeycomb : CORNER_COUNT, Corner, FACE_COUNT, FACE_DISTANCE, Face, NODE_RADIUS, across, cornerToNode, cubeScale, faces, mirror, nodeToCorner;
 import geometry.lorentz : Motion, Point, Vec4;
@@ -40,7 +40,6 @@ enum double APART_TOLERANCE = 1e-3;
 enum float GROUND_LIFT_FACTOR = 0.1f;
 enum float DESCENT_ALTITUDE = 2.0f;
 enum float DESCENT_TOLERANCE = 1e-3f;
-// How far from its column anything an upright horosphere's tiles draw may reach, in edges.
 enum float COLUMN_REACH_EDGES = 1.5f;
 enum ubyte TEST_DIMENSION = 12;
 enum float TEST_RADIUS = 3.0f;
@@ -55,8 +54,6 @@ immutable int[3][3] TEST_PAINTED_CELLS = [
     [6, 9, 40],
 ];
 
-// What fills the space below a horosphere's surface: nothing, the flat dirt under a plane or structure world, or
-// terrain.
 enum Fill : ubyte {
     none,
     flat,
@@ -69,14 +66,11 @@ struct HorosphereKind {
     uint tag;
 }
 
-// What rises from one vertex of a horosphere: a kind, counted from one, and how many edges up a plane stands.
 struct Rise {
     ubyte kind;
     ubyte edges;
 }
 
-// One horosphere other than the root's. A plane faces back down at what it rose from; an upright one has no plane
-// of its own and stands on its foot's column, kept as the two planes that meet along it.
 struct Horosphere {
     Plane plane;
     Plane[2] column;
@@ -102,8 +96,12 @@ struct HorosphereRef {
     Plane[2] column;
     uint horosphere;
 
-    HorosphereRef across(Face side) const {
-        return HorosphereRef(plane.reflectAcross(side), [column[0].reflectAcross(side), column[1].reflectAcross(side)], horosphere);
+    HorosphereRef across(Face side, bool isUpright) const {
+        Plane[2] carried = column;
+        if (isUpright) {
+            carried = [column[0].reflectAcross(side), column[1].reflectAcross(side)];
+        }
+        return HorosphereRef(plane.reflectAcross(side), carried, horosphere);
     }
 }
 
@@ -169,14 +167,19 @@ struct NodeHorospheres {
     bool isKnown;
 }
 
+struct NodeRises {
+    Rise[CORNER_COUNT] rises;
+    uint known;
+}
+
 struct Horospheres {
     Array!HorosphereKind kinds;
     Array!Horosphere horospheres;
     Array!uint freeHorospheres;
     Slab!NodeHorospheres nodes;
+    Slab!NodeRises rises;
     RunPool!HorosphereRef refs;
     HashMap!(CornerKey, Rise) forced;
-    HashMap!(CornerKey, Rise) choices;
     HashMap!(CornerKey, uint) horosphereOf;
     HashMap!(GroundKey, RisingList) risingFrom;
     Array!uint rising;
@@ -185,6 +188,21 @@ struct Horospheres {
 
     void ensureSlots(uint count) {
         nodes.ensure(count);
+        rises.ensure(count);
+    }
+
+    bool hasRise(uint slot, Corner corner) const {
+        return (rises.at(slot).known & (1u << corner)) != 0;
+    }
+
+    Rise riseAt(uint slot, Corner corner) const {
+        return rises.at(slot).rises[corner];
+    }
+
+    void storeRise(uint slot, Corner corner, Rise rise) {
+        NodeRises* node = rises.at(slot);
+        node.rises[corner] = rise;
+        node.known |= 1u << corner;
     }
 
     ref const(Horosphere) horosphere(uint index) const {
@@ -262,6 +280,7 @@ struct Horospheres {
         }
         refs.release(nodes.at(slot).run);
         *nodes.at(slot) = NodeHorospheres.init;
+        *rises.at(slot) = NodeRises.init;
     }
 
     const(uint)[] knownRising(GroundKey key) const {
@@ -317,9 +336,9 @@ struct Horospheres {
         horospheres.release();
         freeHorospheres.release();
         nodes.release();
+        rises.release();
         refs.release();
         forced.release();
-        choices.release();
         horosphereOf.release();
         risingFrom.release();
         rising.release();
@@ -345,9 +364,9 @@ void applyDiscoveries(ref Graph target, ref const GraphView view) {
             target.horospheres.storeRising(key, view.knownRising(key));
         }
     }
-    foreach (key; view.choiceKeys.slice()) {
-        if (target.horospheres.choices.find(key) is null) {
-            target.horospheres.choices.insert(key, *view.knownChoice(key));
+    foreach (at; view.choiceKeys.slice()) {
+        if (!target.horospheres.hasRise(at.slot, at.corner)) {
+            target.horospheres.storeRise(at.slot, at.corner, view.choiceAt(at));
         }
     }
 }
@@ -389,9 +408,11 @@ void discoverHorospheres(ref GraphView view, uint slot, ref Array!HorosphereRef 
     ParentList parents = view.parents(slot);
     foreach (link; parents.links[0 .. parents.count]) {
         foreach (near; view.ensureHorospheresAt(link.slot)) {
-            HorosphereRef moved = near.across(link.side);
-            if (!found.contains(near.horosphere) && view.isNear(moved)) {
-                found.append(moved);
+            if (!found.contains(near.horosphere)) {
+                HorosphereRef moved = near.across(link.side, view.horospheres.isUpright(near.horosphere));
+                if (view.isNear(moved)) {
+                    found.append(moved);
+                }
             }
         }
     }
@@ -409,14 +430,16 @@ void discoverHorospheres(ref GraphView view, uint slot, ref Array!HorosphereRef 
 uint groundNodeOf(ref GraphView view, uint slot, uint horosphere) {
     uint current = slot;
     Vec4!double center = Vec4!double.origin();
-    Plane carried = view.planeOfHorosphereIn(horosphere, current);
+    Plane start = view.planeOfHorosphereIn(horosphere, current);
+    Plane carried = start;
     float altitude = fabsf(carried.distanceTo(Point!float.origin()));
     bool isDescending = altitude > DESCENT_ALTITUDE;
     while (isDescending) {
         Face lowest = Face.f0;
         float lowestAltitude = float.infinity;
+        PlaneMeasure measured = carried.measure();
         foreach (index; 0 .. FACE_COUNT) {
-            float candidate = fabsf(carried.distanceTo(mirror(cast(Face) index) * Point!float.origin()));
+            float candidate = fabsf(measured.distanceTo(mirror(cast(Face) index) * Point!float.origin()));
             if (candidate < lowestAltitude) {
                 lowestAltitude = candidate;
                 lowest = cast(Face) index;
@@ -431,7 +454,10 @@ uint groundNodeOf(ref GraphView view, uint slot, uint horosphere) {
             isDescending = altitude > DESCENT_ALTITUDE;
         }
     }
-    Plane plane = view.planeOfHorosphereIn(horosphere, current);
+    Plane plane = start;
+    if (current != slot) {
+        plane = view.planeOfHorosphereIn(horosphere, current);
+    }
     Vec4!double normal = plane.scaledNormal.as!double();
     normal = normal * (1.0 / sqrt(normal.minkowski(normal)));
     double along = center.minkowski(normal);
@@ -466,7 +492,7 @@ HorosphereRef inheritedRefOf(ref GraphView view, uint horosphere, uint slot) {
     foreach (link; parents.links[0 .. parents.count]) {
         foreach (near; view.horospheresAt(link.slot)) {
             if (near.horosphere == horosphere) {
-                return near.across(link.side);
+                return near.across(link.side, view.horospheres.isUpright(horosphere));
             }
         }
     }
@@ -476,13 +502,15 @@ HorosphereRef inheritedRefOf(ref GraphView view, uint horosphere, uint slot) {
 HorosphereRef refIn(ref const GraphView view, uint horosphere, uint slot) {
     const(Horosphere)* found = &view.horospheres.horosphere(horosphere);
     Array!Face path = view.pathBetween(found.footNode, slot);
-    HorosphereRef carried = HorosphereRef(found.plane.carriedAlong(path.slice()), [found.column[0].carriedAlong(path.slice()), found.column[1].carriedAlong(path.slice())], horosphere);
+    Plane[2] column = found.column;
+    if (view.horospheres.isUpright(horosphere)) {
+        column = [found.column[0].carriedAlong(path.slice()), found.column[1].carriedAlong(path.slice())];
+    }
+    HorosphereRef carried = HorosphereRef(found.plane.carriedAlong(path.slice()), column, horosphere);
     path.release();
     return carried;
 }
 
-// What rises from the vertices around a ground node: every kind from the ring of faces around it, and upright
-// kinds from further out, since what they draw reaches further across.
 const(uint)[] risingFrom(ref GraphView view, uint ground, uint horosphere) {
     GroundKey key = GroundKey(view.idAt(ground), horosphere);
     const(uint)[] known = view.knownRising(key);
@@ -532,13 +560,13 @@ bool containsHorosphere(const(uint)[] list, uint horosphere) {
 }
 
 Rise riseAt(ref GraphView view, uint face, Corner corner, uint horosphere) {
-    CornerKey key = view.cornerKeyOf(view.rootedCorner(face, corner).key);
-    const(Rise)* cached = view.knownChoice(key);
-    if (cached !is null) {
-        return *cached;
+    ClaimKey rooted = view.rootedCorner(face, corner).key;
+    SlotCorner at = SlotCorner(rooted.slot, corner);
+    if (view.hasChoice(at)) {
+        return view.choiceAt(at);
     } else {
-        Rise rise = view.chosenRise(face, corner, horosphere, key);
-        view.storeChoice(key, rise);
+        Rise rise = view.chosenRise(face, corner, horosphere, view.cornerKeyOf(rooted));
+        view.storeChoice(at, rise);
         return rise;
     }
 }
@@ -588,7 +616,6 @@ Rise chosenRise(ref GraphView view, uint face, Corner corner, uint horosphere, C
     }
 }
 
-// The vertex of a corner and the unit direction from it up the edge that rises off a plane labelled label.
 Vec4!float[2] riseLineOver(Corner corner, Face label, float edge) {
     Corner upper = corner.across[sideAxis(corner, label)];
     Vec4!float base = (corner.cornerToNode * Point!float.origin()).v;
@@ -602,9 +629,6 @@ Plane risenPlaneOver(Corner corner, Face label, ubyte edges, float edge) {
     return Plane.fromNormal(-(line[0] * sinhf(rise) + line[1] * coshf(rise)));
 }
 
-// Whether the ray from base along along stays at least separation from a plane all the way out. Along the ray the
-// plane's normal reads a cosh t + b sinh t, the sinh of the distance, which only nears zero when a and b differ in
-// sign.
 bool isRayApart(Vec4!float base, Vec4!float along, Plane plane, float separation) {
     Vec4!double normal = plane.scaledNormal().as!double();
     normal = normal * (1.0 / sqrt(normal.minkowski(normal)));
@@ -629,7 +653,6 @@ bool isRiseClear(ref GraphView view, uint face, Corner corner, uint horosphere, 
     }
 }
 
-// An upright horosphere never ends, so its whole column must miss everything its plane rose from.
 bool isColumnClearOfAncestors(ref GraphView view, uint face, Corner corner, uint horosphere) {
     Vec4!float[2] line = riseLineOver(corner, view.horospheres.labelOf(horosphere), view.edgeOf());
     float separation = CLEARANCE_EDGES * view.edgeOf();
@@ -910,8 +933,6 @@ float edgeLineDistance() {
     return acoshf(sqrtf(alongCorner * alongCorner - alongEdge * alongEdge));
 }
 
-// Whether a node may hold a horosphere's surface: terrain reaches as far as its relief, anything else only what its
-// tiles paint, which the structure covers.
 bool isInBand(Plane plane, Fill fill, float relief) {
     float altitude = plane.distanceTo(Point!float.origin());
     float top = 0;
@@ -982,8 +1003,6 @@ int groundAlong(ref GraphView view, SiteFrame line, uint horosphere, int span) {
     return cell;
 }
 
-// Whether a cell is nearer the plane of the horosphere than the plane it rose from: the line where chunk
-// generation hands the space from one to the other.
 bool isRisenNearer(ref GraphView view, SiteFrame line, uint horosphere, int cell) {
     Position at = view.cellOnLine(line, cell);
     return view.planeHeightAt(horosphere, at) < view.planeHeightAt(view.horospheres.horosphere(horosphere).parent, at);
@@ -1044,8 +1063,6 @@ ref const(Horosphere) measuredHorosphere(ref Graph graph, uint horosphere) {
     return graph.horospheres.horosphere(horosphere);
 }
 
-// The lowest and highest segments of an upright horosphere whose drawing can reach a node, which a segment does
-// from an edge below its span to two above, where its limbs climb.
 int[2] segmentsNear(ref GraphView view, ref const HorosphereRef near) {
     float edge = view.edgeOf();
     float height = near.plane.distanceTo(Point!float.origin());

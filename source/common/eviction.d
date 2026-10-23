@@ -7,8 +7,9 @@ import common.graph : Graph, NO_SLOT, ParentList;
 import common.neighbors : chunkNeighborSlot;
 import common.node : Chunk, ChunkSlot, ChunkState;
 import common.traversal : NOT_COLLECTED, NearbyNode, NearbyScratch;
-import common.worldgen.blueprint : TileRecord;
+import common.worldgen.blueprint : Blueprint, TileRecord;
 import common.worldgen.horospheres : releaseIdleHorospheres;
+import common.worldgen.store : dropTile, isTilePinned, unpin;
 import geometry.cube : DIRECTIONS;
 import geometry.honeycomb : CORNER_COUNT, CUBE_RADIUS, Corner, cubeCenter;
 import geometry.lorentz : Point;
@@ -18,7 +19,7 @@ enum uint SWEEP_CYCLE_FRAMES = 120;
 enum double SWEEP_MOST_MILLISECONDS = 3.0;
 enum float KEEP_RADIUS = 3.0f;
 enum float DROP_RADIUS = 3.5f;
-enum double TILE_IDLE_TRAVEL = 12.0;
+enum uint TILE_IDLE_SWEEPS = 4;
 
 struct Evictor {
     Array!uint stack;
@@ -86,17 +87,19 @@ struct Evictor {
     }
 
     void dropIdleTiles(ref Graph graph, Near near) {
-        size_t count = graph.structures.blueprint.tiles.length / SWEEP_CYCLE_FRAMES + 1;
+        Blueprint* blueprint = &graph.structures.blueprint;
+        size_t count = blueprint.tiles.length / SWEEP_CYCLE_FRAMES + 1;
         foreach (_; 0 .. count) {
-            if (tileCursor >= graph.structures.blueprint.tiles.length) {
+            if (tileCursor >= blueprint.tiles.length) {
                 tileCursor = 0;
+                blueprint.sweep += 1;
             }
-            if (tileCursor < graph.structures.blueprint.tiles.length) {
-                const(TileRecord)* record = &graph.structures.blueprint.tiles.ptr[tileCursor];
-                if (!record.isDropped && !record.isKept && graph.structures.blueprint.travel - record.lastUse > TILE_IDLE_TRAVEL) {
+            if (tileCursor < blueprint.tiles.length) {
+                const(TileRecord)* record = &blueprint.tiles.ptr[tileCursor];
+                if (!record.isDropped && blueprint.sweep - record.lastUse > TILE_IDLE_SWEEPS && !graph.isTilePinned(tileCursor)) {
                     uint face = graph.slotOf(record.face);
                     if (face == NO_SLOT || !near.contains(face)) {
-                        graph.structures.blueprint.dropTile(tileCursor);
+                        graph.dropTile(tileCursor);
                         droppedTiles += 1;
                     }
                 }
@@ -207,6 +210,7 @@ void unloadNode(ref Graph graph, uint slot, ref Array!Unloaded unloaded) {
     if (!isHeld) {
         graph.structures.releaseBuilding(slot);
     }
+    graph.unpin(slot);
 }
 
 void evictNode(ref Graph graph, uint slot, ref Array!Unloaded unloaded) {
@@ -214,6 +218,7 @@ void evictNode(ref Graph graph, uint slot, ref Array!Unloaded unloaded) {
     if (graph.chunks.has(slot)) {
         graph.chunks.releaseBlock(slot);
     }
+    graph.unpin(slot);
     graph.structures.forget(slot);
     graph.horospheres.forget(slot);
     graph.removeNode(slot);

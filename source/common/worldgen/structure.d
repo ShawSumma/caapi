@@ -14,6 +14,7 @@ import common.traversal : NearbyNode, NearbyScratch;
 import common.view : GraphView;
 import common.worldgen.blueprint : BlueprintBuilder, CellBox, EVERY_HEIGHT, LineSpec, PaintResult, canonicalBox, floorDivision;
 import common.worldgen.generation : NodeState, StructureWorld, Worldgen;
+import common.worldgen.store : pin;
 import geometry.honeycomb : CORNER_COUNT, Corner, FACE_COUNT, FACE_DISTANCE, Face, across, cornerToNode, cubeToNode, faceBit, faces, isAdjacentTo, mirror;
 import geometry.lorentz : Mat4, Motion, Point, Vec4;
 import plugins.api.api : Material, Site, SitePart, Turn;
@@ -225,6 +226,10 @@ void finalizeStructure(ref Graph graph, uint slot) {
     }
     graph.structures.setTouches(slot, found.slice());
     graph.structures.at(slot).isInStructure = isInStructure;
+    graph.structures.at(slot).hasStrokes = graph.structures.strokes.reachesAt(graph.idAt(slot)).length > 0;
+    if (graph.structures.at(slot).needsBuilding()) {
+        graph.pin(slot);
+    }
 }
 
 void addUnique(ref Array!LineTouch touches, LineTouch touch) {

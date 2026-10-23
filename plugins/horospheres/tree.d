@@ -24,8 +24,6 @@ enum double ROOT_DIP = 20;
 enum double ROOT_DROOP = 5;
 enum double ROOT_WANDER = 10;
 
-// Limbs per segment, the share of the first segment kept bare above the ground, and how far a limb reaches as a
-// share of an edge: with its forks it stays within the edge and a half around the column the engine plans for.
 enum uint SEGMENT_LIMBS = 4;
 enum double BARE_SHARE = 0.4;
 enum double LOWEST_LIMB_ANGLE = 85;
@@ -123,8 +121,6 @@ void roots(Drawing base) {
     }
 }
 
-// One edge of the trunk from its base, which stands on the column with z up it. The trunk runs straight so the
-// segments meet; the first also sinks its roots into the ground the tree rose from.
 void segment(Turtle base, int index) {
     double edge = base.edgeCells();
     double start = 0;

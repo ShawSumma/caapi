@@ -16,6 +16,10 @@ libraries loaded at startup that call the engine through a table of functions; L
 - Load and flight benchmark: `dub run -q -b release --compiler=ldc2 -- --bench-load [--profile] --out /dev/stdout`
   (reports chunks loaded within 2 and 4 units of the camera per leg; use those to judge loading while moving, and
   what keeps the rest within 4 from loading: generating, building, unscanned, scanned, unlisted, unmade)
+- World digest (a hash of the generated terrain; compare before and after any change meant to keep output identical):
+  `dub run -q -b release --compiler=ldc2 -c headless -- --world-digest --out /dev/stdout`
+- Generation and nearby search benchmarks: `-- --bench-gen [radius] --out /dev/stdout` and
+  `-- --bench-nearby [radius] [iterations] --out /dev/stdout` (same `dub run` prefix as above)
 - Hash map benchmark (NodeId churn at 2M live keys, including the slowest batch of 1024 changes):
   `dub run -q -b release --compiler=ldc2 -c headless -- --bench-hashmap --out /dev/stdout`
 - Screenshot: `dub run -q -b release --compiler=ldc2 -- --screenshot screenshots/<new name>.png --out /dev/stdout tests/visual/<script>.lua`
@@ -103,14 +107,17 @@ API, `client` on all.
   - `character/`: collision and movement; `raycast/`: ray casts.
   - `worldgen/`: `generation.d` (node state, chunk generation), `climate.d`, `plane.d`, `horospheres.d` (the root's
     plane and what rises from every plane, as planes or upright columns, which of them reach each node, and the
-    grounds and gravity they give), `structure.d` (sites and lines), `blueprint.d` (painted brushes), `strokes.d` (tapered
-    strokes along geodesics, drawn with the API's pen and indexed by the nodes they reach), `store.d` (structure per
-    node, buildings), `building.d`, `spawn.d`.
+    grounds and gravity they give), `structure.d` (sites and lines), `blueprint.d` (what each tile painted: brushes on
+    lines and strokes), `strokes.d` (tapered strokes along geodesics drawn with the API's pen, and the index from each
+    node they reach back to the tile that drew them), `store.d` (structure per node, buildings, and the pins that keep
+    a tile until the nodes it paints have built), `building.d` (a node's brushes and strokes, pulled from the tiles that
+    reach it), `spawn.d`.
 - `source/client/`
   - `game.d`: the player, movement modes and stepping the world; `camera.d`: the view's heading and pitch.
   - `arguments.d`: command line values and exit statuses shared by both programs; `config.d`: the settings file;
     `png.d`: screenshots.
-  - `world.d`: `LocalWorld`, the per-frame update and its budget split between nearby search, streaming and eviction.
+  - `world.d`: `LocalWorld`, the per-frame update and its budget split between nearby search, streaming and eviction,
+    and the fog, whose reach sets how far the world loads.
   - `streaming.d`: which chunks to load and when; `tasks.d`: worker queues for chunks and buildings; `arrivals.d`:
     joining arrived chunks to their neighbors in parallel passes.
   - `structures.d`: the main-thread host of the world API (the root and placed structures); `tiles.d`: tiles planned

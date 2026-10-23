@@ -11,8 +11,6 @@ enum uint TREE_RISE = 2;
 immutable float[3] SPAWN = [-14, 12, 0];
 immutable bool UNROUTED = false;
 
-// The terrain world: wild terrain at the root with every kind rising from it and from each other, the viaduct, and
-// a tree beside the spawn.
 void world(const(Api)* api, Site site, const(void)* data) {
     Turtle at = Turtle(api, site);
     at.build("road");

@@ -85,8 +85,6 @@ enum SitePart : ubyte {
     edge,
 }
 
-// How a horosphere stands: a plane over terrain, a bare plane holding only what its tiles paint, or upright on the
-// vertex it rises from, reaching up without end.
 enum HorosphereForm : ubyte {
     terrain,
     bare,
@@ -134,12 +132,6 @@ struct Pen {
     uint node;
 }
 
-// The horosphere a tile paints and what it rose from. foot is the vertex it rose from, edges how far its plane
-// stands from there, ground and below the cells where its own surface and the lower one are found along the way,
-// and balance the cells up from its plane that are still nearer to it than to the lower one. lower is the tag of
-// the lower horosphere's kind, NO_KIND where it has none. The root rose from nothing: its edges are 0. An upright
-// horosphere's tiles each draw one segment, an edge long, of its column, from a site at the segment's base with z up
-// the column.
 struct Risen {
     Site foot;
     int edges;

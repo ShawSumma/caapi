@@ -55,8 +55,6 @@ immutable Kind[4] KINDS = [
     Kind(false, AROUND_TYPES[], 38),
 ];
 
-// What the streets are planned around: the vertex a city rose from, if it rose, with what it rose from and the
-// floor of that.
 struct Root {
     ulong vertex;
     ulong face;

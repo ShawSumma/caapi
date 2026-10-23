@@ -30,8 +30,6 @@ struct TileCall {
     Array!ubyte data;
 }
 
-// The tiles a world paints with: its own, for the root's plane in a structure world, and one for each kind of
-// horosphere.
 struct TileCalls {
     TileCall root;
     Array!TileCall kinds;
@@ -232,11 +230,9 @@ struct TilePainter {
     }
 
     void stroke(ref GraphView view, PenFrame pen, double length, float startRadius, float endRadius, Material material, bool isLeafy) {
-        if (!isRestoring) {
-            uint pathStart = cast(uint) paths.length;
-            uint start = view.pathTo(pen.node, paths);
-            strokes.append(StrokeOutput(pen.frame, length, startRadius, endRadius, material, isLeafy, start, pathStart, cast(uint) paths.length - pathStart));
-        }
+        uint pathStart = cast(uint) paths.length;
+        uint start = view.pathTo(pen.node, paths);
+        strokes.append(StrokeOutput(pen.frame, length, startRadius, endRadius, material, isLeafy, start, pathStart, cast(uint) paths.length - pathStart));
     }
 
     void release() {
@@ -251,7 +247,6 @@ struct TilePainter {
     }
 }
 
-// One tile to paint: the site it is painted from, whose node is found again from start along the path.
 struct TileTask {
     TileKey key;
     uint start;
@@ -821,7 +816,7 @@ struct TileWork {
         outputOf.resize(planning.length);
         foreach (hostIndex, host; hosts.slice()) {
             foreach (record; host.plan.usedRecords.slice()) {
-                target.structures.blueprint.tiles.ptr[record].lastUse = target.structures.blueprint.travel;
+                target.structures.blueprint.tiles.ptr[record].lastUse = target.structures.blueprint.sweep;
             }
             foreach (measured; host.plan.measures.slice()) {
                 if (!target.horospheres.horosphere(measured.horosphere).isMeasured) {
@@ -964,13 +959,12 @@ struct TileWork {
                 target.reference(slot);
             }
         }
-        TileRecord* record = &blueprint.tiles.ptr[task.record];
         foreach (drawn; painter.strokes.ptr[output.strokeStart .. output.strokeStart + output.strokeCount]) {
             uint slot = slotAlong(target, painter, drawn.start, drawn.pathStart, drawn.pathLength);
-            target.structures.strokes.add(target.view, slot, Stroke.make(drawn.frame, drawn.length, drawn.startRadius, drawn.endRadius, drawn.material, drawn.isLeafy));
-            record.isKept = true;
+            target.structures.addStroke(target.view, task.record, slot, Stroke.make(drawn.frame, drawn.length, drawn.startRadius, drawn.endRadius, drawn.material, drawn.isLeafy));
         }
-        record.lastUse = blueprint.travel;
+        TileRecord* record = &blueprint.tiles.ptr[task.record];
+        record.lastUse = blueprint.sweep;
         record.isDropped = false;
         if (task.isRestoring) {
             blueprint.restoredTiles += 1;

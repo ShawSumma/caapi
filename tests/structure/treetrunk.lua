@@ -6,8 +6,6 @@ local CLIMB = 0.1
 local NUDGE = 0.01
 local MOST_NUDGES = 200
 
--- Up the trunk of the tree by the terrain world's spawn, keeping in reach of its bark, past where any tree drawn once
--- would end: it rises one segment at a time without end.
 local function approach(world)
   local nudges = 0
   while world:target_material() ~= BARK and nudges < MOST_NUDGES do

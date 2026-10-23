@@ -11,9 +11,8 @@ import common.worldgen.building : Building;
 import common.worldgen.generation : ChunkStructure, NodeState, Worldgen;
 import common.worldgen.horospheres : CornerKey, GroundKey, HorosphereRef, Horospheres, ROOT, Rise, RisingList, applyDiscoveries, makeHorosphere, makeWantedHorospheres;
 import common.worldgen.store : NodeStructure;
-import common.worldgen.strokes : Stroke;
 import common.worldgen.structure : ClaimKey;
-import geometry.honeycomb : Corner, FACE_COUNT, Face, faceBit, mirror;
+import geometry.honeycomb : CORNER_COUNT, Corner, FACE_COUNT, Face, faceBit, mirror;
 import geometry.lorentz : Point;
 
 enum uint VIRTUAL = 1u << 31;
@@ -45,6 +44,15 @@ struct SlotKey {
     }
 }
 
+struct SlotCorner {
+    uint slot;
+    Corner corner;
+
+    size_t toHash() const {
+        return cast(size_t) slot * CORNER_COUNT + corner;
+    }
+}
+
 struct RefRange {
     uint start;
     uint count;
@@ -71,10 +79,10 @@ struct GraphView {
     HashMap!(SlotKey, RefRange) refsOfNodes;
     Array!uint risingFound;
     HashMap!(GroundKey, RisingList) rising;
-    HashMap!(CornerKey, Rise) choices;
+    HashMap!(SlotCorner, Rise) choices;
     Array!uint storedSlots;
     Array!GroundKey risingKeys;
-    Array!CornerKey choiceKeys;
+    Array!SlotCorner choiceKeys;
     bool isBlocked;
 
     static GraphView over(ref const Graph graph) {
@@ -130,10 +138,6 @@ struct GraphView {
 
     ref const(Blueprint) blueprint() const {
         return graph.structures.blueprint;
-    }
-
-    const(Stroke)[] strokesAt(uint node) const {
-        return graph.structures.strokes.at(idAt(node));
     }
 
     static bool isVirtual(uint node) {
@@ -322,14 +326,14 @@ struct GraphView {
     ChunkStructure chunkStructureAt(uint slot) {
         if (owner !is null) {
             if (owner.ensureStructureAt(slot)) {
-                return ChunkStructure(owner.ensureBuildingAt(slot), true);
+                return ChunkStructure(owner.ensureBuildingAt(slot), owner.structures.at(slot).isInStructure);
             } else {
                 return ChunkStructure(null, false);
             }
         } else {
             const(NodeStructure)* node = &graph.structures.at(slot);
             const(Building)* building = graph.structures.buildingAt(slot);
-            if (!node.isFinished || (node.isInStructure && building is null)) {
+            if (!node.isFinished || (node.needsBuilding() && building is null)) {
                 return ChunkStructure(null, false, false);
             } else {
                 return ChunkStructure(building, node.isInStructure);
@@ -388,21 +392,26 @@ struct GraphView {
         }
     }
 
-    const(Rise)* knownChoice(CornerKey key) const {
-        const(Rise)* global = graph.horospheres.choices.find(key);
-        if (global !is null) {
-            return global;
+    bool hasChoice(SlotCorner at) const {
+        return (!isVirtual(at.slot) && graph.horospheres.hasRise(at.slot, at.corner)) || choices.find(at) !is null;
+    }
+
+    Rise choiceAt(SlotCorner at) const {
+        if (!isVirtual(at.slot) && graph.horospheres.hasRise(at.slot, at.corner)) {
+            return graph.horospheres.riseAt(at.slot, at.corner);
         } else {
-            return choices.find(key);
+            return *choices.find(at);
         }
     }
 
-    void storeChoice(CornerKey key, Rise rise) {
+    void storeChoice(SlotCorner at, Rise rise) {
         if (owner !is null) {
-            owner.horospheres.choices.insert(key, rise);
+            owner.horospheres.storeRise(at.slot, at.corner, rise);
         } else {
-            choices.insert(key, rise);
-            choiceKeys.append(key);
+            choices.insert(at, rise);
+            if (!isVirtual(at.slot)) {
+                choiceKeys.append(at);
+            }
         }
     }
 

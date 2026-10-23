@@ -4,7 +4,7 @@ import core.stdc.math : asinh, exp, fabs, fabsf, log, log1p, sqrt, sqrtf, tanh;
 import common.character.chart : applied, gridJacobian;
 import common.node : ChunkLayout;
 import geometry.honeycomb : Corner, FACE_COUNT, FACE_DISTANCE, Face, cubeToNode, direction, mirror, nodeToCorner, opposite;
-import geometry.lorentz : Motion, Point, Vec4;
+import geometry.lorentz : Mat4, Motion, Point, Vec4;
 
 enum double LARGEST_DIRECT_SCALE = 600;
 enum float SNAP_TOLERANCE = 0.05f;
@@ -59,21 +59,26 @@ struct Plane {
     }
 
     Plane transformBy(Motion!float motion) const {
-        Vec4!double moved = motion.as!double() * scaledNormal();
-        return Plane(unit(moved.spatial()), distanceTo(motion.inverse() * Point!float.origin()));
+        PlaneMeasure measured = measure();
+        Vec4!double moved = motion.as!double() * measured.normal;
+        return Plane(unit(moved.spatial()), measured.distanceTo(motion.inverse() * Point!float.origin()));
     }
 
     Vec4!double scaledNormal() const {
         return Vec4!double([up[0], up[1], up[2], -tanh(height)]);
     }
 
+    PlaneMeasure measure() const {
+        double logScale = logCosh(height);
+        return PlaneMeasure(scaledNormal(), logScale, exp(logScale));
+    }
+
     float distanceTo(Point!float point) const {
-        return cast(float) scaledAsinh(scaledNormal().minkowski(point.v.as!double()), logCosh(height));
+        return measure().distanceTo(point);
     }
 
     float distanceToChunk(Corner chunk, float[3] coord) const {
-        Vec4!float transformed = chunk.cubeToNode * Vec4!float([coord[0], coord[1], coord[2], 1.0f]);
-        return distanceTo(transformed.toPoint());
+        return distanceTo(chunkPoint(chunk, coord));
     }
 
     float[3] upAt(Motion!float local) const {
@@ -107,22 +112,37 @@ struct Plane {
     }
 }
 
+struct PlaneMeasure {
+    Vec4!double normal;
+    double logScale;
+    double scale;
+
+    float distanceTo(Point!float point) const {
+        double value = normal.minkowski(point.v.as!double());
+        if (logScale < LARGEST_DIRECT_SCALE) {
+            return cast(float) asinh(value * scale);
+        } else {
+            double magnitude = logScale + log(2 * fabs(value));
+            if (value < 0) {
+                return cast(float) -magnitude;
+            } else {
+                return cast(float) magnitude;
+            }
+        }
+    }
+}
+
+Point!float chunkPoint(Corner chunk, float[3] coord) {
+    return cubePoint(chunk.cubeToNode, coord);
+}
+
+Point!float cubePoint(Mat4!float cubeToNode, float[3] coord) {
+    return (cubeToNode * Vec4!float([coord[0], coord[1], coord[2], 1.0f])).toPoint();
+}
+
 double logCosh(double x) {
     double size = fabs(x);
     return size + log1p(exp(-2 * size)) - log(2.0);
-}
-
-double scaledAsinh(double value, double logScale) {
-    if (logScale < LARGEST_DIRECT_SCALE) {
-        return asinh(value * exp(logScale));
-    } else {
-        double magnitude = logScale + log(2 * fabs(value));
-        if (value < 0) {
-            return -magnitude;
-        } else {
-            return magnitude;
-        }
-    }
 }
 
 float[3] unit(double[3] v) {

@@ -146,8 +146,6 @@ void route(Turtle tower, Layout layout) {
     tower.stop(-HALF_WIDTH - 0.5f, 0, base + top);
 }
 
-// Where the tower meets a surface: its first open cell, counted up from the surface's own plane, and how deep the
-// footing reaches past it, deep into terrain but only into the slab of a surface that holds only what is painted.
 struct Floor {
     int open;
     int footing;
@@ -170,7 +168,6 @@ Layout layoutOf(Turtle site, ref const Risen risen, Floor upper, Floor lower) {
     return Layout(lower.open, stoop, base, upperFloor - base, split, split + 1 - FLIP_CLEARANCE);
 }
 
-// A tower from the lower surface up to the risen one's floor at its foot.
 void connect(Turtle site, ref const Risen risen, Floor upper, Floor lower, bool isRouted) {
     Layout layout = layoutOf(site, risen, upper, lower);
     if (layout.split >= STORY && layout.top - layout.split > STORY && layout.top >= 2 * TURN) {

@@ -24,6 +24,7 @@ import common.position : Position;
 import common.traversal : NO_DEADLINE, NearbyNode, NearbyScratch;
 import common.worldgen.generation : ChunkParams, GeneratedVoxels, Worldgen;
 import common.worldgen.horospheres : ChunkPoint, chunkPointOf;
+import common.worldgen.store : dropTile;
 import common.worldgen.structure : ColumnSpot, SiteFrame, altitude, columnPoint, edgeLength, forwarded, rootSite, sitePlacement, turned;
 import geometry.honeycomb : CORNER_COUNT, CUBE_RADIUS, Corner, cubeCenter;
 import geometry.lorentz : Motion, Point;
@@ -292,7 +293,7 @@ bool checkRepaint(FILE* output, ubyte dimension, Worldgen worldgen) {
         }
         size_t tiles = graph.structures.blueprint.tiles.length;
         foreach (tile; 0 .. tiles) {
-            graph.structures.blueprint.dropTile(cast(uint) tile);
+            graph.dropTile(cast(uint) tile);
         }
         foreach (slot; 0 .. graph.slotCount) {
             graph.structures.releaseBuilding(slot);

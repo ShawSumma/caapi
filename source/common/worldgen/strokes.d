@@ -5,6 +5,7 @@ import base.array : Array;
 import base.hashmap : HashMap;
 import base.numbers : higherOf;
 import common.graph : ALL_FACES, NO_FACE, NodeId, farthestFaceBeyond;
+import common.traversal : MIRRORED_ORIGINS;
 import common.view : GraphView;
 import geometry.honeycomb : FACE_COUNT, Face, NODE_RADIUS, mirror;
 import geometry.lorentz : Motion, Point, Vec4;
@@ -13,6 +14,7 @@ import plugins.api.api : Material;
 enum float LEAF_CORE = 0.5f;
 enum float LEAF_CORE_DENSITY = 0.95f;
 enum float LEAF_EDGE_DENSITY = 0.3f;
+enum float FRAME_SLACK = 1e-3f;
 enum double TEST_LENGTH = 0.8;
 enum double TEST_SIDE = 0.3;
 enum float TEST_TOLERANCE = 1e-4f;
@@ -53,6 +55,10 @@ struct Stroke {
 
     bool isWithin(Vec4!float point, float distance) const {
         return nearest(point).coshDistance <= coshf(distance + reach());
+    }
+
+    bool mayBeWithin(Vec4!float point, float distance) const {
+        return nearest(point).coshDistance <= coshf(distance + reach()) + FRAME_SLACK;
     }
 
     Nearest nearest(Vec4!float point) const {
@@ -109,22 +115,35 @@ struct StrokeVisit {
     Motion!double motion;
 }
 
+struct StrokeRun {
+    NodeId node;
+    uint first;
+    uint count;
+}
+
+struct StrokeReach {
+    Motion!double motion;
+    uint record;
+    uint run;
+}
+
 struct Strokes {
     HashMap!(NodeId, uint) lists;
-    Array!(Array!Stroke) strokes;
+    Array!(Array!StrokeReach) reaches;
+    Array!uint freeLists;
     Array!StrokeVisit visits;
     Array!NodeId seen;
 
-    const(Stroke)[] at(NodeId id) const {
+    const(StrokeReach)[] reachesAt(NodeId id) const {
         const(uint)* found = lists.find(id);
         if (found is null) {
             return null;
         } else {
-            return strokes.ptr[*found].slice();
+            return reaches.ptr[*found].slice();
         }
     }
 
-    void add(ref GraphView view, uint node, Stroke stroke) {
+    void add(ref GraphView view, uint record, uint run, uint node, Stroke stroke, ref Array!NodeId reached) {
         visits.clear();
         seen.clear();
         visits.append(view.containing(node, stroke.middle()));
@@ -135,13 +154,15 @@ struct Strokes {
             next += 1;
             Stroke moved = stroke.moved(visit.motion);
             if (moved.isWithin(Vec4!float.origin(), NODE_RADIUS)) {
-                listOf(view.idAt(visit.slot)).append(moved);
+                note(view.idAt(visit.slot), StrokeReach(visit.motion, record, run), reached);
                 foreach (index; 0 .. FACE_COUNT) {
                     Face side = cast(Face) index;
-                    uint beside = view.ensureNeighborSlot(visit.slot, side);
-                    if (!isSeen(view.idAt(beside))) {
-                        seen.append(view.idAt(beside));
-                        visits.append(StrokeVisit(beside, side.mirror.as!double() * visit.motion));
+                    if (moved.mayBeWithin(MIRRORED_ORIGINS[index], NODE_RADIUS)) {
+                        uint beside = view.ensureNeighborSlot(visit.slot, side);
+                        if (!isSeen(view.idAt(beside))) {
+                            seen.append(view.idAt(beside));
+                            visits.append(StrokeVisit(beside, side.mirror.as!double() * visit.motion));
+                        }
                     }
                 }
             }
@@ -156,23 +177,66 @@ struct Strokes {
         return index < seen.length;
     }
 
-    ref Array!Stroke listOf(NodeId id) {
+    void note(NodeId id, StrokeReach reach, ref Array!NodeId reached) {
+        Array!StrokeReach* list = &listOf(id);
+        bool hasRecord = false;
+        bool hasRun = false;
+        foreach (ref existing; list.slice()) {
+            hasRecord = hasRecord || existing.record == reach.record;
+            hasRun = hasRun || (existing.record == reach.record && existing.run == reach.run);
+        }
+        if (!hasRun) {
+            list.append(reach);
+        }
+        if (!hasRecord) {
+            reached.append(id);
+        }
+    }
+
+    ref Array!StrokeReach listOf(NodeId id) {
         const(uint)* found = lists.find(id);
-        if (found is null) {
-            lists.insert(id, cast(uint) strokes.length);
-            strokes.append(Array!Stroke.init);
-            return strokes.ptr[strokes.length - 1];
+        if (found !is null) {
+            return reaches.ptr[*found];
+        } else if (freeLists.length > 0) {
+            freeLists.length -= 1;
+            uint index = freeLists.ptr[freeLists.length];
+            lists.insert(id, index);
+            return reaches.ptr[index];
         } else {
-            return strokes.ptr[*found];
+            lists.insert(id, cast(uint) reaches.length);
+            reaches.append(Array!StrokeReach.init);
+            return reaches.ptr[reaches.length - 1];
+        }
+    }
+
+    void remove(NodeId id, uint record) {
+        const(uint)* found = lists.find(id);
+        if (found !is null) {
+            uint index = *found;
+            Array!StrokeReach* list = &reaches.ptr[index];
+            size_t kept = 0;
+            foreach (reach; list.slice()) {
+                if (reach.record != record) {
+                    list.ptr[kept] = reach;
+                    kept += 1;
+                }
+            }
+            list.length = kept;
+            if (kept == 0) {
+                list.release();
+                lists.remove(id);
+                freeLists.append(index);
+            }
         }
     }
 
     void release() {
-        foreach (ref list; strokes.slice()) {
+        foreach (ref list; reaches.slice()) {
             list.release();
         }
         lists.release();
-        strokes.release();
+        reaches.release();
+        freeLists.release();
         visits.release();
         seen.release();
     }

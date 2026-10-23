@@ -18,7 +18,6 @@ import common.node : ChunkSlot, ChunkState, Occupancy;
 import common.position : Position;
 import common.traversal : NearbyNode;
 import common.view : GraphView;
-import common.worldgen.building : BuildingPlan;
 import common.worldgen.generation : ChunkParams, GeneratedVoxels;
 import common.worldgen.store : NodeStructure;
 import geometry.honeycomb : CORNER_COUNT, CUBE_RADIUS, Corner, cubeCenter;
@@ -102,7 +101,7 @@ void computeParams(void* context, size_t index, uint worker) {
             made.predicted = made.params.predictOccupancy();
             if (!job.chunks[index].isRestoring) {
                 job.graph.chunks.existing(chunk).predicted = made.predicted;
-                if (made.predicted == Occupancy.empty) {
+                if (made.params.isUniformlyFilled(made.predicted)) {
                     made.generated = made.params.generateVoxels();
                 }
             }
@@ -241,12 +240,12 @@ struct Streamer {
                     result.predicted = result.params.predictOccupancy();
                     if (!plan.isRestoring) {
                         graph.chunks.existing(plan.chunk).predicted = result.predicted;
-                        if (result.predicted == Occupancy.empty) {
+                        if (result.params.isUniformlyFilled(result.predicted)) {
                             result.generated = result.params.generateVoxels();
                         }
                     }
                 }
-                if (plan.isRestoring || result.predicted != Occupancy.empty) {
+                if (plan.isRestoring || !result.params.isUniformlyFilled(result.predicted)) {
                     GenRequest request = GenRequest(result.params, plan.chunk, plan.isRestoring, plan.isUrgent);
                     if (plan.isUrgent) {
                         urgentRequests.append(request);
@@ -527,8 +526,7 @@ struct Streamer {
         size_t pushed = 0;
         while (pushed < slots.length && pushed < room) {
             uint slot = slots.ptr[pushed];
-            graph.restoreBrushes(slot);
-            bool isPushed = queue.push(BuildingRequest(BuildingPlan.make(graph, slot), slot));
+            bool isPushed = queue.push(BuildingRequest(graph.planBuilding(slot), slot));
             assert(isPushed);
             pushed += 1;
         }
