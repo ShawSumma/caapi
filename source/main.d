@@ -1229,6 +1229,7 @@ void printMemory(FILE* report, ref const LocalWorld world) {
     size_t buildings = 0;
     size_t buildingBytes = 0;
     size_t holding = 0;
+    size_t unknownHorospheres = 0;
     size_t stated = 0;
     size_t touched = 0;
     size_t referenced = 0;
@@ -1243,6 +1244,9 @@ void printMemory(FILE* report, ref const LocalWorld world) {
         }
         if (graph.chunks.has(slot)) {
             holding += 1;
+            if (!graph.horospheres.hasHorospheresAt(slot)) {
+                unknownHorospheres += 1;
+            }
         }
         if (node.hasState) {
             stated += 1;
@@ -1266,6 +1270,17 @@ void printMemory(FILE* report, ref const LocalWorld world) {
             denseBytes += cellCount(graph.layout.dimension) * Material.sizeof;
         }
     }
+    size_t liveHorospheres = 0;
+    size_t tiledHorospheres = 0;
+    foreach (ref horosphere; graph.horospheres.horospheres.slice()) {
+        if (horosphere.isKnown) {
+            liveHorospheres += 1;
+        }
+        if (horosphere.tiles > 0) {
+            tiledHorospheres += 1;
+        }
+    }
+    fprintf(report, "horospheres live=%zu with tiles=%zu\n", liveHorospheres, tiledHorospheres);
     size_t solidBlocks = 0;
     foreach (slot; 0 .. graph.slotCount) {
         if (graph.isLive(slot) && graph.chunks.has(slot)) {
@@ -1279,7 +1294,7 @@ void printMemory(FILE* report, ref const LocalWorld world) {
         }
     }
     fprintf(report, "chunk blocks whose chunks are all settled and filled with something opaque: %zu\n", solidBlocks);
-    fprintf(report, "nodes holding chunks=%zu with state=%zu, structure-touched=%zu referenced=%zu with children=%zu recent=%zu\n", holding, stated, touched, referenced, parents, recent);
+    fprintf(report, "nodes holding chunks=%zu (horospheres never stored %zu) with state=%zu, structure-touched=%zu referenced=%zu with children=%zu recent=%zu\n", holding, unknownHorospheres, stated, touched, referenced, parents, recent);
     size_t nodeBytes = cast(size_t) graph.slotCount * (Node.sizeof + NodeState.sizeof + NodeStructure.sizeof + NodeHorospheres.sizeof + NodeRises.sizeof + uint.sizeof);
     size_t chunkBytes = cast(size_t) graph.chunks.blockCount * CORNER_COUNT * Chunk.sizeof;
     HeapBytes heap = heapBytes();

@@ -48,6 +48,8 @@ enum int TEST_FAR_EDGES = 3;
 enum int TEST_RISE_EDGES = 3;
 enum int TEST_ALONG_EDGES = 4;
 enum int TEST_FARTHEST_EDGES = 8;
+enum float TEST_FARTHEST_GROUND = 2.0f;
+immutable float[5] TEST_GROUND_HEIGHTS = [-2.5f, 1.0f, -0.5f, 2.0f, 1.5f];
 immutable int[3][3] TEST_PAINTED_CELLS = [
     [5, 6, 19],
     [8, 5, 3],
@@ -80,6 +82,7 @@ struct Horosphere {
     uint parent;
     uint footNode;
     uint users;
+    uint tiles;
     int ground;
     int below;
     int balance;
@@ -88,7 +91,6 @@ struct Horosphere {
     ubyte edges;
     bool isMeasured;
     bool isKnown;
-    bool isTiled;
 }
 
 struct HorosphereRef {
@@ -97,11 +99,12 @@ struct HorosphereRef {
     uint horosphere;
 
     HorosphereRef across(Face side, bool isUpright) const {
+        Face[1] path = [side];
         Plane[2] carried = column;
         if (isUpright) {
-            carried = [column[0].reflectAcross(side), column[1].reflectAcross(side)];
+            carried = [column[0].carriedAlong(path[]), column[1].carriedAlong(path[])];
         }
-        return HorosphereRef(plane.reflectAcross(side), carried, horosphere);
+        return HorosphereRef(plane.carriedAlong(path[]), carried, horosphere);
     }
 }
 
@@ -127,6 +130,16 @@ struct Ground {
 struct Grounds {
     Ground[MAX_GROUNDS] items;
     uint count;
+
+    uint farthestRisen() const {
+        uint farthest = 1;
+        foreach (index; 2 .. count) {
+            if (fabsf(items[index].surface.distanceTo(Point!float.origin())) > fabsf(items[farthest].surface.distanceTo(Point!float.origin()))) {
+                farthest = index;
+            }
+        }
+        return farthest;
+    }
 }
 
 struct Gravity {
@@ -725,13 +738,13 @@ Horosphere risenHorosphere(ref Graph graph, uint face, Corner corner, uint paren
                 count += 1;
             }
         }
-        return Horosphere(graph.view.planeOfHorosphereIn(parent, face), column, groundSite(face, corner, parentLabel), CornerKey.init, 0, parent, face, 0, 0, 0, 0, parentLabel, cast(ubyte)(rise.kind - 1), rise.edges, false, true, false);
+        return Horosphere(graph.view.planeOfHorosphereIn(parent, face), column, groundSite(face, corner, parentLabel), CornerKey.init, 0, parent, face, 0, 0, 0, 0, 0, parentLabel, cast(ubyte)(rise.kind - 1), rise.edges, false, true);
     } else {
         SiteFrame tower = graph.view.turned(groundSite(face, corner, parentLabel), Turn.pitchUp);
         SiteFrame top = graph.view.atLevel(forwarded(tower, rise.edges), 0);
         Face label = top.zSide();
         uint foot = graph.airSideNode(top.node, top.corner, label);
-        return Horosphere(-Plane.ofFace(label), [Plane.init, Plane.init], groundSite(foot, top.corner, label), CornerKey.init, 0, parent, foot, 0, 0, 0, 0, label, cast(ubyte)(rise.kind - 1), rise.edges, false, true, false);
+        return Horosphere(-Plane.ofFace(label), [Plane.init, Plane.init], groundSite(foot, top.corner, label), CornerKey.init, 0, parent, foot, 0, 0, 0, 0, 0, label, cast(ubyte)(rise.kind - 1), rise.edges, false, true);
     }
 }
 
@@ -759,19 +772,22 @@ uint makeHorosphere(ref Graph graph, ClaimKey rooted, uint face, Corner corner, 
 }
 
 bool isIdle(ref const Graph graph, ref const Horosphere horosphere) {
-    return horosphere.isKnown && horosphere.users == 0 && !horosphere.isTiled && graph.horospheres.forced.find(horosphere.key) is null;
+    return horosphere.isKnown && horosphere.users == 0 && horosphere.tiles == 0 && graph.horospheres.forced.find(horosphere.key) is null;
 }
 
 void releaseIdleHorospheres(ref Graph graph) {
-    bool isReleased = true;
-    while (isReleased) {
-        isReleased = false;
-        foreach (index; 0 .. graph.horospheres.horospheres.length) {
-            if (graph.isIdle(graph.horospheres.horospheres.ptr[index])) {
-                graph.releaseHorosphere(cast(uint) index + 1);
-                isReleased = true;
-            }
+    bool isReleased = false;
+    foreach (index; 0 .. graph.horospheres.horospheres.length) {
+        uint idle = cast(uint) index + 1;
+        while (idle != ROOT && graph.isIdle(graph.horospheres.horosphere(idle))) {
+            uint parent = graph.horospheres.horosphere(idle).parent;
+            graph.releaseHorosphere(idle);
+            isReleased = true;
+            idle = parent;
         }
+    }
+    if (isReleased) {
+        graph.horospheres.forgetRising();
     }
 }
 
@@ -785,7 +801,6 @@ void releaseHorosphere(ref Graph graph, uint index) {
     }
     graph.horospheres.horospheres.ptr[index - 1] = Horosphere.init;
     graph.horospheres.freeHorospheres.append(index);
-    graph.horospheres.forgetRising();
 }
 
 bool openHorosphere(ref Graph graph, SiteFrame site, Rise rise) {
@@ -821,9 +836,17 @@ Grounds groundsOf(ref const Horospheres horospheres, Plane surface, const(Horosp
     grounds.items[0] = Ground(surface, horospheres.fillOf(ROOT));
     grounds.count = 1;
     foreach (found; near) {
-        if (grounds.count < MAX_GROUNDS && !horospheres.isUpright(found.horosphere) && fabsf(found.plane.distanceTo(Point!float.origin())) <= GROUND_REACH) {
-            grounds.items[grounds.count] = Ground(found.plane, horospheres.fillOf(found.horosphere));
-            grounds.count += 1;
+        if (!horospheres.isUpright(found.horosphere) && fabsf(found.plane.distanceTo(Point!float.origin())) <= GROUND_REACH) {
+            Ground ground = Ground(found.plane, horospheres.fillOf(found.horosphere));
+            if (grounds.count < MAX_GROUNDS) {
+                grounds.items[grounds.count] = ground;
+                grounds.count += 1;
+            } else {
+                uint farthest = grounds.farthestRisen();
+                if (fabsf(found.plane.distanceTo(Point!float.origin())) < fabsf(grounds.items[farthest].surface.distanceTo(Point!float.origin()))) {
+                    grounds.items[farthest] = ground;
+                }
+            }
         }
     }
     return grounds;
@@ -858,8 +881,20 @@ float heightAbove(float relief, float altitude, bool isFlat) {
     }
 }
 
+bool isGravityKnown(ref const Graph graph, uint slot) {
+    return graph.nodeAt(slot).hasState && graph.horospheres.hasHorospheresAt(slot);
+}
+
+Gravity ensureGravityAt(ref Graph graph, Position position) {
+    uint slot = graph.slotOf(position.node);
+    graph.ensureState(slot);
+    graph.view.ensureHorospheresAt(slot);
+    return graph.gravityAt(position);
+}
+
 Gravity gravityAt(ref const Graph graph, Position position) {
     uint slot = graph.slotOf(position.node);
+    assert(graph.isGravityKnown(slot));
     Grounds grounds = graph.groundsIn(slot);
     if (grounds.count == 1) {
         return Gravity(grounds.items[0].surface.upAt(position.local), 1.0f);
@@ -1160,6 +1195,22 @@ unittest {
     assert(blendedGravity(alone[], single[]).strength == 1.0f);
     scratch.release();
     graph.release();
+}
+
+unittest {
+    Horospheres horospheres;
+    horospheres.kinds.append(HorosphereKind(0, HorosphereForm.bare, 0));
+    HorosphereRef[TEST_GROUND_HEIGHTS.length] near;
+    foreach (index, height; TEST_GROUND_HEIGHTS) {
+        horospheres.horospheres.append(Horosphere.init);
+        near[index] = HorosphereRef(Plane([0, 1, 0], height), [Plane.init, Plane.init], cast(uint) index + 1);
+    }
+    Grounds grounds = groundsOf(horospheres, Plane.ofFace(Face.f0), near[]);
+    assert(grounds.count == MAX_GROUNDS);
+    foreach (ground; grounds.items[1 .. grounds.count]) {
+        assert(fabsf(ground.surface.height) < TEST_FARTHEST_GROUND);
+    }
+    horospheres.release();
 }
 
 unittest {

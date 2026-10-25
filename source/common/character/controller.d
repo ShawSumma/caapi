@@ -9,7 +9,7 @@ import common.character.sweep : Capsule, ContactPlane, MIN_CREASE_SINE, Sweep, i
 import common.graph : Graph;
 import common.position : Position;
 import common.settings : CharacterConfig;
-import common.worldgen.horospheres : Gravity, gravityAt;
+import common.worldgen.horospheres : Gravity, gravityAt, isGravityKnown;
 import geometry.lorentz : Motion;
 
 enum uint MAX_CONTACT_PLANES = 5;
@@ -55,7 +55,7 @@ struct CharacterState {
         float[3] movement = input.movement;
         foreach (_; 0 .. substeps) {
             Gravity gravity = Gravity(up, 0);
-            if (graph.nodeAt(graph.slotOf(position.node)).hasState) {
+            if (graph.isGravityKnown(graph.slotOf(position.node))) {
                 gravity = graph.gravityAt(position);
             }
             float[3] turned = up;

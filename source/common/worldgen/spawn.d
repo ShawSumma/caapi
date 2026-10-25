@@ -8,7 +8,7 @@ import common.node : ChunkSlot;
 import common.position : Position;
 import common.traversal : NodeVisit, isVisited;
 import common.worldgen.generation : ChunkParams, PlaneWorld, Worldgen;
-import common.worldgen.horospheres : gravityAt;
+import common.worldgen.horospheres : ensureGravityAt;
 import geometry.honeycomb : CORNER_COUNT, CUBE_RADIUS, Corner, FACE_COUNT, Face, NODE_RADIUS, cubeCenter, mirror;
 import geometry.lorentz : Motion, Point, Vec4;
 
@@ -69,7 +69,7 @@ bool isRegionProvenClear(ref Graph graph, Position position, float distance) {
 
 Position clearSpawnPosition(ref Graph graph, float bodyReach) {
     float rootAltitude = graph.ensureState(graph.slotOf(ROOT_NODE)).surface.distanceTo(Point!float.origin());
-    float[3] up = graph.gravityAt(Position.origin()).up;
+    float[3] up = graph.ensureGravityAt(Position.origin()).up;
     return graph.clearPositionFrom(up, rootAltitude, bodyReach, bodyReach);
 }
 

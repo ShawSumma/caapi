@@ -847,17 +847,16 @@ struct TileWork {
             uint record = NO_RECORD;
             bool isRestoring = false;
             if (known is null) {
-                record = target.structures.blueprint.addTile(key.node);
+                record = target.structures.blueprint.addTile(key.node, horosphere);
                 target.structures.tiledFaces.insert(key, record);
-                if (horosphere != ROOT) {
-                    target.horospheres.horospheres.ptr[horosphere - 1].isTiled = true;
-                }
             } else if (target.structures.blueprint.tiles.ptr[*known].isDropped) {
                 record = *known;
+                target.structures.blueprint.tiles.ptr[record].horosphere = horosphere;
                 isRestoring = true;
             }
             if (record != NO_RECORD) {
                 if (horosphere != ROOT) {
+                    target.horospheres.horospheres.ptr[horosphere - 1].tiles += 1;
                     target.measuredHorosphere(horosphere);
                 }
                 taskOf.insert(key, cast(uint) tasks.length);

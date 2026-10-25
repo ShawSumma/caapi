@@ -8,7 +8,7 @@ libraries loaded at startup that call the engine through a table of functions; L
 - Build: `dub build -q -b release --compiler=ldc2` (add `-c headless` for the headless tools)
 - Unit tests: `dub test -q --compiler=ldc2`
 - Behavior tests: `dub run -q -b release --compiler=ldc2 -c headless -- --out /dev/stdout tests`
-- Repaint check: `dub run -q -b release --compiler=ldc2 -c headless -- --worldgen structure city --check-repaint --out /dev/stdout` (also `backrooms`)
+- Repaint check: `dub run -q -b release --compiler=ldc2 -c headless -- --worldgen structure city --check-repaint --out /dev/stdout` (also `backrooms`, and `planet`, which covers strokes)
 - Material census (cells of each material in the terrain world around the origin):
   `dub run -q -b release --compiler=ldc2 -c headless -- --material-census 5 --out /dev/stdout`
 - Structure slice (generated voxels in each quarter around the root at one height, `#` solid and `.` open):
@@ -60,8 +60,15 @@ libraries loaded at startup that call the engine through a table of functions; L
 - Rebasing keeps a transform's float error in its center's Minkowski norm, about cosh^2(d) x epsilon from wherever it
   was made. Anything that keeps old transforms checks them against the rounding allowed at their current distance
   (`isOffHyperboloid`).
+- The nearby set follows the surfaces and grows about e^1 per unit, so its outer unit holds most nodes. The shell table
+  in `--bench-load` shows the cost per shell.
 - A nearby rebuild copies the kept part of the old set a slice per frame (`continueKeeping`). Until it finishes, the
   published set's transforms must not change, so rebases wait.
+- `gravityAt` reads only the horospheres already stored for the body's node (`isGravityKnown`); with none stored it
+  would give the root plane's up. The controller keeps its up until they are stored, and anything that places the body
+  calls `ensureGravityAt`.
+- `pathBetween` (behind `refIn`, `planeOfHorosphereIn`, `nodeToNode`) walks both nodes up the first-parent tree to
+  where they meet, which can be far above two nearby nodes. Its result matches going through the root.
 
 ## Threading
 
@@ -82,6 +89,12 @@ libraries loaded at startup that call the engine through a table of functions; L
   all-zero init or never read before it is written again.
 - The bench memory line's "free but held" is memory malloc keeps after frees. `malloc_trim` returns it but takes about
   80-90 ms with malloc's locks held, so it isn't called.
+- Anything a tile paints must be repaintable from its key. A tile drops once nothing pins it and it has been idle
+  `TILE_IDLE_SWEEPS` sweeps, and comes back by being painted again.
+- The load radius comes from the fog (`FOG_LOAD_THRESHOLD` in `world.d`), not from the render radius directly.
+- A horosphere lives while nodes list it, horospheres rise from it, tiles it painted are alive (`Horosphere.tiles`), or
+  the world opened it. It references its foot node, so far nodes that are unloaded but not evicted drop their horosphere
+  lists; otherwise the foot node would keep its own horosphere alive forever.
 
 ## Code structure
 

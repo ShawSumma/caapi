@@ -9,6 +9,7 @@ import common.graph : Graph, NO_SLOT, NodeId;
 import common.view : GraphView;
 import common.worldgen.blueprint : Blueprint, Painted;
 import common.worldgen.building : Building;
+import common.worldgen.horospheres : ROOT;
 import common.worldgen.strokes : Stroke, Strokes;
 import common.worldgen.structure : LineTouch, PendingTouch;
 
@@ -210,6 +211,10 @@ void dropTile(ref Graph graph, uint tile) {
         if (slot != NO_SLOT && !structures.at(slot).isFinished) {
             structures.at(slot).isCovered = false;
         }
+    }
+    uint horosphere = structures.blueprint.tiles.ptr[tile].horosphere;
+    if (horosphere != ROOT) {
+        graph.horospheres.horospheres.ptr[horosphere - 1].tiles -= 1;
     }
     structures.blueprint.dropTile(tile);
 }

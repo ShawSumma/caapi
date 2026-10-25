@@ -274,17 +274,6 @@ struct GraphView {
         return Position(idAt(node), start.local);
     }
 
-    Array!Face sidesToRoot(uint start) const {
-        Array!Face sides;
-        uint node = start;
-        while (depthOf(node) > 0) {
-            ParentEntry parent = parents(node).links[0];
-            sides.append(parent.side);
-            node = parent.slot;
-        }
-        return sides;
-    }
-
     uint pathTo(uint node, ref Array!Face sides) const {
         if (!isVirtual(node)) {
             return node;

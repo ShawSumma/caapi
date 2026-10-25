@@ -7,7 +7,7 @@ import base.hashmap : FIBONACCI_MULTIPLIER;
 import base.numbers : lowerOf;
 import base.splitmix : SplitMix;
 import base.units : Length;
-import common.graph : Graph, NO_SLOT, NodeId, ParentList, ROOT_NODE;
+import common.graph : Graph, NO_SLOT, NodeId, ParentEntry, ParentList, ROOT_NODE;
 import common.node : ChunkLayout;
 import common.position : Position;
 import common.traversal : NearbyNode, NearbyScratch;
@@ -618,8 +618,21 @@ Motion!float nodeToNode(ref const GraphView view, uint from, uint to) {
 }
 
 Array!Face pathBetween(ref const GraphView view, uint from, uint to) {
-    Array!Face toPath = view.sidesToRoot(to);
-    Array!Face fromPath = view.sidesToRoot(from);
+    Array!Face toPath;
+    Array!Face fromPath;
+    uint toward = to;
+    uint away = from;
+    while (toward != away) {
+        if (view.depthOf(toward) >= view.depthOf(away)) {
+            ParentEntry parent = view.parents(toward).links[0];
+            toPath.append(parent.side);
+            toward = parent.slot;
+        } else {
+            ParentEntry parent = view.parents(away).links[0];
+            fromPath.append(parent.side);
+            away = parent.slot;
+        }
+    }
     Array!Face path;
     foreach (side; toPath.slice()) {
         path.appendReduced(side);

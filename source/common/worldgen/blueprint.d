@@ -130,6 +130,7 @@ struct RunRef {
 struct TileRecord {
     Painted painted;
     NodeId face;
+    uint horosphere;
     uint lastUse;
     bool isDropped;
 }
@@ -209,8 +210,8 @@ struct Blueprint {
         }
     }
 
-    uint addTile(NodeId face) {
-        tiles.append(TileRecord(Painted.init, face, sweep, false));
+    uint addTile(NodeId face, uint horosphere) {
+        tiles.append(TileRecord(Painted.init, face, horosphere, sweep, false));
         return cast(uint)(tiles.length - 1);
     }
 

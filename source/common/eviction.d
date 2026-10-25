@@ -209,6 +209,7 @@ void unloadNode(ref Graph graph, uint slot, ref Array!Unloaded unloaded) {
     }
     if (!isHeld) {
         graph.structures.releaseBuilding(slot);
+        graph.horospheres.forget(slot);
     }
     graph.unpin(slot);
 }

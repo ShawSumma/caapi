@@ -18,7 +18,7 @@ import common.settings : CHUNK_DIMENSION, CharacterConfig;
 import common.traversal : NOT_COLLECTED, NearbyNode, NearbyScratch;
 import common.worldgen.blueprint : RouteStop;
 import common.worldgen.generation : NodeState, Worldgen;
-import common.worldgen.horospheres : ensureHorospheresAt, gravityAt;
+import common.worldgen.horospheres : ensureGravityAt;
 import common.worldgen.spawn : clearSpawnPosition, collectChunksNear;
 import common.worldgen.structure : SiteFrame, columnPoint, rootSite, siteToNode, sitePlacement, spawnBefore;
 import geometry.honeycomb : CORNER_COUNT, Corner, Face, cornerToNode;
@@ -171,7 +171,7 @@ struct Game {
             placeAt(sitePosition(entrance.site, spawnBefore(world.graph.layout, entrance.spot)), bodyExtent() + character.skin);
         } else {
             Position spawn = world.graph.clearSpawnPosition(bodyReach().value);
-            float[3] up = world.graph.gravityAt(spawn).up;
+            float[3] up = world.graph.ensureGravityAt(spawn).up;
             characterState = CharacterState(spawn, ZERO_VECTOR, [0, 1, 0], up, up, false);
         }
         settleToGround();
@@ -190,8 +190,7 @@ struct Game {
         Slide drop;
         while (!drop.hasLanded) {
             generateAround(characterState.position, reach);
-            world.graph.ensureState(world.graph.slotOf(characterState.position.node));
-            characterState.up = world.graph.gravityAt(characterState.position).up;
+            characterState.up = world.graph.ensureGravityAt(characterState.position).up;
             characterState.pull = characterState.up;
             features.collect(world.graph, characterState.position, reach);
             drop = Mover.make(character, features, characterState.up, Length(0)).settle(ZERO_VECTOR, bodyReach());
@@ -266,13 +265,9 @@ struct Game {
     }
 
     void placeAt(Position target, Length lift) {
-        world.graph.ensureState(world.graph.slotOf(target.node));
-        world.graph.view.ensureHorospheresAt(world.graph.slotOf(target.node));
-        float[3] up = world.graph.gravityAt(target).up;
+        float[3] up = world.graph.ensureGravityAt(target).up;
         Position lifted = world.graph.ensureNormalized(Position(target.node, (target.local * Motion!float.shift(up.scaled(lift.value))).orthonormalized()));
-        world.graph.ensureState(world.graph.slotOf(lifted.node));
-        world.graph.view.ensureHorospheresAt(world.graph.slotOf(lifted.node));
-        float[3] liftedUp = world.graph.gravityAt(lifted).up;
+        float[3] liftedUp = world.graph.ensureGravityAt(lifted).up;
         characterState = CharacterState(lifted, ZERO_VECTOR, characterState.groundNormal, liftedUp, liftedUp, false);
         resetView();
     }
