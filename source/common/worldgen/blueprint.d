@@ -3,14 +3,18 @@ module common.worldgen.blueprint;
 import base.array : Array;
 import base.hashmap : FIBONACCI_MULTIPLIER, HashMap;
 import base.numbers : higherOf, lowerOf;
+import base.splitmix : SplitMix;
 import common.graph : Graph, NodeId;
 import common.material : MATERIAL_COUNT;
 import common.worldgen.strokes : Stroke, StrokeRun;
-import common.worldgen.structure : CanonicalSite, ClaimKey, ColumnSpot, LineTransform, PAINT_REACH, SiteFrame, SlotTouch, addPendingTouch, aroundEdge, canonicalOf, edgeCells, isEndless, seedTouch, walkedTouch;
+import common.worldgen.structure : CanonicalSite, ClaimKey, EDGE_NODES, ColumnSpot, LineTransform, PAINT_REACH, SiteFrame, SlotTouch, addPendingTouch, aroundEdge, canonicalOf, edgeCells, isEndless, seedTouch, walkedTouch;
 import geometry.honeycomb : Corner, FACE_COUNT, Face;
 import plugins.api.api : Material;
 
 enum uint PLACED_RECORD = uint.max;
+enum uint KEPT_USERS = uint.max;
+enum ulong PLACED_RANK = 0;
+enum ulong TILE_RANK_BIT = 1;
 enum ubyte TEST_DIMENSION = 12;
 
 struct Paint {
@@ -54,6 +58,15 @@ struct Rhythm {
 }
 
 enum Rhythm EVERY_HEIGHT = Rhythm(0, 0, 0);
+
+struct BrushRank {
+    ulong tile;
+    uint index;
+
+    bool isBefore(BrushRank other) const {
+        return tile < other.tile || (tile == other.tile && index < other.index);
+    }
+}
 
 struct Brush {
     CellBox box;
@@ -125,14 +138,45 @@ struct Painted {
 struct RunRef {
     uint record;
     uint run;
+    int lowEdge;
+    int highEdge;
+}
+
+enum TileState : ubyte {
+    live,
+    dropped,
+    free,
+}
+
+struct TileEdge {
+    LineEdge edge;
+    NodeId[EDGE_NODES] nodes;
 }
 
 struct TileRecord {
     Painted painted;
+    Array!TileEdge edges;
     NodeId face;
     uint horosphere;
-    uint lastUse;
-    bool isDropped;
+    uint listIndex;
+    ubyte feature;
+    TileState state;
+
+    bool isDropped() const {
+        return state == TileState.dropped;
+    }
+}
+
+struct EdgeRecord {
+    NodeId[EDGE_NODES] nodes;
+    uint users;
+}
+
+struct LineState {
+    NodeId node;
+    uint edges;
+    uint touchers;
+    bool isKept;
 }
 
 struct SiteLine {
@@ -170,18 +214,26 @@ enum PaintResult : ubyte {
 
 struct Blueprint {
     Array!LineSpec lines;
+    Array!LineState lineStates;
+    Array!uint freeLines;
     Array!(Array!RunRef) runsOn;
     Array!uint linePins;
     Painted placed;
     Array!TileRecord tiles;
+    Array!uint liveTiles;
+    Array!uint liveUses;
+    Array!uint droppedTiles;
+    Array!uint freeTiles;
     Array!RouteStop route;
     Array!Material materials;
     ubyte[MATERIAL_COUNT] paints;
     HashMap!(LineKey, uint) lineIndex;
-    HashMap!(LineEdge, bool) touchedEdges;
+    HashMap!(LineEdge, EdgeRecord) touchedEdges;
     HashMap!(ClaimKey, bool) claims;
     RouteStop entrance;
+    float fog = float.infinity;
     uint sweep;
+    uint madeLive;
     uint brushCount;
     uint claimCount;
     uint restoredTiles;
@@ -197,22 +249,161 @@ struct Blueprint {
     uint lineOf(LineSpec spec, NodeId node) {
         LineKey key = LineKey(node, spec.lower, spec.xSide, spec.ySide);
         const(uint)* found = lineIndex.find(key);
-        if (found is null) {
+        if (found !is null) {
+            lines.ptr[*found].node = spec.node;
+            return *found;
+        } else if (freeLines.length > 0) {
+            freeLines.length -= 1;
+            uint index = freeLines.ptr[freeLines.length];
+            lines.ptr[index] = spec;
+            lineStates.ptr[index] = LineState(node);
+            lineIndex.insert(key, index);
+            return index;
+        } else {
             uint index = cast(uint) lines.length;
             lines.append(spec);
+            lineStates.append(LineState(node));
             runsOn.append(Array!RunRef.init);
             linePins.append(0);
             lineIndex.insert(key, index);
             return index;
-        } else {
-            lines.ptr[*found].node = spec.node;
-            return *found;
         }
     }
 
-    uint addTile(NodeId face, uint horosphere) {
-        tiles.append(TileRecord(Painted.init, face, horosphere, sweep, false));
-        return cast(uint)(tiles.length - 1);
+    void keepLine(uint line) {
+        lineStates.ptr[line].isKept = true;
+    }
+
+    void forgetLineIfUnused(uint line) {
+        LineState* state = &lineStates.ptr[line];
+        if (!state.isKept && state.edges == 0 && state.touchers == 0 && linePins.ptr[line] == 0 && runsOn.ptr[line].length == 0) {
+            LineSpec spec = lines.ptr[line];
+            lineIndex.remove(LineKey(state.node, spec.lower, spec.xSide, spec.ySide));
+            runsOn.ptr[line].release();
+            lines.ptr[line] = LineSpec.init;
+            *state = LineState.init;
+            freeLines.append(line);
+        }
+    }
+
+    bool isEdgeTouched(LineEdge edge) const {
+        return touchedEdges.find(edge) !is null;
+    }
+
+    void touchEdge(LineEdge edge, NodeId[EDGE_NODES] nodes) {
+        touchedEdges.insert(edge, EdgeRecord(nodes, 0));
+        lineStates.ptr[edge.line].edges += 1;
+    }
+
+    NodeId[EDGE_NODES] useEdge(LineEdge edge) {
+        EdgeRecord* found = touchedEdges.find(edge);
+        if (found.users != KEPT_USERS) {
+            found.users += 1;
+        }
+        return found.nodes;
+    }
+
+    void keepEdge(LineEdge edge) {
+        touchedEdges.find(edge).users = KEPT_USERS;
+    }
+
+    bool releaseEdge(LineEdge edge) {
+        EdgeRecord* found = touchedEdges.find(edge);
+        if (found.users != KEPT_USERS) {
+            found.users -= 1;
+        }
+        return found.users == 0;
+    }
+
+    uint[3] edgeUses() const {
+        uint[3] uses;
+        foreach (ref const edge, ref const record; touchedEdges) {
+            if (record.users == KEPT_USERS) {
+                uses[0] += 1;
+            } else if (record.users > 0) {
+                uses[1] += 1;
+            } else {
+                uses[2] += 1;
+            }
+        }
+        return uses;
+    }
+
+    size_t edgeCount() const {
+        size_t count = 0;
+        foreach (state; lineStates.slice()) {
+            count += state.edges;
+        }
+        return count;
+    }
+
+    void forgetEdge(LineEdge edge) {
+        touchedEdges.remove(edge);
+        lineStates.ptr[edge.line].edges -= 1;
+        forgetLineIfUnused(edge.line);
+    }
+
+    uint addTile(NodeId face, ubyte feature, uint horosphere) {
+        TileRecord made = TileRecord(Painted.init, Array!TileEdge.init, face, horosphere, 0, feature, TileState.live);
+        uint tile = cast(uint) tiles.length;
+        if (freeTiles.length > 0) {
+            freeTiles.length -= 1;
+            tile = freeTiles.ptr[freeTiles.length];
+            tiles.ptr[tile] = made;
+        } else {
+            tiles.append(made);
+        }
+        addLive(tile);
+        return tile;
+    }
+
+    void reviveTile(uint tile) {
+        TileRecord* record = &tiles.ptr[tile];
+        if (record.isDropped) {
+            unlist(droppedTiles, tile);
+            record.state = TileState.live;
+            addLive(tile);
+        }
+    }
+
+    void useTile(uint tile) {
+        if (tiles.ptr[tile].state == TileState.live) {
+            liveUses.ptr[tiles.ptr[tile].listIndex] = sweep;
+        }
+    }
+
+    void addLive(uint tile) {
+        enlist(liveTiles, tile);
+        liveUses.append(sweep);
+        madeLive += 1;
+    }
+
+    void removeLive(uint tile) {
+        uint at = tiles.ptr[tile].listIndex;
+        liveUses.ptr[at] = liveUses.ptr[liveUses.length - 1];
+        liveUses.length -= 1;
+        unlist(liveTiles, tile);
+    }
+
+    void freeTile(uint tile) {
+        unlist(droppedTiles, tile);
+        tiles.ptr[tile].edges.release();
+        tiles.ptr[tile] = TileRecord.init;
+        tiles.ptr[tile].state = TileState.free;
+        freeTiles.append(tile);
+    }
+
+    void enlist(ref Array!uint list, uint tile) {
+        tiles.ptr[tile].listIndex = cast(uint) list.length;
+        list.append(tile);
+    }
+
+    void unlist(ref Array!uint list, uint tile) {
+        uint at = tiles.ptr[tile].listIndex;
+        uint last = list.ptr[list.length - 1];
+        list.ptr[at] = last;
+        tiles.ptr[last].listIndex = at;
+        list.length -= 1;
     }
 
     ref inout(Painted) paintedBy(uint record) inout return {
@@ -241,11 +432,23 @@ struct Blueprint {
 
     void addBrush(uint record, uint line, Brush brush) {
         Painted* painted = &paintedBy(record);
-        if (painted.runs.length == 0 || painted.runs.ptr[painted.runs.length - 1].line != line) {
+        int lowEdge = edgeOf(brush.box.low[2], dimension);
+        int highEdge = edgeOf(brush.box.high[2], dimension);
+        uint run = cast(uint) painted.runs.length - 1;
+        if (painted.runs.length == 0 || painted.runs.ptr[run].line != line) {
             painted.runs.append(LineRun(line, cast(uint) painted.brushes.length, 0));
-            runsOn.ptr[line].append(RunRef(record, cast(uint)(painted.runs.length - 1)));
+            run = cast(uint) painted.runs.length - 1;
+            runsOn.ptr[line].append(RunRef(record, run, lowEdge, highEdge));
+        } else {
+            Array!RunRef* listed = &runsOn.ptr[line];
+            size_t at = listed.length - 1;
+            while (listed.ptr[at].record != record || listed.ptr[at].run != run) {
+                at -= 1;
+            }
+            listed.ptr[at].lowEdge = lowerOf(listed.ptr[at].lowEdge, lowEdge);
+            listed.ptr[at].highEdge = higherOf(listed.ptr[at].highEdge, highEdge);
         }
-        painted.runs.ptr[painted.runs.length - 1].count += 1;
+        painted.runs.ptr[run].count += 1;
         painted.brushes.append(brush);
     }
 
@@ -261,18 +464,34 @@ struct Blueprint {
             listed.ptr[at] = listed.ptr[listed.length];
         }
         record.painted.release();
-        record.isDropped = true;
+        removeLive(tile);
+        record.state = TileState.dropped;
+        enlist(droppedTiles, tile);
     }
 
-    void collectBrushes(uint line, int level, ref Array!Brush into) const {
+    void collectBrushes(uint line, int level, ref Array!Brush into, ref Array!BrushRank ranks) const {
         foreach (listed; runsOn.ptr[line].slice()) {
+            if (listed.lowEdge > level || listed.highEdge < level) {
+                continue;
+            }
             const(Painted)* painted = &paintedBy(listed.record);
             LineRun run = painted.runs.ptr[listed.run];
+            ulong tile = tileRank(listed.record);
             foreach (brush; painted.brushes.ptr[run.first .. run.first + run.count]) {
                 if (edgeOf(brush.box.low[2], dimension) <= level && edgeOf(brush.box.high[2], dimension) >= level) {
                     into.append(brush);
+                    ranks.append(BrushRank(tile, brush.order));
                 }
             }
+        }
+    }
+
+    ulong tileRank(uint record) const {
+        if (record == PLACED_RECORD) {
+            return PLACED_RANK;
+        } else {
+            const(TileRecord)* tile = &tiles.ptr[record];
+            return SplitMix(tile.face.spice() ^ (tile.feature * FIBONACCI_MULTIPLIER)).next() | TILE_RANK_BIT;
         }
     }
 
@@ -309,15 +528,22 @@ struct Blueprint {
     void release() {
         foreach (ref tile; tiles.slice()) {
             tile.painted.release();
+            tile.edges.release();
         }
         foreach (ref listed; runsOn.slice()) {
             listed.release();
         }
         lines.release();
+        lineStates.release();
+        freeLines.release();
         runsOn.release();
         linePins.release();
         placed.release();
         tiles.release();
+        liveTiles.release();
+        liveUses.release();
+        droppedTiles.release();
+        freeTiles.release();
         route.release();
         materials.release();
         lineIndex.release();
@@ -375,6 +601,7 @@ struct BlueprintBuilder {
             return PaintResult.behind;
         } else {
             record(*found, lowEdge, highEdge, isUnbounded);
+            blueprint.keepLine(found.line);
             blueprint.addBrush(PLACED_RECORD, found.line, Brush(canonical, canonicalRhythm(rhythm, found.transform, dimension), blueprint.takeOrders(1), Paint(blueprint.paintOf(material), isIntoAirOnly)));
             return PaintResult.painted;
         }
@@ -421,13 +648,16 @@ struct BlueprintBuilder {
         SlotTouch edge = seedTouch(spec, line);
         foreach (level; lowEdge .. highEdge + 1) {
             LineEdge key = LineEdge(line, level);
-            if (blueprint.touchedEdges.find(key) is null) {
-                blueprint.touchedEdges.insert(key, true);
+            if (!blueprint.isEdgeTouched(key)) {
                 edge = graph.view.walkedTouch(edge, spec, level);
-                foreach (around; graph.view.aroundEdge(edge, spec)) {
+                NodeId[EDGE_NODES] nodes = void;
+                foreach (index, around; graph.view.aroundEdge(edge, spec)) {
+                    nodes[index] = graph.idAt(around.slot);
                     (*graph).addPendingTouch(around.slot, around.touch);
                 }
+                blueprint.touchEdge(key, nodes);
             }
+            blueprint.keepEdge(key);
         }
     }
 

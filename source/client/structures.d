@@ -10,7 +10,7 @@ import base.parallel : Executor;
 import base.splitmix : SplitMix;
 import client.game : Game;
 import client.plugins : registry;
-import client.tiles : TileCall, TileCalls, TileWork, faceKey, isRootTiled, segmentKey;
+import client.tiles : TileCall, TileCalls, TileWork, edgeKey, faceKey, isTiledBy, segmentKey;
 import common.graph : Graph;
 import common.worldgen.blueprint : BlueprintBuilder, CellBox, PLACED_RECORD, PaintResult, Rhythm;
 import common.worldgen.generation : StructureWorld, Worldgen;
@@ -18,7 +18,7 @@ import common.worldgen.horospheres : HorosphereKind, HorosphereRef, Horospheres,
 import common.worldgen.plane : Plane;
 import common.worldgen.store : Grower, TileKey;
 import common.worldgen.strokes : Stroke;
-import common.worldgen.structure : ClaimKey, ColumnSpot, GROUND_RING, PLACE_SLACK, RootedCorner, SiteFrame, anchorBits, atLevel, claimKeyOf, edgeCells, edgeLength, faceSite, forwarded, frameOf, groundRing, rootSite, siteHash, siteOf, siteOrigin, sitePlacement, turned;
+import common.worldgen.structure : ClaimKey, ColumnSpot, GROUND_RING, PLACE_SLACK, RootedCorner, SiteFrame, anchorBits, atLevel, claimKeyOf, edgeCells, edgeLength, edgeSitesOf, faceSite, forwarded, frameOf, groundRing, rootSite, siteHash, siteOf, siteOrigin, sitePlacement, turned;
 import geometry.honeycomb : Face;
 import geometry.lorentz : Motion, Vec4;
 import plugins.api.api : Api, Box, Column, HorosphereForm, Material, NO_KIND, Pen, Site, SitePart, Spot, Structure, Tile, Turn;
@@ -193,7 +193,13 @@ struct StructureHost {
     }
 
     bool hasCover() const {
-        return calls.hasRoot || calls.kinds.length > 0;
+        uint tiled = 0;
+        foreach (call; calls.kinds.slice()) {
+            if (call.tile !is null) {
+                tiled += 1;
+            }
+        }
+        return calls.root.tile !is null || calls.edge.tile !is null || tiled > 0;
     }
 
     void build(SiteFrame root) {
@@ -257,33 +263,40 @@ struct StructureHost {
     void cover(ref Graph graph, uint slot) {
         builder.graph = &graph;
         if (!problem.isPresent && hasCover()) {
-            if (isRootTiled(graph, calls)) {
+            if (isTiledBy(graph, calls, ROOT)) {
                 coverRing(graph, graph.view.groundRing(graph.view.groundNodeOf(slot, ROOT), Face.f0), Face.f0, ROOT);
             }
             foreach (near; graph.view.ensureHorospheresAt(slot)) {
-                if (graph.horospheres.isUpright(near.horosphere)) {
+                if (!isTiledBy(graph, calls, near.horosphere)) {
+                    continue;
+                } else if (graph.horospheres.isUpright(near.horosphere)) {
                     coverSegments(graph, near);
                 } else if (graph.view.isPaintedBy(slot, near)) {
                     Face label = graph.horospheres.horosphere(near.horosphere).label;
                     coverRing(graph, graph.view.groundRing(graph.view.groundNodeOf(slot, near.horosphere), label), label, near.horosphere);
                 }
             }
+            if (calls.hasEdge) {
+                foreach (site; graph.view.edgeSitesOf(slot)) {
+                    coverTile(graph, graph.view.edgeKey(site), site, ROOT, 0, true);
+                }
+            }
             runTiles(graph);
         }
     }
 
-    void coverTile(ref Graph graph, TileKey key, SiteFrame site, uint over, int segment) {
+    void coverTile(ref Graph graph, TileKey key, SiteFrame site, uint over, int segment, bool isEdge) {
         const(uint)* known = graph.structures.tiledFaces.find(key);
         if (known !is null && !graph.structures.blueprint.tiles.ptr[*known].isDropped) {
-            graph.structures.blueprint.tiles.ptr[*known].lastUse = graph.structures.blueprint.sweep;
+            graph.structures.blueprint.useTile(*known);
         } else {
-            tiles.addTask(graph, key, site.node, null, over, site, segment);
+            tiles.addTask(graph, key, site.node, null, over, site, segment, isEdge);
         }
     }
 
     void coverRing(ref Graph graph, uint[GROUND_RING] ring, Face label, uint over) {
         foreach (face; ring) {
-            coverTile(graph, graph.view.faceKey(face, label), faceSite(face, label), over, 0);
+            coverTile(graph, graph.view.faceKey(face, label), faceSite(face, label), over, 0, false);
         }
     }
 
@@ -291,7 +304,7 @@ struct StructureHost {
         int[2] segments = graph.view.segmentsNear(near);
         foreach (segment; segments[0] .. segments[1] + 1) {
             SiteFrame site = graph.view.segmentSite(near.horosphere, segment);
-            coverTile(graph, graph.view.segmentKey(site), site, near.horosphere, segment);
+            coverTile(graph, graph.view.segmentKey(site), site, near.horosphere, segment, false);
         }
     }
 
@@ -386,6 +399,33 @@ struct StructureHost {
         } else {
             calls.root = TileCall(tile, copied(data, size));
             calls.hasRoot = true;
+        }
+    }
+
+    void tileEdges(Tile tile, const(void)* data, size_t size) {
+        if (builder.isGrowing || calls.hasEdge) {
+            refuse("only the world's own structure tiles the edges, and only once");
+        } else {
+            calls.edge = TileCall(tile, copied(data, size));
+            calls.hasEdge = true;
+        }
+    }
+
+    void invertGravity() {
+        if (builder.isGrowing) {
+            refuse("only the world's own structure turns gravity around");
+        } else {
+            builder.graph.horospheres.isGravityInverted = true;
+        }
+    }
+
+    void fog(double units) {
+        if (builder.isGrowing) {
+            refuse("only the world's own structure sets the fog");
+        } else if (!(units > 0)) {
+            refuse("the fog closes in past a distance above zero");
+        } else {
+            builder.graph.structures.blueprint.fog = cast(float) units;
         }
     }
 
@@ -505,9 +545,12 @@ Api mainApi(StructureHost* host) {
     api.claim = &mainClaim;
     api.isClaimed = &mainIsClaimed;
     api.tile = &mainTile;
+    api.tileEdges = &mainTileEdges;
     api.horosphere = &mainHorosphere;
     api.openHorosphere = &mainOpenHorosphere;
     api.rooted = &mainRooted;
+    api.invertGravity = &mainInvertGravity;
+    api.fog = &mainFog;
     api.rising = &mainRising;
     api.balance = &mainBalance;
     api.pen = &mainPen;
@@ -604,6 +647,18 @@ void mainOpenHorosphere(const(Api)* api, Site site, uint kind, uint edges) {
 
 void mainRooted(const(Api)* api, uint kind) {
     mainHost(api).rooted(kind);
+}
+
+void mainTileEdges(const(Api)* api, Tile tile, const(void)* data, size_t size) {
+    mainHost(api).tileEdges(tile, data, size);
+}
+
+void mainInvertGravity(const(Api)* api) {
+    mainHost(api).invertGravity();
+}
+
+void mainFog(const(Api)* api, double units) {
+    mainHost(api).fog(units);
 }
 
 uint mainRising(const(Api)* api, Site site) {

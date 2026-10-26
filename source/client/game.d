@@ -212,7 +212,7 @@ struct Game {
 
     Length currentAltitude() {
         Position position = characterState.position;
-        return Length(world.graph.ensureState(world.graph.slotOf(position.node)).surface.distanceTo(position.local * Point!float.origin()));
+        return Length(world.graph.horospheres.gravitySign() * world.graph.ensureState(world.graph.slotOf(position.node)).surface.distanceTo(position.local * Point!float.origin()));
     }
 
     float[3] directionToDoor() {
@@ -275,9 +275,11 @@ struct Game {
     void rebuildWorld(Worldgen worldgen) {
         ubyte dimension = world.graph.layout.dimension;
         float tanhReach = world.tanhReach;
+        float renderRadius = world.renderRadius;
         uint epoch = world.epoch;
         world.release();
         world = LocalWorld.make(dimension, worldgen, tanhReach);
+        world.renderRadius = renderRadius;
         world.epoch = epoch + 1;
     }
 

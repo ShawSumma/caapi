@@ -7,6 +7,16 @@ enum int ENDLESS_LOW = int.min;
 enum int ENDLESS_HIGH = int.max;
 enum uint PERCENT = 100;
 enum uint FACE_CORNERS = 5;
+enum ulong MIX = 0x2545F4914F6CDD1D;
+enum uint MIX_SHIFT = 24;
+
+ulong mixed(ulong hash, ulong salt) {
+    return ((hash ^ salt) * MIX) >> MIX_SHIFT;
+}
+
+double roll(ulong hash, ulong salt) {
+    return (mixed(hash, salt) % PERCENT) / cast(double) PERCENT;
+}
 
 Box boxOf(int[2] x, int[2] y, int[2] z) {
     return Box([x[0], y[0], z[0]], [x[1], y[1], z[1]]);
@@ -54,6 +64,34 @@ T clamped(T)(T value, T low, T high) {
     } else {
         return value;
     }
+}
+
+struct Tread {
+    int[2] x;
+    int[2] y;
+}
+
+int[2] negated(int[2] span) {
+    return [-span[1] - 1, -span[0] - 1];
+}
+
+Tread treadAround(int inner, int width, int sides, int index) {
+    int at = floorMod(index, 4 * (sides + 1));
+    int step = at % (sides + 1);
+    int depth = 2 * inner / sides;
+    int[2] ring = [inner, inner + width - 1];
+    Tread tread = Tread(ring, ring);
+    if (step > 0) {
+        tread.x = [inner - step * depth, inner - (step - 1) * depth - 1];
+    }
+    foreach (_; 0 .. at / (sides + 1)) {
+        tread = Tread(negated(tread.y), tread.x);
+    }
+    return tread;
+}
+
+float middle(int[2] span) {
+    return (span[0] + span[1] + 1) / 2.0f;
 }
 
 Turtle upright(Turtle site) {

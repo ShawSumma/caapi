@@ -148,16 +148,17 @@ struct Strokes {
         seen.clear();
         visits.append(view.containing(node, stroke.middle()));
         seen.append(view.idAt(visits.ptr[0].slot));
+        float within = coshf(NODE_RADIUS + stroke.reach());
         size_t next = 0;
         while (next < visits.length) {
             StrokeVisit visit = visits.ptr[next];
             next += 1;
             Stroke moved = stroke.moved(visit.motion);
-            if (moved.isWithin(Vec4!float.origin(), NODE_RADIUS)) {
+            if (moved.nearest(Vec4!float.origin()).coshDistance <= within) {
                 note(view.idAt(visit.slot), StrokeReach(visit.motion, record, run), reached);
                 foreach (index; 0 .. FACE_COUNT) {
                     Face side = cast(Face) index;
-                    if (moved.mayBeWithin(MIRRORED_ORIGINS[index], NODE_RADIUS)) {
+                    if (moved.nearest(MIRRORED_ORIGINS[index]).coshDistance <= within + FRAME_SLACK) {
                         uint beside = view.ensureNeighborSlot(visit.slot, side);
                         if (!isSeen(view.idAt(beside))) {
                             seen.append(view.idAt(beside));

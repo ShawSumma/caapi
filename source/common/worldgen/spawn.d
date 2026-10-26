@@ -68,7 +68,7 @@ bool isRegionProvenClear(ref Graph graph, Position position, float distance) {
 }
 
 Position clearSpawnPosition(ref Graph graph, float bodyReach) {
-    float rootAltitude = graph.ensureState(graph.slotOf(ROOT_NODE)).surface.distanceTo(Point!float.origin());
+    float rootAltitude = graph.horospheres.gravitySign() * graph.ensureState(graph.slotOf(ROOT_NODE)).surface.distanceTo(Point!float.origin());
     float[3] up = graph.ensureGravityAt(Position.origin()).up;
     return graph.clearPositionFrom(up, rootAltitude, bodyReach, bodyReach);
 }

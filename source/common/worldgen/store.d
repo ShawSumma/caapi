@@ -7,14 +7,13 @@ import base.parallel : Executor;
 import base.slab : Run, RunPool, Slab;
 import common.graph : Graph, NO_SLOT, NodeId;
 import common.view : GraphView;
-import common.worldgen.blueprint : Blueprint, Painted;
+import common.worldgen.blueprint : Blueprint, LineEdge, Painted, TileRecord;
 import common.worldgen.building : Building;
 import common.worldgen.horospheres : ROOT;
 import common.worldgen.strokes : Stroke, Strokes;
-import common.worldgen.structure : LineTouch, PendingTouch;
+import common.worldgen.structure : LineTouch;
 
 enum uint NO_BUILDING = 0;
-enum uint NO_PENDING = 0;
 
 struct Grower {
     void function(void* context, ref Graph graph, int through) grow;
@@ -52,8 +51,7 @@ struct NodeStructure {
 struct StructureStore {
     Slab!NodeStructure nodes;
     RunPool!LineTouch touches;
-    Slab!PendingTouch pending;
-    HashMap!(NodeId, uint) pendingHeads;
+    HashMap!(NodeId, Array!LineTouch) pending;
     HashMap!(TileKey, uint) tiledFaces;
     Array!LineTouch scratch;
     Slab!Building buildings;
@@ -61,7 +59,6 @@ struct StructureStore {
     Blueprint blueprint;
     Strokes strokes;
     Grower grower;
-    uint pendingCount;
     uint buildingCount;
     int grownThrough = -1;
 
@@ -81,18 +78,45 @@ struct StructureStore {
         Run run = touches.reserve(cast(uint) found.length);
         memcpy(touches.slice(run).ptr, found.ptr, found.length * LineTouch.sizeof);
         at(slot).touches = run;
+        foreach (touch; found) {
+            blueprint.lineStates.ptr[touch.line].touchers += 1;
+        }
     }
 
     void addPending(NodeId id, LineTouch touch) {
-        const(uint)* head = pendingHeads.find(id);
-        uint next = NO_PENDING;
-        if (head !is null) {
-            next = *head;
+        Array!LineTouch* found = pending.find(id);
+        if (found !is null) {
+            found.append(touch);
+        } else {
+            Array!LineTouch made;
+            made.append(touch);
+            pending.insert(id, made);
         }
-        pendingCount += 1;
-        pending.ensure(pendingCount);
-        *pending.at(pendingCount - 1) = PendingTouch(touch, next);
-        pendingHeads.insert(id, pendingCount);
+    }
+
+    const(LineTouch)[] pendingAt(NodeId id) const {
+        const(Array!LineTouch)* found = pending.find(id);
+        if (found is null) {
+            return null;
+        } else {
+            return found.slice();
+        }
+    }
+
+    void removePending(NodeId id, LineEdge edge) {
+        Array!LineTouch* touched = pending.find(id);
+        size_t index = 0;
+        while (touched.ptr[index].line != edge.line || touched.ptr[index].level != edge.level) {
+            index += 1;
+        }
+        foreach (moved; index + 1 .. touched.length) {
+            touched.ptr[moved - 1] = touched.ptr[moved];
+        }
+        touched.length -= 1;
+        if (touched.length == 0) {
+            touched.release();
+            pending.remove(id);
+        }
     }
 
     const(Building)* buildingAt(uint slot) const {
@@ -129,6 +153,9 @@ struct StructureStore {
 
     void forget(uint slot) {
         releaseBuilding(slot);
+        foreach (touch; touchesAt(slot)) {
+            blueprint.lineStates.ptr[touch.line].touchers -= 1;
+        }
         touches.release(at(slot).touches);
         at(slot) = NodeStructure.init;
     }
@@ -148,15 +175,16 @@ struct StructureStore {
         }
         nodes.release();
         touches.release();
+        foreach (ref const id, ref list; pending) {
+            list.release();
+        }
         pending.release();
-        pendingHeads.release();
         tiledFaces.release();
         scratch.release();
         buildings.release();
         freeBuildings.release();
         blueprint.release();
         strokes.release();
-        pendingCount = 0;
         buildingCount = 0;
     }
 }
@@ -217,4 +245,30 @@ void dropTile(ref Graph graph, uint tile) {
         graph.horospheres.horospheres.ptr[horosphere - 1].tiles -= 1;
     }
     structures.blueprint.dropTile(tile);
+}
+
+bool isTileGone(ref const Graph graph, uint tile) {
+    bool isGone = true;
+    foreach (ref used; graph.structures.blueprint.tiles.ptr[tile].edges.slice()) {
+        foreach (node; used.nodes) {
+            isGone = isGone && graph.slotOf(node) == NO_SLOT;
+        }
+    }
+    return isGone;
+}
+
+void forgetTile(ref Graph graph, uint tile) {
+    StructureStore* structures = &graph.structures;
+    Blueprint* blueprint = &structures.blueprint;
+    TileRecord* record = &blueprint.tiles.ptr[tile];
+    structures.tiledFaces.remove(TileKey(record.face, record.feature));
+    foreach (ref used; record.edges.slice()) {
+        if (blueprint.releaseEdge(used.edge)) {
+            foreach (node; used.nodes) {
+                structures.removePending(node, used.edge);
+            }
+            blueprint.forgetEdge(used.edge);
+        }
+    }
+    blueprint.freeTile(tile);
 }

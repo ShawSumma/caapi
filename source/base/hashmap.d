@@ -22,6 +22,11 @@ enum size_t TEST_KEPT = 3;
 enum size_t TEST_RANGE = 4096;
 enum size_t TEST_STEPS = 2_000_000;
 enum size_t TEST_SWING = 200_000;
+enum size_t TEST_VISIT_STEPS = 1009;
+enum size_t TEST_BIG_RANGE = 1 << 18;
+enum size_t TEST_BIG_STEPS = 1_500_000;
+enum size_t TEST_BIG_SWING = 500_000;
+enum size_t TEST_BIG_VISIT_STEPS = 4999;
 
 struct HashSlot(K, V) {
     K key;
@@ -154,11 +159,13 @@ struct HashMap(K, V) {
 
     inout(V)* find(K key) inout {
         inout(V)* found = current.find(key);
-        if (found !is null) {
-            return found;
-        } else {
-            return previous.find(key);
+        if (found is null && previous.capacity > 0) {
+            size_t index = previous.probe(key, previous.hashOf(key));
+            if (index >= migrated && previous.controls[index] != EMPTY) {
+                found = &previous.slots[index].value;
+            }
         }
+        return found;
     }
 
     void insert(K key, V value) {
@@ -213,11 +220,36 @@ struct HashMap(K, V) {
         }
     }
 
+    int opApply(scope int delegate(ref const K, ref V) visit) {
+        return visitLive(this, visit);
+    }
+
+    int opApply(scope int delegate(ref const K, ref const V) visit) const {
+        return visitLive(this, visit);
+    }
+
     void release() {
         current.release();
         previous.release();
         migrated = 0;
     }
+}
+
+// Below the migration cursor previous holds only stale copies, and pages given back there may keep a live control over
+// a zeroed slot. Above it, an entry counts only if current has no newer one.
+int visitLive(M, D)(ref M map, D visit) {
+    int result = 0;
+    foreach (index; 0 .. map.current.capacity) {
+        if (result == 0 && (map.current.controls[index] & LIVE) != 0) {
+            result = visit(map.current.slots[index].key, map.current.slots[index].value);
+        }
+    }
+    foreach (index; map.migrated .. map.previous.capacity) {
+        if (result == 0 && (map.previous.controls[index] & LIVE) != 0 && map.current.find(map.previous.slots[index].key) is null) {
+            result = visit(map.previous.slots[index].key, map.previous.slots[index].value);
+        }
+    }
+    return result;
 }
 
 struct TestKey {
@@ -304,9 +336,71 @@ unittest {
         } else {
             assert(found is null);
         }
+        if (step % TEST_VISIT_STEPS == 0) {
+            size_t visited = 0;
+            foreach (ref const visitedKey, ref value; map) {
+                assert(isPresent[visitedKey.value] && value == visitedKey.value);
+                visited += 1;
+            }
+            size_t present = 0;
+            foreach (isKey; isPresent) {
+                present += isKey;
+            }
+            assert(visited == present);
+        }
     }
     foreach (key; 0 .. TEST_RANGE) {
         assert((map.find(TestKey(key)) !is null) == isPresent[key]);
     }
+    map.release();
+}
+
+unittest {
+    HashMap!(TestKey, size_t) map;
+    bool* isPresent = cast(bool*) calloc(TEST_BIG_RANGE, bool.sizeof);
+    size_t present = 0;
+    ulong state = 1;
+    foreach (step; 0 .. TEST_BIG_STEPS) {
+        state = state * 6364136223846793005UL + 1442695040888963407UL;
+        size_t key = (state >> 30) % TEST_BIG_RANGE;
+        bool isInserting = ((step / TEST_BIG_SWING) % 2 == 0) != ((state >> 20) % 4 == 0);
+        if (isInserting && !isPresent[key]) {
+            map.insert(TestKey(key), key);
+            isPresent[key] = true;
+            present += 1;
+        } else if (!isInserting && isPresent[key]) {
+            map.remove(TestKey(key));
+            isPresent[key] = false;
+            present -= 1;
+        }
+        size_t probed = (state >> 40) % TEST_BIG_RANGE;
+        assert((map.find(TestKey(probed)) !is null) == isPresent[probed]);
+        if (step % TEST_BIG_VISIT_STEPS == 0) {
+            size_t visited = 0;
+            foreach (ref const visitedKey, ref value; map) {
+                assert(isPresent[visitedKey.value] && value == visitedKey.value);
+                visited += 1;
+            }
+            assert(visited == present);
+        }
+    }
+    free(isPresent);
+    map.release();
+}
+
+unittest {
+    HashMap!(TestKey, size_t) map;
+    size_t count = 0;
+    while (map.previous.capacity == 0) {
+        map.insert(TestKey(count), count);
+        count += 1;
+    }
+    assert(map.migrated > 0);
+    size_t visited = 0;
+    foreach (ref const key, ref value; map) {
+        assert(key.value == value && value < count);
+        visited += 1;
+    }
+    assert(visited == count);
     map.release();
 }

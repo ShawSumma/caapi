@@ -5,10 +5,8 @@ import plugins.buildings.building : Bound, Join, Lot, Lots, Palette, STORY, Side
 import plugins.buildings.types : Type, palettes, stories;
 import types = plugins.buildings.types;
 import plugins.connector.connector : Floor, connect, slabFloor;
-import plugins.turtle.turtle : FACE_CORNERS, PERCENT, Turtle, boxOf, cornersOf, floorDiv, lowerOf, upright;
+import plugins.turtle.turtle : FACE_CORNERS, Turtle, boxOf, cornersOf, floorDiv, lowerOf, roll, upright;
 
-enum ulong MIX = 0x2545F4914F6CDD1D;
-enum uint MIX_SHIFT = 24;
 enum ulong ISLAND_SALT = 0x51ED270B;
 enum ulong DROPPED_SALT = 0x2C1B3C6D;
 enum ulong TREES_SALT = 0x297A2D39;
@@ -68,14 +66,6 @@ struct Area {
     Turtle tower;
     int[2] x;
     int[2] y;
-}
-
-ulong mixed(ulong hash, ulong salt) {
-    return ((hash ^ salt) * MIX) >> MIX_SHIFT;
-}
-
-double roll(ulong hash, ulong salt) {
-    return (mixed(hash, salt) % PERCENT) / cast(double) PERCENT;
 }
 
 Turtle[AROUND] quartersOf(Turtle corner) {

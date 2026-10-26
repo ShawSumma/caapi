@@ -75,6 +75,7 @@ struct GraphView {
     HashMap!(NodeId, uint) virtualIds;
     HashMap!(SideKey, uint) missingChildren;
     HashMap!(SlotKey, NodeState) statesOfSlots;
+    Array!uint statedSlots;
     Array!HorosphereRef refs;
     HashMap!(SlotKey, RefRange) refsOfNodes;
     Array!uint risingFound;
@@ -96,6 +97,7 @@ struct GraphView {
         virtualIds.clear();
         missingChildren.clear();
         statesOfSlots.clear();
+        statedSlots.clear();
         refs.clear();
         refsOfNodes.clear();
         risingFound.clear();
@@ -114,6 +116,7 @@ struct GraphView {
         virtualIds.release();
         missingChildren.release();
         statesOfSlots.release();
+        statedSlots.release();
         refs.release();
         refsOfNodes.release();
         risingFound.release();
@@ -303,6 +306,7 @@ struct GraphView {
             } else {
                 NodeState state = NodeState.fromParents(this, node);
                 statesOfSlots.insert(SlotKey(node), state);
+                statedSlots.append(node);
                 return state;
             }
         }
@@ -429,6 +433,15 @@ struct GraphView {
     }
 }
 
+void applyStates(ref Graph target, ref const GraphView view) {
+    foreach (slot; view.statedSlots.slice()) {
+        if (!target.nodeAt(slot).hasState) {
+            *target.states.at(slot) = *view.statesOfSlots.find(SlotKey(slot));
+            target.nodeAt(slot).hasState = true;
+        }
+    }
+}
+
 struct ThreadViews {
     Array!GraphView views;
 
@@ -449,6 +462,7 @@ struct ThreadViews {
     bool finish(ref Graph graph) {
         bool isMade = false;
         foreach (ref view; views.slice()) {
+            graph.applyStates(view);
             graph.applyDiscoveries(view);
             isMade = graph.makeWantedHorospheres(view) || isMade;
         }

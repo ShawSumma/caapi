@@ -5,7 +5,7 @@ import blocks = plugins.blocks.blocks;
 import plugins.buildings.building : SIDES, Side;
 import plugins.rooms.levels : Biome, HallLayout, LAYERS, Level;
 import plugins.rooms.rooms : Doors, Floor, Frame, Halls, MAZE_CELLS, Owns, Plan, Quarter, SEPARATION, Stair, frameOf, origin, paintFloor, stairs;
-import plugins.turtle.turtle : FACE_CORNERS, Turtle, cornersOf, higherOf, upright;
+import plugins.turtle.turtle : FACE_CORNERS, Turtle, cornersOf, higherOf, mixed, roll, upright;
 
 enum int TOP_FLOOR = -2;
 enum int GROUND = TOP_FLOOR + 1;
@@ -68,29 +68,29 @@ bool isHall(Turtle turtle, ref const Root root, ref const Level level, size_t in
     } else if (turtle.hash(SitePart.vertex) == root.vertex || turtle.forward(1).hash(SitePart.vertex) == root.vertex) {
         return true;
     } else {
-        return blocks.roll(turtle.hash(SitePart.edge), HALL_SALT + index) >= GRID_DROPPED;
+        return roll(turtle.hash(SitePart.edge), HALL_SALT + index) >= GRID_DROPPED;
     }
 }
 
 bool isSolid(ulong face, ref const Level level, size_t index) {
-    return blocks.roll(face, SOLID_SALT + index) < level.solid;
+    return roll(face, SOLID_SALT + index) < level.solid;
 }
 
 Doors lineDoors(ulong hash, size_t index, ref const Level level, bool isClosed) {
     if (level.isMaze) {
-        int first = cast(int)(blocks.mixed(hash, SLOT_SALT + index) % MAZE_CELLS);
+        int first = cast(int)(mixed(hash, SLOT_SALT + index) % MAZE_CELLS);
         Doors slots = Doors.one(first);
-        if (blocks.roll(hash, SECOND_SALT + index) < SECOND_PASSAGE_ODDS) {
-            slots.at[1] = cast(int)((first + 1 + blocks.mixed(hash, OFFSET_SALT + index) % (MAZE_CELLS - 1)) % MAZE_CELLS);
+        if (roll(hash, SECOND_SALT + index) < SECOND_PASSAGE_ODDS) {
+            slots.at[1] = cast(int)((first + 1 + mixed(hash, OFFSET_SALT + index) % (MAZE_CELLS - 1)) % MAZE_CELLS);
             slots.count = 2;
         }
         return slots;
     } else if (isClosed) {
         return Doors.init;
-    } else if (blocks.roll(hash, MISSING_SALT + index) < level.missing) {
+    } else if (roll(hash, MISSING_SALT + index) < level.missing) {
         return Doors([0, 0], 0, true);
     } else {
-        return Doors.one(DOOR_LOW + cast(int)(blocks.mixed(hash, DOOR_SALT + index) % (DOOR_HIGH - DOOR_LOW + 1)));
+        return Doors.one(DOOR_LOW + cast(int)(mixed(hash, DOOR_SALT + index) % (DOOR_HIGH - DOOR_LOW + 1)));
     }
 }
 
@@ -111,12 +111,12 @@ bool stairOf(Turtle corner, ref const Root root, ref const Halls[FLOOR_COUNT] ha
     ulong vertex = corner.hash(SitePart.vertex);
     ulong face = corner.hash(SitePart.face);
     ulong hash = vertex ^ face;
-    uint upper = cast(uint)(blocks.mixed(hash, STAIR_SALT) % (FLOOR_COUNT - 1));
+    uint upper = cast(uint)(mixed(hash, STAIR_SALT) % (FLOOR_COUNT - 1));
     bool isForced = root.forced.isPresent && vertex == root.forced.vertex && face == root.forced.face;
     if (isForced) {
         upper = root.forced.upper;
     }
-    if (isLobby || (!isForced && blocks.roll(hash, STAIR_ODDS_SALT) >= FLOORS[upper].level.stairs)) {
+    if (isLobby || (!isForced && roll(hash, STAIR_ODDS_SALT) >= FLOORS[upper].level.stairs)) {
         return false;
     } else {
         uint lower = upper + 1;
@@ -131,7 +131,7 @@ bool stairOf(Turtle corner, ref const Root root, ref const Halls[FLOOR_COUNT] ha
 
 Plan planOf(Turtle corner, ref const Quarter q, ref const Floor floor, size_t index, bool isSolidBlock, bool hasStair, Halls halls) {
     immutable(Level)* level = &floor.level();
-    double chance = blocks.roll(corner.hash(SitePart.vertex) ^ corner.hash(SitePart.face), PLAN_SALT + index);
+    double chance = roll(corner.hash(SitePart.vertex) ^ corner.hash(SitePart.face), PLAN_SALT + index);
     if (level.isMaze) {
         return Plan.maze;
     } else if (q.isLobby && (floor.isTop || q.hasShaft)) {
@@ -202,7 +202,7 @@ void tileAt(Turtle face, ref const Root root) {
     const(Biome)*[FLOOR_COUNT] biomes;
     foreach (index; 0 .. FLOOR_COUNT) {
         immutable(Level)* level = &FLOORS[index].level();
-        biomes[index] = &level.biomes[blocks.mixed(strongest, BIOME_SALT + index + 1) % level.biomes.length];
+        biomes[index] = &level.biomes[mixed(strongest, BIOME_SALT + index + 1) % level.biomes.length];
     }
     foreach (corner; corners) {
         quarter(corner, root, biomes);

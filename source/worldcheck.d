@@ -16,17 +16,19 @@ import client.meshing : Mesher;
 import client.streaming : Streamer;
 import client.structures : StructureProblem, growthProblem, placeWorldStructure;
 import client.world : FULL_RADIUS;
-import common.graph : Graph, NodeId;
+import common.eviction : Evictor, Unloaded;
+import common.graph : Graph, NO_SLOT, NodeId;
 import common.material : MATERIAL_COUNT;
 import common.neighbors : needsMesh;
 import common.node : Chunk, ChunkSlot, ChunkState, Voxels, cellIndex;
 import common.position : Position;
 import common.traversal : NO_DEADLINE, NearbyNode, NearbyScratch;
+import common.worldgen.blueprint : Blueprint;
 import common.worldgen.generation : ChunkParams, GeneratedVoxels, Worldgen;
 import common.worldgen.horospheres : ChunkPoint, chunkPointOf;
 import common.worldgen.store : dropTile;
 import common.worldgen.structure : ColumnSpot, SiteFrame, altitude, columnPoint, edgeLength, forwarded, rootSite, sitePlacement, turned;
-import geometry.honeycomb : CORNER_COUNT, CUBE_RADIUS, Corner, cubeCenter;
+import geometry.honeycomb : CORNER_COUNT, CUBE_RADIUS, Corner, FACE_COUNT, Face, cubeCenter;
 import geometry.lorentz : Motion, Point;
 import plugins.api.api : Material, Turn;
 
@@ -41,6 +43,10 @@ enum size_t BENCH_MAP_LIVE = 2_000_000;
 enum size_t BENCH_MAP_CHURN = 8_000_000;
 enum size_t BENCH_MAP_LOOKUPS = 4_000_000;
 enum size_t BENCH_MAP_BATCH = 1024;
+enum uint FORGET_STEPS = 16;
+enum uint FORGET_SIDE_STRIDE = 5;
+enum float FORGET_NEAR_RADIUS = 1.0f;
+enum uint FORGET_SWEEPS = 4000;
 
 struct ContentHashes {
     ulong[2] materials;
@@ -268,7 +274,7 @@ bool dumpStructure(FILE* output, ubyte dimension, Worldgen worldgen) {
             }
         }
         scratch.release();
-        fprintf(output, "lines=%zu brushes=%u stops=%zu claims=%u edge=%.4f\n", graph.structures.blueprint.lines.length, graph.structures.blueprint.brushCount, graph.structures.blueprint.route.length, graph.structures.blueprint.claimCount, cast(double) edgeLength(graph.layout).value);
+        fprintf(output, "lines=%zu brushes=%zu stops=%zu claims=%u edge=%.4f\n", graph.structures.blueprint.lines.length, graph.structures.blueprint.brushTotal(), graph.structures.blueprint.route.length, graph.structures.blueprint.claimCount, cast(double) edgeLength(graph.layout).value);
         problem = growthProblem(graph);
     }
     if (problem.isPresent) {
@@ -293,7 +299,9 @@ bool checkRepaint(FILE* output, ubyte dimension, Worldgen worldgen) {
         }
         size_t tiles = graph.structures.blueprint.tiles.length;
         foreach (tile; 0 .. tiles) {
-            graph.dropTile(cast(uint) tile);
+            if (tile % 2 == 0) {
+                graph.dropTile(cast(uint) tile);
+            }
         }
         foreach (slot; 0 .. graph.slotCount) {
             graph.structures.releaseBuilding(slot);
@@ -317,6 +325,104 @@ bool checkRepaint(FILE* output, ubyte dimension, Worldgen worldgen) {
     }
     graph.release();
     return !problem.isPresent && differing == 0;
+}
+
+struct StructureCounts {
+    size_t lines;
+    size_t edges;
+    size_t pending;
+    size_t tiles;
+
+    static StructureCounts of(ref const Graph graph) {
+        const(Blueprint)* blueprint = &graph.structures.blueprint;
+        size_t pending = 0;
+        foreach (ref const id, ref const list; graph.structures.pending) {
+            pending += 1;
+        }
+        return StructureCounts(blueprint.lines.length - blueprint.freeLines.length, blueprint.edgeCount(), pending, blueprint.liveTiles.length + blueprint.droppedTiles.length);
+    }
+}
+
+void hashStructured(ref Graph graph, const(NearbyNode)[] nearby, ref HashMap!(NodeId, ulong) hashes) {
+    foreach (node; nearby) {
+        if (graph.ensureStructureAt(node.slot)) {
+            hashes.insert(graph.idAt(node.slot), graph.generatedHash(node.slot));
+        }
+    }
+}
+
+bool checkForget(FILE* output, ubyte dimension, Worldgen worldgen) {
+    Graph graph = Graph.make(dimension, worldgen);
+    StructureProblem problem = graph.placeWorldStructure();
+    uint differing = 0;
+    uint forgotten = 0;
+    if (!problem.isPresent) {
+        NearbyScratch scratch;
+        Position anchor = Position(graph.idAt(graph.anchorSlot), Motion!float.identity());
+        HashMap!(NodeId, ulong) first;
+        graph.hashStructured(scratch.collectAll(graph, anchor, STRUCTURE_DUMP_RADIUS), first);
+        StructureCounts painted = StructureCounts.of(graph);
+        uint far = graph.anchorSlot;
+        foreach (step; 0 .. FORGET_STEPS) {
+            uint side = step * FORGET_SIDE_STRIDE;
+            while (graph.isParentFace(far, cast(Face)(side % FACE_COUNT))) {
+                side += 1;
+            }
+            far = graph.ensureNeighborSlot(far, cast(Face)(side % FACE_COUNT));
+        }
+        NearbyScratch away;
+        away.collectAll(graph, Position(graph.idAt(far), Motion!float.identity()), FORGET_NEAR_RADIUS);
+        Evictor evictor;
+        Array!Unloaded unloaded;
+        double evicting = nowMilliseconds();
+        foreach (_; 0 .. FORGET_SWEEPS) {
+            unloaded.clear();
+            evictor.sweep(graph, away, null, Point!float.origin(), unloaded, nowMilliseconds());
+        }
+        evicting = nowMilliseconds() - evicting;
+        forgotten = evictor.forgottenTiles;
+        StructureCounts left = StructureCounts.of(graph);
+        uint[3] edgeUses = graph.structures.blueprint.edgeUses();
+        HashMap!(NodeId, bool) kept;
+        size_t structured = 0;
+        size_t keptCount = 0;
+        foreach (ref const id, ref const hash; first) {
+            structured += 1;
+            if (graph.slotOf(id) != NO_SLOT) {
+                kept.insert(id, true);
+                keptCount += 1;
+            }
+        }
+        HashMap!(NodeId, ulong) again;
+        graph.hashStructured(scratch.collectAll(graph, anchor, STRUCTURE_DUMP_RADIUS), again);
+        uint missing = 0;
+        uint keptDiffering = 0;
+        foreach (ref const id, ref const hash; first) {
+            const(ulong)* repainted = again.find(id);
+            if (repainted is null) {
+                missing += 1;
+            } else if (*repainted != hash) {
+                differing += 1;
+                keptDiffering += kept.find(id) !is null;
+            }
+        }
+        differing += missing;
+        fprintf(output, "forget evicting %u nodes and %u tiles took %.0fms\n", evictor.evicted, evictor.droppedTiles, evicting);
+        fprintf(output, "forget structured=%zu (%zu never evicted) forgot=%u of %u dropped tiles,lines %zu->%zu edges %zu->%zu (kept %u, used %u, unused %u) pending %zu->%zu tiles %zu->%zu, differing=%u (%u never evicted, %u missing)\n", structured, keptCount, forgotten, evictor.droppedTiles, painted.lines, left.lines, painted.edges, left.edges, edgeUses[0], edgeUses[1], edgeUses[2], painted.pending, left.pending, painted.tiles, left.tiles, differing, keptDiffering, missing);
+        kept.release();
+        first.release();
+        again.release();
+        unloaded.release();
+        evictor.release();
+        away.release();
+        scratch.release();
+        problem = growthProblem(graph);
+    }
+    if (problem.isPresent) {
+        fprintf(output, "%s\n", problem.text.ptr);
+    }
+    graph.release();
+    return !problem.isPresent && differing == 0 && forgotten > 0;
 }
 
 bool printSlices(FILE* output, ubyte dimension, Worldgen worldgen, int height) {

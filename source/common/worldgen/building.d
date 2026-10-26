@@ -4,8 +4,8 @@ import core.stdc.stdlib : calloc, free, malloc;
 import base.array : Array;
 import base.numbers : higherOf, lowerOf;
 import common.graph : Graph;
-import common.worldgen.blueprint : Brush, CellBox, LineSpec, Paint, Painted;
-import common.worldgen.strokes : Stroke, StrokeRun;
+import common.worldgen.blueprint : Brush, BrushRank, CellBox, LineSpec, Paint, Painted;
+import common.worldgen.strokes : Stroke, StrokeReach, StrokeRun;
 import common.worldgen.structure : ColumnChunk, LineTouch, isOnTouch, isTouchInRange;
 import geometry.honeycomb : CORNER_COUNT, Corner, NODE_RADIUS;
 import geometry.lorentz : Vec4;
@@ -35,6 +35,7 @@ struct PlanLine {
 struct BuildingPlan {
     Array!PlanLine lines;
     Array!Brush brushes;
+    Array!BrushRank ranks;
     Array!Material materials;
     Array!Stroke strokes;
     ubyte dimension;
@@ -46,7 +47,7 @@ struct BuildingPlan {
             LineSpec spec = graph.structures.blueprint.lines.ptr[touch.line];
             if (isTouchInRange(touch, spec)) {
                 uint first = cast(uint) plan.brushes.length;
-                graph.structures.blueprint.collectBrushes(touch.line, touch.level, plan.brushes);
+                graph.structures.blueprint.collectBrushes(touch.line, touch.level, plan.brushes, plan.ranks);
                 plan.lines.append(PlanLine(spec, touch, first, cast(uint) plan.brushes.length - first));
             }
         }
@@ -58,13 +59,28 @@ struct BuildingPlan {
     void release() {
         lines.release();
         brushes.release();
+        ranks.release();
         materials.release();
         strokes.release();
     }
 }
 
 void collectStrokes(ref const Graph graph, uint slot, ref Array!Stroke into) {
-    foreach (reach; graph.structures.strokes.reachesAt(graph.idAt(slot))) {
+    const(StrokeReach)[] reaches = graph.structures.strokes.reachesAt(graph.idAt(slot));
+    Array!BrushRank ranks;
+    Array!uint order;
+    foreach (index, reach; reaches) {
+        ranks.append(BrushRank(graph.structures.blueprint.tileRank(reach.record), reach.run));
+        size_t at = order.length;
+        order.append(cast(uint) index);
+        while (at > 0 && ranks.ptr[index].isBefore(ranks.ptr[order.ptr[at - 1]])) {
+            order.ptr[at] = order.ptr[at - 1];
+            at -= 1;
+        }
+        order.ptr[at] = cast(uint) index;
+    }
+    foreach (index; order.slice()) {
+        StrokeReach reach = reaches[index];
         const(Painted)* painted = &graph.structures.blueprint.paintedBy(reach.record);
         StrokeRun run = painted.strokeRuns.ptr[reach.run];
         Vec4!float center = (reach.motion.inverse() * Vec4!double.origin()).as!float();
@@ -77,6 +93,8 @@ void collectStrokes(ref const Graph graph, uint slot, ref Array!Stroke into) {
             }
         }
     }
+    ranks.release();
+    order.release();
 }
 
 struct ChunkLines {
@@ -136,7 +154,7 @@ struct Building {
                 }
             }
             if (uses.length > 0) {
-                sortByOrder(uses.slice(), plan.brushes.slice());
+                sortByRank(uses.slice(), plan.ranks.slice());
                 stampChunk(corner, found, uses.slice(), plan.brushes.slice());
             }
         }
@@ -206,11 +224,11 @@ struct Building {
     }
 }
 
-void sortByOrder(BrushUse[] uses, const(Brush)[] brushes) {
+void sortByRank(BrushUse[] uses, const(BrushRank)[] ranks) {
     foreach (index; 1 .. uses.length) {
         BrushUse held = uses[index];
         size_t slot = index;
-        while (slot > 0 && brushes[uses[slot - 1].brush].order > brushes[held.brush].order) {
+        while (slot > 0 && ranks[held.brush].isBefore(ranks[uses[slot - 1].brush])) {
             uses[slot] = uses[slot - 1];
             slot -= 1;
         }

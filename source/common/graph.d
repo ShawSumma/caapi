@@ -110,6 +110,7 @@ struct Graph {
     ChunkLayout layout;
     uint slotCount;
     uint liveCount;
+    uint madeNodes;
     uint anchorSlot;
 
     static Graph make(ubyte dimension, Worldgen chosen) {
@@ -208,6 +209,7 @@ struct Graph {
         added.depth = depth;
         added.parentFaces = parentFaces;
         liveCount += 1;
+        madeNodes += 1;
         slots.insert(id, slot);
         return slot;
     }

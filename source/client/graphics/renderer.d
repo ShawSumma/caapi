@@ -198,7 +198,7 @@ struct Renderer {
             skyLinear,
             [frustum.tanHalfWidth, frustum.tanHalfHeight],
             kleinDepthScale(NEAR_PLANE),
-            fogReach(world.renderRadius),
+            fogReach(world.viewRadius()),
             FOG_SHARPNESS,
             parityOf(determinant(matrixMultiply(projection, cameraInverse))),
             sinhf(CUBE_RADIUS),

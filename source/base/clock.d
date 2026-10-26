@@ -1,6 +1,6 @@
 module base.clock;
 
-import base.numbers : higherOf;
+import base.numbers : higherOf, lowerOf;
 
 version (OSX) {
     import core.sys.posix.time : timespec;
@@ -16,6 +16,10 @@ version (OSX) {
 enum double NANOSECONDS_PER_SECOND = 1e9;
 enum double NANOSECONDS_PER_MILLISECOND = 1e6;
 enum double MILLISECONDS_PER_SECOND = 1e3;
+enum uint SMOOTHED_FRAMES = 8;
+immutable double[2] TEST_UNEVEN_FRAMES = [0.012, 0.021];
+enum double TEST_MOST_FRAME = 0.1;
+enum double TEST_FRAME_TOLERANCE = 1e-9;
 
 double nowSeconds() {
     timespec now;
@@ -43,6 +47,48 @@ struct PhaseTimes {
             return 0;
         }
     }
+}
+
+struct FrameClock {
+    double[SMOOTHED_FRAMES] intervals = 0;
+    double last = 0;
+    double worst = 0;
+    uint count;
+
+    static FrameClock startingAt(double now) {
+        FrameClock clock;
+        clock.last = now;
+        return clock;
+    }
+
+    double tick(double now, double most) {
+        double interval = lowerOf(now - last, most);
+        intervals[count % SMOOTHED_FRAMES] = interval;
+        worst = higherOf(interval, worst);
+        last = now;
+        count += 1;
+        uint used = lowerOf(count, SMOOTHED_FRAMES);
+        double total = 0;
+        foreach (recent; intervals[0 .. used]) {
+            total += recent;
+        }
+        return total / used;
+    }
+}
+
+unittest {
+    FrameClock clock = FrameClock.startingAt(0);
+    double now = 0;
+    double smoothed = 0;
+    foreach (frame; 0 .. 4 * SMOOTHED_FRAMES) {
+        now += TEST_UNEVEN_FRAMES[frame % TEST_UNEVEN_FRAMES.length];
+        smoothed = clock.tick(now, TEST_MOST_FRAME);
+    }
+    double mean = (TEST_UNEVEN_FRAMES[0] + TEST_UNEVEN_FRAMES[1]) / 2;
+    assert(smoothed > mean - TEST_FRAME_TOLERANCE && smoothed < mean + TEST_FRAME_TOLERANCE);
+    assert(clock.worst > TEST_UNEVEN_FRAMES[1] - TEST_FRAME_TOLERANCE && clock.worst < TEST_UNEVEN_FRAMES[1] + TEST_FRAME_TOLERANCE);
+    smoothed = clock.tick(now + 1, TEST_MOST_FRAME);
+    assert(smoothed < mean + TEST_MOST_FRAME / SMOOTHED_FRAMES + TEST_FRAME_TOLERANCE);
 }
 
 double nowMilliseconds() {

@@ -23,7 +23,8 @@ import plugins.api.api : Material;
 
 enum float NEARBY_PADDING = 0.05f;
 enum float NEARBY_REBUILD_DISTANCE = 0.25f;
-enum double REBUILD_RESTART_TRAVEL = 4 * NEARBY_REBUILD_DISTANCE;
+enum double REBUILD_NARROW_TRAVEL = 4 * NEARBY_REBUILD_DISTANCE;
+enum double REBUILD_ABANDON_TRAVEL = FULL_RADIUS - CAMERA_REACH;
 enum float REBUILD_GROWTH = 0.25f;
 enum float REBASE_DISTANCE = NODE_RADIUS + 1.0f;
 enum float REDERIVE_RADIUS = 6.0f;
@@ -34,7 +35,7 @@ enum float FOG_LOAD_THRESHOLD = 1.0f / 256;
 enum float FOG_SHARPNESS = 4.0f;
 enum float FULL_RADIUS = 4.5f;
 enum float CAMERA_REACH = 2.0f;
-enum double STEP_BUDGET_MILLISECONDS = 5.0;
+enum double STEP_BUDGET_MILLISECONDS = 8.0;
 enum double NEARBY_LEAST_MILLISECONDS = 1.0;
 enum double STREAMER_LEAST_MILLISECONDS = 1.0;
 enum size_t STRUCTURE_CANDIDATES = 256;
@@ -49,10 +50,13 @@ struct Placement {
 struct NearbyStats {
     double slicedMilliseconds = 0;
     double recoveryMilliseconds = 0;
+    double pendingTravel = 0;
+    uint pendingFrames;
     uint publishes;
     uint recoveries;
     uint grown;
-    uint restarts;
+    uint narrowings;
+    uint abandons;
     uint rebases;
 }
 
@@ -83,6 +87,7 @@ struct LocalWorld {
     Array!Unloaded unloaded;
     Array!uint candidates;
     double rebuildTravel = 0;
+    double startTravel = 0;
     float renderRadius;
     float radiusCut = 0;
     float publishedCut = 0;
@@ -126,17 +131,21 @@ struct LocalWorld {
         return nearby[published].nodes.ptr[cameraNearbyIndex()].transform * cameraPosition.local;
     }
 
+    float viewRadius() const {
+        return lowerOf(renderRadius, graph.structures.blueprint.fog);
+    }
+
     float loadRadius() const {
-        return fogReach(renderRadius) * powf(logf(1.0f / FOG_LOAD_THRESHOLD), 1.0f / FOG_SHARPNESS);
+        return fogReach(viewRadius()) * powf(logf(1.0f / FOG_LOAD_THRESHOLD), 1.0f / FOG_SHARPNESS);
     }
 
     void update(bool isUnbudgeted) {
         double start = nowMilliseconds();
-        double end = start + STEP_BUDGET_MILLISECONDS;
+        double end = start + STEP_BUDGET_MILLISECONDS - phases.evict.lastMs;
         paintAhead();
         double painted = nowMilliseconds();
         double paintedCpu = threadCpuMilliseconds();
-        double deadline = phaseDeadline(isUnbudgeted, end - phases.streamer.lastMs - phases.evict.lastMs, NEARBY_LEAST_MILLISECONDS);
+        double deadline = phaseDeadline(isUnbudgeted, end - phases.streamer.lastMs, NEARBY_LEAST_MILLISECONDS);
         if (!hasNearby) {
             buildInitialNearby(deadline);
         } else if (cameraNearbyIndex() == NOT_COLLECTED) {
@@ -149,7 +158,7 @@ struct LocalWorld {
         trackTravel();
         double found = nowMilliseconds();
         double foundCpu = threadCpuMilliseconds();
-        streamer.drive(graph, cachedNodes, cameraPosition, cameraInNearbyFrame(), loadRadius(), nearbyVersion, isUnbudgeted, phaseDeadline(isUnbudgeted, end - phases.evict.lastMs, STREAMER_LEAST_MILLISECONDS));
+        streamer.drive(graph, cachedNodes, cameraPosition, cameraInNearbyFrame(), loadRadius(), nearbyVersion, isUnbudgeted, phaseDeadline(isUnbudgeted, end, STREAMER_LEAST_MILLISECONDS));
         double streamed = nowMilliseconds();
         double streamedCpu = threadCpuMilliseconds();
         evict();
@@ -211,6 +220,7 @@ struct LocalWorld {
             nearbyVersion += 1;
             listVersion += 1;
             streamer.travel += TELEPORT_TRAVEL;
+            startTravel = streamer.travel;
         }
         current.advance(graph, deadline, streamer.executor());
         hasNearby = !current.isBuilding();
@@ -229,6 +239,7 @@ struct LocalWorld {
         nearbyStats.recoveries += 1;
         nearbyStats.recoveryMilliseconds += nowMilliseconds() - start;
         streamer.travel += TELEPORT_TRAVEL;
+        startTravel = streamer.travel;
         publish(pendingPoint);
     }
 
@@ -237,19 +248,25 @@ struct LocalWorld {
         NearbyScratch* current = &nearby[published];
         NearbyScratch* next = &nearby[1 - published];
         Point!float camera = cameraInNearbyFrame() * Point!float.origin();
-        if (current.isBuilding()) {
+        bool isOutrun = streamer.travel - startTravel > REBUILD_ABANDON_TRAVEL;
+        if ((current.isBuilding() || isPending) && isOutrun) {
+            abandonRebuild(deadline);
+        } else if (current.isBuilding()) {
             current.advance(graph, deadline, streamer.executor());
             cachedNodes = current.nodes.slice();
         } else {
             double traveled = streamer.travel - rebuildTravel;
-            if (next.isBuilding() && !next.isKeeping() && traveled > REBUILD_RESTART_TRAVEL) {
+            if (next.isBuilding() && !next.isKeeping() && traveled > REBUILD_NARROW_TRAVEL) {
                 cutRadius(traveled);
-                startNext(camera);
-                nearbyStats.restarts += 1;
+                next.narrow(rebuildDistance());
+                pendingCut = radiusCut;
+                rebuildTravel = streamer.travel;
+                nearbyStats.narrowings += 1;
             } else if (!isPending && (publishedPoint.coshDistance(camera) > coshf(NEARBY_REBUILD_DISTANCE) || publishedCut > 0)) {
                 startNext(camera);
             }
             if (isPending) {
+                nearbyStats.pendingFrames += 1;
                 next.continueKeeping(*current, deadline, streamer.executor());
                 next.advance(graph, deadline, streamer.executor());
                 if (!next.isBuilding()) {
@@ -258,6 +275,19 @@ struct LocalWorld {
             }
         }
         nearbyStats.slicedMilliseconds += nowMilliseconds() - start;
+    }
+
+    void abandonRebuild(double deadline) {
+        NearbyScratch* next = &nearby[1 - published];
+        cutRadius(streamer.travel - rebuildTravel);
+        next.begin(graph, cameraPosition, rebuildDistance(), FULL_RADIUS);
+        pendingPoint = cameraPosition.local * Point!float.origin();
+        pendingCut = radiusCut;
+        rebuildTravel = streamer.travel;
+        startTravel = streamer.travel;
+        next.advance(graph, deadline, streamer.executor());
+        nearbyStats.abandons += 1;
+        publish(pendingPoint);
     }
 
     float rebuildDistance() const {
@@ -281,6 +311,7 @@ struct LocalWorld {
         pendingPoint = camera;
         pendingCut = radiusCut;
         rebuildTravel = streamer.travel;
+        startTravel = streamer.travel;
         isPending = true;
         nearbyStats.grown += 1;
     }
@@ -289,11 +320,13 @@ struct LocalWorld {
         NearbyScratch* next = &nearby[1 - published];
         if (next.indexOf(graph.slotOf(cameraPosition.node)) != NOT_COLLECTED) {
             cutRadius(streamer.travel - rebuildTravel);
+            nearbyStats.pendingTravel += streamer.travel - startTravel;
             publish(pendingPoint);
         } else {
             next.begin(graph, cameraPosition, rebuildDistance(), FULL_RADIUS);
             pendingPoint = cameraPosition.local * Point!float.origin();
             pendingCut = radiusCut;
+            startTravel = streamer.travel;
         }
     }
 

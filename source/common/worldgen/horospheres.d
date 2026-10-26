@@ -8,9 +8,10 @@ import base.hashmap : FIBONACCI_MULTIPLIER, HashMap;
 import base.numbers : higherOf, lowerOf;
 import base.slab : Run, RunPool, Slab;
 import base.splitmix : unitOf;
+import base.vector3 : scaled;
 import common.graph : Graph, NO_SLOT, NodeId, ParentList;
 import common.position : Position;
-import common.traversal : NearbyNode, NearbyScratch;
+import common.traversal : MIRRORED_ORIGINS, NearbyNode, NearbyScratch;
 import common.view : GraphView, SlotCorner;
 import common.worldgen.blueprint : BlueprintBuilder, CellBox, EVERY_HEIGHT, PaintResult;
 import common.worldgen.climate : Climate, CubeClimate, NodeClimate, RELIEF_BOUND, RELIEF_SLACK;
@@ -40,6 +41,8 @@ enum double APART_TOLERANCE = 1e-3;
 enum float GROUND_LIFT_FACTOR = 0.1f;
 enum float DESCENT_ALTITUDE = 2.0f;
 enum float DESCENT_TOLERANCE = 1e-3f;
+enum double DESCENT_TIE_SLACK = 1 + 1e-3;
+enum double DESCENT_TIE_FLOOR = 1e-3;
 enum float COLUMN_REACH_EDGES = 1.5f;
 enum ubyte TEST_DIMENSION = 12;
 enum float TEST_RADIUS = 3.0f;
@@ -198,6 +201,15 @@ struct Horospheres {
     Array!uint rising;
     Fill rootFill;
     ubyte rootKind;
+    bool isGravityInverted;
+
+    float gravitySign() const {
+        if (isGravityInverted) {
+            return -1;
+        } else {
+            return 1;
+        }
+    }
 
     void ensureSlots(uint count) {
         nodes.ensure(count);
@@ -451,11 +463,20 @@ uint groundNodeOf(ref GraphView view, uint slot, uint horosphere) {
         Face lowest = Face.f0;
         float lowestAltitude = float.infinity;
         PlaneMeasure measured = carried.measure();
+        double[FACE_COUNT] along = void;
+        double least = double.infinity;
         foreach (index; 0 .. FACE_COUNT) {
-            float candidate = fabsf(measured.distanceTo(mirror(cast(Face) index) * Point!float.origin()));
-            if (candidate < lowestAltitude) {
-                lowestAltitude = candidate;
-                lowest = cast(Face) index;
+            along[index] = fabs(measured.normal.minkowski(MIRRORED_ORIGINS[index].as!double()));
+            least = lowerOf(least, along[index]);
+        }
+        // Altitude grows with the product; only faces whose float altitude could tie the lowest are measured.
+        foreach (index; 0 .. FACE_COUNT) {
+            if (along[index] <= least * DESCENT_TIE_SLACK || along[index] * measured.scale < DESCENT_TIE_FLOOR) {
+                float candidate = fabsf(measured.distanceTo(Point!float(MIRRORED_ORIGINS[index])));
+                if (candidate < lowestAltitude) {
+                    lowestAltitude = candidate;
+                    lowest = cast(Face) index;
+                }
             }
         }
         isDescending = lowestAltitude < altitude - DESCENT_TOLERANCE;
@@ -896,16 +917,17 @@ Gravity gravityAt(ref const Graph graph, Position position) {
     uint slot = graph.slotOf(position.node);
     assert(graph.isGravityKnown(slot));
     Grounds grounds = graph.groundsIn(slot);
+    float sign = graph.horospheres.gravitySign();
     if (grounds.count == 1) {
-        return Gravity(grounds.items[0].surface.upAt(position.local), 1.0f);
+        return Gravity(grounds.items[0].surface.upAt(position.local).scaled(sign), 1.0f);
     } else {
         Point!float point = position.local * Point!float.origin();
         float relief = graph.loadedClimateAt(slot, point).relief;
         float[MAX_GROUNDS] heights = void;
         float[3][MAX_GROUNDS] ups = void;
         foreach (index, ground; grounds.items[0 .. grounds.count]) {
-            heights[index] = heightAbove(relief, ground.surface.distanceTo(point), ground.fill != Fill.terrain);
-            ups[index] = ground.surface.upAt(position.local);
+            heights[index] = sign * heightAbove(relief, ground.surface.distanceTo(point), ground.fill != Fill.terrain);
+            ups[index] = ground.surface.upAt(position.local).scaled(sign);
         }
         return blendedGravity(heights[0 .. grounds.count], ups[0 .. grounds.count]);
     }
@@ -982,11 +1004,11 @@ bool isInBand(Plane plane, Fill fill, float relief) {
 bool mayHoldContent(ref Graph graph, uint slot) {
     NodeState state = *graph.ensureState(slot);
     float relief = state.climate.climate().relief;
-    bool holds = graph.ensureStructureAt(slot) || isInBand(state.surface, graph.horospheres.fillOf(ROOT), relief);
+    bool holds = isInBand(state.surface, graph.horospheres.fillOf(ROOT), relief);
     foreach (near; graph.view.ensureHorospheresAt(slot)) {
         holds = holds || graph.horospheres.isUpright(near.horosphere) || isInBand(near.plane, graph.horospheres.fillOf(near.horosphere), relief);
     }
-    return holds;
+    return holds || graph.ensureStructureAt(slot);
 }
 
 float horosphereHeightAt(ref GraphView view, uint horosphere, Position position) {

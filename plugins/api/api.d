@@ -164,9 +164,12 @@ struct Api {
     bool function(const(Api)* api, Site site, SitePart part) claim;
     bool function(const(Api)* api, Site site, SitePart part) isClaimed;
     void function(const(Api)* api, Tile tile, const(void)* data, size_t size) tile;
+    void function(const(Api)* api, Tile tile, const(void)* data, size_t size) tileEdges;
     uint function(const(Api)* api, double odds, HorosphereForm form, uint tag, Tile tile, const(void)* data, size_t size) horosphere;
     void function(const(Api)* api, Site site, uint kind, uint edges) openHorosphere;
     void function(const(Api)* api, uint kind) rooted;
+    void function(const(Api)* api) invertGravity;
+    void function(const(Api)* api, double units) fog;
     uint function(const(Api)* api, Site site) rising;
     int function(const(Api)* api, Site site, int most) balance;
     Pen function(const(Api)* api, Site site) pen;

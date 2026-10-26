@@ -15,7 +15,7 @@ import client.script : ScriptHost;
 import client.structures : StructureProblem, placeStructure;
 import common.settings : CHUNK_DIMENSION;
 import common.worldgen.generation : Worldgen, WorldgenKind;
-import worldcheck : benchDrive, benchGen, benchHashMap, benchMesh, benchNearby, checkRepaint, dumpStructure, dumpWorld, printMaterialCensus, printSlices, printWorldDigest;
+import worldcheck : benchDrive, benchGen, benchHashMap, benchMesh, benchNearby, checkForget, checkRepaint, dumpStructure, dumpWorld, printMaterialCensus, printSlices, printWorldDigest;
 
 enum float DEFAULT_DUMP_RADIUS = 3.0f;
 enum float DEFAULT_GEN_RADIUS = 2.5f;
@@ -33,6 +33,7 @@ enum Command : ubyte {
     dumpStructure,
     slices,
     checkRepaint,
+    checkForget,
     benchGen,
     benchDrive,
     benchNearby,
@@ -92,6 +93,9 @@ struct HeadlessArguments {
             return index + 1;
         } else if (strcmp(argument, "--check-repaint") == 0) {
             command = Command.checkRepaint;
+            return index + 1;
+        } else if (strcmp(argument, "--check-forget") == 0) {
+            command = Command.checkForget;
             return index + 1;
         } else if (strcmp(argument, "--bench-gen") == 0) {
             command = Command.benchGen;
@@ -160,6 +164,8 @@ struct HeadlessArguments {
             return StartupError(registry().allNames(), "needs --worldgen structure <name>", "--dump-structure");
         } else if (command == Command.checkRepaint && worldgen.kind != WorldgenKind.structure) {
             return StartupError(registry().allNames(), "needs --worldgen structure <name>", "--check-repaint");
+        } else if (command == Command.checkForget && worldgen.kind != WorldgenKind.structure) {
+            return StartupError(registry().allNames(), "needs --worldgen structure <name>", "--check-forget");
         } else if (command == Command.slices && worldgen.kind != WorldgenKind.structure) {
             return StartupError(registry().allNames(), "needs --worldgen structure <name>", "--slice");
         } else {
@@ -242,6 +248,8 @@ bool runWorldCommand(ref const HeadlessArguments arguments, FILE* output) {
         return printSlices(output, CHUNK_DIMENSION, arguments.worldgen, arguments.sliceHeight());
     } else if (arguments.command == Command.checkRepaint) {
         return checkRepaint(output, CHUNK_DIMENSION, arguments.worldgen);
+    } else if (arguments.command == Command.checkForget) {
+        return checkForget(output, CHUNK_DIMENSION, arguments.worldgen);
     } else {
         runMeasurement(arguments, output);
         return true;

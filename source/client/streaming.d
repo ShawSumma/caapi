@@ -351,14 +351,24 @@ struct Streamer {
     }
 
     void collectUnstructured(ref const Graph graph, const(NearbyNode)[] nearby, ref Array!uint into, size_t limit) const {
+        size_t looked = 0;
+        size_t near = nearHead;
+        while (near < nearCamera.length && looked < limit * LOOKAHEAD_PER_CANDIDATE && into.length < limit) {
+            collectIfUnstructured(graph, nearby[nearCamera.ptr[near]].slot, into);
+            near += 1;
+            looked += 1;
+        }
         size_t index = scanCursor;
-        size_t end = index + limit * LOOKAHEAD_PER_CANDIDATE;
-        while (index < nearby.length && index < end && into.length < limit) {
-            uint slot = nearby[index].slot;
-            if (isScanPending(slot) && !graph.isFinished(slot) && !graph.structures.at(slot).isCovered) {
-                into.append(slot);
-            }
+        while (index < nearby.length && looked < limit * LOOKAHEAD_PER_CANDIDATE && into.length < limit) {
+            collectIfUnstructured(graph, nearby[index].slot, into);
             index += 1;
+            looked += 1;
+        }
+    }
+
+    void collectIfUnstructured(ref const Graph graph, uint slot, ref Array!uint into) const {
+        if (isScanPending(slot) && !graph.isFinished(slot) && !graph.structures.at(slot).isCovered) {
+            into.append(slot);
         }
     }
 

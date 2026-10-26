@@ -11,7 +11,7 @@ dflags "-betterC" "-checkaction=halt" "-P-Ilua" "-P-DLUA_USE_JUMPTABLE=0"
 dflags "-P-DLUA_USE_LINUX" platform="linux"
 dflags "-P-DLUA_USE_MACOSX" platform="osx"
 libs "dl" "m" "pthread"
-preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :planet" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :road" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :city" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :backrooms" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :tower" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :crown" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :trail" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :fixtures"
+preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :planet" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :road" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :city" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :backrooms" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :tower" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :crown" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :trail" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :fixtures" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :babel" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :library" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :palace" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :arbor" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :lattice"
 
 configuration "application" {
 	targetName "mined"
@@ -178,6 +178,61 @@ subPackage {
 	dflags "-betterC" "-checkaction=halt"
 	libs "m"
 	dependency "mined:box" version="*"
+}
+
+subPackage {
+	name "babel"
+	targetType "dynamicLibrary"
+	targetPath "lib"
+	sourcePaths "plugins/babel"
+	importPaths "."
+	dflags "-betterC" "-checkaction=halt"
+	libs "m"
+	dependency "mined:turtle" version="*"
+}
+
+subPackage {
+	name "library"
+	targetType "dynamicLibrary"
+	targetPath "lib"
+	sourcePaths "plugins/library"
+	importPaths "."
+	dflags "-betterC" "-checkaction=halt"
+	libs "m"
+	dependency "mined:blocks" version="*"
+}
+
+subPackage {
+	name "palace"
+	targetType "dynamicLibrary"
+	targetPath "lib"
+	sourcePaths "plugins/palace"
+	importPaths "."
+	dflags "-betterC" "-checkaction=halt"
+	libs "m"
+	dependency "mined:turtle" version="*"
+}
+
+subPackage {
+	name "arbor"
+	targetType "dynamicLibrary"
+	targetPath "lib"
+	sourcePaths "plugins/arbor"
+	importPaths "."
+	dflags "-betterC" "-checkaction=halt"
+	libs "m"
+	dependency "mined:turtle" version="*"
+}
+
+subPackage {
+	name "lattice"
+	targetType "dynamicLibrary"
+	targetPath "lib"
+	sourcePaths "plugins/lattice"
+	importPaths "."
+	dflags "-betterC" "-checkaction=halt"
+	libs "m"
+	dependency "mined:turtle" version="*"
 }
 
 subPackage {

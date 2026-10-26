@@ -4,7 +4,7 @@ import core.math : sqrt;
 import core.stdc.math : atanhf, coshf, fabsf, floorf;
 import base.array : Array;
 import base.hashmap : FIBONACCI_MULTIPLIER;
-import base.numbers : lowerOf;
+import base.numbers : higherOf, lowerOf;
 import base.splitmix : SplitMix;
 import base.units : Length;
 import common.graph : Graph, NO_SLOT, NodeId, ParentEntry, ParentList, ROOT_NODE;
@@ -27,6 +27,7 @@ enum float TOUCHING_FACTOR = 1.5f;
 enum Length SPAWN_DISTANCE = Length(1.0f);
 enum uint FACE_CORNERS = 5;
 enum uint EDGE_NODES = 4;
+enum uint NODE_EDGES = 30;
 enum ubyte TEST_DIMENSION = 12;
 enum float TEST_RADIUS = 3.0f;
 enum Length TEST_TOLERANCE = Length(0.01f);
@@ -35,6 +36,7 @@ enum int TEST_BEHIND_EDGES = 10;
 enum int TEST_RISE_EDGES = 3;
 enum uint TEST_DEEP_STEPS = 40;
 enum uint TEST_SIDE_STRIDE = 5;
+immutable Face[3] TEST_EDGE_WALK = [Face.f3, Face.f7, Face.f1];
 immutable int[3][4] TEST_CELLS = [
     [0, 0, 0],
     [3, 1, 2],
@@ -48,11 +50,6 @@ struct LineTouch {
     Corner lower;
     byte xSign;
     byte ySign;
-}
-
-struct PendingTouch {
-    LineTouch touch;
-    uint next;
 }
 
 struct TouchCrossing {
@@ -198,15 +195,8 @@ Face crossingSide(Corner corner, ref const LineSpec spec) {
 void finalizeStructure(ref Graph graph, uint slot) {
     Array!LineTouch* found = &graph.structures.scratch;
     found.clear();
-    const(uint)* head = graph.structures.pendingHeads.find(graph.idAt(slot));
-    uint pending = 0;
-    if (head !is null) {
-        pending = *head;
-    }
-    while (pending != 0) {
-        PendingTouch record = *graph.structures.pending.at(pending - 1);
-        (*found).addUnique(record.touch);
-        pending = record.next;
+    foreach_reverse (touch; graph.structures.pendingAt(graph.idAt(slot))) {
+        (*found).addUnique(touch);
     }
     ParentList parents = graph.parents(slot);
     foreach (link; parents.links[0 .. parents.count]) {
@@ -361,6 +351,41 @@ RootedCorner rootedCorner(ref const GraphView view, uint node, Corner corner) {
         }
     }
     return RootedCorner(ClaimKey(slot, corner, SitePart.vertex), view.depthOf(slot));
+}
+
+SiteFrame edgeSite(ref const GraphView view, uint node, Corner corner, size_t axis) {
+    Face first = corner.faces[(axis + 1) % 3];
+    Face second = corner.faces[(axis + 2) % 3];
+    uint slot = node;
+    bool isLowest = false;
+    while (!isLowest) {
+        ParentList parents = view.parents(slot);
+        uint index = 0;
+        while (index < parents.count && parents.links[index].side != first && parents.links[index].side != second) {
+            index += 1;
+        }
+        isLowest = index == parents.count;
+        if (!isLowest) {
+            slot = parents.links[index].slot;
+        }
+    }
+    return SiteFrame(0, slot, lowerOf(corner, corner.across[axis]), lowerOf(first, second), higherOf(first, second), 1, 1, 1);
+}
+
+SiteFrame[NODE_EDGES] edgeSitesOf(ref const GraphView view, uint node) {
+    SiteFrame[NODE_EDGES] sites = void;
+    uint count = 0;
+    foreach (index; 0 .. CORNER_COUNT) {
+        Corner corner = cast(Corner) index;
+        foreach (axis; 0 .. 3) {
+            if (corner < corner.across[axis]) {
+                sites[count] = view.edgeSite(node, corner, axis);
+                count += 1;
+            }
+        }
+    }
+    assert(count == NODE_EDGES);
+    return sites;
 }
 
 RootedCorner siteOrigin(ref GraphView view, SiteFrame site) {
@@ -916,6 +941,40 @@ unittest {
         assert(isSamePoint(graph.view.nodeToNode(corner, deep) * Point!float.origin(), side.mirror * turn.mirror * Point!float.origin()));
         if (side.isAdjacentTo(turn)) {
             assert(graph.ensureNeighborSlot(graph.ensureNeighborSlot(deep, turn), side) == corner);
+        }
+    }
+    graph.release();
+}
+
+unittest {
+    Graph graph = testGraph();
+    uint far = graph.anchorSlot;
+    foreach (side; TEST_EDGE_WALK) {
+        far = graph.ensureNeighborSlot(far, side);
+    }
+    uint[2] starts = [graph.anchorSlot, far];
+    foreach (start; starts) {
+        SiteFrame[NODE_EDGES] sites = graph.view.edgeSitesOf(start);
+        foreach (index, site; sites) {
+            foreach (other; sites[index + 1 .. $]) {
+                assert(other != site);
+            }
+        }
+        foreach (index; 0 .. CORNER_COUNT) {
+            Corner corner = cast(Corner) index;
+            foreach (axis; 0 .. 3) {
+                SiteFrame expected = graph.view.edgeSite(start, corner, axis);
+                uint first = graph.ensureNeighborSlot(start, corner.faces[(axis + 1) % 3]);
+                uint second = graph.ensureNeighborSlot(start, corner.faces[(axis + 2) % 3]);
+                uint both = graph.ensureNeighborSlot(first, corner.faces[(axis + 2) % 3]);
+                uint[3] around = [first, second, both];
+                foreach (node; around) {
+                    assert(graph.view.edgeSite(node, corner, axis) == expected);
+                }
+                Corner end = corner.across[axis];
+                size_t endAxis = 3 - sideAxis(end, corner.faces[(axis + 1) % 3]) - sideAxis(end, corner.faces[(axis + 2) % 3]);
+                assert(graph.view.edgeSite(start, end, endAxis) == expected);
+            }
         }
     }
     graph.release();

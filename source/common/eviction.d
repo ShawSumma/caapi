@@ -3,44 +3,57 @@ module common.eviction;
 import core.stdc.math : coshf;
 import base.array : Array;
 import base.clock : nowMilliseconds;
+import base.numbers : higherOf;
 import common.graph : Graph, NO_SLOT, ParentList;
 import common.neighbors : chunkNeighborSlot;
 import common.node : Chunk, ChunkSlot, ChunkState;
 import common.traversal : NOT_COLLECTED, NearbyNode, NearbyScratch;
-import common.worldgen.blueprint : Blueprint, TileRecord;
+import common.worldgen.blueprint : Blueprint;
 import common.worldgen.horospheres : releaseIdleHorospheres;
-import common.worldgen.store : dropTile, isTilePinned, unpin;
+import common.worldgen.store : dropTile, forgetTile, isTileGone, isTilePinned, unpin;
 import geometry.cube : DIRECTIONS;
 import geometry.honeycomb : CORNER_COUNT, CUBE_RADIUS, Corner, cubeCenter;
 import geometry.lorentz : Point;
 
 enum uint SLOTS_PER_CLOCK_CHECK = 256;
 enum uint SWEEP_CYCLE_FRAMES = 120;
+enum uint SWEEP_LEAST_SLOTS = 1024;
 enum double SWEEP_MOST_MILLISECONDS = 3.0;
 enum float KEEP_RADIUS = 3.0f;
 enum float DROP_RADIUS = 3.5f;
-enum uint TILE_IDLE_SWEEPS = 4;
+enum uint TILE_IDLE_SWEEPS = 60;
+enum uint TILE_CYCLE_FRAMES = 30;
+enum uint TILES_PER_CLOCK_CHECK = 64;
 
 struct Evictor {
     Array!uint stack;
     Array!bool isRecent;
     uint cursor;
     uint tileCursor;
+    uint forgetCursor;
+    uint seenLive;
+    uint seenNodes;
     uint evicted;
     uint dropped;
     uint droppedTiles;
+    uint forgottenTiles;
 
     void sweep(ref Graph graph, ref const NearbyScratch published, const(NearbyScratch)* building, Point!float camera, ref Array!Unloaded unloaded, double start) {
         Near near = Near(&published, building);
         if (isRecent.length < graph.slotCount) {
             isRecent.resize(graph.slotCount);
         }
-        dropIdleTiles(graph, near);
+        double deadline = start + SWEEP_MOST_MILLISECONDS;
+        dropIdleTiles(graph, near, deadline);
+        forgetGoneTiles(graph);
         float dropThreshold = coshf(DROP_RADIUS + CUBE_RADIUS);
-        uint wanted = graph.slotCount / SWEEP_CYCLE_FRAMES;
+        uint wanted = higherOf(graph.slotCount / SWEEP_CYCLE_FRAMES, SWEEP_LEAST_SLOTS);
+        uint owed = graph.madeNodes - seenNodes;
+        seenNodes = graph.madeNodes;
+        uint before = evicted;
         uint examined = 0;
         bool isDone = false;
-        while (examined < graph.slotCount && !isDone) {
+        while (examined < wanted && !isDone) {
             if (cursor >= graph.slotCount) {
                 cursor = 0;
                 graph.releaseIdleHorospheres();
@@ -49,7 +62,7 @@ struct Evictor {
             cursor += 1;
             examined += 1;
             if (examined % SLOTS_PER_CLOCK_CHECK == 0) {
-                isDone = examined >= wanted || nowMilliseconds() - start >= SWEEP_MOST_MILLISECONDS;
+                isDone = evicted - before >= owed && nowMilliseconds() >= deadline;
             }
             if (!graph.isLive(slot)) {
                 continue;
@@ -86,24 +99,61 @@ struct Evictor {
         }
     }
 
-    void dropIdleTiles(ref Graph graph, Near near) {
+    // Once as many tiles have dropped as went live since the last sweep, the deadline may cut the rest of the share;
+    // before that it may not, or tiles would go live faster than they drop.
+    void dropIdleTiles(ref Graph graph, Near near, double deadline) {
         Blueprint* blueprint = &graph.structures.blueprint;
-        size_t count = blueprint.tiles.length / SWEEP_CYCLE_FRAMES + 1;
-        foreach (_; 0 .. count) {
-            if (tileCursor >= blueprint.tiles.length) {
+        blueprint.sweep += 1;
+        uint owed = blueprint.madeLive - seenLive;
+        seenLive = blueprint.madeLive;
+        size_t count = blueprint.liveTiles.length / TILE_CYCLE_FRAMES + 1;
+        size_t examined = 0;
+        bool isDone = false;
+        while (examined < count && !isDone) {
+            if (tileCursor >= blueprint.liveTiles.length) {
                 tileCursor = 0;
-                blueprint.sweep += 1;
             }
-            if (tileCursor < blueprint.tiles.length) {
-                const(TileRecord)* record = &blueprint.tiles.ptr[tileCursor];
-                if (!record.isDropped && blueprint.sweep - record.lastUse > TILE_IDLE_SWEEPS && !graph.isTilePinned(tileCursor)) {
-                    uint face = graph.slotOf(record.face);
-                    if (face == NO_SLOT || !near.contains(face)) {
-                        graph.dropTile(tileCursor);
-                        droppedTiles += 1;
-                    }
+            if (tileCursor < blueprint.liveTiles.length) {
+                uint tile = blueprint.liveTiles.ptr[tileCursor];
+                bool isDropping = false;
+                if (blueprint.sweep - blueprint.liveUses.ptr[tileCursor] > TILE_IDLE_SWEEPS && !graph.isTilePinned(tile)) {
+                    uint face = graph.slotOf(blueprint.tiles.ptr[tile].face);
+                    isDropping = face == NO_SLOT || !near.contains(face);
                 }
-                tileCursor += 1;
+                if (isDropping) {
+                    graph.dropTile(tile);
+                    droppedTiles += 1;
+                    owed -= owed > 0;
+                    if (graph.isTileGone(tile)) {
+                        graph.forgetTile(tile);
+                        forgottenTiles += 1;
+                    }
+                } else {
+                    tileCursor += 1;
+                }
+            }
+            examined += 1;
+            if (examined % TILES_PER_CLOCK_CHECK == 0) {
+                isDone = owed == 0 && nowMilliseconds() >= deadline;
+            }
+        }
+    }
+
+    void forgetGoneTiles(ref Graph graph) {
+        Blueprint* blueprint = &graph.structures.blueprint;
+        size_t count = blueprint.droppedTiles.length / SWEEP_CYCLE_FRAMES + 1;
+        foreach (examined; 0 .. count) {
+            if (forgetCursor >= blueprint.droppedTiles.length) {
+                forgetCursor = 0;
+            }
+            if (forgetCursor < blueprint.droppedTiles.length) {
+                uint tile = blueprint.droppedTiles.ptr[forgetCursor];
+                if (graph.isTileGone(tile)) {
+                    graph.forgetTile(tile);
+                    forgottenTiles += 1;
+                } else {
+                    forgetCursor += 1;
+                }
             }
         }
     }

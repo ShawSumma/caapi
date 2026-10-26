@@ -139,7 +139,7 @@ void expandBatch(void* context, size_t index, uint worker) {
         NodeContent content = job.graph.nodeAt(current.slot).content;
         if (scratch.isInner(current) || content == NodeContent.holding) {
             scratch.expandKnown(*job.graph, current, cast(uint) position, *output);
-        } else if (content == NodeContent.unknown) {
+        } else if (content == NodeContent.unknown && scratch.hasOpenSide(*job.graph, current)) {
             output.unknown.append(cast(uint) position);
         }
     }
@@ -560,11 +560,28 @@ struct NearbyScratch {
         return !(-startPoint.minkowski(current.transform * Vec4!float.origin()) > coshInner);
     }
 
+    bool isOpenSide(ref const Graph graph, NearbyNode current, Face side) const {
+        uint existing = graph.neighborSlot(current.slot, side);
+        return (existing == NO_SLOT || collected.ptr[existing].stamp != generation) && isWithinReach(current, side);
+    }
+
+    bool hasOpenSide(ref const Graph graph, NearbyNode current) const {
+        uint side = 0;
+        while (side < FACE_COUNT && !isOpenSide(graph, current, cast(Face) side)) {
+            side += 1;
+        }
+        return side < FACE_COUNT;
+    }
+
+    void narrow(float distance) {
+        coshThreshold = coshf(distance + NODE_RADIUS);
+    }
+
     void expandKnown(ref const Graph graph, NearbyNode current, uint index, ref ExpandOutput output) {
         foreach (sideIndex; 0 .. FACE_COUNT) {
             Face side = cast(Face) sideIndex;
-            uint existing = graph.neighborSlot(current.slot, side);
-            if ((existing == NO_SLOT || collected.ptr[existing].stamp != generation) && isWithinReach(current, side)) {
+            if (isOpenSide(graph, current, side)) {
+                uint existing = graph.neighborSlot(current.slot, side);
                 if (existing == NO_SLOT) {
                     output.missing.append(MissingSide(index, side));
                 } else if (claim(existing)) {
