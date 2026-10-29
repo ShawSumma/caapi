@@ -1,12 +1,12 @@
 module client.graphics.core;
 
-import bindings.platform : VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU, VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU, VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU, VK_QUEUE_GRAPHICS_BIT, VK_STRUCTURE_TYPE_APPLICATION_INFO, VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, VK_SUCCESS, VkApplicationInfo, VkBool32, VkDevice, VkDeviceCreateInfo, VkDeviceQueueCreateInfo, VkInstance, VkInstanceCreateFlags, VkInstanceCreateInfo, VkPhysicalDevice, VkPhysicalDeviceFeatures, VkPhysicalDeviceProperties, VkQueue, VkQueueFamilyProperties, VkResult, VkSurfaceKHR, vkCreateDevice, vkCreateInstance, vkDestroyDevice, vkDestroyInstance, vkDestroySurfaceKHR, vkDeviceWaitIdle, vkEnumeratePhysicalDevices, vkGetDeviceQueue, vkGetPhysicalDeviceFeatures, vkGetPhysicalDeviceProperties, vkGetPhysicalDeviceQueueFamilyProperties, vkGetPhysicalDeviceSurfaceSupportKHR;
+import bindings.platform : PFN_vkWaitForPresentKHR, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR, VkPhysicalDeviceFeatures2, VkPhysicalDevicePresentIdFeaturesKHR, VkPhysicalDevicePresentWaitFeaturesKHR, vkGetDeviceProcAddr, vkGetPhysicalDeviceFeatures2, VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU, VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU, VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU, VK_QUEUE_GRAPHICS_BIT, VK_STRUCTURE_TYPE_APPLICATION_INFO, VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, VK_SUCCESS, VkApplicationInfo, VkBool32, VkDevice, VkDeviceCreateInfo, VkDeviceQueueCreateInfo, VkInstance, VkInstanceCreateFlags, VkInstanceCreateInfo, VkPhysicalDevice, VkPhysicalDeviceFeatures, VkPhysicalDeviceProperties, VkQueue, VkQueueFamilyProperties, VkResult, VkSurfaceKHR, vkCreateDevice, vkCreateInstance, vkDestroyDevice, vkDestroyInstance, vkDestroySurfaceKHR, vkDeviceWaitIdle, vkEnumeratePhysicalDevices, vkGetDeviceQueue, vkGetPhysicalDeviceFeatures, vkGetPhysicalDeviceProperties, vkGetPhysicalDeviceQueueFamilyProperties, vkGetPhysicalDeviceSurfaceSupportKHR;
 import client.graphics.pipeline : VULKAN_TRUE, expectSuccess;
 
 enum uint VULKAN_API_VERSION_1_1 = (1 << 22) | (1 << 12);
 enum uint MAX_PHYSICAL_DEVICES = 16;
 enum uint MAX_QUEUE_FAMILIES = 32;
-enum uint MAX_EXTENSIONS = 4;
+enum uint MAX_EXTENSIONS = 5;
 enum uint NO_QUEUE_FAMILY = uint.max;
 enum uint APPLICATION_VERSION = 1;
 enum uint RANK_UNUSABLE = 0;
@@ -15,6 +15,7 @@ enum uint RANK_VIRTUAL = 2;
 enum uint RANK_INTEGRATED = 3;
 enum uint RANK_DISCRETE = 4;
 immutable string[1] SWAPCHAIN_EXTENSIONS = ["VK_KHR_swapchain"];
+immutable string[2] PRESENT_WAIT_EXTENSIONS = ["VK_KHR_present_id", "VK_KHR_present_wait"];
 
 version (OSX) {
     import bindings.platform : CAMetalLayer, VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR, VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT, VkMetalSurfaceCreateInfoEXT, vkCreateMetalSurfaceEXT;
@@ -99,9 +100,29 @@ struct VulkanCore {
     VkDevice device;
     VkQueue graphicsQueue;
     VkSurfaceKHR surface;
+    PFN_vkWaitForPresentKHR waitForPresent;
     uint graphicsQueueFamily = NO_QUEUE_FAMILY;
     uint maxDrawIndirectCount;
     bool isPresenting;
+
+    // Whether frames can wait until an earlier present is on screen, which keeps the display from queueing presents and
+    // then blocking for several refreshes at once.
+    bool isPresentWaitable() const {
+        return waitForPresent !is null;
+    }
+
+    bool supportsPresentWait() const {
+        VkPhysicalDevicePresentWaitFeaturesKHR wait;
+        wait.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR;
+        VkPhysicalDevicePresentIdFeaturesKHR id;
+        id.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR;
+        id.pNext = &wait;
+        VkPhysicalDeviceFeatures2 features;
+        features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+        features.pNext = &id;
+        vkGetPhysicalDeviceFeatures2(cast(VkPhysicalDevice) physicalDevice, &features);
+        return id.presentId != 0 && wait.presentWait != 0;
+    }
 
     void setup(SurfaceSource source) {
         isPresenting = true;
@@ -201,14 +222,28 @@ struct VulkanCore {
         queueInfo.pQueuePriorities = &queuePriority;
         ExtensionList extensions;
         extensions.add(DEVICE_EXTENSIONS);
+        bool isWaitable = isPresenting && supportsPresentWait();
         if (isPresenting) {
             extensions.add(SWAPCHAIN_EXTENSIONS);
+        }
+        if (isWaitable) {
+            extensions.add(PRESENT_WAIT_EXTENSIONS);
         }
         VkPhysicalDeviceFeatures features;
         features.multiDrawIndirect = VULKAN_TRUE;
         features.drawIndirectFirstInstance = VULKAN_TRUE;
+        VkPhysicalDevicePresentWaitFeaturesKHR wait;
+        wait.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR;
+        wait.presentWait = VULKAN_TRUE;
+        VkPhysicalDevicePresentIdFeaturesKHR id;
+        id.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR;
+        id.pNext = &wait;
+        id.presentId = VULKAN_TRUE;
         VkDeviceCreateInfo info;
         info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+        if (isWaitable) {
+            info.pNext = &id;
+        }
         info.queueCreateInfoCount = 1;
         info.pQueueCreateInfos = &queueInfo;
         info.pEnabledFeatures = &features;
@@ -216,6 +251,9 @@ struct VulkanCore {
         info.ppEnabledExtensionNames = extensions.names.ptr;
         expectSuccess(vkCreateDevice(physicalDevice, &info, null, &device));
         vkGetDeviceQueue(device, graphicsQueueFamily, 0, &graphicsQueue);
+        if (isWaitable) {
+            waitForPresent = cast(PFN_vkWaitForPresentKHR) vkGetDeviceProcAddr(device, "vkWaitForPresentKHR");
+        }
     }
 
     void cleanup() {

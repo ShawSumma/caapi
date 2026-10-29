@@ -22,7 +22,7 @@ enum float DEFAULT_GEN_RADIUS = 2.5f;
 enum float DEFAULT_NEARBY_RADIUS = 4.5f;
 enum uint DEFAULT_NEARBY_ITERATIONS = 50;
 enum int DEFAULT_SLICE_HEIGHT = 1;
-immutable string[2] SKIPPED_NAMES = ["lib", "visual"];
+immutable string[3] SKIPPED_NAMES = ["lib", "visual", "drive"];
 enum string LUA_SUFFIX = ".lua";
 
 enum Command : ubyte {

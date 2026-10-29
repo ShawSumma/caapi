@@ -36,7 +36,7 @@ configuration "headless" {
 configuration "unittest" {
 	targetName "mined-unittest"
 	mainSourceFile "source/unittests.d"
-	excludedSourceFiles "source/main.d" "source/headless.d" "source/worldcheck.d" "source/bindings/*" "source/client/cocoa.d" "source/client/graphics/*" "source/client/graphics/voxels/*" "source/client/lua.d" "source/client/script.d" "source/client/structures.d" "source/client/tiles.d"
+	excludedSourceFiles "source/main.d" "source/headless.d" "source/worldcheck.d" "source/bindings/*" "source/client/cocoa.d" "source/client/graphics/*" "source/client/graphics/voxels/*" "source/client/lua.d" "source/client/script.d" "source/client/drive.d" "source/client/structures.d" "source/client/tiles.d"
 }
 
 subPackage {

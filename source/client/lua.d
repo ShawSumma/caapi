@@ -11,6 +11,7 @@ enum int LUA_TOP = -1;
 enum int LUA_BELOW_TOP = -2;
 enum int LUA_TRACEBACK_LEVEL = 1;
 enum int LUA_STATUS_OK = 0;
+enum int LUA_STATUS_YIELD = 1;
 enum int LUA_TYPE_TABLE = 5;
 enum int LUA_TYPE_FUNCTION = 6;
 enum int LUA_LIBRARY_BASE = 1 << 0;

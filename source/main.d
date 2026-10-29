@@ -18,6 +18,8 @@ import base.slab : RunPool, SLAB_SIZE, Slab;
 import base.units : Angle, AngularSpeed, Speed, Time;
 import client.arguments : EXIT_FAILED, EXIT_USAGE, FlagValue, NumberArgument, StartupError, WorldgenArgument, exitStatus;
 import client.config : ClientConfig;
+import client.drive : DriveEventKind, DriveHost, DriveInput, DriveKey, LEFT_BUTTON;
+import client.frames : RenderTimes;
 import client.game : FrameInput, Game, KEY_COUNT, Key, MATERIAL_PALETTE, axisValue;
 import client.graphics.core : SurfaceSource;
 import client.graphics.renderer : FrameTimes, HALF_VERTICAL_FOV, Renderer;
@@ -243,6 +245,7 @@ struct Arguments {
     bool isYInverted;
     bool isBenchLoad;
     bool isProfiled;
+    bool isDriven;
 
     static Arguments fromArgv(int argc, char** argv) {
         Arguments arguments = Arguments(StartupError.init, argv[0]);
@@ -290,6 +293,9 @@ struct Arguments {
             return index + 1;
         } else if (strcmp(argument, "--profile") == 0) {
             isProfiled = true;
+            return index + 1;
+        } else if (strcmp(argument, "--drive") == 0) {
+            isDriven = true;
             return index + 1;
         } else if (strcmp(argument, "--flight-speed") == 0) {
             parseFlightSpeed(value);
@@ -357,10 +363,14 @@ struct Arguments {
             return StartupError(null, "is only for --bench-load", "--profile");
         } else if (flightSpeed > 0 && !isBenchLoad) {
             return StartupError(null, "is only for --bench-load", "--flight-speed");
+        } else if (isDriven && (screenshotPath !is null || isBenchLoad || recordPath !is null)) {
+            return StartupError(null, "does not mix with --screenshot, --bench-load or --record", "--drive");
+        } else if (isDriven && (reportPath is null || scriptPath is null)) {
+            return StartupError(null, "needs --out and a script", "--drive");
         } else if (screenshotPath !is null && (reportPath is null || scriptPath is null)) {
             return StartupError(null, "needs --out and a script", "--screenshot");
-        } else if (screenshotPath is null && !isBenchLoad && (reportPath !is null || scriptPath !is null)) {
-            return StartupError(null, "--out and a script are only for --screenshot, unexpected", firstOf(reportPath, scriptPath));
+        } else if (screenshotPath is null && !isBenchLoad && !isDriven && (reportPath !is null || scriptPath !is null)) {
+            return StartupError(null, "--out and a script are only for --screenshot and --drive, unexpected", firstOf(reportPath, scriptPath));
         } else {
             return StartupError.init;
         }
@@ -393,6 +403,41 @@ immutable KeyBinding[10] KEY_BINDINGS = [
     KeyBinding(XK_Down, Key.pitchDown),
 ];
 
+immutable KeySym[DriveKey.max + 1] DRIVE_KEYSYMS = [
+    DriveKey.w: XK_w,
+    DriveKey.a: XK_a,
+    DriveKey.s: XK_s,
+    DriveKey.d: XK_d,
+    DriveKey.space: XK_space,
+    DriveKey.shift: XK_Shift_L,
+    DriveKey.v: XK_v,
+    DriveKey.n: XK_n,
+    DriveKey.left: XK_Left,
+    DriveKey.right: XK_Right,
+    DriveKey.up: XK_Up,
+    DriveKey.down: XK_Down,
+    DriveKey.bracketLeft: XK_bracketleft,
+    DriveKey.bracketRight: XK_bracketright,
+    DriveKey.escape: XK_Escape,
+    DriveKey.digit1: XK_1,
+    DriveKey.digit2: XK_1 + 1,
+    DriveKey.digit3: XK_1 + 2,
+    DriveKey.digit4: XK_1 + 3,
+    DriveKey.digit5: XK_1 + 4,
+    DriveKey.digit6: XK_1 + 5,
+    DriveKey.digit7: XK_1 + 6,
+    DriveKey.digit8: XK_1 + 7,
+    DriveKey.digit9: XK_9,
+];
+
+uint driveButton(uint button) {
+    if (button == LEFT_BUTTON) {
+        return Button1;
+    } else {
+        return Button3;
+    }
+}
+
 struct Session {
     Game game;
     Renderer renderer;
@@ -411,17 +456,21 @@ struct Session {
     double mouseDx = 0;
     double mouseDy = 0;
     ClientConfig config;
+    DriveHost drive;
     float fps = 0;
     float worstFrameMs = 0;
     uint worldIndex;
     bool[KEY_COUNT] isHeld;
     bool isCaptured;
     bool isRecording;
+    bool isDriven;
     bool isRunning = true;
     bool isTitleDirty = true;
 
     int run(Arguments arguments) {
-        if (arguments.recordPath is null) {
+        if (arguments.isDriven) {
+            return runDriven(arguments);
+        } else if (arguments.recordPath is null) {
             return runWindow(arguments);
         } else {
             bool isOpened = recorder.open(arguments.recordPath);
@@ -437,6 +486,52 @@ struct Session {
         }
     }
 
+    // A script plays the window: its keys and mouse motion go through the same handlers as real input, which is
+    // ignored, and the pointer counts as captured without being grabbed.
+    int runDriven(Arguments arguments) {
+        FILE* report = fopen(arguments.reportPath, "w");
+        if (report is null) {
+            StartupError(null, "cannot open the report file", arguments.reportPath).report(arguments.program);
+            return EXIT_FAILED;
+        } else {
+            isDriven = true;
+            isCaptured = true;
+            int status = EXIT_FAILED;
+            if (drive.start(arguments.scriptPath, report, config.mouseTurnPerCount.value)) {
+                status = runWindow(arguments);
+            }
+            drive.finish();
+            fclose(report);
+            if (drive.isFailed) {
+                return EXIT_FAILED;
+            } else {
+                return status;
+            }
+        }
+    }
+
+    DriveInput driveFrame() {
+        DriveInput input = drive.next(game.world.isWorldgenSettled() && renderer.meshBacklog() == 0);
+        foreach (event; input.events) {
+            final switch (event.kind) {
+                case DriveEventKind.press:
+                    handleKeyPress(DRIVE_KEYSYMS[event.key], false);
+                    break;
+                case DriveEventKind.release:
+                    setMovementKey(DRIVE_KEYSYMS[event.key], false);
+                    break;
+                case DriveEventKind.click:
+                    handleButton(driveButton(event.button));
+                    break;
+            }
+        }
+        if (isCaptured) {
+            mouseDx += input.dx;
+            mouseDy += input.dy;
+        }
+        return input;
+    }
+
     int runWindow(Arguments arguments) {
         bool isWindowOpen = openWindow();
         if (!isWindowOpen) {
@@ -444,6 +539,9 @@ struct Session {
             return EXIT_FAILED;
         } else {
             renderer.setup(surfaceSource(), CHUNK_DIMENSION);
+            if (isDriven) {
+                fprintf(drive.report, "drive: frames %s for the display\n", waitedText(renderer.core.isPresentWaitable()));
+            }
             game = Game.make(arguments.worldgen, config.reach);
             worldIndex = worldIndexOf(arguments.worldgen);
             game.world.renderRadius = arguments.renderRadius;
@@ -489,25 +587,31 @@ struct Session {
         }
 
         void handleKey(KeyEvent key) {
-            if (key.isPressed) {
+            if (!isDriven && key.isPressed) {
                 handleKeyPress(key.symbol, key.isRepeat);
-            } else {
+            } else if (!isDriven) {
                 setMovementKey(key.symbol, false);
             }
         }
 
+        void handleWindowButton(uint button) {
+            if (!isDriven) {
+                handleButton(button);
+            }
+        }
+
         void handleMotion(double dx, double dy) {
-            if (isCaptured) {
+            if (isCaptured && !isDriven) {
                 mouseDx += dx;
                 mouseDy += dy;
             }
         }
 
         void pollEvents() {
-            window.poll(WindowEvents(&handleKey, &handleButton, &handleMotion));
+            window.poll(WindowEvents(&handleKey, &handleWindowButton, &handleMotion));
             if (!window.isOpen()) {
                 isRunning = false;
-            } else if (isCaptured && !window.isFocused()) {
+            } else if (isCaptured && !isDriven && !window.isFocused()) {
                 releasePointer();
             }
         }
@@ -676,7 +780,9 @@ struct Session {
             while (XPending(display) > 0) {
                 XEvent event;
                 XNextEvent(display, &event);
-                processEvent(&event);
+                if (!isDriven || event.type == ClientMessage) {
+                    processEvent(&event);
+                }
             }
         }
 
@@ -741,7 +847,10 @@ struct Session {
     }
 
     void handleButton(uint button) {
-        if (!isCaptured) {
+        if (!isCaptured && isDriven) {
+            isCaptured = true;
+            isTitleDirty = true;
+        } else if (!isCaptured) {
             capturePointer();
         } else if (button == Button1) {
             game.breakBlock();
@@ -795,18 +904,35 @@ struct Session {
         FrameClock clock = FrameClock.startingAt(lastTitleTime);
         uint framesSinceTitle = 0;
         while (isRunning) {
+            renderer.waitForDisplay();
             double now = nowSeconds();
             Time dt = Time(cast(float) clock.tick(now, MAX_STEP_SECONDS));
             mouseDx = 0;
             mouseDy = 0;
             pollEvents();
+            DriveInput driven;
+            if (isDriven && isRunning) {
+                driven = driveFrame();
+            }
             if (isRunning) {
                 FrameInput frame = buildFrameInput(dt);
                 if (isRecording) {
                     recorder.recordFrame(frame, dt);
                 }
+                double stepStart = nowSeconds();
                 game.step(frame, dt);
+                double renderStart = nowSeconds();
+                if (isDriven) {
+                    drive.record(now, dt.value, (renderStart - stepStart) * MILLISECONDS_PER_SECOND, driven, game.world.cameraPosition, game.world.graph);
+                    renderer.isCapturing = drive.wantsImage();
+                }
                 renderer.render(game.world);
+                if (isDriven) {
+                    FrameTimes times = renderer.frameTimes;
+                    RenderTimes rendered = RenderTimes((nowSeconds() - renderStart) * MILLISECONDS_PER_SECOND, times.fenceWaitMs, times.chunkUpdateMs, times.acquireMs, times.presentMs, times.gpu.frameMs);
+                    drive.finishFrame(rendered, renderer.capturedImage(), renderer.capturedExtent.width, renderer.capturedExtent.height, renderer.isCapturedBgra());
+                    isRunning = !drive.isDone();
+                }
                 framesSinceTitle += 1;
                 if (now - lastTitleTime >= TITLE_INTERVAL_SECONDS) {
                     fps = cast(float)(framesSinceTitle / (now - lastTitleTime));
@@ -869,6 +995,14 @@ void pauseUntilFrameEnd(double frameStart) {
     if (remaining > 0) {
         timespec pause = timespec(0, cast(long)(remaining * NANOSECONDS_PER_SECOND));
         nanosleep(&pause, null);
+    }
+}
+
+immutable(char)* waitedText(bool isWaited) {
+    if (isWaited) {
+        return "wait";
+    } else {
+        return "cannot wait";
     }
 }
 

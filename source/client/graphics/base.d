@@ -33,6 +33,7 @@ struct SwapchainState {
     VkFormat format;
     uint imageCount;
     bool isOffscreen;
+    bool isReadable;
 
     void setup(VkPhysicalDevice physical, VkDevice device, VkSurfaceKHR targetSurface, uint queueFamily) {
         physicalDevice = physical;
@@ -157,7 +158,11 @@ struct SwapchainState {
         info.imageColorSpace = surfaceFormat.colorSpace;
         info.imageExtent = extent;
         info.imageArrayLayers = 1;
+        isReadable = (capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
         info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        if (isReadable) {
+            info.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        }
         info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
         info.preTransform = capabilities.currentTransform;
         info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;

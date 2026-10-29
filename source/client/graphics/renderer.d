@@ -1,7 +1,9 @@
 module client.graphics.renderer;
 
 import core.stdc.math : powf, sinhf;
-import bindings.platform : VK_ACCESS_HOST_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_ERROR_OUT_OF_DATE_KHR, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_BIND_POINT_GRAPHICS, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_QUERY_RESULT_64_BIT, VK_QUERY_TYPE_TIMESTAMP, VK_SHADER_STAGE_VERTEX_BIT, VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, VK_STRUCTURE_TYPE_MEMORY_BARRIER, VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, VK_STRUCTURE_TYPE_SUBMIT_INFO, VK_SUBOPTIMAL_KHR, VK_SUBPASS_CONTENTS_INLINE, VK_SUCCESS, VkBufferImageCopy, VkClearValue, VkCommandBuffer, VkCommandBufferBeginInfo, VkDescriptorSet, VkDevice, VkDeviceSize, VkDrawIndirectCommand, VkExtent2D, VkExtent3D, VkImageSubresourceLayers, VkMemoryBarrier, VkPhysicalDevice, VkPhysicalDeviceProperties, VkPipelineStageFlags, VkPresentInfoKHR, VkQueryPool, VkQueryPoolCreateInfo, VkRect2D, VkRenderPassBeginInfo, VkResult, VkSubmitInfo, VkViewport, vkAcquireNextImageKHR, vkBeginCommandBuffer, vkCmdBeginRenderPass, vkCmdBindDescriptorSets, vkCmdBindPipeline, vkCmdCopyImageToBuffer, vkCmdDrawIndirect, vkCmdEndRenderPass, vkCmdNextSubpass, vkCmdPipelineBarrier, vkCmdPushConstants, vkCmdResetQueryPool, vkCmdSetScissor, vkCmdSetViewport, vkCmdWriteTimestamp, vkCreateQueryPool, vkDestroyQueryPool, vkDeviceWaitIdle, vkEndCommandBuffer, vkGetPhysicalDeviceProperties, vkGetQueryPoolResults, vkQueuePresentKHR, vkQueueSubmit, vkResetCommandBuffer, vkResetFences, vkWaitForFences;
+import core.stdc.string : memcpy;
+import bindings.platform : VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_HOST_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_ERROR_OUT_OF_DATE_KHR, VK_FORMAT_B8G8R8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, VK_STRUCTURE_TYPE_PRESENT_ID_KHR, VkPresentIdKHR, VkImage, VkImageLayout, VkImageMemoryBarrier, VkImageSubresourceRange, VK_PIPELINE_BIND_POINT_GRAPHICS, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_QUERY_RESULT_64_BIT, VK_QUERY_TYPE_TIMESTAMP, VK_SHADER_STAGE_VERTEX_BIT, VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, VK_STRUCTURE_TYPE_MEMORY_BARRIER, VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, VK_STRUCTURE_TYPE_SUBMIT_INFO, VK_SUBOPTIMAL_KHR, VK_SUBPASS_CONTENTS_INLINE, VK_SUCCESS, VkBufferImageCopy, VkClearValue, VkCommandBuffer, VkCommandBufferBeginInfo, VkDescriptorSet, VkDevice, VkDeviceSize, VkDrawIndirectCommand, VkExtent2D, VkExtent3D, VkImageSubresourceLayers, VkMemoryBarrier, VkPhysicalDevice, VkPhysicalDeviceProperties, VkPipelineStageFlags, VkPresentInfoKHR, VkQueryPool, VkQueryPoolCreateInfo, VkRect2D, VkRenderPassBeginInfo, VkResult, VkSubmitInfo, VkViewport, vkAcquireNextImageKHR, vkBeginCommandBuffer, vkCmdBeginRenderPass, vkCmdBindDescriptorSets, vkCmdBindPipeline, vkCmdCopyImageToBuffer, vkCmdDrawIndirect, vkCmdEndRenderPass, vkCmdNextSubpass, vkCmdPipelineBarrier, vkCmdPushConstants, vkCmdResetQueryPool, vkCmdSetScissor, vkCmdSetViewport, vkCmdWriteTimestamp, vkCreateQueryPool, vkDestroyQueryPool, vkDeviceWaitIdle, vkEndCommandBuffer, vkGetPhysicalDeviceProperties, vkGetQueryPoolResults, vkQueuePresentKHR, vkQueueSubmit, vkResetCommandBuffer, vkResetFences, vkWaitForFences;
+import base.array : Array;
 import base.clock : NANOSECONDS_PER_MILLISECOND, nowMilliseconds;
 import base.numbers : RADIANS_PER_DEGREE, lowerOf;
 import base.parallel : ParallelJob;
@@ -13,7 +15,7 @@ import client.graphics.fog : FogPipeline;
 import client.graphics.frustum : FRUSTUM_PLANE_COUNT, Frustum, kleinDepthScale;
 import client.graphics.highlight : HighlightPipeline;
 import client.graphics.matrices : MATRIX_FLOATS, determinant, flatten, matrixMultiply;
-import client.graphics.pipeline : GpuBuffer, VULKAN_TRUE, expectSuccess;
+import client.graphics.pipeline : GpuBuffer, QUEUE_FAMILY_IGNORED, VULKAN_TRUE, expectSuccess;
 import client.graphics.voxels.cull : CullPipeline;
 import client.graphics.voxels.meshes : ChunkMeshes, meshJob;
 import client.graphics.voxels.surface : COLOR_CHANNELS, CommonUniforms, FACES_BINDING, LayoutPush, SurfacePipeline, TRANSFORMS_BINDING;
@@ -36,6 +38,8 @@ enum uint TIMESTAMP_COUNT = 3;
 enum uint FRAME_START_STAMP = 0;
 enum uint CULL_END_STAMP = 1;
 enum uint FRAME_END_STAMP = 2;
+enum ulong PRESENTS_AHEAD = 1;
+enum ulong PRESENT_WAIT_NANOSECONDS = 100_000_000;
 
 enum float SRGB_LINEAR_LIMIT = 0.04045f;
 enum float SRGB_LINEAR_SLOPE = 12.92f;
@@ -65,6 +69,8 @@ struct FrameTimes {
     GpuTimes gpu;
     double fenceWaitMs = 0;
     double chunkUpdateMs = 0;
+    double acquireMs = 0;
+    double presentMs = 0;
 }
 
 struct GpuTimer {
@@ -122,17 +128,47 @@ struct Renderer {
     GpuTimer timer;
     FrameTimes frameTimes;
     GpuBuffer readback;
+    Array!ubyte captured;
+    VkExtent2D capturedExtent;
+    VkExtent2D copiedExtent;
     float[4] skyLinear;
     ChunkLayout layout;
     uint worldEpoch = NO_EPOCH;
     ubyte dimension;
     uint backlog;
+    ulong presentCount;
+    bool isCapturing;
+    bool hasCopy;
+    bool isCaptureReady;
 
     void setup(SurfaceSource source, ubyte chunkDimension) {
         prepare(chunkDimension);
         core.setup(source);
         swapchain.setup(core.physicalDevice, core.device, core.surface, core.graphicsQueueFamily);
+        ensureReadback();
         setupPipelines();
+    }
+
+    // Presented images are copied out only when asked (`isCapturing`), so the readback buffer follows the window's size.
+    void ensureReadback() {
+        VkDeviceSize size = cast(VkDeviceSize) swapchain.extent.width * swapchain.extent.height * PIXEL_BYTES;
+        if (swapchain.isReadable && readback.size != size) {
+            readback.destroy(core.device);
+            readback = GpuBuffer.makeReadable(core.physicalDevice, core.device, size, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        }
+    }
+
+    // The image of the frame drawn before the last `render`, or null if it was not copied out.
+    const(ubyte)[] capturedImage() const {
+        if (isCaptureReady) {
+            return captured.slice();
+        } else {
+            return null;
+        }
+    }
+
+    bool isCapturedBgra() const {
+        return swapchain.format == VK_FORMAT_B8G8R8A8_SRGB;
     }
 
     void setupOffscreen(VkExtent2D extent, ubyte chunkDimension) {
@@ -169,6 +205,7 @@ struct Renderer {
     }
 
     void render(ref LocalWorld world) {
+        isCaptureReady = false;
         if (swapchain.isMinimized()) {
             recreateSwapchain();
         }
@@ -212,6 +249,9 @@ struct Renderer {
         double updateStart = nowMilliseconds();
         frameTimes.fenceWaitMs = updateStart - waitStart;
         frameTimes.gpu = timer.read(core.device, frameTimes.gpu);
+        if (hasCopy) {
+            takeCopy();
+        }
         CommonUniforms uniforms = commonUniforms(world);
         voxels.updateCommonUbo(uniforms);
         updateChunks(world);
@@ -222,6 +262,7 @@ struct Renderer {
             recordCommands(OFFSCREEN_IMAGE, target);
             submit(false);
         } else {
+            double presentStart = nowMilliseconds();
             uint imageIndex;
             VkResult acquired = vkAcquireNextImageKHR(core.device, swapchain.swapchain, NO_TIMEOUT, swapchain.imageAvailableSemaphore, null, &imageIndex);
             if (acquired == VK_ERROR_OUT_OF_DATE_KHR) {
@@ -229,10 +270,12 @@ struct Renderer {
             } else {
                 expectAcquired(acquired);
                 expectSuccess(vkResetFences(core.device, 1, &swapchain.inFlightFence));
+                frameTimes.acquireMs = nowMilliseconds() - presentStart;
                 recordCommands(imageIndex, target);
                 submit(true);
                 present(imageIndex);
             }
+            frameTimes.presentMs = nowMilliseconds() - presentStart;
         }
     }
 
@@ -327,17 +370,37 @@ struct Renderer {
         crosshair.draw(commands, cast(float) swapchain.extent.width / cast(float) swapchain.extent.height);
         vkCmdEndRenderPass(commands);
         if (swapchain.isOffscreen) {
-            recordReadback(commands);
+            recordReadback(commands, swapchain.offscreenImage);
+        } else if (isCapturing && swapchain.isReadable) {
+            recordPresentedReadback(commands, swapchain.images[imageIndex]);
+            hasCopy = true;
+            copiedExtent = swapchain.extent;
         }
         timer.end(commands);
         vkEndCommandBuffer(commands);
     }
 
-    void recordReadback(VkCommandBuffer commands) {
+    // Called once the fence says the GPU finished the frame that copied its image, before the next one is submitted.
+    void takeCopy() {
+        size_t bytes = cast(size_t) copiedExtent.width * copiedExtent.height * PIXEL_BYTES;
+        captured.resize(bytes);
+        memcpy(captured.ptr, readback.mapped, bytes);
+        capturedExtent = copiedExtent;
+        isCaptureReady = true;
+        hasCopy = false;
+    }
+
+    void recordPresentedReadback(VkCommandBuffer commands, VkImage image) {
+        imageBarrier(commands, image, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        recordReadback(commands, image);
+        imageBarrier(commands, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_ACCESS_TRANSFER_READ_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+    }
+
+    void recordReadback(VkCommandBuffer commands, VkImage image) {
         VkBufferImageCopy region;
         region.imageSubresource = VkImageSubresourceLayers(VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1);
         region.imageExtent = VkExtent3D(swapchain.extent.width, swapchain.extent.height, 1);
-        vkCmdCopyImageToBuffer(commands, swapchain.offscreenImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback.buffer, 1, &region);
+        vkCmdCopyImageToBuffer(commands, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback.buffer, 1, &region);
         VkMemoryBarrier barrier;
         barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
         barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -369,7 +432,16 @@ struct Renderer {
         presentInfo.swapchainCount = 1;
         presentInfo.pSwapchains = &swapchain.swapchain;
         presentInfo.pImageIndices = &imageIndex;
+        ulong presentId = presentCount + 1;
+        VkPresentIdKHR ids;
+        ids.sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR;
+        ids.swapchainCount = 1;
+        ids.pPresentIds = &presentId;
+        if (core.isPresentWaitable()) {
+            presentInfo.pNext = &ids;
+        }
         VkResult presented = vkQueuePresentKHR(core.graphicsQueue, &presentInfo);
+        presentCount = presentId;
         if (presented == VK_ERROR_OUT_OF_DATE_KHR || presented == VK_SUBOPTIMAL_KHR) {
             recreateSwapchain();
         } else {
@@ -382,9 +454,20 @@ struct Renderer {
         return (cast(const(ubyte)*) readback.mapped)[0 .. readback.size];
     }
 
+    // Called before a frame starts: waits until the frame presented two frames ago is on screen, so at most one frame
+    // waits for the display. A present that is never shown (a hidden window) gives up after PRESENT_WAIT_NANOSECONDS.
+    void waitForDisplay() {
+        if (core.isPresentWaitable() && presentCount > PRESENTS_AHEAD) {
+            core.waitForPresent(core.device, swapchain.swapchain, presentCount - PRESENTS_AHEAD, PRESENT_WAIT_NANOSECONDS);
+        }
+    }
+
     void recreateSwapchain() {
         swapchain.recreate(core.device);
+        presentCount = 0;
+        hasCopy = false;
         if (!swapchain.isMinimized()) {
+            ensureReadback();
             voxels.updateDepthDescriptor(core.device, swapchain.depthView);
         }
     }
@@ -399,9 +482,24 @@ struct Renderer {
         voxels.cleanup(core.device);
         meshes.cleanup();
         readback.destroy(core.device);
+        captured.release();
         swapchain.cleanup(core.device);
         core.cleanup();
     }
+}
+
+void imageBarrier(VkCommandBuffer commands, VkImage image, VkImageLayout from, VkImageLayout to, uint sourceAccess, uint destinationAccess, uint sourceStage, uint destinationStage) {
+    VkImageMemoryBarrier barrier;
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.srcAccessMask = sourceAccess;
+    barrier.dstAccessMask = destinationAccess;
+    barrier.oldLayout = from;
+    barrier.newLayout = to;
+    barrier.srcQueueFamilyIndex = QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = QUEUE_FAMILY_IGNORED;
+    barrier.image = image;
+    barrier.subresourceRange = VkImageSubresourceRange(VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1);
+    vkCmdPipelineBarrier(commands, sourceStage, destinationStage, 0, 0, null, 0, null, 1, &barrier);
 }
 
 void expectAcquired(VkResult acquired) {
