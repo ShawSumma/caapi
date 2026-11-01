@@ -1,8 +1,10 @@
 module plugins.lattice.plugin;
 
 import core.stdc.math : fabs;
-import plugins.api.api : Api, ENTRY, HorosphereForm, Material, Registry, Rhythm, Risen, Site, SitePart, Turn;
+import plugins.api.api : Api, ENTRY, HorosphereForm, Look, Material, NO_KIND, Registry, Rhythm, Risen, Site, SitePart, Turn;
 import plugins.turtle.turtle : Tread, Turtle, boxOf, lowerOf, roll, treadAround, upright;
+
+immutable Look LOOK = Look("lattice", "Every edge of the honeycomb, drawn. Four dodecahedra meet at each beam, which flat space cannot do. Fog hides the rest.", [0.05f, 0.06f, 0.1f], true);
 
 enum int BEAM = 1;
 enum int PLATFORM = 6;
@@ -209,6 +211,7 @@ void world(const(Api)* api, Site at, const(void)* data) {
     api.rooted(api, kind);
     api.invertGravity(api);
     api.fog(api, FOG);
+    api.look(api, NO_KIND, &LOOK);
     api.tileEdges(api, &edge, &lattice, Root.sizeof);
     upright(root).entrance(SPAWN[0], SPAWN[1], SPAWN[2]);
 }

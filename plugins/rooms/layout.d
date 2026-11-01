@@ -3,12 +3,12 @@ module plugins.rooms.layout;
 import plugins.api.api : Api, Risen, Site, SitePart;
 import blocks = plugins.blocks.blocks;
 import plugins.buildings.building : SIDES, Side;
+import plugins.connector.connector : BACKROOMS_GROUND;
 import plugins.rooms.levels : Biome, HallLayout, LAYERS, Level;
 import plugins.rooms.rooms : Doors, Floor, Frame, Halls, MAZE_CELLS, Owns, Plan, Quarter, SEPARATION, Stair, frameOf, origin, paintFloor, stairs;
 import plugins.turtle.turtle : FACE_CORNERS, Turtle, cornersOf, higherOf, mixed, roll, upright;
 
-enum int TOP_FLOOR = -2;
-enum int GROUND = TOP_FLOOR + 1;
+enum int TOP_FLOOR = BACKROOMS_GROUND - 1;
 enum int DOOR_LOW = 3;
 enum int DOOR_HIGH = 8;
 enum ulong SLOT_SALT = 0x2F4A7C15;

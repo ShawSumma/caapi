@@ -32,6 +32,9 @@ immutable NamedScript[] VIEWS = [
     NamedScript("corner", &corner),
     NamedScript("crownarch", &rising!("crown", 0, 0.6f, -12)),
     NamedScript("crown", &looking!("crown", 0, 0)),
+    NamedScript("connectorspiral", &connectorFromAside!("spiralcity")),
+    NamedScript("connectordrift", &connectorFromAside!("driftcity")),
+    NamedScript("connectorlantern", &connectorFromAside!("lanterncity")),
     NamedScript("crowntops", &rising!("crown", 1.45f, 0.45f, -35)),
     NamedScript("cubes", &cubes),
     NamedScript("far", &far),
@@ -44,6 +47,11 @@ immutable NamedScript[] VIEWS = [
     NamedScript("library", &looking!("library", 0, -5)),
     NamedScript("libraryroof", &rising!("library", 0, 1.9f, 60)),
     NamedScript("libraryturn", &looking!("library", 100, -10)),
+    NamedScript("overview", &overview),
+    NamedScript("around0", &around!(0)),
+    NamedScript("around90", &around!(90)),
+    NamedScript("around180", &around!(180)),
+    NamedScript("around270", &around!(270)),
     NamedScript("palaceinside", &rising!("palace", 1.3f, 0, 25)),
     NamedScript("palace", &looking!("palace", 0, -10)),
     NamedScript("palacestair", &towardWaypoint!("palace", 6, -15)),
@@ -143,6 +151,31 @@ void behindRoute(string name)(ref Script view) {
     view.mode(MovementMode.noclip);
     noclip(view, 1.2f, Key.back);
     view.look(degrees(0), degrees(-40));
+    view.step();
+}
+
+void connectorFromAside(string name)(ref Script view) {
+    view.structure(name);
+    view.enterRoute();
+    view.mode(MovementMode.noclip);
+    noclip(view, 0.5f, Key.up);
+    noclip(view, 1.1f, Key.back);
+    view.look(degrees(0), degrees(-15));
+    view.step();
+}
+
+void around(double yaw)(ref Script view) {
+    view.mode(MovementMode.noclip);
+    noclip(view, 0.5f, Key.up);
+    view.look(degrees(yaw), degrees(-8));
+    view.step();
+}
+
+void overview(ref Script view) {
+    view.mode(MovementMode.noclip);
+    view.look(degrees(0), degrees(-STRAIGHT_DOWN_DEGREES));
+    noclip(view, 1.6f, Key.fwd);
+    view.look(degrees(0), degrees(2 * STRAIGHT_DOWN_DEGREES));
     view.step();
 }
 

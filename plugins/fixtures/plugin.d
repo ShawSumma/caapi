@@ -4,18 +4,19 @@ import plugins.api.api : Api, ENTRY, HorosphereForm, Registry, Site, SitePart;
 import box = plugins.box.box;
 import plugins.buildings.building : Bound, Lot, Lots, Side, Spec;
 import plugins.buildings.types : Type, build, palettes;
+import plugins.connector.connector : Connection, Style, Tag;
 import layout = plugins.rooms.layout;
-import plugins.horospheres.horospheres : Kinds, Tag, addKinds, cityTile;
+import plugins.horospheres.horospheres : Kinds, addKinds, cityTile;
 import plugins.turtle.turtle : Turtle, cornersOf;
 
 enum uint RISE_EDGES = 2;
 enum int CHAIN_EDGES = 4;
 immutable float[3] CHAIN_SPAWN = [0, 4, 0];
-immutable bool UNROUTED = false;
+immutable Connection UNROUTED = Connection.forced(Style.tower, false);
+immutable Connection ROUTED = Connection.forced(Style.tower, true);
 enum uint HOUSE_FLOOR = 1;
 enum uint TOP_FLOOR = 0;
 enum int SHOWCASE_FRONT = 4;
-immutable bool ROUTED = true;
 
 Kinds routedKinds(const(Api)* api) {
     return addKinds(api, 0, 0, &ROUTED);
@@ -23,6 +24,11 @@ Kinds routedKinds(const(Api)* api) {
 
 void risenCity(const(Api)* api, Site site, const(void)* data) {
     api.openHorosphere(api, site, routedKinds(api).city, RISE_EDGES);
+}
+
+void styled(Style style)(const(Api)* api, Site site, const(void)* data) {
+    immutable Connection how = Connection.forced(style, true);
+    api.openHorosphere(api, site, addKinds(api, 0, 0, &how).city, RISE_EDGES);
 }
 
 void risenWild(const(Api)* api, Site site, const(void)* data) {
@@ -41,7 +47,7 @@ void stacked(const(Api)* api, Site site, const(void)* data) {
 
 void chain(const(Api)* api, Site site, const(void)* data) {
     Kinds kinds = addKinds(api, 0, 0, &UNROUTED);
-    uint upper = api.horosphere(api, 0, HorosphereForm.bare, Tag.city, &cityTile, &ROUTED, bool.sizeof);
+    uint upper = api.horosphere(api, 0, HorosphereForm.bare, Tag.city, &cityTile, &ROUTED, Connection.sizeof);
     api.openHorosphere(api, site, kinds.city, RISE_EDGES);
     Turtle along = Turtle(api, site).pitchUp().forward(RISE_EDGES).pitchUp().forward(CHAIN_EDGES);
     api.openHorosphere(api, along.site, upper, RISE_EDGES);
@@ -99,6 +105,9 @@ void hamlet(const(Api)* api, Site site, const(void)* data) {
 
 pragma(mangle, ENTRY) void plugin(const(Registry)* registry) {
     registry.add(registry, "risencity", &risenCity);
+    registry.add(registry, "spiralcity", &styled!(Style.spiral));
+    registry.add(registry, "driftcity", &styled!(Style.drift));
+    registry.add(registry, "lanterncity", &styled!(Style.lantern));
     registry.add(registry, "risenwild", &risenWild);
     registry.add(registry, "risenbackrooms", &risenBackrooms);
     registry.add(registry, "stacked", &stacked);

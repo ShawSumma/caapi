@@ -1,8 +1,10 @@
 module plugins.road.plugin;
 
 import core.stdc.math : fabs, floor, sqrt;
-import plugins.api.api : Api, Column, ENTRY, Material, Registry, Rhythm, Site;
+import plugins.api.api : Api, Column, ENTRY, Look, Material, NO_KIND, Registry, Rhythm, Site;
 import plugins.turtle.turtle : ENDLESS_HIGH, ENDLESS_LOW, Turtle, boxOf, higherOf;
+
+immutable Look LOOK = Look("road", "Two straight roads that start side by side drift apart fast, so this one always has fresh ground beside it.");
 
 enum int HALF_WIDTH = 6;
 enum int DECK = 2;
@@ -108,6 +110,11 @@ void world(const(Api)* api, Site at, const(void)* data) {
     }
 }
 
+void lookedWorld(const(Api)* api, Site at, const(void)* data) {
+    api.look(api, NO_KIND, &LOOK);
+    world(api, at, data);
+}
+
 pragma(mangle, ENTRY) void plugin(const(Registry)* registry) {
-    registry.add(registry, "road", &world);
+    registry.add(registry, "road", &lookedWorld);
 }

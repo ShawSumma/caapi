@@ -4,7 +4,7 @@ import plugins.api.api : Api, Material, NO_KIND, Rhythm, Risen, Site, SitePart;
 import plugins.buildings.building : Bound, Join, Lot, Lots, Palette, STORY, Side, Spec;
 import plugins.buildings.types : Type, palettes, stories;
 import types = plugins.buildings.types;
-import plugins.connector.connector : Floor, connect, slabFloor;
+import plugins.connector.connector : Connection, Tag, connect;
 import plugins.turtle.turtle : FACE_CORNERS, Turtle, boxOf, cornersOf, floorDiv, lowerOf, roll, upright;
 
 enum ulong ISLAND_SALT = 0x51ED270B;
@@ -29,7 +29,6 @@ enum int CROSSING = 1;
 enum int TREE_SPACING = 8;
 enum int CURB = SIDEWALK[0];
 enum int PARKING_SPACING = 3;
-enum int CITY_GROUND = 1;
 enum int CROWN_ROOM = 10;
 enum int ROUTE_STORIES = 2;
 enum int ROUTE_BUILDING_STORIES = 4;
@@ -57,9 +56,8 @@ struct Root {
     ulong vertex;
     ulong face;
     Risen risen;
-    Floor lower;
+    Connection connection;
     bool isRisen;
-    bool isRouted;
 }
 
 struct Area {
@@ -399,7 +397,7 @@ void lotsAt(ref const Turtle[AROUND] quarters, ref const Root root) {
     bool isRoot = isRootVertex(quarters[0], root);
     bool isFootOfRisen = isRoot && root.isRisen;
     if (isFootOfRisen) {
-        connect(quarters[0], root.risen, slabFloor(CITY_GROUND), root.lower, root.isRouted);
+        connect(quarters[0], root.risen, Tag.city, root.connection);
     }
     bool isPlaza = isFootOfRisen || isRisingFrom(quarters[0]);
     uint start = 0;
@@ -448,12 +446,12 @@ void island(ref const Turtle[FACE_CORNERS] corners, ref const Root root) {
     }
 }
 
-Root rootAt(Turtle site, bool isRouted) {
-    return Root(site.hash(SitePart.vertex), site.hash(SitePart.face), Risen.init, Floor.init, false, isRouted);
+Root rootAt(Turtle site) {
+    return Root(site.hash(SitePart.vertex), site.hash(SitePart.face));
 }
 
-Root risenRootAt(Turtle foot, ref const Risen risen, Floor lower, bool isRouted) {
-    return Root(foot.hash(SitePart.vertex), foot.hash(SitePart.face), risen, lower, true, isRouted);
+Root risenRootAt(Turtle foot, ref const Risen risen, Connection how) {
+    return Root(foot.hash(SitePart.vertex), foot.hash(SitePart.face), risen, how, true);
 }
 
 void tile(const(Api)* api, Site site, const(Risen)* risen, const(void)* data) {

@@ -5,6 +5,7 @@ import core.stdc.math : atan2, exp, fabs, sin;
 import base.numbers : RADIANS_PER_DEGREE, higherOf, lowerOf;
 import base.units : AngularSpeed, Length, Time;
 import client.game : Key, RouteWaypoint, UnloadedCount;
+import client.hud : Growth;
 import client.script : NamedScript, ONE_SECOND, Script, StepHook, degrees;
 import client.world : TargetMaterial;
 import common.character.controller : MovementMode;
@@ -15,6 +16,9 @@ import scripts.walk : Across, Motion;
 
 immutable NamedScript[] TESTS = [
     NamedScript("api", &api),
+    NamedScript("demo/growth", &demoGrowth),
+    NamedScript("demo/holonomy", &demoHolonomy),
+    NamedScript("demo/throw", &demoThrow),
     NamedScript("flat/corner", &flatCorner),
     NamedScript("flat/curve", &flatCurve),
     NamedScript("flat/hole", &flatHole),
@@ -53,6 +57,9 @@ immutable NamedScript[] TESTS = [
     NamedScript("structure/palace", &climbing!("palace", 0.35f, true)),
     NamedScript("structure/risen", &risen!("risencity", 1.5f, Material.concrete, "the risen city's paved lot")),
     NamedScript("structure/road", &structureRoad),
+    NamedScript("structure/spiral", &risen!("spiralcity", 1.5f, Material.concrete, "the spiral's landing")),
+    NamedScript("structure/drift", &risen!("driftcity", 1.5f, Material.concrete, "the drift's landing")),
+    NamedScript("structure/lantern", &risen!("lanterncity", 1.5f, Material.concrete, "the lantern's landing")),
     NamedScript("structure/stacked", &risen!("stacked", 1.5f, Material.concrete, "the connector's landing")),
     NamedScript("structure/stairs", &climbing!("tower", 2.5f, false)),
     NamedScript("structure/tower", &structureTower),
@@ -124,6 +131,64 @@ void api(ref Script world) {
     world.check(world.traveled().value > 0, "holding fwd moves the player");
     world.material(3);
     world.check(world.material() == 3, "material slot is set and read back");
+}
+
+enum float PENTAGON_SIDE = 1.0613f;
+enum uint PENTAGON_SIDES = 5;
+enum double QUARTER_TURN = 90;
+enum double QUARTER_TOLERANCE = 3;
+enum double STRAIGHT_TOLERANCE = 0.5;
+
+float pentagonLap(ref Script world) {
+    world.look(degrees(0), degrees(0));
+    world.resetCompass();
+    float before = world.compassOff().value;
+    foreach (_; 0 .. PENTAGON_SIDES) {
+        world.press(PENTAGON_SIDE / walk.NOCLIP_SPEED, Key.fwd);
+        world.look(degrees(QUARTER_TURN), degrees(0));
+    }
+    world.step();
+    return world.compassOff().value - before;
+}
+
+void demoHolonomy(ref Script world) {
+    world.plane(degrees(0));
+    world.mode(MovementMode.noclip);
+    world.resetCompass();
+    world.press(0.2f / walk.NOCLIP_SPEED, Key.fwd);
+    double straight = world.compassOff().value / RADIANS_PER_DEGREE;
+    world.check(fabs(straight) < STRAIGHT_TOLERANCE, "walking straight turned the compass %.2f degrees", straight);
+    double off = pentagonLap(world) / RADIANS_PER_DEGREE;
+    world.check(fabs(fabs(off) - QUARTER_TURN) < QUARTER_TOLERANCE, "five right turns around a block moved the compass %.2f degrees, curvature predicts %.0f", off, QUARTER_TURN);
+}
+
+void demoThrow(ref Script world) {
+    world.plane(degrees(0));
+    walk.spawn(world);
+    world.throwBlock();
+    world.check(world.thrownCount() == 1, "a thrown block is flying");
+    world.check(!world.isThrownResting(0), "a thrown block starts in the air");
+    world.wait(4);
+    world.check(world.thrownCount() == 1, "the block is still there after it lands");
+    world.check(world.isThrownResting(0), "the block came to rest on the ground");
+}
+
+enum double GROWTH_SECONDS = 3;
+enum uint GROWTH_FIRST_STEP = 2;
+enum uint GROWTH_LAST_STEP = 5;
+enum double LEAST_GROWTH = 2;
+
+void demoGrowth(ref Script world) {
+    world.structure("city");
+    world.live();
+    world.wait(GROWTH_SECONDS);
+    Growth growth;
+    growth.update(world.game.world);
+    foreach (step; GROWTH_FIRST_STEP .. GROWTH_LAST_STEP + 1) {
+        double rate = cast(double) growth.within[step] / growth.within[step - 1];
+        world.check(rate > LEAST_GROWTH, "cells within %u steps: %u, within %u: %u, a rate of only %.2f", step - 1, growth.within[step - 1], step, growth.within[step], rate);
+    }
+    growth.release();
 }
 
 enum uint CORNER_BLOCKS = 2;

@@ -19,7 +19,7 @@ import common.worldgen.strokes : Stroke;
 import common.worldgen.structure : CanonicalSite, ColumnSpot, EDGE_NODES, GROUND_RING, LineTouch, SiteFrame, SlotTouch, addPendingTouch, aroundEdge, atLevel, canonicalOf, edgeCells, edgeLength, edgeSitesOf, faceSite, forwarded, frameOf, groundRing, seedTouch, sideAxis, siteHash, siteOf, sitePlacement, turned, walkedTouch;
 import geometry.honeycomb : CORNER_COUNT, FACE_COUNT, Face;
 import geometry.lorentz : Motion;
-import plugins.api.api : Api, Box, Column, HorosphereForm, Material, NO_KIND, Pen, Risen, Site, SitePart, Spot, Structure, Tile, Turn;
+import plugins.api.api : Api, Box, Column, HorosphereForm, Look, Material, NO_KIND, Pen, Risen, Site, SitePart, Spot, Structure, Tile, Turn;
 import plugins.api.api : ApiRhythm = Rhythm;
 
 enum uint NO_RECORD = uint.max;
@@ -589,6 +589,9 @@ Api tileApi(TileHost* host) {
     api.limb = &tileLimb;
     api.leaves = &tileLeaves;
     api.build = &tileBuild;
+    api.look = &tileLook;
+    api.risingKinds = &tileRisingKinds;
+    api.landmark = &tileLandmark;
     return api;
 }
 
@@ -754,6 +757,19 @@ bool tileBuild(const(Api)* api, const(char)* world, Site site) {
         found(api, site, null);
         return true;
     }
+}
+
+void tileLook(const(Api)* api, uint kind, const(Look)* look) {
+    tileHost(api).refuse("only the world's own structure sets how it looks");
+}
+
+void tileRisingKinds(const(Api)* api, double odds) {
+    tileHost(api).refuse("only the world's own structure gives horospheres their kinds");
+}
+
+bool tileLandmark(const(Api)* api, uint index, Site site) {
+    tileHost(api).refuse("a tile cannot place: tiles run in any order, so decide from site:hash");
+    return false;
 }
 
 struct TileJob {

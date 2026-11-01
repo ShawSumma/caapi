@@ -1,24 +1,60 @@
 module plugins.planet.plugin;
 
-import plugins.api.api : Api, ENTRY, Registry, Site;
-import plugins.horospheres.horospheres : Kinds, addKinds;
+import plugins.api.api : Api, ENTRY, NO_KIND, Registry, Site;
+import plugins.connector.connector : Connection;
+import plugins.horospheres.horospheres : Kinds, WILD_LOOK, addKinds;
 import plugins.turtle.turtle : Turtle;
 
-enum double RISE_ODDS = 0.02;
+enum double RISE_ODDS = 0.015;
 enum double TREE_ODDS = 0.002;
 enum int TREE_EDGES = 1;
 enum uint TREE_RISE = 2;
+enum int LANDMARK_RINGS = 3;
 immutable float[3] SPAWN = [-14, 12, 0];
-immutable bool UNROUTED = false;
+immutable Connection CONNECTION = Connection.rolled();
+
+// Walks outward from the spawn, four arms of three turns each, far enough apart that the widest landmark (the palace,
+// a face and its neighbors) keeps clear of the road and of the next landmark.
+struct LandmarkSites {
+    Turtle[4] arms;
+    uint next;
+
+    Turtle take() {
+        uint arm = next % arms.length;
+        Turtle site = arms[arm];
+        if (next / arms.length % 2 == 0) {
+            arms[arm] = site.forward(2).right();
+        } else {
+            arms[arm] = site.forward(2).left();
+        }
+        next += 1;
+        return site;
+    }
+}
+
+void landmarks(const(Api)* api, Turtle at) {
+    Turtle ahead = at.forward(2).left();
+    Turtle behind = at.left().left().forward(2).right();
+    Turtle aside = at.left().forward(2);
+    Turtle beyond = at.right().forward(5).right();
+    LandmarkSites sites = LandmarkSites([ahead.forward(1), behind.forward(1), aside, beyond]);
+    uint index = 0;
+    while (index < LANDMARK_RINGS * sites.arms.length && api.landmark(api, index, sites.take().site)) {
+        index += 1;
+    }
+}
 
 void world(const(Api)* api, Site site, const(void)* data) {
     Turtle at = Turtle(api, site);
     at.build("road");
-    Kinds kinds = addKinds(api, RISE_ODDS, TREE_ODDS, &UNROUTED);
+    Kinds kinds = addKinds(api, RISE_ODDS, TREE_ODDS, &CONNECTION);
     api.rooted(api, kinds.wild);
+    api.risingKinds(api, RISE_ODDS);
+    api.look(api, NO_KIND, &WILD_LOOK);
     Turtle tree = at.right().forward(TREE_EDGES);
     api.openHorosphere(api, tree.site, kinds.tree, TREE_RISE);
     tree.entrance(SPAWN[0], SPAWN[1], SPAWN[2]);
+    landmarks(api, at);
 }
 
 pragma(mangle, ENTRY) void plugin(const(Registry)* registry) {

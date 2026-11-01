@@ -20,7 +20,7 @@ import common.worldgen.plane : Plane, PlaneMeasure, logCosh;
 import common.worldgen.structure : ClaimKey, ColumnSpot, GROUND_RING, SiteFrame, atLevel, columnPoint, edgeCells, edgeLength, forwarded, groundRing, groundSite, isCanonicalMatch, isSamePoint, pathBetween, rootSite, rootedCorner, sideAxis, siteHash, siteOrigin, sitePlacement, siteToNode, turned;
 import geometry.honeycomb : CORNER_COUNT, Corner, FACE_COUNT, FACE_DISTANCE, Face, NODE_RADIUS, across, cornerToNode, cubeScale, faces, mirror, nodeToCorner;
 import geometry.lorentz : Motion, Point, Vec4;
-import plugins.api.api : HorosphereForm, Material, NO_KIND, SitePart, Turn;
+import plugins.api.api : HorosphereForm, Look, Material, NO_KIND, SitePart, Turn;
 
 enum uint ROOT = 0;
 enum ubyte NO_RISE = 0;
@@ -69,6 +69,7 @@ struct HorosphereKind {
     double odds;
     HorosphereForm form;
     uint tag;
+    Look look;
 }
 
 struct Rise {
@@ -910,6 +911,34 @@ Gravity ensureGravityAt(ref Graph graph, Position position) {
     graph.ensureState(slot);
     graph.view.ensureHorospheresAt(slot);
     return graph.gravityAt(position);
+}
+
+const(Look)* lookOfGround(ref const Graph graph, uint horosphere) {
+    ubyte kind = graph.horospheres.kindOf(horosphere);
+    if (kind != NO_RISE && graph.horospheres.kinds.ptr[kind - 1].look.name !is null) {
+        return &graph.horospheres.kinds.ptr[kind - 1].look;
+    } else {
+        return &graph.structures.blueprint.look;
+    }
+}
+
+const(Look)* lookAt(ref const Graph graph, Position position) {
+    uint slot = graph.slotOf(position.node);
+    if (!graph.isGravityKnown(slot)) {
+        return &graph.structures.blueprint.look;
+    } else {
+        Point!float point = position.local * Point!float.origin();
+        uint nearest = ROOT;
+        float least = fabsf(graph.stateAt(slot).surface.distanceTo(point));
+        foreach (near; graph.horospheres.horospheresAt(slot)) {
+            float away = fabsf(near.plane.distanceTo(point));
+            if (!graph.horospheres.isUpright(near.horosphere) && away < least) {
+                least = away;
+                nearest = near.horosphere;
+            }
+        }
+        return graph.lookOfGround(nearest);
+    }
 }
 
 Gravity gravityAt(ref const Graph graph, Position position) {

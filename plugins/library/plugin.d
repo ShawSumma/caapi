@@ -1,9 +1,11 @@
 module plugins.library.plugin;
 
-import plugins.api.api : Api, Box, ENTRY, HorosphereForm, Material, Registry, Rhythm, Risen, Site, SitePart;
+import plugins.api.api : Api, Box, ENTRY, HorosphereForm, Look, Material, NO_KIND, Registry, Rhythm, Risen, RisingKind, Site, SitePart;
 import blocks = plugins.blocks.blocks;
-import plugins.connector.connector : connect, slabFloor;
+import plugins.connector.connector : Connection, Tag, connect;
 import plugins.turtle.turtle : Turtle, boxOf, cornersOf, roll, upright;
+
+immutable Look LOOK = Look("library", "Galleries branch off galleries. Each room opens on more rooms than a flat building could ever fit.", [0.72f, 0.62f, 0.46f], true);
 
 enum int STORY = 6;
 enum int HALL_STORY = 2 * STORY;
@@ -18,7 +20,6 @@ enum int[2] LAMP = [10, 4];
 enum int[2] TABLE_X = [3, 8];
 enum int[2] TABLE_Y = [5, 6];
 enum double RISE_ODDS = 0.03;
-enum uint TAG = 0;
 enum double WELL_ODDS = 0.15;
 enum double HALL_ODDS = 0.15;
 enum double STAIR_ODDS = 0.15;
@@ -30,7 +31,6 @@ enum ulong WALL_SALT = 0x1B873593;
 enum Material FRAME = Material.spruceWood;
 enum Material CEILING = Material.plaster;
 enum double FOG = 6;
-enum int OPEN = 1;
 enum float ROUTE_LANE_LOW = 2.5f;
 enum float ROUTE_LANE_HIGH = 6.5f;
 immutable float[3] SPAWN = [32, 10, 1];
@@ -53,7 +53,10 @@ enum Wall : ubyte {
 
 struct Root {
     ulong face;
+    Connection connection;
 }
+
+immutable Root RISING_ROOT = Root(0, Connection.rolled());
 
 struct Quarter {
     Turtle tower;
@@ -219,19 +222,22 @@ void tile(const(Api)* api, Site site, const(Risen)* risen, const(void)* data) {
         quarter(corner, index, kind, material, hash == root.face && risen.edges == 0, *risen);
     }
     if (risen.edges > 0 && blocks.ownsFoot(face, *risen)) {
-        connect(Turtle(api, risen.foot), *risen, slabFloor(OPEN), slabFloor(OPEN), false);
+        connect(Turtle(api, risen.foot), *risen, Tag.library, root.connection);
     }
 }
 
 void world(const(Api)* api, Site site, const(void)* data) {
     Turtle at = Turtle(api, site);
-    Root root = Root(at.hash(SitePart.face));
-    uint kind = api.horosphere(api, RISE_ODDS, HorosphereForm.bare, TAG, &tile, &root, Root.sizeof);
+    Root root = Root(at.hash(SitePart.face), Connection.rolled());
+    uint kind = api.horosphere(api, RISE_ODDS, HorosphereForm.bare, Tag.library, &tile, &root, Root.sizeof);
     api.rooted(api, kind);
+    api.look(api, kind, &LOOK);
     api.fog(api, FOG);
     upright(at).entrance(SPAWN[0], SPAWN[1], SPAWN[2]);
 }
 
 pragma(mangle, ENTRY) void plugin(const(Registry)* registry) {
     registry.add(registry, "library", &world);
+    RisingKind rising = RisingKind(1, HorosphereForm.bare, Tag.library, &tile, &RISING_ROOT, Root.sizeof, LOOK);
+    registry.addKind(registry, "library", &rising);
 }

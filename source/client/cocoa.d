@@ -14,9 +14,12 @@ enum KeySym XK_9 = 0x39;
 enum KeySym XK_bracketleft = 0x5b;
 enum KeySym XK_bracketright = 0x5d;
 enum KeySym XK_a = 0x61;
+enum KeySym XK_c = 0x63;
 enum KeySym XK_d = 0x64;
+enum KeySym XK_h = 0x68;
 enum KeySym XK_n = 0x6e;
 enum KeySym XK_s = 0x73;
+enum KeySym XK_t = 0x74;
 enum KeySym XK_v = 0x76;
 enum KeySym XK_w = 0x77;
 enum KeySym XK_Escape = 0xff1b;
@@ -68,7 +71,10 @@ struct KeyCode {
     KeySym symbol;
 }
 
-immutable KeyCode[23] KEY_CODES = [
+immutable KeyCode[26] KEY_CODES = [
+    KeyCode(0x08, XK_c),
+    KeyCode(0x04, XK_h),
+    KeyCode(0x11, XK_t),
     KeyCode(0x21, XK_bracketleft),
     KeyCode(0x1E, XK_bracketright),
     KeyCode(0x0D, XK_w),

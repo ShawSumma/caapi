@@ -4,8 +4,12 @@ import core.stdc.stdlib : free, malloc;
 import core.stdc.string : memcpy, memset;
 import bindings.platform : VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_OP_ADD, VK_COMPARE_OP_GREATER, VK_CULL_MODE_BACK_BIT, VK_CULL_MODE_NONE, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_VIEWPORT, VK_FRONT_FACE_CLOCKWISE, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, VK_MEMORY_PROPERTY_HOST_CACHED_BIT, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, VK_POLYGON_MODE_FILL, VK_SAMPLE_COUNT_1_BIT, VK_SHADER_STAGE_COMPUTE_BIT, VK_SHADER_STAGE_FRAGMENT_BIT, VK_SHADER_STAGE_VERTEX_BIT, VK_SHARING_MODE_EXCLUSIVE, VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO, VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO, VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, VK_SUCCESS, VkBlendFactor, VkBuffer, VkBufferCreateInfo, VkBufferUsageFlags, VkComputePipelineCreateInfo, VkCullModeFlags, VkDescriptorBufferInfo, VkDescriptorImageInfo, VkDescriptorSet, VkDescriptorSetLayout, VkDescriptorSetLayoutBinding, VkDescriptorSetLayoutCreateInfo, VkDescriptorType, VkDevice, VkDeviceMemory, VkDeviceSize, VkDynamicState, VkGraphicsPipelineCreateInfo, VkImage, VkMemoryAllocateInfo, VkMemoryPropertyFlags, VkMemoryRequirements, VkPhysicalDevice, VkPhysicalDeviceMemoryProperties, VkPipeline, VkPipelineColorBlendAttachmentState, VkPipelineColorBlendStateCreateInfo, VkPipelineDepthStencilStateCreateInfo, VkPipelineDynamicStateCreateInfo, VkPipelineInputAssemblyStateCreateInfo, VkPipelineLayout, VkPipelineLayoutCreateInfo, VkPipelineMultisampleStateCreateInfo, VkPipelineRasterizationStateCreateInfo, VkPipelineShaderStageCreateInfo, VkPipelineVertexInputStateCreateInfo, VkPipelineViewportStateCreateInfo, VkPrimitiveTopology, VkPushConstantRange, VkRenderPass, VkResult, VkShaderModule, VkShaderModuleCreateInfo, VkShaderStageFlagBits, VkShaderStageFlags, VkWriteDescriptorSet, vkAllocateMemory, vkBindBufferMemory, vkBindImageMemory, vkCreateBuffer, vkCreateComputePipelines, vkCreateDescriptorSetLayout, vkCreateGraphicsPipelines, vkCreatePipelineLayout, vkCreateShaderModule, vkDestroyBuffer, vkFreeMemory, vkGetBufferMemoryRequirements, vkGetImageMemoryRequirements, vkGetPhysicalDeviceMemoryProperties, vkMapMemory;
 
+enum uint COLOR_WRITE_RED = 0x1;
 enum uint COLOR_WRITE_RGB = 0x7;
 enum uint COLOR_WRITE_RGBA = 0xf;
+enum uint GEOMETRY_SUBPASS = 0;
+enum uint GEOMETRY_COLOR_ATTACHMENTS = 2;
+enum uint OVERLAY_COLOR_ATTACHMENTS = 1;
 enum ulong WHOLE_SIZE = ulong.max;
 enum uint QUEUE_FAMILY_IGNORED = uint.max;
 enum uint SUBPASS_EXTERNAL = uint.max;
@@ -137,11 +141,25 @@ struct PipelineSettings {
             return blendedAttachment(VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
         }
     }
+
+    uint colorAttachmentCount() const {
+        if (subpass == GEOMETRY_SUBPASS) {
+            return GEOMETRY_COLOR_ATTACHMENTS;
+        } else {
+            return OVERLAY_COLOR_ATTACHMENTS;
+        }
+    }
 }
 
 VkPipelineColorBlendAttachmentState opaqueAttachment() {
     VkPipelineColorBlendAttachmentState attachment;
     attachment.colorWriteMask = COLOR_WRITE_RGBA;
+    return attachment;
+}
+
+VkPipelineColorBlendAttachmentState glowAttachment() {
+    VkPipelineColorBlendAttachmentState attachment;
+    attachment.colorWriteMask = COLOR_WRITE_RED;
     return attachment;
 }
 
@@ -202,11 +220,14 @@ VkPipeline createGraphicsPipeline(VkDevice device, PipelineSettings settings) {
     depthStencil.depthTestEnable = settings.isDepthTested;
     depthStencil.depthWriteEnable = settings.isDepthWritten;
     depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER;
-    VkPipelineColorBlendAttachmentState blendAttachment = settings.blendAttachment();
+    VkPipelineColorBlendAttachmentState[GEOMETRY_COLOR_ATTACHMENTS] blendAttachments = [
+        settings.blendAttachment(),
+        glowAttachment(),
+    ];
     VkPipelineColorBlendStateCreateInfo colorBlend;
     colorBlend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    colorBlend.attachmentCount = 1;
-    colorBlend.pAttachments = &blendAttachment;
+    colorBlend.attachmentCount = settings.colorAttachmentCount();
+    colorBlend.pAttachments = blendAttachments.ptr;
     VkDynamicState[2] dynamicStates = [
         VK_DYNAMIC_STATE_VIEWPORT,
         VK_DYNAMIC_STATE_SCISSOR,

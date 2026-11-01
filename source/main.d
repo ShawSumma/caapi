@@ -5,6 +5,7 @@ import core.stdc.math : asinf, coshf, floorf, sinhf, tanf;
 import core.stdc.stdio : FILE, fclose, fflush, fopen, fprintf, fscanf, printf, snprintf, stderr;
 import core.stdc.stdlib : free, malloc;
 import core.stdc.string : strcmp, strlen;
+import core.sys.posix.sys.stat : mkdir;
 import core.sys.posix.time : nanosleep, timespec;
 import bindings.platform : VkExtent2D;
 import base.array : Array;
@@ -24,10 +25,11 @@ import client.game : FrameInput, Game, KEY_COUNT, Key, MATERIAL_PALETTE, axisVal
 import client.graphics.core : SurfaceSource;
 import client.graphics.renderer : FrameTimes, HALF_VERTICAL_FOV, Renderer;
 import client.graphics.voxels.meshes : ChunkMeshes;
+import client.hud : Hud, worldNameOf;
 import client.meshing : Mesher;
 import client.png : writePng;
 import client.sampler : Sampler;
-import client.script : NamedScript, Script, ScriptRecorder, named;
+import client.script : NamedScript, Script, ScriptRecorder, StepHook, named;
 import client.streaming : Streamer;
 import client.plugins : registry;
 import client.structures : StructureHost, StructureProblem, growthProblem, placeStructure, restartGame, tileCounts;
@@ -52,12 +54,17 @@ import geometry.honeycomb : CORNER_COUNT, CUBE_RADIUS, Corner, FACE_COUNT, Face,
 import geometry.lorentz : Motion, Point;
 import plugins.api.api : Material;
 import scripts.drives : DRIVES;
+import scripts.films : FILMS, NamedFilm;
 import scripts.views : VIEWS;
 
 enum uint WINDOW_WIDTH = 1280;
 enum uint WINDOW_HEIGHT = 720;
 enum uint SCREENSHOT_WIDTH = 640;
 enum uint SCREENSHOT_HEIGHT = 360;
+enum uint FILM_WIDTH = 1280;
+enum uint FILM_HEIGHT = 720;
+enum uint DIRECTORY_MODE = 0x1ED;
+enum size_t PATH_CAPACITY = 4096;
 enum double BENCH_FRAME_SECONDS = 1.0 / 60.0;
 enum uint BENCH_MOVE_FRAMES = 300;
 enum uint BENCH_FLIGHT_LEGS = 6;
@@ -83,14 +90,17 @@ enum string USAGE = "usage: mined [options]
   --record <file>         record the session as a D script body
   --help, --version
 tools:
-  --screenshot <png> --out <report> <view>   run a view script (scripts/views.d) and render it offscreen
+  --screenshot <png> --out <report> [--hud] <view>
+                                             run a view script (scripts/views.d) and render it offscreen
+  --film <directory> --out <report> [--hud] <film>
+                                             render every step of a film (scripts/films.d) offscreen to numbered PNGs
   --drive <name> --out <report>              play a drive (scripts/drives.d) in the window
   --bench-load [--profile] [--flight-speed <units/s>] --out <report>
                                              load and flight benchmark
 ";
 
 version (OSX) {
-    import client.cocoa : Button1, Button3, CocoaWindow, KeyEvent, KeySym, WindowEvents, XK_1, XK_9, XK_bracketleft, XK_bracketright, XK_Escape, XK_Down, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_n, XK_s, XK_space, XK_v, XK_w;
+    import client.cocoa : Button1, Button3, CocoaWindow, KeyEvent, KeySym, WindowEvents, XK_1, XK_9, XK_bracketleft, XK_bracketright, XK_Escape, XK_Down, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_c, XK_d, XK_h, XK_n, XK_s, XK_space, XK_t, XK_v, XK_w;
 
     enum string WINDOW_REQUIREMENT = "cannot open a window";
     enum int MACH_TASK_BASIC_INFO = 20;
@@ -141,7 +151,7 @@ version (OSX) {
     }
 } else {
     import core.sys.posix.sys.resource : RUSAGE_SELF, getrusage, rusage;
-    import bindings.platform : Atom, Button1, Button3, ButtonPress, ClientMessage, CurrentTime, Cursor, Display, False, FocusOut, GenericEvent, GrabModeAsync, GrabSuccess, KeyPress, KeyRelease, KeySym, Pixmap, Success, True, UnmapNotify, Window, XBlackPixel, XCloseDisplay, XColor, XCreateBitmapFromData, XCreatePixmapCursor, XCreateSimpleWindow, XDefaultScreen, XDestroyWindow, XDisplayHeight, XDisplayWidth, XEvent, XFlush, XFreeCursor, XFreeEventData, XFreePixmap, XGenericEventCookie, XGetEventData, XGrabPointer, XIAllMasterDevices, XIDeviceInfo, XIEventMask, XIFreeDeviceInfo, XIModeAbsolute, XIQueryDevice, XIQueryVersion, XIRawEvent, XISelectEvents, XIValuatorClass, XIValuatorClassInfo, XI_DeviceChanged, XI_RawMotion, XInternAtom, XK_1, XK_9, XK_bracketleft, XK_bracketright, XK_Escape, XK_Down, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_n, XK_s, XK_space, XK_v, XK_w, XLookupKeysym, XMapWindow, XNextEvent, XOpenDisplay, XPending, XQueryExtension, XRootWindow, XSelectInput, XSetWMProtocols, XStoreName, XUngrabPointer, XkbSetDetectableAutoRepeat;
+    import bindings.platform : Atom, Button1, Button3, ButtonPress, ClientMessage, CurrentTime, Cursor, Display, False, FocusOut, GenericEvent, GrabModeAsync, GrabSuccess, KeyPress, KeyRelease, KeySym, Pixmap, Success, True, UnmapNotify, Window, XBlackPixel, XCloseDisplay, XColor, XCreateBitmapFromData, XCreatePixmapCursor, XCreateSimpleWindow, XDefaultScreen, XDestroyWindow, XDisplayHeight, XDisplayWidth, XEvent, XFlush, XFreeCursor, XFreeEventData, XFreePixmap, XGenericEventCookie, XGetEventData, XGrabPointer, XIAllMasterDevices, XIDeviceInfo, XIEventMask, XIFreeDeviceInfo, XIModeAbsolute, XIQueryDevice, XIQueryVersion, XIRawEvent, XISelectEvents, XIValuatorClass, XIValuatorClassInfo, XI_DeviceChanged, XI_RawMotion, XInternAtom, XK_1, XK_9, XK_bracketleft, XK_bracketright, XK_Escape, XK_Down, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_c, XK_d, XK_h, XK_n, XK_s, XK_space, XK_t, XK_v, XK_w, XLookupKeysym, XMapWindow, XNextEvent, XOpenDisplay, XPending, XQueryExtension, XRootWindow, XSelectInput, XSetWMProtocols, XStoreName, XUngrabPointer, XkbSetDetectableAutoRepeat;
     import base.pages : pageSize;
 
     enum string WINDOW_REQUIREMENT = "cannot open a window: needs an X display with XInput 2.1";
@@ -252,9 +262,11 @@ struct Arguments {
     const(char)* configPath = "mined.cfg";
     const(char)* recordPath;
     const(char)* screenshotPath;
+    const(char)* filmPath;
     const(char)* reportPath;
     const(char)* viewName;
     const(NamedScript)* view;
+    const(NamedFilm)* film;
     const(NamedDrive)* drive;
     Worldgen worldgen;
     float sensitivity = 0;
@@ -264,6 +276,7 @@ struct Arguments {
     bool isYInverted;
     bool isBenchLoad;
     bool isProfiled;
+    bool isHudAsked;
     bool isHelp;
     bool isVersion;
 
@@ -311,6 +324,13 @@ struct Arguments {
             screenshotPath = value.text;
             error = value.error;
             return index + 2;
+        } else if (strcmp(argument, "--film") == 0) {
+            filmPath = value.text;
+            error = value.error;
+            return index + 2;
+        } else if (strcmp(argument, "--hud") == 0) {
+            isHudAsked = true;
+            return index + 1;
         } else if (strcmp(argument, "--bench-load") == 0) {
             isBenchLoad = true;
             return index + 1;
@@ -339,8 +359,9 @@ struct Arguments {
         } else {
             viewName = argument;
             view = named(VIEWS, argument[0 .. strlen(argument)]);
-            if (view is null) {
-                error = StartupError(null, "unknown view", argument);
+            film = named(FILMS, argument[0 .. strlen(argument)]);
+            if (view is null && film is null) {
+                error = StartupError(null, "unknown view or film", argument);
             }
             return index + 1;
         }
@@ -412,10 +433,14 @@ struct Arguments {
             return StartupError(null, "needs --out", "--drive");
         } else if (screenshotPath !is null && (reportPath is null || view is null)) {
             return StartupError(null, "needs --out and a view", "--screenshot");
-        } else if (screenshotPath is null && view !is null) {
-            return StartupError(null, "a view is only for --screenshot, unexpected", viewName);
-        } else if (screenshotPath is null && !isBenchLoad && drive is null && reportPath !is null) {
-            return StartupError(null, "is only for --screenshot, --drive and --bench-load", "--out");
+        } else if (filmPath !is null && (reportPath is null || film is null)) {
+            return StartupError(null, "needs --out and a film", "--film");
+        } else if (screenshotPath is null && filmPath is null && viewName !is null) {
+            return StartupError(null, "a view is only for --screenshot, a film only for --film, unexpected", viewName);
+        } else if (screenshotPath is null && filmPath is null && isHudAsked) {
+            return StartupError(null, "is only for --screenshot and --film: the game always draws it, H hides it", "--hud");
+        } else if (screenshotPath is null && filmPath is null && !isBenchLoad && drive is null && reportPath !is null) {
+            return StartupError(null, "is only for --screenshot, --film, --drive and --bench-load", "--out");
         } else {
             return StartupError.init;
         }
@@ -478,6 +503,7 @@ uint driveButton(uint button) {
 struct Session {
     Game game;
     Renderer renderer;
+    Hud hud;
     ScriptRecorder recorder;
     version (OSX) {
         CocoaWindow window;
@@ -501,6 +527,7 @@ struct Session {
     bool isCaptured;
     bool isRecording;
     bool isDriven;
+    bool isHudHidden;
     bool isRunning = true;
     bool isTitleDirty = true;
 
@@ -596,6 +623,7 @@ struct Session {
             runLoop();
         }
         bool isGrown = isPlaced && isStructureGrown(game, arguments);
+        hud.release();
         game.release();
         return exitStatus(isGrown);
     }
@@ -874,6 +902,12 @@ struct Session {
             selectMaterial(cast(uint)(symbol - XK_1));
         } else if ((symbol == XK_bracketleft || symbol == XK_bracketright) && !isRepeat && !isRecording) {
             switchWorld(symbol == XK_bracketright);
+        } else if (symbol == XK_h && !isRepeat) {
+            isHudHidden = !isHudHidden;
+        } else if (symbol == XK_c && !isRepeat) {
+            game.resetCompass();
+        } else if (symbol == XK_t && !isRepeat) {
+            game.throwBlock();
         } else {
             setMovementKey(symbol, true);
         }
@@ -969,6 +1003,13 @@ struct Session {
                     drive.record(now, dt.value, (renderStart - stepStart) * MILLISECONDS_PER_SECOND, driven, game.world.cameraPosition, game.world.graph);
                     renderer.isCapturing = drive.wantsImage();
                 }
+                hud.buildMarkers(game);
+                hud.clearOverlay();
+                if (!isHudHidden) {
+                    hud.build(game, renderer.swapchain.extent.width, renderer.swapchain.extent.height, fps);
+                }
+                renderer.hudVertices = hud.vertices.slice();
+                renderer.markers = hud.markers.slice();
                 renderer.render(game.world);
                 if (isDriven) {
                     FrameTimes times = renderer.frameTimes;
@@ -1011,17 +1052,6 @@ uint worldIndexOf(Worldgen worldgen) {
         return index + 1;
     } else {
         return 0;
-    }
-}
-
-const(char)[] worldNameOf(ref const Worldgen worldgen) {
-    final switch (worldgen.kind) {
-        case WorldgenKind.terrain:
-            return "terrain";
-        case WorldgenKind.plane:
-            return "plane";
-        case WorldgenKind.structure:
-            return worldgen.structureName();
     }
 }
 
@@ -1104,22 +1134,124 @@ bool captureScreenshot(Arguments arguments, FILE* report, ref Renderer renderer,
 }
 
 bool renderSettled(Arguments arguments, FILE* report, ref Renderer renderer, ref Game game) {
-    while (!game.world.isWorldgenSettled()) {
-        game.world.update(true);
-        game.world.streamer.settle(game.world.graph);
-    }
-    StructureProblem grown = growthProblem(game.world.graph);
-    if (grown.isPresent) {
-        fprintf(report, "%s\n", grown.text.ptr);
-    }
-    uint frames = 0;
-    do {
-        renderer.render(game.world);
-        frames += 1;
-    } while (renderer.meshBacklog() > 0);
+    SettledFrame frame = SettledFrame.of(renderer, game, arguments.isHudAsked, report, SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT);
+    bool isSettled = frame.render();
     bool isWritten = writePng(arguments.screenshotPath, SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT, renderer.capture());
-    fprintf(report, "screenshot: %s after %u frames (%u chunks meshed, %u faces)\n", writtenText(isWritten), frames, renderer.meshes.meshedChunks, renderer.meshes.allocator.used());
-    return isWritten && !grown.isPresent;
+    fprintf(report, "screenshot: %s after %u frames (%u chunks meshed, %u faces)\n", writtenText(isWritten), frame.frames, renderer.meshes.meshedChunks, renderer.meshes.allocator.used());
+    frame.release();
+    return isWritten && isSettled;
+}
+
+struct SettledFrame {
+    Hud hud;
+    Renderer* renderer;
+    Game* game;
+    FILE* report;
+    uint width;
+    uint height;
+    uint frames;
+    bool isHudShown;
+
+    static SettledFrame of(ref Renderer renderer, ref Game game, bool isHudShown, FILE* report, uint width, uint height) {
+        SettledFrame frame;
+        frame.renderer = &renderer;
+        frame.game = &game;
+        frame.report = report;
+        frame.width = width;
+        frame.height = height;
+        frame.isHudShown = isHudShown;
+        return frame;
+    }
+
+    bool render() {
+        while (!game.world.isWorldgenSettled()) {
+            game.world.update(true);
+            game.world.streamer.settle(game.world.graph);
+        }
+        StructureProblem grown = growthProblem(game.world.graph);
+        if (grown.isPresent) {
+            fprintf(report, "%s\n", grown.text.ptr);
+        }
+        hud.buildMarkers(*game);
+        hud.clearOverlay();
+        if (isHudShown) {
+            hud.build(*game, width, height, 0);
+        }
+        renderer.hudVertices = hud.vertices.slice();
+        renderer.markers = hud.markers.slice();
+        frames = 0;
+        do {
+            renderer.render(game.world);
+            frames += 1;
+        } while (renderer.meshBacklog() > 0);
+        return !grown.isPresent;
+    }
+
+    void release() {
+        hud.release();
+    }
+}
+
+struct FilmRoll {
+    SettledFrame frame;
+    const(char)* directory;
+    uint written;
+    bool isFailed;
+}
+
+void filmFrame(ref Script script, void* context) {
+    FilmRoll* roll = cast(FilmRoll*) context;
+    roll.isFailed = !roll.frame.render() || roll.isFailed;
+    char[PATH_CAPACITY] path;
+    snprintf(path.ptr, path.length, "%s/frame%05u.png", roll.directory, roll.written);
+    if (!writePng(path.ptr, FILM_WIDTH, FILM_HEIGHT, roll.frame.renderer.capture())) {
+        fprintf(roll.frame.report, "film: could not write %s\n", path.ptr);
+        roll.isFailed = true;
+    }
+    roll.written += 1;
+}
+
+bool renderFilm(Arguments arguments) {
+    FILE* report = fopen(arguments.reportPath, "w");
+    if (report is null) {
+        StartupError(null, "cannot open the report file", arguments.reportPath).report(arguments.program);
+        return false;
+    } else {
+        mkdir(arguments.filmPath, DIRECTORY_MODE);
+        ClientConfig config;
+        Renderer* renderer = cast(Renderer*) malloc(Renderer.sizeof);
+        *renderer = Renderer.init;
+        const(char)* problem = renderer.setupOffscreen(VkExtent2D(FILM_WIDTH, FILM_HEIGHT), CHUNK_DIMENSION);
+        bool isFilmed = false;
+        if (problem !is null) {
+            StartupError(null, problem, null).report(arguments.program);
+        } else {
+            Game game = Game.make(arguments.worldgen, config.reach);
+            game.world.renderRadius = arguments.renderRadius;
+            game.isGeneratingOnDemand = true;
+            isFilmed = isStructurePlaced(game, arguments) && filmShots(arguments, report, *renderer, game);
+            renderer.cleanup();
+            game.release();
+        }
+        free(renderer);
+        fclose(report);
+        return isFilmed;
+    }
+}
+
+bool filmShots(Arguments arguments, FILE* report, ref Renderer renderer, ref Game game) {
+    FilmRoll roll = FilmRoll(SettledFrame.of(renderer, game, arguments.isHudAsked, report, FILM_WIDTH, FILM_HEIGHT), arguments.filmPath);
+    foreach (ref shot; arguments.film.shots) {
+        size_t before = roll.written;
+        Script script = Script.make(&game, report);
+        script.camera = StepHook(&filmFrame, &roll);
+        roll.isFailed = !script.run(shot.run) || roll.isFailed;
+        fprintf(report, "%.*s: %zu frames\n", cast(int) shot.name.length, shot.name.ptr, roll.written - before);
+        fflush(report);
+    }
+    fprintf(report, "film: %u frames in %s\n", roll.written, arguments.filmPath);
+    roll.frame.release();
+    return !roll.isFailed;
 }
 
 struct RenderBreakdown {
@@ -1880,6 +2012,8 @@ extern (C) int main(int argc, char** argv) {
         return exitStatus(benchLoad(arguments));
     } else if (arguments.screenshotPath !is null) {
         return exitStatus(renderScreenshot(arguments));
+    } else if (arguments.filmPath !is null) {
+        return exitStatus(renderFilm(arguments));
     } else {
         return runWindowed(arguments);
     }

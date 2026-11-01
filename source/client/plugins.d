@@ -4,9 +4,11 @@ import core.stdc.stdio : fprintf, snprintf, stderr;
 import core.stdc.string : strlen;
 import core.sys.posix.dirent : DIR, closedir, dirent, opendir, readdir;
 import core.sys.posix.dlfcn : RTLD_NOW, dlerror, dlopen, dlsym;
-import plugins.api.api : ENTRY, Entry, Registry, Structure;
+import plugins.api.api : ENTRY, Entry, Registry, RisingKind, Structure;
 
 enum size_t MAX_STRUCTURES = 64;
+enum size_t MAX_KINDS = 32;
+enum size_t MAX_LANDMARKS = 32;
 enum size_t PATH_CAPACITY = 4096;
 enum string PLUGIN_DIRECTORY = "lib";
 version (OSX) {
@@ -40,10 +42,51 @@ version (OSX) {
     }
 }
 
+void sortByName(T)(string[] names, T[] items) {
+    foreach (index; 1 .. names.length) {
+        string name = names[index];
+        T item = items[index];
+        size_t at = index;
+        while (at > 0 && isOrderedAfter(names[at - 1], name)) {
+            names[at] = names[at - 1];
+            items[at] = items[at - 1];
+            at -= 1;
+        }
+        names[at] = name;
+        items[at] = item;
+    }
+}
+
+bool isOrderedAfter(const(char)[] a, const(char)[] b) {
+    size_t index = 0;
+    while (index < a.length && index < b.length && a[index] == b[index]) {
+        index += 1;
+    }
+    if (index == a.length || index == b.length) {
+        return a.length > b.length;
+    } else {
+        return a[index] > b[index];
+    }
+}
+
 struct Worlds {
     string[MAX_STRUCTURES] names;
     Structure[MAX_STRUCTURES] structures;
     size_t count;
+    string[MAX_KINDS] kindNames;
+    RisingKind[MAX_KINDS] risingKinds;
+    size_t kindCount;
+    string[MAX_LANDMARKS] landmarkNames;
+    Structure[MAX_LANDMARKS] landmarks;
+    size_t landmarkCount;
+
+    // The directory lists plugins in no fixed order. Kinds are rolled by position, so the order has to be the same on
+    // every machine for the same seed to give the same world.
+    void sort() {
+        sortByName(names[0 .. count], structures[0 .. count]);
+        sortByName(kindNames[0 .. kindCount], risingKinds[0 .. kindCount]);
+        sortByName(landmarkNames[0 .. landmarkCount], landmarks[0 .. landmarkCount]);
+    }
 
     void gather() {
         char[PATH_CAPACITY] directory = 0;
@@ -56,6 +99,7 @@ struct Worlds {
         } else {
             snprintf(directory.ptr + length, directory.length - length, "%s", PLUGIN_DIRECTORY.ptr);
             gatherFrom(directory.ptr);
+            sort();
         }
     }
 
@@ -87,7 +131,7 @@ struct Worlds {
             if (plugin is null) {
                 fprintf(stderr, "the plugin '%s' has no '%s'; it may have been built against another version of the API\n", path.ptr, ENTRY.ptr);
             } else {
-                Registry registry = Registry(&this, &add);
+                Registry registry = Registry(&this, &add, &addKind, &addLandmark);
                 plugin(&registry);
             }
         }
@@ -118,6 +162,28 @@ void add(const(Registry)* registry, const(char)* name, Structure world) {
         worlds.names[worlds.count] = cast(string) name[0 .. strlen(name)];
         worlds.structures[worlds.count] = world;
         worlds.count += 1;
+    }
+}
+
+void addKind(const(Registry)* registry, const(char)* name, const(RisingKind)* kind) {
+    Worlds* worlds = cast(Worlds*) registry.host;
+    if (worlds.kindCount == MAX_KINDS) {
+        fprintf(stderr, "too many rising kinds, '%s' is left out (at most %zu)\n", name, MAX_KINDS);
+    } else {
+        worlds.kindNames[worlds.kindCount] = cast(string) name[0 .. strlen(name)];
+        worlds.risingKinds[worlds.kindCount] = *kind;
+        worlds.kindCount += 1;
+    }
+}
+
+void addLandmark(const(Registry)* registry, const(char)* name, Structure landmark) {
+    Worlds* worlds = cast(Worlds*) registry.host;
+    if (worlds.landmarkCount == MAX_LANDMARKS) {
+        fprintf(stderr, "too many landmarks, '%s' is left out (at most %zu)\n", name, MAX_LANDMARKS);
+    } else {
+        worlds.landmarkNames[worlds.landmarkCount] = cast(string) name[0 .. strlen(name)];
+        worlds.landmarks[worlds.landmarkCount] = landmark;
+        worlds.landmarkCount += 1;
     }
 }
 

@@ -1,31 +1,41 @@
 module client.game;
 
-import core.stdc.math : acoshf, atan2f, atanhf, coshf, fabs, fabsf, sinhf, sqrt, tanhf;
+import core.stdc.math : acoshf, atan2f, atanhf, ceilf, coshf, fabs, fabsf, floorf, sinhf, sqrt, tanhf;
 import base.array : Array;
 import base.numbers : higherOf;
 import base.units : Acceleration, Angle, Length, Speed, Time;
-import base.vector3 : ZERO_VECTOR, cross, dot, magnitude, negated, plus, rejectAlong, scaled;
+import base.vector3 : ZERO_VECTOR, cross, dot, magnitude, minus, negated, plus, rejectAlong, scaled;
 import client.arrivals : generateNow;
 import client.camera : CAMERA_FORWARD, Camera;
 import client.world : LocalWorld, Placement;
-import common.character.controller : CharacterInput, CharacterState, MovementMode, Mover, Slide, Stepped, movedBy, regionReach;
-import common.character.features : CellOverlap, CellRange, Features, LocalFrame, RequiredChunks, visitCells;
+import common.character.controller : CharacterInput, CharacterState, MovementMode, Mover, Slide, Stepped, movedBy, perpendicularTo, regionReach;
+import common.character.features : CellOverlap, CellRange, Features, LocalFrame, RequiredChunks, gridPoint, isInsideGrid, visitCells;
 import common.character.sweep : Capsule, sectionCenters;
-import common.graph : Graph, NodeId;
-import common.node : ChunkSlot, ChunkState;
+import common.graph : Graph, NO_SLOT, NodeId;
+import common.node : ChunkSlot, ChunkState, cellIndex;
 import common.position : Position;
 import common.settings : CHUNK_DIMENSION, CharacterConfig;
 import common.traversal : NOT_COLLECTED, NearbyNode, NearbyScratch;
 import common.worldgen.blueprint : RouteStop;
 import common.worldgen.generation : NodeState, Worldgen;
-import common.worldgen.horospheres : ensureGravityAt;
+import common.worldgen.horospheres : Gravity, ensureGravityAt, gravityAt, isGravityKnown;
 import common.worldgen.spawn : clearSpawnPosition, collectChunksNear;
 import common.worldgen.structure : SiteFrame, columnPoint, rootSite, siteToNode, sitePlacement, spawnBefore;
-import geometry.honeycomb : CORNER_COUNT, Corner, Face, cornerToNode;
+import geometry.honeycomb : CORNER_COUNT, Corner, Face, cornerToNode, nodeToCorner;
 import geometry.lorentz : Motion, Point, Vec4;
 import plugins.api.api : Material;
 
 enum uint MAX_BODY_SECTIONS = 64;
+enum float SUN_ELEVATION_COSINE = 0.82f;
+enum float SUN_ELEVATION_SINE = 0.57f;
+enum size_t MOST_THROWN = 8;
+enum uint TRAIL_POINTS = 48;
+enum float TRAIL_EVERY_SECONDS = 0.05f;
+enum float THROW_SPEED = 1.4f;
+enum float THROW_LIFT = 0.5f;
+enum float THROWN_SECONDS = 20;
+enum float THROWN_STEP = 0.02f;
+enum float LEAST_COMPASS_LENGTH = 1e-3f;
 
 immutable Material[9] MATERIAL_PALETTE = [
     Material.woodPlanks,
@@ -100,6 +110,76 @@ struct UnloadedCount {
     }
 }
 
+struct SolidProbe {
+    bool isSolid;
+
+    void visitMissingNode(uint, Face) {
+    }
+
+    void visitChunk(ref const Graph graph, LocalFrame frame, ChunkSlot slot, CellRange) {
+        float[3] grid = gridPoint(graph.layout, slot.corner.nodeToCorner * frame.toBody.inverse());
+        if (isInsideGrid(grid, graph.layout.dimension) && graph.chunks.at(slot).state == ChunkState.populated) {
+            size_t cell = cellIndex(graph.layout.dimension, cast(int) floorf(grid[0]), cast(int) floorf(grid[1]), cast(int) floorf(grid[2]));
+            isSolid = isSolid || graph.chunks.at(slot).voxels.at(cell) != Material.none;
+        }
+    }
+}
+
+struct Thrown {
+    Position position;
+    float[3] velocity;
+    Position[TRAIL_POINTS] trail;
+    uint trailCount;
+    float untilTrail = 0;
+    float age = 0;
+    bool isResting;
+
+    void remember() {
+        trail[trailCount % TRAIL_POINTS] = position;
+        trailCount += 1;
+        untilTrail = TRAIL_EVERY_SECONDS;
+    }
+
+    bool advance(ref const Graph graph, float gravity, Time dt) {
+        age += dt.value;
+        if (age > THROWN_SECONDS || graph.slotOf(position.node) == NO_SLOT) {
+            return false;
+        } else {
+            if (!isResting) {
+                untilTrail -= dt.value;
+                if (untilTrail <= 0) {
+                    remember();
+                }
+                return fly(graph, gravity, dt);
+            }
+            return true;
+        }
+    }
+
+    bool fly(ref const Graph graph, float gravity, Time dt) {
+        uint substeps = higherOf(cast(uint) ceilf(velocity.magnitude * dt.value / THROWN_STEP), 1u);
+        float each = dt.value / substeps;
+        foreach (_; 0 .. substeps) {
+            uint slot = graph.slotOf(position.node);
+            if (slot == NO_SLOT) {
+                return false;
+            } else if (graph.isGravityKnown(slot)) {
+                Gravity pull = graph.gravityAt(position);
+                velocity = velocity.minus(pull.up.scaled(pull.strength * gravity * each));
+            }
+            Position next = graph.movedBy(position, velocity.scaled(each));
+            SolidProbe probe;
+            visitCells(graph, next, Length(0), probe);
+            if (probe.isSolid) {
+                isResting = true;
+                return true;
+            }
+            position = next;
+        }
+        return true;
+    }
+}
+
 struct RouteWaypoint {
     Angle yaw;
     Length horizontal;
@@ -118,6 +198,8 @@ struct Game {
     Acceleration cameraVerticalAcceleration;
     Length cameraAltitude;
     Speed cameraVerticalVelocity;
+    Array!Thrown thrown;
+    float[3] compass = [0, 0, -1];
     uint materialIndex;
     MovementMode mode = MovementMode.walk;
     bool isGeneratingOnDemand;
@@ -182,6 +264,55 @@ struct Game {
             camera.turn(yawToward(uphillDirection()), Angle(0));
         }
         updateView();
+        resetCompass();
+        world.settleFogColor();
+    }
+
+    // Moving the body only ever shifts along the step, and a shift carries a vector parallel to itself, so a vector fixed
+    // in the body's axes stays parallel along the whole path. Only its level part has to be kept, as up changes.
+    void resetCompass() {
+        float[3] level = camera.heading.rotate(CAMERA_FORWARD).rejectAlong(characterState.up);
+        compass = level.scaled(1.0f / level.magnitude);
+    }
+
+    void levelCompass() {
+        float[3] level = compass.rejectAlong(characterState.up);
+        float length = level.magnitude;
+        if (length > LEAST_COMPASS_LENGTH) {
+            compass = level.scaled(1.0f / length);
+        }
+    }
+
+    Angle compassOff() const {
+        return yawToward(compass);
+    }
+
+    void throwBlock() {
+        if (thrown.length == MOST_THROWN) {
+            foreach (index; 1 .. thrown.length) {
+                thrown.ptr[index - 1] = thrown.ptr[index];
+            }
+            thrown.length -= 1;
+        }
+        Thrown made;
+        made.position = world.cameraPosition;
+        made.velocity = CAMERA_FORWARD.scaled(THROW_SPEED).plus([0, THROW_LIFT, 0]);
+        made.remember();
+        thrown.append(made);
+    }
+
+    void stepThrown(Time dt) {
+        size_t index = 0;
+        while (index < thrown.length) {
+            if (thrown.ptr[index].advance(world.graph, character.gravity.value, dt)) {
+                index += 1;
+            } else {
+                foreach (later; index + 1 .. thrown.length) {
+                    thrown.ptr[later - 1] = thrown.ptr[later];
+                }
+                thrown.length -= 1;
+            }
+        }
     }
 
     void settleToGround() {
@@ -270,6 +401,7 @@ struct Game {
         float[3] liftedUp = world.graph.ensureGravityAt(lifted).up;
         characterState = CharacterState(lifted, ZERO_VECTOR, characterState.groundNormal, liftedUp, liftedUp, false);
         resetView();
+        resetCompass();
     }
 
     void rebuildWorld(Worldgen worldgen) {
@@ -277,6 +409,7 @@ struct Game {
         float tanhReach = world.tanhReach;
         float renderRadius = world.renderRadius;
         uint epoch = world.epoch;
+        thrown.clear();
         world.release();
         world = LocalWorld.make(dimension, worldgen, tanhReach);
         world.renderRadius = renderRadius;
@@ -284,6 +417,7 @@ struct Game {
     }
 
     void release() {
+        thrown.release();
         world.release();
     }
 
@@ -319,6 +453,13 @@ struct Game {
 
     void updateView() {
         world.cameraPosition = camera.orientedPosition();
+        world.sunward = camera.orientation.inverted().rotate(sunInBody());
+    }
+
+    float[3] sunInBody() const {
+        float[3] up = characterState.up;
+        float[3] side = perpendicularTo(up).rejectAlong(up);
+        return up.scaled(SUN_ELEVATION_COSINE).plus(side.scaled(SUN_ELEVATION_SINE / side.magnitude));
     }
 
     void step(FrameInput input, Time dt) {
@@ -332,7 +473,10 @@ struct Game {
         traveled = traveled + stepped.traveled;
         altitude = currentAltitude();
         followBody();
+        levelCompass();
         updateView();
+        stepThrown(dt);
+        world.approachFogColor(dt.value);
         trackCameraAcceleration(altitude + camera.eyeOffset, dt);
         if (!isGeneratingOnDemand) {
             world.update(false);

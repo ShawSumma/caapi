@@ -9,7 +9,7 @@ import common.material : MATERIAL_COUNT;
 import common.worldgen.strokes : Stroke, StrokeRun;
 import common.worldgen.structure : CanonicalSite, ClaimKey, EDGE_NODES, ColumnSpot, LineTransform, PAINT_REACH, SiteFrame, SlotTouch, addPendingTouch, aroundEdge, canonicalOf, edgeCells, isEndless, seedTouch, walkedTouch;
 import geometry.honeycomb : Corner, FACE_COUNT, Face;
-import plugins.api.api : Material;
+import plugins.api.api : Look, Material;
 
 enum uint PLACED_RECORD = uint.max;
 enum uint KEPT_USERS = uint.max;
@@ -231,6 +231,7 @@ struct Blueprint {
     HashMap!(LineEdge, EdgeRecord) touchedEdges;
     HashMap!(ClaimKey, bool) claims;
     RouteStop entrance;
+    Look look;
     float fog = float.infinity;
     uint sweep;
     uint madeLive;

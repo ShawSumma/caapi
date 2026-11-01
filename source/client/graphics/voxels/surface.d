@@ -1,43 +1,40 @@
 module client.graphics.voxels.surface;
 
-import core.stdc.stdlib : free, malloc;
-import bindings.platform : VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_COMMAND_BUFFER_LEVEL_PRIMARY, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_FILTER_LINEAR, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_TYPE_2D, VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_VIEW_TYPE_2D_ARRAY, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_SAMPLER_ADDRESS_MODE_REPEAT, VK_SAMPLER_MIPMAP_MODE_NEAREST, VK_SAMPLE_COUNT_1_BIT, VK_SHADER_STAGE_FRAGMENT_BIT, VK_SHADER_STAGE_VERTEX_BIT, VK_SHARING_MODE_EXCLUSIVE, VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, VK_STRUCTURE_TYPE_SUBMIT_INFO, VkBuffer, VkBufferImageCopy, VkCommandBuffer, VkCommandBufferAllocateInfo, VkCommandBufferBeginInfo, VkCommandPool, VkDescriptorBufferInfo, VkDescriptorImageInfo, VkDescriptorPool, VkDescriptorPoolCreateInfo, VkDescriptorPoolSize, VkDescriptorSet, VkDescriptorSetAllocateInfo, VkDescriptorSetLayout, VkDescriptorSetLayoutBinding, VkDevice, VkDeviceMemory, VkExtent3D, VkImage, VkImageCreateInfo, VkImageMemoryBarrier, VkImageSubresourceLayers, VkImageSubresourceRange, VkImageView, VkImageViewCreateInfo, VkPhysicalDevice, VkPipeline, VkPipelineLayout, VkPushConstantRange, VkQueue, VkRenderPass, VkSampler, VkSamplerCreateInfo, VkShaderModule, VkSubmitInfo, VkWriteDescriptorSet, vkAllocateCommandBuffers, vkAllocateDescriptorSets, vkBeginCommandBuffer, vkCmdCopyBufferToImage, vkCmdPipelineBarrier, vkCreateDescriptorPool, vkCreateImage, vkCreateImageView, vkCreateSampler, vkDestroyDescriptorPool, vkDestroyDescriptorSetLayout, vkDestroyImage, vkDestroyImageView, vkDestroyPipeline, vkDestroyPipelineLayout, vkDestroySampler, vkDestroyShaderModule, vkEndCommandBuffer, vkFreeCommandBuffers, vkFreeMemory, vkQueueSubmit, vkQueueWaitIdle, vkUpdateDescriptorSets;
+import core.stdc.stdlib : free;
+import bindings.platform : VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_COMMAND_BUFFER_LEVEL_PRIMARY, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_FILTER_LINEAR, VK_FILTER_NEAREST, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_TYPE_2D, VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_VIEW_TYPE_2D_ARRAY, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_SAMPLER_ADDRESS_MODE_REPEAT, VK_SAMPLER_MIPMAP_MODE_LINEAR, VK_SAMPLE_COUNT_1_BIT, VK_SHADER_STAGE_FRAGMENT_BIT, VK_SHADER_STAGE_VERTEX_BIT, VK_SHARING_MODE_EXCLUSIVE, VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, VK_STRUCTURE_TYPE_SUBMIT_INFO, VkBuffer, VkBufferImageCopy, VkCommandBuffer, VkCommandBufferAllocateInfo, VkCommandBufferBeginInfo, VkCommandPool, VkDescriptorBufferInfo, VkDescriptorImageInfo, VkDescriptorPool, VkDescriptorPoolCreateInfo, VkDescriptorPoolSize, VkDescriptorSet, VkDescriptorSetAllocateInfo, VkDescriptorSetLayout, VkDescriptorSetLayoutBinding, VkDevice, VkDeviceMemory, VkExtent3D, VkImage, VkImageCreateInfo, VkImageMemoryBarrier, VkImageSubresourceLayers, VkImageSubresourceRange, VkImageView, VkImageViewCreateInfo, VkPhysicalDevice, VkPipeline, VkPipelineLayout, VkPushConstantRange, VkQueue, VkRenderPass, VkSampler, VkSamplerCreateInfo, VkShaderModule, VkSubmitInfo, VkWriteDescriptorSet, vkAllocateCommandBuffers, vkAllocateDescriptorSets, vkBeginCommandBuffer, vkCmdCopyBufferToImage, vkCmdPipelineBarrier, vkCreateDescriptorPool, vkCreateImage, vkCreateImageView, vkCreateSampler, vkDestroyDescriptorPool, vkDestroyDescriptorSetLayout, vkDestroyImage, vkDestroyImageView, vkDestroyPipeline, vkDestroyPipelineLayout, vkDestroySampler, vkDestroyShaderModule, vkEndCommandBuffer, vkFreeCommandBuffers, vkFreeMemory, vkQueueSubmit, vkQueueWaitIdle, vkUpdateDescriptorSets;
 import client.graphics.frustum : FRUSTUM_PLANE_COUNT;
 import client.graphics.matrices : MATRIX_FLOATS;
 import client.graphics.pipeline : Blend, GpuBuffer, PipelineSettings, QUEUE_FAMILY_IGNORED, WHOLE_SIZE, bindDeviceLocalImage, bufferWrite, createGraphicsPipeline, createPipelineLayout, createSetLayout, createShader, expectSuccess, imageWrite, layoutBinding;
-import common.material : MATERIAL_COLORS;
+import client.graphics.voxels.textures : TEXTURE_LAYERS, TEXTURE_MIPS, TEXTURE_SIZE, makeTexturePixels, mipOffset, textureBytes;
+import common.material : MATERIAL_COUNT, isGlowing;
 import plugins.api.api : Material;
 
 enum string VOXELS_VERT_SPV = import("voxels.vert.spv");
 enum string VOXELS_FRAG_SPV = import("voxels.frag.spv");
-enum uint TEXTURE_SIZE = 16;
-enum ubyte TEXTURE_OPAQUE = 255;
-enum ubyte TEXTURE_CLEAR = 0;
-enum uint GLASS_LAYER = Material.glass - 1;
-enum uint GLASS_FRAME_TEXELS = 1;
-enum uint TEXTURE_LAYERS = Material.max;
-enum uint TEXEL_BYTES = 4;
 enum uint COLOR_CHANNELS = 3;
 enum uint FACES_BINDING = 0;
 enum uint TEXTURE_BINDING = 1;
 enum uint TRANSFORMS_BINDING = 2;
 enum uint COMMON_UBO_BINDING = 0;
 enum uint DEPTH_INPUT_BINDING = 1;
+enum uint GLOW_INPUT_BINDING = 2;
+enum uint BITS_PER_WORD = 32;
+enum uint GLOW_WORDS = (MATERIAL_COUNT + BITS_PER_WORD - 1) / BITS_PER_WORD;
 
-ubyte texelAlpha(uint layer, uint texel) {
-    uint u = texel % TEXTURE_SIZE;
-    uint v = texel / TEXTURE_SIZE;
-    bool isFrame = u < GLASS_FRAME_TEXELS || v < GLASS_FRAME_TEXELS || u >= TEXTURE_SIZE - GLASS_FRAME_TEXELS || v >= TEXTURE_SIZE - GLASS_FRAME_TEXELS;
-    if (layer == GLASS_LAYER && !isFrame) {
-        return TEXTURE_CLEAR;
-    } else {
-        return TEXTURE_OPAQUE;
+uint[GLOW_WORDS] glowingMaterials() {
+    uint[GLOW_WORDS] words = 0;
+    foreach (index; 0 .. MATERIAL_COUNT) {
+        if (isGlowing(cast(Material) index)) {
+            words[index / BITS_PER_WORD] |= 1u << (index % BITS_PER_WORD);
+        }
     }
+    return words;
 }
 
 struct LayoutPush {
     uint dimension;
     float cellRatio;
+    uint[GLOW_WORDS] glowing;
 }
 
 struct CommonUniforms {
@@ -45,6 +42,8 @@ struct CommonUniforms {
     float[MATRIX_FLOATS] cameraInverse;
     float[4][FRUSTUM_PLANE_COUNT] frustumPlanes;
     float[4] fogColor;
+    float[4] sun;
+    float[4] eye;
     float[2] halfTangents;
     float depthScale;
     float fogReach;
@@ -67,10 +66,11 @@ struct SurfacePipeline {
     VkImageView textureView;
     VkSampler textureSampler;
 
-    void setup(VkPhysicalDevice physicalDevice, VkDevice device, VkRenderPass renderPass, VkQueue queue, VkCommandPool commandPool, VkImageView depthView) {
-        VkDescriptorSetLayoutBinding[2] commonBindings = [
+    void setup(VkPhysicalDevice physicalDevice, VkDevice device, VkRenderPass renderPass, VkQueue queue, VkCommandPool commandPool, VkImageView depthView, VkImageView glowView) {
+        VkDescriptorSetLayoutBinding[3] commonBindings = [
             layoutBinding(COMMON_UBO_BINDING, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT),
             layoutBinding(DEPTH_INPUT_BINDING, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, VK_SHADER_STAGE_FRAGMENT_BIT),
+            layoutBinding(GLOW_INPUT_BINDING, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, VK_SHADER_STAGE_FRAGMENT_BIT),
         ];
         commonLayout = createSetLayout(device, commonBindings[]);
         VkDescriptorSetLayoutBinding[3] staticBindings = [
@@ -82,7 +82,7 @@ struct SurfacePipeline {
         allocateSets(device);
         commonUbo = GpuBuffer.makeMapped(physicalDevice, device, CommonUniforms.sizeof, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
         createTextureArray(physicalDevice, device, queue, commandPool);
-        writeDescriptors(device, depthView);
+        writeDescriptors(device, depthView, glowView);
         createPipeline(device, renderPass);
     }
 
@@ -91,7 +91,7 @@ struct SurfacePipeline {
             VkDescriptorPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1),
             VkDescriptorPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2),
             VkDescriptorPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1),
-            VkDescriptorPoolSize(VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1),
+            VkDescriptorPoolSize(VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 2),
         ];
         VkDescriptorPoolCreateInfo poolInfo;
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -114,13 +114,15 @@ struct SurfacePipeline {
         staticSet = allocated[1];
     }
 
-    void writeDescriptors(VkDevice device, VkImageView depthView) {
+    void writeDescriptors(VkDevice device, VkImageView depthView, VkImageView glowView) {
         VkDescriptorBufferInfo commonInfo = VkDescriptorBufferInfo(commonUbo.buffer, 0, WHOLE_SIZE);
         VkDescriptorImageInfo textureInfo = VkDescriptorImageInfo(textureSampler, textureView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         VkDescriptorImageInfo depthInfo = VkDescriptorImageInfo(null, depthView, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
-        VkWriteDescriptorSet[3] writes = [
+        VkDescriptorImageInfo glowInfo = VkDescriptorImageInfo(null, glowView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        VkWriteDescriptorSet[4] writes = [
             bufferWrite(commonSet, COMMON_UBO_BINDING, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, &commonInfo),
             imageWrite(commonSet, DEPTH_INPUT_BINDING, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, &depthInfo),
+            imageWrite(commonSet, GLOW_INPUT_BINDING, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, &glowInfo),
             imageWrite(staticSet, TEXTURE_BINDING, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &textureInfo),
         ];
         vkUpdateDescriptorSets(device, writes.length, writes.ptr, 0, null);
@@ -161,16 +163,10 @@ struct SurfacePipeline {
     }
 
     void createTextureArray(VkPhysicalDevice physicalDevice, VkDevice device, VkQueue queue, VkCommandPool commandPool) {
-        size_t layerTexels = TEXTURE_SIZE * TEXTURE_SIZE;
-        size_t totalBytes = layerTexels * TEXEL_BYTES * TEXTURE_LAYERS;
-        ubyte* pixels = cast(ubyte*) malloc(totalBytes);
-        foreach (texel; 0 .. layerTexels * TEXTURE_LAYERS) {
-            pixels[texel * TEXEL_BYTES .. texel * TEXEL_BYTES + COLOR_CHANNELS] = MATERIAL_COLORS[texel / layerTexels + 1][];
-            pixels[texel * TEXEL_BYTES + COLOR_CHANNELS] = texelAlpha(cast(uint)(texel / layerTexels), cast(uint)(texel % layerTexels));
-        }
-        GpuBuffer staging = GpuBuffer.makeFilled(physicalDevice, device, pixels[0 .. totalBytes], VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
-        free(pixels);
-        VkImageSubresourceRange range = VkImageSubresourceRange(VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, TEXTURE_LAYERS);
+        ubyte[] pixels = makeTexturePixels();
+        GpuBuffer staging = GpuBuffer.makeFilled(physicalDevice, device, pixels, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+        free(pixels.ptr);
+        VkImageSubresourceRange range = VkImageSubresourceRange(VK_IMAGE_ASPECT_COLOR_BIT, 0, TEXTURE_MIPS, 0, TEXTURE_LAYERS);
         createTextureImage(physicalDevice, device);
         uploadTexture(device, queue, commandPool, staging.buffer, range);
         staging.destroy(device);
@@ -183,12 +179,13 @@ struct SurfacePipeline {
         expectSuccess(vkCreateImageView(device, &viewInfo, null, &textureView));
         VkSamplerCreateInfo samplerInfo;
         samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-        samplerInfo.magFilter = VK_FILTER_LINEAR;
+        samplerInfo.magFilter = VK_FILTER_NEAREST;
         samplerInfo.minFilter = VK_FILTER_LINEAR;
-        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
         samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        samplerInfo.maxLod = TEXTURE_MIPS;
         expectSuccess(vkCreateSampler(device, &samplerInfo, null, &textureSampler));
     }
 
@@ -198,7 +195,7 @@ struct SurfacePipeline {
         imageInfo.imageType = VK_IMAGE_TYPE_2D;
         imageInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
         imageInfo.extent = VkExtent3D(TEXTURE_SIZE, TEXTURE_SIZE, 1);
-        imageInfo.mipLevels = 1;
+        imageInfo.mipLevels = TEXTURE_MIPS;
         imageInfo.arrayLayers = TEXTURE_LAYERS;
         imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
         imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -241,10 +238,13 @@ struct SurfacePipeline {
         barrier.image = textureImage;
         barrier.subresourceRange = range;
         vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, null, 0, null, 1, &barrier);
-        VkBufferImageCopy region;
-        region.imageSubresource = VkImageSubresourceLayers(VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, TEXTURE_LAYERS);
-        region.imageExtent = VkExtent3D(TEXTURE_SIZE, TEXTURE_SIZE, 1);
-        vkCmdCopyBufferToImage(commands, staging, textureImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        VkBufferImageCopy[TEXTURE_MIPS] regions;
+        foreach (mip; 0 .. TEXTURE_MIPS) {
+            regions[mip].bufferOffset = mipOffset(mip);
+            regions[mip].imageSubresource = VkImageSubresourceLayers(VK_IMAGE_ASPECT_COLOR_BIT, mip, 0, TEXTURE_LAYERS);
+            regions[mip].imageExtent = VkExtent3D(TEXTURE_SIZE >> mip, TEXTURE_SIZE >> mip, 1);
+        }
+        vkCmdCopyBufferToImage(commands, staging, textureImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, TEXTURE_MIPS, regions.ptr);
         barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
         barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
@@ -253,10 +253,14 @@ struct SurfacePipeline {
         vkEndCommandBuffer(commands);
     }
 
-    void updateDepthDescriptor(VkDevice device, VkImageView depthView) {
+    void updateInputDescriptors(VkDevice device, VkImageView depthView, VkImageView glowView) {
         VkDescriptorImageInfo depthInfo = VkDescriptorImageInfo(null, depthView, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
-        VkWriteDescriptorSet write = imageWrite(commonSet, DEPTH_INPUT_BINDING, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, &depthInfo);
-        vkUpdateDescriptorSets(device, 1, &write, 0, null);
+        VkDescriptorImageInfo glowInfo = VkDescriptorImageInfo(null, glowView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        VkWriteDescriptorSet[2] writes = [
+            imageWrite(commonSet, DEPTH_INPUT_BINDING, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, &depthInfo),
+            imageWrite(commonSet, GLOW_INPUT_BINDING, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, &glowInfo),
+        ];
+        vkUpdateDescriptorSets(device, writes.length, writes.ptr, 0, null);
     }
 
     void updateCommonUbo(CommonUniforms uniforms) {

@@ -15,16 +15,18 @@ import client.graphics.fog : FogPipeline;
 import client.graphics.frustum : FRUSTUM_PLANE_COUNT, Frustum, kleinDepthScale;
 import client.graphics.highlight : HighlightPipeline;
 import client.graphics.matrices : MATRIX_FLOATS, determinant, flatten, matrixMultiply;
+import client.graphics.overlay : HudPipeline, MarkerPipeline;
+import client.hud : HudVertex, Marker;
 import client.graphics.pipeline : GpuBuffer, QUEUE_FAMILY_IGNORED, VULKAN_TRUE, expectSuccess;
 import client.graphics.voxels.cull : CullPipeline;
 import client.graphics.voxels.meshes : ChunkMeshes, meshJob;
-import client.graphics.voxels.surface : COLOR_CHANNELS, CommonUniforms, FACES_BINDING, LayoutPush, SurfacePipeline, TRANSFORMS_BINDING;
+import client.graphics.voxels.surface : COLOR_CHANNELS, CommonUniforms, FACES_BINDING, LayoutPush, SurfacePipeline, TRANSFORMS_BINDING, glowingMaterials;
 import client.world : FOG_SHARPNESS, LocalWorld, fogReach;
 import common.node : ChunkLayout;
 import common.raycast.graph : GraphCastHit;
 import common.traversal : NOT_COLLECTED;
 import geometry.honeycomb : CUBE_RADIUS, cubeToNode;
-import geometry.lorentz : Normal;
+import geometry.lorentz : Motion, Normal, Point, Vec4;
 
 enum Angle HALF_VERTICAL_FOV = Angle(cast(float)(45 * RADIANS_PER_DEGREE));
 enum float NEAR_PLANE = 1.0e-4f;
@@ -45,13 +47,6 @@ enum float SRGB_LINEAR_LIMIT = 0.04045f;
 enum float SRGB_LINEAR_SLOPE = 12.92f;
 enum float SRGB_OFFSET = 0.055f;
 enum float SRGB_GAMMA = 2.4f;
-
-immutable float[4] SKY_SRGB = [
-    0.55f,
-    0.7f,
-    0.94f,
-    1.0f,
-];
 
 struct HighlightTarget {
     float[MATRIX_FLOATS] model;
@@ -125,13 +120,17 @@ struct Renderer {
     FogPipeline fog;
     HighlightPipeline highlight;
     CrosshairPipeline crosshair;
+    HudPipeline hud;
+    MarkerPipeline marker;
+    const(HudVertex)[] hudVertices;
+    const(Marker)[] markers;
     GpuTimer timer;
     FrameTimes frameTimes;
     GpuBuffer readback;
     Array!ubyte captured;
     VkExtent2D capturedExtent;
     VkExtent2D copiedExtent;
-    float[4] skyLinear;
+    float[4] fogLinear = [0, 0, 0, 1];
     ChunkLayout layout;
     uint worldEpoch = NO_EPOCH;
     ubyte dimension;
@@ -185,20 +184,18 @@ struct Renderer {
 
     void prepare(ubyte chunkDimension) {
         dimension = chunkDimension;
-        skyLinear = SKY_SRGB;
-        foreach (channel; 0 .. COLOR_CHANNELS) {
-            skyLinear[channel] = srgbToLinear(SKY_SRGB[channel]);
-        }
     }
 
     void setupPipelines() {
         meshes.setup(core.physicalDevice, core.device, dimension);
-        voxels.setup(core.physicalDevice, core.device, swapchain.renderPass, core.graphicsQueue, swapchain.commandPool, swapchain.depthView);
+        voxels.setup(core.physicalDevice, core.device, swapchain.renderPass, core.graphicsQueue, swapchain.commandPool, swapchain.depthView, swapchain.glowView);
         cull.setup(core.device, voxels.commonUbo.buffer);
         bindMeshBuffers();
         fog.setup(core.device, swapchain.renderPass, voxels.commonLayout);
         highlight.setup(core.device, swapchain.renderPass, voxels.commonLayout);
         crosshair.setup(core.device, swapchain.renderPass);
+        hud.setup(core.physicalDevice, core.device, swapchain.renderPass);
+        marker.setup(core.device, swapchain.renderPass, voxels.commonLayout);
         timer.setup(core.physicalDevice, core.device);
     }
 
@@ -232,11 +229,15 @@ struct Renderer {
         foreach (i; 0 .. FRUSTUM_PLANE_COUNT) {
             frustumPlanes[i] = planes[i].v.c;
         }
+        Motion!float camera = world.cameraInNearbyFrame();
+        float[3] sunward = world.sunward;
         return CommonUniforms(
             projection,
             cameraInverse,
             frustumPlanes,
-            skyLinear,
+            fogLinear,
+            (camera * Vec4!float([sunward[0], sunward[1], sunward[2], 1])).c,
+            (camera * Point!float.origin()).v.c,
             [frustum.tanHalfWidth, frustum.tanHalfHeight],
             kleinDepthScale(NEAR_PLANE),
             fogReach(world.viewRadius()),
@@ -248,6 +249,9 @@ struct Renderer {
 
     void renderFrame(ref LocalWorld world) {
         layout = world.graph.layout;
+        foreach (channel; 0 .. COLOR_CHANNELS) {
+            fogLinear[channel] = srgbToLinear(world.fogColor[channel]);
+        }
         double waitStart = nowMilliseconds();
         expectSuccess(vkWaitForFences(core.device, 1, &swapchain.inFlightFence, VULKAN_TRUE, NO_TIMEOUT));
         double updateStart = nowMilliseconds();
@@ -258,6 +262,7 @@ struct Renderer {
         }
         CommonUniforms uniforms = commonUniforms(world);
         voxels.updateCommonUbo(uniforms);
+        hud.upload(hudVertices);
         updateChunks(world);
         frameTimes.chunkUpdateMs = nowMilliseconds() - updateStart;
         HighlightTarget target = findHighlightTarget(world);
@@ -336,8 +341,8 @@ struct Renderer {
         meshes.recordUploads(commands);
         cull.record(commands, meshes.drawableCount);
         timer.markCullEnd(commands);
-        VkClearValue[2] clears;
-        clears[0].color.float32 = skyLinear;
+        VkClearValue[3] clears;
+        clears[0].color.float32 = fogLinear;
         clears[1].depthStencil.depth = CLEAR_DEPTH;
         VkRenderPassBeginInfo passInfo;
         passInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -358,7 +363,7 @@ struct Renderer {
             voxels.staticSet,
         ];
         vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, voxels.pipelineLayout, 0, sets.length, sets.ptr, 0, null);
-        LayoutPush layoutPush = LayoutPush(layout.dimension, layout.cellRatio);
+        LayoutPush layoutPush = LayoutPush(layout.dimension, layout.cellRatio, glowingMaterials());
         vkCmdPushConstants(commands, voxels.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, LayoutPush.sizeof, &layoutPush);
         uint drawn = 0;
         while (drawn < meshes.drawableCount) {
@@ -369,9 +374,11 @@ struct Renderer {
         if (target.isFound) {
             highlight.draw(commands, voxels.commonSet, target.model, target.low, target.high);
         }
+        marker.draw(commands, voxels.commonSet, markers);
         vkCmdNextSubpass(commands, VK_SUBPASS_CONTENTS_INLINE);
         fog.draw(commands, voxels.commonSet);
         crosshair.draw(commands, cast(float) swapchain.extent.width / cast(float) swapchain.extent.height);
+        hud.draw(commands);
         vkCmdEndRenderPass(commands);
         if (swapchain.isOffscreen) {
             recordReadback(commands, swapchain.offscreenImage);
@@ -469,13 +476,15 @@ struct Renderer {
         hasCopy = false;
         if (!swapchain.isMinimized()) {
             ensureReadback();
-            voxels.updateDepthDescriptor(core.device, swapchain.depthView);
+            voxels.updateInputDescriptors(core.device, swapchain.depthView, swapchain.glowView);
         }
     }
 
     void cleanup() {
         vkDeviceWaitIdle(core.device);
         timer.cleanup(core.device);
+        marker.cleanup(core.device);
+        hud.cleanup(core.device);
         crosshair.cleanup(core.device);
         highlight.cleanup(core.device);
         fog.cleanup(core.device);

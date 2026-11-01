@@ -21,7 +21,7 @@ configuration "application" {
 	dflags "-P-I/opt/homebrew/include" platform="osx"
 	libs "vulkan" "objc" platform="osx"
 	lflags "-L/opt/homebrew/lib" "-framework" "AppKit" "-framework" "QuartzCore" platform="osx"
-	preBuildCommands "mkdir -p source/shaders/spv" "glslc -I source/shaders source/shaders/voxels.vert -o source/shaders/spv/voxels.vert.spv" "glslc source/shaders/voxels.frag -o source/shaders/spv/voxels.frag.spv" "glslc source/shaders/fullscreen.vert -o source/shaders/spv/fullscreen.vert.spv" "glslc -I source/shaders source/shaders/fog.frag -o source/shaders/spv/fog.frag.spv" "glslc -I source/shaders source/shaders/highlight.vert -o source/shaders/spv/highlight.vert.spv" "glslc source/shaders/highlight.frag -o source/shaders/spv/highlight.frag.spv" "glslc -I source/shaders source/shaders/cull.comp -o source/shaders/spv/cull.comp.spv" "glslc source/shaders/crosshair.vert -o source/shaders/spv/crosshair.vert.spv" "glslc source/shaders/crosshair.frag -o source/shaders/spv/crosshair.frag.spv"
+	preBuildCommands "mkdir -p source/shaders/spv" "glslc -I source/shaders source/shaders/voxels.vert -o source/shaders/spv/voxels.vert.spv" "glslc source/shaders/voxels.frag -o source/shaders/spv/voxels.frag.spv" "glslc source/shaders/fullscreen.vert -o source/shaders/spv/fullscreen.vert.spv" "glslc -I source/shaders source/shaders/fog.frag -o source/shaders/spv/fog.frag.spv" "glslc -I source/shaders source/shaders/highlight.vert -o source/shaders/spv/highlight.vert.spv" "glslc source/shaders/highlight.frag -o source/shaders/spv/highlight.frag.spv" "glslc -I source/shaders source/shaders/cull.comp -o source/shaders/spv/cull.comp.spv" "glslc source/shaders/crosshair.vert -o source/shaders/spv/crosshair.vert.spv" "glslc source/shaders/crosshair.frag -o source/shaders/spv/crosshair.frag.spv" "glslc source/shaders/hud.vert -o source/shaders/spv/hud.vert.spv" "glslc source/shaders/hud.frag -o source/shaders/spv/hud.frag.spv" "glslc -I source/shaders source/shaders/marker.vert -o source/shaders/spv/marker.vert.spv" "glslc source/shaders/marker.frag -o source/shaders/spv/marker.frag.spv"
 }
 
 configuration "headless" {
@@ -130,7 +130,7 @@ subPackage {
 	importPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
-	dependency "mined:blocks" version="*"
+	dependency "mined:horospheres" version="*"
 }
 
 subPackage {
@@ -141,7 +141,7 @@ subPackage {
 	importPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
-	dependency "mined:rooms" version="*"
+	dependency "mined:horospheres" version="*"
 }
 
 subPackage {
@@ -185,7 +185,7 @@ subPackage {
 	importPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
-	dependency "mined:turtle" version="*"
+	dependency "mined:connector" version="*"
 }
 
 subPackage {

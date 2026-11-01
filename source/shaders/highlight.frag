@@ -5,8 +5,10 @@ const float SRGB_OFFSET = 0.055;
 const float SRGB_GAMMA = 2.4;
 
 layout(location = 0) out vec4 color;
+layout(location = 1) out float glow;
 
 void main() {
     float edge = pow((EDGE_SRGB + SRGB_OFFSET) / (1.0 + SRGB_OFFSET), SRGB_GAMMA);
     color = vec4(edge, edge, edge, 1.0);
+    glow = 0.0;
 }

@@ -12,6 +12,7 @@ import client.script : NamedScript, Script;
 import client.structures : StructureProblem, placeStructure;
 import common.settings : CHUNK_DIMENSION;
 import common.worldgen.generation : Worldgen, WorldgenKind;
+import scripts.films : FILMS;
 import scripts.tests : TESTS;
 import scripts.views : VIEWS;
 import worldcheck : benchDrive, benchGen, benchHashMap, benchMesh, benchNearby, checkForget, checkRepaint, dumpStructure, dumpWorld, printMaterialCensus, printSlices, printWorldDigest;
@@ -27,6 +28,7 @@ enum string USAGE = "usage: mined-headless --out <report> --tests [name prefix .
 commands:
   --tests [name prefix ...]   run the behavior tests (all, or those whose names start with a prefix)
   --views [name prefix ...]   run the screenshot view scripts without rendering, to check they still run
+  --films [name prefix ...]   run the film shots without rendering, to check they still run
   --world-digest, --dump-world, --material-census [radius]
   --dump-structure, --check-repaint, --check-forget, --slice [height]   (need --worldgen structure <world>)
   --bench-gen [radius], --bench-mesh [radius], --bench-drive [radius]
@@ -38,6 +40,7 @@ enum Command : ubyte {
     none,
     tests,
     views,
+    films,
     dumpWorld,
     worldDigest,
     materialCensus,
@@ -94,6 +97,9 @@ struct HeadlessArguments {
         } else if (strcmp(argument, "--views") == 0) {
             command = Command.views;
             return index + 1;
+        } else if (strcmp(argument, "--films") == 0) {
+            command = Command.films;
+            return index + 1;
         } else if (strcmp(argument, "--dump-world") == 0) {
             command = Command.dumpWorld;
             return index + 1;
@@ -136,7 +142,7 @@ struct HeadlessArguments {
         } else if (strcmp(argument, "--version") == 0) {
             isVersion = true;
             return index + 1;
-        } else if ((command == Command.tests || command == Command.views) && argument[0] != '-') {
+        } else if ((command == Command.tests || command == Command.views || command == Command.films) && argument[0] != '-') {
             prefixes.append(argument);
             return index + 1;
         } else if (number.isPresent && !radius.isPresent) {
@@ -242,6 +248,14 @@ immutable(char)* sessionSuffix(bool isPassed) {
     }
 }
 
+bool runFilms(ref const HeadlessArguments arguments, FILE* report) {
+    bool isPassed = true;
+    foreach (ref film; FILMS) {
+        isPassed = runScripts(arguments, film.shots, report) && isPassed;
+    }
+    return isPassed;
+}
+
 bool runScripts(ref const HeadlessArguments arguments, const(NamedScript)[] scripts, FILE* report) {
     uint passed = 0;
     uint failed = 0;
@@ -263,6 +277,8 @@ bool runWorldCommand(ref const HeadlessArguments arguments, FILE* output) {
         return runScripts(arguments, TESTS, output);
     } else if (arguments.command == Command.views) {
         return runScripts(arguments, VIEWS, output);
+    } else if (arguments.command == Command.films) {
+        return runFilms(arguments, output);
     } else if (arguments.command == Command.dumpStructure) {
         return dumpStructure(output, CHUNK_DIMENSION, arguments.worldgen);
     } else if (arguments.command == Command.slices) {

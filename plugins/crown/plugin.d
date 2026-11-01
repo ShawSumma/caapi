@@ -1,9 +1,10 @@
 module plugins.crown.plugin;
 
-import plugins.api.api : Api, Box, ENTRY, Material, Registry, Rhythm, Site;
+import plugins.api.api : Api, Box, ENTRY, Look, Material, NO_KIND, Registry, Rhythm, Site;
 import box = plugins.box.box;
 import plugins.turtle.turtle : FACE_CORNERS, Turtle, boxOf, cornersOf, upright;
 
+immutable Look LOOK = Look("crown", "Five towers ring one pentagon, joined by bridges at right angles. No flat plan could close this ring.");
 enum int HEIGHT_EDGES = 2;
 enum int HALL_ROOF = 2 * box.STORY;
 enum int HALL_WINDOW_OFFSET = 2;
@@ -112,7 +113,7 @@ void archRoute(Turtle from, Turtle to) {
     }
 }
 
-void world(const(Api)* api, Site root, const(void)* data) {
+void landmark(const(Api)* api, Site root, const(void)* data) {
     Turtle site = Turtle(api, root);
     box.Palette palette = box.palette(site);
     int top = box.top(site, HEIGHT_EDGES);
@@ -137,9 +138,16 @@ void world(const(Api)* api, Site root, const(void)* data) {
     second.stop(box.ROUTE_LANE, box.HALF_WIDTH - 1.5f, bridgeFloor + 1);
     second.stop(box.ROUTE_LANE, box.ROUTE_LANE, bridgeFloor + 1);
     box.stairRoute(second, bridgeFloor, top);
-    corners[0].entrance(0, 1, site.edgeCells() / 2);
+}
+
+void world(const(Api)* api, Site root, const(void)* data) {
+    Turtle site = Turtle(api, root);
+    landmark(api, root, data);
+    api.look(api, NO_KIND, &LOOK);
+    site.entrance(0, 1, site.edgeCells() / 2);
 }
 
 pragma(mangle, ENTRY) void plugin(const(Registry)* registry) {
     registry.add(registry, "crown", &world);
+    registry.addLandmark(registry, "crown", &landmark);
 }

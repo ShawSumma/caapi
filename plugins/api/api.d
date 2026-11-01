@@ -1,6 +1,6 @@
 module plugins.api.api;
 
-enum string ENTRY = "mined_plugin_1";
+enum string ENTRY = "mined_plugin_2";
 
 enum Material : ubyte {
     none,
@@ -142,8 +142,25 @@ struct Risen {
     int segment;
 }
 
+struct Look {
+    const(char)* name;
+    const(char)* caption;
+    float[3] fog = [0, 0, 0];
+    bool hasFog;
+}
+
 alias Structure = void function(const(Api)* api, Site site, const(void)* data);
 alias Tile = void function(const(Api)* api, Site face, const(Risen)* risen, const(void)* data);
+
+struct RisingKind {
+    double share;
+    HorosphereForm form;
+    uint tag;
+    Tile tile;
+    const(void)* data;
+    size_t size;
+    Look look;
+}
 
 struct Api {
     void* host;
@@ -182,11 +199,16 @@ struct Api {
     void function(const(Api)* api, Pen pen, Material material, double cells, double fromRadius, double toRadius) limb;
     void function(const(Api)* api, Pen pen, Material material, double radius) leaves;
     bool function(const(Api)* api, const(char)* world, Site site) build;
+    void function(const(Api)* api, uint kind, const(Look)* look) look;
+    void function(const(Api)* api, double odds) risingKinds;
+    bool function(const(Api)* api, uint index, Site site) landmark;
 }
 
 struct Registry {
     void* host;
     void function(const(Registry)* registry, const(char)* name, Structure world) add;
+    void function(const(Registry)* registry, const(char)* name, const(RisingKind)* kind) addKind;
+    void function(const(Registry)* registry, const(char)* name, Structure landmark) addLandmark;
 }
 
 alias Entry = void function(const(Registry)* registry);

@@ -12,6 +12,10 @@ bool isShownAgainst(Material material, Material beside) {
     return material != Material.none && isSeeThrough(beside) && !(material == Material.glass && beside == Material.glass);
 }
 
+bool isGlowing(Material material) {
+    return material == Material.lightPanel || material == Material.sunlight || material == Material.lava;
+}
+
 immutable ubyte[3][MATERIAL_COUNT] MATERIAL_COLORS = [
     Material.none: [0, 0, 0],
     Material.dirt: [120, 85, 58],

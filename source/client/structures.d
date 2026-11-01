@@ -21,7 +21,7 @@ import common.worldgen.strokes : Stroke;
 import common.worldgen.structure : ClaimKey, ColumnSpot, GROUND_RING, PLACE_SLACK, RootedCorner, SiteFrame, anchorBits, atLevel, claimKeyOf, edgeCells, edgeLength, edgeSitesOf, faceSite, forwarded, frameOf, groundRing, rootSite, siteHash, siteOf, siteOrigin, sitePlacement, turned;
 import geometry.honeycomb : Face;
 import geometry.lorentz : Motion, Vec4;
-import plugins.api.api : Api, Box, Column, HorosphereForm, Material, NO_KIND, Pen, Site, SitePart, Spot, Structure, Tile, Turn;
+import plugins.api.api : Api, Box, Column, HorosphereForm, Look, Material, NO_KIND, Pen, RisingKind, Site, SitePart, Spot, Structure, Tile, Turn;
 import plugins.api.api : ApiRhythm = Rhythm;
 
 enum size_t MESSAGE_CAPACITY = 1024;
@@ -447,6 +447,27 @@ struct StructureHost {
         }
     }
 
+    void look(uint kind, ref const Look chosen) {
+        if (builder.isGrowing) {
+            refuse("only the world's own structure sets how it looks");
+        } else if (kind == NO_KIND) {
+            builder.graph.structures.blueprint.look = chosen;
+        } else if (!isKnownKind(kind)) {
+            refuse("unknown kind of horosphere");
+        } else {
+            builder.graph.horospheres.kinds.ptr[kind - 1].look = chosen;
+        }
+    }
+
+    void addRisingKinds(double odds) {
+        foreach (ref kind; registry().risingKinds[0 .. registry().kindCount]) {
+            uint made = horosphere(odds * kind.share, kind.form, kind.tag, kind.tile, kind.data, kind.size);
+            if (refusal is null) {
+                look(made, kind.look);
+            }
+        }
+    }
+
     bool isKnownKind(uint kind) const {
         return kind >= 1 && kind <= builder.graph.horospheres.kinds.length;
     }
@@ -563,6 +584,9 @@ Api mainApi(StructureHost* host) {
     api.limb = &mainLimb;
     api.leaves = &mainLeaves;
     api.build = &mainBuild;
+    api.look = &mainLook;
+    api.risingKinds = &mainRisingKinds;
+    api.landmark = &mainLandmark;
     return api;
 }
 
@@ -714,6 +738,23 @@ bool mainBuild(const(Api)* api, const(char)* world, Site site) {
         return false;
     } else {
         found(api, site, null);
+        return true;
+    }
+}
+
+void mainLook(const(Api)* api, uint kind, const(Look)* look) {
+    mainHost(api).look(kind, *look);
+}
+
+void mainRisingKinds(const(Api)* api, double odds) {
+    mainHost(api).addRisingKinds(odds);
+}
+
+bool mainLandmark(const(Api)* api, uint index, Site site) {
+    if (index >= registry().landmarkCount) {
+        return false;
+    } else {
+        registry().landmarks[index](api, site, null);
         return true;
     }
 }

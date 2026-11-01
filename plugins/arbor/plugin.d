@@ -1,8 +1,10 @@
 module plugins.arbor.plugin;
 
 import core.stdc.math : pow;
-import plugins.api.api : Api, ENTRY, Material, Registry, Rhythm, Risen, Site, SitePart, Turn;
+import plugins.api.api : Api, ENTRY, Look, Material, NO_KIND, Registry, Rhythm, Risen, Site, SitePart, Turn;
 import plugins.turtle.turtle : Tread, Turtle, boxOf, cornersOf, floorMod, higherOf, middle, roll, treadAround, upright;
+
+immutable Look LOOK = Look("arbor", "Limbs branch along the honeycomb's edges, and space makes room: no two branches ever have to cross.", [0.72f, 0.84f, 0.74f], true);
 
 enum int TRUNK = 4;
 enum int RING = 4;
@@ -32,13 +34,20 @@ immutable Turn[4] SIDES = [Turn.pitchUp, Turn.left, Turn.pitchDown, Turn.right];
 enum int ROUTE_TREADS = TREADS;
 immutable float[3] SPAWN = [-12, 0, 0];
 
+enum int ENDLESS = 0;
+enum int LANDMARK_SEGMENTS = 4;
+enum int LANDMARK_GENERATIONS = 4;
+
 struct Branch {
     int generation;
     int start;
+    int lastGeneration;
 }
 
 struct Trunk {
     int age;
+    int segments;
+    int lastGeneration;
 }
 
 int widthOf(int generation) {
@@ -54,7 +63,7 @@ void leaves(Turtle site, int tip, ulong hash) {
 
 bool grow(Turtle child, Branch data) {
     Turtle tip = child.forward(1);
-    if (tip.isClaimed(SitePart.vertex)) {
+    if (tip.isClaimed(SitePart.vertex) || (data.lastGeneration != ENDLESS && data.generation > data.lastGeneration)) {
         return false;
     } else {
         bool isPlaced = child.place(&branch, &data, Branch.sizeof);
@@ -73,7 +82,7 @@ void branch(const(Api)* api, Site at, const(void)* data) {
     site.paint(BARK, boxOf([-width, width - 1], [-width, width - 1], [own.start, length - 1]));
     Turtle tip = site.forward(1);
     double odds = pow(TAPER, own.generation);
-    Branch next = Branch(own.generation + 1, 0);
+    Branch next = Branch(own.generation + 1, 0, own.lastGeneration);
     uint grown = 0;
     if (tip.pen().rise() > DOWNWARD && roll(tip.hash(SitePart.edge), STRAIGHT_SALT) < STRAIGHT_ODDS && grow(tip, next)) {
         grown += 1;
@@ -110,7 +119,8 @@ void stairSegment(Turtle tower, int age) {
 
 void trunk(const(Api)* api, Site at, const(void)* data) {
     Turtle tower = Turtle(api, at);
-    int age = (*cast(const(Trunk)*) data).age;
+    Trunk own = *cast(const(Trunk)*) data;
+    int age = own.age;
     int length = tower.edgeCells();
     tower.paint(BARK, boxOf([-TRUNK, TRUNK - 1], [-TRUNK, TRUNK - 1], [0, length - 1]));
     if (age == 0) {
@@ -119,11 +129,13 @@ void trunk(const(Api)* api, Site at, const(void)* data) {
     stairSegment(tower, age);
     Turtle top = tower.forward(1);
     top.claim(SitePart.vertex);
-    Trunk higher = Trunk(age + 1);
-    if (!top.place(&trunk, &higher, Trunk.sizeof)) {
+    Trunk higher = Trunk(age + 1, own.segments, own.lastGeneration);
+    if (own.segments != ENDLESS && higher.age == own.segments) {
+        leaves(tower, length, top.hash(SitePart.vertex));
+    } else if (!top.place(&trunk, &higher, Trunk.sizeof)) {
         tower.fail("the trunk's next segment is behind the tree");
     }
-    Branch limb = Branch(1, LIMB_START);
+    Branch limb = Branch(1, LIMB_START, own.lastGeneration);
     int vertexHeight = (age + 1) * length;
     Turn reachable = limbSide(vertexHeight + widthOf(limb.generation));
     grow(top.turned(reachable), limb);
@@ -150,18 +162,28 @@ void lawn(const(Api)* api, Site face, const(Risen)* risen, const(void)* data) {
     }
 }
 
-void world(const(Api)* api, Site at, const(void)* data) {
-    Turtle tower = upright(Turtle(api, at));
-    Trunk first = Trunk(0);
+void plant(Turtle tower, Trunk first) {
     tower.claim(SitePart.vertex);
     if (!tower.place(&trunk, &first, Trunk.sizeof)) {
         tower.fail("the trunk cannot be placed at the root");
     }
     route(tower);
+}
+
+// A placed structure is never forgotten and grows with the deepest depth reached anywhere, so one sharing a world with
+// everything else has to be finite.
+void landmark(const(Api)* api, Site at, const(void)* data) {
+    plant(upright(Turtle(api, at)), Trunk(0, LANDMARK_SEGMENTS, LANDMARK_GENERATIONS));
+}
+
+void world(const(Api)* api, Site at, const(void)* data) {
+    plant(upright(Turtle(api, at)), Trunk(0, ENDLESS, ENDLESS));
     api.tile(api, &lawn, null, 0);
-    tower.entrance(SPAWN[0], SPAWN[1], SPAWN[2]);
+    api.look(api, NO_KIND, &LOOK);
+    upright(Turtle(api, at)).entrance(SPAWN[0], SPAWN[1], SPAWN[2]);
 }
 
 pragma(mangle, ENTRY) void plugin(const(Registry)* registry) {
     registry.add(registry, "arbor", &world);
+    registry.addLandmark(registry, "arbor", &landmark);
 }

@@ -22,6 +22,7 @@ jobs:
         run: |
           dub run -q -b release --compiler=ldc2 -c headless -- --tests --out /dev/stdout
           dub run -q -b release --compiler=ldc2 -c headless -- --views --out /dev/stdout
+          dub run -q -b release --compiler=ldc2 -c headless -- --films --out /dev/stdout
       - name: Repaint checks
         run: |
           dub run -q -b release --compiler=ldc2 -c headless -- --worldgen structure city --check-repaint --out /dev/stdout

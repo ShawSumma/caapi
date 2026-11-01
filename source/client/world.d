@@ -15,11 +15,12 @@ import common.position : Position;
 import common.raycast.graph : GraphCastHit, rayCast;
 import common.traversal : NOT_COLLECTED, NO_DEADLINE, NearbyNode, NearbyScratch;
 import common.worldgen.generation : Worldgen;
+import common.worldgen.horospheres : lookAt;
 import geometry.cube : Cell, Direction, boundaryOf;
 import geometry.honeycomb : NODE_RADIUS;
 import geometry.lorentz : Motion, Point, Vec4;
 import geometry.ray : Ray;
-import plugins.api.api : Material;
+import plugins.api.api : Look, Material;
 
 enum float NEARBY_PADDING = 0.05f;
 enum float NEARBY_REBUILD_DISTANCE = 0.25f;
@@ -40,6 +41,8 @@ enum double NEARBY_LEAST_MILLISECONDS = 1.0;
 enum double STREAMER_LEAST_MILLISECONDS = 1.0;
 enum size_t STRUCTURE_CANDIDATES = 256;
 enum double RECOVERY_BUDGET_MILLISECONDS = 8.0;
+enum float FOG_COLOR_RATE = 1.5f;
+enum float[3] SKY_SRGB = [0.55f, 0.7f, 0.94f];
 
 struct Placement {
     ChunkId chunk;
@@ -82,6 +85,8 @@ struct LocalWorld {
     Point!float publishedPoint;
     Point!float pendingPoint;
     Point!float trackedCamera;
+    float[3] sunward = [0, 1, 0];
+    float[3] fogColor = SKY_SRGB;
     uint trackedVersion;
     NearbyNode[] cachedNodes;
     Array!Unloaded unloaded;
@@ -129,6 +134,34 @@ struct LocalWorld {
 
     Motion!float cameraInNearbyFrame() const {
         return nearby[published].nodes.ptr[cameraNearbyIndex()].transform * cameraPosition.local;
+    }
+
+    const(Look)* lookAtCamera() const {
+        return graph.lookAt(cameraPosition);
+    }
+
+    float[3] wantedFogColor() const {
+        const(Look)* look = lookAtCamera();
+        const(Look)* world = &graph.structures.blueprint.look;
+        if (look.hasFog) {
+            return look.fog;
+        } else if (world.hasFog) {
+            return world.fog;
+        } else {
+            return SKY_SRGB;
+        }
+    }
+
+    void settleFogColor() {
+        fogColor = wantedFogColor();
+    }
+
+    void approachFogColor(float seconds) {
+        float[3] wanted = wantedFogColor();
+        float kept = expf(-FOG_COLOR_RATE * seconds);
+        foreach (channel; 0 .. fogColor.length) {
+            fogColor[channel] = wanted[channel] + (fogColor[channel] - wanted[channel]) * kept;
+        }
     }
 
     float viewRadius() const {

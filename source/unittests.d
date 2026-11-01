@@ -51,6 +51,7 @@ import clientArrivals = client.arrivals;
 import clientStreaming = client.streaming;
 import clientWorld = client.world;
 import clientGame = client.game;
+import clientHud = client.hud;
 
 enum uint TEST_TIME_LIMIT_SECONDS = 300;
 

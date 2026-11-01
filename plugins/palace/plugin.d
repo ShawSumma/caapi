@@ -1,7 +1,9 @@
 module plugins.palace.plugin;
 
-import plugins.api.api : Api, Box, ENTRY, Material, Registry, Risen, Site, SitePart, Turn;
+import plugins.api.api : Api, Box, ENTRY, Look, Material, NO_KIND, Registry, Risen, Site, SitePart, Turn;
 import plugins.turtle.turtle : Turtle, boxOf, cornersOf, roll, upright;
+
+immutable Look LOOK = Look("palace", "One sunken hall over a pentagon and its ten neighbors. Eleven rooms, and every wall meets at a right angle.");
 
 enum size_t MOST_FACES = 16;
 enum int FLOOR = -11;
@@ -174,10 +176,14 @@ void lawn(const(Api)* api, Site site, const(Risen)* risen, const(void)* data) {
     }
 }
 
-void world(const(Api)* api, Site site, const(void)* data) {
-    Turtle root = Turtle(api, site);
+struct Halls {
+    Run entranceRun;
+    Footprint footprint;
+}
+
+Halls halls(Turtle root) {
     Footprint footprint = footprintOf(root);
-    Lawn lawnData = Lawn(footprint.hashes, footprint.count);
+    Run entranceRun;
     bool hasEntrance = false;
     foreach (face; footprint.faces[0 .. footprint.count]) {
         bool isCentre = face.hash(SitePart.face) == footprint.hashes[0];
@@ -192,15 +198,28 @@ void world(const(Api)* api, Site site, const(void)* data) {
                 Run run = Run(upright(corner), upright(corner.forward(1)));
                 grandStair(run, isFirst);
                 if (isFirst) {
-                    run.near.turned(Turn.rollLeft).entrance(0, -(DOOR_X[0] + DOOR_X[1] + 1) / 2.0f, GROUND);
+                    entranceRun = run;
                     hasEntrance = true;
                 }
             }
         }
     }
+    return Halls(entranceRun, footprint);
+}
+
+void landmark(const(Api)* api, Site site, const(void)* data) {
+    halls(Turtle(api, site));
+}
+
+void world(const(Api)* api, Site site, const(void)* data) {
+    Halls built = halls(Turtle(api, site));
+    Lawn lawnData = Lawn(built.footprint.hashes, built.footprint.count);
+    built.entranceRun.near.turned(Turn.rollLeft).entrance(0, -(DOOR_X[0] + DOOR_X[1] + 1) / 2.0f, GROUND);
     api.tile(api, &lawn, &lawnData, Lawn.sizeof);
+    api.look(api, NO_KIND, &LOOK);
 }
 
 pragma(mangle, ENTRY) void plugin(const(Registry)* registry) {
     registry.add(registry, "palace", &world);
+    registry.addLandmark(registry, "palace", &landmark);
 }

@@ -1,6 +1,6 @@
 module client.script;
 
-import core.stdc.math : floor;
+import core.stdc.math : floor, fabsf;
 import core.stdc.stdio : FILE, fclose, fopen, fprintf, snprintf;
 import base.names : ENUM_NAMES;
 import base.numbers : RADIANS_PER_DEGREE;
@@ -37,6 +37,10 @@ double degreesOf(Angle angle) {
     return angle.value / RADIANS_PER_DEGREE;
 }
 
+float smoothStep(float share) {
+    return share * share * (3 - 2 * share);
+}
+
 struct Script {
     Game* game;
     FILE* report;
@@ -44,6 +48,7 @@ struct Script {
     AngularSpeed yawRate;
     AngularSpeed pitchRate;
     StepHook hook;
+    StepHook camera;
     uint steps;
     char[FAILURE_CAPACITY] failure = 0;
     bool[KEY_COUNT] isHeld;
@@ -208,6 +213,64 @@ struct Script {
         wait(seconds);
         yawRate = restingYaw;
         pitchRate = restingPitch;
+    }
+
+    // Starts the film: from here on every step is a frame. A script that is not being filmed has no camera to start.
+    void roll() {
+        hook = camera;
+    }
+
+    // Turns and flies together, easing in and out, for shots that must not start or stop with a jerk.
+    void glide(Key key, float distance, Angle yaw, Angle pitch, double seconds) {
+        ulong count = cast(ulong) floor(seconds / timestep.value + 0.5);
+        Speed resting = game.character.noclipSpeed;
+        float before = 0;
+        hold(key);
+        foreach (index; 0 .. count) {
+            if (!isFailed) {
+                float after = smoothStep((index + 1.0f) / count);
+                float share = after - before;
+                before = after;
+                game.character.noclipSpeed = Speed(fabsf(distance) * share / timestep.value);
+                look(yaw * share, pitch * share);
+                step();
+            }
+        }
+        release(key);
+        game.character.noclipSpeed = resting;
+    }
+
+    void ease(Angle yaw, Angle pitch, double seconds) {
+        ulong count = cast(ulong) floor(seconds / timestep.value + 0.5);
+        float before = 0;
+        foreach (index; 0 .. count) {
+            if (!isFailed) {
+                float after = smoothStep((index + 1.0f) / count);
+                look(yaw * (after - before), pitch * (after - before));
+                before = after;
+                step();
+            }
+        }
+    }
+
+    void throwBlock() {
+        game.throwBlock();
+    }
+
+    size_t thrownCount() const {
+        return game.thrown.length;
+    }
+
+    bool isThrownResting(size_t index) const {
+        return game.thrown.ptr[index].isResting;
+    }
+
+    void resetCompass() {
+        game.resetCompass();
+    }
+
+    Angle compassOff() const {
+        return game.compassOff();
     }
 
     MovementMode mode() const {

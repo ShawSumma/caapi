@@ -184,33 +184,40 @@ API, `client` on all.
     horospheres drawn with the pen, and edges of the honeycomb.
   - `plugins.d`: loads every library in the `lib/` beside the executable, calls its entry point (`ENTRY`, whose name
     carries the API version) and keeps the worlds it registers.
-  - `script.d`: the `Script` API the behavior tests and views drive the game through, and the recorder that writes a
-    session as D; `drive.d`, `frames.d`, `images.d`: playing a list of drive actions in the window and timing its
-    frames; `sampler.d`: the profiler; `meshing.d`, `graphics/`: rendering.
+  - `script.d`: the `Script` API the behavior tests, views and films drive the game through, and the recorder that
+    writes a session as D; `drive.d`, `frames.d`, `images.d`: playing a list of drive actions in the window and timing
+    its frames; `sampler.d`: the profiler; `meshing.d`, `graphics/`: rendering (`graphics/voxels/textures.d` makes the
+    block textures, `graphics/overlay.d` draws the HUD and thrown blocks).
+  - `hud.d`: builds the HUD each frame as colored triangles without touching Vulkan: name and caption, the Poincare
+    disk, the compass, the growth counter; `font.d`: its bitmap font.
   - `cocoa.d`: the macOS window (AppKit through the Objective-C runtime, a `CAMetalLayer` for MoltenVK), reporting
     keys as X keysyms so `main.d` handles input the same way on both platforms.
-- `source/scripts/`: `tests.d` (behavior tests), `views.d` (screenshot views), `drives.d` (drives), each a table of
-  named entries, and the helpers they share: `walk.d` (walking constants and checks, building walls and steps) and
-  `climb.d` (following a structure's route).
+- `source/scripts/`: `tests.d` (behavior tests), `views.d` (screenshot views), `films.d` (films, each a list of shots),
+  `drives.d` (drives), each a table of named entries, and the helpers they share: `walk.d` (walking constants and
+  checks, building walls and steps) and `climb.d` (following a structure's route).
 - `source/shaders/`: GLSL, compiled into `spv/` by the windowed build.
 - `plugins/`: dub sub-packages declared in `dub.sdl`. Source libraries are shared code compiled into each plugin that
   uses them; each plugin is a shared library built into `lib/` before the engine, whose entry point (named by
   `pragma(mangle, ENTRY)`) registers its worlds by name.
-  - `api/`: `plugins.api.api`, the world API: sites, boxes, materials, the pen, the `Api` table of functions a world
-    calls, and the `Registry` a plugin registers worlds with. The engine links it too.
+  - `api/`: `plugins.api.api`, the world API: sites, boxes, materials, the pen, looks (a name, caption and fog color),
+    the `Api` table of functions a world calls, and the `Registry` a plugin registers its worlds, rising kinds and
+    landmarks with. The engine links it too.
   - Source libraries: `turtle/` (a site and a pen wrapped around the API, and the helpers every plugin shares:
     `lowerOf`, `higherOf`, `clamped`, `upright`, `cornersOf`, the salted hash rolls `mixed` and `roll`, and
     `treadAround`, the treads of a square spiral stair around a line), `box/` (the square tower and the hut), `buildings/`
-    (building types on `building.d`, chosen through `types.d`), `connector/` (the tower from a lower surface up to
-    the horosphere risen from it, meeting each at its own kind of floor), `blocks/` (city blocks and streets),
-    `rooms/` (the backrooms' layers along the same streets, `levels.d` holding the layers and biomes),
-    `horospheres/` (the kinds of horosphere with their tags and tiles: wild terrain, city, backrooms and the tree,
-    which `tree.d` draws a segment at a time without end).
-  - Plugins, one world each: `planet` (the terrain world: wild terrain at the root with every kind rising, `road`,
-    and a tree beside the spawn), `road` (the viaduct), `city`, `backrooms`, `tower`, `crown`, `trail`, `babel` (an
-    endless spiral stair around a hollow core), `library` (galleries of shelves on every face, four stories, rising as
-    more library planes joined by connectors, in fog), `palace` (one sunken hall over the root face and its ten
-    neighbors, with grand stairs down from its doors), `arbor` (an endless trunk with a spiral stair, and limbs that
-    branch along edges without crossing), `lattice` (a beam on every edge with platforms, built for upright gravity
-    and turned upside down, in fog); `fixtures` holds small test worlds.
+    (building types on `building.d`, chosen through `types.d`), `connector/` (the tags of the kinds, and what joins a
+    lower surface to the horosphere risen from it, meeting each at its own kind of floor: a tower, an open spiral, a
+    drift of floating steps or a lantern, rolled per pair of kinds from a table, with nothing for a pair not listed),
+    `blocks/` (city blocks and streets), `rooms/` (the backrooms' layers along the same streets, `levels.d` holding the
+    layers and biomes), `horospheres/` (the kinds of horosphere with their tiles and looks: wild terrain, city, backrooms
+    and the tree, which `tree.d` draws a segment at a time without end).
+  - Plugins, one world each: `planet` (the default world: wild terrain at the root with every kind rising, including
+    the kinds other plugins register, `road`, a tree beside the spawn and every registered landmark around it), `road`
+    (the viaduct), `city`, `backrooms`, `tower`, `crown`, `trail`, `babel` (an endless spiral stair around a hollow core,
+    also a rising kind), `library` (galleries of shelves on every face, four stories, rising as more library planes
+    joined by connectors, in fog; also a rising kind), `palace` (one sunken hall over the root face and its ten neighbors,
+    with grand stairs down from its doors), `arbor` (an endless trunk with a spiral stair, and limbs that branch along
+    edges without crossing), `lattice` (a beam on every edge with platforms, built for upright gravity and turned upside
+    down, in fog; it fills space, so it cannot join another world); `tower`, `crown`, `trail`, `babel`, `palace` and
+    `arbor` also register as landmarks; `fixtures` holds small test worlds.
 - `.github/workflows/ci.yml`: unit and behavior tests, the repaint and forget checks, and the windowed build on Linux.

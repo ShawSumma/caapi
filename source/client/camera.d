@@ -70,6 +70,10 @@ struct Quaternion {
         }
     }
 
+    Quaternion inverted() const {
+        return Quaternion(w, -x, -y, -z);
+    }
+
     Motion!float toMotion() const {
         Mat4!float m;
         m.c[0][0] = 1 - 2 * (y * y + z * z);
