@@ -1,6 +1,6 @@
 module plugins.api.api;
 
-enum string ENTRY = "plugin";
+enum string ENTRY = "mined_plugin_1";
 
 enum Material : ubyte {
     none,

@@ -1,8 +1,11 @@
 module client.graphics.core;
 
 import bindings.platform : PFN_vkWaitForPresentKHR, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR, VkPhysicalDeviceFeatures2, VkPhysicalDevicePresentIdFeaturesKHR, VkPhysicalDevicePresentWaitFeaturesKHR, vkGetDeviceProcAddr, vkGetPhysicalDeviceFeatures2, VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU, VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU, VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU, VK_QUEUE_GRAPHICS_BIT, VK_STRUCTURE_TYPE_APPLICATION_INFO, VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, VK_SUCCESS, VkApplicationInfo, VkBool32, VkDevice, VkDeviceCreateInfo, VkDeviceQueueCreateInfo, VkInstance, VkInstanceCreateFlags, VkInstanceCreateInfo, VkPhysicalDevice, VkPhysicalDeviceFeatures, VkPhysicalDeviceProperties, VkQueue, VkQueueFamilyProperties, VkResult, VkSurfaceKHR, vkCreateDevice, vkCreateInstance, vkDestroyDevice, vkDestroyInstance, vkDestroySurfaceKHR, vkDeviceWaitIdle, vkEnumeratePhysicalDevices, vkGetDeviceQueue, vkGetPhysicalDeviceFeatures, vkGetPhysicalDeviceProperties, vkGetPhysicalDeviceQueueFamilyProperties, vkGetPhysicalDeviceSurfaceSupportKHR;
+import client.graphics.base : srgbSurfaceFormat;
 import client.graphics.pipeline : VULKAN_TRUE, expectSuccess;
 
+enum string NO_INSTANCE = "cannot create a Vulkan 1.1 instance with the extensions this needs";
+enum string NO_DEVICE = "no usable Vulkan device: needs multiDrawIndirect, drawIndirectFirstInstance and, for a window, an 8-bit sRGB surface format";
 enum uint VULKAN_API_VERSION_1_1 = (1 << 22) | (1 << 12);
 enum uint MAX_PHYSICAL_DEVICES = 16;
 enum uint MAX_QUEUE_FAMILIES = 32;
@@ -105,8 +108,6 @@ struct VulkanCore {
     uint maxDrawIndirectCount;
     bool isPresenting;
 
-    // Whether frames can wait until an earlier present is on screen, which keeps the display from queueing presents and
-    // then blocking for several refreshes at once.
     bool isPresentWaitable() const {
         return waitForPresent !is null;
     }
@@ -124,22 +125,39 @@ struct VulkanCore {
         return id.presentId != 0 && wait.presentWait != 0;
     }
 
-    void setup(SurfaceSource source) {
+    const(char)* setup(SurfaceSource source) {
         isPresenting = true;
-        createInstance();
-        surface = createSurface(instance, source);
-        pickPhysicalDevice();
-        createDevice();
+        if (!createInstance()) {
+            return NO_INSTANCE;
+        } else {
+            surface = createSurface(instance, source);
+            return startDevice();
+        }
     }
 
-    void setupOffscreen() {
+    const(char)* setupOffscreen() {
         isPresenting = false;
-        createInstance();
-        pickPhysicalDevice();
-        createDevice();
+        if (!createInstance()) {
+            return NO_INSTANCE;
+        } else {
+            return startDevice();
+        }
     }
 
-    void createInstance() {
+    const(char)* startDevice() {
+        if (!pickPhysicalDevice()) {
+            if (isPresenting) {
+                vkDestroySurfaceKHR(instance, surface, null);
+            }
+            vkDestroyInstance(instance, null);
+            return NO_DEVICE;
+        } else {
+            createDevice();
+            return null;
+        }
+    }
+
+    bool createInstance() {
         ExtensionList extensions;
         extensions.add(INSTANCE_EXTENSIONS);
         if (isPresenting) {
@@ -158,18 +176,22 @@ struct VulkanCore {
         info.pApplicationInfo = &applicationInfo;
         info.enabledExtensionCount = extensions.count;
         info.ppEnabledExtensionNames = extensions.names.ptr;
-        expectSuccess(vkCreateInstance(&info, null, &instance));
+        return vkCreateInstance(&info, null, &instance) == VK_SUCCESS;
+    }
+
+    bool hasSurfaceFormat(VkPhysicalDevice candidate) {
+        return !isPresenting || srgbSurfaceFormat(candidate, surface).isFound;
     }
 
     uint usableRank(VkPhysicalDevice candidate) {
-        if (usableGraphicsFamily(candidate) != NO_QUEUE_FAMILY && isIndirectDrawingSupported(candidate)) {
+        if (usableGraphicsFamily(candidate) != NO_QUEUE_FAMILY && isIndirectDrawingSupported(candidate) && hasSurfaceFormat(candidate)) {
             return deviceTypeRank(candidate);
         } else {
             return RANK_UNUSABLE;
         }
     }
 
-    void pickPhysicalDevice() {
+    bool pickPhysicalDevice() {
         VkPhysicalDevice[MAX_PHYSICAL_DEVICES] devices;
         uint deviceCount = MAX_PHYSICAL_DEVICES;
         expectSuccess(vkEnumeratePhysicalDevices(instance, &deviceCount, devices.ptr));
@@ -181,11 +203,15 @@ struct VulkanCore {
                 bestRank = rank;
             }
         }
-        assert(bestRank != RANK_UNUSABLE);
-        graphicsQueueFamily = usableGraphicsFamily(physicalDevice);
-        VkPhysicalDeviceProperties properties;
-        vkGetPhysicalDeviceProperties(physicalDevice, &properties);
-        maxDrawIndirectCount = properties.limits.maxDrawIndirectCount;
+        if (bestRank == RANK_UNUSABLE) {
+            return false;
+        } else {
+            graphicsQueueFamily = usableGraphicsFamily(physicalDevice);
+            VkPhysicalDeviceProperties properties;
+            vkGetPhysicalDeviceProperties(physicalDevice, &properties);
+            maxDrawIndirectCount = properties.limits.maxDrawIndirectCount;
+            return true;
+        }
     }
 
     bool isPresentable(VkPhysicalDevice candidate, uint family) {

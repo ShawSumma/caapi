@@ -1,2 +1,3 @@
-#define MAKE_LIB
-#include "onelua.c"
+#include "lua.h"
+#include "lauxlib.h"
+#include "lualib.h"

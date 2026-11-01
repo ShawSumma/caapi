@@ -24,8 +24,6 @@ int channelDelta(ubyte a, ubyte b) {
     }
 }
 
-// Each pixel takes `stride` bytes in both images, of which the first three (red, green, blue) are compared. A pixel
-// counts as changed when any of them moves by more than CHANGE_THRESHOLD.
 ImageDifference differenceOf(const(ubyte)[] first, const(ubyte)[] second, uint stride, size_t pixels) {
     ImageDifference difference;
     size_t changed = 0;

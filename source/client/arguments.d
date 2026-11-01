@@ -7,6 +7,7 @@ import base.names : ENUM_NAMES, NameLookup;
 import client.plugins : registry;
 import common.worldgen.generation : PlaneWorld, STRUCTURE_NAME_CAPACITY, StructureWorld, Worldgen, WorldgenKind, degreesToRadians;
 
+enum string VERSION = "0.0.1";
 enum int EXIT_OK = 0;
 enum int EXIT_FAILED = 1;
 enum int EXIT_USAGE = 2;

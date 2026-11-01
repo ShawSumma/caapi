@@ -179,7 +179,6 @@ bool writePng(const(char)* path, uint width, uint height, const(ubyte)[] rgba) {
     }
 }
 
-// Reads only what writePng writes: 8-bit RGB, unfiltered rows, stored deflate blocks.
 PngImage readPng(const(char)* path) {
     FILE* file = fopen(path, "rb");
     if (file is null) {

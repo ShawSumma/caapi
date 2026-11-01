@@ -1,16 +1,14 @@
 name "mined"
 description "Hyperbolic voxel engine"
-license "Apache-2.0"
+license "MIT"
 targetType "executable"
 sourcePaths "source"
 importPaths "source"
 dependency "mined:api" version="*"
 
-sourceFiles "source/bindings/lua.c"
-dflags "-betterC" "-checkaction=halt" "-P-Ilua" "-P-DLUA_USE_JUMPTABLE=0"
-dflags "-P-DLUA_USE_LINUX" platform="linux"
-dflags "-P-DLUA_USE_MACOSX" platform="osx"
+dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 libs "dl" "m" "pthread"
+excludedSourceFiles "source/client/lua.d" "source/bindings/lua.c"
 preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :planet" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :road" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :city" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :backrooms" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :tower" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :crown" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :trail" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :fixtures" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :babel" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :library" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :palace" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :arbor" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :lattice"
 
 configuration "application" {
@@ -18,7 +16,6 @@ configuration "application" {
 	mainSourceFile "source/main.d"
 	excludedSourceFiles "source/headless.d" "source/worldcheck.d" "source/unittests.d"
 	stringImportPaths "source/shaders/spv"
-	dflags "-P-Ideps/vulkan-headers/include" platform="linux"
 	libs "vulkan" "X11" ":libXi.so.6" platform="linux"
 	lflags "--export-dynamic" platform="linux"
 	dflags "-P-I/opt/homebrew/include" platform="osx"
@@ -36,7 +33,7 @@ configuration "headless" {
 configuration "unittest" {
 	targetName "mined-unittest"
 	mainSourceFile "source/unittests.d"
-	excludedSourceFiles "source/main.d" "source/headless.d" "source/worldcheck.d" "source/bindings/*" "source/client/cocoa.d" "source/client/graphics/*" "source/client/graphics/voxels/*" "source/client/lua.d" "source/client/script.d" "source/client/drive.d" "source/client/structures.d" "source/client/tiles.d"
+	excludedSourceFiles "source/main.d" "source/headless.d" "source/worldcheck.d" "source/bindings/*" "source/client/cocoa.d" "source/client/graphics/*" "source/client/graphics/voxels/*" "source/client/script.d" "source/client/drive.d" "source/client/structures.d" "source/client/tiles.d" "source/scripts/*"
 }
 
 subPackage {
@@ -109,7 +106,7 @@ subPackage {
 	targetPath "lib"
 	sourcePaths "plugins/planet"
 	importPaths "."
-	dflags "-betterC" "-checkaction=halt"
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
 	dependency "mined:horospheres" version="*"
 }
@@ -120,7 +117,7 @@ subPackage {
 	targetPath "lib"
 	sourcePaths "plugins/road"
 	importPaths "."
-	dflags "-betterC" "-checkaction=halt"
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
 	dependency "mined:turtle" version="*"
 }
@@ -131,7 +128,7 @@ subPackage {
 	targetPath "lib"
 	sourcePaths "plugins/city"
 	importPaths "."
-	dflags "-betterC" "-checkaction=halt"
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
 	dependency "mined:blocks" version="*"
 }
@@ -142,7 +139,7 @@ subPackage {
 	targetPath "lib"
 	sourcePaths "plugins/backrooms"
 	importPaths "."
-	dflags "-betterC" "-checkaction=halt"
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
 	dependency "mined:rooms" version="*"
 }
@@ -153,7 +150,7 @@ subPackage {
 	targetPath "lib"
 	sourcePaths "plugins/tower"
 	importPaths "."
-	dflags "-betterC" "-checkaction=halt"
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
 	dependency "mined:box" version="*"
 }
@@ -164,7 +161,7 @@ subPackage {
 	targetPath "lib"
 	sourcePaths "plugins/crown"
 	importPaths "."
-	dflags "-betterC" "-checkaction=halt"
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
 	dependency "mined:box" version="*"
 }
@@ -175,7 +172,7 @@ subPackage {
 	targetPath "lib"
 	sourcePaths "plugins/trail"
 	importPaths "."
-	dflags "-betterC" "-checkaction=halt"
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
 	dependency "mined:box" version="*"
 }
@@ -186,7 +183,7 @@ subPackage {
 	targetPath "lib"
 	sourcePaths "plugins/babel"
 	importPaths "."
-	dflags "-betterC" "-checkaction=halt"
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
 	dependency "mined:turtle" version="*"
 }
@@ -197,7 +194,7 @@ subPackage {
 	targetPath "lib"
 	sourcePaths "plugins/library"
 	importPaths "."
-	dflags "-betterC" "-checkaction=halt"
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
 	dependency "mined:blocks" version="*"
 }
@@ -208,7 +205,7 @@ subPackage {
 	targetPath "lib"
 	sourcePaths "plugins/palace"
 	importPaths "."
-	dflags "-betterC" "-checkaction=halt"
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
 	dependency "mined:turtle" version="*"
 }
@@ -219,7 +216,7 @@ subPackage {
 	targetPath "lib"
 	sourcePaths "plugins/arbor"
 	importPaths "."
-	dflags "-betterC" "-checkaction=halt"
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
 	dependency "mined:turtle" version="*"
 }
@@ -230,7 +227,7 @@ subPackage {
 	targetPath "lib"
 	sourcePaths "plugins/lattice"
 	importPaths "."
-	dflags "-betterC" "-checkaction=halt"
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
 	dependency "mined:turtle" version="*"
 }
@@ -241,7 +238,7 @@ subPackage {
 	targetPath "lib"
 	sourcePaths "plugins/fixtures"
 	importPaths "."
-	dflags "-betterC" "-checkaction=halt"
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
 	dependency "mined:horospheres" version="*"
 	dependency "mined:box" version="*"

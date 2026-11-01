@@ -141,15 +141,17 @@ struct Renderer {
     bool hasCopy;
     bool isCaptureReady;
 
-    void setup(SurfaceSource source, ubyte chunkDimension) {
+    const(char)* setup(SurfaceSource source, ubyte chunkDimension) {
         prepare(chunkDimension);
-        core.setup(source);
-        swapchain.setup(core.physicalDevice, core.device, core.surface, core.graphicsQueueFamily);
-        ensureReadback();
-        setupPipelines();
+        const(char)* problem = core.setup(source);
+        if (problem is null) {
+            swapchain.setup(core.physicalDevice, core.device, core.surface, core.graphicsQueueFamily);
+            ensureReadback();
+            setupPipelines();
+        }
+        return problem;
     }
 
-    // Presented images are copied out only when asked (`isCapturing`), so the readback buffer follows the window's size.
     void ensureReadback() {
         VkDeviceSize size = cast(VkDeviceSize) swapchain.extent.width * swapchain.extent.height * PIXEL_BYTES;
         if (swapchain.isReadable && readback.size != size) {
@@ -158,7 +160,6 @@ struct Renderer {
         }
     }
 
-    // The image of the frame drawn before the last `render`, or null if it was not copied out.
     const(ubyte)[] capturedImage() const {
         if (isCaptureReady) {
             return captured.slice();
@@ -171,12 +172,15 @@ struct Renderer {
         return swapchain.format == VK_FORMAT_B8G8R8A8_SRGB;
     }
 
-    void setupOffscreen(VkExtent2D extent, ubyte chunkDimension) {
+    const(char)* setupOffscreen(VkExtent2D extent, ubyte chunkDimension) {
         prepare(chunkDimension);
-        core.setupOffscreen();
-        swapchain.setupOffscreen(core.physicalDevice, core.device, core.graphicsQueueFamily, extent);
-        readback = GpuBuffer.makeMapped(core.physicalDevice, core.device, cast(VkDeviceSize) extent.width * extent.height * PIXEL_BYTES, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
-        setupPipelines();
+        const(char)* problem = core.setupOffscreen();
+        if (problem is null) {
+            swapchain.setupOffscreen(core.physicalDevice, core.device, core.graphicsQueueFamily, extent);
+            readback = GpuBuffer.makeMapped(core.physicalDevice, core.device, cast(VkDeviceSize) extent.width * extent.height * PIXEL_BYTES, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+            setupPipelines();
+        }
+        return problem;
     }
 
     void prepare(ubyte chunkDimension) {
@@ -380,7 +384,6 @@ struct Renderer {
         vkEndCommandBuffer(commands);
     }
 
-    // Called once the fence says the GPU finished the frame that copied its image, before the next one is submitted.
     void takeCopy() {
         size_t bytes = cast(size_t) copiedExtent.width * copiedExtent.height * PIXEL_BYTES;
         captured.resize(bytes);
@@ -454,8 +457,6 @@ struct Renderer {
         return (cast(const(ubyte)*) readback.mapped)[0 .. readback.size];
     }
 
-    // Called before a frame starts: waits until the frame presented two frames ago is on screen, so at most one frame
-    // waits for the display. A present that is never shown (a hidden window) gives up after PRESENT_WAIT_NANOSECONDS.
     void waitForDisplay() {
         if (core.isPresentWaitable() && presentCount > PRESENTS_AHEAD) {
             core.waitForPresent(core.device, swapchain.swapchain, presentCount - PRESENTS_AHEAD, PRESENT_WAIT_NANOSECONDS);

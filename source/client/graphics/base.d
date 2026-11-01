@@ -148,7 +148,9 @@ struct SwapchainState {
     }
 
     void createSwapchain(VkDevice device, VkSurfaceCapabilitiesKHR capabilities) {
-        VkSurfaceFormatKHR surfaceFormat = selectSurfaceFormat(physicalDevice, surface);
+        SurfaceFormat chosen = srgbSurfaceFormat(physicalDevice, surface);
+        assert(chosen.isFound);
+        VkSurfaceFormatKHR surfaceFormat = chosen.value;
         format = surfaceFormat.format;
         VkSwapchainCreateInfoKHR info;
         info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
@@ -323,7 +325,12 @@ bool isSrgbSurfaceFormat(VkSurfaceFormatKHR candidate) {
     return candidate.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR && (candidate.format == VK_FORMAT_B8G8R8A8_SRGB || candidate.format == VK_FORMAT_R8G8B8A8_SRGB);
 }
 
-VkSurfaceFormatKHR selectSurfaceFormat(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface) {
+struct SurfaceFormat {
+    VkSurfaceFormatKHR value;
+    bool isFound;
+}
+
+SurfaceFormat srgbSurfaceFormat(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface) {
     VkSurfaceFormatKHR[MAX_SURFACE_FORMATS] formats;
     uint count = MAX_SURFACE_FORMATS;
     expectSuccess(vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &count, formats.ptr));
@@ -331,8 +338,11 @@ VkSurfaceFormatKHR selectSurfaceFormat(VkPhysicalDevice physicalDevice, VkSurfac
     while (index < count && !isSrgbSurfaceFormat(formats[index])) {
         index += 1;
     }
-    assert(index < count);
-    return formats[index];
+    if (index < count) {
+        return SurfaceFormat(formats[index], true);
+    } else {
+        return SurfaceFormat.init;
+    }
 }
 
 VkPresentModeKHR selectPresentMode(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface) {

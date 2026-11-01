@@ -1,6 +1,7 @@
 module common.graph;
 
 import core.bitop : bsf;
+import base.array : Array;
 import base.hashmap : FIBONACCI_MULTIPLIER, HashMap;
 import base.murmur : murmurHash3;
 import base.parallel : Executor;
@@ -70,6 +71,11 @@ struct ParentEntry {
 struct ParentList {
     ParentEntry[MAX_PARENTS] links;
     uint count;
+}
+
+struct Finishing {
+    uint slot;
+    uint parent;
 }
 
 ushort childParentFaces(ushort parentFaces, Face face) {
@@ -338,18 +344,35 @@ struct Graph {
 
     bool ensureStructureAt(uint slot) {
         if (!isFinished(slot)) {
-            ParentList list = parents(slot);
-            foreach (link; list.links[0 .. list.count]) {
-                ensureStructureAt(link.slot);
+            Array!Finishing stack;
+            stack.append(Finishing(slot, 0));
+            while (stack.length > 0) {
+                Finishing* top = &stack.ptr[stack.length - 1];
+                ParentList list = parents(top.slot);
+                if (top.parent < list.count) {
+                    uint parent = list.links[top.parent].slot;
+                    top.parent += 1;
+                    if (!isFinished(parent)) {
+                        stack.append(Finishing(parent, 0));
+                    }
+                } else {
+                    uint done = top.slot;
+                    stack.length -= 1;
+                    finishStructure(done);
+                }
             }
-            growBefore(depthOf(slot));
-            if (structures.grower.cover !is null && !structures.at(slot).isCovered) {
-                structures.grower.cover(structures.grower.context, this, slot);
-            }
-            this.finalizeStructure(slot);
-            structures.at(slot).isFinished = true;
+            stack.release();
         }
         return structures.at(slot).needsBuilding();
+    }
+
+    void finishStructure(uint slot) {
+        growBefore(depthOf(slot));
+        if (structures.grower.cover !is null && !structures.at(slot).isCovered) {
+            structures.grower.cover(structures.grower.context, this, slot);
+        }
+        this.finalizeStructure(slot);
+        structures.at(slot).isFinished = true;
     }
 
     void paintAhead(const(uint)[] candidates, Executor executor) {

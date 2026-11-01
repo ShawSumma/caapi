@@ -235,8 +235,6 @@ struct HashMap(K, V) {
     }
 }
 
-// Below the migration cursor previous holds only stale copies, and pages given back there may keep a live control over
-// a zeroed slot. Above it, an entry counts only if current has no newer one.
 int visitLive(M, D)(ref M map, D visit) {
     int result = 0;
     foreach (index; 0 .. map.current.capacity) {

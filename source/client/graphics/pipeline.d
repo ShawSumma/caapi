@@ -50,7 +50,6 @@ struct GpuBuffer {
         return result;
     }
 
-    // Host-cached, so the CPU reads it at memory speed; for what the GPU writes and the CPU reads back.
     static GpuBuffer makeReadable(VkPhysicalDevice physicalDevice, VkDevice device, VkDeviceSize size, VkBufferUsageFlags usage) {
         GpuBuffer result = make(physicalDevice, device, size, usage, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
         expectSuccess(vkMapMemory(device, result.memory, 0, size, 0, &result.mapped));

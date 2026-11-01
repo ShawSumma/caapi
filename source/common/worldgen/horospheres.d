@@ -469,7 +469,6 @@ uint groundNodeOf(ref GraphView view, uint slot, uint horosphere) {
             along[index] = fabs(measured.normal.minkowski(MIRRORED_ORIGINS[index].as!double()));
             least = lowerOf(least, along[index]);
         }
-        // Altitude grows with the product; only faces whose float altitude could tie the lowest are measured.
         foreach (index; 0 .. FACE_COUNT) {
             if (along[index] <= least * DESCENT_TIE_SLACK || along[index] * measured.scale < DESCENT_TIE_FLOOR) {
                 float candidate = fabsf(measured.distanceTo(Point!float(MIRRORED_ORIGINS[index])));

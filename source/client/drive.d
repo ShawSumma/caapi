@@ -1,24 +1,17 @@
 module client.drive;
 
 import core.stdc.stdio : FILE, fflush, fprintf;
-import core.stdc.string : strlen;
-import lua : luaL_checkinteger, luaL_checklstring, luaL_checknumber, luaL_checktype, luaL_error, luaL_loadfilex, luaL_ref, luaL_traceback, lua_CFunction, lua_State, lua_close, lua_createtable, lua_gettop, lua_newthread, lua_pcallk, lua_pushboolean, lua_pushcclosure, lua_pushinteger, lua_pushvalue, lua_rawgeti, lua_resume, lua_settop, lua_toboolean, lua_tolstring, lua_touserdata, lua_type, lua_xmove, lua_yieldk;
 import base.array : Array;
 import base.clock : MILLISECONDS_PER_SECOND;
 import client.frames : FrameRecord, FrameSummary, MouseMotion, RenderTimes, cameraStep;
 import client.images : RGBA_BYTES, copyAsRgba, differenceOf;
-import client.lua : LUA_FIRST_UPVALUE, LUA_NO_REF, LUA_REGISTRY, LUA_STATUS_OK, LUA_STATUS_YIELD, LUA_TOP, LUA_TYPE_FUNCTION, LUA_TYPE_TABLE, LuaLookup, SELF, TRACEBACK_INDEX, luaTraceback, newSafeState, registerMethod, setPackagePath;
 import client.png : writePng;
 import common.graph : Graph;
 import common.position : Position;
 
-enum int CHUNK_RESULTS = 1;
-enum int DRIVE_ARGUMENTS = 1;
-enum int FUNCTION_BELOW_THREAD = LUA_TOP - 1;
 enum uint LEFT_BUTTON = 1;
 enum uint RIGHT_BUTTON = 3;
 
-// Keys by their name on the keyboard; the game binds them to actions, the driver only presses them.
 enum DriveKey : ubyte {
     w,
     a,
@@ -64,11 +57,83 @@ struct DriveInput {
     double dy = 0;
 }
 
-// The script runs as a coroutine. Calls that let frames pass yield back to the window's frame loop, which resumes the
-// script once those frames are done, so the script plays the game the way the window runs it.
+enum DriveActionKind : ubyte {
+    frames,
+    move,
+    hold,
+    release,
+    tap,
+    click,
+    settle,
+    capture,
+    watch,
+    log,
+    summary,
+}
+
+struct DriveAction {
+    DriveActionKind kind;
+    uint frames;
+    double dx = 0;
+    double dy = 0;
+    DriveKey key;
+    uint button;
+    string text;
+    bool isOn;
+}
+
+struct NamedDrive {
+    string name;
+    immutable(DriveAction)[] actions;
+}
+
+DriveAction framesOf(uint count) {
+    return DriveAction(DriveActionKind.frames, count);
+}
+
+DriveAction moveBy(double dx, double dy, uint count) {
+    return DriveAction(DriveActionKind.move, count, dx, dy);
+}
+
+DriveAction holdKey(DriveKey key) {
+    return DriveAction(DriveActionKind.hold, 0, 0, 0, key);
+}
+
+DriveAction releaseKey(DriveKey key) {
+    return DriveAction(DriveActionKind.release, 0, 0, 0, key);
+}
+
+DriveAction tapKey(DriveKey key) {
+    return DriveAction(DriveActionKind.tap, 0, 0, 0, key);
+}
+
+DriveAction clickButton(uint button) {
+    return DriveAction(DriveActionKind.click, 0, 0, 0, DriveKey.init, button);
+}
+
+DriveAction settleWithin(uint limit) {
+    return DriveAction(DriveActionKind.settle, limit);
+}
+
+DriveAction captureTo(string path) {
+    return DriveAction(DriveActionKind.capture, 0, 0, 0, DriveKey.init, 0, path);
+}
+
+DriveAction watching(bool isOn) {
+    return DriveAction(DriveActionKind.watch, 0, 0, 0, DriveKey.init, 0, null, isOn);
+}
+
+DriveAction logging(bool isOn) {
+    return DriveAction(DriveActionKind.log, 0, 0, 0, DriveKey.init, 0, null, isOn);
+}
+
+DriveAction summaryOf(string title) {
+    return DriveAction(DriveActionKind.summary, 0, 0, 0, DriveKey.init, 0, title);
+}
+
 struct DriveHost {
-    lua_State* lua;
-    lua_State* thread;
+    const(DriveAction)[] actions;
+    size_t nextAction;
     FILE* report;
     Array!DriveEvent events;
     Array!DriveEvent later;
@@ -84,8 +149,6 @@ struct DriveHost {
     FrameRecord waiting;
     FrameSummary summary;
     double lastNow = 0;
-    int driveRef = LUA_NO_REF;
-    int resumeArguments;
     uint pendingFrames;
     uint frame;
     uint summaryFrame;
@@ -101,43 +164,10 @@ struct DriveHost {
     bool isFinished;
     bool isFailed;
 
-    bool start(const(char)* path, FILE* output, float sensitivity) {
+    void start(const(char)* name, const(DriveAction)[] chosen, FILE* output, float sensitivity) {
         report = output;
-        fprintf(report, "drive: %s, the mouse turns %g radians per count\n", path, cast(double) sensitivity);
-        lua = newSafeState();
-        lua.setPackagePath(path[0 .. strlen(path)]);
-        createDrive();
-        lua_pushcclosure(lua, cast(lua_CFunction) &luaTraceback, 0);
-        bool isLoaded = luaL_loadfilex(lua, path, null) == LUA_STATUS_OK && lua_pcallk(lua, 0, CHUNK_RESULTS, TRACEBACK_INDEX, 0, null) == LUA_STATUS_OK;
-        if (!isLoaded) {
-            fail(lua_tolstring(lua, LUA_TOP, null));
-        } else if (lua_type(lua, LUA_TOP) != LUA_TYPE_FUNCTION) {
-            fail("the script does not return a function of the drive");
-        } else {
-            thread = lua_newthread(lua);
-            lua_pushvalue(lua, FUNCTION_BELOW_THREAD);
-            lua_xmove(lua, thread, 1);
-            lua_rawgeti(thread, LUA_REGISTRY, driveRef);
-            resumeArguments = DRIVE_ARGUMENTS;
-        }
-        return !isFailed;
-    }
-
-    void createDrive() {
-        lua_createtable(lua, 0, 0);
-        lua.registerMethod(&this, "frames", &driveFrames);
-        lua.registerMethod(&this, "move", &driveMove);
-        lua.registerMethod(&this, "hold", &driveHold);
-        lua.registerMethod(&this, "release", &driveRelease);
-        lua.registerMethod(&this, "tap", &driveTap);
-        lua.registerMethod(&this, "click", &driveClick);
-        lua.registerMethod(&this, "settle", &driveSettle);
-        lua.registerMethod(&this, "capture", &driveCapture);
-        lua.registerMethod(&this, "watch", &driveWatch);
-        lua.registerMethod(&this, "log", &driveLog);
-        lua.registerMethod(&this, "summary", &driveSummary);
-        lua.registerMethod(&this, "frame", &driveFrameCount);
-        driveRef = luaL_ref(lua, LUA_REGISTRY);
+        fprintf(report, "drive: %s, the mouse turns %g radians per count\n", name, cast(double) sensitivity);
+        actions = chosen;
     }
 
     void fail(const(char)* message) {
@@ -146,7 +176,6 @@ struct DriveHost {
         isFinished = true;
     }
 
-    // Called once a frame before the game steps; `isLoaded` says whether everything around the camera is drawn.
     DriveInput next(bool isLoaded) {
         events.clear();
         events.appendAll(later.slice());
@@ -155,7 +184,12 @@ struct DriveHost {
             finishSettling(true);
         }
         while (pendingFrames == 0 && !isFinished) {
-            resume();
+            if (nextAction == actions.length) {
+                isFinished = true;
+            } else {
+                apply(actions[nextAction]);
+                nextAction += 1;
+            }
         }
         DriveInput input;
         if (pendingFrames > 0) {
@@ -173,28 +207,70 @@ struct DriveHost {
         return input;
     }
 
-    void finishSettling(bool isSettled) {
-        pendingFrames = 0;
-        isSettling = false;
-        lua_pushboolean(thread, isSettled);
-        resumeArguments = 1;
-    }
-
-    void resume() {
-        int results = 0;
-        int status = lua_resume(thread, lua, resumeArguments, &results);
-        resumeArguments = 0;
-        if (status == LUA_STATUS_OK) {
-            isFinished = true;
-        } else if (status == LUA_STATUS_YIELD) {
-            lua_settop(thread, -results - 1);
-        } else {
-            luaL_traceback(lua, thread, lua_tolstring(thread, LUA_TOP, null), 0);
-            fail(lua_tolstring(lua, LUA_TOP, null));
+    void apply(ref const DriveAction action) {
+        final switch (action.kind) {
+            case DriveActionKind.frames:
+                pendingFrames = action.frames;
+                break;
+            case DriveActionKind.move:
+                if (action.frames == 0) {
+                    fail("mouse motion needs at least one frame");
+                } else {
+                    motion = MouseMotion([action.dx, action.dy], [0, 0], action.frames, 0);
+                    pendingFrames = action.frames;
+                }
+                break;
+            case DriveActionKind.hold:
+                events.append(DriveEvent(DriveEventKind.press, action.key, 0));
+                break;
+            case DriveActionKind.release:
+                events.append(DriveEvent(DriveEventKind.release, action.key, 0));
+                break;
+            case DriveActionKind.tap:
+                events.append(DriveEvent(DriveEventKind.press, action.key, 0));
+                later.append(DriveEvent(DriveEventKind.release, action.key, 0));
+                break;
+            case DriveActionKind.click:
+                if (action.button != LEFT_BUTTON && action.button != RIGHT_BUTTON) {
+                    fail("the button is 1 (left) or 3 (right)");
+                } else {
+                    events.append(DriveEvent(DriveEventKind.click, DriveKey.init, action.button));
+                }
+                break;
+            case DriveActionKind.settle:
+                if (action.frames == 0) {
+                    fail("settling needs at least one frame");
+                } else {
+                    isSettling = true;
+                    pendingFrames = action.frames;
+                }
+                break;
+            case DriveActionKind.capture:
+                capturePath.clear();
+                capturePath.appendAll(action.text);
+                isCaptureAsked = true;
+                break;
+            case DriveActionKind.watch:
+                isWatching = action.isOn;
+                if (!isWatching) {
+                    previous.clear();
+                }
+                break;
+            case DriveActionKind.log:
+                isLogging = action.isOn;
+                break;
+            case DriveActionKind.summary:
+                askSummary(action.text);
+                break;
         }
     }
 
-    // Called once a frame after the game stepped and before it is drawn, with the frame clock's reading.
+    void finishSettling(bool isSettled) {
+        pendingFrames = 0;
+        isSettling = false;
+        fprintf(report, "settle: %s at frame %u\n", settleOutcome(isSettled), frame);
+    }
+
     void record(double now, double dt, double stepMs, DriveInput input, Position camera, ref const Graph graph) {
         if (!isFinished) {
             FrameRecord made;
@@ -223,7 +299,6 @@ struct DriveHost {
         }
     }
 
-    // Whether the frame about to be drawn should be copied out.
     bool wantsImage() const {
         return hasDrawn && isDrawnImaged;
     }
@@ -232,8 +307,6 @@ struct DriveHost {
         return isFinished && !hasDrawn && !isWaitingImage;
     }
 
-    // Called once a frame after drawing. A frame's image comes back with the next frame, so `image` belongs to the frame
-    // that waits for it, and is null if that frame was not drawn or cannot be read back.
     void finishFrame(RenderTimes render, const(ubyte)[] image, uint width, uint height, bool isBgra) {
         if (isWaitingImage) {
             takeImage(image, width, height, isBgra);
@@ -289,7 +362,6 @@ struct DriveHost {
         summary.add(made);
     }
 
-    // A summary covers the frames recorded before it was asked for, so it waits for the last of them to be printed.
     void askSummary(const(char)[] title) {
         if (isSummaryAsked) {
             printSummary();
@@ -315,10 +387,6 @@ struct DriveHost {
         summary.print(report);
         summaryTitle.release();
         fflush(report);
-        if (lua !is null) {
-            lua_close(lua);
-            lua = null;
-        }
         events.release();
         later.release();
         capturePath.release();
@@ -337,123 +405,10 @@ immutable(char)* capturedText(bool isWritten) {
     }
 }
 
-DriveHost* driveHost(lua_State* lua) {
-    luaL_checktype(lua, SELF, LUA_TYPE_TABLE);
-    return cast(DriveHost*) lua_touserdata(lua, LUA_FIRST_UPVALUE);
-}
-
-int yieldFrames(lua_State* lua, DriveHost* host, uint frames) {
-    host.pendingFrames = frames;
-    if (frames == 0) {
-        return 0;
+immutable(char)* settleOutcome(bool isSettled) {
+    if (isSettled) {
+        return "settled";
     } else {
-        return lua_yieldk(lua, 0, 0, null);
+        return "not settled";
     }
-}
-
-uint frameCount(lua_State* lua, int index) {
-    long count = luaL_checkinteger(lua, index);
-    if (count < 0) {
-        luaL_error(lua, "a frame count cannot be negative");
-    }
-    return cast(uint) count;
-}
-
-extern (C) int driveFrames(lua_State* lua) {
-    DriveHost* host = driveHost(lua);
-    return yieldFrames(lua, host, frameCount(lua, SELF + 1));
-}
-
-extern (C) int driveMove(lua_State* lua) {
-    DriveHost* host = driveHost(lua);
-    double dx = luaL_checknumber(lua, SELF + 1);
-    double dy = luaL_checknumber(lua, SELF + 2);
-    uint frames = frameCount(lua, SELF + 3);
-    if (frames == 0) {
-        luaL_error(lua, "mouse motion needs at least one frame");
-    }
-    host.motion = MouseMotion([dx, dy], [0, 0], frames, 0);
-    return yieldFrames(lua, host, frames);
-}
-
-void queueKeys(lua_State* lua, ref Array!DriveEvent queue, DriveEventKind kind) {
-    foreach (index; SELF + 1 .. lua_gettop(lua) + 1) {
-        const(char)* name = luaL_checklstring(lua, index, null);
-        LuaLookup!DriveKey lookup = LuaLookup!DriveKey.fromName(name[0 .. strlen(name)]);
-        if (!lookup.isFound) {
-            luaL_error(lua, "unknown key '%s'", name);
-        }
-        queue.append(DriveEvent(kind, lookup.value, 0));
-    }
-}
-
-extern (C) int driveHold(lua_State* lua) {
-    queueKeys(lua, driveHost(lua).events, DriveEventKind.press);
-    return 0;
-}
-
-extern (C) int driveRelease(lua_State* lua) {
-    queueKeys(lua, driveHost(lua).events, DriveEventKind.release);
-    return 0;
-}
-
-extern (C) int driveTap(lua_State* lua) {
-    DriveHost* host = driveHost(lua);
-    queueKeys(lua, host.events, DriveEventKind.press);
-    queueKeys(lua, host.later, DriveEventKind.release);
-    return 0;
-}
-
-extern (C) int driveClick(lua_State* lua) {
-    long button = luaL_checkinteger(lua, SELF + 1);
-    if (button != LEFT_BUTTON && button != RIGHT_BUTTON) {
-        luaL_error(lua, "the button is %d (left) or %d (right)", cast(int) LEFT_BUTTON, cast(int) RIGHT_BUTTON);
-    }
-    driveHost(lua).events.append(DriveEvent(DriveEventKind.click, DriveKey.init, cast(uint) button));
-    return 0;
-}
-
-extern (C) int driveSettle(lua_State* lua) {
-    DriveHost* host = driveHost(lua);
-    uint limit = frameCount(lua, SELF + 1);
-    if (limit == 0) {
-        luaL_error(lua, "settling needs at least one frame");
-    }
-    host.isSettling = true;
-    return yieldFrames(lua, host, limit);
-}
-
-extern (C) int driveCapture(lua_State* lua) {
-    DriveHost* host = driveHost(lua);
-    const(char)* path = luaL_checklstring(lua, SELF + 1, null);
-    host.capturePath.clear();
-    host.capturePath.appendAll(path[0 .. strlen(path)]);
-    host.isCaptureAsked = true;
-    return 0;
-}
-
-extern (C) int driveWatch(lua_State* lua) {
-    DriveHost* host = driveHost(lua);
-    host.isWatching = lua_toboolean(lua, SELF + 1) != 0;
-    if (!host.isWatching) {
-        host.previous.clear();
-    }
-    return 0;
-}
-
-extern (C) int driveLog(lua_State* lua) {
-    driveHost(lua).isLogging = lua_toboolean(lua, SELF + 1) != 0;
-    return 0;
-}
-
-// Prints the summary of the frames since the last one and starts a new one, so a script can measure its parts apart.
-extern (C) int driveSummary(lua_State* lua) {
-    const(char)* title = luaL_checklstring(lua, SELF + 1, null);
-    driveHost(lua).askSummary(title[0 .. strlen(title)]);
-    return 0;
-}
-
-extern (C) int driveFrameCount(lua_State* lua) {
-    lua_pushinteger(lua, driveHost(lua).frame);
-    return 1;
 }

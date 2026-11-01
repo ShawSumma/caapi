@@ -72,7 +72,6 @@ struct MouseMotion {
         return done < steps;
     }
 
-    // Whole counts, as a mouse reports them, spread so that the running sum stays on the straight line.
     double[2] next() {
         done += 1;
         double[2] share;
@@ -166,7 +165,6 @@ struct FrameSummary {
     }
 }
 
-// How far the camera turned and moved between two frames, measured in the node it is in now.
 CameraStep cameraStep(ref const Graph graph, Position before, Position after) {
     uint from = graph.slotOf(before.node);
     uint to = graph.slotOf(after.node);

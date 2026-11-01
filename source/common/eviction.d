@@ -99,8 +99,6 @@ struct Evictor {
         }
     }
 
-    // Once as many tiles have dropped as went live since the last sweep, the deadline may cut the rest of the share;
-    // before that it may not, or tiles would go live faster than they drop.
     void dropIdleTiles(ref Graph graph, Near near, double deadline) {
         Blueprint* blueprint = &graph.structures.blueprint;
         blueprint.sweep += 1;

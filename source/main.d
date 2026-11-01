@@ -2,9 +2,9 @@ module main;
 
 import core.bitop : bsf;
 import core.stdc.math : asinf, coshf, floorf, sinhf, tanf;
-import core.stdc.stdio : FILE, fclose, fflush, fopen, fprintf, fscanf, snprintf, stderr;
+import core.stdc.stdio : FILE, fclose, fflush, fopen, fprintf, fscanf, printf, snprintf, stderr;
 import core.stdc.stdlib : free, malloc;
-import core.stdc.string : strcmp;
+import core.stdc.string : strcmp, strlen;
 import core.sys.posix.time : nanosleep, timespec;
 import bindings.platform : VkExtent2D;
 import base.array : Array;
@@ -16,9 +16,9 @@ import base.numbers : higherOf, lowerOf;
 import base.parallel : ConcurrentQueue, QueueCell;
 import base.slab : RunPool, SLAB_SIZE, Slab;
 import base.units : Angle, AngularSpeed, Speed, Time;
-import client.arguments : EXIT_FAILED, EXIT_USAGE, FlagValue, NumberArgument, StartupError, WorldgenArgument, exitStatus;
+import client.arguments : EXIT_FAILED, EXIT_OK, EXIT_USAGE, FlagValue, NumberArgument, StartupError, VERSION, WorldgenArgument, exitStatus;
 import client.config : ClientConfig;
-import client.drive : DriveEventKind, DriveHost, DriveInput, DriveKey, LEFT_BUTTON;
+import client.drive : DriveEventKind, DriveHost, DriveInput, DriveKey, LEFT_BUTTON, NamedDrive;
 import client.frames : RenderTimes;
 import client.game : FrameInput, Game, KEY_COUNT, Key, MATERIAL_PALETTE, axisValue;
 import client.graphics.core : SurfaceSource;
@@ -27,7 +27,7 @@ import client.graphics.voxels.meshes : ChunkMeshes;
 import client.meshing : Mesher;
 import client.png : writePng;
 import client.sampler : Sampler;
-import client.script : ScriptHost, ScriptRecorder;
+import client.script : NamedScript, Script, ScriptRecorder, named;
 import client.streaming : Streamer;
 import client.plugins : registry;
 import client.structures : StructureHost, StructureProblem, growthProblem, placeStructure, restartGame, tileCounts;
@@ -51,6 +51,8 @@ import geometry.cube : DIRECTIONS;
 import geometry.honeycomb : CORNER_COUNT, CUBE_RADIUS, Corner, FACE_COUNT, Face, NODE_RADIUS, cubeCenter, mirror;
 import geometry.lorentz : Motion, Point;
 import plugins.api.api : Material;
+import scripts.drives : DRIVES;
+import scripts.views : VIEWS;
 
 enum uint WINDOW_WIDTH = 1280;
 enum uint WINDOW_HEIGHT = 720;
@@ -71,6 +73,21 @@ enum double TITLE_INTERVAL_SECONDS = 1.0;
 enum double MAX_STEP_SECONDS = 0.1;
 enum size_t TEXT_CAPACITY = 256;
 enum size_t BYTES_PER_MEGABYTE = 1024 * 1024;
+enum string USAGE = "usage: mined [options]
+  --worldgen terrain | plane <tilt in degrees> | structure <world>
+                          the world to start in ([ and ] switch worlds while playing)
+  --config <file>         settings file (default mined.cfg in the working directory)
+  --sensitivity <number>  mouse turn in radians per count
+  --invert-y              invert vertical mouse look
+  --render-radius <units> how far to draw
+  --record <file>         record the session as a D script body
+  --help, --version
+tools:
+  --screenshot <png> --out <report> <view>   run a view script (scripts/views.d) and render it offscreen
+  --drive <name> --out <report>              play a drive (scripts/drives.d) in the window
+  --bench-load [--profile] [--flight-speed <units/s>] --out <report>
+                                             load and flight benchmark
+";
 
 version (OSX) {
     import client.cocoa : Button1, Button3, CocoaWindow, KeyEvent, KeySym, WindowEvents, XK_1, XK_9, XK_bracketleft, XK_bracketright, XK_Escape, XK_Down, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_n, XK_s, XK_space, XK_v, XK_w;
@@ -236,7 +253,9 @@ struct Arguments {
     const(char)* recordPath;
     const(char)* screenshotPath;
     const(char)* reportPath;
-    const(char)* scriptPath;
+    const(char)* viewName;
+    const(NamedScript)* view;
+    const(NamedDrive)* drive;
     Worldgen worldgen;
     float sensitivity = 0;
     float renderRadius = RENDER_RADIUS;
@@ -245,7 +264,8 @@ struct Arguments {
     bool isYInverted;
     bool isBenchLoad;
     bool isProfiled;
-    bool isDriven;
+    bool isHelp;
+    bool isVersion;
 
     static Arguments fromArgv(int argc, char** argv) {
         Arguments arguments = Arguments(StartupError.init, argv[0]);
@@ -269,6 +289,9 @@ struct Arguments {
         } else if (strcmp(argument, "--record") == 0) {
             recordPath = value.text;
             error = value.error;
+            return index + 2;
+        } else if (strcmp(argument, "--drive") == 0) {
+            parseDrive(value);
             return index + 2;
         } else if (strcmp(argument, "--sensitivity") == 0) {
             parseSensitivity(value);
@@ -294,9 +317,6 @@ struct Arguments {
         } else if (strcmp(argument, "--profile") == 0) {
             isProfiled = true;
             return index + 1;
-        } else if (strcmp(argument, "--drive") == 0) {
-            isDriven = true;
-            return index + 1;
         } else if (strcmp(argument, "--flight-speed") == 0) {
             parseFlightSpeed(value);
             return index + 2;
@@ -304,15 +324,36 @@ struct Arguments {
             reportPath = value.text;
             error = value.error;
             return index + 2;
+        } else if (strcmp(argument, "--help") == 0) {
+            isHelp = true;
+            return index + 1;
+        } else if (strcmp(argument, "--version") == 0) {
+            isVersion = true;
+            return index + 1;
         } else if (argument[0] == '-') {
             error = StartupError(null, "unknown option", argument);
             return index + 1;
-        } else if (scriptPath !is null) {
-            error = StartupError(null, "only one script is run, unexpected", argument);
+        } else if (viewName !is null) {
+            error = StartupError(null, "only one view is rendered, unexpected", argument);
             return index + 1;
         } else {
-            scriptPath = argument;
+            viewName = argument;
+            view = named(VIEWS, argument[0 .. strlen(argument)]);
+            if (view is null) {
+                error = StartupError(null, "unknown view", argument);
+            }
             return index + 1;
+        }
+    }
+
+    void parseDrive(FlagValue value) {
+        if (value.error.isPresent()) {
+            error = value.error;
+        } else {
+            drive = named(DRIVES, value.text[0 .. strlen(value.text)]);
+            if (drive is null) {
+                error = StartupError(null, "unknown drive", value.text);
+            }
         }
     }
 
@@ -357,31 +398,27 @@ struct Arguments {
     }
 
     StartupError usageError() const {
-        if (isBenchLoad && reportPath is null) {
+        if (isHelp || isVersion) {
+            return StartupError.init;
+        } else if (isBenchLoad && reportPath is null) {
             return StartupError(null, "needs --out", "--bench-load");
         } else if (isProfiled && !isBenchLoad) {
             return StartupError(null, "is only for --bench-load", "--profile");
         } else if (flightSpeed > 0 && !isBenchLoad) {
             return StartupError(null, "is only for --bench-load", "--flight-speed");
-        } else if (isDriven && (screenshotPath !is null || isBenchLoad || recordPath !is null)) {
+        } else if (drive !is null && (screenshotPath !is null || isBenchLoad || recordPath !is null)) {
             return StartupError(null, "does not mix with --screenshot, --bench-load or --record", "--drive");
-        } else if (isDriven && (reportPath is null || scriptPath is null)) {
-            return StartupError(null, "needs --out and a script", "--drive");
-        } else if (screenshotPath !is null && (reportPath is null || scriptPath is null)) {
-            return StartupError(null, "needs --out and a script", "--screenshot");
-        } else if (screenshotPath is null && !isBenchLoad && !isDriven && (reportPath !is null || scriptPath !is null)) {
-            return StartupError(null, "--out and a script are only for --screenshot and --drive, unexpected", firstOf(reportPath, scriptPath));
+        } else if (drive !is null && reportPath is null) {
+            return StartupError(null, "needs --out", "--drive");
+        } else if (screenshotPath !is null && (reportPath is null || view is null)) {
+            return StartupError(null, "needs --out and a view", "--screenshot");
+        } else if (screenshotPath is null && view !is null) {
+            return StartupError(null, "a view is only for --screenshot, unexpected", viewName);
+        } else if (screenshotPath is null && !isBenchLoad && drive is null && reportPath !is null) {
+            return StartupError(null, "is only for --screenshot, --drive and --bench-load", "--out");
         } else {
             return StartupError.init;
         }
-    }
-}
-
-const(char)* firstOf(const(char)* first, const(char)* second) {
-    if (first !is null) {
-        return first;
-    } else {
-        return second;
     }
 }
 
@@ -468,7 +505,7 @@ struct Session {
     bool isTitleDirty = true;
 
     int run(Arguments arguments) {
-        if (arguments.isDriven) {
+        if (arguments.drive !is null) {
             return runDriven(arguments);
         } else if (arguments.recordPath is null) {
             return runWindow(arguments);
@@ -486,8 +523,6 @@ struct Session {
         }
     }
 
-    // A script plays the window: its keys and mouse motion go through the same handlers as real input, which is
-    // ignored, and the pointer counts as captured without being grabbed.
     int runDriven(Arguments arguments) {
         FILE* report = fopen(arguments.reportPath, "w");
         if (report is null) {
@@ -496,10 +531,8 @@ struct Session {
         } else {
             isDriven = true;
             isCaptured = true;
-            int status = EXIT_FAILED;
-            if (drive.start(arguments.scriptPath, report, config.mouseTurnPerCount.value)) {
-                status = runWindow(arguments);
-            }
+            drive.start(arguments.drive.name.ptr, arguments.drive.actions, report, config.mouseTurnPerCount.value);
+            int status = runWindow(arguments);
             drive.finish();
             fclose(report);
             if (drive.isFailed) {
@@ -538,23 +571,33 @@ struct Session {
             StartupError(null, WINDOW_REQUIREMENT, null).report(arguments.program);
             return EXIT_FAILED;
         } else {
-            renderer.setup(surfaceSource(), CHUNK_DIMENSION);
-            if (isDriven) {
-                fprintf(drive.report, "drive: frames %s for the display\n", waitedText(renderer.core.isPresentWaitable()));
+            const(char)* problem = renderer.setup(surfaceSource(), CHUNK_DIMENSION);
+            int status = EXIT_FAILED;
+            if (problem !is null) {
+                StartupError(null, problem, null).report(arguments.program);
+            } else {
+                status = runGame(arguments);
+                renderer.cleanup();
             }
-            game = Game.make(arguments.worldgen, config.reach);
-            worldIndex = worldIndexOf(arguments.worldgen);
-            game.world.renderRadius = arguments.renderRadius;
-            bool isPlaced = isStructurePlaced(game, arguments);
-            if (isPlaced) {
-                runLoop();
-            }
-            bool isGrown = isPlaced && isStructureGrown(game, arguments);
-            game.release();
-            renderer.cleanup();
             closeWindow();
-            return exitStatus(isGrown);
+            return status;
         }
+    }
+
+    int runGame(Arguments arguments) {
+        if (isDriven) {
+            fprintf(drive.report, "drive: frames %s for the display\n", waitedText(renderer.core.isPresentWaitable()));
+        }
+        game = Game.make(arguments.worldgen, config.reach);
+        worldIndex = worldIndexOf(arguments.worldgen);
+        game.world.renderRadius = arguments.renderRadius;
+        bool isPlaced = isStructurePlaced(game, arguments);
+        if (isPlaced) {
+            runLoop();
+        }
+        bool isGrown = isPlaced && isStructureGrown(game, arguments);
+        game.release();
+        return exitStatus(isGrown);
     }
 
     version (OSX) {
@@ -854,10 +897,10 @@ struct Session {
             capturePointer();
         } else if (button == Button1) {
             game.breakBlock();
-            recordCall("break_block");
+            recordCall("breakBlock");
         } else if (button == Button3) {
             game.placeBlock();
-            recordCall("place_block");
+            recordCall("placeBlock");
         }
     }
 
@@ -1031,45 +1074,52 @@ bool renderScreenshot(Arguments arguments) {
         ClientConfig config;
         Renderer* renderer = cast(Renderer*) malloc(Renderer.sizeof);
         *renderer = Renderer.init;
-        renderer.setupOffscreen(VkExtent2D(SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT), CHUNK_DIMENSION);
-        Game game = Game.make(arguments.worldgen, config.reach);
-        game.world.renderRadius = arguments.renderRadius;
-        game.isGeneratingOnDemand = true;
-        bool isPlaced = isStructurePlaced(game, arguments);
-        bool isWritten = isPlaced && captureScreenshot(arguments, report, *renderer, game);
-        renderer.cleanup();
+        const(char)* problem = renderer.setupOffscreen(VkExtent2D(SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT), CHUNK_DIMENSION);
+        bool isWritten = false;
+        if (problem !is null) {
+            StartupError(null, problem, null).report(arguments.program);
+        } else {
+            Game game = Game.make(arguments.worldgen, config.reach);
+            game.world.renderRadius = arguments.renderRadius;
+            game.isGeneratingOnDemand = true;
+            bool isPlaced = isStructurePlaced(game, arguments);
+            isWritten = isPlaced && captureScreenshot(arguments, report, *renderer, game);
+            renderer.cleanup();
+            game.release();
+        }
         free(renderer);
-        game.release();
         fclose(report);
         return isWritten;
     }
 }
 
 bool captureScreenshot(Arguments arguments, FILE* report, ref Renderer renderer, ref Game game) {
-    ScriptHost host = ScriptHost.make(&game, report);
-    bool isCompleted = host.run(arguments.scriptPath);
-    host.close();
-    if (!isCompleted) {
-        fprintf(report, "screenshot: not taken, the script failed\n");
+    Script script = Script.make(&game, report);
+    if (!script.run(arguments.view.run)) {
+        fprintf(report, "screenshot: not taken, the view failed\n");
         return false;
     } else {
-        while (!game.world.isWorldgenSettled()) {
-            game.world.update(true);
-            game.world.streamer.settle(game.world.graph);
-        }
-        StructureProblem grown = growthProblem(game.world.graph);
-        if (grown.isPresent) {
-            fprintf(report, "%s\n", grown.text.ptr);
-        }
-        uint frames = 0;
-        do {
-            renderer.render(game.world);
-            frames += 1;
-        } while (renderer.meshBacklog() > 0);
-        bool isWritten = writePng(arguments.screenshotPath, SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT, renderer.capture());
-        fprintf(report, "screenshot: %s after %u frames (%u chunks meshed, %u faces)\n", writtenText(isWritten), frames, renderer.meshes.meshedChunks, renderer.meshes.allocator.used());
-        return isWritten && !grown.isPresent;
+        return renderSettled(arguments, report, renderer, game);
     }
+}
+
+bool renderSettled(Arguments arguments, FILE* report, ref Renderer renderer, ref Game game) {
+    while (!game.world.isWorldgenSettled()) {
+        game.world.update(true);
+        game.world.streamer.settle(game.world.graph);
+    }
+    StructureProblem grown = growthProblem(game.world.graph);
+    if (grown.isPresent) {
+        fprintf(report, "%s\n", grown.text.ptr);
+    }
+    uint frames = 0;
+    do {
+        renderer.render(game.world);
+        frames += 1;
+    } while (renderer.meshBacklog() > 0);
+    bool isWritten = writePng(arguments.screenshotPath, SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT, renderer.capture());
+    fprintf(report, "screenshot: %s after %u frames (%u chunks meshed, %u faces)\n", writtenText(isWritten), frames, renderer.meshes.meshedChunks, renderer.meshes.allocator.used());
+    return isWritten && !grown.isPresent;
 }
 
 struct RenderBreakdown {
@@ -1097,46 +1147,56 @@ bool benchLoad(Arguments arguments) {
         StartupError(null, "cannot open the report file", arguments.reportPath).report(arguments.program);
         return false;
     } else {
-        ClientConfig config;
         Renderer* renderer = cast(Renderer*) malloc(Renderer.sizeof);
         *renderer = Renderer.init;
-        renderer.setupOffscreen(VkExtent2D(SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT), CHUNK_DIMENSION);
-        Game game = Game.make(arguments.worldgen, config.reach);
-        game.world.renderRadius = arguments.renderRadius;
-        bool isPlaced = isStructurePlaced(game, arguments);
-        Sampler sampler;
-        if (isPlaced) {
-            if (arguments.isProfiled) {
-                sampler.start();
-            }
-            reportHangAfter(BENCH_TIME_LIMIT_SECONDS);
-            measureLoad(report, *renderer, game);
-            if (arguments.isProfiled) {
-                sampler.report(report, "load");
-                sampler.start();
-            }
-            fflush(report);
-            if (arguments.flightSpeed > 0) {
-                game.character.noclipSpeed = Speed(arguments.flightSpeed);
-            }
-            measureFlight(report, *renderer, game);
-            if (arguments.isProfiled) {
-                sampler.report(report, "flight");
-                sampler.start();
-            }
-            measureSettle(report, *renderer, game);
-            if (arguments.isProfiled) {
-                sampler.report(report, "settle");
-            }
+        const(char)* problem = renderer.setupOffscreen(VkExtent2D(SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT), CHUNK_DIMENSION);
+        bool isGrown = false;
+        if (problem !is null) {
+            StartupError(null, problem, null).report(arguments.program);
+        } else {
+            isGrown = benchLoadWith(arguments, report, *renderer);
+            renderer.cleanup();
         }
-        sampler.release();
-        bool isGrown = isPlaced && isStructureGrown(game, arguments);
-        renderer.cleanup();
         free(renderer);
-        game.release();
         fclose(report);
         return isGrown;
     }
+}
+
+bool benchLoadWith(Arguments arguments, FILE* report, ref Renderer renderer) {
+    ClientConfig config;
+    Game game = Game.make(arguments.worldgen, config.reach);
+    game.world.renderRadius = arguments.renderRadius;
+    bool isPlaced = isStructurePlaced(game, arguments);
+    Sampler sampler;
+    if (isPlaced) {
+        if (arguments.isProfiled) {
+            sampler.start();
+        }
+        reportHangAfter(BENCH_TIME_LIMIT_SECONDS);
+        measureLoad(report, renderer, game);
+        if (arguments.isProfiled) {
+            sampler.report(report, "load");
+            sampler.start();
+        }
+        fflush(report);
+        if (arguments.flightSpeed > 0) {
+            game.character.noclipSpeed = Speed(arguments.flightSpeed);
+        }
+        measureFlight(report, renderer, game);
+        if (arguments.isProfiled) {
+            sampler.report(report, "flight");
+            sampler.start();
+        }
+        measureSettle(report, renderer, game);
+        if (arguments.isProfiled) {
+            sampler.report(report, "settle");
+        }
+    }
+    sampler.release();
+    bool isGrown = isPlaced && isStructureGrown(game, arguments);
+    game.release();
+    return isGrown;
 }
 
 bool isStructurePlaced(ref Game game, Arguments arguments) {
@@ -1810,6 +1870,12 @@ extern (C) int main(int argc, char** argv) {
     if (arguments.error.isPresent()) {
         arguments.error.report(argv[0]);
         return EXIT_USAGE;
+    } else if (arguments.isHelp) {
+        printf("%s", USAGE.ptr);
+        return EXIT_OK;
+    } else if (arguments.isVersion) {
+        printf("mined %s\n", VERSION.ptr);
+        return EXIT_OK;
     } else if (arguments.isBenchLoad) {
         return exitStatus(benchLoad(arguments));
     } else if (arguments.screenshotPath !is null) {

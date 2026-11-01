@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y glslc libvulkan-dev libx11-dev libxi-dev
+      - uses: dlang-community/setup-dlang@v2
+        with:
+          compiler: ldc-1.36.0
+      - name: Unit tests
+        run: dub test -q --compiler=ldc2
+      - name: Behavior tests
+        run: |
+          dub run -q -b release --compiler=ldc2 -c headless -- --tests --out /dev/stdout
+          dub run -q -b release --compiler=ldc2 -c headless -- --views --out /dev/stdout
+      - name: Repaint checks
+        run: |
+          dub run -q -b release --compiler=ldc2 -c headless -- --worldgen structure city --check-repaint --out /dev/stdout
+          dub run -q -b release --compiler=ldc2 -c headless -- --worldgen structure backrooms --check-repaint --out /dev/stdout
+          dub run -q -b release --compiler=ldc2 -c headless -- --worldgen structure library --check-repaint --out /dev/stdout
+          dub run -q -b release --compiler=ldc2 -c headless -- --worldgen structure lattice --check-repaint --out /dev/stdout
+          dub run -q -b release --compiler=ldc2 -c headless -- --worldgen structure planet --check-repaint --out /dev/stdout
+      - name: Forget check
+        run: dub run -q -b release --compiler=ldc2 -c headless -- --worldgen structure lattice --check-forget --out /dev/stdout
+      - name: Build the game
+        run: dub build -q -b release --compiler=ldc2

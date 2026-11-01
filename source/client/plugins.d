@@ -10,9 +10,34 @@ enum size_t MAX_STRUCTURES = 64;
 enum size_t PATH_CAPACITY = 4096;
 enum string PLUGIN_DIRECTORY = "lib";
 version (OSX) {
+    import core.sys.posix.stdlib : realpath;
+
     enum string LIBRARY_SUFFIX = ".dylib";
+
+    extern (C) int _NSGetExecutablePath(char* buffer, uint* size) nothrow @nogc;
+
+    size_t executablePath(ref char[PATH_CAPACITY] resolved) {
+        char[PATH_CAPACITY] path = 0;
+        uint size = cast(uint) path.length;
+        if (_NSGetExecutablePath(path.ptr, &size) != 0 || realpath(path.ptr, resolved.ptr) is null) {
+            return 0;
+        } else {
+            return strlen(resolved.ptr);
+        }
+    }
 } else {
+    import core.sys.posix.unistd : readlink;
+
     enum string LIBRARY_SUFFIX = ".so";
+
+    size_t executablePath(ref char[PATH_CAPACITY] path) {
+        ptrdiff_t length = readlink("/proc/self/exe", path.ptr, path.length);
+        if (length <= 0 || length == path.length) {
+            return 0;
+        } else {
+            return cast(size_t) length;
+        }
+    }
 }
 
 struct Worlds {
@@ -21,15 +46,29 @@ struct Worlds {
     size_t count;
 
     void gather() {
-        DIR* directory = opendir(PLUGIN_DIRECTORY.ptr);
+        char[PATH_CAPACITY] directory = 0;
+        size_t length = executablePath(directory);
+        while (length > 0 && directory[length - 1] != '/') {
+            length -= 1;
+        }
+        if (length == 0) {
+            fprintf(stderr, "cannot find the executable's own path, so no plugins are loaded\n");
+        } else {
+            snprintf(directory.ptr + length, directory.length - length, "%s", PLUGIN_DIRECTORY.ptr);
+            gatherFrom(directory.ptr);
+        }
+    }
+
+    void gatherFrom(const(char)* path) {
+        DIR* directory = opendir(path);
         if (directory is null) {
-            fprintf(stderr, "cannot open the plugin directory '%s'\n", PLUGIN_DIRECTORY.ptr);
+            fprintf(stderr, "cannot open the plugin directory '%s'\n", path);
         } else {
             dirent* entry = readdir(directory);
             while (entry !is null) {
                 const(char)[] name = entry.d_name.ptr[0 .. strlen(entry.d_name.ptr)];
                 if (name.length > LIBRARY_SUFFIX.length && name[$ - LIBRARY_SUFFIX.length .. $] == LIBRARY_SUFFIX) {
-                    load(name);
+                    load(path, name);
                 }
                 entry = readdir(directory);
             }
@@ -37,16 +76,16 @@ struct Worlds {
         }
     }
 
-    void load(const(char)[] file) {
+    void load(const(char)* directory, const(char)[] file) {
         char[PATH_CAPACITY] path = 0;
-        snprintf(path.ptr, path.length, "%s/%.*s", PLUGIN_DIRECTORY.ptr, cast(int) file.length, file.ptr);
+        snprintf(path.ptr, path.length, "%s/%.*s", directory, cast(int) file.length, file.ptr);
         void* library = dlopen(path.ptr, RTLD_NOW);
         if (library is null) {
             fprintf(stderr, "cannot load the plugin '%s': %s\n", path.ptr, dlerror());
         } else {
             Entry plugin = cast(Entry) dlsym(library, ENTRY.ptr);
             if (plugin is null) {
-                fprintf(stderr, "the plugin '%s' has no '%s'\n", path.ptr, ENTRY.ptr);
+                fprintf(stderr, "the plugin '%s' has no '%s'; it may have been built against another version of the API\n", path.ptr, ENTRY.ptr);
             } else {
                 Registry registry = Registry(&this, &add);
                 plugin(&registry);
@@ -73,10 +112,13 @@ struct Worlds {
 
 void add(const(Registry)* registry, const(char)* name, Structure world) {
     Worlds* worlds = cast(Worlds*) registry.host;
-    assert(worlds.count < MAX_STRUCTURES);
-    worlds.names[worlds.count] = cast(string) name[0 .. strlen(name)];
-    worlds.structures[worlds.count] = world;
-    worlds.count += 1;
+    if (worlds.count == MAX_STRUCTURES) {
+        fprintf(stderr, "too many worlds, '%s' is left out (at most %zu)\n", name, MAX_STRUCTURES);
+    } else {
+        worlds.names[worlds.count] = cast(string) name[0 .. strlen(name)];
+        worlds.structures[worlds.count] = world;
+        worlds.count += 1;
+    }
 }
 
 __gshared Worlds gathered;

@@ -1,13 +1,15 @@
 # mined
 
 A voxel engine on the hyperbolic {5,3,4} honeycomb, written in D (betterC, LDC). Worlds are plugins, shared
-libraries loaded at startup that call the engine through a table of functions; Lua runs the test scripts.
+libraries loaded at startup that call the engine through a table of functions.
 
 ## Commands
 
 - Build: `dub build -q -b release --compiler=ldc2` (add `-c headless` for the headless tools)
 - Unit tests: `dub test -q --compiler=ldc2`
-- Behavior tests: `dub run -q -b release --compiler=ldc2 -c headless -- --out /dev/stdout tests`
+- Behavior tests (D scripts in `source/scripts/tests.d`; give name prefixes to run some):
+  `dub run -q -b release --compiler=ldc2 -c headless -- --tests [prefix ...] --out /dev/stdout`
+  (`--views` instead runs the screenshot view scripts without rendering, to check they still run)
 - Repaint check (drops every other tile and paints them again; the voxels must come out the same):
   `dub run -q -b release --compiler=ldc2 -c headless -- --worldgen structure city --check-repaint --out /dev/stdout`
   (also `backrooms`, `library`, `lattice`, which covers edge tiles, and `planet`, which covers strokes)
@@ -30,14 +32,21 @@ libraries loaded at startup that call the engine through a table of functions; L
   `-- --bench-nearby [radius] [iterations] --out /dev/stdout` (same `dub run` prefix as above)
 - Hash map benchmark (NodeId churn at 2M live keys, including the slowest batch of 1024 changes):
   `dub run -q -b release --compiler=ldc2 -c headless -- --bench-hashmap --out /dev/stdout`
-- Screenshot: `dub run -q -b release --compiler=ldc2 -- --screenshot screenshots/<new name>.png --out /dev/stdout tests/visual/<script>.lua`
+- Screenshot of a view script (`source/scripts/views.d`), rendered offscreen:
+  `dub run -q -b release --compiler=ldc2 -- --screenshot screenshots/<new name>.png --out /dev/stdout <view>`
 - Run through `dub run`, never the built binaries directly.
-- A debug build (no `-b release`) keeps asserts; release builds drop them.
+- Never open a window: no plain `dub run` of the game and no `--drive`. Only the headless configuration and the
+  windowed build's offscreen modes (`--screenshot`, `--bench-load`) may be run. Anything that needs a window is for
+  the user to run.
+- Release builds keep asserts and bounds checks (`--enable-asserts --boundscheck=on` on every `dflags` line in
+  `dub.sdl`); a failed check halts.
 
 ## Testing
 
-- Behavior tests generate the world on demand around the body. A test that calls `world:live()` loads it a budget at a
+- Behavior tests generate the world on demand around the body. A test that calls `world.live()` loads it a budget at a
   time the way the game does; anything about streaming, loading order or frame budgets needs a live test.
+- A failed `check` stops the script from stepping but does not unwind it, so every loop in a script also stops on
+  `world.isFailed`.
 - Benchmarks: repeat runs and compare against a baseline measured the same way. Never store the numbers.
 - A flight leg where the camera moves more than about a unit per published rebuild, narrowings or abandons climb and
   `unlisted` grows is the nearby rebuild failing. Rare failures need 20 or more legs; raise `BENCH_FLIGHT_LEGS`
@@ -48,10 +57,6 @@ libraries loaded at startup that call the engine through a table of functions; L
 - Don't `printf` from the windowed binary while the report goes to `/dev/stdout`; the report is a second handle on the
   same file and the two overwrite each other.
 - Screenshots go to new filenames, compared by eye against earlier ones.
-
-## Lua
-
-- Booleans are named `is_` or `has_gi`. `and`, `or` and conditions take only booleans; write `~= nil` out.
 
 ## Worlds
 
@@ -143,7 +148,8 @@ API, `client` on all.
   the load/flight benchmark.
 - `source/headless.d`, `source/worldcheck.d`: script runner and world checks and benchmarks without a window.
 - `source/unittests.d`: the unit test runner; it imports every module with tests, in layer order.
-- `source/bindings/`: `lua.c` (all of Lua as one ImportC module) and `platform.c` (Vulkan with its Xlib or Metal surface, X11 and the XInput 2 calls).
+- `source/bindings/platform.c`: Vulkan with its Xlib or Metal surface, X11 and the XInput 2 calls, from the system
+  headers through ImportC.
 - `source/base/`: containers (`array.d`, `hashmap.d`, `slab.d` with `RunPool` and `FreeIndices`, `allocator.d`),
   `pages.d` (memory mapped from the system, given back a page at a time), `parallel.d` (worker pool, futex waits,
   lock-free queue), `clock.d` (timers, and `FrameClock`, which steps the game by the mean of recent frames so uneven
@@ -176,13 +182,19 @@ API, `client` on all.
   - `structures.d`: the main-thread host of the world API (the root and placed structures); `tiles.d`: tiles planned
     and painted on the worker threads, each with its own host of the API: faces of planes, segments of upright
     horospheres drawn with the pen, and edges of the honeycomb.
-  - `plugins.d`: loads every library in `lib/`, calls its `plugin` entry point and keeps the worlds it registers.
-  - `script.d`, `lua.d`: the test script API; `sampler.d`: the profiler; `meshing.d`, `graphics/`: rendering.
+  - `plugins.d`: loads every library in the `lib/` beside the executable, calls its entry point (`ENTRY`, whose name
+    carries the API version) and keeps the worlds it registers.
+  - `script.d`: the `Script` API the behavior tests and views drive the game through, and the recorder that writes a
+    session as D; `drive.d`, `frames.d`, `images.d`: playing a list of drive actions in the window and timing its
+    frames; `sampler.d`: the profiler; `meshing.d`, `graphics/`: rendering.
   - `cocoa.d`: the macOS window (AppKit through the Objective-C runtime, a `CAMetalLayer` for MoltenVK), reporting
     keys as X keysyms so `main.d` handles input the same way on both platforms.
+- `source/scripts/`: `tests.d` (behavior tests), `views.d` (screenshot views), `drives.d` (drives), each a table of
+  named entries, and the helpers they share: `walk.d` (walking constants and checks, building walls and steps) and
+  `climb.d` (following a structure's route).
 - `source/shaders/`: GLSL, compiled into `spv/` by the windowed build.
 - `plugins/`: dub sub-packages declared in `dub.sdl`. Source libraries are shared code compiled into each plugin that
-  uses them; each plugin is a shared library built into `lib/` before the engine, whose `plugin` function (named by
+  uses them; each plugin is a shared library built into `lib/` before the engine, whose entry point (named by
   `pragma(mangle, ENTRY)`) registers its worlds by name.
   - `api/`: `plugins.api.api`, the world API: sites, boxes, materials, the pen, the `Api` table of functions a world
     calls, and the `Registry` a plugin registers worlds with. The engine links it too.
@@ -200,7 +212,5 @@ API, `client` on all.
     more library planes joined by connectors, in fog), `palace` (one sunken hall over the root face and its ten
     neighbors, with grand stairs down from its doors), `arbor` (an endless trunk with a spiral stair, and limbs that
     branch along edges without crossing), `lattice` (a beam on every edge with platforms, built for upright gravity
-    and turned upside down, in fog); `fixtures` holds the worlds the behavior tests load.
-- `tests/`: behavior tests (`lib/` helpers and shared constants, `visual/` screenshot scripts, `live/` tests that
-  load the world live).
-- `tools/gridvolume.py`: compares the volumes of chunk cells for uniform and geometric grid spacings.
+    and turned upside down, in fog); `fixtures` holds small test worlds.
+- `.github/workflows/ci.yml`: unit and behavior tests, the repaint and forget checks, and the windowed build on Linux.

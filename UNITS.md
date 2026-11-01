@@ -7,7 +7,7 @@ space makes it worse than usual: one distance shows up as d, cosh d,
 sinh d and tanh d; a grid cell has no fixed size; and a vector only
 means something at the point and in the frame where it was taken. This
 document defines the unit system, the parts that exist today
-(`source/common/units.d`), and how to move the rest of the code onto
+(`source/base/units.d`), and how to move the rest of the code onto
 it.
 
 ## Base units
@@ -22,7 +22,7 @@ it.
 - **Time**: the second.
 - **Angle**: the radian. Angles are dimensionless, but they are a kind
   of their own, so a turn rate cannot be confused with a frequency and
-  degrees exist only at text boundaries (Lua, recorded scripts).
+  degrees exist only at boundaries (the command line, the plugin pen).
 
 Everything else is built from these. Integer counts (cells, steps,
 nodes, story layers) are not quantities; they stay integers.
@@ -46,7 +46,7 @@ struct Quantity(int lengthPower, int timePower, int anglePower) {
 | `Rate`         | 0      | -1   | 0     | `walkResponse`                         |
 | `Speed`        | 1      | -1   | 0     | `walkSpeed`, `jumpSpeed`               |
 | `Acceleration` | 1      | -2   | 0     | `gravity`, `steering`                  |
-| `AngularSpeed` | 0      | -1   | 1     | `keyTurnRate`, Lua `turn_rate`         |
+| `AngularSpeed` | 0      | -1   | 1     | `keyTurnRate`                          |
 | `Area`         | 2      | 0    | 0     | planned: block faces, disk areas       |
 | `Volume`       | 3      | 0    | 0     | planned: `NODE_VOLUME`, block volume   |
 | `Curvature`    | -2     | 0    | 1     | planned: the space's -1 rad per R^2    |
@@ -72,7 +72,7 @@ Operations:
 2. Names do not repeat what the type says: `gravity: Acceleration`,
    `radius: Length`, `keyTurnRate: AngularSpeed`, not
    `gravityAcceleration` or `turnSpeedRadiansPerSecond`.
-3. `.value` appears only at a boundary: a C or Lua API, a vector kernel
+3. `.value` appears only at a boundary: a C API, a vector kernel
    working in chart coordinates (below), or a transcendental function.
 4. `exp`, `log` and the like take a `Ratio`: decay over a step is
    `expf(-(rate * dt).value)`, never `expf(-rate.value * dt.value)`.
@@ -83,9 +83,6 @@ Operations:
 
 ## Boundaries
 
-- **Lua**: scripts see plain numbers: lengths in R, times in seconds,
-  angles in degrees. `client/script.d` converts at the edge
-  (`degreesArgument`, `degreesOf`, `Time(...)`, `Length(...)`).
 - **Config files**: plain numbers in the same units; `client/config.d`
   wraps them on load. `mouse_sensitivity` is radians per count.
 - **Clock and C APIs**: `clock_gettime` and friends return plain numbers;
@@ -152,13 +149,13 @@ Angle drift = enclosed * CURVATURE;
 ```
 
 That is why nothing orientation-related may be integrated over time.
-The camera and body re-level every frame (see CLAUDE.md).
+The camera and body re-level every frame.
 
 The same idea covers paths. An equidistant curve at altitude h bends
 toward the surface plane by tanh(h) radians per R. A geodesic does not
 bend, so a body moving at speed s along one rises away from the
 equidistant surface with acceleration s^2 tanh(h). That is the
-"falling curves back up" effect `tests/flat/curve.lua` measures. Here
+"falling curves back up" effect. Here
 the radian cancels the way it does in arc length (s = r theta), so the
 conversion is explicit:
 
@@ -275,7 +272,7 @@ typed path, and it shows the pattern:
 
 Typed now:
 
-- `common/units.d`: `Quantity`, `Ratio`, `Length`, `Time`, `Angle`,
+- `base/units.d`: `Quantity`, `Ratio`, `Length`, `Time`, `Angle`,
   `Rate`, `Speed`, `Acceleration`, `AngularSpeed`, and the local
   `Blocks` and `LocalBlock`.
 - `common/settings.d`: `CharacterConfig`.
@@ -289,7 +286,7 @@ Typed now:
 - `client/game.d`: time, traveled distance, altitude, camera vertical
   motion, route waypoints, look input, spawn and placement lifts.
 - `client/camera.d`: eye offset, pitch, turns.
-- `client/script.d` and `main.d`: timesteps, turn rates, look deltas.
+- `main.d`: timesteps, turn rates, look deltas.
 - `client/graphics/frustum.d` and `renderer.d`: the field of view.
 
 Not typed yet, in the order to do them:
@@ -300,11 +297,11 @@ Not typed yet, in the order to do them:
    `streaming.isOutOfRange`, `spawn.collectChunksNear`, `raycast/*`
    (`tanhDistance` parameters, `MAX_TANH_DISTANCE`),
    `LocalWorld.tanhReach`, and `SinhDistance` in `plane.d`.
-2. Radii and heights as `Length`: `BOUNDING_SPHERE_RADIUS` and
-   `CHUNK_BOUNDING_SPHERE_RADIUS` (`dodeca.d`), `RENDER_RADIUS` and
+2. Radii and heights as `Length`: `NODE_RADIUS`, `CUBE_RADIUS` and
+   `FACE_DISTANCE` (`honeycomb.d`), `RENDER_RADIUS` and
    `NEARBY_PADDING` (`world.d`), `STRUCTURE_SEARCH_RADIUS` (`game.d`),
-   the default radii in `headless.d`, `faceDistance` (`dodeca.d`),
-   `Plane.distanceTo` and node altitudes.
+   the default radii in `headless.d`, `Plane.distanceTo` and node
+   altitudes.
 3. `Area` and `Volume`: `NODE_VOLUME`, `kleinBoxVolume`, the
    block-volume test in `node.d`, with `Volume.ofBall` for nearby-set
    estimates.
@@ -324,6 +321,5 @@ Not typed yet, in the order to do them:
 
 For each step: change the declaration's type and build. The compiler
 then lists every use; fix each one at its boundary or push the type
-further. Keep the suite (`./mined-headless --out <report> tests`) and
-`--world-digest` unchanged across a step. Units change types, never
-values.
+further. Keep the unit tests and `--world-digest` (commands in
+CLAUDE.md) unchanged across a step. Units change types, never values.
