@@ -4,7 +4,7 @@ import core.stdc.stdio : FILE, fclose, fopen, fprintf, printf;
 import core.stdc.string : strcmp, strlen;
 import base.array : Array;
 import base.crash : reportCrashes;
-import client.arguments : EXIT_FAILED, EXIT_OK, EXIT_USAGE, FlagValue, NumberArgument, StartupError, VERSION, WorldgenArgument, exitStatus;
+import client.arguments : ExitStatus, FlagValue, NumberArgument, StartupError, VERSION, WorldgenArgument, exitStatus;
 import client.config : ClientConfig;
 import client.game : Game;
 import client.plugins : registry;
@@ -314,28 +314,28 @@ void runMeasurement(ref const HeadlessArguments arguments, FILE* output) {
     }
 }
 
-int runWithOutput(ref const HeadlessArguments arguments, const(char)* program) {
+ExitStatus runWithOutput(ref const HeadlessArguments arguments, const(char)* program) {
     FILE* output = fopen(arguments.outputPath, "w");
     if (output is null) {
         StartupError(null, "cannot open the report file", arguments.outputPath).report(program);
-        return EXIT_FAILED;
+        return ExitStatus.failed;
     } else {
-        int status = exitStatus(runWorldCommand(arguments, output));
+        ExitStatus status = exitStatus(runWorldCommand(arguments, output));
         fclose(output);
         return status;
     }
 }
 
-int startCommand(ref const HeadlessArguments arguments, const(char)* program) {
+ExitStatus startCommand(ref const HeadlessArguments arguments, const(char)* program) {
     if (arguments.error.isPresent()) {
         arguments.error.report(program);
-        return EXIT_USAGE;
+        return ExitStatus.usage;
     } else if (arguments.isHelp) {
         printf("%s", USAGE.ptr);
-        return EXIT_OK;
+        return ExitStatus.ok;
     } else if (arguments.isVersion) {
         printf("mined %s\n", VERSION.ptr);
-        return EXIT_OK;
+        return ExitStatus.ok;
     } else {
         return runWithOutput(arguments, program);
     }
@@ -344,7 +344,7 @@ int startCommand(ref const HeadlessArguments arguments, const(char)* program) {
 extern (C) int main(int argc, char** argv) {
     reportCrashes();
     HeadlessArguments arguments = HeadlessArguments.fromArgv(argc, argv);
-    int status = startCommand(arguments, argv[0]);
+    ExitStatus status = startCommand(arguments, argv[0]);
     arguments.prefixes.release();
     return status;
 }

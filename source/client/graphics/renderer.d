@@ -27,6 +27,7 @@ import common.raycast.graph : GraphCastHit;
 import common.traversal : NOT_COLLECTED;
 import geometry.honeycomb : CUBE_RADIUS, cubeToNode;
 import geometry.lorentz : Motion, Normal, Point, Vec4;
+import plugins.api.api : Material;
 
 enum Angle HALF_VERTICAL_FOV = Angle(cast(float)(45 * RADIANS_PER_DEGREE));
 enum float NEAR_PLANE = 1.0e-4f;
@@ -363,7 +364,7 @@ struct Renderer {
             voxels.staticSet,
         ];
         vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, voxels.pipelineLayout, 0, sets.length, sets.ptr, 0, null);
-        LayoutPush layoutPush = LayoutPush(layout.dimension, layout.cellRatio, glowingMaterials());
+        LayoutPush layoutPush = LayoutPush(layout.dimension, layout.cellRatio, glowingMaterials(), Material.glass);
         vkCmdPushConstants(commands, voxels.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, LayoutPush.sizeof, &layoutPush);
         uint drawn = 0;
         while (drawn < meshes.drawableCount) {

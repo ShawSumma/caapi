@@ -5,7 +5,7 @@ import blocks = plugins.blocks.blocks;
 import plugins.connector.connector : Connection, Tag, connect;
 import plugins.turtle.turtle : Turtle, boxOf, cornersOf, roll, upright;
 
-immutable Look LOOK = Look("library", "Galleries branch off galleries. Each room opens on more rooms than a flat building could ever fit.", [0.72f, 0.62f, 0.46f], true);
+immutable Look LOOK = Look("library", [0.72f, 0.62f, 0.46f], true);
 
 enum int STORY = 6;
 enum int HALL_STORY = 2 * STORY;

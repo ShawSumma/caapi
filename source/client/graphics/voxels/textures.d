@@ -1,311 +1,143 @@
 module client.graphics.voxels.textures;
 
-import core.stdc.math : fabsf, floorf, sinf;
-import core.stdc.stdlib : malloc;
-import base.numbers : PI, clamped, higherOf;
+import core.stdc.math : floorf;
+import core.stdc.stdlib : free, malloc;
+import base.numbers : clamped, higherOf;
 import base.splitmix : SplitMix;
+import client.meshing : WINDOWS_PER_SIDE;
 import common.material : MATERIAL_COLORS;
 import plugins.api.api : Material;
 
-enum uint TEXTURE_SIZE = 16;
-enum uint TEXTURE_MIPS = 5;
+enum uint TEXELS_PER_WINDOW = 16;
+enum uint TEXTURE_SIZE = WINDOWS_PER_SIDE * TEXELS_PER_WINDOW;
+enum uint TEXTURE_MIPS = 9;
 enum uint TEXTURE_LAYERS = Material.max;
 enum uint TEXEL_BYTES = 4;
 enum uint COLOR_CHANNELS = 3;
 enum ubyte TEXTURE_OPAQUE = 255;
 enum ubyte TEXTURE_CLEAR = 0;
-enum uint SHADE_FULL = 255;
-enum uint BRICK_LONG = 8;
-enum uint BRICK_SHORT = 4;
-enum uint BOARD_WIDTH = 4;
-enum uint FORM_EVERY = 8;
-enum uint WEAVE_EVERY = 8;
-enum uint BLADES_EVERY = 3;
-enum ulong SALT_FINE = 0x9E37;
-enum ulong SALT_COARSE = 0x79B9;
-enum ulong SALT_PIECE = 0x7F4A;
-enum ulong SALT_BLADE = 0x7C15;
+enum float CHANNEL_MOST = 255;
+enum uint CORNERS_PER_TEXEL = 4;
+enum ulong OCTAVE_SALT = 0x9E3779B97F4A7C15;
+enum uint LAYER_SHIFT = 37;
 
-enum Pattern : ubyte {
-    soil,
-    gravel,
-    grass,
-    stone,
-    marble,
-    bark,
-    leaves,
-    planks,
-    bricks,
-    concrete,
-    steel,
-    glass,
-    water,
-    lava,
-    wallpaper,
-    carpet,
-    ceilingTile,
-    lightPanel,
-    sunlight,
-    snow,
+struct Octave {
+    uint cell;
+    float weight;
 }
 
-immutable Pattern[Material.max + 1] PATTERNS = [
-    Material.none: Pattern.soil,
-    Material.dirt: Pattern.soil,
-    Material.sand: Pattern.snow,
-    Material.redSand: Pattern.snow,
-    Material.silt: Pattern.soil,
-    Material.clay: Pattern.soil,
-    Material.mud: Pattern.soil,
-    Material.sandyLoam: Pattern.soil,
-    Material.siltyLoam: Pattern.soil,
-    Material.clayLoam: Pattern.soil,
-    Material.gravel: Pattern.gravel,
-    Material.grass: Pattern.grass,
-    Material.lushGrass: Pattern.grass,
-    Material.coarseGrass: Pattern.grass,
-    Material.tanGrass: Pattern.grass,
-    Material.mudGrass: Pattern.grass,
-    Material.caveGrass: Pattern.grass,
-    Material.snow: Pattern.snow,
-    Material.ice: Pattern.water,
-    Material.iceSlush: Pattern.snow,
-    Material.limestone: Pattern.stone,
-    Material.dolomite: Pattern.stone,
-    Material.shale: Pattern.stone,
-    Material.slate: Pattern.stone,
-    Material.sandstone: Pattern.stone,
-    Material.redSandstone: Pattern.stone,
-    Material.marble: Pattern.marble,
-    Material.granite: Pattern.gravel,
-    Material.diorite: Pattern.gravel,
-    Material.andesite: Pattern.stone,
-    Material.gabbro: Pattern.gravel,
-    Material.basalt: Pattern.stone,
-    Material.olivine: Pattern.gravel,
-    Material.water: Pattern.water,
-    Material.lava: Pattern.lava,
-    Material.oakWood: Pattern.bark,
-    Material.oakLeaves: Pattern.leaves,
-    Material.birchWood: Pattern.bark,
-    Material.birchLeaves: Pattern.leaves,
-    Material.spruceWood: Pattern.bark,
-    Material.spruceLeaves: Pattern.leaves,
-    Material.woodPlanks: Pattern.planks,
-    Material.greyBrick: Pattern.bricks,
-    Material.whiteBrick: Pattern.bricks,
-    Material.concrete: Pattern.concrete,
-    Material.steel: Pattern.steel,
-    Material.glass: Pattern.glass,
-    Material.jungleWood: Pattern.bark,
-    Material.jungleLeaves: Pattern.leaves,
-    Material.acaciaWood: Pattern.bark,
-    Material.acaciaLeaves: Pattern.leaves,
-    Material.cherryLeaves: Pattern.leaves,
-    Material.mapleLeaves: Pattern.leaves,
-    Material.willowLeaves: Pattern.leaves,
-    Material.cactus: Pattern.bark,
-    Material.wallpaper: Pattern.wallpaper,
-    Material.stainedWallpaper: Pattern.wallpaper,
-    Material.carpet: Pattern.carpet,
-    Material.dampCarpet: Pattern.carpet,
-    Material.ceilingTile: Pattern.ceilingTile,
-    Material.lightPanel: Pattern.lightPanel,
-    Material.redCarpet: Pattern.carpet,
-    Material.sunlight: Pattern.sunlight,
-    Material.plaster: Pattern.concrete,
-    Material.wetConcrete: Pattern.concrete,
+immutable Octave[4] OCTAVES = [
+    Octave(1, 0.2f),
+    Octave(2, 0.25f),
+    Octave(8, 0.3f),
+    Octave(32, 0.25f),
 ];
 
-float noiseAt(uint layer, ulong salt, uint u, uint v) {
-    return SplitMix(salt * 0x100000001B3 ^ (cast(ulong) layer << 40) ^ (cast(ulong) u << 20) ^ v).roll();
+immutable float[Material.max + 1] GRAIN = [
+    Material.none: 0,
+    Material.dirt: 0.13f,
+    Material.sand: 0.05f,
+    Material.redSand: 0.06f,
+    Material.silt: 0.08f,
+    Material.clay: 0.08f,
+    Material.mud: 0.1f,
+    Material.sandyLoam: 0.1f,
+    Material.siltyLoam: 0.1f,
+    Material.clayLoam: 0.1f,
+    Material.gravel: 0.22f,
+    Material.grass: 0.12f,
+    Material.lushGrass: 0.12f,
+    Material.coarseGrass: 0.14f,
+    Material.tanGrass: 0.12f,
+    Material.mudGrass: 0.12f,
+    Material.caveGrass: 0.12f,
+    Material.snow: 0.02f,
+    Material.ice: 0.03f,
+    Material.iceSlush: 0.04f,
+    Material.limestone: 0.08f,
+    Material.dolomite: 0.08f,
+    Material.shale: 0.1f,
+    Material.slate: 0.1f,
+    Material.sandstone: 0.08f,
+    Material.redSandstone: 0.09f,
+    Material.marble: 0.04f,
+    Material.granite: 0.14f,
+    Material.diorite: 0.14f,
+    Material.andesite: 0.1f,
+    Material.gabbro: 0.14f,
+    Material.basalt: 0.1f,
+    Material.olivine: 0.14f,
+    Material.water: 0.04f,
+    Material.lava: 0.3f,
+    Material.oakWood: 0.1f,
+    Material.oakLeaves: 0.1f,
+    Material.birchWood: 0.05f,
+    Material.birchLeaves: 0.1f,
+    Material.spruceWood: 0.1f,
+    Material.spruceLeaves: 0.1f,
+    Material.woodPlanks: 0.07f,
+    Material.greyBrick: 0.07f,
+    Material.whiteBrick: 0.05f,
+    Material.concrete: 0.05f,
+    Material.steel: 0.03f,
+    Material.glass: 0,
+    Material.jungleWood: 0.1f,
+    Material.jungleLeaves: 0.1f,
+    Material.acaciaWood: 0.1f,
+    Material.acaciaLeaves: 0.1f,
+    Material.cherryLeaves: 0.08f,
+    Material.mapleLeaves: 0.1f,
+    Material.willowLeaves: 0.1f,
+    Material.cactus: 0.08f,
+    Material.wallpaper: 0.025f,
+    Material.stainedWallpaper: 0.05f,
+    Material.carpet: 0.07f,
+    Material.dampCarpet: 0.09f,
+    Material.ceilingTile: 0.02f,
+    Material.lightPanel: 0,
+    Material.redCarpet: 0.07f,
+    Material.sunlight: 0,
+    Material.plaster: 0.025f,
+    Material.wetConcrete: 0.07f,
+];
+
+float latticeAt(ulong salt, uint u, uint v) {
+    return 2 * SplitMix(salt ^ (cast(ulong) u << 20) ^ v).roll() - 1;
 }
 
-float wobble(uint layer, ulong salt, uint u, uint v, float amount) {
-    return 1.0f + amount * (2.0f * noiseAt(layer, salt, u, v) - 1.0f);
+float smoothed(float share) {
+    return share * share * (3 - 2 * share);
 }
 
-bool isEdge(uint at, uint every) {
-    return at % every == every - 1;
+float octaveAt(ulong salt, uint cell, uint u, uint v) {
+    uint side = TEXTURE_SIZE / cell;
+    uint lowU = u / cell;
+    uint lowV = v / cell;
+    uint highU = (lowU + 1) % side;
+    uint highV = (lowV + 1) % side;
+    float acrossU = smoothed((u % cell) / cast(float) cell);
+    float acrossV = smoothed((v % cell) / cast(float) cell);
+    float near = latticeAt(salt, lowU, lowV) * (1 - acrossU) + latticeAt(salt, highU, lowV) * acrossU;
+    float far = latticeAt(salt, lowU, highV) * (1 - acrossU) + latticeAt(salt, highU, highV) * acrossU;
+    return near * (1 - acrossV) + far * acrossV;
 }
 
-// Chunks meet at any quarter turn, and a pattern with a grain would change direction at every chunk border. Masonry and
-// boards are laid as a basket weave so a quarter turn leaves them looking the same.
-struct Weave {
-    uint along;
-    uint across;
-    uint piece;
-
-    static Weave at(uint u, uint v, uint pieceAcross) {
-        uint block = (u / WEAVE_EVERY + v / WEAVE_EVERY) % 2;
-        uint x = u % WEAVE_EVERY;
-        uint y = v % WEAVE_EVERY;
-        uint cell = (u / WEAVE_EVERY) * 4 + (v / WEAVE_EVERY) * 2;
-        if (block == 0) {
-            return Weave(x, y, cell * 8 + y / pieceAcross);
-        } else {
-            return Weave(y, x, cell * 8 + x / pieceAcross);
+float[] makeNoise() {
+    float[] noise = (cast(float*) malloc(TEXTURE_SIZE * TEXTURE_SIZE * float.sizeof))[0 .. TEXTURE_SIZE * TEXTURE_SIZE];
+    foreach (v; 0 .. TEXTURE_SIZE) {
+        foreach (u; 0 .. TEXTURE_SIZE) {
+            float sum = 0;
+            foreach (index, octave; OCTAVES) {
+                sum += octave.weight * octaveAt(OCTAVE_SALT * (index + 1), octave.cell, u, v);
+            }
+            noise[v * TEXTURE_SIZE + u] = sum;
         }
     }
+    return noise;
 }
 
-float bricksShade(uint layer, uint u, uint v) {
-    Weave weave = Weave.at(u, v, BRICK_SHORT);
-    if (isEdge(weave.across, BRICK_SHORT) || isEdge(weave.along, BRICK_LONG)) {
-        return 0.62f;
-    } else {
-        return wobble(layer, SALT_PIECE, weave.piece, 0, 0.1f) * wobble(layer, SALT_FINE, u, v, 0.05f);
-    }
-}
-
-float planksShade(uint layer, uint u, uint v) {
-    Weave weave = Weave.at(u, v, BOARD_WIDTH);
-    if (isEdge(weave.across, BOARD_WIDTH)) {
-        return 0.68f;
-    } else {
-        return wobble(layer, SALT_PIECE, weave.piece, 0, 0.1f) * wobble(layer, SALT_FINE, weave.piece, weave.along / 2, 0.06f);
-    }
-}
-
-float barkShade(uint layer, uint u, uint v) {
-    uint crack = (u + cast(uint)(noiseAt(layer, SALT_COARSE, v / 3, 0) * 2)) % 4;
-    if (crack == 0) {
-        return 0.68f;
-    } else {
-        return wobble(layer, SALT_FINE, u, v, 0.1f);
-    }
-}
-
-float stoneShade(uint layer, uint u, uint v) {
-    float coarse = wobble(layer, SALT_COARSE, u / 4, v / 4, 0.06f);
-    return coarse * wobble(layer, SALT_FINE, u / 2, v / 2, 0.06f) * wobble(layer, SALT_FINE, u, v, 0.03f);
-}
-
-float marbleShade(uint layer, uint u, uint v) {
-    float vein = sinf((u + v + 2 * sinf(v * 2 * PI / TEXTURE_SIZE)) * 2 * PI / TEXTURE_SIZE);
-    if (fabsf(vein) < 0.14f) {
-        return 0.82f;
-    } else {
-        return wobble(layer, SALT_FINE, u, v, 0.015f);
-    }
-}
-
-float concreteShade(uint layer, uint u, uint v) {
-    float form = 1.0f;
-    if (u == 0 || v == 0) {
-        form = 0.9f;
-    }
-    return form * wobble(layer, SALT_FINE, u, v, 0.045f);
-}
-
-float steelShade(uint layer, uint u, uint v) {
-    bool isRivet = (u == 2 || u == TEXTURE_SIZE - 3) && (v == 2 || v == TEXTURE_SIZE - 3);
-    if (isRivet) {
-        return 1.3f;
-    } else if (u == 0 || v == 0) {
-        return 0.74f;
-    } else {
-        return wobble(layer, SALT_FINE, u / 2, v, 0.035f);
-    }
-}
-
-float grassShade(uint layer, uint u, uint v) {
-    if (noiseAt(layer, SALT_BLADE, u, v) * BLADES_EVERY < 1) {
-        return wobble(layer, SALT_FINE, u, v, 0.2f) * 1.1f;
-    } else {
-        return wobble(layer, SALT_COARSE, u / 2, v / 2, 0.12f);
-    }
-}
-
-float wallpaperShade(uint layer, uint u, uint v) {
-    float grain = wobble(layer, SALT_FINE, u, v, 0.015f);
-    if ((u + v) % WEAVE_EVERY == 0 || (u + TEXTURE_SIZE - v) % WEAVE_EVERY == 0) {
-        return 0.9f * grain;
-    } else if (u % WEAVE_EVERY == 4 && v % WEAVE_EVERY == 0) {
-        return 1.08f * grain;
-    } else {
-        return grain;
-    }
-}
-
-float ceilingTileShade(uint layer, uint u, uint v) {
-    if (u == 0 || v == 0) {
-        return 0.68f;
-    } else if (noiseAt(layer, SALT_BLADE, u, v) < 0.14f) {
-        return 0.88f;
-    } else {
-        return wobble(layer, SALT_FINE, u, v, 0.015f);
-    }
-}
-
-float lightPanelShade(uint u, uint v) {
-    if (u == 0 || v == 0 || u == TEXTURE_SIZE - 1 || v == TEXTURE_SIZE - 1) {
-        return 0.78f;
-    } else {
-        return 1.0f;
-    }
-}
-
-float lavaShade(uint layer, uint u, uint v) {
-    float crust = noiseAt(layer, SALT_COARSE, u / 3, v / 3);
-    if (crust < 0.3f) {
-        return 0.55f * wobble(layer, SALT_FINE, u, v, 0.12f);
-    } else {
-        return 1.1f * wobble(layer, SALT_FINE, u, v, 0.08f);
-    }
-}
-
-float waterShade(uint layer, uint u, uint v) {
-    float ripple = sinf((u + 2 * sinf(v * 2 * PI / TEXTURE_SIZE)) * 4 * PI / TEXTURE_SIZE);
-    return 1.0f + 0.05f * ripple;
-}
-
-float shadeOf(uint layer, Pattern pattern, uint u, uint v) {
-    final switch (pattern) {
-        case Pattern.soil:
-            return wobble(layer, SALT_COARSE, u / 2, v / 2, 0.08f) * wobble(layer, SALT_FINE, u, v, 0.05f);
-        case Pattern.gravel:
-            return wobble(layer, SALT_COARSE, u / 2, v / 2, 0.2f);
-        case Pattern.snow:
-            return wobble(layer, SALT_FINE, u, v, 0.03f);
-        case Pattern.grass:
-            return grassShade(layer, u, v);
-        case Pattern.stone:
-            return stoneShade(layer, u, v);
-        case Pattern.marble:
-            return marbleShade(layer, u, v);
-        case Pattern.bark:
-            return barkShade(layer, u, v);
-        case Pattern.leaves:
-            return wobble(layer, SALT_COARSE, u / 2, v / 2, 0.24f);
-        case Pattern.planks:
-            return planksShade(layer, u, v);
-        case Pattern.bricks:
-            return bricksShade(layer, u, v);
-        case Pattern.concrete:
-            return concreteShade(layer, u, v);
-        case Pattern.steel:
-            return steelShade(layer, u, v);
-        case Pattern.glass:
-        case Pattern.sunlight:
-            return 1.0f;
-        case Pattern.water:
-            return waterShade(layer, u, v);
-        case Pattern.lava:
-            return lavaShade(layer, u, v);
-        case Pattern.wallpaper:
-            return wallpaperShade(layer, u, v);
-        case Pattern.carpet:
-            return wobble(layer, SALT_FINE, u, v, 0.09f);
-        case Pattern.ceilingTile:
-            return ceilingTileShade(layer, u, v);
-        case Pattern.lightPanel:
-            return lightPanelShade(u, v);
-    }
-}
-
-bool isGlassPane(uint u, uint v) {
-    return u > 0 && v > 0 && u < TEXTURE_SIZE - 1 && v < TEXTURE_SIZE - 1;
+bool insideFrame(uint u, uint v) {
+    return u >= TEXELS_PER_WINDOW && v >= TEXELS_PER_WINDOW && u < TEXTURE_SIZE - TEXELS_PER_WINDOW && v < TEXTURE_SIZE - TEXELS_PER_WINDOW;
 }
 
 size_t mipBytes(uint mip) {
@@ -325,25 +157,29 @@ size_t textureBytes() {
     return mipOffset(TEXTURE_MIPS);
 }
 
+// One noise field shared by every material, shifted per layer, so materials differ without a noise field each.
 void fillFirstMip(ubyte[] pixels) {
+    float[] noise = makeNoise();
     size_t at = 0;
     foreach (layer; 0 .. TEXTURE_LAYERS) {
         Material material = cast(Material)(layer + 1);
-        Pattern pattern = PATTERNS[material];
+        float grain = GRAIN[material];
+        uint shift = layer * LAYER_SHIFT;
         foreach (v; 0 .. TEXTURE_SIZE) {
             foreach (u; 0 .. TEXTURE_SIZE) {
-                float shade = shadeOf(layer, pattern, u, v);
+                float shade = 1 + grain * noise[((v + shift) % TEXTURE_SIZE) * TEXTURE_SIZE + (u + shift) % TEXTURE_SIZE];
                 foreach (channel; 0 .. COLOR_CHANNELS) {
-                    pixels[at + channel] = cast(ubyte) clamped(floorf(MATERIAL_COLORS[material][channel] * shade + 0.5f), 0.0f, cast(float) SHADE_FULL);
+                    pixels[at + channel] = cast(ubyte) clamped(floorf(MATERIAL_COLORS[material][channel] * shade + 0.5f), 0.0f, CHANNEL_MOST);
                 }
                 pixels[at + COLOR_CHANNELS] = TEXTURE_OPAQUE;
-                if (pattern == Pattern.glass && isGlassPane(u, v)) {
+                if (material == Material.glass && insideFrame(u, v)) {
                     pixels[at + COLOR_CHANNELS] = TEXTURE_CLEAR;
                 }
                 at += TEXEL_BYTES;
             }
         }
     }
+    free(noise.ptr);
 }
 
 // Alpha takes the most of its four texels and color averages only the opaque ones, so distant glass closes into a solid
@@ -355,7 +191,7 @@ void downsample(const(ubyte)[] from, ubyte[] to, uint side) {
                 uint[COLOR_CHANNELS] sum = 0;
                 uint opaque = 0;
                 ubyte alpha = TEXTURE_CLEAR;
-                foreach (corner; 0 .. 4) {
+                foreach (corner; 0 .. CORNERS_PER_TEXEL) {
                     size_t source = (layer * side * side + (y * 2 + corner / 2) * side + x * 2 + corner % 2) * TEXEL_BYTES;
                     if (from[source + COLOR_CHANNELS] != TEXTURE_CLEAR) {
                         foreach (channel; 0 .. COLOR_CHANNELS) {

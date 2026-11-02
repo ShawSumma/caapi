@@ -4,7 +4,7 @@ import plugins.api.api : Api, ENTRY, Look, Material, NO_KIND, Registry, Site, Si
 import box = plugins.box.box;
 import plugins.turtle.turtle : Turtle, boxOf;
 
-immutable Look LOOK = Look("trail", "A path that never doubles back. Almost every turn leads somewhere nothing has ever been.");
+immutable Look LOOK = Look("trail");
 
 enum int HALF_WIDTH = 2;
 enum uint HUT_EVERY = 3;

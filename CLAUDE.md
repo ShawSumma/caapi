@@ -34,6 +34,9 @@ libraries loaded at startup that call the engine through a table of functions.
   `dub run -q -b release --compiler=ldc2 -c headless -- --bench-hashmap --out /dev/stdout`
 - Screenshot of a view script (`source/scripts/views.d`), rendered offscreen:
   `dub run -q -b release --compiler=ldc2 -- --screenshot screenshots/<new name>.png --out /dev/stdout <view>`
+- Film of a list of shots (`source/scripts/films.d`), every step rendered offscreen to numbered PNGs:
+  `dub run -q -b release --compiler=ldc2 -- --film <directory> --out /dev/stdout <film>`
+  (headless `--films` instead runs the shots without rendering, to check they still run)
 - Run through `dub run`, never the built binaries directly.
 - Never open a window: no plain `dub run` of the game and no `--drive`. Only the headless configuration and the
   windowed build's offscreen modes (`--screenshot`, `--bench-load`) may be run. Anything that needs a window is for
@@ -64,6 +67,10 @@ libraries loaded at startup that call the engine through a table of functions.
   with salts.
 - Every plane rolls rises from its vertices with its world's odds, so horospheres stack on horospheres. Trees are
   endless columns that must clear every plane below them; keep their odds low.
+- Rise odds compound because planes stack on planes, so adding a kind to a world means sharing out its total odds, not
+  adding to them.
+- A placed structure is never forgotten and grows with the deepest depth reached anywhere, so a landmark sharing a world
+  with others must be finite.
 - A pentagon's quarters tile the space over it only within half an edge (12 cells) above and below its plane; higher,
   each quarter's column belongs to its own vertex and they pull apart. Floors spanning quarters stay in that slab;
   taller work follows a single line (Babel, branches) or stacks risen planes joined by connectors (the library).
@@ -147,9 +154,10 @@ API, `client` on all.
 - `source/main.d`: windowed game (`[` and `]` step through the terrain and every registered world), screenshots and
   the load/flight benchmark.
 - `source/headless.d`, `source/worldcheck.d`: script runner and world checks and benchmarks without a window.
-- `source/unittests.d`: the unit test runner; it imports every module with tests, in layer order.
+- `source/unittests.d`: the unit test runner; it imports every module with tests, in layer order. `source/unit/`: the
+  tests of production modules, one file per module, kept out of the game's own code.
 - `source/bindings/platform.c`: Vulkan with its Xlib or Metal surface, X11 and the XInput 2 calls, from the system
-  headers through ImportC.
+  headers through ImportC. `source/bindings/kernel.c`: syscall and futex numbers from the system headers.
 - `source/base/`: containers (`array.d`, `hashmap.d`, `slab.d` with `RunPool` and `FreeIndices`, `allocator.d`),
   `pages.d` (memory mapped from the system, given back a page at a time), `parallel.d` (worker pool, futex waits,
   lock-free queue), `clock.d` (timers, and `FrameClock`, which steps the game by the mean of recent frames so uneven
@@ -188,8 +196,7 @@ API, `client` on all.
     writes a session as D; `drive.d`, `frames.d`, `images.d`: playing a list of drive actions in the window and timing
     its frames; `sampler.d`: the profiler; `meshing.d`, `graphics/`: rendering (`graphics/voxels/textures.d` makes the
     block textures, `graphics/overlay.d` draws the HUD and thrown blocks).
-  - `hud.d`: builds the HUD each frame as colored triangles without touching Vulkan: name and caption, the Poincare
-    disk, the compass, the growth counter; `font.d`: its bitmap font.
+  - `hud.d`: builds the HUD each frame as colored triangles without touching Vulkan: the Poincare disk and the compass.
   - `cocoa.d`: the macOS window (AppKit through the Objective-C runtime, a `CAMetalLayer` for MoltenVK), reporting
     keys as X keysyms so `main.d` handles input the same way on both platforms.
 - `source/scripts/`: `tests.d` (behavior tests), `views.d` (screenshot views), `films.d` (films, each a list of shots),
@@ -199,7 +206,7 @@ API, `client` on all.
 - `plugins/`: dub sub-packages declared in `dub.sdl`. Source libraries are shared code compiled into each plugin that
   uses them; each plugin is a shared library built into `lib/` before the engine, whose entry point (named by
   `pragma(mangle, ENTRY)`) registers its worlds by name.
-  - `api/`: `plugins.api.api`, the world API: sites, boxes, materials, the pen, looks (a name, caption and fog color),
+  - `api/`: `plugins.api.api`, the world API: sites, boxes, materials, the pen, looks (a name and fog color),
     the `Api` table of functions a world calls, and the `Registry` a plugin registers its worlds, rising kinds and
     landmarks with. The engine links it too.
   - Source libraries: `turtle/` (a site and a pen wrapped around the API, and the helpers every plugin shares:

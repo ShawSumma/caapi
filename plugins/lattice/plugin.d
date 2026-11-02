@@ -4,7 +4,7 @@ import core.stdc.math : fabs;
 import plugins.api.api : Api, ENTRY, HorosphereForm, Look, Material, NO_KIND, Registry, Rhythm, Risen, Site, SitePart, Turn;
 import plugins.turtle.turtle : Tread, Turtle, boxOf, lowerOf, roll, treadAround, upright;
 
-immutable Look LOOK = Look("lattice", "Every edge of the honeycomb, drawn. Four dodecahedra meet at each beam, which flat space cannot do. Fog hides the rest.", [0.05f, 0.06f, 0.1f], true);
+immutable Look LOOK = Look("lattice", [0.05f, 0.06f, 0.1f], true);
 
 enum int BEAM = 1;
 enum int PLATFORM = 6;

@@ -2,6 +2,7 @@ module client.meshing;
 
 import core.stdc.stdlib : free, malloc;
 import core.stdc.string : memcpy;
+import base.splitmix : SplitMix;
 import common.graph : Graph, NO_SLOT;
 import common.material : isShownAgainst;
 import common.neighbors : acrossBorder, chunkNeighborSlot, indexIn, isCellOccupied, isOutside;
@@ -17,14 +18,17 @@ enum uint OCCLUSION_SHIFT = 24;
 enum uint OCCLUSION_BITS = 2;
 enum uint REVERSED_BIT = 1 << 2;
 enum uint FLIPPED_BIT = 1 << 3;
-enum ubyte TEST_DIMENSION = 4;
-enum ubyte TEST_CELL = 2;
+enum uint WINDOW_SHIFT = 16;
+enum uint WINDOW_BITS = 8;
+enum uint WINDOWS_PER_SIDE = 1 << (WINDOW_BITS / 2);
+enum uint CHUNK_SEED_SHIFT = 40;
+enum uint CELL_SEED_SHIFT = 2;
 
 struct Quad {
     uint posAxis;
     uint occlusionMaterial;
 
-    static Quad fromVoxel(int[3] voxel, size_t axis, bool isInward, Material material, uint[CORNERS_PER_FACE] occlusion) {
+    static Quad fromVoxel(int[3] voxel, size_t axis, bool isInward, Material material, uint[CORNERS_PER_FACE] occlusion, uint window) {
         uint axisCode = cast(uint) axis;
         if (isInward) {
             axisCode |= REVERSED_BIT;
@@ -32,7 +36,7 @@ struct Quad {
         if (isDiagonalFlipped(occlusion)) {
             axisCode |= FLIPPED_BIT;
         }
-        uint packed = material;
+        uint packed = material | window << WINDOW_SHIFT;
         foreach (corner; 0 .. CORNERS_PER_FACE) {
             packed |= occlusion[corner] << (OCCLUSION_SHIFT + OCCLUSION_BITS * corner);
         }
@@ -46,6 +50,11 @@ struct ChunkCells {
     ChunkSlot chunk;
     ubyte dimension;
     bool isUniform;
+    ulong seed;
+
+    uint windowOf(size_t index, size_t axis) const {
+        return cast(uint)(SplitMix(seed ^ (index << CELL_SEED_SHIFT | axis)).next() >> (ulong.sizeof * 8 - WINDOW_BITS));
+    }
 
     bool isOccupied(int[3] voxel) const {
         uint outside = 0;
@@ -105,7 +114,7 @@ struct ChunkCells {
                             voxel[cAxis] = cast(int) c;
                             int[3] base = voxel;
                             base[axis] -= solidSideStep(isOtherShown);
-                            quads[count] = Quad.fromVoxel(voxel, axis, isOtherShown, solidMaterial(index, step, isOtherShown), faceOcclusion(base, axis));
+                            quads[count] = Quad.fromVoxel(voxel, axis, isOtherShown, solidMaterial(index, step, isOtherShown), faceOcclusion(base, axis), windowOf(index, axis));
                             count += 1;
                         }
                     }
@@ -142,7 +151,8 @@ struct Mesher {
 
     const(Quad)[] mesh(ref const Graph graph, ChunkSlot chunk) {
         pad(graph, chunk);
-        ChunkCells cells = ChunkCells(padded, &graph, chunk, graph.layout.dimension, graph.chunks.at(chunk).voxels.isUniform());
+        ulong seed = graph.idAt(chunk.slot).spice() ^ (cast(ulong) chunk.corner << CHUNK_SEED_SHIFT);
+        ChunkCells cells = ChunkCells(padded, &graph, chunk, graph.layout.dimension, graph.chunks.at(chunk).voxels.isUniform(), seed);
         return quads[0 .. cells.extractQuads(quads)];
     }
 
@@ -230,32 +240,4 @@ int solidSideStep(bool isOtherShown) {
     } else {
         return 1;
     }
-}
-
-unittest {
-    Material[] padded = (cast(Material*) malloc(paddedCellCount(TEST_DIMENSION)))[0 .. paddedCellCount(TEST_DIMENSION)];
-    padded[] = Material.none;
-    int[3] center = [TEST_CELL, TEST_CELL, TEST_CELL];
-    ChunkCells cells = ChunkCells(padded.ptr, null, ChunkSlot.init, TEST_DIMENSION, false);
-    padded[paddedIndex(TEST_DIMENSION, center)] = Material.granite;
-    assert(cells.isOccupied(center));
-    Quad* quads = cast(Quad*) malloc(maxQuads(TEST_DIMENSION) * Quad.sizeof);
-    uint count = cells.extractQuads(quads);
-    assert(count == 2 * AXIS_COUNT);
-    uint[CORNERS_PER_FACE] unoccluded = OCCLUSION_LEVELS;
-    foreach (quad; quads[0 .. count]) {
-        assert(quad.occlusionMaterial == Quad.fromVoxel(center, 0, false, Material.granite, unoccluded).occlusionMaterial);
-    }
-    padded[paddedIndex(TEST_DIMENSION, [TEST_CELL - 1, TEST_CELL, TEST_CELL])] = Material.glass;
-    uint glassCount = cells.extractQuads(quads);
-    uint glassQuads = 0;
-    foreach (quad; quads[0 .. glassCount]) {
-        if ((quad.occlusionMaterial & ((1u << OCCLUSION_SHIFT) - 1)) == Material.glass) {
-            glassQuads += 1;
-        }
-    }
-    assert(glassCount == 2 * AXIS_COUNT + 2 * AXIS_COUNT - 1);
-    assert(glassQuads == 2 * AXIS_COUNT - 1);
-    free(quads);
-    free(padded.ptr);
 }

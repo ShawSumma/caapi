@@ -8,13 +8,12 @@ dependency "mined:api" version="*"
 
 dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 libs "dl" "m" "pthread"
-excludedSourceFiles "source/client/lua.d" "source/bindings/lua.c"
 preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :planet" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :road" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :city" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :backrooms" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :tower" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :crown" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :trail" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :fixtures" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :babel" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :library" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :palace" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :arbor" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :lattice"
 
 configuration "application" {
 	targetName "mined"
 	mainSourceFile "source/main.d"
-	excludedSourceFiles "source/headless.d" "source/worldcheck.d" "source/unittests.d"
+	excludedSourceFiles "source/headless.d" "source/worldcheck.d" "source/unittests.d" "source/unit/*"
 	stringImportPaths "source/shaders/spv"
 	libs "vulkan" "X11" ":libXi.so.6" platform="linux"
 	lflags "--export-dynamic" platform="linux"
@@ -27,13 +26,13 @@ configuration "application" {
 configuration "headless" {
 	targetName "mined-headless"
 	mainSourceFile "source/headless.d"
-	excludedSourceFiles "source/main.d" "source/unittests.d" "source/bindings/platform.c" "source/client/cocoa.d" "source/client/graphics/*" "source/client/graphics/voxels/*"
+	excludedSourceFiles "source/main.d" "source/unittests.d" "source/unit/*" "source/bindings/platform.c" "source/client/cocoa.d" "source/client/graphics/*" "source/client/graphics/voxels/*"
 }
 
 configuration "unittest" {
 	targetName "mined-unittest"
 	mainSourceFile "source/unittests.d"
-	excludedSourceFiles "source/main.d" "source/headless.d" "source/worldcheck.d" "source/bindings/*" "source/client/cocoa.d" "source/client/graphics/*" "source/client/graphics/voxels/*" "source/client/script.d" "source/client/drive.d" "source/client/structures.d" "source/client/tiles.d" "source/scripts/*"
+	excludedSourceFiles "source/main.d" "source/headless.d" "source/worldcheck.d" "source/bindings/platform.c" "source/client/cocoa.d" "source/client/graphics/*" "source/client/graphics/voxels/*" "source/client/script.d" "source/client/drive.d" "source/client/structures.d" "source/client/tiles.d" "source/scripts/*"
 }
 
 subPackage {

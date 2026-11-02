@@ -38,13 +38,8 @@ version (OSX) {
     import core.sys.posix.sys.time : ITIMER_PROF;
     import core.sys.posix.time : CLOCK_THREAD_CPUTIME_ID, itimerspec, timer_create, timer_delete, timer_settime, timer_t, timespec;
     import base.parallel : syscall;
+    import bindings.kernel : CALL_GETTID, SIGNAL_ONE_THREAD;
 
-    version (X86_64) {
-        enum long SYS_GETTID = 186;
-    } else version (AArch64) {
-        enum long SYS_GETTID = 178;
-    }
-    enum int SIGEV_THREAD_ID = 4;
     enum long MAIN_SAMPLE_NANOSECONDS = 500_000;
 
     extern (C) int* __errno_location() nothrow @nogc;
@@ -141,9 +136,9 @@ struct Sampler {
             handle(SIGPROF, &recordWorkerSample);
             handle(__libc_current_sigrtmin(), &recordMainSample);
             sigevent event;
-            event.sigev_notify = SIGEV_THREAD_ID;
+            event.sigev_notify = SIGNAL_ONE_THREAD;
             event.sigev_signo = __libc_current_sigrtmin();
-            event._tid = cast(int) syscall(SYS_GETTID);
+            event._tid = cast(int) syscall(CALL_GETTID);
             timer_create(CLOCK_THREAD_CPUTIME_ID, &event, &mainTimer);
             itimerspec mainPeriod = itimerspec(timespec(0, MAIN_SAMPLE_NANOSECONDS), timespec(0, MAIN_SAMPLE_NANOSECONDS));
             timer_settime(mainTimer, 0, &mainPeriod, null);

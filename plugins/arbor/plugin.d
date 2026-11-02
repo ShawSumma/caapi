@@ -4,7 +4,7 @@ import core.stdc.math : pow;
 import plugins.api.api : Api, ENTRY, Look, Material, NO_KIND, Registry, Rhythm, Risen, Site, SitePart, Turn;
 import plugins.turtle.turtle : Tread, Turtle, boxOf, cornersOf, floorMod, higherOf, middle, roll, treadAround, upright;
 
-immutable Look LOOK = Look("arbor", "Limbs branch along the honeycomb's edges, and space makes room: no two branches ever have to cross.", [0.72f, 0.84f, 0.74f], true);
+immutable Look LOOK = Look("arbor", [0.72f, 0.84f, 0.74f], true);
 
 enum int TRUNK = 4;
 enum int RING = 4;

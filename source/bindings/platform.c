@@ -3,6 +3,10 @@
 #define VK_USE_PLATFORM_METAL_EXT
 #include <vulkan/vulkan.h>
 
+enum {
+    VULKAN_API_1_1 = VK_API_VERSION_1_1,
+};
+
 #else
 
 #define VK_USE_PLATFORM_XLIB_KHR
@@ -10,6 +14,16 @@
 #include <X11/XKBlib.h>
 #include <X11/keysym.h>
 #include <X11/extensions/XI2.h>
+#include <malloc.h>
+
+enum {
+    VULKAN_API_1_1 = VK_API_VERSION_1_1,
+    KEY_PRESS_EVENTS = KeyPressMask,
+    KEY_RELEASE_EVENTS = KeyReleaseMask,
+    BUTTON_PRESS_EVENTS = ButtonPressMask,
+    STRUCTURE_EVENTS = StructureNotifyMask,
+    FOCUS_EVENTS = FocusChangeMask,
+};
 
 typedef struct {
     int deviceid;

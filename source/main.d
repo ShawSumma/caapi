@@ -17,7 +17,7 @@ import base.numbers : higherOf, lowerOf;
 import base.parallel : ConcurrentQueue, QueueCell;
 import base.slab : RunPool, SLAB_SIZE, Slab;
 import base.units : Angle, AngularSpeed, Speed, Time;
-import client.arguments : EXIT_FAILED, EXIT_OK, EXIT_USAGE, FlagValue, NumberArgument, StartupError, VERSION, WorldgenArgument, exitStatus;
+import client.arguments : ExitStatus, FlagValue, NumberArgument, StartupError, VERSION, WorldgenArgument, exitStatus;
 import client.config : ClientConfig;
 import client.drive : DriveEventKind, DriveHost, DriveInput, DriveKey, LEFT_BUTTON, NamedDrive;
 import client.frames : RenderTimes;
@@ -90,17 +90,15 @@ enum string USAGE = "usage: mined [options]
   --record <file>         record the session as a D script body
   --help, --version
 tools:
-  --screenshot <png> --out <report> [--hud] <view>
-                                             run a view script (scripts/views.d) and render it offscreen
-  --film <directory> --out <report> [--hud] <film>
-                                             render every step of a film (scripts/films.d) offscreen to numbered PNGs
+  --screenshot <png> --out <report> <view>   run a view script (scripts/views.d) and render it offscreen
+  --film <directory> --out <report> <film>   render every step of a film (scripts/films.d) offscreen to numbered PNGs
   --drive <name> --out <report>              play a drive (scripts/drives.d) in the window
   --bench-load [--profile] [--flight-speed <units/s>] --out <report>
                                              load and flight benchmark
 ";
 
 version (OSX) {
-    import client.cocoa : Button1, Button3, CocoaWindow, KeyEvent, KeySym, WindowEvents, XK_1, XK_9, XK_bracketleft, XK_bracketright, XK_Escape, XK_Down, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_c, XK_d, XK_h, XK_n, XK_s, XK_space, XK_t, XK_v, XK_w;
+    import client.cocoa : Button1, Button3, CocoaWindow, KeyEvent, KeySym, WindowEvents, XK_1, XK_9, XK_bracketleft, XK_bracketright, XK_Escape, XK_Down, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_n, XK_s, XK_space, XK_v, XK_w;
 
     enum string WINDOW_REQUIREMENT = "cannot open a window";
     enum int MACH_TASK_BASIC_INFO = 20;
@@ -151,20 +149,15 @@ version (OSX) {
     }
 } else {
     import core.sys.posix.sys.resource : RUSAGE_SELF, getrusage, rusage;
-    import bindings.platform : Atom, Button1, Button3, ButtonPress, ClientMessage, CurrentTime, Cursor, Display, False, FocusOut, GenericEvent, GrabModeAsync, GrabSuccess, KeyPress, KeyRelease, KeySym, Pixmap, Success, True, UnmapNotify, Window, XBlackPixel, XCloseDisplay, XColor, XCreateBitmapFromData, XCreatePixmapCursor, XCreateSimpleWindow, XDefaultScreen, XDestroyWindow, XDisplayHeight, XDisplayWidth, XEvent, XFlush, XFreeCursor, XFreeEventData, XFreePixmap, XGenericEventCookie, XGetEventData, XGrabPointer, XIAllMasterDevices, XIDeviceInfo, XIEventMask, XIFreeDeviceInfo, XIModeAbsolute, XIQueryDevice, XIQueryVersion, XIRawEvent, XISelectEvents, XIValuatorClass, XIValuatorClassInfo, XI_DeviceChanged, XI_RawMotion, XInternAtom, XK_1, XK_9, XK_bracketleft, XK_bracketright, XK_Escape, XK_Down, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_c, XK_d, XK_h, XK_n, XK_s, XK_space, XK_t, XK_v, XK_w, XLookupKeysym, XMapWindow, XNextEvent, XOpenDisplay, XPending, XQueryExtension, XRootWindow, XSelectInput, XSetWMProtocols, XStoreName, XUngrabPointer, XkbSetDetectableAutoRepeat;
+    import bindings.platform : Atom, Button1, Button3, ButtonPress, ClientMessage, CurrentTime, Cursor, Display, False, FocusOut, GenericEvent, GrabModeAsync, GrabSuccess, KeyPress, KeyRelease, KeySym, Pixmap, Success, True, UnmapNotify, Window, XBlackPixel, XCloseDisplay, XColor, XCreateBitmapFromData, XCreatePixmapCursor, XCreateSimpleWindow, XDefaultScreen, XDestroyWindow, XDisplayHeight, XDisplayWidth, XEvent, XFlush, XFreeCursor, XFreeEventData, XFreePixmap, XGenericEventCookie, XGetEventData, XGrabPointer, XIAllMasterDevices, XIDeviceInfo, XIEventMask, XIFreeDeviceInfo, XIModeAbsolute, XIQueryDevice, XIQueryVersion, XIRawEvent, XISelectEvents, XIValuatorClass, XIValuatorClassInfo, XI_DeviceChanged, XI_RawMotion, XInternAtom, XK_1, XK_9, XK_bracketleft, XK_bracketright, XK_Escape, XK_Down, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_n, XK_s, XK_space, XK_t, XK_v, XK_w, XLookupKeysym, XMapWindow, XNextEvent, XOpenDisplay, XPending, XQueryExtension, XRootWindow, XSelectInput, XSetWMProtocols, XStoreName, XUngrabPointer, XkbSetDetectableAutoRepeat, BUTTON_PRESS_EVENTS, FOCUS_EVENTS, KEY_PRESS_EVENTS, KEY_RELEASE_EVENTS, STRUCTURE_EVENTS, mallinfo2;
     import base.pages : pageSize;
 
     enum string WINDOW_REQUIREMENT = "cannot open a window: needs an X display with XInput 2.1";
     enum size_t BYTES_PER_KILOBYTE = 1024;
     enum uint KEYCODE_COUNT = 256;
     enum uint CURSOR_BITMAP_SIZE = 8;
-    enum long KEY_PRESS_MASK = 1L << 0;
-    enum long KEY_RELEASE_MASK = 1L << 1;
-    enum long BUTTON_PRESS_MASK = 1L << 2;
-    enum long STRUCTURE_NOTIFY_MASK = 1L << 17;
-    enum long FOCUS_CHANGE_MASK = 1L << 21;
-    enum long INPUT_EVENT_MASK = KEY_PRESS_MASK | KEY_RELEASE_MASK | BUTTON_PRESS_MASK | STRUCTURE_NOTIFY_MASK | FOCUS_CHANGE_MASK;
-    enum uint POINTER_GRAB_MASK = cast(uint) BUTTON_PRESS_MASK;
+    enum long INPUT_EVENT_MASK = KEY_PRESS_EVENTS | KEY_RELEASE_EVENTS | BUTTON_PRESS_EVENTS | STRUCTURE_EVENTS | FOCUS_EVENTS;
+    enum uint POINTER_GRAB_MASK = BUTTON_PRESS_EVENTS;
     enum int XI_REQUIRED_MAJOR = 2;
     enum int XI_REQUIRED_MINOR = 1;
     enum size_t XI_MASK_BYTES = (XI_RawMotion >> 3) + 1;
@@ -230,23 +223,8 @@ version (OSX) {
         return cast(size_t) usage.ru_maxrss * BYTES_PER_KILOBYTE;
     }
 
-    struct MallInfo2 {
-        size_t arena;
-        size_t ordblks;
-        size_t smblks;
-        size_t hblks;
-        size_t hblkhd;
-        size_t usmblks;
-        size_t fsmblks;
-        size_t uordblks;
-        size_t fordblks;
-        size_t keepcost;
-    }
-
-    extern (C) MallInfo2 mallinfo2() nothrow @nogc;
-
     HeapBytes heapBytes() {
-        MallInfo2 info = mallinfo2();
+        auto info = mallinfo2();
         return HeapBytes(info.uordblks + info.hblkhd, info.fordblks);
     }
 }
@@ -276,7 +254,6 @@ struct Arguments {
     bool isYInverted;
     bool isBenchLoad;
     bool isProfiled;
-    bool isHudAsked;
     bool isHelp;
     bool isVersion;
 
@@ -328,9 +305,6 @@ struct Arguments {
             filmPath = value.text;
             error = value.error;
             return index + 2;
-        } else if (strcmp(argument, "--hud") == 0) {
-            isHudAsked = true;
-            return index + 1;
         } else if (strcmp(argument, "--bench-load") == 0) {
             isBenchLoad = true;
             return index + 1;
@@ -437,8 +411,6 @@ struct Arguments {
             return StartupError(null, "needs --out and a film", "--film");
         } else if (screenshotPath is null && filmPath is null && viewName !is null) {
             return StartupError(null, "a view is only for --screenshot, a film only for --film, unexpected", viewName);
-        } else if (screenshotPath is null && filmPath is null && isHudAsked) {
-            return StartupError(null, "is only for --screenshot and --film: the game always draws it, H hides it", "--hud");
         } else if (screenshotPath is null && filmPath is null && !isBenchLoad && drive is null && reportPath !is null) {
             return StartupError(null, "is only for --screenshot, --film, --drive and --bench-load", "--out");
         } else {
@@ -527,11 +499,10 @@ struct Session {
     bool isCaptured;
     bool isRecording;
     bool isDriven;
-    bool isHudHidden;
     bool isRunning = true;
     bool isTitleDirty = true;
 
-    int run(Arguments arguments) {
+    ExitStatus run(Arguments arguments) {
         if (arguments.drive !is null) {
             return runDriven(arguments);
         } else if (arguments.recordPath is null) {
@@ -540,30 +511,30 @@ struct Session {
             bool isOpened = recorder.open(arguments.recordPath);
             if (!isOpened) {
                 StartupError(null, "cannot open the recording file", arguments.recordPath).report(arguments.program);
-                return EXIT_FAILED;
+                return ExitStatus.failed;
             } else {
                 isRecording = true;
-                int status = runWindow(arguments);
+                ExitStatus status = runWindow(arguments);
                 recorder.close();
                 return status;
             }
         }
     }
 
-    int runDriven(Arguments arguments) {
+    ExitStatus runDriven(Arguments arguments) {
         FILE* report = fopen(arguments.reportPath, "w");
         if (report is null) {
             StartupError(null, "cannot open the report file", arguments.reportPath).report(arguments.program);
-            return EXIT_FAILED;
+            return ExitStatus.failed;
         } else {
             isDriven = true;
             isCaptured = true;
             drive.start(arguments.drive.name.ptr, arguments.drive.actions, report, config.mouseTurnPerCount.value);
-            int status = runWindow(arguments);
+            ExitStatus status = runWindow(arguments);
             drive.finish();
             fclose(report);
             if (drive.isFailed) {
-                return EXIT_FAILED;
+                return ExitStatus.failed;
             } else {
                 return status;
             }
@@ -592,14 +563,14 @@ struct Session {
         return input;
     }
 
-    int runWindow(Arguments arguments) {
+    ExitStatus runWindow(Arguments arguments) {
         bool isWindowOpen = openWindow();
         if (!isWindowOpen) {
             StartupError(null, WINDOW_REQUIREMENT, null).report(arguments.program);
-            return EXIT_FAILED;
+            return ExitStatus.failed;
         } else {
             const(char)* problem = renderer.setup(surfaceSource(), CHUNK_DIMENSION);
-            int status = EXIT_FAILED;
+            ExitStatus status = ExitStatus.failed;
             if (problem !is null) {
                 StartupError(null, problem, null).report(arguments.program);
             } else {
@@ -611,7 +582,7 @@ struct Session {
         }
     }
 
-    int runGame(Arguments arguments) {
+    ExitStatus runGame(Arguments arguments) {
         if (isDriven) {
             fprintf(drive.report, "drive: frames %s for the display\n", waitedText(renderer.core.isPresentWaitable()));
         }
@@ -689,6 +660,10 @@ struct Session {
 
         void storeTitle(const(char)* title) {
             window.setTitle(title);
+        }
+
+        bool handleThrowKey(KeySym symbol, bool isRepeat) {
+            return false;
         }
     } else {
         bool openWindow() {
@@ -860,6 +835,15 @@ struct Session {
         void storeTitle(const(char)* title) {
             XStoreName(display, window, title);
         }
+
+        bool handleThrowKey(KeySym symbol, bool isRepeat) {
+            if (symbol == XK_t && !isRepeat) {
+                game.throwBlock();
+                return true;
+            } else {
+                return false;
+            }
+        }
     }
 
     void recordCall(const(char)* call) {
@@ -902,13 +886,7 @@ struct Session {
             selectMaterial(cast(uint)(symbol - XK_1));
         } else if ((symbol == XK_bracketleft || symbol == XK_bracketright) && !isRepeat && !isRecording) {
             switchWorld(symbol == XK_bracketright);
-        } else if (symbol == XK_h && !isRepeat) {
-            isHudHidden = !isHudHidden;
-        } else if (symbol == XK_c && !isRepeat) {
-            game.resetCompass();
-        } else if (symbol == XK_t && !isRepeat) {
-            game.throwBlock();
-        } else {
+        } else if (!handleThrowKey(symbol, isRepeat)) {
             setMovementKey(symbol, true);
         }
     }
@@ -1004,10 +982,7 @@ struct Session {
                     renderer.isCapturing = drive.wantsImage();
                 }
                 hud.buildMarkers(game);
-                hud.clearOverlay();
-                if (!isHudHidden) {
-                    hud.build(game, renderer.swapchain.extent.width, renderer.swapchain.extent.height, fps);
-                }
+                hud.build(game, renderer.swapchain.extent.width, renderer.swapchain.extent.height);
                 renderer.hudVertices = hud.vertices.slice();
                 renderer.markers = hud.markers.slice();
                 renderer.render(game.world);
@@ -1134,7 +1109,7 @@ bool captureScreenshot(Arguments arguments, FILE* report, ref Renderer renderer,
 }
 
 bool renderSettled(Arguments arguments, FILE* report, ref Renderer renderer, ref Game game) {
-    SettledFrame frame = SettledFrame.of(renderer, game, arguments.isHudAsked, report, SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT);
+    SettledFrame frame = SettledFrame.of(renderer, game, report, SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT);
     bool isSettled = frame.render();
     bool isWritten = writePng(arguments.screenshotPath, SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT, renderer.capture());
     fprintf(report, "screenshot: %s after %u frames (%u chunks meshed, %u faces)\n", writtenText(isWritten), frame.frames, renderer.meshes.meshedChunks, renderer.meshes.allocator.used());
@@ -1150,16 +1125,14 @@ struct SettledFrame {
     uint width;
     uint height;
     uint frames;
-    bool isHudShown;
 
-    static SettledFrame of(ref Renderer renderer, ref Game game, bool isHudShown, FILE* report, uint width, uint height) {
+    static SettledFrame of(ref Renderer renderer, ref Game game, FILE* report, uint width, uint height) {
         SettledFrame frame;
         frame.renderer = &renderer;
         frame.game = &game;
         frame.report = report;
         frame.width = width;
         frame.height = height;
-        frame.isHudShown = isHudShown;
         return frame;
     }
 
@@ -1173,10 +1146,7 @@ struct SettledFrame {
             fprintf(report, "%s\n", grown.text.ptr);
         }
         hud.buildMarkers(*game);
-        hud.clearOverlay();
-        if (isHudShown) {
-            hud.build(*game, width, height, 0);
-        }
+        hud.build(*game, width, height);
         renderer.hudVertices = hud.vertices.slice();
         renderer.markers = hud.markers.slice();
         frames = 0;
@@ -1240,7 +1210,7 @@ bool renderFilm(Arguments arguments) {
 }
 
 bool filmShots(Arguments arguments, FILE* report, ref Renderer renderer, ref Game game) {
-    FilmRoll roll = FilmRoll(SettledFrame.of(renderer, game, arguments.isHudAsked, report, FILM_WIDTH, FILM_HEIGHT), arguments.filmPath);
+    FilmRoll roll = FilmRoll(SettledFrame.of(renderer, game, report, FILM_WIDTH, FILM_HEIGHT), arguments.filmPath);
     foreach (ref shot; arguments.film.shots) {
         size_t before = roll.written;
         Script script = Script.make(&game, report);
@@ -1981,7 +1951,7 @@ void printShells(FILE* report, ref const LocalWorld world, ref const Renderer re
     }
 }
 
-int runWindowed(Arguments arguments) {
+ExitStatus runWindowed(Arguments arguments) {
     Session* session = cast(Session*) malloc(Session.sizeof);
     *session = Session.init;
     session.config = ClientConfig.fromFile(arguments.configPath);
@@ -1991,7 +1961,7 @@ int runWindowed(Arguments arguments) {
     if (arguments.isYInverted) {
         session.config.isYInverted = true;
     }
-    int status = session.run(arguments);
+    ExitStatus status = session.run(arguments);
     free(session);
     return status;
 }
@@ -2001,13 +1971,13 @@ extern (C) int main(int argc, char** argv) {
     Arguments arguments = Arguments.fromArgv(argc, argv);
     if (arguments.error.isPresent()) {
         arguments.error.report(argv[0]);
-        return EXIT_USAGE;
+        return ExitStatus.usage;
     } else if (arguments.isHelp) {
         printf("%s", USAGE.ptr);
-        return EXIT_OK;
+        return ExitStatus.ok;
     } else if (arguments.isVersion) {
         printf("mined %s\n", VERSION.ptr);
-        return EXIT_OK;
+        return ExitStatus.ok;
     } else if (arguments.isBenchLoad) {
         return exitStatus(benchLoad(arguments));
     } else if (arguments.screenshotPath !is null) {

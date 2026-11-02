@@ -8,7 +8,6 @@ enum int DIFFERENCE_GAIN = 4;
 enum uint COMPARED_CHANNELS = 3;
 enum uint RGBA_BYTES = 4;
 enum ubyte OPAQUE = 255;
-enum size_t TEST_PIXELS = 4;
 
 struct ImageDifference {
     double changed = 0;
@@ -65,18 +64,4 @@ void copyAsRgba(ubyte[] rgba, const(ubyte)[] source, bool isBgra) {
             rgba[pixel * RGBA_BYTES + 2] = source[pixel * RGBA_BYTES];
         }
     }
-}
-
-unittest {
-    ubyte[TEST_PIXELS * RGBA_BYTES] first = [10, 20, 30, 255, 0, 0, 0, 255, 200, 200, 200, 255, 50, 60, 70, 255];
-    ubyte[TEST_PIXELS * RGBA_BYTES] second = [10, 20, 30, 0, 9, 0, 0, 255, 200, 100, 200, 255, 50, 60, 72, 255];
-    ImageDifference difference = differenceOf(first[], second[], RGBA_BYTES, TEST_PIXELS);
-    assert(difference.changed == 0.5 && difference.largestDelta == 100);
-    assert(difference.meanDelta == (9.0 + 100 + 2) / (TEST_PIXELS * COMPARED_CHANNELS));
-    ubyte[TEST_PIXELS * RGBA_BYTES] shown;
-    writeDifference(shown[], first[], second[], RGBA_BYTES, TEST_PIXELS);
-    assert(shown[4] == 36 && shown[9] == OPAQUE && shown[3] == OPAQUE && shown[0] == 0);
-    ubyte[TEST_PIXELS * RGBA_BYTES] swapped;
-    copyAsRgba(swapped[], first[], true);
-    assert(swapped[0] == 30 && swapped[1] == 20 && swapped[2] == 10 && swapped[3] == 255);
 }

@@ -267,11 +267,9 @@ struct StructureHost {
                 coverRing(graph, graph.view.groundRing(graph.view.groundNodeOf(slot, ROOT), Face.f0), Face.f0, ROOT);
             }
             foreach (near; graph.view.ensureHorospheresAt(slot)) {
-                if (!isTiledBy(graph, calls, near.horosphere)) {
-                    continue;
-                } else if (graph.horospheres.isUpright(near.horosphere)) {
+                if (isTiledBy(graph, calls, near.horosphere) && graph.horospheres.isUpright(near.horosphere)) {
                     coverSegments(graph, near);
-                } else if (graph.view.isPaintedBy(slot, near)) {
+                } else if (isTiledBy(graph, calls, near.horosphere) && graph.view.isPaintedBy(slot, near)) {
                     Face label = graph.horospheres.horosphere(near.horosphere).label;
                     coverRing(graph, graph.view.groundRing(graph.view.groundNodeOf(slot, near.horosphere), label), label, near.horosphere);
                 }

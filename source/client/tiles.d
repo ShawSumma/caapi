@@ -476,11 +476,10 @@ struct TileHost {
                 planRing(graph, (*view).groundRing((*view).groundNodeOf(candidate, ROOT), Face.f0), Face.f0, ROOT);
             }
             foreach (near; (*view).ensureHorospheresAt(candidate)) {
-                if (view.isBlocked || !isTiledBy(graph, *calls, near.horosphere)) {
-                    continue;
-                } else if (view.horospheres.isUpright(near.horosphere)) {
+                bool wanted = !view.isBlocked && isTiledBy(graph, *calls, near.horosphere);
+                if (wanted && view.horospheres.isUpright(near.horosphere)) {
                     planSegments(graph, near);
-                } else if ((*view).isPaintedBy(candidate, near)) {
+                } else if (wanted && (*view).isPaintedBy(candidate, near)) {
                     Face label = graph.horospheres.horosphere(near.horosphere).label;
                     planRing(graph, (*view).groundRing((*view).groundNodeOf(candidate, near.horosphere), label), label, near.horosphere);
                 }

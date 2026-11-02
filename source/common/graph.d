@@ -123,7 +123,10 @@ struct Graph {
         Graph graph;
         graph.layout = ChunkLayout.make(dimension);
         graph.worldgen = chosen;
-        graph.horospheres.rootFill = chosen.hasPlaneGround() ? Fill.flat : Fill.terrain;
+        graph.horospheres.rootFill = Fill.terrain;
+        if (chosen.hasPlaneGround()) {
+            graph.horospheres.rootFill = Fill.flat;
+        }
         graph.structures.blueprint = Blueprint.make(dimension);
         uint root = graph.addNode(ROOT_NODE, 0, 0);
         graph.anchorSlot = root;

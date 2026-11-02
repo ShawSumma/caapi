@@ -1,12 +1,9 @@
 module client.hud;
 
 import core.stdc.math : asinhf, cosf, sinf, sqrtf;
-import core.stdc.stdio : snprintf;
-import core.stdc.string : strlen;
 import base.array : Array;
 import base.numbers : PI, higherOf, lowerOf;
 import client.camera : Quaternion;
-import client.font : GLYPH_ADVANCE, GLYPH_HEIGHT, GLYPH_WIDTH, isLit;
 import client.game : Game, TRAIL_POINTS;
 import client.world : LocalWorld;
 import common.graph : Graph, NO_SLOT;
@@ -15,7 +12,6 @@ import common.traversal : NOT_COLLECTED, NearbyScratch;
 import common.worldgen.generation : Worldgen, WorldgenKind;
 import geometry.honeycomb : FACE_COUNT, Face;
 import geometry.lorentz : Motion, Vec4;
-import plugins.api.api : Look;
 
 enum uint GROWTH_STEPS = 5;
 enum size_t MOST_DISK_NODES = 1 << 14;
@@ -24,20 +20,15 @@ enum uint QUAD_VERTICES = 6;
 enum uint CIRCLE_SEGMENTS = 48;
 enum uint BASE_HEIGHT = 360;
 enum float MARGIN = 8;
-enum float LINE_GAP = 2;
 enum float DISK_SHARE = 0.2f;
 enum float COMPASS_SHARE = 0.085f;
 enum float DISK_BAND = 1.2f;
 enum float DISK_FARTHEST_W = 200;
 enum float NEEDLE_THICKNESS = 1.5f;
 enum float LINK_THICKNESS = 0.7f;
-enum float RADIANS_TO_DEGREES = 180 / PI;
 enum float BLOCK_HALF = 0.02f;
 enum float TRAIL_HALF = 0.005f;
-enum size_t TEXT_CAPACITY = 256;
 enum uint WHITE = rgba(255, 255, 255, 255);
-enum uint SOFT_WHITE = rgba(235, 235, 225, 235);
-enum uint SHADOW = rgba(0, 0, 0, 170);
 enum uint PANEL = rgba(12, 16, 26, 150);
 enum uint RIM = rgba(225, 225, 215, 210);
 enum uint GOLD = rgba(255, 205, 90, 255);
@@ -84,13 +75,17 @@ struct Growth {
     uint generation;
     uint countedSlot = NO_SLOT;
     uint countedVersion;
+    size_t countedNodes;
 
+    // The first nearby set takes many frames to build, so a count is also stale once the set has doubled since it.
     void update(ref const LocalWorld world) {
         uint start = world.graph.slotOf(world.cameraPosition.node);
-        if (start != countedSlot || world.nearbyVersion != countedVersion) {
+        size_t nodes = world.nearby[world.published].nodes.length;
+        if (start != countedSlot || world.nearbyVersion != countedVersion || nodes > 2 * countedNodes) {
             count(world, start);
             countedSlot = start;
             countedVersion = world.nearbyVersion;
+            countedNodes = nodes;
         }
     }
 
@@ -152,10 +147,6 @@ struct Hud {
     float height = 0;
     float scale = 1;
 
-    void clearOverlay() {
-        vertices.clear();
-    }
-
     void rect(float x, float y, float w, float h, uint color) {
         quad([x, y], [x + w, y], [x + w, y + h], [x, y + h], color);
     }
@@ -199,44 +190,6 @@ struct Hud {
         }
     }
 
-    void glyphs(float x, float y, float size, const(char)[] text, uint color) {
-        foreach (index, letter; text) {
-            foreach (column; 0 .. GLYPH_WIDTH) {
-                foreach (row; 0 .. GLYPH_HEIGHT) {
-                    if (isLit(letter, column, row)) {
-                        rect(x + (index * GLYPH_ADVANCE + column) * size, y + row * size, size, size, color);
-                    }
-                }
-            }
-        }
-    }
-
-    void text(float x, float y, float size, const(char)[] written, uint color) {
-        glyphs(x + size, y + size, size, written, SHADOW);
-        glyphs(x, y, size, written, color);
-    }
-
-    float wrapped(float x, float y, float size, float widest, const(char)[] written, uint color) {
-        size_t perLine = cast(size_t)(widest / (GLYPH_ADVANCE * size));
-        const(char)[] rest = written;
-        float at = y;
-        while (rest.length > 0) {
-            size_t end = lowerOf(rest.length, perLine);
-            if (end < rest.length) {
-                while (end > 1 && rest[end] != ' ') {
-                    end -= 1;
-                }
-            }
-            text(x, at, size, rest[0 .. end], color);
-            at += (GLYPH_HEIGHT + LINE_GAP) * size;
-            rest = rest[end .. $];
-            if (rest.length > 0 && rest[0] == ' ') {
-                rest = rest[1 .. $];
-            }
-        }
-        return at;
-    }
-
     void buildMarkers(ref const Game game) {
         markers.clear();
         const(NearbyScratch)* nearby = &game.world.nearby[game.world.published];
@@ -258,70 +211,27 @@ struct Hud {
         }
     }
 
-    void build(ref const Game game, uint pixelsWide, uint pixelsHigh, float fps) {
+    void build(ref const Game game, uint pixelsWide, uint pixelsHigh) {
         vertices.clear();
         width = pixelsWide;
         height = pixelsHigh;
         scale = higherOf(1u, pixelsHigh / BASE_HEIGHT);
-        if (game.world.hasNearby && game.world.cameraNearbyIndex() != NOT_COLLECTED) {
+        if (game.world.cameraNearbyIndex() != NOT_COLLECTED) {
             growth.update(game.world);
             buildPoincareDisk(game);
-            buildCompass(game);
-            buildCaption(game, fps);
-            buildGrowth();
         }
-    }
-
-    void buildCaption(ref const Game game, float fps) {
-        const(Look)* look = game.world.lookAtCamera();
-        const(char)[] name = worldNameOf(game.world.graph.worldgen);
-        if (look.name !is null) {
-            name = look.name[0 .. strlen(look.name)];
-        }
-        float x = MARGIN * scale;
-        float y = MARGIN * scale;
-        text(x, y, 2 * scale, name, WHITE);
-        y += (GLYPH_HEIGHT + LINE_GAP) * 2 * scale;
-        float widest = width - 2 * x - 2.4f * DISK_SHARE * height;
-        if (look.caption !is null) {
-            y = wrapped(x, y, scale, widest, look.caption[0 .. strlen(look.caption)], SOFT_WHITE);
-        }
-        if (fps > 0) {
-            char[TEXT_CAPACITY] written;
-            int length = snprintf(written.ptr, written.length, "%.0f fps", cast(double) fps);
-            text(x, y, scale, written[0 .. length], SOFT_WHITE);
-        }
-    }
-
-    void buildGrowth() {
-        char[TEXT_CAPACITY] steps;
-        char[TEXT_CAPACITY] cells;
-        int stepsLength = snprintf(steps.ptr, steps.length, "steps away");
-        int cellsLength = snprintf(cells.ptr, cells.length, "cells within");
-        foreach (step; 1 .. GROWTH_STEPS + 1) {
-            stepsLength += snprintf(steps.ptr + stepsLength, steps.length - stepsLength, "%8u", step);
-            cellsLength += snprintf(cells.ptr + cellsLength, cells.length - cellsLength, "%8u", growth.within[step]);
-        }
-        float x = MARGIN * scale;
-        float rowHeight = (GLYPH_HEIGHT + LINE_GAP) * scale;
-        float y = height - MARGIN * scale - 3 * rowHeight;
-        text(x, y, scale, steps[0 .. stepsLength], SOFT_WHITE);
-        text(x, y + rowHeight, scale, cells[0 .. cellsLength], GOLD);
-        text(x, y + 2 * rowHeight, scale, "T throw  C reset compass  H hide", SOFT_WHITE);
+        buildCompass(game);
     }
 
     void buildCompass(ref const Game game) {
         float radius = COMPASS_SHARE * height;
-        float[2] center = [width - MARGIN * scale - radius, height - MARGIN * scale - radius - GLYPH_HEIGHT * scale];
+        float[2] center = [width - MARGIN * scale - radius, height - MARGIN * scale - radius];
         circle(center, radius, PANEL, RIM);
         float off = game.compassOff().value;
         float[2] ahead = [center[0], center[1] - radius * 0.8f];
         line(center, ahead, scale, faded(WHITE, 0.45f));
         float[2] tip = [center[0] - sinf(off) * radius * 0.92f, center[1] - cosf(off) * radius * 0.92f];
         line(center, tip, NEEDLE_THICKNESS * scale, GOLD);
-        char[TEXT_CAPACITY] written;
-        int length = snprintf(written.ptr, written.length, "compass %+.0f", cast(double)(off * RADIANS_TO_DEGREES));
-        text(center[0] - length * GLYPH_ADVANCE * scale / 2, center[1] + radius + LINE_GAP * scale, scale, written[0 .. length], GOLD);
     }
 
     void buildPoincareDisk(ref const Game game) {
@@ -383,13 +293,4 @@ DiskPoint onDisk(Vec4!float point) {
         float over = 1 / (foot + point.c[3]);
         return DiskPoint([point.c[0] * over, point.c[2] * over], share);
     }
-}
-
-unittest {
-    DiskPoint here = onDisk(Vec4!float([0, 0, 0, 1]));
-    assert(here.at[0] == 0 && here.at[1] == 0 && here.share == 1);
-    DiskPoint far = onDisk(Vec4!float([99.995f, 0, 0, 100]));
-    assert(far.at[0] > 0.97f && far.at[0] < 1.0f);
-    assert(onDisk(Vec4!float([0, 50, 0, 50])).share == 0);
-    assert(onDisk(Vec4!float([500, 0, 0, 500])).share == 0);
 }

@@ -144,7 +144,6 @@ struct Risen {
 
 struct Look {
     const(char)* name;
-    const(char)* caption;
     float[3] fog = [0, 0, 0];
     bool hasFog;
 }

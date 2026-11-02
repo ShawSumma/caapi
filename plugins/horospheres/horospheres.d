@@ -14,9 +14,9 @@ struct Kinds {
     uint tree;
 }
 
-immutable Look WILD_LOOK = Look("wild", "Terrain on a plane in hyperbolic space: past the next hill there is far more world than behind you.");
-immutable Look CITY_LOOK = Look("city", "Five right-angle corners close every block. Walk around one and your compass comes back a quarter turn off.", [0.74f, 0.79f, 0.86f], true);
-immutable Look BACKROOMS_LOOK = Look("backrooms", "Rooms multiply with every door you pass: the count below climbs far faster than any flat floor plan could.", [0.78f, 0.72f, 0.45f], true);
+immutable Look WILD_LOOK = Look("wild");
+immutable Look CITY_LOOK = Look("city", [0.74f, 0.79f, 0.86f], true);
+immutable Look BACKROOMS_LOOK = Look("backrooms", [0.78f, 0.72f, 0.45f], true);
 
 Connection connectionOf(const(void)* data) {
     return *cast(const(Connection)*) data;

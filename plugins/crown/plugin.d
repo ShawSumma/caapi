@@ -4,7 +4,7 @@ import plugins.api.api : Api, Box, ENTRY, Look, Material, NO_KIND, Registry, Rhy
 import box = plugins.box.box;
 import plugins.turtle.turtle : FACE_CORNERS, Turtle, boxOf, cornersOf, upright;
 
-immutable Look LOOK = Look("crown", "Five towers ring one pentagon, joined by bridges at right angles. No flat plan could close this ring.");
+immutable Look LOOK = Look("crown");
 enum int HEIGHT_EDGES = 2;
 enum int HALL_ROOF = 2 * box.STORY;
 enum int HALL_WINDOW_OFFSET = 2;

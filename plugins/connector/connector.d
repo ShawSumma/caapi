@@ -239,8 +239,8 @@ void drift(Turtle tower, Palette palette, Layout layout) {
 int lanternHalf(Layout layout, int z) {
     int widest = layout.base + layout.split;
     int reach = lowerOf(layout.split, layout.top - layout.split);
-    int growth = (LANTERN_WIDEST - HALF_WIDTH) * (reach - lowerOf(reach, z > widest ? z - widest : widest - z)) / higherOf(reach, 1);
-    return HALF_WIDTH + growth;
+    int away = higherOf(z - widest, widest - z);
+    return HALF_WIDTH + (LANTERN_WIDEST - HALF_WIDTH) * (reach - lowerOf(reach, away)) / higherOf(reach, 1);
 }
 
 void ring(Turtle tower, Material material, int half, int[2] z) {

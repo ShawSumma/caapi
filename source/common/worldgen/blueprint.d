@@ -472,16 +472,15 @@ struct Blueprint {
 
     void collectBrushes(uint line, int level, ref Array!Brush into, ref Array!BrushRank ranks) const {
         foreach (listed; runsOn.ptr[line].slice()) {
-            if (listed.lowEdge > level || listed.highEdge < level) {
-                continue;
-            }
-            const(Painted)* painted = &paintedBy(listed.record);
-            LineRun run = painted.runs.ptr[listed.run];
-            ulong tile = tileRank(listed.record);
-            foreach (brush; painted.brushes.ptr[run.first .. run.first + run.count]) {
-                if (edgeOf(brush.box.low[2], dimension) <= level && edgeOf(brush.box.high[2], dimension) >= level) {
-                    into.append(brush);
-                    ranks.append(BrushRank(tile, brush.order));
+            if (listed.lowEdge <= level && listed.highEdge >= level) {
+                const(Painted)* painted = &paintedBy(listed.record);
+                LineRun run = painted.runs.ptr[listed.run];
+                ulong tile = tileRank(listed.record);
+                foreach (brush; painted.brushes.ptr[run.first .. run.first + run.count]) {
+                    if (edgeOf(brush.box.low[2], dimension) <= level && edgeOf(brush.box.high[2], dimension) >= level) {
+                        into.append(brush);
+                        ranks.append(BrushRank(tile, brush.order));
+                    }
                 }
             }
         }

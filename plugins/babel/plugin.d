@@ -18,7 +18,7 @@ enum Material WALL = Material.sandstone;
 enum Material STEP = Material.redSandstone;
 enum Material BAND = Material.marble;
 enum double COLUMN_SHARE = 0.1;
-immutable Look LOOK = Look("babel", "An endless stair. Climb and the ground below shrinks to a disc while the sky keeps opening.", [0.82f, 0.74f, 0.58f], true);
+immutable Look LOOK = Look("babel", [0.82f, 0.74f, 0.58f], true);
 
 // A rhythm counts from the bottom of its site; a segment lifted above the stair's start moves every rhythm down by that much.
 void core(Turtle tower, int[2] rising, int lifted) {

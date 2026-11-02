@@ -8,6 +8,8 @@ const uint AXIS_MASK = 3u;
 const uint REVERSED_BIT = 1u << 2;
 const uint FLIPPED_BIT = 1u << 3;
 const uint MATERIAL_MASK = 0xFFFFu;
+const uint WINDOW_SHIFT = 16;
+const uint WINDOW_MASK = 0xFFu;
 const uint OCCLUSION_SHIFT = 24;
 const uint OCCLUSION_BITS = 2;
 const uint OCCLUSION_MASK = (1u << OCCLUSION_BITS) - 1u;
@@ -29,6 +31,10 @@ uint face_code(Face face) {
 
 uint face_material(Face face) {
     return face.occlusion_material & MATERIAL_MASK;
+}
+
+uint face_window(Face face) {
+    return (face.occlusion_material >> WINDOW_SHIFT) & WINDOW_MASK;
 }
 
 float face_occlusion(Face face, uvec2 corner) {

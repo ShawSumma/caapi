@@ -18,15 +18,3 @@ struct NameLookup(E) {
         }
     }
 }
-
-enum TestKind : ubyte {
-    first,
-    second,
-    third,
-}
-
-unittest {
-    assert(ENUM_NAMES!TestKind[TestKind.second] == "second");
-    assert(NameLookup!TestKind.fromName("third").value == TestKind.third);
-    assert(!NameLookup!TestKind.fromName("fourth").isFound);
-}

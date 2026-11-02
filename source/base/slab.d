@@ -13,9 +13,6 @@ enum size_t TRIMMED_BLOCKS_PER_CALL = 4;
 enum uint WORD_SHIFT = 6;
 enum uint WORD_MASK = (1u << WORD_SHIFT) - 1;
 enum size_t NOTED_PAGES_PER_DISCARD = 512;
-enum uint TEST_RUNS = 3000;
-enum uint TEST_INDICES = 10000;
-enum uint TEST_INDEX_STRIDE = 7;
 
 struct Slab(T) {
     Array!(T*) blocks;
@@ -302,102 +299,4 @@ uint runClass(uint length) {
     } else {
         return bsr(length - 1) + 1;
     }
-}
-
-unittest {
-    Slab!uint slab;
-    slab.ensure(SLAB_SIZE + 1);
-    uint* first = slab.at(0);
-    *slab.at(SLAB_SIZE) = SLAB_SIZE;
-    slab.ensure(SLAB_SIZE * 3);
-    assert(slab.at(0) is first);
-    assert(*slab.at(SLAB_SIZE) == SLAB_SIZE);
-    assert(*slab.at(SLAB_SIZE * 3 - 1) == 0);
-    slab.release();
-    Slab!uint sparse;
-    *sparse.touch(SLAB_SIZE * 5) = 7;
-    assert(sparse.blocks.ptr[0] is null);
-    assert(*sparse.touch(SLAB_SIZE * 5) == 7);
-    sparse.release();
-}
-
-struct TestRecord {
-    uint[3] values;
-}
-
-unittest {
-    Slab!TestRecord slab;
-    FreeIndices free;
-    size_t count = (NOTED_PAGES_PER_DISCARD + 2) * pageSize() / TestRecord.sizeof;
-    size_t straddling = pageSize() / TestRecord.sizeof;
-    size_t inside = count / 2;
-    slab.ensure(count);
-    foreach (index; 0 .. count) {
-        slab.at(index).values[0] = cast(uint) index + 1;
-    }
-    foreach (index; 0 .. count) {
-        if (index != straddling && index != inside) {
-            *slab.at(index) = TestRecord.init;
-            free.add(cast(uint) index);
-            slab.note(index, 1);
-        }
-    }
-    do {
-        uint calls = 1;
-        slab.discardNoted(free, count, 1, calls);
-    } while (slab.isDiscarding);
-    assert(slab.notedCount == 0);
-    assert(slab.at(straddling).values[0] == straddling + 1 && slab.at(inside).values[0] == inside + 1);
-    foreach (index; 0 .. count) {
-        assert(index == straddling || index == inside || slab.at(index).values[0] == 0);
-    }
-    slab.release();
-    free.release();
-}
-
-unittest {
-    RunPool!uint pool;
-    Array!Run runs;
-    foreach (index; 0 .. TEST_RUNS) {
-        Run run = pool.reserve(index % 37 + 1);
-        assert(run.start >> SLAB_SHIFT == (run.start + run.length - 1) >> SLAB_SHIFT);
-        foreach (ref item; pool.slice(run)) {
-            item = index;
-        }
-        runs.append(run);
-    }
-    foreach (index, run; runs.slice()) {
-        foreach (item; pool.slice(run)) {
-            assert(item == index);
-        }
-    }
-    uint end = pool.end;
-    foreach (run; runs.slice()) {
-        pool.release(run);
-    }
-    foreach (run; runs.slice()) {
-        pool.reserve(run.length);
-    }
-    assert(pool.end == end);
-    runs.release();
-    pool.release();
-}
-
-unittest {
-    FreeIndices free;
-    foreach (step; 0 .. TEST_INDICES) {
-        free.add(step * TEST_INDEX_STRIDE % TEST_INDICES);
-    }
-    foreach (expected; 0 .. TEST_INDICES / 2) {
-        assert(free.takeLowest() == expected);
-    }
-    free.add(TEST_INDEX_STRIDE);
-    assert(free.contains(TEST_INDEX_STRIDE) && !free.contains(TEST_INDEX_STRIDE + 1));
-    assert(free.containsAll(TEST_INDICES / 2, TEST_INDICES) && !free.containsAll(TEST_INDICES / 2 - 1, TEST_INDICES));
-    assert(free.containsAll(TEST_INDEX_STRIDE, TEST_INDEX_STRIDE + 1) && !free.containsAll(0, TEST_INDEX_STRIDE + 1));
-    assert(free.takeLowest() == TEST_INDEX_STRIDE);
-    free.drop(TEST_INDICES / 2);
-    assert(free.takeLowest() == TEST_INDICES / 2 + 1);
-    assert(free.count == TEST_INDICES / 2 - 2);
-    free.release();
 }

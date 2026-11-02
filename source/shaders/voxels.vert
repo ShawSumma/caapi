@@ -7,6 +7,7 @@
 const uint VERTICES_PER_FACE = 6;
 const uint FIRST_SOLID_MATERIAL = 1;
 const uint BITS_PER_WORD = 32;
+const uint WINDOWS_PER_SIDE = 16;
 const float SHADE_FACING_SUN = 1.0;
 const float SHADE_AWAY = 0.5;
 
@@ -26,6 +27,7 @@ layout(push_constant) uniform PushConstants {
     uint dimension;
     float cell_ratio;
     uint glowing_materials[3];
+    uint framed_material;
 };
 
 uvec2 face_corner(uint vertex, bool is_reversed, bool is_flipped) {
@@ -81,7 +83,12 @@ void main() {
     bool is_reversed = ((code & REVERSED_BIT) != 0) != (draw.reversed.x != 0.0);
     uvec2 corner = face_corner(gl_VertexIndex % VERTICES_PER_FACE, is_reversed, (code & FLIPPED_BIT) != 0);
     uint material = face_material(face);
-    texcoords = vec3(corner, material - FIRST_SOLID_MATERIAL);
+    vec2 on_layer = vec2(corner);
+    if (material != framed_material) {
+        uint window = face_window(face);
+        on_layer = (on_layer + vec2(window % WINDOWS_PER_SIDE, window / WINDOWS_PER_SIDE)) / float(WINDOWS_PER_SIDE);
+    }
+    texcoords = vec3(on_layer, material - FIRST_SOLID_MATERIAL);
     uvec3 grid = face_position(face);
     grid[(axis + 1) % 3] += corner.x;
     grid[(axis + 2) % 3] += corner.y;

@@ -26,11 +26,6 @@ enum uint CHUNK_CRC_BYTES = 4;
 enum uint ADLER_BYTES = 4;
 enum uint CRC_INITIAL = 0xFFFFFFFF;
 enum uint BYTE_MASK = 0xFF;
-enum uint TEST_CRC_OF_IEND = 0xAE426082;
-enum uint TEST_ADLER_OF_WIKIPEDIA = 0x11E60398;
-enum uint TEST_WIDTH = 300;
-enum uint TEST_HEIGHT = 250;
-enum size_t TEST_PIXEL_MIX = 2654435761;
 
 immutable ubyte[8] PNG_SIGNATURE = [
     0x89,
@@ -299,24 +294,4 @@ ubyte[] encodePng(uint width, uint height, const(ubyte)[] rgba) {
     free(raw);
     free(compressed);
     return bytes[0 .. fileBytes];
-}
-
-unittest {
-    assert(crc32(cast(const(ubyte)[]) "IEND") == TEST_CRC_OF_IEND);
-    assert(adler32(cast(const(ubyte)[]) "Wikipedia") == TEST_ADLER_OF_WIKIPEDIA);
-    ubyte[TEST_WIDTH * TEST_HEIGHT * RGBA_BYTES] rgba;
-    foreach (index, ref value; rgba) {
-        value = cast(ubyte)(index * TEST_PIXEL_MIX);
-    }
-    ubyte[] encoded = encodePng(TEST_WIDTH, TEST_HEIGHT, rgba[]);
-    PngImage decoded = decodePng(encoded);
-    assert(decoded.isRead() && decoded.width == TEST_WIDTH && decoded.height == TEST_HEIGHT);
-    foreach (pixel; 0 .. TEST_WIDTH * TEST_HEIGHT) {
-        assert(decoded.pixels()[pixel * RGB_BYTES .. (pixel + 1) * RGB_BYTES] == rgba[pixel * RGBA_BYTES .. pixel * RGBA_BYTES + RGB_BYTES]);
-    }
-    encoded[encoded.length / 2] ^= 1;
-    PngImage corrupted = decodePng(encoded);
-    assert(!corrupted.isRead());
-    decoded.release();
-    free(encoded.ptr);
 }

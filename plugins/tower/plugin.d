@@ -5,7 +5,7 @@ import box = plugins.box.box;
 import plugins.turtle.turtle : Turtle;
 
 enum int HEIGHT_EDGES = 3;
-immutable Look LOOK = Look("tower", "Vertical lines spread apart with height: two towers side by side at the ground stand far apart at the top.");
+immutable Look LOOK = Look("tower");
 
 void landmark(const(Api)* api, Site site, const(void)* data) {
     Turtle tower = Turtle(api, site).pitchUp();

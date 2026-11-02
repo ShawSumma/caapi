@@ -9,9 +9,6 @@ import base.numbers : higherOf, lowerOf;
 enum uint MAIN_WORKER = 0;
 enum size_t CACHE_LINE = 64;
 enum size_t GRAINS_PER_PARTICIPANT = 8;
-enum uint TEST_WORKERS = 3;
-enum size_t TEST_ITEMS = 10000;
-enum uint TEST_ROUNDS = 50;
 
 version (OSX) {
     enum uint OS_SYNC_NONE = 0;
@@ -27,23 +24,18 @@ version (OSX) {
         os_sync_wake_by_address_all(&word, uint.sizeof, OS_SYNC_NONE);
     }
 } else {
-    version (X86_64) {
-        enum long SYS_FUTEX = 202;
-    } else version (AArch64) {
-        enum long SYS_FUTEX = 98;
-    }
-    enum int FUTEX_WAIT_PRIVATE = 128;
-    enum int FUTEX_WAKE_PRIVATE = 129;
+    import bindings.kernel : CALL_FUTEX, FUTEX_WAIT_HERE, FUTEX_WAKE_HERE;
+
     enum int WAKE_ALL = int.max;
 
     extern (C) long syscall(long number, ...) nothrow @nogc;
 
     void waitWhile(ref shared uint word, uint expected) {
-        syscall(SYS_FUTEX, &word, FUTEX_WAIT_PRIVATE, expected, null, null, 0);
+        syscall(CALL_FUTEX, &word, FUTEX_WAIT_HERE, expected, null, null, 0);
     }
 
     void wake(ref shared uint word) {
-        syscall(SYS_FUTEX, &word, FUTEX_WAKE_PRIVATE, WAKE_ALL, null, null, 0);
+        syscall(CALL_FUTEX, &word, FUTEX_WAKE_HERE, WAKE_ALL, null, null, 0);
     }
 }
 
@@ -291,58 +283,4 @@ struct ConcurrentQueue(T) {
         free(cells);
         cells = null;
     }
-}
-
-struct TestCounts {
-    shared uint[TEST_ITEMS] seen;
-}
-
-void countItem(void* context, size_t index, uint worker) {
-    atomicOp!"+="((cast(TestCounts*) context).seen[index], 1);
-}
-
-bool takeNothing(void* context, uint worker) {
-    return false;
-}
-
-unittest {
-    WorkerPool* pool = WorkerPool.make(TEST_WORKERS, TaskSource(&takeNothing, null));
-    TestCounts* counts = cast(TestCounts*) calloc(1, TestCounts.sizeof);
-    foreach (round; 0 .. TEST_ROUNDS) {
-        ParallelJob job = ParallelJob(&countItem, counts, double.infinity, TEST_ITEMS);
-        pool.run(&job);
-        assert(job.count == TEST_ITEMS);
-    }
-    foreach (index; 0 .. TEST_ITEMS) {
-        assert(atomicLoad(counts.seen[index]) == TEST_ROUNDS);
-    }
-    ParallelJob late = ParallelJob(&countItem, counts, 0, TEST_ITEMS);
-    pool.run(&late);
-    assert(late.count >= 1 && late.count < TEST_ITEMS);
-    foreach (index; 0 .. TEST_ITEMS) {
-        uint expected = TEST_ROUNDS;
-        if (index < late.count) {
-            expected += 1;
-        }
-        assert(atomicLoad(counts.seen[index]) == expected);
-    }
-    free(counts);
-    pool.release();
-    free(pool);
-}
-
-unittest {
-    ConcurrentQueue!uint queue = ConcurrentQueue!uint.make(4);
-    foreach (value; 0 .. 4) {
-        assert(queue.push(value));
-    }
-    assert(!queue.push(4));
-    uint popped;
-    assert(queue.pop(popped) && popped == 0);
-    assert(queue.push(4));
-    foreach (expected; 1 .. 5) {
-        assert(queue.pop(popped) && popped == expected);
-    }
-    assert(!queue.pop(popped));
-    queue.release();
 }

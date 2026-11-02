@@ -3,7 +3,7 @@ module plugins.palace.plugin;
 import plugins.api.api : Api, Box, ENTRY, Look, Material, NO_KIND, Registry, Risen, Site, SitePart, Turn;
 import plugins.turtle.turtle : Turtle, boxOf, cornersOf, roll, upright;
 
-immutable Look LOOK = Look("palace", "One sunken hall over a pentagon and its ten neighbors. Eleven rooms, and every wall meets at a right angle.");
+immutable Look LOOK = Look("palace");
 
 enum size_t MOST_FACES = 16;
 enum int FLOOR = -11;
