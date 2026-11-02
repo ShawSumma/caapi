@@ -2,6 +2,7 @@ module client.meshing;
 
 import core.stdc.stdlib : free, malloc;
 import core.stdc.string : memcpy;
+import base.maybe : Maybe;
 import base.splitmix : SplitMix;
 import common.graph : Graph, NO_SLOT;
 import common.material : isShownAgainst;
@@ -24,13 +25,18 @@ enum uint WINDOWS_PER_SIDE = 1 << (WINDOW_BITS / 2);
 enum uint CHUNK_SEED_SHIFT = 40;
 enum uint CELL_SEED_SHIFT = 2;
 
+enum Facing : ubyte {
+    outward,
+    inward,
+}
+
 struct Quad {
     uint posAxis;
     uint occlusionMaterial;
 
-    static Quad fromVoxel(int[3] voxel, size_t axis, bool isInward, Material material, uint[CORNERS_PER_FACE] occlusion, uint window) {
+    static Quad fromVoxel(int[3] voxel, size_t axis, Facing facing, Material material, uint[CORNERS_PER_FACE] occlusion, uint window) {
         uint axisCode = cast(uint) axis;
-        if (isInward) {
+        if (facing == Facing.inward) {
             axisCode |= REVERSED_BIT;
         }
         if (isDiagonalFlipped(occlusion)) {
@@ -49,7 +55,7 @@ struct ChunkCells {
     const(Graph)* graph;
     ChunkSlot chunk;
     ubyte dimension;
-    bool isUniform;
+    uint stride;
     ulong seed;
 
     uint windowOf(size_t index, size_t axis) const {
@@ -91,10 +97,6 @@ struct ChunkCells {
     uint extractQuads(Quad* quads) const {
         size_t side = dimension + 2;
         size_t[AXIS_COUNT] strides = [1, side, side * side];
-        uint stride = 1;
-        if (isUniform) {
-            stride = dimension;
-        }
         uint count = 0;
         foreach (axis; 0 .. AXIS_COUNT) {
             size_t bAxis = (axis + 1) % AXIS_COUNT;
@@ -105,16 +107,15 @@ struct ChunkCells {
                     size_t rowStart = (b + 1) * strides[bAxis] + (c + 1) * strides[cAxis] + step;
                     for (uint a = 0; a <= dimension; a += stride) {
                         size_t index = rowStart + a * step;
-                        bool isSelfShown = isShownAgainst(padded[index], padded[index - step]);
-                        bool isOtherShown = isShownAgainst(padded[index - step], padded[index]);
-                        if ((isSelfShown && a > 0) || (isOtherShown && a < dimension)) {
+                        Maybe!Facing facing = facingAt(padded[index], padded[index - step], a);
+                        if (facing.exists) {
                             int[3] voxel;
                             voxel[axis] = cast(int) a;
                             voxel[bAxis] = cast(int) b;
                             voxel[cAxis] = cast(int) c;
                             int[3] base = voxel;
-                            base[axis] -= solidSideStep(isOtherShown);
-                            quads[count] = Quad.fromVoxel(voxel, axis, isOtherShown, solidMaterial(index, step, isOtherShown), faceOcclusion(base, axis), windowOf(index, axis));
+                            base[axis] -= solidSideStep(facing.value);
+                            quads[count] = Quad.fromVoxel(voxel, axis, facing.value, solidMaterial(index, step, facing.value), faceOcclusion(base, axis), windowOf(index, axis));
                             count += 1;
                         }
                     }
@@ -124,8 +125,22 @@ struct ChunkCells {
         return count;
     }
 
-    Material solidMaterial(size_t index, size_t step, bool isSelfVoid) const {
-        if (isSelfVoid) {
+    Maybe!Facing facingAt(Material self, Material other, uint a) const {
+        if (isShownAgainst(other, self)) {
+            if (a < dimension || isShownAgainst(self, other)) {
+                return Maybe!Facing.of(Facing.inward);
+            } else {
+                return Maybe!Facing.init;
+            }
+        } else if (a > 0 && isShownAgainst(self, other)) {
+            return Maybe!Facing.of(Facing.outward);
+        } else {
+            return Maybe!Facing.init;
+        }
+    }
+
+    Material solidMaterial(size_t index, size_t step, Facing facing) const {
+        if (facing == Facing.inward) {
             return padded[index - step];
         } else {
             return padded[index];
@@ -152,7 +167,11 @@ struct Mesher {
     const(Quad)[] mesh(ref const Graph graph, ChunkSlot chunk) {
         pad(graph, chunk);
         ulong seed = graph.idAt(chunk.slot).spice() ^ (cast(ulong) chunk.corner << CHUNK_SEED_SHIFT);
-        ChunkCells cells = ChunkCells(padded, &graph, chunk, graph.layout.dimension, graph.chunks.at(chunk).voxels.isUniform(), seed);
+        uint stride = 1;
+        if (graph.chunks.at(chunk).voxels.isUniform()) {
+            stride = graph.layout.dimension;
+        }
+        ChunkCells cells = ChunkCells(padded, &graph, chunk, graph.layout.dimension, stride, seed);
         return quads[0 .. cells.extractQuads(quads)];
     }
 
@@ -212,18 +231,18 @@ uint maxQuads(ubyte dimension) {
     return AXIS_COUNT * (dimension * dimension * dimension + dimension * dimension);
 }
 
-uint cornerOcclusion(bool isEdgeBOccupied, bool isEdgeCOccupied, bool isDiagonalOccupied) {
-    if (isEdgeBOccupied && isEdgeCOccupied) {
+uint cornerOcclusion(bool edgeB, bool edgeC, bool diagonal) {
+    if (edgeB && edgeC) {
         return 0;
     } else {
         uint level = OCCLUSION_LEVELS;
-        if (isEdgeBOccupied) {
+        if (edgeB) {
             level -= 1;
         }
-        if (isEdgeCOccupied) {
+        if (edgeC) {
             level -= 1;
         }
-        if (isDiagonalOccupied) {
+        if (diagonal) {
             level -= 1;
         }
         return level;
@@ -234,8 +253,8 @@ bool isDiagonalFlipped(uint[CORNERS_PER_FACE] occlusion) {
     return occlusion[1] + occlusion[2] > occlusion[0] + occlusion[3];
 }
 
-int solidSideStep(bool isOtherShown) {
-    if (isOtherShown) {
+int solidSideStep(Facing facing) {
+    if (facing == Facing.inward) {
         return 0;
     } else {
         return 1;

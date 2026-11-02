@@ -121,10 +121,15 @@ KeySym keySymOf(ushort code) {
     }
 }
 
+enum KeyAction : ubyte {
+    released,
+    pressed,
+    repeated,
+}
+
 struct KeyEvent {
     KeySym symbol;
-    bool isPressed;
-    bool isRepeat;
+    KeyAction action;
 }
 
 struct WindowEvents {
@@ -147,8 +152,7 @@ struct CocoaWindow {
         CGRect frame = CGRect(CGPoint(0, 0), CGSize(width, height));
         ulong style = NS_WINDOW_TITLED | NS_WINDOW_CLOSABLE | NS_WINDOW_MINIATURIZABLE | NS_WINDOW_RESIZABLE;
         window = send(send(objc_getClass("NSWindow"), "alloc"), "initWithContentRect:styleMask:backing:defer:", frame, style, NS_BACKING_STORE_BUFFERED, false);
-        bool isOpen = window !is null;
-        if (isOpen) {
+        if (window !is null) {
             send!void(window, "setReleasedWhenClosed:", false);
             send!void(window, "setAcceptsMouseMovedEvents:", true);
             send!void(window, "center");
@@ -160,7 +164,7 @@ struct CocoaWindow {
             send!void(application, "activateIgnoringOtherApps:", true);
         }
         objc_autoreleasePoolPop(pool);
-        return isOpen;
+        return window !is null;
     }
 
     const(CAMetalLayer)* metalLayer() const {
@@ -196,8 +200,7 @@ struct CocoaWindow {
         id past = send(objc_getClass("NSDate"), "distantPast");
         id event = send(application, "nextEventMatchingMask:untilDate:inMode:dequeue:", NS_EVENT_MASK_ANY, past, NSDefaultRunLoopMode, true);
         while (event !is null) {
-            bool isHandled = handle(event, events);
-            if (!isHandled) {
+            if (!handle(event, events)) {
                 send!void(application, "sendEvent:", event);
             }
             event = send(application, "nextEventMatchingMask:untilDate:inMode:dequeue:", NS_EVENT_MASK_ANY, past, NSDefaultRunLoopMode, true);
@@ -211,13 +214,22 @@ struct CocoaWindow {
         if (type == NS_EVENT_KEY_DOWN || type == NS_EVENT_KEY_UP) {
             KeySym symbol = keySymOf(send!ushort(event, "keyCode"));
             if (symbol != NO_KEY) {
-                events.onKey(KeyEvent(symbol, type == NS_EVENT_KEY_DOWN, send!bool(event, "isARepeat")));
+                KeyAction action = KeyAction.released;
+                if (type == NS_EVENT_KEY_DOWN && send!bool(event, "isARepeat")) {
+                    action = KeyAction.repeated;
+                } else if (type == NS_EVENT_KEY_DOWN) {
+                    action = KeyAction.pressed;
+                }
+                events.onKey(KeyEvent(symbol, action));
             }
             return true;
         } else if (type == NS_EVENT_FLAGS_CHANGED) {
             if (send!ushort(event, "keyCode") == LEFT_SHIFT_KEYCODE) {
-                bool isPressed = (send!ulong(event, "modifierFlags") & LEFT_SHIFT_DEVICE_MASK) != 0;
-                events.onKey(KeyEvent(XK_Shift_L, isPressed, false));
+                KeyAction action = KeyAction.released;
+                if ((send!ulong(event, "modifierFlags") & LEFT_SHIFT_DEVICE_MASK) != 0) {
+                    action = KeyAction.pressed;
+                }
+                events.onKey(KeyEvent(XK_Shift_L, action));
             }
             return false;
         } else if (type == NS_EVENT_LEFT_MOUSE_DOWN && isInContent(event)) {

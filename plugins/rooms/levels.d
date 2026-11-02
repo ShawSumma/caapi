@@ -8,6 +8,16 @@ enum HallLayout : ubyte {
     streets,
 }
 
+enum Vents : ubyte {
+    none,
+    some,
+}
+
+enum LevelKind : ubyte {
+    rooms,
+    maze,
+}
+
 struct Biome {
     Material wall;
     Material floor;
@@ -26,7 +36,7 @@ struct Biome {
     double skylight = 0;
     double nowhere = 0;
     int boxHeight = 0;
-    bool hasVents;
+    Vents vents;
 }
 
 struct Hall {
@@ -40,7 +50,7 @@ struct Level {
     HallLayout halls;
     int hallWidth;
     int room = 4;
-    bool isMaze;
+    LevelKind kind;
     double solid = 0;
     double missing = 0;
     double rings = 0;
@@ -48,23 +58,27 @@ struct Level {
     double stairs = 0;
     Hall hall;
     const(Biome)[] biomes;
+
+    bool isMaze() const {
+        return kind == LevelKind.maze;
+    }
 }
 
 immutable Biome OFFICE = {
     wall: Material.wallpaper, floor: Material.carpet, ceiling: Material.ceilingTile, light: Material.lightPanel,
-    trim: Material.woodPlanks, damp: Material.dampCarpet, stair: Material.carpet, hasVents: true,
+    trim: Material.woodPlanks, damp: Material.dampCarpet, stair: Material.carpet, vents: Vents.some,
     boxes: Material.wallpaper, boxOdds: 0.15, boxHeight: 4, skylight: 0.2,
 };
 
 immutable Biome SODDEN = {
     wall: Material.wallpaper, floor: Material.dampCarpet, ceiling: Material.ceilingTile, light: Material.lightPanel,
-    damp: Material.carpet, stair: Material.carpet, hasVents: true, boxes: Material.wallpaper, boxOdds: 0.25,
+    damp: Material.carpet, stair: Material.carpet, vents: Vents.some, boxes: Material.wallpaper, boxOdds: 0.25,
     boxHeight: 3, skylight: 0.1,
 };
 
 immutable Biome STAINED = {
     wall: Material.stainedWallpaper, floor: Material.carpet, ceiling: Material.ceilingTile, light: Material.lightPanel,
-    damp: Material.dampCarpet, stair: Material.carpet, hasVents: true, skylight: 0.15,
+    damp: Material.dampCarpet, stair: Material.carpet, vents: Vents.some, skylight: 0.15,
 };
 
 immutable Material[3] PARLOR_FLOORS = [Material.woodPlanks, Material.woodPlanks, Material.carpet];
@@ -117,7 +131,7 @@ immutable Level HOUSE_LEVEL = {
 };
 
 immutable Level MAZE_LEVEL = {
-    room: 3, isMaze: true, biomes: MAZES[],
+    room: 3, kind: LevelKind.maze, biomes: MAZES[],
 };
 
 immutable Level[3] LAYERS = [OFFICE_LEVEL, HOUSE_LEVEL, MAZE_LEVEL];

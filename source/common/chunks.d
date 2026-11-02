@@ -81,7 +81,7 @@ struct ChunkStore {
     }
 
     void queue(ChunkSlot chunk) {
-        writable(chunk).isQueued = true;
+        writable(chunk).markQueued();
         changed.append(chunk);
     }
 
@@ -97,7 +97,7 @@ struct ChunkStore {
         ChunkSlot taken = changed.ptr[changedHead];
         changedHead += 1;
         if (has(taken.slot)) {
-            existing(taken).isQueued = false;
+            existing(taken).unmarkQueued();
         }
         if (changedHead == changed.length) {
             changed.clear();

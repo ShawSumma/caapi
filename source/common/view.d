@@ -2,6 +2,7 @@ module common.view;
 
 import core.bitop : bsf;
 import base.array : Array;
+import base.flags : Readiness;
 import base.hashmap : HashMap;
 import common.graph : ALL_FACES, Graph, NO_FACE, NO_SLOT, NodeId, ParentEntry, ParentList, childId, childParentFaces, farthestFaceBeyond;
 import common.node : ChunkLayout;
@@ -10,7 +11,7 @@ import common.worldgen.blueprint : Blueprint;
 import common.worldgen.building : Building;
 import common.worldgen.generation : ChunkStructure, NodeState, Worldgen;
 import common.worldgen.horospheres : CornerKey, GroundKey, HorosphereRef, Horospheres, ROOT, Rise, RisingList, applyDiscoveries, makeHorosphere, makeWantedHorospheres;
-import common.worldgen.store : NodeStructure;
+import common.worldgen.store : NodeStructure, Standing;
 import common.worldgen.structure : ClaimKey;
 import geometry.honeycomb : CORNER_COUNT, Corner, FACE_COUNT, Face, faceBit, mirror;
 import geometry.lorentz : Point;
@@ -24,7 +25,7 @@ struct ViewNode {
     NodeState state;
     uint depth;
     ushort parentFaces;
-    bool hasState;
+    Readiness stateReadiness;
 }
 
 struct SideKey {
@@ -84,7 +85,11 @@ struct GraphView {
     Array!uint storedSlots;
     Array!GroundKey risingKeys;
     Array!SlotCorner choiceKeys;
-    bool isBlocked;
+    size_t settledWanted;
+
+    bool isBlocked() const {
+        return wanted.length > settledWanted;
+    }
 
     static GraphView over(ref const Graph graph) {
         GraphView view;
@@ -106,7 +111,7 @@ struct GraphView {
         storedSlots.clear();
         risingKeys.clear();
         choiceKeys.clear();
-        isBlocked = false;
+        settledWanted = wanted.length;
     }
 
     void release() {
@@ -292,9 +297,9 @@ struct GraphView {
         if (owner !is null) {
             return *owner.ensureState(node);
         } else if (isVirtual(node)) {
-            if (!virtualAt(node).hasState) {
+            if (virtualAt(node).stateReadiness == Readiness.pending) {
                 virtualAt(node).state = NodeState.fromParents(this, node);
-                virtualAt(node).hasState = true;
+                virtualAt(node).stateReadiness = Readiness.ready;
             }
             return virtualAt(node).state;
         } else if (graph.nodeAt(node).hasState) {
@@ -319,17 +324,17 @@ struct GraphView {
     ChunkStructure chunkStructureAt(uint slot) {
         if (owner !is null) {
             if (owner.ensureStructureAt(slot)) {
-                return ChunkStructure(owner.ensureBuildingAt(slot), owner.structures.at(slot).isInStructure);
+                return ChunkStructure(owner.ensureBuildingAt(slot), owner.structures.at(slot).standing);
             } else {
-                return ChunkStructure(null, false);
+                return ChunkStructure(null, Standing.outside);
             }
         } else {
             const(NodeStructure)* node = &graph.structures.at(slot);
             const(Building)* building = graph.structures.buildingAt(slot);
             if (!node.isFinished || (node.needsBuilding() && building is null)) {
-                return ChunkStructure(null, false, false);
+                return ChunkStructure(null, Standing.unknown);
             } else {
-                return ChunkStructure(building, node.isInStructure);
+                return ChunkStructure(building, node.standing);
             }
         }
     }
@@ -419,7 +424,6 @@ struct GraphView {
         } else if (owner !is null) {
             return (*owner).makeHorosphere(rooted, face, corner, parent, rise);
         } else {
-            isBlocked = true;
             uint pathStart = cast(uint) wantedPaths.length;
             uint start = pathTo(face, wantedPaths);
             wanted.append(WantedHorosphere(start, pathStart, cast(uint) wantedPaths.length - pathStart, parent, corner));
@@ -430,6 +434,7 @@ struct GraphView {
     void clearWanted() {
         wanted.clear();
         wantedPaths.clear();
+        settledWanted = 0;
     }
 }
 
@@ -437,7 +442,7 @@ void applyStates(ref Graph target, ref const GraphView view) {
     foreach (slot; view.statedSlots.slice()) {
         if (!target.nodeAt(slot).hasState) {
             *target.states.at(slot) = *view.statesOfSlots.find(SlotKey(slot));
-            target.nodeAt(slot).hasState = true;
+            target.nodeAt(slot).state = Readiness.ready;
         }
     }
 }
@@ -459,14 +464,14 @@ struct ThreadViews {
         return views.ptr[worker];
     }
 
-    bool finish(ref Graph graph) {
-        bool isMade = false;
+    size_t finish(ref Graph graph) {
+        size_t made = 0;
         foreach (ref view; views.slice()) {
             graph.applyStates(view);
             graph.applyDiscoveries(view);
-            isMade = graph.makeWantedHorospheres(view) || isMade;
+            made += graph.makeWantedHorospheres(view);
         }
-        return isMade;
+        return made;
     }
 
     void release() {

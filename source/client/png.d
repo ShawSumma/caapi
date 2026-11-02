@@ -3,6 +3,7 @@ module client.png;
 import core.stdc.stdio : FILE, SEEK_END, SEEK_SET, fclose, fopen, fread, fseek, ftell, fwrite;
 import core.stdc.stdlib : free, malloc;
 import core.stdc.string : memcpy;
+import base.maybe : Maybe;
 
 enum uint CRC_POLYNOMIAL = 0xEDB88320;
 enum uint CRC_TABLE_SIZE = 256;
@@ -102,22 +103,6 @@ size_t storedSize(size_t raw) {
     return ZLIB_HEADER_BYTES + raw + blocks * STORED_BLOCK_HEADER_BYTES + ADLER_BYTES;
 }
 
-size_t blockLength(size_t remaining, bool isFinal) {
-    if (isFinal) {
-        return remaining;
-    } else {
-        return STORED_BLOCK_LIMIT;
-    }
-}
-
-ubyte blockKind(bool isFinal) {
-    if (isFinal) {
-        return FINAL_BLOCK;
-    } else {
-        return MORE_BLOCKS;
-    }
-}
-
 size_t deflateStored(const(ubyte)[] raw, ubyte* output) {
     size_t at = 0;
     output[at] = ZLIB_METHOD;
@@ -125,9 +110,13 @@ size_t deflateStored(const(ubyte)[] raw, ubyte* output) {
     at += ZLIB_HEADER_BYTES;
     size_t consumed = 0;
     while (consumed < raw.length) {
-        bool isFinal = raw.length - consumed <= STORED_BLOCK_LIMIT;
-        size_t length = blockLength(raw.length - consumed, isFinal);
-        output[at] = blockKind(isFinal);
+        size_t length = raw.length - consumed;
+        ubyte kind = FINAL_BLOCK;
+        if (length > STORED_BLOCK_LIMIT) {
+            length = STORED_BLOCK_LIMIT;
+            kind = MORE_BLOCKS;
+        }
+        output[at] = kind;
         output[at + 1] = cast(ubyte) length;
         output[at + 2] = cast(ubyte)(length >> 8);
         output[at + 3] = cast(ubyte) ~length;
@@ -198,71 +187,86 @@ uint getBigEndian(const(ubyte)* source) {
     return (cast(uint) source[0] << 24) | (cast(uint) source[1] << 16) | (cast(uint) source[2] << 8) | source[3];
 }
 
-PngImage decodePng(const(ubyte)[] bytes) {
-    PngImage image;
+Maybe!size_t gatherDeflated(const(ubyte)[] bytes, ref PngImage image, ubyte* deflated) {
+    if (bytes.length < PNG_SIGNATURE.length || bytes[0 .. PNG_SIGNATURE.length] != PNG_SIGNATURE[]) {
+        return Maybe!size_t.init;
+    }
     size_t at = PNG_SIGNATURE.length;
-    ubyte* deflated = cast(ubyte*) malloc(bytes.length);
     size_t deflatedBytes = 0;
-    bool isValid = bytes.length >= PNG_SIGNATURE.length && bytes[0 .. PNG_SIGNATURE.length] == PNG_SIGNATURE[];
-    bool isEnded = false;
-    while (isValid && !isEnded && at + chunkSize(0) <= bytes.length) {
+    while (at + chunkSize(0) <= bytes.length) {
         size_t length = getBigEndian(bytes.ptr + at);
         const(char)[] kind = cast(const(char)[]) bytes[at + CHUNK_LENGTH_BYTES .. at + CHUNK_LENGTH_BYTES + CHUNK_KIND_BYTES];
         size_t data = at + CHUNK_LENGTH_BYTES + CHUNK_KIND_BYTES;
-        isValid = data + length + CHUNK_CRC_BYTES <= bytes.length;
-        if (isValid && kind == "IHDR") {
-            isValid = length == HEADER_BYTES && bytes[data + 8] == BIT_DEPTH && bytes[data + 9] == COLOR_TYPE_RGB;
+        if (data + length + CHUNK_CRC_BYTES > bytes.length) {
+            return Maybe!size_t.init;
+        } else if (kind == "IHDR") {
             image.width = getBigEndian(bytes.ptr + data);
             image.height = getBigEndian(bytes.ptr + data + 4);
-        } else if (isValid && kind == "IDAT") {
+            if (length != HEADER_BYTES || bytes[data + 8] != BIT_DEPTH || bytes[data + 9] != COLOR_TYPE_RGB) {
+                return Maybe!size_t.init;
+            }
+        } else if (kind == "IDAT") {
             memcpy(deflated + deflatedBytes, bytes.ptr + data, length);
             deflatedBytes += length;
-        } else if (isValid && kind == "IEND") {
-            isEnded = true;
+        } else if (kind == "IEND") {
+            return Maybe!size_t.of(deflatedBytes);
         }
         at = data + length + CHUNK_CRC_BYTES;
     }
-    size_t rowBytes = 1 + cast(size_t) image.width * RGB_BYTES;
-    size_t rawBytes = rowBytes * image.height;
-    ubyte* raw = cast(ubyte*) malloc(rawBytes + 1);
-    isValid = isValid && isEnded && image.width > 0 && image.height > 0 && inflateStored(deflated[0 .. deflatedBytes], raw[0 .. rawBytes]);
-    if (isValid) {
-        image.rgb = cast(ubyte*) malloc(rawBytes - image.height);
-        size_t row = 0;
-        while (isValid && row < image.height) {
-            isValid = raw[row * rowBytes] == FILTER_NONE;
-            memcpy(image.rgb + row * (rowBytes - 1), raw + row * rowBytes + 1, rowBytes - 1);
-            row += 1;
+    return Maybe!size_t.init;
+}
+
+ubyte* unfiltered(const(ubyte)* raw, size_t rowBytes, size_t height) {
+    ubyte* rgb = cast(ubyte*) malloc((rowBytes - 1) * height);
+    foreach (row; 0 .. height) {
+        if (raw[row * rowBytes] != FILTER_NONE) {
+            free(rgb);
+            return null;
         }
-        if (!isValid) {
-            image.release();
-        }
+        memcpy(rgb + row * (rowBytes - 1), raw + row * rowBytes + 1, rowBytes - 1);
     }
-    free(raw);
+    return rgb;
+}
+
+PngImage decodePng(const(ubyte)[] bytes) {
+    PngImage image;
+    ubyte* deflated = cast(ubyte*) malloc(bytes.length);
+    Maybe!size_t deflatedBytes = gatherDeflated(bytes, image, deflated);
+    if (deflatedBytes.exists && image.width > 0 && image.height > 0) {
+        size_t rowBytes = 1 + cast(size_t) image.width * RGB_BYTES;
+        size_t rawBytes = rowBytes * image.height;
+        ubyte* raw = cast(ubyte*) malloc(rawBytes + 1);
+        if (inflateStored(deflated[0 .. deflatedBytes.value], raw[0 .. rawBytes])) {
+            image.rgb = unfiltered(raw, rowBytes, image.height);
+        }
+        free(raw);
+    }
     free(deflated);
     return image;
 }
 
 bool inflateStored(const(ubyte)[] deflated, ubyte[] raw) {
+    if (deflated.length < ZLIB_HEADER_BYTES + ADLER_BYTES || deflated[0] != ZLIB_METHOD) {
+        return false;
+    }
     size_t at = ZLIB_HEADER_BYTES;
     size_t produced = 0;
-    bool isValid = deflated.length >= ZLIB_HEADER_BYTES + ADLER_BYTES && deflated[0] == ZLIB_METHOD;
-    bool isFinal = false;
-    while (isValid && !isFinal) {
-        isValid = at + STORED_BLOCK_HEADER_BYTES <= deflated.length && (deflated[at] & ~FINAL_BLOCK) == 0;
-        if (isValid) {
-            isFinal = deflated[at] == FINAL_BLOCK;
-            size_t length = deflated[at + 1] | (cast(size_t) deflated[at + 2] << 8);
-            at += STORED_BLOCK_HEADER_BYTES;
-            isValid = at + length <= deflated.length && produced + length <= raw.length;
-            if (isValid) {
-                memcpy(raw.ptr + produced, deflated.ptr + at, length);
-                produced += length;
-                at += length;
-            }
+    ubyte kind = MORE_BLOCKS;
+    while (kind != FINAL_BLOCK) {
+        if (at + STORED_BLOCK_HEADER_BYTES > deflated.length || (deflated[at] & ~FINAL_BLOCK) != 0) {
+            return false;
         }
+        kind = deflated[at];
+        size_t length = deflated[at + 1] | (cast(size_t) deflated[at + 2] << 8);
+        at += STORED_BLOCK_HEADER_BYTES;
+        if (at + length > deflated.length || produced + length > raw.length) {
+            return false;
+        }
+        memcpy(raw.ptr + produced, deflated.ptr + at, length);
+        produced += length;
+        at += length;
     }
-    return isValid && produced == raw.length && at + ADLER_BYTES <= deflated.length && getBigEndian(deflated.ptr + at) == adler32(raw);
+    return produced == raw.length && at + ADLER_BYTES <= deflated.length && getBigEndian(deflated.ptr + at) == adler32(raw);
 }
 
 ubyte[] encodePng(uint width, uint height, const(ubyte)[] rgba) {

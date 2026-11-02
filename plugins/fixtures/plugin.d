@@ -4,7 +4,7 @@ import plugins.api.api : Api, ENTRY, HorosphereForm, Registry, Site, SitePart;
 import box = plugins.box.box;
 import plugins.buildings.building : Bound, Lot, Lots, Side, Spec;
 import plugins.buildings.types : Type, build, palettes;
-import plugins.connector.connector : Connection, Style, Tag;
+import plugins.connector.connector : Connection, Routing, Style, Tag;
 import layout = plugins.rooms.layout;
 import plugins.horospheres.horospheres : Kinds, addKinds, cityTile;
 import plugins.turtle.turtle : Turtle, cornersOf;
@@ -12,8 +12,8 @@ import plugins.turtle.turtle : Turtle, cornersOf;
 enum uint RISE_EDGES = 2;
 enum int CHAIN_EDGES = 4;
 immutable float[3] CHAIN_SPAWN = [0, 4, 0];
-immutable Connection UNROUTED = Connection.forced(Style.tower, false);
-immutable Connection ROUTED = Connection.forced(Style.tower, true);
+immutable Connection UNROUTED = Connection.forced(Style.tower, Routing.unrouted);
+immutable Connection ROUTED = Connection.forced(Style.tower, Routing.routed);
 enum uint HOUSE_FLOOR = 1;
 enum uint TOP_FLOOR = 0;
 enum int SHOWCASE_FRONT = 4;
@@ -27,7 +27,7 @@ void risenCity(const(Api)* api, Site site, const(void)* data) {
 }
 
 void styled(Style style)(const(Api)* api, Site site, const(void)* data) {
-    immutable Connection how = Connection.forced(style, true);
+    immutable Connection how = Connection.forced(style, Routing.routed);
     api.openHorosphere(api, site, addKinds(api, 0, 0, &how).city, RISE_EDGES);
 }
 
@@ -57,8 +57,8 @@ void chain(const(Api)* api, Site site, const(void)* data) {
 void forcedStair(const(Api)* api, Site site, uint upper) {
     Turtle at = Turtle(api, site);
     Turtle stairs = at.forward(1).right();
-    layout.ForcedStair forced = layout.ForcedStair(stairs.hash(SitePart.vertex), stairs.hash(SitePart.face), upper, true);
-    layout.Root root = layout.Root(at.hash(SitePart.vertex), false, true, forced);
+    layout.ForcedStair forced = layout.ForcedStair(stairs.hash(SitePart.vertex), stairs.hash(SitePart.face), upper);
+    layout.Root root = layout.Root(at.hash(SitePart.vertex), layout.Shaft.none, Routing.routed, forced);
     api.tile(api, &layout.tile, &root, layout.Root.sizeof);
 }
 
@@ -75,7 +75,6 @@ Turtle show(Turtle quarter, Type type, int stories) {
     lot.site = quarter;
     lot.bounds = [Bound.street, Bound.street, Bound.lot, Bound.lot];
     lot.front = Side.yLow;
-    lot.hasFront = true;
     Lots lots;
     lots.add(lot);
     build(type, lots, Spec(stories, palettes(type)[0], SHOWCASE_FRONT, 0, 0));

@@ -36,7 +36,10 @@ void reportOn(int signal) {
 }
 
 extern (C) void printCrash(int signal) nothrow @nogc {
-    string heading ="crashed, backtrace:\n";
+    string heading = "crashed, backtrace:\n";
+    if (signal == SIGALRM) {
+        heading = "hung past its time limit, backtrace:\n";
+    }
     write(STDERR_FILENO, heading.ptr, heading.length);
     void*[CRASH_FRAMES] frames;
     int depth = backtrace(frames.ptr, CRASH_FRAMES);

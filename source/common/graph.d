@@ -2,6 +2,7 @@ module common.graph;
 
 import core.bitop : bsf;
 import base.array : Array;
+import base.flags : Readiness;
 import base.hashmap : FIBONACCI_MULTIPLIER, HashMap;
 import base.murmur : murmurHash3;
 import base.parallel : Executor;
@@ -15,7 +16,7 @@ import common.worldgen.blueprint : Blueprint;
 import common.worldgen.building : Building, BuildingPlan;
 import common.worldgen.generation : NodeState, Worldgen;
 import common.worldgen.horospheres : Fill, Horospheres;
-import common.worldgen.store : StructureStore, unpin;
+import common.worldgen.store : NodeMark, StructureStore, unpin;
 import common.worldgen.structure : PAINT_REACH, anchorSlotOf, finalizeStructure;
 import geometry.honeycomb : BEYOND_TOLERANCE, FACE_COUNT, Face, adjacentFaces, faceBit, mirror, normal;
 import geometry.lorentz : Point;
@@ -60,7 +61,11 @@ struct Node {
     ushort liveChildren;
     ushort references;
     NodeContent content;
-    bool hasState;
+    Readiness state;
+
+    bool hasState() const {
+        return state == Readiness.ready;
+    }
 }
 
 struct ParentEntry {
@@ -330,7 +335,7 @@ struct Graph {
     const(NodeState)* ensureState(uint slot) {
         if (!nodeAt(slot).hasState) {
             *states.at(slot) = NodeState.fromParents(view, slot);
-            nodeAt(slot).hasState = true;
+            nodeAt(slot).state = Readiness.ready;
         }
         return states.at(slot);
     }
@@ -375,7 +380,7 @@ struct Graph {
             structures.grower.cover(structures.grower.context, this, slot);
         }
         this.finalizeStructure(slot);
-        structures.at(slot).isFinished = true;
+        structures.at(slot).marks.set(NodeMark.finished);
     }
 
     void paintAhead(const(uint)[] candidates, Executor executor) {

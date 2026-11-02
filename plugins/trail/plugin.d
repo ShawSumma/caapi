@@ -42,14 +42,11 @@ Turtle turnedTo(Turtle tip, uint turn) {
 
 bool extend(Turtle segment, int left) {
     Turtle ahead = segment.forward(1);
-    if (ahead.isClaimed(SitePart.vertex)) {
-        return false;
+    if (!ahead.isClaimed(SitePart.vertex) && segment.place(&stretch, &left, int.sizeof)) {
+        ahead.claim(SitePart.vertex);
+        return true;
     } else {
-        bool isPlaced = segment.place(&stretch, &left, int.sizeof);
-        if (isPlaced) {
-            ahead.claim(SitePart.vertex);
-        }
-        return isPlaced;
+        return false;
     }
 }
 
@@ -66,16 +63,12 @@ void stretch(const(Api)* api, Site site, const(void)* data) {
     if (left != 0) {
         uint first = segment.pick(TURNS);
         uint tried = 0;
-        bool isExtended = false;
-        while (tried < TURNS && !isExtended) {
-            isExtended = extend(turnedTo(tip, (first + tried) % TURNS), left - 1);
+        while (tried < TURNS && !extend(turnedTo(tip, (first + tried) % TURNS), left - 1)) {
             tried += 1;
         }
     }
 }
 
-// A placed structure is never forgotten and grows with the deepest depth reached anywhere, so one sharing a world with
-// everything else has to be finite.
 void landmark(const(Api)* api, Site site, const(void)* data) {
     int left = LANDMARK_SEGMENTS;
     stretch(api, site, &left);

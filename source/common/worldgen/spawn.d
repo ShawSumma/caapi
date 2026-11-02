@@ -7,14 +7,10 @@ import common.graph : Graph, ROOT_NODE;
 import common.node : ChunkSlot;
 import common.position : Position;
 import common.traversal : NodeVisit, isVisited;
-import common.worldgen.generation : ChunkParams, PlaneWorld, Worldgen;
+import common.worldgen.generation : ChunkParams;
 import common.worldgen.horospheres : ensureGravityAt;
 import geometry.honeycomb : CORNER_COUNT, CUBE_RADIUS, Corner, FACE_COUNT, Face, NODE_RADIUS, cubeCenter, mirror;
 import geometry.lorentz : Motion, Point, Vec4;
-
-enum float TEST_BODY_REACH = 0.1f;
-enum float TEST_ALTITUDE_TOLERANCE = 1e-4f;
-enum ubyte TEST_DIMENSION = 12;
 
 Array!ChunkSlot collectChunksNear(ref Graph graph, Position position, float distance) {
     float nodeThreshold = coshf(distance + NODE_RADIUS + CUBE_RADIUS);
@@ -83,13 +79,4 @@ Position positionAtRise(ref Graph graph, float[3] up, float rise) {
     Position result = graph.ensureNormalized(Position(ROOT_NODE, Motion!float.shift(up.scaled(rise))));
     graph.ensureState(graph.slotOf(result.node));
     return result;
-}
-
-unittest {
-    Graph graph = Graph.make(TEST_DIMENSION, Worldgen.fromPlane(PlaneWorld(0)));
-    Position spawn = graph.clearSpawnPosition(TEST_BODY_REACH);
-    float altitude = graph.stateAt(graph.slotOf(spawn.node)).surface.distanceTo(spawn.local * Point!float.origin());
-    assert(altitude > TEST_BODY_REACH - TEST_ALTITUDE_TOLERANCE);
-    assert(graph.isRegionProvenClear(spawn, TEST_BODY_REACH));
-    graph.release();
 }

@@ -14,12 +14,17 @@ enum uint WORD_SHIFT = 6;
 enum uint WORD_MASK = (1u << WORD_SHIFT) - 1;
 enum size_t NOTED_PAGES_PER_DISCARD = 512;
 
+enum DiscardPass : ubyte {
+    resting,
+    sweeping,
+}
+
 struct Slab(T) {
     Array!(T*) blocks;
     Array!ulong noted;
     size_t notedCount;
     size_t notedCursor;
-    bool isDiscarding;
+    DiscardPass pass;
 
     inout(T)* at(size_t index) inout {
         return blocks.ptr[index >> SLAB_SHIFT] + (index & SLAB_MASK);
@@ -68,11 +73,13 @@ struct Slab(T) {
     }
 
     void discardNoted(ref const FreeIndices free, size_t limit, size_t per, ref uint calls) {
-        isDiscarding = isDiscarding || notedCount >= NOTED_PAGES_PER_DISCARD;
+        if (notedCount >= NOTED_PAGES_PER_DISCARD) {
+            pass = DiscardPass.sweeping;
+        }
         size_t page = pageSize();
         size_t runStart = 0;
         size_t runEnd = 0;
-        while (isDiscarding && calls > 0) {
+        while (pass == DiscardPass.sweeping && calls > 0) {
             ulong* bits = &noted.ptr[notedCursor];
             while (*bits != 0 && calls > 0) {
                 size_t candidate = (notedCursor << WORD_SHIFT) + bsf(*bits);
@@ -91,7 +98,7 @@ struct Slab(T) {
             }
             if (notedCursor == noted.length) {
                 notedCursor = 0;
-                isDiscarding = false;
+                pass = DiscardPass.resting;
             }
         }
         calls -= lowerOf(calls, discardPages(runStart, runEnd, page));
@@ -147,7 +154,7 @@ struct Slab(T) {
         noted.release();
         notedCount = 0;
         notedCursor = 0;
-        isDiscarding = false;
+        pass = DiscardPass.resting;
     }
 }
 
@@ -231,8 +238,7 @@ struct FreeIndices {
     }
 
     bool containsAll(size_t from, size_t to) const {
-        bool isAll = true;
-        while (isAll && from < to) {
+        while (from < to) {
             size_t word = from >> WORD_SHIFT;
             size_t end = lowerOf((word + 1) << WORD_SHIFT, to);
             size_t span = end - from;
@@ -241,10 +247,12 @@ struct FreeIndices {
                 mask = (1UL << span) - 1;
             }
             mask <<= from & WORD_MASK;
-            isAll = word < words.length && (words.ptr[word] & mask) == mask;
+            if (word >= words.length || (words.ptr[word] & mask) != mask) {
+                return false;
+            }
             from = end;
         }
-        return isAll;
+        return true;
     }
 
     void add(uint index) {

@@ -1,21 +1,22 @@
 module client.tiles;
 
 import core.stdc.math : asin, asinh;
+import core.stdc.stdio : snprintf;
 import core.stdc.stdlib : calloc, free;
-import core.stdc.string : memcpy, strlen;
 import base.array : Array;
 import base.hashmap : HashMap;
 import base.clock : nowMilliseconds;
+import base.maybe : Maybe;
 import base.numbers : RADIANS_PER_DEGREE, clamped, higherOf, lowerOf;
 import base.parallel : Executor, ParallelJob;
 import base.splitmix : SplitMix;
 import client.structures : AHEAD, ACROSS, MESSAGE_CAPACITY, PenFrame, UP, axisOf, boxRefusal, engineRhythm, unitNormal, worldNamed;
 import common.graph : Graph, NO_SLOT, NodeId;
 import common.view : GraphView;
-import common.worldgen.blueprint : Blueprint, Brush, CellBox, LineEdge, LineKey, LineSpec, Paint, PaintResult, Rhythm, RouteStop, SiteLine, TileEdge, canonicalBox, canonicalRhythm, edgeOf;
+import common.worldgen.blueprint : Blueprint, Brush, CellBox, Cover, LineEdge, LineKey, LineSpec, Paint, PaintResult, Rhythm, RouteStop, SiteLine, TileEdge, canonicalBox, canonicalRhythm, edgeOf, isUnbounded;
 import common.worldgen.horospheres : Horosphere, HorosphereRef, NO_RISE, ROOT, Rise, RiseMeasure, balanceAlong, ensureHorospheresAt, groundNodeOf, isPaintedBy, measureOf, measuredHorosphere, planeOfHorosphereIn, riseAt, segmentSite, segmentsNear, storeMeasure;
-import common.worldgen.store : TileKey;
-import common.worldgen.strokes : Stroke;
+import common.worldgen.store : NodeMark, TileKey;
+import common.worldgen.strokes : Stroke, StrokeForm;
 import common.worldgen.structure : CanonicalSite, ColumnSpot, EDGE_NODES, GROUND_RING, LineTouch, SiteFrame, SlotTouch, addPendingTouch, aroundEdge, atLevel, canonicalOf, edgeCells, edgeLength, edgeSitesOf, faceSite, forwarded, frameOf, groundRing, seedTouch, sideAxis, siteHash, siteOf, sitePlacement, turned, walkedTouch;
 import geometry.honeycomb : CORNER_COUNT, FACE_COUNT, Face;
 import geometry.lorentz : Motion;
@@ -29,6 +30,31 @@ enum double TILE_TASK_LEAST = 64;
 enum double TILE_TASK_MOST = 4096;
 enum uint PLAN_ROUNDS = 4;
 
+enum TileSpan : ubyte {
+    ground,
+    edge,
+}
+
+enum TilePass : ubyte {
+    first,
+    restoring,
+}
+
+enum TaskEnd : ubyte {
+    painted,
+    failed,
+}
+
+enum StopKind : ubyte {
+    route,
+    entrance,
+}
+
+enum PlanEnd : ubyte {
+    planned,
+    blocked,
+}
+
 struct TileCall {
     Tile tile;
     Array!ubyte data;
@@ -38,8 +64,14 @@ struct TileCalls {
     TileCall root;
     TileCall edge;
     Array!TileCall kinds;
-    bool hasRoot;
-    bool hasEdge;
+
+    bool hasRoot() const {
+        return root.tile !is null;
+    }
+
+    bool hasEdge() const {
+        return edge.tile !is null;
+    }
 
     void release() {
         root.data.release();
@@ -77,7 +109,7 @@ struct StopOutput {
     uint start;
     uint pathStart;
     uint pathLength;
-    bool isEntrance;
+    StopKind kind;
 }
 
 struct StrokeOutput {
@@ -86,7 +118,7 @@ struct StrokeOutput {
     float startRadius;
     float endRadius;
     Material material;
-    bool isLeafy;
+    StrokeForm form;
     uint start;
     uint pathStart;
     uint pathLength;
@@ -104,7 +136,7 @@ struct TileOutput {
     uint stopCount;
     uint strokeStart;
     uint strokeCount;
-    bool isFailed;
+    TaskEnd end;
 }
 
 struct TilePainter {
@@ -117,7 +149,7 @@ struct TilePainter {
     Array!Face paths;
     Array!TileOutput outputs;
     TileOutput current;
-    bool isRestoring;
+    TilePass pass;
 
     void clear() {
         lines.clear();
@@ -129,19 +161,19 @@ struct TilePainter {
         outputs.clear();
     }
 
-    void begin(uint task, bool restoring) {
+    void begin(uint task, TilePass chosen) {
         known.clear();
-        isRestoring = restoring;
-        current = TileOutput(task, cast(uint) lines.length, 0, cast(uint) brushes.length, 0, cast(uint) touches.length, 0, cast(uint) stops.length, 0, cast(uint) strokes.length, 0, false);
+        pass = chosen;
+        current = TileOutput(task, cast(uint) lines.length, 0, cast(uint) brushes.length, 0, cast(uint) touches.length, 0, cast(uint) stops.length, 0, cast(uint) strokes.length, 0, TaskEnd.painted);
     }
 
-    void finish(bool isFailed) {
+    void finish(TaskEnd end) {
         current.lineCount = cast(uint) lines.length - current.lineStart;
         current.brushCount = cast(uint) brushes.length - current.brushStart;
         current.touchCount = cast(uint) touches.length - current.touchStart;
         current.stopCount = cast(uint) stops.length - current.stopStart;
         current.strokeCount = cast(uint) strokes.length - current.strokeStart;
-        current.isFailed = isFailed;
+        current.end = end;
         outputs.append(current);
     }
 
@@ -165,21 +197,21 @@ struct TilePainter {
         return &known.ptr[index];
     }
 
-    PaintResult paint(ref GraphView view, SiteFrame site, CellBox box, Rhythm rhythm, Material material, bool isIntoAirOnly) {
+    PaintResult paint(ref GraphView view, SiteFrame site, CellBox box, Rhythm rhythm, Material material, Cover cover) {
         SiteLine* found = lineOf(view, site);
         ubyte dimension = view.layout.dimension;
         CellBox canonical = canonicalBox(box, found.transform, dimension);
         int lowEdge = edgeOf(canonical.low[2], dimension);
         int highEdge = edgeOf(canonical.high[2], dimension);
-        if (lowEdge == int.min || highEdge == int.max) {
+        if (isUnbounded(lowEdge, highEdge)) {
             return PaintResult.endless;
-        } else if (!isRestoring && !isAhead(view, *found, lowEdge, highEdge)) {
+        } else if (pass == TilePass.first && !isAhead(view, *found, lowEdge, highEdge)) {
             return PaintResult.behind;
         } else {
-            if (!isRestoring) {
+            if (pass == TilePass.first) {
                 record(view, *found, lowEdge, highEdge);
             }
-            brushes.append(BrushOutput(found.line, Brush(canonical, canonicalRhythm(rhythm, found.transform, dimension), 0, Paint(0, isIntoAirOnly)), material));
+            brushes.append(BrushOutput(found.line, Brush(canonical, canonicalRhythm(rhythm, found.transform, dimension), 0, Paint(0, cover)), material));
             return PaintResult.painted;
         }
     }
@@ -187,23 +219,28 @@ struct TilePainter {
     bool isAhead(ref GraphView view, ref SiteLine found, int lowEdge, int highEdge) {
         if (found.open.contains(lowEdge, highEdge)) {
             return true;
+        } else if (areEdgesOpen(view, found, lowEdge, highEdge)) {
+            found.open.include(lowEdge, highEdge);
+            return true;
         } else {
-            LineSpec spec = lines.ptr[found.line].spec;
-            SlotTouch edge = seedTouch(spec, found.line);
-            bool isClear = true;
-            int level = lowEdge;
-            while (isClear && level <= highEdge) {
-                edge = view.walkedTouch(edge, spec, level);
-                foreach (around; view.aroundEdge(edge, spec)) {
-                    isClear = isClear && !view.hasStructureAt(around.slot);
-                }
-                level += 1;
-            }
-            if (isClear) {
-                found.open.include(lowEdge, highEdge);
-            }
-            return isClear;
+            return false;
         }
+    }
+
+    bool areEdgesOpen(ref GraphView view, ref SiteLine found, int lowEdge, int highEdge) {
+        LineSpec spec = lines.ptr[found.line].spec;
+        SlotTouch edge = seedTouch(spec, found.line);
+        int level = lowEdge;
+        while (level <= highEdge) {
+            edge = view.walkedTouch(edge, spec, level);
+            foreach (around; view.aroundEdge(edge, spec)) {
+                if (view.hasStructureAt(around.slot)) {
+                    return false;
+                }
+            }
+            level += 1;
+        }
+        return true;
     }
 
     void record(ref GraphView view, ref SiteLine found, int lowEdge, int highEdge) {
@@ -228,18 +265,18 @@ struct TilePainter {
         line.highest = higherOf(line.highest, highEdge);
     }
 
-    void stop(ref GraphView view, SiteFrame site, ColumnSpot spot, bool isEntrance) {
-        if (!isRestoring) {
+    void stop(ref GraphView view, SiteFrame site, ColumnSpot spot, StopKind kind) {
+        if (pass == TilePass.first) {
             uint pathStart = cast(uint) paths.length;
             uint start = view.pathTo(site.node, paths);
-            stops.append(StopOutput(site, spot, start, pathStart, cast(uint) paths.length - pathStart, isEntrance));
+            stops.append(StopOutput(site, spot, start, pathStart, cast(uint) paths.length - pathStart, kind));
         }
     }
 
-    void stroke(ref GraphView view, PenFrame pen, double length, float startRadius, float endRadius, Material material, bool isLeafy) {
+    void stroke(ref GraphView view, PenFrame pen, double length, float startRadius, float endRadius, Material material, StrokeForm form) {
         uint pathStart = cast(uint) paths.length;
         uint start = view.pathTo(pen.node, paths);
-        strokes.append(StrokeOutput(pen.frame, length, startRadius, endRadius, material, isLeafy, start, pathStart, cast(uint) paths.length - pathStart));
+        strokes.append(StrokeOutput(pen.frame, length, startRadius, endRadius, material, form, start, pathStart, cast(uint) paths.length - pathStart));
     }
 
     void release() {
@@ -263,8 +300,8 @@ struct TileTask {
     uint horosphere;
     SiteFrame site;
     int segment;
-    bool isEdge;
-    bool isRestoring;
+    TileSpan span;
+    TilePass pass;
 }
 
 struct PlannedTile {
@@ -275,14 +312,14 @@ struct PlannedTile {
     uint horosphere;
     SiteFrame site;
     int segment;
-    bool isEdge;
+    TileSpan span;
 }
 
 struct PlanResult {
     uint candidate;
     uint tileStart;
     uint tileCount;
-    bool isBlocked;
+    PlanEnd end;
 }
 
 struct MeasuredRise {
@@ -365,17 +402,14 @@ struct TileHost {
     SplitMix random;
     const(char)* refusal;
     uint horosphere;
-    bool isTaskFailed;
-    bool hasFailed;
-    char[MESSAGE_CAPACITY] failure;
+    int segment;
+    TaskEnd taskEnd;
+    char[MESSAGE_CAPACITY] failure = 0;
 
     void fail(const(char)* message) {
-        isTaskFailed = true;
-        if (!hasFailed) {
-            hasFailed = true;
-            size_t length = lowerOf(strlen(message), failure.length - 1);
-            memcpy(failure.ptr, message, length);
-            failure[length] = 0;
+        taskEnd = TaskEnd.failed;
+        if (failure[0] == 0) {
+            snprintf(failure.ptr, failure.length, "%s (tile over horosphere %u, segment %d)", message, horosphere, segment);
         }
     }
 
@@ -410,12 +444,13 @@ struct TileHost {
         foreach (side; path) {
             node = view.ensureNeighborSlot(node, side);
         }
-        painter.begin(index, task.isRestoring);
+        painter.begin(index, task.pass);
         random = SplitMix(task.key.node.spice() ^ task.key.feature);
         horosphere = task.horosphere;
-        isTaskFailed = false;
+        segment = task.segment;
+        taskEnd = TaskEnd.painted;
         const(TileCall)* call = &calls.edge;
-        if (!task.isEdge) {
+        if (task.span == TileSpan.ground) {
             call = callFor(graph, *calls, task.horosphere);
         }
         Risen risen = risenOf(graph, task.horosphere, task.segment);
@@ -423,15 +458,15 @@ struct TileHost {
         site.node = node;
         call.tile(&api, siteOf(site), &risen, call.data.ptr);
         takeRefusal();
-        painter.finish(isTaskFailed);
+        painter.finish(taskEnd);
     }
 
-    void paint(Site site, Material material, Box area, ApiRhythm rhythm, bool isIntoAirOnly) {
+    void paint(Site site, Material material, Box area, ApiRhythm rhythm, Cover cover) {
         const(char)* wrong = boxRefusal(area, rhythm, column());
         if (wrong !is null) {
             refuse(wrong);
         } else {
-            PaintResult result = painter.paint(*view, frameOf(site), CellBox(area.low, area.high), engineRhythm(rhythm), material, isIntoAirOnly);
+            PaintResult result = painter.paint(*view, frameOf(site), CellBox(area.low, area.high), engineRhythm(rhythm), material, cover);
             if (result == PaintResult.endless) {
                 refuse("a placed structure paints bounded heights: give the box a z range");
             } else if (result == PaintResult.behind) {
@@ -440,8 +475,8 @@ struct TileHost {
         }
     }
 
-    void stop(Site site, Spot spot, bool isEntrance) {
-        painter.stop(*view, frameOf(site), ColumnSpot(spot.x, spot.y, spot.z), isEntrance);
+    void stop(Site site, Spot spot, StopKind kind) {
+        painter.stop(*view, frameOf(site), ColumnSpot(spot.x, spot.y, spot.z), kind);
     }
 
     PenFrame penAt(Site site) {
@@ -449,12 +484,12 @@ struct TileHost {
         return PenFrame(sitePlacement(frame, view.layout).as!double(), unitNormal((*view).planeOfHorosphereIn(horosphere, frame.node)), frame.node);
     }
 
-    void draw(Pen pen, double cells, double fromRadius, double toRadius, Material material, bool isLeafy) {
+    void draw(Pen pen, double cells, double fromRadius, double toRadius, Material material, StrokeForm form) {
         if (!(cells >= 0) || !(fromRadius > 0) || !(toRadius > 0)) {
             refuse("a pen draws a length of at least zero with radii above zero");
         } else {
             double cell = cellLength();
-            painter.stroke(*view, PenFrame.fromPen(pen), cells * cell, cast(float)(fromRadius * cell), cast(float)(toRadius * cell), material, isLeafy);
+            painter.stroke(*view, PenFrame.fromPen(pen), cells * cell, cast(float)(fromRadius * cell), cast(float)(toRadius * cell), material, form);
         }
     }
 
@@ -476,26 +511,27 @@ struct TileHost {
                 planRing(graph, (*view).groundRing((*view).groundNodeOf(candidate, ROOT), Face.f0), Face.f0, ROOT);
             }
             foreach (near; (*view).ensureHorospheresAt(candidate)) {
-                bool wanted = !view.isBlocked && isTiledBy(graph, *calls, near.horosphere);
-                if (wanted && view.horospheres.isUpright(near.horosphere)) {
-                    planSegments(graph, near);
-                } else if (wanted && (*view).isPaintedBy(candidate, near)) {
-                    Face label = graph.horospheres.horosphere(near.horosphere).label;
-                    planRing(graph, (*view).groundRing((*view).groundNodeOf(candidate, near.horosphere), label), label, near.horosphere);
+                if (!view.isBlocked && isTiledBy(graph, *calls, near.horosphere)) {
+                    if (view.horospheres.isUpright(near.horosphere)) {
+                        planSegments(graph, near);
+                    } else if ((*view).isPaintedBy(candidate, near)) {
+                        Face label = graph.horospheres.horosphere(near.horosphere).label;
+                        planRing(graph, (*view).groundRing((*view).groundNodeOf(candidate, near.horosphere), label), label, near.horosphere);
+                    }
                 }
             }
             if (calls.hasEdge) {
                 foreach (site; (*view).edgeSitesOf(candidate)) {
-                    planTile(graph, (*view).edgeKey(site), site, ROOT, 0, true);
+                    planTile(graph, (*view).edgeKey(site), site, ROOT, 0, TileSpan.edge);
                 }
             }
         }
         if (view.isBlocked) {
             plan.tiles.length = tileStart;
-            plan.results.append(PlanResult(index, tileStart, 0, true));
+            plan.results.append(PlanResult(index, tileStart, 0, PlanEnd.blocked));
             view.forget();
         } else {
-            plan.results.append(PlanResult(index, tileStart, cast(uint) plan.tiles.length - tileStart, false));
+            plan.results.append(PlanResult(index, tileStart, cast(uint) plan.tiles.length - tileStart, PlanEnd.planned));
             measureRises(graph, tileStart);
         }
     }
@@ -514,7 +550,7 @@ struct TileHost {
         }
     }
 
-    void planTile(ref const Graph graph, TileKey key, SiteFrame site, uint over, int segment, bool isEdge) {
+    void planTile(ref const Graph graph, TileKey key, SiteFrame site, uint over, int segment, TileSpan span) {
         const(uint)* known = graph.structures.tiledFaces.find(key);
         if (known !is null) {
             plan.usedRecords.append(*known);
@@ -522,13 +558,13 @@ struct TileHost {
         if (known is null || graph.structures.blueprint.tiles.ptr[*known].isDropped) {
             uint pathStart = cast(uint) plan.paths.length;
             uint start = view.pathTo(site.node, plan.paths);
-            plan.tiles.append(PlannedTile(key, start, pathStart, cast(uint) plan.paths.length - pathStart, over, site, segment, isEdge));
+            plan.tiles.append(PlannedTile(key, start, pathStart, cast(uint) plan.paths.length - pathStart, over, site, segment, span));
         }
     }
 
     void planRing(ref const Graph graph, uint[GROUND_RING] ring, Face label, uint over) {
         foreach (face; ring) {
-            planTile(graph, (*view).faceKey(face, label), faceSite(face, label), over, 0, false);
+            planTile(graph, (*view).faceKey(face, label), faceSite(face, label), over, 0, TileSpan.ground);
         }
     }
 
@@ -536,7 +572,7 @@ struct TileHost {
         int[2] segments = (*view).segmentsNear(near);
         foreach (segment; segments[0] .. segments[1] + 1) {
             SiteFrame site = (*view).segmentSite(near.horosphere, segment);
-            planTile(graph, (*view).segmentKey(site), site, near.horosphere, segment, false);
+            planTile(graph, (*view).segmentKey(site), site, near.horosphere, segment, TileSpan.ground);
         }
     }
 
@@ -572,7 +608,10 @@ Api tileApi(TileHost* host) {
     api.tile = &tileTile;
     api.tileEdges = &tileTileEdges;
     api.horosphere = &tileHorosphere;
+    api.sunken = &tileSunken;
     api.openHorosphere = &tileOpenHorosphere;
+    api.columnSite = &tileColumnSite;
+    api.flatten = &tileFlatten;
     api.rooted = &tileRooted;
     api.invertGravity = &tileInvertGravity;
     api.fog = &tileFog;
@@ -634,19 +673,19 @@ ulong tileHash(const(Api)* api, Site site, SitePart part) {
 }
 
 void tilePaint(const(Api)* api, Site site, Material material, Box area, ApiRhythm rhythm) {
-    tileHost(api).paint(site, material, area, rhythm, false);
+    tileHost(api).paint(site, material, area, rhythm, Cover.over);
 }
 
 void tileFill(const(Api)* api, Site site, Material material, Box area, ApiRhythm rhythm) {
-    tileHost(api).paint(site, material, area, rhythm, true);
+    tileHost(api).paint(site, material, area, rhythm, Cover.intoAir);
 }
 
 void tileStop(const(Api)* api, Site site, Spot spot) {
-    tileHost(api).stop(site, spot, false);
+    tileHost(api).stop(site, spot, StopKind.route);
 }
 
 void tileEntrance(const(Api)* api, Site site, Spot spot) {
-    tileHost(api).stop(site, spot, true);
+    tileHost(api).stop(site, spot, StopKind.entrance);
 }
 
 bool tilePlace(const(Api)* api, Site site, Structure structure, const(void)* data, size_t size) {
@@ -673,8 +712,18 @@ uint tileHorosphere(const(Api)* api, double odds, HorosphereForm form, uint tag,
     return 0;
 }
 
+uint tileSunken(const(Api)* api, double odds, uint under, uint tag, Tile tile, const(void)* data, size_t size) {
+    tileHost(api).refuse("only the world's own structure gives horospheres their kinds");
+    return 0;
+}
+
 void tileOpenHorosphere(const(Api)* api, Site site, uint kind, uint edges) {
     tileHost(api).refuse("only the world's own structure opens horospheres");
+}
+
+Site tileColumnSite(const(Api)* api, Site site) {
+    tileHost(api).refuse("only the world's own structure opens horospheres, so only it asks for their frames");
+    return site;
 }
 
 void tileRooted(const(Api)* api, uint kind) {
@@ -683,6 +732,10 @@ void tileRooted(const(Api)* api, uint kind) {
 
 void tileTileEdges(const(Api)* api, Tile tile, const(void)* data, size_t size) {
     tileHost(api).refuse("only the world's own structure tiles the edges, and only once");
+}
+
+void tileFlatten(const(Api)* api, Site site) {
+    tileHost(api).refuse("only the world's own structure flattens the ground");
 }
 
 void tileInvertGravity(const(Api)* api) {
@@ -740,11 +793,11 @@ double tilePenHeight(const(Api)* api, Pen pen) {
 }
 
 void tileLimb(const(Api)* api, Pen pen, Material material, double cells, double fromRadius, double toRadius) {
-    tileHost(api).draw(pen, cells, fromRadius, toRadius, material, false);
+    tileHost(api).draw(pen, cells, fromRadius, toRadius, material, StrokeForm.solid);
 }
 
 void tileLeaves(const(Api)* api, Pen pen, Material material, double radius) {
-    tileHost(api).draw(pen, 0, radius, radius, material, true);
+    tileHost(api).draw(pen, 0, radius, radius, material, StrokeForm.leafy);
 }
 
 bool tileBuild(const(Api)* api, const(char)* world, Site site) {
@@ -811,8 +864,11 @@ struct TileWork {
     double msPerTask = INITIAL_MS_PER_TASK;
     uint preparedTiles;
     uint fallbackTiles;
-    bool hasFailed;
-    char[MESSAGE_CAPACITY] failure;
+    char[MESSAGE_CAPACITY] failure = 0;
+
+    bool hasFailed() const {
+        return failure[0] != 0;
+    }
 
     void ensureHosts(uint workers) {
         while (hosts.length < workers) {
@@ -835,20 +891,19 @@ struct TileWork {
         covered.clear();
         planning.clear();
         planning.appendAll(candidates);
-        bool isMade = true;
         uint round = 0;
-        while (!hasFailed && planning.length > 0 && isMade && round < PLAN_ROUNDS && tasks.length < budget) {
-            isMade = planCandidates(target, executor);
+        while (!hasFailed && planning.length > 0 && round < PLAN_ROUNDS && tasks.length < budget) {
+            size_t made = planCandidates(target, executor);
             blocked.clear();
             size_t index = 0;
             while (index < planning.length && tasks.length < budget) {
                 const(TileHost)* host = hosts.ptr[outputOf.ptr[index].host];
                 PlanResult result = host.plan.results.ptr[outputOf.ptr[index].output];
-                if (result.isBlocked) {
+                if (result.end == PlanEnd.blocked) {
                     blocked.append(planning.ptr[index]);
                 } else {
                     foreach (tile; host.plan.tiles.ptr[result.tileStart .. result.tileStart + result.tileCount]) {
-                        addTask(target, tile.key, tile.start, host.plan.paths.ptr[tile.pathStart .. tile.pathStart + tile.pathLength], tile.horosphere, tile.site, tile.segment, tile.isEdge);
+                        addTask(target, tile.key, tile.start, host.plan.paths.ptr[tile.pathStart .. tile.pathStart + tile.pathLength], tile.horosphere, tile.site, tile.segment, tile.span);
                     }
                     covered.append(planning.ptr[index]);
                 }
@@ -857,12 +912,16 @@ struct TileWork {
             planning.clear();
             planning.appendAll(blocked.slice());
             round += 1;
+            if (made == 0) {
+                break;
+            }
         }
         size_t painted = tasks.length;
         preparedTiles += cast(uint) painted;
-        if (runTasks(target, executor)) {
+        runTasks(target, executor);
+        if (!hasFailed) {
             foreach (slot; covered.slice()) {
-                target.structures.at(slot).isCovered = true;
+                target.structures.at(slot).marks.set(NodeMark.covered);
             }
         }
         if (painted >= TILE_TASK_LEAST) {
@@ -870,7 +929,7 @@ struct TileWork {
         }
     }
 
-    bool planCandidates(ref Graph target, Executor executor) {
+    size_t planCandidates(ref Graph target, Executor executor) {
         foreach (host; hosts.slice()) {
             host.plan.clear();
         }
@@ -878,7 +937,7 @@ struct TileWork {
         TileJob context = TileJob(&target, hosts.ptr, null, null, planning.ptr);
         ParallelJob job = ParallelJob(&planCandidateTask, &context, double.infinity, planning.length);
         executor.run(&job);
-        bool isMade = target.threadViews.finish(target);
+        size_t made = target.threadViews.finish(target);
         outputOf.resize(planning.length);
         foreach (hostIndex, host; hosts.slice()) {
             foreach (record; host.plan.usedRecords.slice()) {
@@ -893,11 +952,10 @@ struct TileWork {
                 outputOf.ptr[result.candidate] = TaskOutput(cast(uint) hostIndex, cast(uint) resultIndex);
             }
         }
-        return isMade;
+        return made;
     }
 
     void takeFailure(const(TileHost)* host) {
-        hasFailed = true;
         failure = host.failure;
     }
 
@@ -907,18 +965,18 @@ struct TileWork {
         taskOf.clear();
     }
 
-    void addTask(ref Graph target, TileKey key, uint start, const(Face)[] path, uint horosphere, SiteFrame site, int segment, bool isEdge) {
+    void addTask(ref Graph target, TileKey key, uint start, const(Face)[] path, uint horosphere, SiteFrame site, int segment, TileSpan span) {
         if (taskOf.find(key) is null) {
             const(uint)* known = target.structures.tiledFaces.find(key);
             uint record = NO_RECORD;
-            bool isRestoring = false;
+            TilePass pass = TilePass.first;
             if (known is null) {
                 record = target.structures.blueprint.addTile(key.node, key.feature, horosphere);
                 target.structures.tiledFaces.insert(key, record);
             } else if (target.structures.blueprint.tiles.ptr[*known].isDropped) {
                 record = *known;
                 target.structures.blueprint.tiles.ptr[record].horosphere = horosphere;
-                isRestoring = true;
+                pass = TilePass.restoring;
             }
             if (record != NO_RECORD) {
                 if (horosphere != ROOT) {
@@ -926,13 +984,13 @@ struct TileWork {
                     target.measuredHorosphere(horosphere);
                 }
                 taskOf.insert(key, cast(uint) tasks.length);
-                tasks.append(TileTask(key, start, cast(uint) paths.length, cast(uint) path.length, record, horosphere, site, segment, isEdge, isRestoring));
+                tasks.append(TileTask(key, start, cast(uint) paths.length, cast(uint) path.length, record, horosphere, site, segment, span, pass));
                 paths.appendAll(path);
             }
         }
     }
 
-    bool runTasks(ref Graph target, Executor executor) {
+    void runTasks(ref Graph target, Executor executor) {
         ensureHosts(executor.workers);
         if (tasks.length > 0 && !hasFailed) {
             foreach (host; hosts.slice()) {
@@ -953,7 +1011,7 @@ struct TileWork {
             while (index < tasks.length && !hasFailed) {
                 TileHost* host = hosts.ptr[outputOf.ptr[index].host];
                 TileOutput output = host.painter.outputs.ptr[outputOf.ptr[index].output];
-                if (output.isFailed) {
+                if (output.end == TaskEnd.failed) {
                     takeFailure(host);
                 } else {
                     apply(target, tasks.ptr[index], host.painter, output);
@@ -962,7 +1020,6 @@ struct TileWork {
             }
         }
         clearTasks();
-        return !hasFailed;
     }
 
     uint slotAlong(ref Graph target, ref const TilePainter painter, uint start, uint pathStart, uint pathLength) {
@@ -1021,29 +1078,28 @@ struct TileWork {
                 }
             }
         }
-        if (!task.isRestoring) {
+        if (task.pass == TilePass.first) {
             useEdges(blueprint, task.record, painted, lines, output.lineStart);
         }
         foreach (stop; painter.stops.ptr[output.stopStart .. output.stopStart + output.stopCount]) {
             uint slot = slotAlong(target, painter, stop.start, stop.pathStart, stop.pathLength);
             SiteFrame site = stop.site;
             site.node = slot;
-            if (!stop.isEntrance) {
+            if (stop.kind == StopKind.route) {
                 blueprint.route.append(RouteStop(site, stop.spot));
                 target.reference(slot);
-            } else if (!blueprint.hasEntrance) {
-                blueprint.entrance = RouteStop(site, stop.spot);
-                blueprint.hasEntrance = true;
+            } else if (!blueprint.entrance.exists) {
+                blueprint.entrance = Maybe!RouteStop.of(RouteStop(site, stop.spot));
                 target.reference(slot);
             }
         }
         foreach (drawn; painter.strokes.ptr[output.strokeStart .. output.strokeStart + output.strokeCount]) {
             uint slot = slotAlong(target, painter, drawn.start, drawn.pathStart, drawn.pathLength);
-            target.structures.addStroke(target.view, task.record, slot, Stroke.make(drawn.frame, drawn.length, drawn.startRadius, drawn.endRadius, drawn.material, drawn.isLeafy));
+            target.structures.addStroke(target.view, task.record, slot, Stroke.make(drawn.frame, drawn.length, drawn.startRadius, drawn.endRadius, drawn.material, drawn.form));
         }
         blueprint.reviveTile(task.record);
         blueprint.useTile(task.record);
-        if (task.isRestoring) {
+        if (task.pass == TilePass.restoring) {
             blueprint.restoredTiles += 1;
         }
     }

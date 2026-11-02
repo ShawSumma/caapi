@@ -1,12 +1,14 @@
 module headless;
 
-import core.stdc.stdio : FILE, fclose, fopen, fprintf, printf;
+import core.stdc.stdio : FILE, fclose, fflush, fopen, fprintf, printf;
 import core.stdc.string : strcmp, strlen;
 import base.array : Array;
-import base.crash : reportCrashes;
-import client.arguments : ExitStatus, FlagValue, NumberArgument, StartupError, VERSION, WorldgenArgument, exitStatus;
+import base.clock : nowSeconds;
+import base.crash : reportCrashes, reportHangAfter;
+import base.maybe : Maybe;
+import client.arguments : ExitStatus, FlagValue, StartupError, VERSION, WorldgenArgument, exitStatus, numberIn;
 import client.config : ClientConfig;
-import client.game : Game;
+import client.game : ChunkSupply, Game;
 import client.plugins : registry;
 import client.script : NamedScript, Script;
 import client.structures : StructureProblem, placeStructure;
@@ -15,13 +17,14 @@ import common.worldgen.generation : Worldgen, WorldgenKind;
 import scripts.films : FILMS;
 import scripts.tests : TESTS;
 import scripts.views : VIEWS;
-import worldcheck : benchDrive, benchGen, benchHashMap, benchMesh, benchNearby, checkForget, checkRepaint, dumpStructure, dumpWorld, printMaterialCensus, printSlices, printWorldDigest;
+import worldcheck : benchDrive, benchGen, benchHashMap, benchMesh, benchNearby, checkForget, checkRepaint, dumpStructure, dumpWorld, printMaterialCensus, printSlices, printSurfaceCensus, printWorldDigest;
 
 enum float DEFAULT_DUMP_RADIUS = 3.0f;
 enum float DEFAULT_GEN_RADIUS = 2.5f;
 enum float DEFAULT_NEARBY_RADIUS = 4.5f;
 enum uint DEFAULT_NEARBY_ITERATIONS = 50;
 enum int DEFAULT_SLICE_HEIGHT = 1;
+enum uint TEST_HANG_SECONDS = 120;
 enum string USAGE = "usage: mined-headless --out <report> --tests [name prefix ...]
        mined-headless --out <report> [--worldgen <world>] <command> [radius] [iterations]
   --worldgen terrain | plane <tilt in degrees> | structure <world>
@@ -29,7 +32,7 @@ commands:
   --tests [name prefix ...]   run the behavior tests (all, or those whose names start with a prefix)
   --views [name prefix ...]   run the screenshot view scripts without rendering, to check they still run
   --films [name prefix ...]   run the film shots without rendering, to check they still run
-  --world-digest, --dump-world, --material-census [radius]
+  --world-digest, --dump-world, --material-census, --surface-census [radius]
   --dump-structure, --check-repaint, --check-forget, --slice [height]   (need --worldgen structure <world>)
   --bench-gen [radius], --bench-mesh [radius], --bench-drive [radius]
   --bench-nearby [radius] [iterations], --bench-hashmap
@@ -38,12 +41,15 @@ commands:
 
 enum Command : ubyte {
     none,
+    help,
+    showVersion,
     tests,
     views,
     films,
     dumpWorld,
     worldDigest,
     materialCensus,
+    surfaceCensus,
     dumpStructure,
     slices,
     checkRepaint,
@@ -60,11 +66,9 @@ struct HeadlessArguments {
     StartupError error;
     const(char)* outputPath;
     Worldgen worldgen;
-    NumberArgument radius;
-    NumberArgument iterations;
+    Maybe!float radius;
+    Maybe!float iterations;
     Command command;
-    bool isHelp;
-    bool isVersion;
 
     static HeadlessArguments fromArgv(int argc, char** argv) {
         HeadlessArguments arguments;
@@ -80,7 +84,7 @@ struct HeadlessArguments {
 
     int parseAt(int argc, char** argv, int index) {
         const(char)* argument = argv[index];
-        NumberArgument number = NumberArgument.fromText(argument);
+        Maybe!float number = numberIn(argument);
         if (strcmp(argument, "--out") == 0) {
             FlagValue value = FlagValue.fromArgv(argc, argv, index);
             outputPath = value.text;
@@ -108,6 +112,9 @@ struct HeadlessArguments {
             return index + 1;
         } else if (strcmp(argument, "--material-census") == 0) {
             command = Command.materialCensus;
+            return index + 1;
+        } else if (strcmp(argument, "--surface-census") == 0) {
+            command = Command.surfaceCensus;
             return index + 1;
         } else if (strcmp(argument, "--dump-structure") == 0) {
             command = Command.dumpStructure;
@@ -137,21 +144,21 @@ struct HeadlessArguments {
             command = Command.benchHashMap;
             return index + 1;
         } else if (strcmp(argument, "--help") == 0) {
-            isHelp = true;
-            return index + 1;
+            command = Command.help;
+            return argc;
         } else if (strcmp(argument, "--version") == 0) {
-            isVersion = true;
-            return index + 1;
+            command = Command.showVersion;
+            return argc;
         } else if ((command == Command.tests || command == Command.views || command == Command.films) && argument[0] != '-') {
             prefixes.append(argument);
             return index + 1;
-        } else if (number.isPresent && !radius.isPresent) {
+        } else if (number.exists && !radius.exists) {
             radius = number;
             return index + 1;
-        } else if (number.isPresent && !iterations.isPresent) {
+        } else if (number.exists && !iterations.exists) {
             iterations = number;
             return index + 1;
-        } else if (number.isPresent) {
+        } else if (number.exists) {
             error = StartupError(null, "too many numbers, unexpected", argument);
             return index + 1;
         } else {
@@ -161,7 +168,7 @@ struct HeadlessArguments {
     }
 
     StartupError usageError() const {
-        if (isHelp || isVersion) {
+        if (command == Command.help || command == Command.showVersion) {
             return StartupError.init;
         } else if (outputPath is null) {
             return StartupError(null, "needs a report file", "--out");
@@ -181,9 +188,9 @@ struct HeadlessArguments {
     }
 
     float commandRadius() const {
-        if (radius.isPresent) {
+        if (radius.exists) {
             return radius.value;
-        } else if (command == Command.dumpWorld || command == Command.worldDigest || command == Command.materialCensus) {
+        } else if (command == Command.dumpWorld || command == Command.worldDigest || command == Command.materialCensus || command == Command.surfaceCensus) {
             return DEFAULT_DUMP_RADIUS;
         } else if (command == Command.benchNearby) {
             return DEFAULT_NEARBY_RADIUS;
@@ -193,7 +200,7 @@ struct HeadlessArguments {
     }
 
     int sliceHeight() const {
-        if (radius.isPresent) {
+        if (radius.exists) {
             return cast(int) radius.value;
         } else {
             return DEFAULT_SLICE_HEIGHT;
@@ -201,7 +208,7 @@ struct HeadlessArguments {
     }
 
     uint iterationCount() const {
-        if (iterations.isPresent) {
+        if (iterations.exists) {
             return cast(uint) iterations.value;
         } else {
             return DEFAULT_NEARBY_ITERATIONS;
@@ -222,46 +229,52 @@ bool isPrefixOf(const(char)* prefix, string name) {
     return length <= name.length && name[0 .. length] == prefix[0 .. length];
 }
 
-bool runTest(ref const NamedScript test, Worldgen worldgen, FILE* report) {
+ExitStatus runTest(ref const NamedScript test, Worldgen worldgen, FILE* report) {
+    double start = nowSeconds();
+    fprintf(report, "== %.*s\n", cast(int) test.name.length, test.name.ptr);
+    fflush(report);
+    reportHangAfter(TEST_HANG_SECONDS);
     ClientConfig config;
     Game game = Game.make(worldgen, config.reach);
-    game.isGeneratingOnDemand = true;
-    fprintf(report, "== %.*s\n", cast(int) test.name.length, test.name.ptr);
+    game.supply = ChunkSupply.onDemand;
     StructureProblem problem = game.placeStructure();
-    bool isPassed = false;
+    ExitStatus status = ExitStatus.failed;
     if (problem.isPresent) {
         fprintf(report, "%s\n", problem.text.ptr);
     } else {
         Script script = Script.make(&game, report);
-        isPassed = script.run(test.run);
-        fprintf(report, "session: steps=%u time=%.2f traveled=%.2f%s\n", script.steps, cast(double) game.time.value, cast(double) game.traveled.value, sessionSuffix(isPassed));
+        status = script.run(test.run);
+        fprintf(report, "session: steps=%u time=%.2f traveled=%.2f wall=%.1fs%s\n", script.steps, cast(double) game.time.value, cast(double) game.traveled.value, nowSeconds() - start, sessionSuffix(status));
     }
+    fflush(report);
     game.release();
-    return isPassed;
+    return status;
 }
 
-immutable(char)* sessionSuffix(bool isPassed) {
-    if (isPassed) {
+immutable(char)* sessionSuffix(ExitStatus status) {
+    if (status == ExitStatus.ok) {
         return "";
     } else {
         return " error";
     }
 }
 
-bool runFilms(ref const HeadlessArguments arguments, FILE* report) {
-    bool isPassed = true;
+ExitStatus runFilms(ref const HeadlessArguments arguments, FILE* report) {
+    ExitStatus status = ExitStatus.ok;
     foreach (ref film; FILMS) {
-        isPassed = runScripts(arguments, film.shots, report) && isPassed;
+        if (runScripts(arguments, film.shots, report) != ExitStatus.ok) {
+            status = ExitStatus.failed;
+        }
     }
-    return isPassed;
+    return status;
 }
 
-bool runScripts(ref const HeadlessArguments arguments, const(NamedScript)[] scripts, FILE* report) {
+ExitStatus runScripts(ref const HeadlessArguments arguments, const(NamedScript)[] scripts, FILE* report) {
     uint passed = 0;
     uint failed = 0;
     foreach (ref test; scripts) {
         if (arguments.isChosen(test.name)) {
-            if (runTest(test, arguments.worldgen, report)) {
+            if (runTest(test, arguments.worldgen, report) == ExitStatus.ok) {
                 passed += 1;
             } else {
                 failed += 1;
@@ -269,10 +282,10 @@ bool runScripts(ref const HeadlessArguments arguments, const(NamedScript)[] scri
         }
     }
     fprintf(report, "%u passed, %u failed\n", passed, failed);
-    return failed == 0;
+    return exitStatus(failed == 0);
 }
 
-bool runWorldCommand(ref const HeadlessArguments arguments, FILE* output) {
+ExitStatus runWorldCommand(ref const HeadlessArguments arguments, FILE* output) {
     if (arguments.command == Command.tests) {
         return runScripts(arguments, TESTS, output);
     } else if (arguments.command == Command.views) {
@@ -289,7 +302,7 @@ bool runWorldCommand(ref const HeadlessArguments arguments, FILE* output) {
         return checkForget(output, CHUNK_DIMENSION, arguments.worldgen);
     } else {
         runMeasurement(arguments, output);
-        return true;
+        return ExitStatus.ok;
     }
 }
 
@@ -301,6 +314,8 @@ void runMeasurement(ref const HeadlessArguments arguments, FILE* output) {
         printWorldDigest(output, radius, CHUNK_DIMENSION);
     } else if (arguments.command == Command.materialCensus) {
         printMaterialCensus(output, radius, CHUNK_DIMENSION);
+    } else if (arguments.command == Command.surfaceCensus) {
+        printSurfaceCensus(output, radius, CHUNK_DIMENSION);
     } else if (arguments.command == Command.benchGen) {
         benchGen(output, radius, CHUNK_DIMENSION);
     } else if (arguments.command == Command.benchDrive) {
@@ -320,7 +335,7 @@ ExitStatus runWithOutput(ref const HeadlessArguments arguments, const(char)* pro
         StartupError(null, "cannot open the report file", arguments.outputPath).report(program);
         return ExitStatus.failed;
     } else {
-        ExitStatus status = exitStatus(runWorldCommand(arguments, output));
+        ExitStatus status = runWorldCommand(arguments, output);
         fclose(output);
         return status;
     }
@@ -330,10 +345,10 @@ ExitStatus startCommand(ref const HeadlessArguments arguments, const(char)* prog
     if (arguments.error.isPresent()) {
         arguments.error.report(program);
         return ExitStatus.usage;
-    } else if (arguments.isHelp) {
+    } else if (arguments.command == Command.help) {
         printf("%s", USAGE.ptr);
         return ExitStatus.ok;
-    } else if (arguments.isVersion) {
+    } else if (arguments.command == Command.showVersion) {
         printf("mined %s\n", VERSION.ptr);
         return ExitStatus.ok;
     } else {

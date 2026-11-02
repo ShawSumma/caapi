@@ -2,7 +2,7 @@ module client.graphics.voxels.meshes;
 
 import core.stdc.string : memcpy;
 import bindings.platform : VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, VK_STRUCTURE_TYPE_MEMORY_BARRIER, VkBuffer, VkBufferCopy, VkBufferUsageFlags, VkCommandBuffer, VkDevice, VkDeviceSize, VkDrawIndirectCommand, VkMemoryBarrier, VkPhysicalDevice, vkCmdCopyBuffer, vkCmdPipelineBarrier;
-import base.allocator : Allocation, RangeAllocator;
+import base.allocator : NO_OFFSET, RangeAllocator;
 import base.array : Array, grownCapacity;
 import base.slab : Slab;
 import client.graphics.matrices : MATRIX_FLOATS, flatten;
@@ -15,6 +15,7 @@ import common.node : Chunk, ChunkSlot, ChunkState;
 import common.traversal : NOT_COLLECTED, NearbyScratch;
 import geometry.cube : DIRECTIONS;
 import geometry.honeycomb : CORNER_COUNT, Corner, cubeCenter, cubeToNode;
+import plugins.api.flags : Flags;
 
 enum uint INITIAL_FACE_CAPACITY = 2 ^^ 20;
 enum uint INITIAL_STAGING_FACES = 2 ^^ 16;
@@ -40,14 +41,23 @@ struct DrawTransform {
     float[POINT_FLOATS] reversed;
 }
 
+enum ChunkMark : ubyte {
+    drawable,
+    nodeMissing,
+    unlisted,
+}
+
+enum Replaced : ubyte {
+    faces,
+    drawBuffers,
+}
+
 struct RenderChunk {
     uint faceOffset;
     uint faceCount;
     uint drawable;
     uint slot;
-    bool hasDrawable;
-    bool isNodeMissing;
-    bool isUnlisted;
+    Flags!ChunkMark marks;
 }
 
 struct MeshRecord {
@@ -70,6 +80,16 @@ struct MeshBatch {
     const(Graph)* graph;
 }
 
+bool isBesideUnsettled(ref const Graph graph, ChunkSlot slot) {
+    foreach (direction; DIRECTIONS) {
+        ChunkSlot neighbor = graph.chunkNeighborSlot(slot, direction);
+        if (neighbor.slot != NO_SLOT && (graph.chunks.at(neighbor).state == ChunkState.generating || graph.chunks.at(neighbor).state == ChunkState.dropped)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void meshJob(void* context, size_t index, uint worker) {
     MeshBatch* batch = cast(MeshBatch*) context;
     const(Graph)* graph = batch.graph;
@@ -77,18 +97,13 @@ void meshJob(void* context, size_t index, uint worker) {
     const(Chunk)* chunk = graph.chunks.at(slot);
     WorkerMeshes* output = &batch.workers.ptr[worker];
     if (chunk.state == ChunkState.populated && !chunk.voxels.isOpaqueFill()) {
-        bool isWaiting = false;
         foreach (direction; DIRECTIONS) {
             ChunkSlot neighbor = (*graph).chunkNeighborSlot(slot, direction);
-            if (neighbor.slot != NO_SLOT) {
-                ChunkState state = graph.chunks.at(neighbor).state;
-                isWaiting = isWaiting || state == ChunkState.generating || state == ChunkState.dropped;
-                if (state == ChunkState.dropped) {
-                    output.dropped.append(neighbor);
-                }
+            if (neighbor.slot != NO_SLOT && graph.chunks.at(neighbor).state == ChunkState.dropped) {
+                output.dropped.append(neighbor);
             }
         }
-        if (isWaiting) {
+        if ((*graph).isBesideUnsettled(slot)) {
             output.waiting.append(slot);
         } else {
             const(Quad)[] meshed = output.mesher.mesh(*graph, slot);
@@ -135,8 +150,7 @@ struct ChunkMeshes {
     uint renderBlockCount;
     uint meshedChunks;
     ubyte dimension;
-    bool hasReplacedFaces;
-    bool hasReplacedDrawBuffers;
+    Flags!Replaced replaced;
 
     void setup(VkPhysicalDevice physical, VkDevice logical, ubyte chunkDimension) {
         physicalDevice = physical;
@@ -169,7 +183,7 @@ struct ChunkMeshes {
 
     GpuBuffer replacedMapped(GpuBuffer old, VkDeviceSize size) {
         retired.append(old);
-        hasReplacedDrawBuffers = true;
+        replaced.set(Replaced.drawBuffers);
         return GpuBuffer.makeMapped(physicalDevice, device, size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     }
 
@@ -207,8 +221,7 @@ struct ChunkMeshes {
         uploads.clear();
         growthCopies.clear();
         stagedFaces = 0;
-        hasReplacedFaces = false;
-        hasReplacedDrawBuffers = false;
+        replaced = Flags!Replaced.init;
     }
 
     void list(ref const NearbyScratch nearby, uint listVersion) {
@@ -237,7 +250,7 @@ struct ChunkMeshes {
 
     void refreshDrawableNodes(ref const NearbyScratch nearby) {
         foreach (chunkIndex; unlisted.slice()) {
-            chunks.at(chunkIndex).isUnlisted = false;
+            chunks.at(chunkIndex).marks.clear(ChunkMark.unlisted);
         }
         unlisted.clear();
         foreach (drawable, chunkIndex; drawableChunks.slice()) {
@@ -259,9 +272,9 @@ struct ChunkMeshes {
 
     void noteNode(uint chunkIndex, uint node) {
         RenderChunk* entry = chunks.at(chunkIndex);
-        entry.isNodeMissing = node == NOT_COLLECTED;
-        if (entry.isNodeMissing && !entry.isUnlisted) {
-            entry.isUnlisted = true;
+        entry.marks.put(ChunkMark.nodeMissing, node == NOT_COLLECTED);
+        if (node == NOT_COLLECTED && !entry.marks.has(ChunkMark.unlisted)) {
+            entry.marks.set(ChunkMark.unlisted);
             unlisted.append(chunkIndex);
         }
     }
@@ -270,17 +283,18 @@ struct ChunkMeshes {
         size_t kept = 0;
         foreach (chunkIndex; unlisted.slice()) {
             RenderChunk* entry = chunks.at(chunkIndex);
-            if (entry.hasDrawable && entry.isNodeMissing) {
+            if (entry.marks.has(ChunkMark.drawable) && entry.marks.has(ChunkMark.nodeMissing)) {
                 uint node = placeNode(nearby, chunkIndex);
                 if (node != NOT_COLLECTED) {
                     setDrawableNode(entry.drawable, node);
-                    entry.isNodeMissing = false;
+                    entry.marks.clear(ChunkMark.nodeMissing);
                 }
             }
-            entry.isUnlisted = entry.hasDrawable && entry.isNodeMissing;
-            if (entry.isUnlisted) {
+            if (entry.marks.has(ChunkMark.drawable) && entry.marks.has(ChunkMark.nodeMissing)) {
                 unlisted.ptr[kept] = chunkIndex;
                 kept += 1;
+            } else {
+                entry.marks.clear(ChunkMark.unlisted);
             }
         }
         unlisted.length = kept;
@@ -391,9 +405,10 @@ struct ChunkMeshes {
                         allocator.release(entry.faceOffset, entry.faceCount);
                     }
                     removeDrawable(chunkIndex);
-                    bool isUnlisted = entry.isUnlisted;
+                    Flags!ChunkMark kept;
+                    kept.put(ChunkMark.unlisted, entry.marks.has(ChunkMark.unlisted));
                     *entry = RenderChunk.init;
-                    entry.isUnlisted = isUnlisted;
+                    entry.marks = kept;
                 }
                 freeRenderBlocks.append(render);
                 placedVersions.ptr[render] = NO_VERSION;
@@ -403,23 +418,23 @@ struct ChunkMeshes {
     }
 
     uint allocateFaces(uint count) {
-        Allocation allocation = allocator.allocate(count);
-        if (allocation.isFound) {
-            return allocation.offset;
+        uint offset = allocator.allocate(count);
+        if (offset != NO_OFFSET) {
+            return offset;
         } else {
             growFaces(count);
-            return allocator.allocate(count).offset;
+            return allocator.allocate(count);
         }
     }
 
     void writeDrawable(uint chunkIndex, ChunkSlot slot, uint node) {
         RenderChunk* entry = chunks.at(chunkIndex);
-        if (!entry.hasDrawable) {
+        if (!entry.marks.has(ChunkMark.drawable)) {
             if (drawableCount == drawableCapacity) {
                 growDrawBuffers(drawableCapacity * 2);
             }
             entry.drawable = drawableCount;
-            entry.hasDrawable = true;
+            entry.marks.set(ChunkMark.drawable);
             drawableChunks.append(chunkIndex);
             drawableRecords.append(DrawableRecord.init);
         }
@@ -429,7 +444,7 @@ struct ChunkMeshes {
 
     void removeDrawable(uint chunkIndex) {
         RenderChunk* entry = chunks.at(chunkIndex);
-        if (entry.hasDrawable) {
+        if (entry.marks.has(ChunkMark.drawable)) {
             uint last = drawableCount - 1;
             uint movedChunk = drawableChunks.ptr[last];
             setDrawable(entry.drawable, drawableRecords.ptr[last]);
@@ -437,7 +452,7 @@ struct ChunkMeshes {
             chunks.at(movedChunk).drawable = entry.drawable;
             drawableChunks.length = last;
             drawableRecords.length = last;
-            entry.hasDrawable = false;
+            entry.marks.clear(ChunkMark.drawable);
         }
     }
 
@@ -454,7 +469,7 @@ struct ChunkMeshes {
         retired.append(faces);
         faces = larger;
         allocator.grow(capacity);
-        hasReplacedFaces = true;
+        replaced.set(Replaced.faces);
     }
 
     void recordUploads(VkCommandBuffer commandBuffer) {

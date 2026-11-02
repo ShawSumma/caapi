@@ -1,6 +1,6 @@
 module unit.hashmap;
 
-import core.stdc.stdlib : calloc, free;
+import base.flags : Bits;
 import base.hashmap : FIBONACCI_MULTIPLIER, HashMap;
 
 enum size_t KEYS = 100000;
@@ -76,26 +76,22 @@ unittest {
 
 unittest {
     HashMap!(Key, size_t) map;
-    bool[RANGE] held;
+    Bits held;
+    held.cover(RANGE);
     ulong state = 1;
     foreach (step; 0 .. STEPS) {
         state = state * STATE_MULTIPLIER + STATE_INCREMENT;
         size_t key = (state >> 33) % RANGE;
-        bool filling = (step / SWING) % 2 == 0;
-        bool inserting = filling;
-        if ((state >> 20) % 4 == 0) {
-            inserting = !filling;
-        }
-        if (inserting) {
+        if (((step / SWING) % 2 == 0) != ((state >> 20) % 4 == 0)) {
             map.insert(Key(key), key);
-            held[key] = true;
+            held.set(key);
         } else {
             map.remove(Key(key));
-            held[key] = false;
+            held.clear(key);
         }
         size_t probed = (state >> 40) % RANGE;
         size_t* found = map.find(Key(probed));
-        if (held[probed]) {
+        if (held.has(probed)) {
             assert(found !is null && *found == probed);
         } else {
             assert(found is null);
@@ -103,52 +99,57 @@ unittest {
         if (step % VISIT_STEPS == 0) {
             size_t visited = 0;
             foreach (ref const visitedKey, ref value; map) {
-                assert(held[visitedKey.value] && value == visitedKey.value);
+                assert(held.has(visitedKey.value) && value == visitedKey.value);
                 visited += 1;
             }
             size_t present = 0;
-            foreach (one; held) {
-                present += one;
+            foreach (cell; 0 .. RANGE) {
+                if (held.has(cell)) {
+                    present += 1;
+                }
             }
             assert(visited == present);
         }
     }
     foreach (key; 0 .. RANGE) {
-        assert((map.find(Key(key)) !is null) == held[key]);
+        assert((map.find(Key(key)) !is null) == held.has(key));
     }
+    held.release();
     map.release();
 }
 
 unittest {
     HashMap!(Key, size_t) map;
-    bool* held = cast(bool*) calloc(BIG_RANGE, bool.sizeof);
+    Bits held;
+    held.cover(BIG_RANGE);
     size_t present = 0;
     ulong state = 1;
     foreach (step; 0 .. BIG_STEPS) {
         state = state * STATE_MULTIPLIER + STATE_INCREMENT;
         size_t key = (state >> 30) % BIG_RANGE;
-        bool inserting = ((step / BIG_SWING) % 2 == 0) != ((state >> 20) % 4 == 0);
-        if (inserting && !held[key]) {
-            map.insert(Key(key), key);
-            held[key] = true;
-            present += 1;
-        } else if (!inserting && held[key]) {
+        if (((step / BIG_SWING) % 2 == 0) != ((state >> 20) % 4 == 0)) {
+            if (!held.has(key)) {
+                map.insert(Key(key), key);
+                held.set(key);
+                present += 1;
+            }
+        } else if (held.has(key)) {
             map.remove(Key(key));
-            held[key] = false;
+            held.clear(key);
             present -= 1;
         }
         size_t probed = (state >> 40) % BIG_RANGE;
-        assert((map.find(Key(probed)) !is null) == held[probed]);
+        assert((map.find(Key(probed)) !is null) == held.has(probed));
         if (step % BIG_VISIT_STEPS == 0) {
             size_t visited = 0;
             foreach (ref const visitedKey, ref value; map) {
-                assert(held[visitedKey.value] && value == visitedKey.value);
+                assert(held.has(visitedKey.value) && value == visitedKey.value);
                 visited += 1;
             }
             assert(visited == present);
         }
     }
-    free(held);
+    held.release();
     map.release();
 }
 

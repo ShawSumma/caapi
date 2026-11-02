@@ -1,23 +1,21 @@
 module common.worldgen.structure;
 
-import core.math : sqrt;
-import core.stdc.math : atanhf, coshf, fabsf, floorf;
+import core.stdc.math : atanhf, floorf;
 import base.array : Array;
 import base.hashmap : FIBONACCI_MULTIPLIER;
-import base.numbers : higherOf, lowerOf;
+import base.maybe : Maybe;
+import base.numbers : clamped, higherOf, lowerOf;
 import base.splitmix : SplitMix;
 import base.units : Length;
 import common.graph : Graph, NO_SLOT, NodeId, ParentEntry, ParentList, ROOT_NODE;
 import common.node : ChunkLayout;
-import common.position : Position;
-import common.traversal : NearbyNode, NearbyScratch;
 import common.view : GraphView;
-import common.worldgen.blueprint : BlueprintBuilder, CellBox, EVERY_HEIGHT, LineSpec, PaintResult, canonicalBox, floorDivision;
-import common.worldgen.generation : NodeState, StructureWorld, Worldgen;
-import common.worldgen.store : pin;
-import geometry.honeycomb : CORNER_COUNT, Corner, FACE_COUNT, FACE_DISTANCE, Face, across, cornerToNode, cubeToNode, faceBit, faces, isAdjacentTo, mirror;
+import common.worldgen.blueprint : CellBox, LineSpec, canonicalBox, floorDivision;
+import common.worldgen.generation : NodeState;
+import common.worldgen.store : NodeMark, pin;
+import geometry.honeycomb : CORNER_COUNT, Corner, FACE_COUNT, Face, across, cornerToNode, faceBit, faces, isAdjacentTo, mirror;
 import geometry.lorentz : Mat4, Motion, Point, Vec4;
-import plugins.api.api : Material, Site, SitePart, Turn;
+import plugins.api.api : Site, SitePart, Turn;
 
 enum int PAINT_REACH = 6;
 enum uint GROUND_RING = 11;
@@ -25,24 +23,11 @@ enum ulong LEVEL_MULTIPLIER = 0xBF58476D1CE4E5B9;
 enum int PLACE_SLACK = 2;
 enum float TOUCHING_FACTOR = 1.5f;
 enum Length SPAWN_DISTANCE = Length(1.0f);
-enum uint FACE_CORNERS = 5;
 enum uint EDGE_NODES = 4;
 enum uint NODE_EDGES = 30;
-enum ubyte TEST_DIMENSION = 12;
-enum float TEST_RADIUS = 3.0f;
-enum Length TEST_TOLERANCE = Length(0.01f);
-enum Length TEST_ON_LINE = Length(1e-3f);
-enum int TEST_BEHIND_EDGES = 10;
-enum int TEST_RISE_EDGES = 3;
-enum uint TEST_DEEP_STEPS = 40;
-enum uint TEST_SIDE_STRIDE = 5;
-immutable Face[3] TEST_EDGE_WALK = [Face.f3, Face.f7, Face.f1];
-immutable int[3][4] TEST_CELLS = [
-    [0, 0, 0],
-    [3, 1, 2],
-    [11, 5, 0],
-    [2, 11, 9],
-];
+enum float FLAT_RADIUS = 1.8f;
+enum float FLAT_BLEND = 1.4f;
+enum uint FLAT_DEPTH_SPAN = 8;
 
 struct LineTouch {
     int level;
@@ -50,11 +35,6 @@ struct LineTouch {
     Corner lower;
     byte xSign;
     byte ySign;
-}
-
-struct TouchCrossing {
-    LineTouch touch;
-    bool isKept;
 }
 
 struct SlotTouch {
@@ -116,9 +96,9 @@ SiteFrame frameOf(Site site) {
     return SiteFrame(site.level, site.node, cast(Corner) site.corner, cast(Face) site.xSide, cast(Face) site.ySide, site.xSign, site.ySign, site.zSign);
 }
 
-struct FrameCrossing {
-    SiteFrame site;
-    bool isKept;
+enum AxisOrder : ubyte {
+    straight,
+    swapped,
 }
 
 struct LineTransform {
@@ -126,7 +106,7 @@ struct LineTransform {
     byte xSign;
     byte ySign;
     byte zSign;
-    bool isSwapped;
+    AxisOrder order;
 }
 
 struct CanonicalSite {
@@ -165,18 +145,18 @@ bool isOnTouch(ref const LineTouch touch, ref const LineSpec spec, Corner corner
     return (corner == touch.lower || corner == upperOf(touch.lower, spec)) && isTouchInRange(touch, spec);
 }
 
-TouchCrossing crossed(LineTouch touch, ref const LineSpec spec, Face side) {
+Maybe!LineTouch crossed(LineTouch touch, ref const LineSpec spec, Face side) {
     Corner upper = upperOf(touch.lower, spec);
     if (side == spec.xSide) {
-        return TouchCrossing(LineTouch(touch.level, touch.line, touch.lower, cast(byte) -touch.xSign, touch.ySign), true);
+        return Maybe!LineTouch.of(LineTouch(touch.level, touch.line, touch.lower, cast(byte) -touch.xSign, touch.ySign));
     } else if (side == spec.ySide) {
-        return TouchCrossing(LineTouch(touch.level, touch.line, touch.lower, touch.xSign, cast(byte) -touch.ySign), true);
+        return Maybe!LineTouch.of(LineTouch(touch.level, touch.line, touch.lower, touch.xSign, cast(byte) -touch.ySign));
     } else if (side == crossingSide(touch.lower, spec)) {
-        return TouchCrossing(LineTouch(touch.level - 1, touch.line, upper, touch.xSign, touch.ySign), true);
+        return Maybe!LineTouch.of(LineTouch(touch.level - 1, touch.line, upper, touch.xSign, touch.ySign));
     } else if (side == crossingSide(upper, spec)) {
-        return TouchCrossing(LineTouch(touch.level + 1, touch.line, upper, touch.xSign, touch.ySign), true);
+        return Maybe!LineTouch.of(LineTouch(touch.level + 1, touch.line, upper, touch.xSign, touch.ySign));
     } else {
-        return TouchCrossing(touch, false);
+        return Maybe!LineTouch.init;
     }
 }
 
@@ -203,23 +183,28 @@ void finalizeStructure(ref Graph graph, uint slot) {
         foreach (touch; graph.structures.touchesAt(link.slot)) {
             LineSpec spec = graph.structures.blueprint.lines.ptr[touch.line];
             if (spec.isEndless()) {
-                TouchCrossing crossing = crossed(touch, spec, link.side);
-                if (crossing.isKept) {
-                    (*found).addUnique(crossing.touch);
+                Maybe!LineTouch crossing = crossed(touch, spec, link.side);
+                if (crossing.exists) {
+                    (*found).addUnique(crossing.value);
                 }
             }
         }
     }
-    bool isInStructure = false;
-    foreach (touch; found.slice()) {
-        isInStructure = isInStructure || isTouchInRange(touch, graph.structures.blueprint.lines.ptr[touch.line]);
-    }
     graph.structures.setTouches(slot, found.slice());
-    graph.structures.at(slot).isInStructure = isInStructure;
-    graph.structures.at(slot).hasStrokes = graph.structures.strokes.reachesAt(graph.idAt(slot)).length > 0;
+    graph.structures.at(slot).marks.put(NodeMark.inStructure, graph.hasTouchInRange(found.slice()));
+    graph.structures.at(slot).marks.put(NodeMark.strokes, graph.structures.strokes.reachesAt(graph.idAt(slot)).length > 0);
     if (graph.structures.at(slot).needsBuilding()) {
         graph.pin(slot);
     }
+}
+
+bool hasTouchInRange(ref const Graph graph, const(LineTouch)[] touches) {
+    foreach (touch; touches) {
+        if (isTouchInRange(touch, graph.structures.blueprint.lines.ptr[touch.line])) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void addUnique(ref Array!LineTouch touches, LineTouch touch) {
@@ -256,15 +241,15 @@ SlotTouch walkedTouch(ref GraphView view, SlotTouch from, ref const LineSpec spe
         if (edge > current.touch.level) {
             side = crossingSide(upperOf(current.touch.lower, spec), spec);
         }
-        current = SlotTouch(crossed(current.touch, spec, side).touch, view.ensureNeighborSlot(current.slot, side));
+        current = SlotTouch(crossed(current.touch, spec, side).value, view.ensureNeighborSlot(current.slot, side));
     }
     return current;
 }
 
 SlotTouch[EDGE_NODES] aroundEdge(ref GraphView view, SlotTouch edge, ref const LineSpec spec) {
-    SlotTouch x = SlotTouch(crossed(edge.touch, spec, spec.xSide).touch, view.ensureNeighborSlot(edge.slot, spec.xSide));
-    SlotTouch y = SlotTouch(crossed(edge.touch, spec, spec.ySide).touch, view.ensureNeighborSlot(edge.slot, spec.ySide));
-    SlotTouch both = SlotTouch(crossed(y.touch, spec, spec.xSide).touch, view.ensureNeighborSlot(y.slot, spec.xSide));
+    SlotTouch x = SlotTouch(crossed(edge.touch, spec, spec.xSide).value, view.ensureNeighborSlot(edge.slot, spec.xSide));
+    SlotTouch y = SlotTouch(crossed(edge.touch, spec, spec.ySide).value, view.ensureNeighborSlot(edge.slot, spec.ySide));
+    SlotTouch both = SlotTouch(crossed(y.touch, spec, spec.xSide).value, view.ensureNeighborSlot(y.slot, spec.xSide));
     return [edge, x, y, both];
 }
 
@@ -286,20 +271,19 @@ SiteFrame forwarded(SiteFrame site, int edges) {
 }
 
 SiteFrame atLevel(ref GraphView view, SiteFrame site, int level) {
+    int rise = 1;
+    if (level < site.level) {
+        rise = -1;
+    }
     SiteFrame result = site;
     while (result.level != level) {
-        result = view.stepped(result, level > result.level);
+        result = view.stepped(result, rise);
     }
     return result;
 }
 
-SiteFrame stepped(ref GraphView view, SiteFrame site, bool isUp) {
-    bool isInside = (site.zSign > 0) == isUp;
-    if (isInside) {
-        int rise = -1;
-        if (isUp) {
-            rise = 1;
-        }
+SiteFrame stepped(ref GraphView view, SiteFrame site, int rise) {
+    if (site.zSign * rise > 0) {
         return SiteFrame(site.level + rise, site.node, site.nextCorner(), site.xSide, site.ySide, site.xSign, site.ySign, cast(byte) -site.zSign);
     } else {
         uint across = view.ensureNeighborSlot(site.node, site.zSide());
@@ -336,19 +320,30 @@ SiteFrame turned(ref GraphView view, SiteFrame site, Turn turn) {
     return SiteFrame.fromAxes(0, at.node, at.corner, axes[0], axes[1], axes[2]);
 }
 
+Maybe!ParentEntry parentOnCorner(ParentList parents, Corner corner) {
+    foreach (link; parents.links[0 .. parents.count]) {
+        if (sideAxis(corner, link.side) != 3) {
+            return Maybe!ParentEntry.of(link);
+        }
+    }
+    return Maybe!ParentEntry.init;
+}
+
+Maybe!ParentEntry parentThrough(ParentList parents, Face first, Face second) {
+    foreach (link; parents.links[0 .. parents.count]) {
+        if (link.side == first || link.side == second) {
+            return Maybe!ParentEntry.of(link);
+        }
+    }
+    return Maybe!ParentEntry.init;
+}
+
 RootedCorner rootedCorner(ref const GraphView view, uint node, Corner corner) {
     uint slot = node;
-    bool isLowest = false;
-    while (!isLowest) {
-        ParentList parents = view.parents(slot);
-        uint index = 0;
-        while (index < parents.count && sideAxis(corner, parents.links[index].side) == 3) {
-            index += 1;
-        }
-        isLowest = index == parents.count;
-        if (!isLowest) {
-            slot = parents.links[index].slot;
-        }
+    Maybe!ParentEntry lower = parentOnCorner(view.parents(slot), corner);
+    while (lower.exists) {
+        slot = lower.value.slot;
+        lower = parentOnCorner(view.parents(slot), corner);
     }
     return RootedCorner(ClaimKey(slot, corner, SitePart.vertex), view.depthOf(slot));
 }
@@ -357,17 +352,10 @@ SiteFrame edgeSite(ref const GraphView view, uint node, Corner corner, size_t ax
     Face first = corner.faces[(axis + 1) % 3];
     Face second = corner.faces[(axis + 2) % 3];
     uint slot = node;
-    bool isLowest = false;
-    while (!isLowest) {
-        ParentList parents = view.parents(slot);
-        uint index = 0;
-        while (index < parents.count && parents.links[index].side != first && parents.links[index].side != second) {
-            index += 1;
-        }
-        isLowest = index == parents.count;
-        if (!isLowest) {
-            slot = parents.links[index].slot;
-        }
+    Maybe!ParentEntry lower = parentThrough(view.parents(slot), first, second);
+    while (lower.exists) {
+        slot = lower.value.slot;
+        lower = parentThrough(view.parents(slot), first, second);
     }
     return SiteFrame(0, slot, lowerOf(corner, corner.across[axis]), lowerOf(first, second), higherOf(first, second), 1, 1, 1);
 }
@@ -473,59 +461,57 @@ uint[GROUND_RING] groundRing(ref GraphView view, uint sky, Face label) {
     return ring;
 }
 
-FrameCrossing crossedFrame(SiteFrame site, Face side, uint node) {
+Maybe!SiteFrame crossedFrame(SiteFrame site, Face side, uint node) {
     Corner next = site.nextCorner();
     Face far = next.faces[3 - sideAxis(next, site.xSide) - sideAxis(next, site.ySide)];
     if (side == site.xSide) {
-        return FrameCrossing(SiteFrame(site.level, node, site.corner, site.xSide, site.ySide, cast(byte) -site.xSign, site.ySign, site.zSign), true);
+        return Maybe!SiteFrame.of(SiteFrame(site.level, node, site.corner, site.xSide, site.ySide, cast(byte) -site.xSign, site.ySign, site.zSign));
     } else if (side == site.ySide) {
-        return FrameCrossing(SiteFrame(site.level, node, site.corner, site.xSide, site.ySide, site.xSign, cast(byte) -site.ySign, site.zSign), true);
+        return Maybe!SiteFrame.of(SiteFrame(site.level, node, site.corner, site.xSide, site.ySide, site.xSign, cast(byte) -site.ySign, site.zSign));
     } else if (side == site.zSide()) {
-        return FrameCrossing(SiteFrame(site.level, node, site.corner, site.xSide, site.ySide, site.xSign, site.ySign, cast(byte) -site.zSign), true);
+        return Maybe!SiteFrame.of(SiteFrame(site.level, node, site.corner, site.xSide, site.ySide, site.xSign, site.ySign, cast(byte) -site.zSign));
     } else if (side == far) {
-        return FrameCrossing(SiteFrame(site.level + site.zSign, node, next, site.xSide, site.ySide, site.xSign, site.ySign, site.zSign), true);
+        return Maybe!SiteFrame.of(SiteFrame(site.level + site.zSign, node, next, site.xSide, site.ySide, site.xSign, site.ySign, site.zSign));
     } else {
-        return FrameCrossing(site, false);
+        return Maybe!SiteFrame.init;
     }
 }
 
 SiteFrame lowerFrame(ref const GraphView view, SiteFrame site) {
     ParentList parents = view.parents(site.node);
-    uint index = 0;
-    while (index < parents.count && !crossedFrame(site, parents.links[index].side, parents.links[index].slot).isKept) {
-        index += 1;
+    foreach (link; parents.links[0 .. parents.count]) {
+        Maybe!SiteFrame crossing = crossedFrame(site, link.side, link.slot);
+        if (crossing.exists) {
+            return crossing.value;
+        }
     }
-    if (index < parents.count) {
-        return crossedFrame(site, parents.links[index].side, parents.links[index].slot).site;
-    } else {
-        return site;
-    }
+    return site;
 }
 
 CanonicalSite canonicalOf(ref const GraphView view, SiteFrame site) {
     SiteFrame entry = site;
-    bool isLowest = false;
-    while (!isLowest) {
-        SiteFrame lower = view.lowerFrame(entry);
-        isLowest = lower.node == entry.node;
-        entry = lower;
+    SiteFrame below = view.lowerFrame(entry);
+    while (below.node != entry.node) {
+        entry = below;
+        below = view.lowerFrame(entry);
     }
     Corner lower = lowerOf(entry.nextCorner(), entry.corner);
     Face first = entry.xSide;
     Face second = entry.ySide;
+    AxisOrder order = AxisOrder.straight;
     if (second < first) {
         first = entry.ySide;
         second = entry.xSide;
+        order = AxisOrder.swapped;
     }
-    bool isAtLower = entry.corner == lower;
     byte zSign = entry.zSign;
     int cornerLevel = 0;
-    if (!isAtLower) {
+    if (entry.corner != lower) {
         zSign = cast(byte) -entry.zSign;
         cornerLevel = 1;
     }
     LineSpec line = LineSpec(int.max, int.min, entry.node, lower, first, second);
-    return CanonicalSite(line, LineTransform(cornerLevel - zSign * entry.level, entry.xSign, entry.ySign, zSign, entry.xSide != first));
+    return CanonicalSite(line, LineTransform(cornerLevel - zSign * entry.level, entry.xSign, entry.ySign, zSign, order));
 }
 
 struct ColumnChunk {
@@ -534,28 +520,21 @@ struct ColumnChunk {
     size_t yAxis;
     int xSign;
     int ySign;
+    int zSign;
     int bottom;
-    bool isUpward;
 
     static ColumnChunk fromTouch(ref const LineTouch touch, ref const LineSpec spec, Corner corner, ubyte dimension) {
         size_t xAxis = sideAxis(corner, spec.xSide);
         size_t yAxis = sideAxis(corner, spec.ySide);
-        bool isLower = corner == touch.lower;
-        int level = touch.level + 1;
-        if (isLower) {
-            level = touch.level;
+        if (corner == touch.lower) {
+            return ColumnChunk(3 - xAxis - yAxis, xAxis, yAxis, touch.xSign, touch.ySign, 1, touch.level * edgeCells(dimension));
+        } else {
+            return ColumnChunk(3 - xAxis - yAxis, xAxis, yAxis, touch.xSign, touch.ySign, -1, (touch.level + 1) * edgeCells(dimension));
         }
-        return ColumnChunk(3 - xAxis - yAxis, xAxis, yAxis, touch.xSign, touch.ySign, level * edgeCells(dimension), isLower);
     }
 
     int[3] columnOf(int[3] cell) const {
-        int z = void;
-        if (isUpward) {
-            z = bottom + cell[zAxis];
-        } else {
-            z = bottom - 1 - cell[zAxis];
-        }
-        return [signedIndex(cell[xAxis], xSign), signedIndex(cell[yAxis], ySign), z];
+        return [signedIndex(cell[xAxis], xSign), signedIndex(cell[yAxis], ySign), bottom + signedIndex(cell[zAxis], zSign)];
     }
 }
 
@@ -729,278 +708,20 @@ ulong anchorBits(ref const Graph graph, uint slot) {
     return SplitMix(graph.idAt(slot).spice()).next();
 }
 
+float calmAt(ref const GraphView view, uint node) {
+    float calm = 1;
+    foreach (ref flat; view.blueprint.flats.slice()) {
+        uint here = view.depthOf(node);
+        uint there = view.depthOf(flat.node);
+        if (here <= there + FLAT_DEPTH_SPAN && there <= here + FLAT_DEPTH_SPAN) {
+            float away = (view.siteToNode(flat, node) * Point!float.origin()).distance(Point!float.origin());
+            float share = clamped((away - FLAT_RADIUS) / FLAT_BLEND, 0.0f, 1.0f);
+            calm = lowerOf(calm, share * share * (3 - 2 * share));
+        }
+    }
+    return calm;
+}
+
 float altitude(ref const NodeState state) {
     return state.surface.height;
-}
-
-bool isOnLineInFrame(ref const LineSpec spec, Point!float corner, Point!float center, ref const ChunkLayout layout) {
-    Vec4!float q = corner.v;
-    Vec4!float c = center.v;
-    int level = cast(int) floorf(atanhf(c.c[2] / c.c[3]) / edgeLength(layout).value);
-    return Length(sqrt(q.c[0] * q.c[0] + q.c[1] * q.c[1])) < TEST_ON_LINE && isLevelInRange(spec, level);
-}
-
-bool hasTouchAt(ref const Graph graph, uint slot, uint line, Corner corner) {
-    const(LineTouch)[] touches = graph.structures.touchesAt(slot);
-    uint index = 0;
-    while (index < touches.length && !(touches[index].line == line && isOnTouch(touches[index], graph.structures.blueprint.lines.ptr[line], corner))) {
-        index += 1;
-    }
-    return index < touches.length;
-}
-
-LineTouch touchOf(ref const Graph graph, uint slot, uint line) {
-    const(LineTouch)[] touches = graph.structures.touchesAt(slot);
-    uint index = 0;
-    while (index < touches.length && touches[index].line != line) {
-        index += 1;
-    }
-    assert(index < touches.length);
-    return touches[index];
-}
-
-bool isSamePoint(Point!float a, Point!float b) {
-    return -a.v.toPoint().minkowski(b.v.toPoint().v) < coshf(TEST_TOLERANCE.value);
-}
-
-Graph testGraph() {
-    return Graph.make(TEST_DIMENSION, Worldgen.fromStructure(StructureWorld.fromName("test")));
-}
-
-SiteFrame[FACE_CORNERS] faceWalk(ref Graph graph, SiteFrame start) {
-    SiteFrame[FACE_CORNERS] corners = void;
-    corners[0] = start;
-    foreach (index; 1 .. FACE_CORNERS) {
-        corners[index] = graph.view.turned(forwarded(corners[index - 1], 1), Turn.right);
-    }
-    return corners;
-}
-
-SiteFrame[8] testSites(ref Graph graph) {
-    SiteFrame ground = rootSite(graph.anchorSlot);
-    SiteFrame tower = graph.view.turned(ground, Turn.pitchUp);
-    SiteFrame bridge = graph.view.turned(forwarded(tower, 1), Turn.pitchDown);
-    SiteFrame corner = graph.faceWalk(ground)[2];
-    return [
-        tower,
-        bridge,
-        graph.view.turned(bridge, Turn.right),
-        graph.view.turned(forwarded(bridge, 1), Turn.pitchDown),
-        ground,
-        graph.view.turned(corner, Turn.rollLeft),
-        forwarded(graph.view.turned(forwarded(corner, 2), Turn.pitchUp), -1),
-        graph.view.turned(forwarded(graph.view.turned(corner, Turn.left), -2), Turn.pitchUp),
-    ];
-}
-
-unittest {
-    Graph graph = testGraph();
-    BlueprintBuilder builder = BlueprintBuilder.make(graph);
-    SiteFrame[8] sites = graph.testSites();
-    CellBox pillar = CellBox.make(-2, 1, -3, 0, -12, 30);
-    foreach (site; sites[0 .. 4]) {
-        assert(builder.paint(site, pillar, EVERY_HEIGHT, Material.granite, false) == PaintResult.painted);
-    }
-    assert(builder.paint(sites[4], CellBox.make(-6, 5, 0, 1, int.min, int.max), EVERY_HEIGHT, Material.granite, false) == PaintResult.painted);
-    foreach (site; sites[5 .. $]) {
-        assert(builder.paint(site, pillar, EVERY_HEIGHT, Material.granite, false) == PaintResult.painted);
-    }
-    NearbyScratch scratch;
-    NearbyNode[] nearby = scratch.collectAll(graph, Position(graph.idAt(graph.anchorSlot), Motion!float.identity()), TEST_RADIUS);
-    uint touchedChunks = 0;
-    foreach (node; nearby) {
-        graph.ensureStructureAt(node.slot);
-        foreach (line, spec; graph.structures.blueprint.lines.slice()) {
-            Motion!float lineFromNode = graph.view.lineToNode(cast(uint) line, node.slot).inverse();
-            Point!float center = lineFromNode * Point!float.origin();
-            foreach (index; 0 .. CORNER_COUNT) {
-                Corner corner = cast(Corner) index;
-                bool isOnLine = isOnLineInFrame(spec, lineFromNode * corner.cornerToNode * Point!float.origin(), center, graph.layout);
-                assert(isOnLine == graph.hasTouchAt(node.slot, cast(uint) line, corner));
-                if (isOnLine) {
-                    touchedChunks += 1;
-                    LineTouch touch = graph.touchOf(node.slot, cast(uint) line);
-                    ColumnChunk chunk = ColumnChunk.fromTouch(touch, spec, corner, TEST_DIMENSION);
-                    foreach (cell; TEST_CELLS) {
-                        int[3] column = chunk.columnOf(cell);
-                        float[3] cellCenter = graph.layout.cellCenter(cell);
-                        Point!float actual = Point!float(corner.cubeToNode * Vec4!float([cellCenter[0], cellCenter[1], cellCenter[2], 1.0f]));
-                        Point!float expected = lineFromNode.inverse() * columnPoint(graph.layout, ColumnSpot(column[0] + 0.5f, column[1] + 0.5f, column[2] + 0.5f));
-                        assert(isSamePoint(actual, expected));
-                    }
-                }
-            }
-        }
-    }
-    assert(touchedChunks >= 8 * graph.structures.blueprint.lines.length);
-    builder.release();
-    scratch.release();
-    graph.release();
-}
-
-bool isCanonicalMatch(ref Graph graph, SiteFrame site) {
-    CanonicalSite canonical = graph.view.canonicalOf(site);
-    SiteFrame line = lineSite(canonical.line);
-    bool isMatch = true;
-    foreach (cell; TEST_CELLS) {
-        int[3] local = [cell[0] - 6, cell[1] - 6, cell[2] - 20];
-        CellBox moved = canonicalBox(CellBox(local, local), canonical.transform, TEST_DIMENSION);
-        ColumnSpot fromSite = ColumnSpot(local[0] + 0.5f, local[1] + 0.5f, local[2] + 0.5f);
-        ColumnSpot fromLine = ColumnSpot(moved.low[0] + 0.5f, moved.low[1] + 0.5f, moved.low[2] + 0.5f);
-        isMatch = isMatch && isSamePoint(graph.view.siteToNode(site, site.node) * columnPoint(graph.layout, fromSite), graph.view.siteToNode(line, site.node) * columnPoint(graph.layout, fromLine));
-    }
-    return isMatch;
-}
-
-unittest {
-    Graph graph = testGraph();
-    SiteFrame[8] sites = graph.testSites();
-    foreach (site; sites) {
-        assert(graph.isCanonicalMatch(site));
-    }
-    graph.release();
-}
-
-unittest {
-    Graph graph = testGraph();
-    SiteFrame tower = graph.view.turned(rootSite(graph.anchorSlot), Turn.pitchUp);
-    SiteFrame down = graph.view.turned(graph.view.turned(forwarded(tower, TEST_RISE_EDGES), Turn.pitchUp), Turn.pitchUp);
-    SiteFrame top = graph.view.atLevel(forwarded(tower, TEST_RISE_EDGES), 0);
-    SiteFrame ground = groundSite(top.node, top.corner, top.zSide());
-    SiteFrame quarter = graph.view.turned(ground, Turn.right);
-    SiteFrame[5] sites = [
-        down,
-        graph.view.turned(down, Turn.rollRight),
-        graph.view.turned(graph.view.turned(ground, Turn.pitchUp), Turn.rollRight),
-        graph.view.turned(graph.view.turned(quarter, Turn.pitchUp), Turn.rollRight),
-        forwarded(graph.view.turned(graph.view.turned(quarter, Turn.pitchUp), Turn.rollRight), TEST_RISE_EDGES),
-    ];
-    foreach (site; sites) {
-        assert(graph.isCanonicalMatch(site));
-    }
-    graph.release();
-}
-
-unittest {
-    Graph graph = testGraph();
-    SiteFrame start = rootSite(graph.anchorSlot);
-    SiteFrame[FACE_CORNERS] corners = graph.faceWalk(start);
-    SiteFrame closed = graph.view.turned(forwarded(corners[FACE_CORNERS - 1], 1), Turn.right);
-    Point!float origin = Point!float.origin();
-    assert(isSamePoint(graph.view.siteToNode(closed, start.node) * origin, graph.view.siteToNode(start, start.node) * origin));
-    assert(!isSamePoint(graph.view.siteToNode(corners[2], start.node) * origin, graph.view.siteToNode(start, start.node) * origin));
-    assert(graph.view.siteOrigin(closed).key == graph.view.siteOrigin(start).key);
-    assert(graph.view.siteOrigin(corners[2]).key != graph.view.siteOrigin(start).key);
-    ClaimKey block = graph.view.siteFace(start);
-    foreach (corner; corners) {
-        assert(graph.view.siteFace(corner) == block);
-    }
-    SiteFrame across = graph.view.turned(corners[1], Turn.right);
-    assert(graph.view.siteFace(across) != block);
-    assert(graph.view.siteFace(graph.faceWalk(across)[3]) == graph.view.siteFace(across));
-    SiteFrame back = graph.view.turned(graph.view.turned(forwarded(start, 1), Turn.right), Turn.right);
-    ulong edge = graph.view.siteHash(start, SitePart.edge);
-    assert(graph.view.siteHash(back, SitePart.edge) == edge);
-    assert(graph.view.siteHash(graph.view.turned(start, Turn.rollLeft), SitePart.edge) == edge);
-    assert(graph.view.siteHash(corners[1], SitePart.edge) != edge);
-    assert(graph.view.siteHash(closed, SitePart.vertex) == graph.view.siteHash(start, SitePart.vertex));
-    assert(graph.view.siteHash(corners[3], SitePart.face) == graph.view.siteHash(start, SitePart.face));
-    assert(graph.view.siteHash(start, SitePart.face) != graph.view.siteHash(start, SitePart.vertex));
-    SiteFrame first = graph.view.turned(forwarded(graph.view.turned(corners[0], Turn.pitchUp), 1), Turn.pitchDown);
-    SiteFrame last = graph.view.turned(graph.view.turned(forwarded(graph.view.turned(corners[1], Turn.pitchUp), 1), Turn.pitchDown), Turn.right);
-    Point!float apex = columnPoint(graph.layout, ColumnSpot(-0.5f, 0.5f, edgeCells(TEST_DIMENSION) + 0.5f));
-    Point!float mirroredApex = columnPoint(graph.layout, ColumnSpot(0.5f, 0.5f, edgeCells(TEST_DIMENSION) + 0.5f));
-    assert(isSamePoint(graph.view.siteToNode(first, graph.anchorSlot) * apex, graph.view.siteToNode(last, graph.anchorSlot) * mirroredApex));
-    foreach (turn; [Turn.left, Turn.pitchUp, Turn.rollRight]) {
-        SiteFrame spun = start;
-        foreach (_; 0 .. 4) {
-            spun = graph.view.turned(spun, turn);
-        }
-        assert(spun == start);
-    }
-    graph.release();
-}
-
-unittest {
-    Graph graph = testGraph();
-    uint deep = graph.anchorSlot;
-    foreach (step; 0 .. TEST_DEEP_STEPS) {
-        uint index = step * TEST_SIDE_STRIDE;
-        while (graph.isParentFace(deep, cast(Face)(index % FACE_COUNT))) {
-            index += 1;
-        }
-        deep = graph.ensureNeighborSlot(deep, cast(Face)(index % FACE_COUNT));
-    }
-    assert(graph.depthOf(deep) > TEST_DEEP_STEPS);
-    foreach (index; 0 .. FACE_COUNT) {
-        Face side = cast(Face) index;
-        uint beside = graph.ensureNeighborSlot(deep, side);
-        assert(isSamePoint(graph.view.nodeToNode(beside, deep) * Point!float.origin(), side.mirror * Point!float.origin()));
-        Face turn = cast(Face)((index + TEST_SIDE_STRIDE) % FACE_COUNT);
-        uint corner = graph.ensureNeighborSlot(beside, turn);
-        assert(isSamePoint(graph.view.nodeToNode(corner, deep) * Point!float.origin(), side.mirror * turn.mirror * Point!float.origin()));
-        if (side.isAdjacentTo(turn)) {
-            assert(graph.ensureNeighborSlot(graph.ensureNeighborSlot(deep, turn), side) == corner);
-        }
-    }
-    graph.release();
-}
-
-unittest {
-    Graph graph = testGraph();
-    uint far = graph.anchorSlot;
-    foreach (side; TEST_EDGE_WALK) {
-        far = graph.ensureNeighborSlot(far, side);
-    }
-    uint[2] starts = [graph.anchorSlot, far];
-    foreach (start; starts) {
-        SiteFrame[NODE_EDGES] sites = graph.view.edgeSitesOf(start);
-        foreach (index, site; sites) {
-            foreach (other; sites[index + 1 .. $]) {
-                assert(other != site);
-            }
-        }
-        foreach (index; 0 .. CORNER_COUNT) {
-            Corner corner = cast(Corner) index;
-            foreach (axis; 0 .. 3) {
-                SiteFrame expected = graph.view.edgeSite(start, corner, axis);
-                uint first = graph.ensureNeighborSlot(start, corner.faces[(axis + 1) % 3]);
-                uint second = graph.ensureNeighborSlot(start, corner.faces[(axis + 2) % 3]);
-                uint both = graph.ensureNeighborSlot(first, corner.faces[(axis + 2) % 3]);
-                uint[3] around = [first, second, both];
-                foreach (node; around) {
-                    assert(graph.view.edgeSite(node, corner, axis) == expected);
-                }
-                Corner end = corner.across[axis];
-                size_t endAxis = 3 - sideAxis(end, corner.faces[(axis + 1) % 3]) - sideAxis(end, corner.faces[(axis + 2) % 3]);
-                assert(graph.view.edgeSite(start, end, endAxis) == expected);
-            }
-        }
-    }
-    graph.release();
-}
-
-unittest {
-    Graph graph = testGraph();
-    uint[GROUND_RING] ring = graph.view.groundRing(graph.anchorSlot, Face.f0);
-    foreach (index, slot; ring) {
-        assert(fabsf(altitude(*graph.ensureState(slot)) - FACE_DISTANCE) < TEST_TOLERANCE.value);
-        foreach (other; ring[index + 1 .. $]) {
-            assert(other != slot);
-        }
-    }
-    graph.release();
-}
-
-unittest {
-    Graph graph = testGraph();
-    BlueprintBuilder builder = BlueprintBuilder.make(graph);
-    SiteFrame tower = graph.view.turned(rootSite(graph.anchorSlot), Turn.pitchUp);
-    SiteFrame high = forwarded(tower, TEST_BEHIND_EDGES);
-    builder.growFrom(graph.view.siteOrigin(high).depth);
-    assert(builder.paint(tower, CellBox.make(0, 0, 0, 0, 0, 1), EVERY_HEIGHT, Material.granite, false) == PaintResult.behind);
-    assert(builder.paint(high, CellBox.make(0, 0, 0, 0, int.min, 1), EVERY_HEIGHT, Material.granite, false) == PaintResult.endless);
-    assert(builder.paint(high, CellBox.make(0, 0, 0, 0, 0, 1), EVERY_HEIGHT, Material.granite, false) == PaintResult.painted);
-    builder.release();
-    graph.release();
 }

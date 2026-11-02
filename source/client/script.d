@@ -1,23 +1,30 @@
 module client.script;
 
-import core.stdc.math : floor, fabsf;
+import core.stdc.math : acosf, floor, fabsf;
 import core.stdc.stdio : FILE, fclose, fopen, fprintf, snprintf;
+import base.maybe : Maybe;
 import base.names : ENUM_NAMES;
-import base.numbers : RADIANS_PER_DEGREE;
+import base.numbers : RADIANS_PER_DEGREE, clamped;
 import base.units : Angle, AngularSpeed, Length, Speed, Time;
 import base.vector3 : dot, magnitude, rejectAlong;
-import client.arguments : StructureName;
-import client.game : FrameInput, Game, KEY_COUNT, Key, MATERIAL_PALETTE, RouteWaypoint, UnloadedCount;
+import client.arguments : ExitStatus, StructureName, exitStatus;
+import client.game : ChunkSupply, FrameInput, Game, KEY_COUNT, Key, MATERIAL_PALETTE, RouteWaypoint, ThrownMotion, UnloadedCount;
 import client.structures : StructureProblem, growthProblem, restartGame;
-import client.world : TargetMaterial;
-import common.character.controller : MovementMode;
+import common.character.controller : Footing, MovementMode;
 import common.worldgen.generation : PlaneWorld, Worldgen, WorldgenKind;
+import plugins.api.api : Material;
+import plugins.api.flags : Flags;
 
 enum Time DEFAULT_TIMESTEP = Time(0.016f);
 enum Time ONE_SECOND = Time(1.0f);
 enum size_t FAILURE_CAPACITY = 1024;
 
 alias ScriptBody = void function(ref Script script);
+
+enum HookState : ubyte {
+    idle,
+    running,
+}
 
 struct NamedScript {
     string name;
@@ -51,34 +58,38 @@ struct Script {
     StepHook camera;
     uint steps;
     char[FAILURE_CAPACITY] failure = 0;
-    bool[KEY_COUNT] isHeld;
-    bool isStepping;
-    bool isFailed;
+    Flags!Key held;
+    HookState hookState;
 
     static Script make(Game* game, FILE* report) {
         return Script(game, report);
     }
 
-    bool run(ScriptBody body) {
+    bool isFailed() const {
+        return failure[0] != 0;
+    }
+
+    ExitStatus run(ScriptBody body) {
         body(this);
         if (isFailed) {
             fprintf(report, "script error: %s\n", failure.ptr);
         }
-        return !isFailed;
+        return exitStatus(!isFailed);
     }
 
     void fail(Args...)(const(char)* format, Args args) {
         if (!isFailed) {
             snprintf(failure.ptr, failure.length, format, args);
-            isFailed = true;
         }
     }
 
     bool takeFailure() {
-        bool wasFailed = isFailed;
-        isFailed = false;
-        failure[0] = 0;
-        return wasFailed;
+        if (isFailed) {
+            failure[0] = 0;
+            return true;
+        } else {
+            return false;
+        }
     }
 
     void check(Args...)(bool condition, const(char)* format, Args args) {
@@ -94,18 +105,18 @@ struct Script {
     void step(Time dt) {
         if (!(dt.value > 0)) {
             fail("the timestep must be positive");
-        } else if (isStepping) {
+        } else if (hookState == HookState.running) {
             fail("a step hook cannot advance time");
         } else if (!isFailed) {
-            game.step(FrameInput(yawRate * dt, pitchRate * dt, isHeld), dt);
+            game.step(FrameInput(yawRate * dt, pitchRate * dt, held), dt);
             steps += 1;
             StructureProblem grown = growthProblem(game.world.graph);
             if (grown.isPresent) {
                 fail("%s", grown.text.ptr);
             } else if (hook.call !is null) {
-                isStepping = true;
+                hookState = HookState.running;
                 hook.call(this, hook.context);
-                isStepping = false;
+                hookState = HookState.idle;
             }
         }
     }
@@ -175,18 +186,18 @@ struct Script {
 
     void hold(Key[] keys...) {
         foreach (key; keys) {
-            isHeld[key] = true;
+            held.set(key);
         }
     }
 
     void release(Key[] keys...) {
         foreach (key; keys) {
-            isHeld[key] = false;
+            held.clear(key);
         }
     }
 
     void releaseAll() {
-        isHeld[] = false;
+        held = Flags!Key.init;
     }
 
     void press(double seconds, Key[] keys...) {
@@ -215,12 +226,10 @@ struct Script {
         pitchRate = restingPitch;
     }
 
-    // Starts the film: from here on every step is a frame. A script that is not being filmed has no camera to start.
     void roll() {
         hook = camera;
     }
 
-    // Turns and flies together, easing in and out, for shots that must not start or stop with a jerk.
     void glide(Key key, float distance, Angle yaw, Angle pitch, double seconds) {
         ulong count = cast(ulong) floor(seconds / timestep.value + 0.5);
         Speed resting = game.character.noclipSpeed;
@@ -262,7 +271,7 @@ struct Script {
     }
 
     bool isThrownResting(size_t index) const {
-        return game.thrown.ptr[index].isResting;
+        return game.thrown.ptr[index].motion == ThrownMotion.resting;
     }
 
     void resetCompass() {
@@ -301,7 +310,7 @@ struct Script {
         return game.placeBlock();
     }
 
-    TargetMaterial targetMaterial() {
+    Maybe!Material targetMaterial() {
         return game.world.targetMaterial();
     }
 
@@ -313,19 +322,19 @@ struct Script {
         }
     }
 
-    void enterRoute() {
-        if (game.world.graph.structures.blueprint.route.length == 0) {
-            fail("enterRoute needs a structure with a route");
+    void enterRoute(size_t number = 1) {
+        if (number == 0 || game.world.graph.structures.blueprint.route.length < number) {
+            fail("enterRoute needs a structure with a route that has stop %zu", number);
         } else {
-            game.enterRoute();
+            game.enterRoute(number - 1);
         }
     }
 
-    RouteWaypoint routeWaypoint(size_t number) {
-        RouteWaypoint waypoint;
+    Maybe!RouteWaypoint routeWaypoint(size_t number) {
+        Maybe!RouteWaypoint waypoint;
         if (number >= 1) {
             waypoint = game.routeWaypoint(number - 1);
-            waypoint.yaw = -waypoint.yaw;
+            waypoint.value.yaw = -waypoint.value.yaw;
         }
         return waypoint;
     }
@@ -338,8 +347,12 @@ struct Script {
         return game.characterState.isOnGround;
     }
 
+    Footing footing() const {
+        return game.characterState.footing;
+    }
+
     void live() {
-        game.isGeneratingOnDemand = false;
+        game.supply = ChunkSupply.streamed;
     }
 
     bool isLoaded() const {
@@ -364,6 +377,10 @@ struct Script {
 
     Speed horizontalSpeed() const {
         return Speed(game.characterState.velocity.rejectAlong(game.characterState.up).magnitude);
+    }
+
+    Angle floorTilt() const {
+        return Angle(acosf(clamped(game.characterState.groundNormal.dot(game.characterState.up), -1.0f, 1.0f)));
     }
 
     Speed verticalSpeed() const {
@@ -391,7 +408,7 @@ struct ScriptRecorder {
     FILE* file;
     Time pendingDt;
     uint pendingSteps;
-    bool[KEY_COUNT] isHeld;
+    Flags!Key held;
 
     bool open(const(char)* path) {
         file = fopen(path, "w");
@@ -405,13 +422,14 @@ struct ScriptRecorder {
 
     void recordFrame(FrameInput input, Time dt) {
         foreach (i; 0 .. KEY_COUNT) {
-            if (input.isHeld[i] != isHeld[i]) {
+            Key key = cast(Key) i;
+            if (input.held.has(key) != held.has(key)) {
                 flush();
                 string name = ENUM_NAMES!Key[i];
-                fprintf(file, "    world.%s(Key.%.*s);\n", keyCall(input.isHeld[i]), cast(int) name.length, name.ptr);
+                fprintf(file, "    world.%s(Key.%.*s);\n", keyCall(input.held, key), cast(int) name.length, name.ptr);
             }
         }
-        isHeld = input.isHeld;
+        held = input.held;
         if (input.yaw.value != 0 || input.pitch.value != 0) {
             flush();
             fprintf(file, "    world.look(degrees(%.9g), degrees(%.9g));\n", degreesOf(input.yaw), degreesOf(input.pitch));
@@ -454,8 +472,8 @@ struct ScriptRecorder {
     }
 }
 
-immutable(char)* keyCall(bool isPressed) {
-    if (isPressed) {
+immutable(char)* keyCall(Flags!Key held, Key key) {
+    if (held.has(key)) {
         return "hold";
     } else {
         return "release";

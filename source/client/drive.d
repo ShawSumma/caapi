@@ -3,11 +3,14 @@ module client.drive;
 import core.stdc.stdio : FILE, fflush, fprintf;
 import base.array : Array;
 import base.clock : MILLISECONDS_PER_SECOND;
+import base.maybe : Maybe;
+import base.names : textFor;
 import client.frames : FrameRecord, FrameSummary, MouseMotion, RenderTimes, cameraStep;
-import client.images : RGBA_BYTES, copyAsRgba, differenceOf;
+import client.images : ImageDifference, PixelOrder, RGBA_BYTES, copyAsRgba, differenceOf;
 import client.png : writePng;
 import common.graph : Graph;
 import common.position : Position;
+import plugins.api.flags : Flags;
 
 enum uint LEFT_BUTTON = 1;
 enum uint RIGHT_BUTTON = 3;
@@ -57,6 +60,24 @@ struct DriveInput {
     double dy = 0;
 }
 
+enum Toggle : ubyte {
+    off,
+    on,
+}
+
+enum DriveMark : ubyte {
+    watching,
+    logging,
+    captureAsked,
+    summaryAsked,
+    settling,
+    drawn,
+    drawnImaged,
+    waitingImage,
+    finished,
+    failed,
+}
+
 enum DriveActionKind : ubyte {
     frames,
     move,
@@ -79,7 +100,7 @@ struct DriveAction {
     DriveKey key;
     uint button;
     string text;
-    bool isOn;
+    Toggle toggle;
 }
 
 struct NamedDrive {
@@ -119,12 +140,12 @@ DriveAction captureTo(string path) {
     return DriveAction(DriveActionKind.capture, 0, 0, 0, DriveKey.init, 0, path);
 }
 
-DriveAction watching(bool isOn) {
-    return DriveAction(DriveActionKind.watch, 0, 0, 0, DriveKey.init, 0, null, isOn);
+DriveAction watching(Toggle toggle) {
+    return DriveAction(DriveActionKind.watch, 0, 0, 0, DriveKey.init, 0, null, toggle);
 }
 
-DriveAction logging(bool isOn) {
-    return DriveAction(DriveActionKind.log, 0, 0, 0, DriveKey.init, 0, null, isOn);
+DriveAction logging(Toggle toggle) {
+    return DriveAction(DriveActionKind.log, 0, 0, 0, DriveKey.init, 0, null, toggle);
 }
 
 DriveAction summaryOf(string title) {
@@ -148,21 +169,15 @@ struct DriveHost {
     FrameRecord drawn;
     FrameRecord waiting;
     FrameSummary summary;
-    double lastNow = 0;
+    Maybe!double lastNow;
     uint pendingFrames;
     uint frame;
     uint summaryFrame;
-    bool isWatching;
-    bool isLogging;
-    bool isCaptureAsked;
-    bool isSummaryAsked;
-    bool isSettling;
-    bool hasDrawn;
-    bool isDrawnImaged;
-    bool isWaitingImage;
-    bool hasLast;
-    bool isFinished;
-    bool isFailed;
+    Flags!DriveMark marks;
+
+    bool isFailed() const {
+        return marks.has(DriveMark.failed);
+    }
 
     void start(const(char)* name, const(DriveAction)[] chosen, FILE* output, float sensitivity) {
         report = output;
@@ -172,20 +187,20 @@ struct DriveHost {
 
     void fail(const(char)* message) {
         fprintf(report, "drive error: %s\n", message);
-        isFailed = true;
-        isFinished = true;
+        marks.set(DriveMark.failed);
+        marks.set(DriveMark.finished);
     }
 
-    DriveInput next(bool isLoaded) {
+    DriveInput next(bool isWorldSettled) {
         events.clear();
         events.appendAll(later.slice());
         later.clear();
-        if (isSettling && isLoaded) {
-            finishSettling(true);
+        if (marks.has(DriveMark.settling) && isWorldSettled) {
+            finishSettling("settled");
         }
-        while (pendingFrames == 0 && !isFinished) {
+        while (pendingFrames == 0 && !marks.has(DriveMark.finished)) {
             if (nextAction == actions.length) {
-                isFinished = true;
+                marks.set(DriveMark.finished);
             } else {
                 apply(actions[nextAction]);
                 nextAction += 1;
@@ -199,8 +214,8 @@ struct DriveHost {
                 input.dx = share[0];
                 input.dy = share[1];
             }
-            if (pendingFrames == 0 && isSettling) {
-                finishSettling(false);
+            if (pendingFrames == 0 && marks.has(DriveMark.settling)) {
+                finishSettling("not settled");
             }
         }
         input.events = events.slice();
@@ -241,23 +256,23 @@ struct DriveHost {
                 if (action.frames == 0) {
                     fail("settling needs at least one frame");
                 } else {
-                    isSettling = true;
+                    marks.set(DriveMark.settling);
                     pendingFrames = action.frames;
                 }
                 break;
             case DriveActionKind.capture:
                 capturePath.clear();
                 capturePath.appendAll(action.text);
-                isCaptureAsked = true;
+                marks.set(DriveMark.captureAsked);
                 break;
             case DriveActionKind.watch:
-                isWatching = action.isOn;
-                if (!isWatching) {
+                marks.put(DriveMark.watching, action.toggle == Toggle.on);
+                if (action.toggle == Toggle.off) {
                     previous.clear();
                 }
                 break;
             case DriveActionKind.log:
-                isLogging = action.isOn;
+                marks.put(DriveMark.logging, action.toggle == Toggle.on);
                 break;
             case DriveActionKind.summary:
                 askSummary(action.text);
@@ -265,70 +280,68 @@ struct DriveHost {
         }
     }
 
-    void finishSettling(bool isSettled) {
+    void finishSettling(immutable(char)* outcome) {
         pendingFrames = 0;
-        isSettling = false;
-        fprintf(report, "settle: %s at frame %u\n", settleOutcome(isSettled), frame);
+        marks.clear(DriveMark.settling);
+        fprintf(report, "settle: %s at frame %u\n", outcome, frame);
     }
 
     void record(double now, double dt, double stepMs, DriveInput input, Position camera, ref const Graph graph) {
-        if (!isFinished) {
+        if (!marks.has(DriveMark.finished)) {
             FrameRecord made;
             made.frame = frame;
             made.dtMs = dt * MILLISECONDS_PER_SECOND;
             made.stepMs = stepMs;
             made.dx = input.dx;
             made.dy = input.dy;
-            if (hasLast) {
-                made.intervalMs = (now - lastNow) * MILLISECONDS_PER_SECOND;
-                made.hasInterval = true;
+            if (lastNow.exists) {
+                made.intervalMs = Maybe!double.of((now - lastNow.value) * MILLISECONDS_PER_SECOND);
                 made.step = graph.cameraStep(lastCamera, camera);
             }
-            lastNow = now;
+            lastNow = Maybe!double.of(now);
             lastCamera = camera;
-            hasLast = true;
             frame += 1;
             drawnPath.clear();
-            if (isCaptureAsked) {
+            if (marks.has(DriveMark.captureAsked)) {
                 drawnPath.appendAll(capturePath.slice());
-                isCaptureAsked = false;
+                marks.clear(DriveMark.captureAsked);
             }
             drawn = made;
-            hasDrawn = true;
-            isDrawnImaged = isWatching || drawnPath.length > 0;
+            marks.set(DriveMark.drawn);
+            marks.put(DriveMark.drawnImaged, marks.has(DriveMark.watching) || drawnPath.length > 0);
         }
     }
 
     bool wantsImage() const {
-        return hasDrawn && isDrawnImaged;
+        return marks.has(DriveMark.drawn) && marks.has(DriveMark.drawnImaged);
     }
 
     bool isDone() const {
-        return isFinished && !hasDrawn && !isWaitingImage;
+        return marks.has(DriveMark.finished) && !marks.has(DriveMark.drawn) && !marks.has(DriveMark.waitingImage);
     }
 
-    void finishFrame(RenderTimes render, const(ubyte)[] image, uint width, uint height, bool isBgra) {
-        if (isWaitingImage) {
-            takeImage(image, width, height, isBgra);
+    void finishFrame(RenderTimes render, const(ubyte)[] image, uint width, uint height, PixelOrder order) {
+        if (marks.has(DriveMark.waitingImage)) {
+            takeImage(image, width, height, order);
             print(waiting);
-            isWaitingImage = false;
+            marks.clear(DriveMark.waitingImage);
         }
-        if (hasDrawn) {
+        if (marks.has(DriveMark.drawn)) {
             drawn.render = render;
-            if (isDrawnImaged) {
+            if (marks.has(DriveMark.drawnImaged)) {
                 waiting = drawn;
                 Array!char swapped = waitingPath;
                 waitingPath = drawnPath;
                 drawnPath = swapped;
-                isWaitingImage = true;
+                marks.set(DriveMark.waitingImage);
             } else {
                 print(drawn);
             }
-            hasDrawn = false;
+            marks.clear(DriveMark.drawn);
         }
     }
 
-    void takeImage(const(ubyte)[] image, uint width, uint height, bool isBgra) {
+    void takeImage(const(ubyte)[] image, uint width, uint height, PixelOrder order) {
         if (image is null) {
             if (waitingPath.length > 0) {
                 fprintf(report, "frame %u: not captured, the frame was not drawn or cannot be read back\n", waiting.frame);
@@ -336,15 +349,13 @@ struct DriveHost {
         } else {
             size_t pixels = cast(size_t) width * height;
             current.resize(pixels * RGBA_BYTES);
-            copyAsRgba(current.slice(), image, isBgra);
-            if (isWatching && previous.length == current.length) {
-                waiting.image = differenceOf(previous.slice(), current.slice(), RGBA_BYTES, pixels);
-                waiting.hasImage = true;
+            copyAsRgba(current.slice(), image, order);
+            if (marks.has(DriveMark.watching) && previous.length == current.length) {
+                waiting.image = Maybe!ImageDifference.of(differenceOf(previous.slice(), current.slice(), RGBA_BYTES, pixels));
             }
             if (waitingPath.length > 0) {
                 waitingPath.append('\0');
-                bool isWritten = writePng(waitingPath.ptr, width, height, current.slice());
-                fprintf(report, "frame %u: %s %s\n", waiting.frame, capturedText(isWritten), waitingPath.ptr);
+                fprintf(report, "frame %u: %s %s\n", waiting.frame, textFor(writePng(waitingPath.ptr, width, height, current.slice()), "captured", "could not write"), waitingPath.ptr);
             }
             Array!ubyte swapped = previous;
             previous = current;
@@ -353,34 +364,34 @@ struct DriveHost {
     }
 
     void print(ref const FrameRecord made) {
-        if (isSummaryAsked && made.frame >= summaryFrame) {
+        if (marks.has(DriveMark.summaryAsked) && made.frame >= summaryFrame) {
             printSummary();
         }
-        if (isLogging) {
+        if (marks.has(DriveMark.logging)) {
             made.print(report);
         }
         summary.add(made);
     }
 
     void askSummary(const(char)[] title) {
-        if (isSummaryAsked) {
+        if (marks.has(DriveMark.summaryAsked)) {
             printSummary();
         }
         summaryTitle.clear();
         summaryTitle.appendAll(title);
         summaryFrame = frame;
-        isSummaryAsked = true;
+        marks.set(DriveMark.summaryAsked);
     }
 
     void printSummary() {
         fprintf(report, "== %.*s\n", cast(int) summaryTitle.length, summaryTitle.ptr);
         summary.print(report);
         summary = FrameSummary.init;
-        isSummaryAsked = false;
+        marks.clear(DriveMark.summaryAsked);
     }
 
     void finish() {
-        if (isSummaryAsked) {
+        if (marks.has(DriveMark.summaryAsked)) {
             printSummary();
         }
         fprintf(report, "== after the last summary\n");
@@ -394,21 +405,5 @@ struct DriveHost {
         waitingPath.release();
         previous.release();
         current.release();
-    }
-}
-
-immutable(char)* capturedText(bool isWritten) {
-    if (isWritten) {
-        return "captured";
-    } else {
-        return "could not write";
-    }
-}
-
-immutable(char)* settleOutcome(bool isSettled) {
-    if (isSettled) {
-        return "settled";
-    } else {
-        return "not settled";
     }
 }

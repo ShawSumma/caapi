@@ -56,9 +56,14 @@ void writeDifference(ubyte[] rgba, const(ubyte)[] first, const(ubyte)[] second, 
     }
 }
 
-void copyAsRgba(ubyte[] rgba, const(ubyte)[] source, bool isBgra) {
+enum PixelOrder : ubyte {
+    rgba,
+    bgra,
+}
+
+void copyAsRgba(ubyte[] rgba, const(ubyte)[] source, PixelOrder order) {
     memcpy(rgba.ptr, source.ptr, rgba.length);
-    if (isBgra) {
+    if (order == PixelOrder.bgra) {
         foreach (pixel; 0 .. rgba.length / RGBA_BYTES) {
             rgba[pixel * RGBA_BYTES] = source[pixel * RGBA_BYTES + 2];
             rgba[pixel * RGBA_BYTES + 2] = source[pixel * RGBA_BYTES];

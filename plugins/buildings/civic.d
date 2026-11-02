@@ -2,7 +2,7 @@ module plugins.buildings.civic;
 
 import core.stdc.math : floor, sqrt;
 import plugins.api.api : Box, Material;
-import plugins.buildings.building : Bound, Lots, Palette, Part, Parts, SIDES, STORY, Spec, Tier, along, crown, enter, faceOf, footprint, makeParts, masonry, middle, movedOut, narrowestOf, pick, pyramid, roof, setbacks, shell, strips, tiers, withAlong;
+import plugins.buildings.building : Bound, Lots, Palette, Part, Parts, SIDES, STORY, Spec, Split, Tier, along, crown, enter, faceOf, footprint, makeParts, masonry, middle, movedOut, narrowestOf, pick, pyramid, roof, setbacks, shell, strips, tiers, withAlong;
 import plugins.turtle.turtle : boxOf, floorDiv;
 
 enum int[2] STORIES = [3, 6];
@@ -18,7 +18,7 @@ immutable Palette[4] PALETTES = [
 ];
 
 void arcade(ref const Part part, Palette palette) {
-    Box box = footprint(part, 0, true, 1, STORY - 1);
+    Box box = footprint(part, 0, Split.below, 1, STORY - 1);
     foreach (side; SIDES) {
         if (part.kinds[side] == Bound.street) {
             Box face = faceOf(box, side);
@@ -34,7 +34,7 @@ void arcade(ref const Part part, Palette palette) {
 }
 
 void dome(ref const Part part, Palette palette, Tier tier) {
-    Box roofBox = footprint(part, tier.shrink + 1, false, tier.high, tier.high);
+    Box roofBox = footprint(part, tier.shrink + 1, Split.above, tier.high, tier.high);
     int reach = floorDiv(narrowestOf(roofBox) - 1, 2);
     int x = middle(roofBox.low[0], roofBox.high[0]);
     int y = middle(roofBox.low[1], roofBox.high[1]);
@@ -52,7 +52,7 @@ void build(ref const Lots lots, Spec spec) {
     foreach (ref part; parts.slice()) {
         foreach (tier; tiers(part, spec, chosen).slice()) {
             masonry(part, spec.palette, shell(part, spec.palette, tier), tier);
-            if (tier.isRoofed) {
+            if (tier.isRoofed()) {
                 roof(part, spec.palette, ROOF, tier);
             }
         }

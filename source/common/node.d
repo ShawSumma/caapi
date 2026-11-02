@@ -1,23 +1,15 @@
 module common.node;
 
 import core.atomic : atomicLoad, cas;
-import core.stdc.math : coshf, fabsf, floorf, logf, powf;
+import core.stdc.math : coshf, floorf, logf, powf;
 import core.stdc.stdlib : free, malloc;
-import base.numbers : higherOf, lowerOf;
 import common.graph : NodeId;
 import common.material : MATERIAL_COUNT, isSeeThrough;
-import geometry.honeycomb : CORNER_COUNT, Corner, NODE_RADIUS, NODE_VOLUME, cubeScale;
+import geometry.honeycomb : CORNER_COUNT, Corner, NODE_RADIUS, cubeScale;
 import plugins.api.api : Material;
 
 enum int OUTSIDE_GRID = -1;
 enum float DENSITY_EXPONENT = -4.0f / 3.0f;
-enum ubyte VOLUME_TEST_DIMENSION = 12;
-enum float MAX_VOLUME_SPREAD = 2.0f;
-enum float GRID_TOLERANCE = 1e-3f;
-enum float VOLUME_TOLERANCE = 1e-3f;
-immutable float[3] GAUSS_POINTS = [-0.7745967f, 0.0f, 0.7745967f];
-immutable float[3] GAUSS_WEIGHTS = [5.0f / 9.0f, 8.0f / 9.0f, 5.0f / 9.0f];
-enum ubyte TEST_DIMENSION = 4;
 enum uint FLAG_SHIFT = 56;
 enum ulong VOXEL_MASK = (1UL << FLAG_SHIFT) - 1;
 enum uint STATE_SHIFT = FLAG_SHIFT;
@@ -89,44 +81,6 @@ struct ChunkLayout {
             return OUTSIDE_GRID;
         }
     }
-}
-
-float kleinBoxVolume(float[3] low, float[3] high) {
-    float[3] middle = [(low[0] + high[0]) / 2, (low[1] + high[1]) / 2, (low[2] + high[2]) / 2];
-    float[3] half = [(high[0] - low[0]) / 2, (high[1] - low[1]) / 2, (high[2] - low[2]) / 2];
-    float total = 0;
-    foreach (i; 0 .. GAUSS_POINTS.length) {
-        foreach (j; 0 .. GAUSS_POINTS.length) {
-            foreach (k; 0 .. GAUSS_POINTS.length) {
-                float x = middle[0] + half[0] * GAUSS_POINTS[i];
-                float y = middle[1] + half[1] * GAUSS_POINTS[j];
-                float z = middle[2] + half[2] * GAUSS_POINTS[k];
-                float inside = 1.0f - x * x - y * y - z * z;
-                total += GAUSS_WEIGHTS[i] * GAUSS_WEIGHTS[j] * GAUSS_WEIGHTS[k] / (inside * inside);
-            }
-        }
-    }
-    return total * half[0] * half[1] * half[2];
-}
-
-unittest {
-    ChunkLayout layout = ChunkLayout.make(VOLUME_TEST_DIMENSION);
-    float smallest = float.infinity;
-    float largest = 0;
-    float total = 0;
-    foreach (x; 0 .. VOLUME_TEST_DIMENSION) {
-        foreach (y; 0 .. VOLUME_TEST_DIMENSION) {
-            foreach (z; 0 .. VOLUME_TEST_DIMENSION) {
-                assert(fabsf(layout.cubeToGrid(layout.gridToCube(x)) - x) < GRID_TOLERANCE);
-                float volume = kleinBoxVolume([layout.gridToKlein(x), layout.gridToKlein(y), layout.gridToKlein(z)], [layout.gridToKlein(x + 1), layout.gridToKlein(y + 1), layout.gridToKlein(z + 1)]);
-                smallest = lowerOf(smallest, volume);
-                largest = higherOf(largest, volume);
-                total += volume;
-            }
-        }
-    }
-    assert(largest / smallest < MAX_VOLUME_SPREAD);
-    assert(fabsf(total * CORNER_COUNT / NODE_VOLUME - 1) < VOLUME_TOLERANCE);
 }
 
 size_t cellCount(ubyte dimension) {
@@ -207,20 +161,6 @@ struct Voxels {
     }
 }
 
-unittest {
-    Voxels stone = Voxels.filled(Material.granite);
-    assert(stone.isUniform() && stone.isOpaqueFill() && stone.at(5) == Material.granite);
-    Material[] cells = stone.toDense(TEST_DIMENSION);
-    assert(!stone.isUniform() && cells.length == cellCount(TEST_DIMENSION) && stone.at(5) == Material.granite);
-    stone.compress(TEST_DIMENSION);
-    assert(stone.isFilledWith(Material.granite));
-    stone.toDense(TEST_DIMENSION)[cellIndex(TEST_DIMENSION, 1, 2, 3)] = Material.glass;
-    stone.compress(TEST_DIMENSION);
-    assert(!stone.isUniform() && stone.at(cellIndex(TEST_DIMENSION, 1, 2, 3)) == Material.glass);
-    stone.release();
-    assert(!Voxels.filled(Material.none).isOpaqueFill() && !Voxels.filled(Material.glass).isOpaqueFill());
-}
-
 enum ChunkState : ubyte {
     fresh,
     generating,
@@ -232,6 +172,11 @@ enum Occupancy : ubyte {
     unknown,
     full,
     empty,
+}
+
+enum Materials : ubyte {
+    resolved,
+    deferred,
 }
 
 struct Chunk {
@@ -273,15 +218,14 @@ struct Chunk {
 
     bool casState(ChunkState expected, ChunkState wanted) {
         ulong seen = atomicLoad(*cast(shared(ulong)*) &word);
-        bool isSwapped = false;
-        while (!isSwapped && ((seen >> STATE_SHIFT) & FIELD_MASK) == expected) {
+        while (((seen >> STATE_SHIFT) & FIELD_MASK) == expected) {
             ulong changed = (seen & ~(FIELD_MASK << STATE_SHIFT)) | (cast(ulong) wanted << STATE_SHIFT);
-            isSwapped = cas(cast(shared(ulong)*) &word, seen, changed);
-            if (!isSwapped) {
-                seen = atomicLoad(*cast(shared(ulong)*) &word);
+            if (cas(cast(shared(ulong)*) &word, seen, changed)) {
+                return true;
             }
+            seen = atomicLoad(*cast(shared(ulong)*) &word);
         }
-        return isSwapped;
+        return false;
     }
 
     Occupancy predicted() const {
@@ -296,44 +240,43 @@ struct Chunk {
         return (word & DEFERRED_BIT) != 0;
     }
 
-    void hasDeferredMaterials(bool value) {
-        setFlag(DEFERRED_BIT, value);
+    void materials(Materials value) {
+        if (value == Materials.deferred) {
+            word |= DEFERRED_BIT;
+        } else {
+            word &= ~DEFERRED_BIT;
+        }
     }
 
     bool isQueued() const {
         return (word & QUEUED_BIT) != 0;
     }
 
-    void isQueued(bool value) {
-        setFlag(QUEUED_BIT, value);
+    void markQueued() {
+        word |= QUEUED_BIT;
+    }
+
+    void unmarkQueued() {
+        word &= ~QUEUED_BIT;
     }
 
     bool claimQueued() {
         ulong seen = atomicLoad(*cast(shared(ulong)*) &word);
-        bool isSwapped = false;
-        while (!isSwapped && (seen & QUEUED_BIT) == 0) {
-            isSwapped = cas(cast(shared(ulong)*) &word, seen, seen | QUEUED_BIT);
-            if (!isSwapped) {
-                seen = atomicLoad(*cast(shared(ulong)*) &word);
+        while ((seen & QUEUED_BIT) == 0) {
+            if (cas(cast(shared(ulong)*) &word, seen, seen | QUEUED_BIT)) {
+                return true;
             }
+            seen = atomicLoad(*cast(shared(ulong)*) &word);
         }
-        return isSwapped;
+        return false;
     }
 
     bool isEdited() const {
         return (word & EDITED_BIT) != 0;
     }
 
-    void isEdited(bool value) {
-        setFlag(EDITED_BIT, value);
-    }
-
-    void setFlag(ulong bit, bool isSet) {
-        if (isSet) {
-            word |= bit;
-        } else {
-            word &= ~bit;
-        }
+    void markEdited() {
+        word |= EDITED_BIT;
     }
 }
 

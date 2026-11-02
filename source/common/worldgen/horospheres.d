@@ -4,23 +4,25 @@ import core.math : sqrt;
 import core.stdc.math : acoshf, cosh, coshf, expf, fabs, fabsf, floorf, log, sinh, sinhf, sqrtf;
 import core.stdc.string : memcpy;
 import base.array : Array;
+import base.flags : Readiness;
 import base.hashmap : FIBONACCI_MULTIPLIER, HashMap;
+import base.maybe : Maybe;
 import base.numbers : higherOf, lowerOf;
 import base.slab : Run, RunPool, Slab;
 import base.splitmix : unitOf;
-import base.vector3 : scaled;
-import common.graph : Graph, NO_SLOT, NodeId, ParentList;
+import base.vector3 : cross, dot, magnitude, negated, scaled;
+import common.graph : Graph, NO_SLOT, NodeId, ParentEntry, ParentList;
 import common.position : Position;
-import common.traversal : MIRRORED_ORIGINS, NearbyNode, NearbyScratch;
+import common.traversal : MIRRORED_ORIGINS;
 import common.view : GraphView, SlotCorner;
-import common.worldgen.blueprint : BlueprintBuilder, CellBox, EVERY_HEIGHT, PaintResult;
+import common.worldgen.blueprint : floorDivision;
 import common.worldgen.climate : Climate, CubeClimate, NodeClimate, RELIEF_BOUND, RELIEF_SLACK;
-import common.worldgen.generation : ChunkParams, GeneratedVoxels, NodeState, StructureWorld, Worldgen;
+import common.worldgen.generation : NodeState;
 import common.worldgen.plane : Plane, PlaneMeasure, logCosh;
-import common.worldgen.structure : ClaimKey, ColumnSpot, GROUND_RING, SiteFrame, atLevel, columnPoint, edgeCells, edgeLength, forwarded, groundRing, groundSite, isCanonicalMatch, isSamePoint, pathBetween, rootSite, rootedCorner, sideAxis, siteHash, siteOrigin, sitePlacement, siteToNode, turned;
+import common.worldgen.structure : ClaimKey, ColumnSpot, GROUND_RING, SiteFrame, atLevel, columnPoint, edgeCells, edgeLength, forwarded, groundRing, groundSite, parentOnCorner, pathBetween, rootedCorner, sideAxis, siteHash, siteOrigin, sitePlacement, turned;
 import geometry.honeycomb : CORNER_COUNT, Corner, FACE_COUNT, FACE_DISTANCE, Face, NODE_RADIUS, across, cornerToNode, cubeScale, faces, mirror, nodeToCorner;
 import geometry.lorentz : Motion, Point, Vec4;
-import plugins.api.api : HorosphereForm, Look, Material, NO_KIND, SitePart, Turn;
+import plugins.api.api : HorosphereForm, Look, NO_KIND, SitePart, Turn;
 
 enum uint ROOT = 0;
 enum ubyte NO_RISE = 0;
@@ -44,20 +46,8 @@ enum float DESCENT_TOLERANCE = 1e-3f;
 enum double DESCENT_TIE_SLACK = 1 + 1e-3;
 enum double DESCENT_TIE_FLOOR = 1e-3;
 enum float COLUMN_REACH_EDGES = 1.5f;
-enum ubyte TEST_DIMENSION = 12;
-enum float TEST_RADIUS = 3.0f;
-enum float TEST_PLANE_TOLERANCE = 1e-2f;
-enum int TEST_FAR_EDGES = 3;
-enum int TEST_RISE_EDGES = 3;
-enum int TEST_ALONG_EDGES = 4;
-enum int TEST_FARTHEST_EDGES = 8;
-enum float TEST_FARTHEST_GROUND = 2.0f;
-immutable float[5] TEST_GROUND_HEIGHTS = [-2.5f, 1.0f, -0.5f, 2.0f, 1.5f];
-immutable int[3][3] TEST_PAINTED_CELLS = [
-    [5, 6, 19],
-    [8, 5, 3],
-    [6, 9, 40],
-];
+enum int COLUMN_GROUND_EDGES = 3;
+enum float COLUMN_GRAVITY_REACH = 0.8f;
 
 enum Fill : ubyte {
     none,
@@ -70,11 +60,23 @@ struct HorosphereKind {
     HorosphereForm form;
     uint tag;
     Look look;
+    uint under;
 }
 
 struct Rise {
     ubyte kind;
     ubyte edges;
+}
+
+enum HorosphereStage : ubyte {
+    free,
+    open,
+    measured,
+}
+
+enum GravityPull : ubyte {
+    down,
+    up,
 }
 
 struct Horosphere {
@@ -93,8 +95,11 @@ struct Horosphere {
     Face label;
     ubyte kind;
     ubyte edges;
-    bool isMeasured;
-    bool isKnown;
+    HorosphereStage stage;
+
+    bool isMeasured() const {
+        return stage == HorosphereStage.measured;
+    }
 }
 
 struct HorosphereRef {
@@ -102,10 +107,10 @@ struct HorosphereRef {
     Plane[2] column;
     uint horosphere;
 
-    HorosphereRef across(Face side, bool isUpright) const {
+    HorosphereRef across(Face side, ref const Horospheres horospheres) const {
         Face[1] path = [side];
         Plane[2] carried = column;
-        if (isUpright) {
+        if (horospheres.isUpright(horosphere)) {
             carried = [column[0].carriedAlong(path[]), column[1].carriedAlong(path[])];
         }
         return HorosphereRef(plane.carriedAlong(path[]), carried, horosphere);
@@ -120,9 +125,9 @@ bool contains(ref const Array!HorosphereRef found, uint horosphere) {
     return index < found.length;
 }
 
-float columnDistanceOf(ref const HorosphereRef near) {
-    float first = sinhf(near.column[0].distanceTo(Point!float.origin()));
-    float second = sinhf(near.column[1].distanceTo(Point!float.origin()));
+float columnDistanceOf(ref const HorosphereRef near, Point!float point) {
+    float first = sinhf(near.column[0].distanceTo(point));
+    float second = sinhf(near.column[1].distanceTo(point));
     return acoshf(sqrtf(1 + first * first + second * second));
 }
 
@@ -181,7 +186,7 @@ struct CornerKey {
 
 struct NodeHorospheres {
     Run run;
-    bool isKnown;
+    Readiness state;
 }
 
 struct NodeRises {
@@ -202,10 +207,10 @@ struct Horospheres {
     Array!uint rising;
     Fill rootFill;
     ubyte rootKind;
-    bool isGravityInverted;
+    GravityPull pull;
 
     float gravitySign() const {
-        if (isGravityInverted) {
+        if (pull == GravityPull.up) {
             return -1;
         } else {
             return 1;
@@ -261,11 +266,15 @@ struct Horospheres {
     }
 
     bool isUpright(uint index) const {
-        return index != ROOT && kinds.ptr[horosphere(index).kind].form == HorosphereForm.upright;
+        return index != ROOT && isUprightKind(cast(ubyte)(horosphere(index).kind + 1));
     }
 
     bool isUprightKind(ubyte kind) const {
-        return kinds.ptr[kind - 1].form == HorosphereForm.upright;
+        return kinds.ptr[kind - 1].form != HorosphereForm.terrain && kinds.ptr[kind - 1].form != HorosphereForm.bare;
+    }
+
+    bool isSunken(uint index) const {
+        return index != ROOT && kinds.ptr[horosphere(index).kind].form == HorosphereForm.sunken;
     }
 
     Fill fillOf(uint index) const {
@@ -279,12 +288,8 @@ struct Horospheres {
         }
     }
 
-    bool isFlat(uint index) const {
-        return fillOf(index) != Fill.terrain;
-    }
-
     bool hasHorospheresAt(uint slot) const {
-        return nodes.at(slot).isKnown;
+        return nodes.at(slot).state == Readiness.ready;
     }
 
     const(HorosphereRef)[] horospheresAt(uint slot) const {
@@ -297,7 +302,7 @@ struct Horospheres {
         foreach (near; found) {
             horospheres.ptr[near.horosphere - 1].users += 1;
         }
-        *nodes.at(slot) = NodeHorospheres(run, true);
+        *nodes.at(slot) = NodeHorospheres(run, Readiness.ready);
     }
 
     void forget(uint slot) {
@@ -397,7 +402,8 @@ void applyDiscoveries(ref Graph target, ref const GraphView view) {
     }
 }
 
-bool makeWantedHorospheres(ref Graph target, ref GraphView view) {
+size_t makeWantedHorospheres(ref Graph target, ref GraphView view) {
+    size_t made = view.wanted.length;
     foreach (want; view.wanted.slice()) {
         uint face = want.start;
         foreach (side; view.wantedPaths.ptr[want.pathStart .. want.pathStart + want.pathLength]) {
@@ -405,9 +411,8 @@ bool makeWantedHorospheres(ref Graph target, ref GraphView view) {
         }
         target.view.horosphereOver(face, want.corner, want.parent);
     }
-    bool isMade = view.wanted.length > 0;
     view.clearWanted();
-    return isMade;
+    return made;
 }
 
 const(HorosphereRef)[] ensureHorospheresAt(ref GraphView view, uint slot) {
@@ -424,7 +429,7 @@ const(HorosphereRef)[] ensureHorospheresAt(ref GraphView view, uint slot) {
 
 bool isNear(ref const GraphView view, ref const HorosphereRef near) {
     if (view.horospheres.isUpright(near.horosphere)) {
-        return columnDistanceOf(near) <= view.columnReach() + NODE_RADIUS;
+        return columnDistanceOf(near, Point!float.origin()) <= view.columnReach() + NODE_RADIUS;
     } else {
         return fabsf(near.plane.distanceTo(Point!float.origin())) <= GROUND_REACH + NODE_RADIUS;
     }
@@ -435,7 +440,7 @@ void discoverHorospheres(ref GraphView view, uint slot, ref Array!HorosphereRef 
     foreach (link; parents.links[0 .. parents.count]) {
         foreach (near; view.ensureHorospheresAt(link.slot)) {
             if (!found.contains(near.horosphere)) {
-                HorosphereRef moved = near.across(link.side, view.horospheres.isUpright(near.horosphere));
+                HorosphereRef moved = near.across(link.side, view.horospheres);
                 if (view.isNear(moved)) {
                     found.append(moved);
                 }
@@ -456,11 +461,9 @@ void discoverHorospheres(ref GraphView view, uint slot, ref Array!HorosphereRef 
 uint groundNodeOf(ref GraphView view, uint slot, uint horosphere) {
     uint current = slot;
     Vec4!double center = Vec4!double.origin();
-    Plane start = view.planeOfHorosphereIn(horosphere, current);
-    Plane carried = start;
+    Plane carried = view.planeOfHorosphereIn(horosphere, current);
     float altitude = fabsf(carried.distanceTo(Point!float.origin()));
-    bool isDescending = altitude > DESCENT_ALTITUDE;
-    while (isDescending) {
+    while (altitude > DESCENT_ALTITUDE) {
         Face lowest = Face.f0;
         float lowestAltitude = float.infinity;
         PlaneMeasure measured = carried.measure();
@@ -479,20 +482,15 @@ uint groundNodeOf(ref GraphView view, uint slot, uint horosphere) {
                 }
             }
         }
-        isDescending = lowestAltitude < altitude - DESCENT_TOLERANCE;
-        if (isDescending) {
-            current = view.ensureNeighborSlot(current, lowest);
-            center = mirror(lowest).as!double() * center;
-            carried = carried.reflectAcross(lowest);
-            altitude = lowestAltitude;
-            isDescending = altitude > DESCENT_ALTITUDE;
+        if (!(lowestAltitude < altitude - DESCENT_TOLERANCE)) {
+            break;
         }
+        current = view.ensureNeighborSlot(current, lowest);
+        center = mirror(lowest).as!double() * center;
+        carried = view.planeOfHorosphereIn(horosphere, current);
+        altitude = fabsf(carried.distanceTo(Point!float.origin()));
     }
-    Plane plane = start;
-    if (current != slot) {
-        plane = view.planeOfHorosphereIn(horosphere, current);
-    }
-    Vec4!double normal = plane.scaledNormal.as!double();
+    Vec4!double normal = carried.scaledNormal.as!double();
     normal = normal * (1.0 / sqrt(normal.minkowski(normal)));
     double along = center.minkowski(normal);
     Vec4!double foot = (center - normal * along) * (1.0 / sqrt(1.0 + along * along));
@@ -502,19 +500,19 @@ uint groundNodeOf(ref GraphView view, uint slot, uint horosphere) {
     return view.slotOf(view.ensureNormalized(Position(view.idAt(current), toAbove)).node);
 }
 
-bool isWithinRiseReach(Plane plane) {
-    return fabsf(plane.distanceTo(Point!float.origin())) <= RISE_REACH + NODE_RADIUS;
+bool isRiseReached(ref const GraphView view, ref const HorosphereRef near) {
+    if (view.horospheres.isUpright(near.horosphere)) {
+        return columnDistanceOf(near, Point!float.origin()) <= view.columnReach() + NODE_RADIUS;
+    } else {
+        return fabsf(near.plane.distanceTo(Point!float.origin())) <= RISE_REACH + NODE_RADIUS;
+    }
 }
 
 void addRisingOver(ref GraphView view, uint slot, uint horosphere, ref Array!HorosphereRef found) {
     foreach (risen; view.risingFrom(view.groundNodeOf(slot, horosphere), horosphere)) {
         if (!found.contains(risen)) {
             HorosphereRef near = view.inheritedRefOf(risen, slot);
-            bool isReached = isWithinRiseReach(near.plane);
-            if (view.horospheres.isUpright(risen)) {
-                isReached = columnDistanceOf(near) <= view.columnReach() + NODE_RADIUS;
-            }
-            if (isReached) {
+            if (view.isRiseReached(near)) {
                 found.append(near);
             }
         }
@@ -526,7 +524,7 @@ HorosphereRef inheritedRefOf(ref GraphView view, uint horosphere, uint slot) {
     foreach (link; parents.links[0 .. parents.count]) {
         foreach (near; view.horospheresAt(link.slot)) {
             if (near.horosphere == horosphere) {
-                return near.across(link.side, view.horospheres.isUpright(horosphere));
+                return near.across(link.side, view.horospheres);
             }
         }
     }
@@ -565,12 +563,11 @@ const(uint)[] risingFrom(ref GraphView view, uint ground, uint horosphere) {
         }
         Array!uint found;
         foreach (face; wide[0 .. wideCount]) {
-            bool isClose = ring[].containsHorosphere(face);
             foreach (index; 0 .. CORNER_COUNT) {
                 Corner corner = cast(Corner) index;
                 if (sideAxis(corner, label) < 3) {
                     Rise rise = view.riseAt(face, corner, horosphere);
-                    if (rise.kind != NO_RISE && (isClose || view.horospheres.isUprightKind(rise.kind))) {
+                    if (rise.kind != NO_RISE && (ring[].containsHorosphere(face) || view.horospheres.isUprightKind(rise.kind))) {
                         uint made = view.horosphereOver(face, corner, horosphere);
                         if (made != ROOT && !found.slice().containsHorosphere(made)) {
                             found.append(made);
@@ -680,10 +677,15 @@ bool isRayApart(Vec4!float base, Vec4!float along, Plane plane, float separation
 }
 
 bool isRiseClear(ref GraphView view, uint face, Corner corner, uint horosphere, Rise rise) {
-    if (view.horospheres.isUprightKind(rise.kind)) {
-        return view.isColumnClearOfAncestors(face, corner, horosphere);
+    if (view.horospheres.kinds.ptr[rise.kind - 1].form == HorosphereForm.sunken) {
+        return view.horospheres.tagOf(horosphere) == view.horospheres.kinds.ptr[rise.kind - 1].under;
     } else {
-        return view.isClearOfAncestors(face, corner, horosphere, rise.edges);
+        uint foot = view.airSideNode(face, corner, view.horospheres.labelOf(horosphere));
+        if (view.horospheres.isUprightKind(rise.kind)) {
+            return view.isColumnClearOfAncestors(foot, corner, horosphere);
+        } else {
+            return view.isClearOfAncestors(foot, corner, horosphere, rise.edges);
+        }
     }
 }
 
@@ -691,12 +693,13 @@ bool isColumnClearOfAncestors(ref GraphView view, uint face, Corner corner, uint
     Vec4!float[2] line = riseLineOver(corner, view.horospheres.labelOf(horosphere), view.edgeOf());
     float separation = CLEARANCE_EDGES * view.edgeOf();
     uint ancestor = horosphere;
-    bool isClear = true;
-    while (isClear && ancestor != ROOT) {
+    while (ancestor != ROOT) {
         ancestor = view.horospheres.horosphere(ancestor).parent;
-        isClear = isRayApart(line[0], line[1], view.planeOfHorosphereIn(ancestor, face), separation);
+        if (!isRayApart(line[0], line[1], view.planeOfHorosphereIn(ancestor, face), separation)) {
+            return false;
+        }
     }
-    return isClear;
+    return true;
 }
 
 Plane planeOfHorosphereIn(ref GraphView view, uint horosphere, uint slot) {
@@ -716,34 +719,28 @@ bool isClearOfAncestors(ref GraphView view, uint face, Corner corner, uint horos
     Plane candidate = risenPlaneOver(corner, view.horospheres.labelOf(horosphere), edges, view.edgeOf());
     float separation = CLEARANCE_EDGES * view.edgeOf();
     uint ancestor = horosphere;
-    bool isClear = true;
-    while (isClear && ancestor != ROOT) {
+    while (ancestor != ROOT) {
         ancestor = view.horospheres.horosphere(ancestor).parent;
-        isClear = isApart(candidate, view.planeOfHorosphereIn(ancestor, face), separation);
+        if (!isApart(candidate, view.planeOfHorosphereIn(ancestor, face), separation)) {
+            return false;
+        }
     }
-    return isClear;
+    return true;
 }
 
-uint airSideNode(ref Graph graph, uint node, Corner corner, Face label) {
+uint airSideNode(ref GraphView view, uint node, Corner corner, Face label) {
     uint slot = node;
-    bool isAcross = false;
-    bool isLowest = false;
-    while (!isLowest) {
-        ParentList parents = graph.parents(slot);
-        uint index = 0;
-        while (index < parents.count && sideAxis(corner, parents.links[index].side) == 3) {
-            index += 1;
+    uint crossings = 0;
+    Maybe!ParentEntry lower = parentOnCorner(view.parents(slot), corner);
+    while (lower.exists) {
+        if (lower.value.side == label) {
+            crossings += 1;
         }
-        isLowest = index == parents.count;
-        if (!isLowest) {
-            if (parents.links[index].side == label) {
-                isAcross = !isAcross;
-            }
-            slot = parents.links[index].slot;
-        }
+        slot = lower.value.slot;
+        lower = parentOnCorner(view.parents(slot), corner);
     }
-    if (isAcross) {
-        slot = graph.ensureNeighborSlot(slot, label);
+    if (crossings % 2 == 1) {
+        slot = view.ensureNeighborSlot(slot, label);
     }
     return slot;
 }
@@ -751,6 +748,7 @@ uint airSideNode(ref Graph graph, uint node, Corner corner, Face label) {
 Horosphere risenHorosphere(ref Graph graph, uint face, Corner corner, uint parent, Rise rise) {
     Face parentLabel = graph.horospheres.labelOf(parent);
     if (graph.horospheres.isUprightKind(rise.kind)) {
+        uint foot = graph.view.airSideNode(face, corner, parentLabel);
         Plane[2] column;
         uint count = 0;
         foreach (side; corner.faces) {
@@ -759,13 +757,13 @@ Horosphere risenHorosphere(ref Graph graph, uint face, Corner corner, uint paren
                 count += 1;
             }
         }
-        return Horosphere(graph.view.planeOfHorosphereIn(parent, face), column, groundSite(face, corner, parentLabel), CornerKey.init, 0, parent, face, 0, 0, 0, 0, 0, parentLabel, cast(ubyte)(rise.kind - 1), rise.edges, false, true);
+        return Horosphere(graph.view.planeOfHorosphereIn(parent, foot), column, groundSite(foot, corner, parentLabel), CornerKey.init, 0, parent, foot, 0, 0, 0, 0, 0, parentLabel, cast(ubyte)(rise.kind - 1), rise.edges, HorosphereStage.open);
     } else {
         SiteFrame tower = graph.view.turned(groundSite(face, corner, parentLabel), Turn.pitchUp);
         SiteFrame top = graph.view.atLevel(forwarded(tower, rise.edges), 0);
         Face label = top.zSide();
-        uint foot = graph.airSideNode(top.node, top.corner, label);
-        return Horosphere(-Plane.ofFace(label), [Plane.init, Plane.init], groundSite(foot, top.corner, label), CornerKey.init, 0, parent, foot, 0, 0, 0, 0, 0, label, cast(ubyte)(rise.kind - 1), rise.edges, false, true);
+        uint foot = graph.view.airSideNode(top.node, top.corner, label);
+        return Horosphere(-Plane.ofFace(label), [Plane.init, Plane.init], groundSite(foot, top.corner, label), CornerKey.init, 0, parent, foot, 0, 0, 0, 0, 0, label, cast(ubyte)(rise.kind - 1), rise.edges, HorosphereStage.open);
     }
 }
 
@@ -793,21 +791,21 @@ uint makeHorosphere(ref Graph graph, ClaimKey rooted, uint face, Corner corner, 
 }
 
 bool isIdle(ref const Graph graph, ref const Horosphere horosphere) {
-    return horosphere.isKnown && horosphere.users == 0 && horosphere.tiles == 0 && graph.horospheres.forced.find(horosphere.key) is null;
+    return horosphere.stage != HorosphereStage.free && horosphere.users == 0 && horosphere.tiles == 0 && graph.horospheres.forced.find(horosphere.key) is null;
 }
 
 void releaseIdleHorospheres(ref Graph graph) {
-    bool isReleased = false;
+    uint released = 0;
     foreach (index; 0 .. graph.horospheres.horospheres.length) {
         uint idle = cast(uint) index + 1;
         while (idle != ROOT && graph.isIdle(graph.horospheres.horosphere(idle))) {
             uint parent = graph.horospheres.horosphere(idle).parent;
             graph.releaseHorosphere(idle);
-            isReleased = true;
+            released += 1;
             idle = parent;
         }
     }
-    if (isReleased) {
+    if (released > 0) {
         graph.horospheres.forgetRising();
     }
 }
@@ -827,20 +825,15 @@ void releaseHorosphere(ref Graph graph, uint index) {
 bool openHorosphere(ref Graph graph, SiteFrame site, Rise rise) {
     SiteFrame at = graph.view.atLevel(site, 0);
     SiteFrame ground = groundSite(at.node, at.corner, at.ySide);
-    uint besides = 0;
     foreach (neighbor; graph.view.neighborsOf(ground)) {
         if (graph.horospheres.forced.find(graph.view.cornerKeyOf(graph.view.siteOrigin(neighbor).key)) !is null) {
-            besides += 1;
+            return false;
         }
     }
-    if (besides > 0) {
-        return false;
-    } else {
-        ClaimKey key = graph.view.siteOrigin(ground).key;
-        graph.horospheres.forced.insert(graph.view.cornerKeyOf(key), rise);
-        graph.reference(key.slot);
-        return true;
-    }
+    ClaimKey key = graph.view.siteOrigin(ground).key;
+    graph.horospheres.forced.insert(graph.view.cornerKeyOf(key), rise);
+    graph.reference(key.slot);
+    return true;
 }
 
 Grounds groundsAt(ref GraphView view, uint slot) {
@@ -894,11 +887,11 @@ ChunkPoint chunkPointOf(Point!float point) {
     return best;
 }
 
-float heightAbove(float relief, float altitude, bool isFlat) {
-    if (isFlat) {
-        return altitude;
-    } else {
+float heightAbove(float relief, float altitude, Fill fill) {
+    if (fill == Fill.terrain) {
         return altitude - relief;
+    } else {
+        return altitude;
     }
 }
 
@@ -941,20 +934,49 @@ const(Look)* lookAt(ref const Graph graph, Position position) {
     }
 }
 
+bool isAlongColumn(ref const Horospheres horospheres, ref const HorosphereRef near, Point!float point) {
+    if (!horospheres.isUpright(near.horosphere)) {
+        return false;
+    } else {
+        float height = near.plane.distanceTo(point);
+        if (horospheres.isSunken(near.horosphere)) {
+            height = -height;
+        }
+        return height > 0 && columnDistanceOf(near, point) <= COLUMN_GRAVITY_REACH;
+    }
+}
+
+float[3] columnUp(ref const HorosphereRef near, Motion!float local) {
+    float[3] across = near.column[0].upAt(local).cross(near.column[1].upAt(local));
+    float[3] up = across.scaled(1.0f / across.magnitude);
+    if (up.dot(near.plane.upAt(local)) < 0) {
+        return up.negated;
+    } else {
+        return up;
+    }
+}
+
 Gravity gravityAt(ref const Graph graph, Position position) {
     uint slot = graph.slotOf(position.node);
     assert(graph.isGravityKnown(slot));
     Grounds grounds = graph.groundsIn(slot);
     float sign = graph.horospheres.gravitySign();
     if (grounds.count == 1) {
-        return Gravity(grounds.items[0].surface.upAt(position.local).scaled(sign), 1.0f);
+        float[3] up = grounds.items[0].surface.upAt(position.local);
+        Point!float point = position.local * Point!float.origin();
+        foreach (ref near; graph.horospheres.horospheresAt(slot)) {
+            if (graph.horospheres.isAlongColumn(near, point)) {
+                up = columnUp(near, position.local);
+            }
+        }
+        return Gravity(up.scaled(sign), 1.0f);
     } else {
         Point!float point = position.local * Point!float.origin();
         float relief = graph.loadedClimateAt(slot, point).relief;
         float[MAX_GROUNDS] heights = void;
         float[3][MAX_GROUNDS] ups = void;
         foreach (index, ground; grounds.items[0 .. grounds.count]) {
-            heights[index] = sign * heightAbove(relief, ground.surface.distanceTo(point), ground.fill != Fill.terrain);
+            heights[index] = sign * heightAbove(relief, ground.surface.distanceTo(point), ground.fill);
             ups[index] = ground.surface.upAt(position.local).scaled(sign);
         }
         return blendedGravity(heights[0 .. grounds.count], ups[0 .. grounds.count]);
@@ -987,8 +1009,8 @@ bool isOnRisenSide(ref GraphView view, uint slot, HorosphereRef near) {
     Point!float center = Point!float.origin();
     float relief = view.stateAt(slot).climate.climate().relief;
     uint parent = view.horospheres.horosphere(near.horosphere).parent;
-    float own = heightAbove(relief, near.plane.distanceTo(center), view.horospheres.isFlat(near.horosphere));
-    float other = heightAbove(relief, view.planeOfHorosphereIn(parent, slot).distanceTo(center), view.horospheres.isFlat(parent));
+    float own = heightAbove(relief, near.plane.distanceTo(center), view.horospheres.fillOf(near.horosphere));
+    float other = heightAbove(relief, view.planeOfHorosphereIn(parent, slot).distanceTo(center), view.horospheres.fillOf(parent));
     return own - other <= RISEN_SIDE_MARGIN;
 }
 
@@ -1032,18 +1054,23 @@ bool isInBand(Plane plane, Fill fill, float relief) {
 bool mayHoldContent(ref Graph graph, uint slot) {
     NodeState state = *graph.ensureState(slot);
     float relief = state.climate.climate().relief;
-    bool holds = isInBand(state.surface, graph.horospheres.fillOf(ROOT), relief);
-    foreach (near; graph.view.ensureHorospheresAt(slot)) {
-        holds = holds || graph.horospheres.isUpright(near.horosphere) || isInBand(near.plane, graph.horospheres.fillOf(near.horosphere), relief);
+    const(HorosphereRef)[] nearby = graph.view.ensureHorospheresAt(slot);
+    if (isInBand(state.surface, graph.horospheres.fillOf(ROOT), relief)) {
+        return true;
     }
-    return holds || graph.ensureStructureAt(slot);
+    foreach (near; nearby) {
+        if (graph.horospheres.isUpright(near.horosphere) || isInBand(near.plane, graph.horospheres.fillOf(near.horosphere), relief)) {
+            return true;
+        }
+    }
+    return graph.ensureStructureAt(slot);
 }
 
 float horosphereHeightAt(ref GraphView view, uint horosphere, Position position) {
     uint slot = view.slotOf(position.node);
     Point!float point = position.local * Point!float.origin();
     float relief = view.climateAt(slot, point).relief;
-    return heightAbove(relief, view.planeOfHorosphereIn(horosphere, slot).distanceTo(point), view.horospheres.isFlat(horosphere));
+    return heightAbove(relief, view.planeOfHorosphereIn(horosphere, slot).distanceTo(point), view.horospheres.fillOf(horosphere));
 }
 
 float planeHeightAt(ref GraphView view, uint horosphere, Position position) {
@@ -1123,8 +1150,11 @@ struct RiseMeasure {
 
 RiseMeasure measureOf(ref GraphView view, uint horosphere) {
     Horosphere measured = view.horospheres.horosphere(horosphere);
-    if (view.horospheres.isUpright(horosphere)) {
+    if (view.horospheres.isSunken(horosphere)) {
         return RiseMeasure.init;
+    } else if (view.horospheres.isUpright(horosphere)) {
+        int reach = COLUMN_GROUND_EDGES * edgeCells(view.layout.dimension);
+        return RiseMeasure(view.groundAlong(view.turned(measured.foot, Turn.pitchUp), measured.parent, reach), 0, 0);
     } else {
         int span = measured.edges * edgeCells(view.layout.dimension);
         SiteFrame up = view.turned(measured.foot, Turn.pitchUp);
@@ -1138,7 +1168,7 @@ void storeMeasure(ref Graph graph, uint horosphere, RiseMeasure measure) {
     stored.ground = measure.ground;
     stored.below = measure.below;
     stored.balance = measure.balance;
-    stored.isMeasured = true;
+    stored.stage = HorosphereStage.measured;
 }
 
 ref const(Horosphere) measuredHorosphere(ref Graph graph, uint horosphere) {
@@ -1148,10 +1178,30 @@ ref const(Horosphere) measuredHorosphere(ref Graph graph, uint horosphere) {
     return graph.horospheres.horosphere(horosphere);
 }
 
+int lowestSegment(ref GraphView view, uint horosphere) {
+    const(Horosphere)* found = &view.horospheres.horosphere(horosphere);
+    int ground = found.ground;
+    if (!found.isMeasured) {
+        ground = view.measureOf(horosphere).ground;
+    }
+    return lowerOf(0, floorDivision(ground, edgeCells(view.layout.dimension)) - 1);
+}
+
 int[2] segmentsNear(ref GraphView view, ref const HorosphereRef near) {
     float edge = view.edgeOf();
     float height = near.plane.distanceTo(Point!float.origin());
-    return [higherOf(0, cast(int) floorf((height - NODE_RADIUS) / edge) - 2), cast(int) floorf((height + NODE_RADIUS) / edge) + 1];
+    int low = cast(int) floorf((height - NODE_RADIUS) / edge) - 2;
+    int high = cast(int) floorf((height + NODE_RADIUS) / edge) + 1;
+    if (view.horospheres.isSunken(near.horosphere)) {
+        return [low, lowerOf(0, high)];
+    } else {
+        return [higherOf(view.lowestSegment(near.horosphere), low), high];
+    }
+}
+
+SiteFrame columnSiteOf(ref Graph graph, SiteFrame site) {
+    SiteFrame at = graph.view.atLevel(site, 0);
+    return graph.view.turned(groundSite(graph.view.airSideNode(at.node, at.corner, at.ySide), at.corner, at.ySide), Turn.pitchUp);
 }
 
 SiteFrame segmentSite(ref GraphView view, uint horosphere, int segment) {
@@ -1159,221 +1209,3 @@ SiteFrame segmentSite(ref GraphView view, uint horosphere, int segment) {
     return view.atLevel(forwarded(view.turned(found.foot, Turn.pitchUp), segment), 0);
 }
 
-unittest {
-    Graph graph = Graph.make(TEST_DIMENSION, Worldgen.fromStructure(StructureWorld.fromName("test")));
-    graph.horospheres.kinds.append(HorosphereKind(0, HorosphereForm.bare, 0));
-    SiteFrame root = rootSite(graph.anchorSlot);
-    assert(graph.openHorosphere(root, Rise(1, LOWEST_RISE_EDGES)));
-    assert(!graph.openHorosphere(forwarded(root, 1), Rise(1, LOWEST_RISE_EDGES)));
-    uint risen = graph.view.horosphereOver(graph.anchorSlot, root.corner, ROOT);
-    assert(risen != ROOT);
-    NearbyScratch scratch;
-    NearbyNode[] nearby = scratch.collectAll(graph, Position(graph.idAt(graph.horospheres.horosphere(risen).footNode), Motion!float.identity()), TEST_RADIUS);
-    foreach (node; nearby) {
-        const(HorosphereRef)[] found = graph.view.ensureHorospheresAt(node.slot);
-        foreach (near; found) {
-            assert(fabsf(graph.view.planeOfHorosphereIn(near.horosphere, node.slot).distanceTo(Point!float.origin()) - near.plane.distanceTo(Point!float.origin())) < TEST_PLANE_TOLERANCE);
-        }
-    }
-    GraphView view = GraphView.over(graph);
-    RiseMeasure viewed = view.measureOf(risen);
-    RiseMeasure measured = graph.view.measureOf(risen);
-    assert(!view.isBlocked && viewed == measured);
-    view.release();
-    Horosphere made = graph.horospheres.horosphere(risen);
-    float footAltitude = graph.view.planeOfHorosphereIn(risen, made.footNode).distanceTo(Point!float.origin());
-    float anchorAltitude = graph.ensureState(graph.anchorSlot).surface.distanceTo(Point!float.origin());
-    assert(fabsf(footAltitude - anchorAltitude) < TEST_PLANE_TOLERANCE);
-    uint[GROUND_RING] ring = graph.view.groundRing(graph.anchorSlot, Face.f0);
-    SiteFrame high = graph.view.atLevel(forwarded(graph.view.turned(root, Turn.pitchUp), TEST_RISE_EDGES), 0);
-    uint below = graph.view.groundNodeOf(high.node, ROOT);
-    uint index = 0;
-    while (index < GROUND_RING && ring[index] != below) {
-        index += 1;
-    }
-    assert(index < GROUND_RING);
-    assert(graph.view.groundNodeOf(made.footNode, risen) == made.footNode);
-    foreach (node; nearby) {
-        uint[2] both = [ROOT, risen];
-        foreach (over; both) {
-            float ground = graph.view.planeOfHorosphereIn(over, graph.view.groundNodeOf(node.slot, over)).distanceTo(Point!float.origin());
-            assert(fabsf(ground - FACE_DISTANCE) < TEST_PLANE_TOLERANCE);
-        }
-    }
-    assert(graph.view.isOnFootLine(made.footNode, risen));
-    assert(!graph.view.isOnFootLine(graph.view.atLevel(forwarded(made.foot, TEST_FAR_EDGES), 0).node, risen));
-    SiteFrame quarter = made.foot;
-    foreach (_; 0 .. GROUND_EDGES) {
-        SiteFrame tower = graph.view.turned(graph.view.turned(quarter, Turn.pitchUp), Turn.rollRight);
-        assert(graph.isCanonicalMatch(tower));
-        assert(graph.isCanonicalMatch(graph.view.turned(graph.view.turned(graph.view.turned(forwarded(tower, LOWEST_RISE_EDGES), Turn.pitchUp), Turn.pitchUp), Turn.rollRight)));
-        quarter = graph.view.turned(quarter, Turn.right);
-    }
-    SiteFrame risenTower = graph.view.turned(graph.view.turned(made.foot, Turn.pitchUp), Turn.rollRight);
-    SiteFrame rootTower = graph.view.turned(graph.view.turned(graph.view.turned(forwarded(risenTower, LOWEST_RISE_EDGES), Turn.pitchUp), Turn.pitchUp), Turn.rollRight);
-    float length = LOWEST_RISE_EDGES * edgeCells(graph.layout.dimension);
-    foreach (cell; TEST_PAINTED_CELLS) {
-        Point!float fromRisen = graph.view.siteToNode(risenTower, risenTower.node) * columnPoint(graph.layout, ColumnSpot(cell[0] + 0.5f, cell[1] + 0.5f, cell[2] + 0.5f));
-        Point!float fromRoot = graph.view.siteToNode(rootTower, risenTower.node) * columnPoint(graph.layout, ColumnSpot(cell[1] + 0.5f, cell[0] + 0.5f, length - cell[2] - 0.5f));
-        assert(isSamePoint(fromRisen, fromRoot));
-    }
-    BlueprintBuilder builder = BlueprintBuilder.make(graph);
-    foreach (cell; TEST_PAINTED_CELLS) {
-        assert(builder.paint(risenTower, CellBox.make(cell[0], cell[0], cell[1], cell[1], cell[2], cell[2]), EVERY_HEIGHT, Material.granite, false) == PaintResult.painted);
-    }
-    foreach (cell; TEST_PAINTED_CELLS) {
-        Point!float center = sitePlacement(risenTower, graph.layout) * columnPoint(graph.layout, ColumnSpot(cell[0] + 0.5f, cell[1] + 0.5f, cell[2] + 0.5f));
-        Position at = graph.ensureNormalized(Position(graph.idAt(risenTower.node), Motion!float.shiftTo(center)));
-        ChunkPoint inChunk = chunkPointOf(at.local * Point!float.origin());
-        int[3] voxel = void;
-        foreach (axis; 0 .. 3) {
-            voxel[axis] = cast(int) floorf(graph.layout.cubeToGrid(inChunk.coords[axis]));
-        }
-        assert(graph.ensureBuildingAt(graph.slotOf(at.node)).materialAt(inChunk.corner, voxel, Material.none) == Material.granite);
-    }
-    builder.release();
-    Plane over = risenPlaneOver(root.corner, Face.f0, LOWEST_RISE_EDGES, graph.view.edgeOf());
-    Plane stored = graph.view.planeOfHorosphereIn(risen, graph.anchorSlot);
-    assert(fabsf(over.distanceTo(Point!float.origin()) - stored.distanceTo(Point!float.origin())) < TEST_PLANE_TOLERANCE);
-    float[3] down = [0, -1, 0];
-    float[3] up = [0, 1, 0];
-    float[2] equal = [0.5f, 0.5f];
-    float[3][2] opposed = [up, down];
-    assert(blendedGravity(equal[], opposed[]).strength < TEST_PLANE_TOLERANCE);
-    float[1] alone = [0.5f];
-    float[3][1] single = [up];
-    assert(blendedGravity(alone[], single[]).strength == 1.0f);
-    scratch.release();
-    graph.release();
-}
-
-unittest {
-    Horospheres horospheres;
-    horospheres.kinds.append(HorosphereKind(0, HorosphereForm.bare, 0));
-    HorosphereRef[TEST_GROUND_HEIGHTS.length] near;
-    foreach (index, height; TEST_GROUND_HEIGHTS) {
-        horospheres.horospheres.append(Horosphere.init);
-        near[index] = HorosphereRef(Plane([0, 1, 0], height), [Plane.init, Plane.init], cast(uint) index + 1);
-    }
-    Grounds grounds = groundsOf(horospheres, Plane.ofFace(Face.f0), near[]);
-    assert(grounds.count == MAX_GROUNDS);
-    foreach (ground; grounds.items[1 .. grounds.count]) {
-        assert(fabsf(ground.surface.height) < TEST_FARTHEST_GROUND);
-    }
-    horospheres.release();
-}
-
-unittest {
-    Graph graph = Graph.make(TEST_DIMENSION, Worldgen.makeTerrain());
-    graph.horospheres.kinds.append(HorosphereKind(0, HorosphereForm.terrain, 0));
-    graph.horospheres.kinds.append(HorosphereKind(0, HorosphereForm.bare, 1));
-    SiteFrame root = rootSite(graph.anchorSlot);
-    SiteFrame beside = graph.view.turned(forwarded(graph.view.turned(root, Turn.right), 2), Turn.left);
-    assert(graph.openHorosphere(root, Rise(1, LOWEST_RISE_EDGES)));
-    assert(graph.openHorosphere(beside, Rise(2, LOWEST_RISE_EDGES)));
-    uint risen = graph.view.horosphereOver(graph.anchorSlot, root.corner, ROOT);
-    assert(risen != ROOT);
-    Horosphere made = graph.horospheres.horosphere(risen);
-    uint solid = graph.ensureNeighborSlot(made.footNode, made.label);
-    GeneratedVoxels generated = ChunkParams.make(graph.view, solid, made.foot.corner).generateVoxels();
-    assert(!generated.voxels.isFilledWith(Material.none));
-    generated.voxels.release();
-    SiteFrame at = graph.view.atLevel(beside, 0);
-    uint bare = graph.view.horosphereOver(at.node, at.corner, ROOT);
-    Horosphere empty = graph.horospheres.horosphere(bare);
-    generated = ChunkParams.make(graph.view, graph.ensureNeighborSlot(empty.footNode, empty.label), empty.foot.corner).generateVoxels();
-    assert(generated.voxels.isFilledWith(Material.none));
-    generated.voxels.release();
-    graph.release();
-}
-
-unittest {
-    Graph graph = Graph.make(TEST_DIMENSION, Worldgen.fromStructure(StructureWorld.fromName("test")));
-    graph.horospheres.kinds.append(HorosphereKind(0, HorosphereForm.upright, 0));
-    SiteFrame root = rootSite(graph.anchorSlot);
-    assert(graph.openHorosphere(root, Rise(1, LOWEST_RISE_EDGES)));
-    uint upright = graph.view.horosphereOver(graph.anchorSlot, root.corner, ROOT);
-    assert(graph.horospheres.isUpright(upright));
-    SiteFrame high = graph.view.segmentSite(upright, TEST_RISE_EDGES);
-    bool isFound = false;
-    foreach (near; graph.view.ensureHorospheresAt(high.node)) {
-        if (near.horosphere == upright) {
-            isFound = true;
-            int[2] segments = graph.view.segmentsNear(near);
-            assert(segments[0] <= TEST_RISE_EDGES && segments[1] >= TEST_RISE_EDGES);
-            assert(columnDistanceOf(near) < NODE_RADIUS);
-        }
-    }
-    assert(isFound);
-    float edge = graph.view.edgeOf();
-    Vec4!float[2] line = riseLineOver(root.corner, Face.f0, edge);
-    Plane above = risenPlaneOver(root.corner, Face.f0, LOWEST_RISE_EDGES, edge);
-    assert(!isRayApart(line[0], line[1], above, edge));
-    assert(isRayApart(line[0], -line[1], above, edge));
-    graph.release();
-}
-
-unittest {
-    Graph graph = Graph.make(TEST_DIMENSION, Worldgen.fromStructure(StructureWorld.fromName("test")));
-    graph.horospheres.kinds.append(HorosphereKind(0, HorosphereForm.bare, 0));
-    SiteFrame root = rootSite(graph.anchorSlot);
-    assert(graph.openHorosphere(root, Rise(1, LOWEST_RISE_EDGES)));
-    uint first = graph.view.horosphereOver(graph.anchorSlot, root.corner, ROOT);
-    SiteFrame along = graph.view.atLevel(forwarded(graph.horospheres.horosphere(first).foot, TEST_ALONG_EDGES), 0);
-    assert(graph.openHorosphere(along, Rise(1, LOWEST_RISE_EDGES)));
-    uint second = graph.view.horosphereOver(along.node, along.corner, first);
-    assert(second != ROOT && graph.horospheres.horosphere(second).parent == first);
-    uint foot = graph.horospheres.horosphere(second).footNode;
-    float separation = CLEARANCE_EDGES * graph.view.edgeOf();
-    assert(isApart(graph.view.planeOfHorosphereIn(second, foot), graph.view.planeOfHorosphereIn(ROOT, foot), separation));
-    bool isFound = false;
-    foreach (near; graph.view.ensureHorospheresAt(foot)) {
-        isFound = isFound || near.horosphere == second;
-    }
-    assert(isFound);
-    graph.release();
-}
-
-unittest {
-    Graph graph = Graph.make(TEST_DIMENSION, Worldgen.fromStructure(StructureWorld.fromName("test")));
-    graph.horospheres.kinds.append(HorosphereKind(1, HorosphereForm.bare, 0));
-    SiteFrame root = rootSite(graph.anchorSlot);
-    assert(graph.openHorosphere(root, Rise(1, LOWEST_RISE_EDGES)));
-    uint first = graph.view.horosphereOver(graph.anchorSlot, root.corner, ROOT);
-    float separation = CLEARANCE_EDGES * graph.view.edgeOf();
-    uint risen = 0;
-    foreach (edges; TEST_ALONG_EDGES .. TEST_FARTHEST_EDGES + 1) {
-        SiteFrame along = graph.view.atLevel(forwarded(graph.horospheres.horosphere(first).foot, edges), 0);
-        foreach (made; graph.view.risingFrom(graph.view.groundNodeOf(along.node, first), first)) {
-            uint foot = graph.horospheres.horosphere(made).footNode;
-            assert(graph.horospheres.horosphere(made).parent == first);
-            assert(isApart(graph.view.planeOfHorosphereIn(made, foot), graph.view.planeOfHorosphereIn(ROOT, foot), separation));
-            risen += 1;
-        }
-    }
-    assert(risen > 0);
-    graph.release();
-}
-
-unittest {
-    Graph graph = Graph.make(TEST_DIMENSION, Worldgen.fromStructure(StructureWorld.fromName("test")));
-    graph.horospheres.kinds.append(HorosphereKind(0, HorosphereForm.bare, 0));
-    graph.horospheres.kinds.append(HorosphereKind(1, HorosphereForm.upright, 1));
-    SiteFrame root = rootSite(graph.anchorSlot);
-    assert(graph.openHorosphere(root, Rise(1, LOWEST_RISE_EDGES)));
-    uint first = graph.view.horosphereOver(graph.anchorSlot, root.corner, ROOT);
-    float edge = graph.view.edgeOf();
-    uint trees = 0;
-    foreach (edges; 0 .. TEST_FARTHEST_EDGES + 1) {
-        SiteFrame along = graph.view.atLevel(forwarded(graph.horospheres.horosphere(first).foot, edges), 0);
-        foreach (made; graph.view.risingFrom(graph.view.groundNodeOf(along.node, first), first)) {
-            const(Horosphere)* tree = &graph.horospheres.horosphere(made);
-            assert(graph.horospheres.isUpright(made) && tree.parent == first);
-            Vec4!float[2] line = riseLineOver(tree.foot.corner, tree.label, edge);
-            assert(isRayApart(line[0], line[1], graph.view.planeOfHorosphereIn(ROOT, tree.footNode), CLEARANCE_EDGES * edge));
-            trees += 1;
-        }
-    }
-    assert(trees > 0);
-    graph.release();
-}

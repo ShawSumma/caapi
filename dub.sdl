@@ -27,12 +27,14 @@ configuration "headless" {
 	targetName "mined-headless"
 	mainSourceFile "source/headless.d"
 	excludedSourceFiles "source/main.d" "source/unittests.d" "source/unit/*" "source/bindings/platform.c" "source/client/cocoa.d" "source/client/graphics/*" "source/client/graphics/voxels/*"
+	lflags "--export-dynamic" platform="linux"
 }
 
 configuration "unittest" {
 	targetName "mined-unittest"
 	mainSourceFile "source/unittests.d"
 	excludedSourceFiles "source/main.d" "source/headless.d" "source/worldcheck.d" "source/bindings/platform.c" "source/client/cocoa.d" "source/client/graphics/*" "source/client/graphics/voxels/*" "source/client/script.d" "source/client/drive.d" "source/client/structures.d" "source/client/tiles.d" "source/scripts/*"
+	lflags "--export-dynamic" platform="linux"
 }
 
 subPackage {
@@ -217,7 +219,7 @@ subPackage {
 	importPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
-	dependency "mined:turtle" version="*"
+	dependency "mined:horospheres" version="*"
 }
 
 subPackage {

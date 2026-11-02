@@ -1,7 +1,7 @@
 module plugins.buildings.deco;
 
 import plugins.api.api : Box, Material;
-import plugins.buildings.building : Lots, Palette, Part, Parts, Spec, Tier, crown, enter, footprint, makeParts, masonry, middle, pick, pyramid, roof, setbacks, shell, storefront, tiers;
+import plugins.buildings.building : Lots, Palette, Part, Parts, Spec, Split, Tier, crown, enter, footprint, makeParts, masonry, middle, pick, pyramid, roof, setbacks, shell, storefront, tiers;
 import plugins.turtle.turtle : boxOf;
 
 enum int[2] STORIES = [14, 34];
@@ -18,7 +18,7 @@ immutable Palette[5] PALETTES = [
 ];
 
 void spire(ref const Part part, Palette palette, Tier tier) {
-    Box roofBox = footprint(part, tier.shrink, false, tier.high, tier.high);
+    Box roofBox = footprint(part, tier.shrink, Split.above, tier.high, tier.high);
     int x = middle(roofBox.low[0], roofBox.high[0]);
     int y = middle(roofBox.low[1], roofBox.high[1]);
     part.tower.paint(palette.trim, boxOf([x - 1, x + 1], [y - 1, y + 1], [tier.high + 1, tier.high + 2]));
@@ -32,7 +32,7 @@ void build(ref const Lots lots, Spec spec) {
     foreach (ref part; parts.slice()) {
         foreach (tier; tiers(part, spec, chosen).slice()) {
             masonry(part, spec.palette, shell(part, spec.palette, tier), tier);
-            if (tier.isRoofed) {
+            if (tier.isRoofed()) {
                 roof(part, spec.palette, ROOF, tier);
             }
         }

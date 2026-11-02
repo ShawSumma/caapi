@@ -1,7 +1,7 @@
 module plugins.buildings.rowhouse;
 
 import plugins.api.api : Box, Material;
-import plugins.buildings.building : Lots, Palette, Part, Parts, Spec, Tier, chimney, crown, enter, footprint, isEmpty, makeParts, pick, punched, roof, shell, tiers;
+import plugins.buildings.building : Lots, Palette, Part, Parts, Spec, Split, Tier, chimney, crown, enter, footprint, isEmpty, makeParts, pick, punched, roof, shell, tiers;
 
 enum int[2] STORIES = [2, 3];
 enum Material ROOF = Material.woodPlanks;
@@ -17,11 +17,11 @@ immutable Palette[5] PALETTES = [
 
 void hipRoof(ref const Part part, Palette palette, Tier tier) {
     int rise = 1;
-    Box box = footprint(part, tier.shrink + rise, false, tier.high + rise, tier.high + rise);
+    Box box = footprint(part, tier.shrink + rise, Split.above, tier.high + rise, tier.high + rise);
     while (!isEmpty(box)) {
         part.tower.paint(palette.roof, box);
         rise += 1;
-        box = footprint(part, tier.shrink + rise, false, tier.high + rise, tier.high + rise);
+        box = footprint(part, tier.shrink + rise, Split.above, tier.high + rise, tier.high + rise);
     }
 }
 
@@ -31,7 +31,7 @@ void build(ref const Lots lots, Spec spec) {
     foreach (ref part; parts.slice()) {
         foreach (tier; tiers(part, spec, 0).slice()) {
             punched(part, spec.palette, shell(part, spec.palette, tier), tier, PIER_SPACING);
-            if (tier.isRoofed) {
+            if (tier.isRoofed()) {
                 roof(part, spec.palette, ROOF, tier);
             }
         }

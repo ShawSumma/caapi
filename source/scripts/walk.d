@@ -1,13 +1,13 @@
 module scripts.walk;
 
 import core.stdc.math : ceil;
+import base.maybe : Maybe;
 import base.names : ENUM_NAMES;
 import base.numbers : higherOf, lowerOf;
 import base.units : Time;
 import client.game : Key;
 import client.script : Script, StepHook, degrees;
-import client.world : TargetMaterial;
-import common.character.controller : MovementMode;
+import common.character.controller : Footing, MovementMode;
 import plugins.api.api : Material;
 
 enum float SPEED = 0.225f;
@@ -38,6 +38,11 @@ immutable Material[7] TOWER_MATERIALS = [Material.concrete, Material.whiteBrick,
 immutable Material[4] BACKROOMS_FLOORS = [Material.carpet, Material.dampCarpet, Material.redCarpet, Material.concrete];
 immutable Material[3] BACKROOMS_CEILINGS = [Material.ceilingTile, Material.lightPanel, Material.concrete];
 
+enum ClimbGoal : ubyte {
+    timed,
+    ontoStep,
+}
+
 struct Motion {
     float excess = 0;
     float excessAt = 0;
@@ -46,7 +51,7 @@ struct Motion {
     float lowest = 0;
     float highest = 0;
     uint offGround;
-    bool wasOnGround;
+    Footing lastFooting;
 }
 
 struct Across {
@@ -54,29 +59,30 @@ struct Across {
     float climbed = 0;
 }
 
-string nameOf(TargetMaterial target) {
-    if (target.isFound) {
-        return ENUM_NAMES!Material[target.material];
+string nameOf(Maybe!Material target) {
+    if (target.exists) {
+        return ENUM_NAMES!Material[target.value];
     } else {
         return "nothing";
     }
 }
 
-bool isMaterial(TargetMaterial target, Material material) {
-    return target.isFound && target.material == material;
+bool isMaterial(Maybe!Material target, Material material) {
+    return target.exists && target.value == material;
 }
 
-bool isOneOf(TargetMaterial target, const(Material)[] materials) {
-    size_t index = 0;
-    while (target.isFound && index < materials.length && materials[index] != target.material) {
-        index += 1;
+bool isOneOf(Maybe!Material target, const(Material)[] materials) {
+    foreach (material; materials) {
+        if (isMaterial(target, material)) {
+            return true;
+        }
     }
-    return target.isFound && index < materials.length;
+    return false;
 }
 
-TargetMaterial lookBelow(ref Script world) {
+Maybe!Material lookBelow(ref Script world) {
     world.look(degrees(0), degrees(STRAIGHT_DOWN_DEGREES));
-    TargetMaterial below = world.targetMaterial();
+    Maybe!Material below = world.targetMaterial();
     world.look(degrees(0), degrees(-STRAIGHT_DOWN_DEGREES));
     return below;
 }
@@ -106,15 +112,15 @@ float forward(ref Script world, double seconds, float minFraction) {
 }
 
 bool isOnStep(ref Script world, float standing) {
-    TargetMaterial below = lookBelow(world);
+    Maybe!Material below = lookBelow(world);
     return world.isOnGround() && world.altitude().value - standing > MIN_BLOCK_EDGE / 2 && isMaterial(below, LAYER_MATERIALS[0]);
 }
 
-void climbForward(ref Script world, double seconds, Time dt, bool isUntilOnStep, float standing) {
+void climbForward(ref Script world, double seconds, Time dt, ClimbGoal goal, float standing) {
     double deadline = world.time().value + seconds;
     world.hold(Key.fwd);
     world.step(dt);
-    while (!world.isFailed && world.time().value < deadline && !(isUntilOnStep && isOnStep(world, standing))) {
+    while (!world.isFailed && world.time().value < deadline && !(goal == ClimbGoal.ontoStep && isOnStep(world, standing))) {
         jumpIfBlocked(world);
         world.step(dt);
     }
@@ -130,7 +136,7 @@ void jumpIfBlocked(ref Script world) {
 
 Motion motionFrom(ref Script world) {
     float altitude = world.altitude().value;
-    return Motion(0, 0, SPEED, 0, altitude, altitude, 0, world.isOnGround());
+    return Motion(0, 0, SPEED, 0, altitude, altitude, 0, world.footing());
 }
 
 void trackMotion(ref Script world, Motion* motion) {
@@ -146,7 +152,7 @@ void observe(ref Script world, ref Motion motion) {
     float speed = world.horizontalSpeed().value;
     float altitude = world.altitude().value;
     if (world.isOnGround()) {
-        if (!motion.wasOnGround) {
+        if (motion.lastFooting == Footing.airborne) {
             motion.cap = higherOf(SPEED, speed);
         }
         if (speed - motion.cap > motion.excess) {
@@ -157,7 +163,7 @@ void observe(ref Script world, ref Motion motion) {
     } else {
         motion.offGround += 1;
     }
-    motion.wasOnGround = world.isOnGround();
+    motion.lastFooting = world.footing();
     motion.rise = higherOf(motion.rise, world.verticalSpeed().value);
     motion.lowest = lowerOf(motion.lowest, altitude);
     motion.highest = higherOf(motion.highest, altitude);
@@ -171,7 +177,7 @@ void checkOnStep(ref Script world, float standing, const(char)* what) {
     world.check(world.isOnGround(), "%s: on ground", what);
     float rise = world.altitude().value - standing;
     world.check(rise > MIN_BLOCK_EDGE / 2, "%s: rose %.4f", what, rise);
-    TargetMaterial below = lookBelow(world);
+    Maybe!Material below = lookBelow(world);
     string name = nameOf(below);
     world.check(isMaterial(below, LAYER_MATERIALS[0]), "%s: standing on %.*s", what, cast(int) name.length, name.ptr);
 }
@@ -295,7 +301,7 @@ Across acrossSlope(ref Script world, double tilt, double heading, double seconds
     trackMotion(world, &motion);
     float start = world.altitude().value;
     float before = world.traveled().value;
-    climbForward(world, seconds, world.timestep, false, 0);
+    climbForward(world, seconds, world.timestep, ClimbGoal.timed, 0);
     float walked = world.traveled().value - before;
     float free = SPEED * seconds;
     string facing = nameOf(world.targetMaterial());

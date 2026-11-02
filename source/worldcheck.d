@@ -5,22 +5,23 @@ import core.stdc.stdio : FILE, fprintf, fputc;
 import core.stdc.stdlib : free, malloc;
 import base.array : Array;
 import base.clock : NANOSECONDS_PER_MILLISECOND, nowMilliseconds;
-import base.hashmap : HashMap;
+import base.hashmap : HashMap, Present;
 import base.murmur : murmurHash3;
 import base.names : ENUM_NAMES;
 import base.numbers : higherOf;
 import base.parallel : Executor;
 import base.splitmix : SplitMix;
+import client.arguments : ExitStatus, exitStatus;
 import client.arrivals : populateChunk, resolveMaterials;
 import client.meshing : Mesher;
-import client.streaming : Streamer;
+import client.streaming : Pacing, Streamer;
 import client.structures : StructureProblem, growthProblem, placeWorldStructure;
 import client.world : FULL_RADIUS;
 import common.eviction : Evictor, Unloaded;
 import common.graph : Graph, NO_SLOT, NodeId;
 import common.material : MATERIAL_COUNT;
 import common.neighbors : needsMesh;
-import common.node : Chunk, ChunkSlot, ChunkState, Voxels, cellIndex;
+import common.node : Chunk, ChunkSlot, ChunkState, Materials, Voxels, cellIndex;
 import common.position : Position;
 import common.traversal : NO_DEADLINE, NearbyNode, NearbyScratch;
 import common.worldgen.blueprint : Blueprint;
@@ -157,7 +158,7 @@ struct ChunkPass {
         } else {
             denseMs += t2 - t1;
         }
-        if (result.hasDeferredMaterials) {
+        if (result.materials == Materials.deferred) {
             deferred += 1;
         }
     }
@@ -237,6 +238,46 @@ void printMaterialCensus(FILE* output, float radius, ubyte dimension) {
     graph.release();
 }
 
+bool touchesAir(const(Chunk)* chunk, ubyte dimension, int[3] cell) {
+    foreach (axis; 0 .. 3) {
+        foreach (step; [-1, 1]) {
+            int[3] beside = cell;
+            beside[axis] += step;
+            if (beside[axis] >= 0 && beside[axis] < dimension && chunk.voxels.at(cellIndex(dimension, beside[0], beside[1], beside[2])) == Material.none) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+void printSurfaceCensus(FILE* output, float radius, ubyte dimension) {
+    Graph graph = terrainGraph(dimension);
+    graph.generateWorld(radius);
+    size_t[MATERIAL_COUNT] counts;
+    foreach (index; 0 .. cast(size_t) graph.slotCount * CORNER_COUNT) {
+        const(Chunk)* chunk = graph.chunks.at(ChunkSlot.fromIndex(index));
+        if (chunk.state == ChunkState.populated && !chunk.voxels.isUniform()) {
+            foreach (x; 0 .. dimension) {
+                foreach (y; 0 .. dimension) {
+                    foreach (z; 0 .. dimension) {
+                        Material material = chunk.voxels.at(cellIndex(dimension, x, y, z));
+                        if (material != Material.none && touchesAir(chunk, dimension, [x, y, z])) {
+                            counts[material] += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    foreach (material, count; counts) {
+        if (count > 0) {
+            fprintf(output, "%.*s %zu\n", cast(int) ENUM_NAMES!Material[material].length, ENUM_NAMES!Material[material].ptr, count);
+        }
+    }
+    graph.release();
+}
+
 void printWorldDigest(FILE* output, float radius, ubyte dimension) {
     Graph graph = terrainGraph(dimension);
     graph.generateWorld(radius);
@@ -262,7 +303,7 @@ size_t filledVoxels(ref Graph graph, uint slot) {
     return filled;
 }
 
-bool dumpStructure(FILE* output, ubyte dimension, Worldgen worldgen) {
+ExitStatus dumpStructure(FILE* output, ubyte dimension, Worldgen worldgen) {
     Graph graph = Graph.make(dimension, worldgen);
     StructureProblem problem = graph.placeWorldStructure();
     if (!problem.isPresent) {
@@ -280,11 +321,12 @@ bool dumpStructure(FILE* output, ubyte dimension, Worldgen worldgen) {
     if (problem.isPresent) {
         fprintf(output, "%s\n", problem.text.ptr);
     }
+    ExitStatus status = exitStatus(!problem.isPresent);
     graph.release();
-    return !problem.isPresent;
+    return status;
 }
 
-bool checkRepaint(FILE* output, ubyte dimension, Worldgen worldgen) {
+ExitStatus checkRepaint(FILE* output, ubyte dimension, Worldgen worldgen) {
     Graph graph = Graph.make(dimension, worldgen);
     StructureProblem problem = graph.placeWorldStructure();
     uint differing = 0;
@@ -324,7 +366,7 @@ bool checkRepaint(FILE* output, ubyte dimension, Worldgen worldgen) {
         fprintf(output, "%s\n", problem.text.ptr);
     }
     graph.release();
-    return !problem.isPresent && differing == 0;
+    return exitStatus(!problem.isPresent && differing == 0);
 }
 
 struct StructureCounts {
@@ -351,7 +393,7 @@ void hashStructured(ref Graph graph, const(NearbyNode)[] nearby, ref HashMap!(No
     }
 }
 
-bool checkForget(FILE* output, ubyte dimension, Worldgen worldgen) {
+ExitStatus checkForget(FILE* output, ubyte dimension, Worldgen worldgen) {
     Graph graph = Graph.make(dimension, worldgen);
     StructureProblem problem = graph.placeWorldStructure();
     uint differing = 0;
@@ -383,13 +425,13 @@ bool checkForget(FILE* output, ubyte dimension, Worldgen worldgen) {
         forgotten = evictor.forgottenTiles;
         StructureCounts left = StructureCounts.of(graph);
         uint[3] edgeUses = graph.structures.blueprint.edgeUses();
-        HashMap!(NodeId, bool) kept;
+        HashMap!(NodeId, Present) kept;
         size_t structured = 0;
         size_t keptCount = 0;
         foreach (ref const id, ref const hash; first) {
             structured += 1;
             if (graph.slotOf(id) != NO_SLOT) {
-                kept.insert(id, true);
+                kept.insert(id, Present.init);
                 keptCount += 1;
             }
         }
@@ -422,10 +464,10 @@ bool checkForget(FILE* output, ubyte dimension, Worldgen worldgen) {
         fprintf(output, "%s\n", problem.text.ptr);
     }
     graph.release();
-    return !problem.isPresent && differing == 0 && forgotten > 0;
+    return exitStatus(!problem.isPresent && differing == 0 && forgotten > 0);
 }
 
-bool printSlices(FILE* output, ubyte dimension, Worldgen worldgen, int height) {
+ExitStatus printSlices(FILE* output, ubyte dimension, Worldgen worldgen, int height) {
     Graph graph = Graph.make(dimension, worldgen);
     StructureProblem problem = graph.placeWorldStructure();
     if (!problem.isPresent) {
@@ -450,8 +492,9 @@ bool printSlices(FILE* output, ubyte dimension, Worldgen worldgen, int height) {
     if (problem.isPresent) {
         fprintf(output, "%s\n", problem.text.ptr);
     }
+    ExitStatus status = exitStatus(!problem.isPresent);
     graph.release();
-    return !problem.isPresent;
+    return status;
 }
 
 void printQuarter(ref Graph graph, FILE* output, SiteFrame quarter, int height) {
@@ -562,11 +605,11 @@ void benchDrive(FILE* output, float radius, ubyte dimension) {
     uint drives = 0;
     do {
         double driveStart = nowMilliseconds();
-        streamer.drive(graph, nearby, Position.origin(), Motion!float.identity(), radius, DRIVE_NEARBY_VERSION, false, driveStart + DRIVE_BUDGET_MILLISECONDS);
+        streamer.drive(graph, nearby, Position.origin(), Motion!float.identity(), radius, DRIVE_NEARBY_VERSION, Pacing.budgeted, driveStart + DRIVE_BUDGET_MILLISECONDS);
         driveMs += nowMilliseconds() - driveStart;
         drives += 1;
         if (streamer.inFlight > 0) {
-            streamer.integrate(graph, true, 0);
+            streamer.integrate(graph, NO_DEADLINE);
         }
     } while (streamer.inFlight > 0 || streamer.scanCursor < nearby.length);
     double totalMs = nowMilliseconds() - start;
@@ -579,7 +622,7 @@ void benchDrive(FILE* output, float radius, ubyte dimension) {
     fprintf(output, "bench-drive dim=%u radius=%.2f populated=%u nodes=%u->%u drives=%u total=%.1fms drive=%.1fms integrate_and_wait=%.1fms\n", cast(uint) dimension, cast(double) radius, populated, nodesBefore, graph.slotCount, drives, totalMs, driveMs, totalMs - driveMs);
     double idleStart = nowMilliseconds();
     foreach (_; 0 .. DRIVE_IDLE_ITERATIONS) {
-        streamer.drive(graph, nearby, Position.origin(), Motion!float.identity(), radius, DRIVE_NEARBY_VERSION, false, nowMilliseconds() + DRIVE_BUDGET_MILLISECONDS);
+        streamer.drive(graph, nearby, Position.origin(), Motion!float.identity(), radius, DRIVE_NEARBY_VERSION, Pacing.budgeted, nowMilliseconds() + DRIVE_BUDGET_MILLISECONDS);
     }
     fprintf(output, "bench-drive idle scan=%.3fms/drive nodes=%zu\n", (nowMilliseconds() - idleStart) / DRIVE_IDLE_ITERATIONS, nearby.length);
     streamer.release();

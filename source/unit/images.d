@@ -1,6 +1,6 @@
 module unit.images;
 
-import client.images : COMPARED_CHANNELS, ImageDifference, OPAQUE, RGBA_BYTES, copyAsRgba, differenceOf, writeDifference;
+import client.images : COMPARED_CHANNELS, ImageDifference, OPAQUE, PixelOrder, RGBA_BYTES, copyAsRgba, differenceOf, writeDifference;
 
 enum size_t PIXELS = 4;
 
@@ -14,6 +14,6 @@ unittest {
     writeDifference(shown[], first[], second[], RGBA_BYTES, PIXELS);
     assert(shown[4] == 36 && shown[9] == OPAQUE && shown[3] == OPAQUE && shown[0] == 0);
     ubyte[PIXELS * RGBA_BYTES] swapped;
-    copyAsRgba(swapped[], first[], true);
+    copyAsRgba(swapped[], first[], PixelOrder.bgra);
     assert(swapped[0] == 30 && swapped[1] == 20 && swapped[2] == 10 && swapped[3] == 255);
 }

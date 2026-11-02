@@ -7,11 +7,16 @@ import base.units : Angle, AngularSpeed, Length;
 
 enum size_t CONFIG_LINE_CAPACITY = 256;
 
+enum PitchAxis : ubyte {
+    normal,
+    inverted,
+}
+
 struct ClientConfig {
     Angle mouseTurnPerCount = Angle(0.001f);
     AngularSpeed keyTurnRate = AngularSpeed(1.5f);
     Length reach = Length(0.5f);
-    bool isYInverted;
+    PitchAxis pitchAxis;
 
     static ClientConfig fromFile(const(char)* path) {
         ClientConfig config;
@@ -36,7 +41,10 @@ struct ClientConfig {
         } else if (entry.key == "reach") {
             reach = Length(strtof(entry.value.ptr, null));
         } else if (entry.key == "invert_y") {
-            isYInverted = entry.value == "1" || entry.value == "true" || entry.value == "yes" || entry.value == "on";
+            pitchAxis = PitchAxis.normal;
+            if (entry.value == "1" || entry.value == "true" || entry.value == "yes" || entry.value == "on") {
+                pitchAxis = PitchAxis.inverted;
+            }
         }
     }
 }

@@ -58,9 +58,6 @@ float minkowski(vec4 a, vec4 b) {
     return dot(a.xyz, b.xyz) - a.w * b.w;
 }
 
-// The covector of the plane through the point and two directions in the cube's projective coordinates gives the face's
-// normal without knowing its side: back faces are culled, so the eye is always on the outward side. Far from the frame
-// origin float rounding can leave the norms without a sign; those faces take the middle shade and are deep in fog.
 float facing_sun(vec4 point, vec4 along, vec4 across) {
     vec4 plane = cross4(point, along, across);
     if (dot(plane, eye) < 0.0) {
@@ -80,8 +77,7 @@ void main() {
     DrawTransform draw = draws[gl_InstanceIndex];
     uint code = face_code(face);
     uint axis = code & AXIS_MASK;
-    bool is_reversed = ((code & REVERSED_BIT) != 0) != (draw.reversed.x != 0.0);
-    uvec2 corner = face_corner(gl_VertexIndex % VERTICES_PER_FACE, is_reversed, (code & FLIPPED_BIT) != 0);
+    uvec2 corner = face_corner(gl_VertexIndex % VERTICES_PER_FACE, ((code & REVERSED_BIT) != 0) != (draw.reversed.x != 0.0), (code & FLIPPED_BIT) != 0);
     uint material = face_material(face);
     vec2 on_layer = vec2(corner);
     if (material != framed_material) {

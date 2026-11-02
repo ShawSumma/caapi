@@ -2,7 +2,7 @@ module plugins.crown.plugin;
 
 import plugins.api.api : Api, Box, ENTRY, Look, Material, NO_KIND, Registry, Rhythm, Site;
 import box = plugins.box.box;
-import plugins.turtle.turtle : FACE_CORNERS, Turtle, boxOf, cornersOf, upright;
+import plugins.turtle.turtle : Along, FACE_CORNERS, Turtle, boxOf, cornersOf, upright;
 
 immutable Look LOOK = Look("crown");
 enum int HEIGHT_EDGES = 2;
@@ -14,32 +14,34 @@ enum int BALCONY_WIDTH = 4;
 enum float ARCH_STOP_CELLS = box.STORY;
 enum size_t MOST_ARCH_STOPS = 16;
 
-Box strip(bool isAhead, int from, int to, int low, int high) {
-    if (isAhead) {
+Box strip(Along along, int from, int to, int low, int high) {
+    if (along == Along.x) {
         return boxOf([from, to], [0, 0], [low, high]);
     } else {
         return boxOf([0, 0], [from, to], [low, high]);
     }
 }
 
-void hallWall(Turtle tower, box.Palette palette, bool isAhead, bool hasDoor) {
+void hallWall(Turtle tower, box.Palette palette, Along along) {
     int far = tower.column().high;
     int window = box.HALF_WIDTH + HALL_WINDOW_OFFSET;
-    tower.paint(palette.wall, strip(isAhead, 0, far, 0, HALL_ROOF));
-    tower.paint(palette.trim, strip(isAhead, 0, far, 0, HALL_ROOF), box.FLOORS);
-    tower.paint(Material.none, strip(isAhead, window, window + box.WINDOW_WIDTH - 1, 0, HALL_ROOF - 1), box.WINDOW_ROW);
-    if (hasDoor) {
-        tower.paint(Material.none, strip(isAhead, far, far, 1, box.DOOR));
-    }
+    tower.paint(palette.wall, strip(along, 0, far, 0, HALL_ROOF));
+    tower.paint(palette.trim, strip(along, 0, far, 0, HALL_ROOF), box.FLOORS);
+    tower.paint(Material.none, strip(along, window, window + box.WINDOW_WIDTH - 1, 0, HALL_ROOF - 1), box.WINDOW_ROW);
 }
 
-void hall(Turtle tower, box.Palette palette, bool hasDoorAhead, bool hasDoorBehind) {
+void hallDoor(Turtle tower, Along along) {
+    int far = tower.column().high;
+    tower.paint(Material.none, strip(along, far, far, 1, box.DOOR));
+}
+
+void hall(Turtle tower, box.Palette palette) {
     int[2] inside = [0, tower.column().high];
     tower.paint(palette.wall, boxOf(inside, inside, [-box.FOUNDATION, -1]));
     tower.paint(palette.floor, boxOf(inside, inside, [0, HALL_ROOF]), box.FLOORS);
     tower.paint(Material.none, boxOf(inside, inside, [0, HALL_ROOF - 1]), box.ROOMS);
-    hallWall(tower, palette, true, hasDoorAhead);
-    hallWall(tower, palette, false, hasDoorBehind);
+    hallWall(tower, palette, Along.x);
+    hallWall(tower, palette, Along.y);
 }
 
 void openToHall(Turtle tower, box.Palette palette) {
@@ -58,27 +60,27 @@ void doors(Turtle tower) {
     tower.paint(Material.none, boxOf([-1, 0], face, bridge));
 }
 
-Box onFace(bool isOnXFace, int[2] outward, int[2] sideways, int[2] heights) {
-    if (isOnXFace) {
+Box onFace(Along along, int[2] outward, int[2] sideways, int[2] heights) {
+    if (along == Along.x) {
         return boxOf(outward, sideways, heights);
     } else {
         return boxOf(sideways, outward, heights);
     }
 }
 
-void balcony(Turtle tower, box.Palette palette, bool isOnXFace, int sideLow, int story, int top) {
+void balcony(Turtle tower, box.Palette palette, Along along, int sideLow, int story, int top) {
     int everyOtherStory = 2 * box.STORY;
     int floor = (story % 2) * box.STORY;
     int[2] heights = [story * box.STORY, top - 1];
-    Box slab = onFace(isOnXFace, [-box.HALF_WIDTH - BALCONY_DEPTH, -box.HALF_WIDTH - 1], [sideLow, sideLow + BALCONY_WIDTH - 1], heights);
-    Box door = onFace(isOnXFace, [-box.HALF_WIDTH, -box.HALF_WIDTH], [sideLow + 1, sideLow + BALCONY_WIDTH - 2], heights);
+    Box slab = onFace(along, [-box.HALF_WIDTH - BALCONY_DEPTH, -box.HALF_WIDTH - 1], [sideLow, sideLow + BALCONY_WIDTH - 1], heights);
+    Box door = onFace(along, [-box.HALF_WIDTH, -box.HALF_WIDTH], [sideLow + 1, sideLow + BALCONY_WIDTH - 2], heights);
     tower.paint(palette.floor, slab, Rhythm(everyOtherStory, floor, 1));
     tower.paint(Material.none, door, Rhythm(everyOtherStory, floor + 1, box.DOOR));
 }
 
 void balconies(Turtle tower, box.Palette palette, int top) {
-    balcony(tower, palette, true, -2, FIRST_BALCONY_STORY, top);
-    balcony(tower, palette, false, -1, FIRST_BALCONY_STORY + 1, top);
+    balcony(tower, palette, Along.x, -2, FIRST_BALCONY_STORY, top);
+    balcony(tower, palette, Along.y, -1, FIRST_BALCONY_STORY + 1, top);
 }
 
 Turtle bridgeAhead(Turtle corner) {
@@ -121,7 +123,12 @@ void landmark(const(Api)* api, Site root, const(void)* data) {
     Turtle[FACE_CORNERS] corners = cornersOf(site);
     foreach (index, corner; corners) {
         Turtle tower = upright(corner);
-        hall(tower, palette, index == 0, index == 1);
+        hall(tower, palette);
+        if (index == 0) {
+            hallDoor(tower, Along.x);
+        } else if (index == 1) {
+            hallDoor(tower, Along.y);
+        }
         box.tower(tower, top, palette);
         openToHall(tower, palette);
         doors(tower);

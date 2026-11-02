@@ -48,6 +48,7 @@ enum Tag : uint {
     tree,
     library,
     column,
+    stacks,
 }
 
 enum Style : ubyte {
@@ -58,17 +59,27 @@ enum Style : ubyte {
     lantern,
 }
 
+enum Routing : ubyte {
+    unrouted,
+    routed,
+}
+
+enum StylePick : ubyte {
+    rolled,
+    forced,
+}
+
 struct Connection {
-    bool isRouted;
-    bool isForced;
+    Routing routing;
+    StylePick pick;
     Style style;
 
     static Connection rolled() {
-        return Connection(false, false, Style.none);
+        return Connection(Routing.unrouted, StylePick.rolled, Style.none);
     }
 
-    static Connection forced(Style style, bool isRouted) {
-        return Connection(isRouted, true, style);
+    static Connection forced(Style style, Routing routing) {
+        return Connection(routing, StylePick.forced, style);
     }
 }
 
@@ -78,7 +89,6 @@ struct Pair {
     ubyte[Style.max + 1] percents;
 }
 
-// Percent chances of each style, in the order of Style. A pair left out of the table is never connected.
 immutable Pair[12] PAIRS = [
     Pair(Tag.wild, Tag.wild, [10, 35, 40, 10, 5]),
     Pair(Tag.wild, Tag.city, [5, 60, 25, 5, 5]),
@@ -208,8 +218,6 @@ void core(Turtle tower, Material material, Material band, Layout layout) {
     tower.paint(band, cells(WELL, WELL, rising), Rhythm(TURN, floorMod(layout.base, TURN), 1));
 }
 
-// Near the balance gravity weakens and turns over, and a walker there drifts wherever it last pushed. Open stairs wall in
-// this one stretch so nobody drifts off the side.
 void flipGallery(Turtle tower, Material material, Layout layout) {
     ring(tower, material, HALF_WIDTH, [layout.base + layout.flip - GALLERY_BELOW, layout.base + layout.flip + GALLERY_ABOVE]);
 }
@@ -375,7 +383,7 @@ Layout layoutOf(Turtle site, ref const Risen risen, Floor upper, Floor lower) {
 }
 
 Style chosenStyle(Turtle site, ref const Risen risen, uint upperTag, Connection how) {
-    if (how.isForced) {
+    if (how.pick == StylePick.forced) {
         return how.style;
     } else {
         return styleOf(risen.lower, upperTag, site.hash(SitePart.vertex));
@@ -423,7 +431,7 @@ void connect(Turtle site, ref const Risen risen, uint upperTag, Connection how) 
         }
         lowerDoor(tower, palette, layout, lower.footing);
         upperDoor(tower, layout, upper.footing);
-        if (how.isRouted) {
+        if (how.routing == Routing.routed) {
             route(tower, layout);
         }
     }

@@ -3,9 +3,9 @@ module plugins.rooms.layout;
 import plugins.api.api : Api, Risen, Site, SitePart;
 import blocks = plugins.blocks.blocks;
 import plugins.buildings.building : SIDES, Side;
-import plugins.connector.connector : BACKROOMS_GROUND;
+import plugins.connector.connector : BACKROOMS_GROUND, Routing;
 import plugins.rooms.levels : Biome, HallLayout, LAYERS, Level;
-import plugins.rooms.rooms : Doors, Floor, Frame, Halls, MAZE_CELLS, Owns, Plan, Quarter, SEPARATION, Stair, frameOf, origin, paintFloor, stairs;
+import plugins.rooms.rooms : Axis, Doors, Floor, Frame, Halls, MAZE_CELLS, NO_STAIR, Owns, Plan, Quarter, QuarterKind, SEPARATION, Stair, WallForm, frameOf, origin, paintFloor, stairs;
 import plugins.turtle.turtle : FACE_CORNERS, Turtle, cornersOf, higherOf, mixed, roll, upright;
 
 enum int TOP_FLOOR = BACKROOMS_GROUND - 1;
@@ -26,17 +26,21 @@ enum double GRID_DROPPED = 0.12;
 enum double SECOND_PASSAGE_ODDS = 0.5;
 enum size_t FLOOR_COUNT = LAYERS.length;
 
+enum Shaft : ubyte {
+    none,
+    open,
+}
+
 struct ForcedStair {
     ulong vertex;
     ulong face;
-    uint upper;
-    bool isPresent;
+    uint upper = NO_STAIR;
 }
 
 struct Root {
     ulong vertex;
-    bool hasShaft;
-    bool isRouted;
+    Shaft shaft;
+    Routing routing;
     ForcedStair forced;
 }
 
@@ -52,7 +56,7 @@ Floor[FLOOR_COUNT] floorsOf() {
         if (index > 0) {
             base = base - LAYERS[index].room - SEPARATION - 2;
         }
-        floors[index] = Floor(cast(uint) index, base, index == 0);
+        floors[index] = Floor(cast(uint) index, base);
     }
     return floors;
 }
@@ -77,7 +81,7 @@ bool isSolid(ulong face, ref const Level level, size_t index) {
 }
 
 Doors lineDoors(ulong hash, size_t index, ref const Level level, bool isClosed) {
-    if (level.isMaze) {
+    if (level.isMaze()) {
         int first = cast(int)(mixed(hash, SLOT_SALT + index) % MAZE_CELLS);
         Doors slots = Doors.one(first);
         if (roll(hash, SECOND_SALT + index) < SECOND_PASSAGE_ODDS) {
@@ -88,7 +92,7 @@ Doors lineDoors(ulong hash, size_t index, ref const Level level, bool isClosed) 
     } else if (isClosed) {
         return Doors.init;
     } else if (roll(hash, MISSING_SALT + index) < level.missing) {
-        return Doors([0, 0], 0, true);
+        return Doors([0, 0], 0, WallForm.missing);
     } else {
         return Doors.one(DOOR_LOW + cast(int)(mixed(hash, DOOR_SALT + index) % (DOOR_HIGH - DOOR_LOW + 1)));
     }
@@ -107,42 +111,42 @@ Line[4] linesOf(Turtle corner) {
     return lines;
 }
 
-bool stairOf(Turtle corner, ref const Root root, ref const Halls[FLOOR_COUNT] halls, bool isLobby, ref Stair stair) {
-    ulong vertex = corner.hash(SitePart.vertex);
-    ulong face = corner.hash(SitePart.face);
-    ulong hash = vertex ^ face;
+bool isForcedStair(Turtle corner, ref const Root root) {
+    return root.forced.upper != NO_STAIR && corner.hash(SitePart.vertex) == root.forced.vertex && corner.hash(SitePart.face) == root.forced.face;
+}
+
+Stair stairOf(Turtle corner, ref const Root root, ref const Halls[FLOOR_COUNT] halls, ref const Quarter q) {
+    ulong hash = corner.hash(SitePart.vertex) ^ corner.hash(SitePart.face);
     uint upper = cast(uint)(mixed(hash, STAIR_SALT) % (FLOOR_COUNT - 1));
-    bool isForced = root.forced.isPresent && vertex == root.forced.vertex && face == root.forced.face;
-    if (isForced) {
+    if (isForcedStair(corner, root)) {
         upper = root.forced.upper;
     }
-    if (isLobby || (!isForced && roll(hash, STAIR_ODDS_SALT) >= FLOORS[upper].level.stairs)) {
-        return false;
+    if (q.isLobby() || (!isForcedStair(corner, root) && roll(hash, STAIR_ODDS_SALT) >= FLOORS[upper].level.stairs)) {
+        return Stair.init;
     } else {
         uint lower = upper + 1;
-        int x = origin(halls[upper].x, FLOORS[upper].level);
-        int otherX = origin(halls[lower].x, FLOORS[lower].level);
-        int y = origin(halls[upper].y, FLOORS[upper].level);
-        int otherY = origin(halls[lower].y, FLOORS[lower].level);
-        stair = Stair(upper, lower, higherOf(x, otherX), higherOf(y, otherY), isForced);
-        return true;
+        int x = origin(halls[upper], Axis.x, FLOORS[upper].level);
+        int otherX = origin(halls[lower], Axis.x, FLOORS[lower].level);
+        int y = origin(halls[upper], Axis.y, FLOORS[upper].level);
+        int otherY = origin(halls[lower], Axis.y, FLOORS[lower].level);
+        return Stair(upper, lower, higherOf(x, otherX), higherOf(y, otherY));
     }
 }
 
-Plan planOf(Turtle corner, ref const Quarter q, ref const Floor floor, size_t index, bool isSolidBlock, bool hasStair, Halls halls) {
+Plan planOf(Turtle corner, ref const Quarter q, ref const Stair stair, ref const Floor floor, size_t index, Halls halls) {
     immutable(Level)* level = &floor.level();
     double chance = roll(corner.hash(SitePart.vertex) ^ corner.hash(SitePart.face), PLAN_SALT + index);
-    if (level.isMaze) {
+    if (level.isMaze()) {
         return Plan.maze;
-    } else if (q.isLobby && (floor.isTop || q.hasShaft)) {
+    } else if (q.isLobby() && (floor.isTop() || q.hasShaft())) {
         return Plan.lobby;
-    } else if (hasStair) {
+    } else if (stair.isOn(floor.layer)) {
         return Plan.rooms;
-    } else if (isSolidBlock) {
+    } else if (isSolid(corner.hash(SitePart.face), *level, index)) {
         return Plan.solid;
     } else if (chance < level.rings) {
         return Plan.rings;
-    } else if (!halls.x && !halls.y && chance < level.rings + level.chapel) {
+    } else if (!halls.has(Axis.x) && !halls.has(Axis.y) && chance < level.rings + level.chapel) {
         return Plan.chapel;
     } else {
         return Plan.rooms;
@@ -152,40 +156,40 @@ Plan planOf(Turtle corner, ref const Quarter q, ref const Floor floor, size_t in
 void quarter(Turtle corner, ref const Root root, ref const(Biome)*[FLOOR_COUNT] biomes) {
     ulong vertex = corner.hash(SitePart.vertex);
     ulong face = corner.hash(SitePart.face);
-    bool isRoot = vertex == root.vertex;
-    bool isLobby = isRoot || blocks.isRisingFrom(corner);
-    Quarter q = Quarter(upright(corner), isLobby, isRoot && root.hasShaft);
-    Owns owns = Owns(vertex > corner.forward(1).hash(SitePart.vertex), vertex > corner.right().forward(1).hash(SitePart.vertex));
+    QuarterKind kind = QuarterKind.plain;
+    if (vertex == root.vertex && root.shaft == Shaft.open) {
+        kind = QuarterKind.lobbyWithShaft;
+    } else if (vertex == root.vertex || blocks.isRisingFrom(corner)) {
+        kind = QuarterKind.lobby;
+    }
+    Quarter q = Quarter(upright(corner), kind);
+    Owns owns;
+    owns.put(Side.xHigh, vertex > corner.forward(1).hash(SitePart.vertex));
+    owns.put(Side.yHigh, vertex > corner.right().forward(1).hash(SitePart.vertex));
     Halls[FLOOR_COUNT] halls;
     foreach (index; 0 .. FLOOR_COUNT) {
-        halls[index] = Halls(isHall(corner.right(), root, FLOORS[index].level, index + 1), isHall(corner, root, FLOORS[index].level, index + 1));
+        halls[index].put(Axis.x, isHall(corner.right(), root, FLOORS[index].level, index + 1));
+        halls[index].put(Axis.y, isHall(corner, root, FLOORS[index].level, index + 1));
     }
     Line[4] lines = linesOf(corner);
-    Stair stair;
-    bool hasStairAnywhere = stairOf(corner, root, halls, q.isLobby, stair);
-    if (hasStairAnywhere && !stair.isForced && (isSolid(face, FLOORS[stair.upper].level, stair.upper + 1) || isSolid(face, FLOORS[stair.lower].level, stair.lower + 1))) {
-        hasStairAnywhere = false;
+    Stair stair = stairOf(corner, root, halls, q);
+    if (stair.isPresent() && !isForcedStair(corner, root) && (isSolid(face, FLOORS[stair.upper].level, stair.upper + 1) || isSolid(face, FLOORS[stair.lower].level, stair.lower + 1))) {
+        stair = Stair.init;
     }
     Frame[FLOOR_COUNT] frames;
     foreach_reverse (index; 0 .. FLOOR_COUNT) {
         Floor floor = FLOORS[index];
         immutable(Level)* level = &floor.level();
-        bool isMineSolid = isSolid(face, *level, index + 1);
         Doors[4] doors;
         foreach (side; SIDES) {
-            doors[side] = lineDoors(lines[side].hash, index + 1, *level, isMineSolid || isSolid(lines[side].beyond, *level, index + 1));
+            doors[side] = lineDoors(lines[side].hash, index + 1, *level, isSolid(face, *level, index + 1) || isSolid(lines[side].beyond, *level, index + 1));
         }
-        bool hasStair = hasStairAnywhere && (stair.upper == index || stair.lower == index);
-        Plan plan = planOf(corner, q, floor, index + 1, isMineSolid, hasStair, halls[index]);
-        const(Stair)* floorStair = null;
-        if (hasStair) {
-            floorStair = &stair;
-        }
-        frames[index] = frameOf(q, halls[index], floor, biomes[index], floorStair, plan == Plan.lobby, owns);
+        Plan plan = planOf(corner, q, stair, floor, index + 1, halls[index]);
+        frames[index] = frameOf(q, halls[index], floor, biomes[index], stair, plan, owns);
         paintFloor(frames[index], doors, plan);
     }
-    if (hasStairAnywhere) {
-        stairs(frames[stair.lower], frames[stair.upper], stair, root.isRouted && stair.isForced);
+    if (stair.isPresent()) {
+        stairs(frames[stair.lower], frames[stair.upper], stair, root.routing == Routing.routed && isForcedStair(corner, root));
     }
 }
 

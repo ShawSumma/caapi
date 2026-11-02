@@ -18,6 +18,14 @@ enum ubyte EMPTY = 0;
 enum ubyte REMOVED = 1;
 enum ubyte LIVE = 0x80;
 
+enum OnExisting : ubyte {
+    replace,
+    keep,
+}
+
+struct Present {
+}
+
 struct HashSlot(K, V) {
     K key;
     V value;
@@ -75,14 +83,14 @@ struct HashTable(K, V) {
         }
     }
 
-    void assign(K key, V value, bool isKept) {
+    void assign(K key, V value, OnExisting existing) {
         size_t hash = hashOf(key);
         size_t index = probe(key, hash);
         if (controls[index] == EMPTY) {
             controls[index] = tagOf(hash);
             slots[index] = HashSlot!(K, V)(key, value);
             used += 1;
-        } else if (!isKept) {
+        } else if (existing == OnExisting.replace) {
             slots[index].value = value;
         }
     }
@@ -164,7 +172,7 @@ struct HashMap(K, V) {
         } else if ((current.used + 1) * EIGHTHS > current.capacity * FULLEST_EIGHTHS) {
             resize(current.capacity * 2);
         }
-        current.assign(key, value, false);
+        current.assign(key, value, OnExisting.replace);
         migrate(MIGRATED_SLOTS_PER_CHANGE);
     }
 
@@ -198,7 +206,7 @@ struct HashMap(K, V) {
         size_t end = lowerOf(migrated + count, previous.capacity);
         foreach (index; migrated .. end) {
             if ((previous.controls[index] & LIVE) != 0) {
-                current.assign(previous.slots[index].key, previous.slots[index].value, true);
+                current.assign(previous.slots[index].key, previous.slots[index].value, OnExisting.keep);
             }
         }
         migrated = end;

@@ -3,7 +3,7 @@ module client.graphics.overlay;
 import core.stdc.string : memcpy;
 import bindings.platform : VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_PIPELINE_BIND_POINT_GRAPHICS, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_SHADER_STAGE_FRAGMENT_BIT, VK_SHADER_STAGE_VERTEX_BIT, VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, VkCommandBuffer, VkDescriptorBufferInfo, VkDescriptorPool, VkDescriptorPoolCreateInfo, VkDescriptorPoolSize, VkDescriptorSet, VkDescriptorSetAllocateInfo, VkDescriptorSetLayout, VkDescriptorSetLayoutBinding, VkDevice, VkPhysicalDevice, VkPipeline, VkPipelineLayout, VkPushConstantRange, VkRenderPass, VkShaderModule, VkWriteDescriptorSet, vkAllocateDescriptorSets, vkCmdBindDescriptorSets, vkCmdBindPipeline, vkCmdDraw, vkCmdPushConstants, vkCreateDescriptorPool, vkDestroyDescriptorPool, vkDestroyDescriptorSetLayout, vkDestroyPipeline, vkDestroyPipelineLayout, vkDestroyShaderModule, vkUpdateDescriptorSets;
 import client.graphics.matrices : MATRIX_FLOATS, flatten;
-import client.graphics.pipeline : Blend, GpuBuffer, PipelineSettings, WHOLE_SIZE, bufferWrite, createGraphicsPipeline, createPipelineLayout, createSetLayout, createShader, expectSuccess, layoutBinding;
+import client.graphics.pipeline : Blend, Culling, Depth, GpuBuffer, PipelineSettings, WHOLE_SIZE, bufferWrite, createGraphicsPipeline, createPipelineLayout, createSetLayout, createShader, expectSuccess, layoutBinding;
 import client.hud : HudVertex, MOST_VERTICES, Marker;
 
 enum string HUD_VERT_SPV = import("hud.vert.spv");
@@ -59,9 +59,8 @@ struct HudPipeline {
             VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
             HUD_SUBPASS,
             Blend.alpha,
-            false,
-            false,
-            false,
+            Depth.ignored,
+            Culling.none,
         );
         pipeline = createGraphicsPipeline(device, settings);
         vkDestroyShaderModule(device, vertexShader, null);
@@ -118,9 +117,8 @@ struct MarkerPipeline {
             VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
             MARKER_SUBPASS,
             Blend.opaque,
-            true,
-            true,
-            false,
+            Depth.written,
+            Culling.none,
         );
         pipeline = createGraphicsPipeline(device, settings);
         vkDestroyShaderModule(device, vertexShader, null);

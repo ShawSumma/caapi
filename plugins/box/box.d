@@ -95,8 +95,7 @@ void stairs(Turtle tower, int top, Palette palette) {
 void merlons(Turtle tower, int z, Palette palette) {
     foreach (x; LOW .. HIGH + 1) {
         foreach (y; LOW .. HIGH + 1) {
-            bool isRing = x == LOW || x == HIGH || y == LOW || y == HIGH;
-            if (isRing && (x + y) % 2 == 0) {
+            if ((x == LOW || x == HIGH || y == LOW || y == HIGH) && (x + y) % 2 == 0) {
                 tower.paint(palette.trim, boxOf([x, x], [y, y], [z, z]));
             }
         }

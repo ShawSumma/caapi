@@ -3,7 +3,8 @@ module client.arguments;
 import core.stdc.stdio : fprintf, stderr;
 import core.stdc.stdlib : strtof;
 import core.stdc.string : strlen;
-import base.names : ENUM_NAMES, NameLookup;
+import base.maybe : Maybe;
+import base.names : ENUM_NAMES, enumNamed;
 import client.plugins : registry;
 import common.worldgen.generation : PlaneWorld, STRUCTURE_NAME_CAPACITY, StructureWorld, Worldgen, WorldgenKind, degreesToRadians;
 
@@ -15,8 +16,8 @@ enum ExitStatus : int {
     usage = 2,
 }
 
-ExitStatus exitStatus(bool isSucceeded) {
-    if (isSucceeded) {
+ExitStatus exitStatus(bool succeeded) {
+    if (succeeded) {
         return ExitStatus.ok;
     } else {
         return ExitStatus.failed;
@@ -65,14 +66,13 @@ struct FlagValue {
     }
 }
 
-struct NumberArgument {
-    float value;
-    bool isPresent;
-
-    static NumberArgument fromText(const(char)* text) {
-        const(char)* end;
-        float value = strtof(text, &end);
-        return NumberArgument(value, end != text && *end == 0);
+Maybe!float numberIn(const(char)* text) {
+    const(char)* end;
+    float value = strtof(text, &end);
+    if (end != text && *end == 0) {
+        return Maybe!float.of(value);
+    } else {
+        return Maybe!float.init;
     }
 }
 
@@ -86,8 +86,8 @@ struct WorldgenArgument {
         if (kindText.error.isPresent()) {
             return WorldgenArgument(kindText.error, Worldgen.init, 1);
         } else {
-            NameLookup!WorldgenKind kind = NameLookup!WorldgenKind.fromName(kindText.text[0 .. strlen(kindText.text)]);
-            if (!kind.isFound) {
+            Maybe!WorldgenKind kind = enumNamed!WorldgenKind(kindText.text[0 .. strlen(kindText.text)]);
+            if (!kind.exists) {
                 return WorldgenArgument(StartupError(ENUM_NAMES!WorldgenKind[], "unknown worldgen", kindText.text), Worldgen.init, 2);
             } else {
                 return WorldgenArgument.ofKind(argc, argv, flagIndex + 1, kind.value);
@@ -116,8 +116,8 @@ struct WorldgenArgument {
         if (text.error.isPresent()) {
             return WorldgenArgument(text.error, Worldgen.init, 2);
         } else {
-            NumberArgument tilt = NumberArgument.fromText(text.text);
-            if (!tilt.isPresent) {
+            Maybe!float tilt = numberIn(text.text);
+            if (!tilt.exists) {
                 return WorldgenArgument(StartupError(null, "plane tilt in degrees is not a number", text.text), Worldgen.init, 3);
             } else {
                 return WorldgenArgument(StartupError.init, Worldgen.fromPlane(PlaneWorld(degreesToRadians(tilt.value))), 3);

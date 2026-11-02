@@ -1,189 +1,104 @@
 module plugins.arbor.plugin;
 
-import core.stdc.math : pow;
-import plugins.api.api : Api, ENTRY, Look, Material, NO_KIND, Registry, Rhythm, Risen, Site, SitePart, Turn;
-import plugins.turtle.turtle : Tread, Turtle, boxOf, cornersOf, floorMod, higherOf, middle, roll, treadAround, upright;
+import plugins.api.api : Api, ENTRY, HorosphereForm, Look, Material, NO_KIND, Registry, Risen, RisingKind, Site, Tint;
+import plugins.connector.connector : Tag;
+import plugins.horospheres.tree : TRUNK_RADIUS, Trunk, segment;
+import plugins.turtle.turtle : Rows, STAIR_HEADROOM, TREAD_THICKNESS, TURN_TREADS, Turtle, boxOf, floorMod, lawn, onWedge, ringRows, treadSpan, wedgeRows;
 
-immutable Look LOOK = Look("arbor", [0.72f, 0.84f, 0.74f], true);
+immutable Look LOOK = Look("arbor", [0.72f, 0.84f, 0.74f], Tint.fog);
 
-enum int TRUNK = 4;
-enum int RING = 4;
-enum int SIDE_TREADS = 4;
-enum int TREADS = 4 * (SIDE_TREADS + 1);
-enum int LIMB_START = TRUNK + RING;
-enum int THICKEST = 4;
-enum int FLARE = 2;
-enum double STRAIGHT_ODDS = 0.8;
-enum double UPWARD_ODDS = 0.7;
-enum double SIDEWAYS_ODDS = 0.5;
-enum double TAPER = 0.85;
-enum double STEEP = 45;
-enum double DOWNWARD = -20;
-enum double SECOND_LIMB_ODDS = 0.5;
-enum double LEAF_ODDS = 0.7;
-enum int LEAFY_GENERATION = 2;
-enum uint MOST_SIDE_BRANCHES = 2;
-enum ulong STRAIGHT_SALT = 0x4F1BBCDD;
-enum ulong SIDE_SALT = 0x6A09E667;
-enum ulong LEAF_SALT = 0x510E527F;
-enum ulong LIMB_SALT = 0x3C6EF372;
-enum Material BARK = Material.oakWood;
-enum Material STEP = Material.woodPlanks;
-immutable Material[4] LEAVES = [Material.oakLeaves, Material.oakLeaves, Material.mapleLeaves, Material.cherryLeaves];
-immutable Turn[4] SIDES = [Turn.pitchUp, Turn.left, Turn.pitchDown, Turn.right];
-enum int ROUTE_TREADS = TREADS;
-immutable float[3] SPAWN = [-12, 0, 0];
+enum double TREAD_IN = TRUNK_RADIUS - 1;
+enum double ROOM_IN = TRUNK_RADIUS + 1.5;
+enum double TREAD_OUT = 8.5;
+enum double DECK_OUT = 9.5;
+enum double RAIL_IN = 8.5;
+enum double ROUTE_RADIUS = 6.5;
+enum int BURIED_TREADS = 8;
+enum int DECK_EVERY = 3;
+enum int ROUTE_TURNS = 4;
+enum int LANTERN_EVERY = 6;
+enum int LANTERN_HEIGHT = 2;
+enum uint TREE_EDGES = 2;
+enum double ROOT_SHARE = 0.1;
+enum Material STEP = Material.spruceWood;
+enum Material DECK = Material.woodPlanks;
+enum Material POST = Material.spruceWood;
+immutable float[3] SPAWN = [6, 0, 0];
 
-enum int ENDLESS = 0;
-enum int LANDMARK_SEGMENTS = 4;
-enum int LANDMARK_GENERATIONS = 4;
-
-struct Branch {
-    int generation;
-    int start;
-    int lastGeneration;
-}
-
-struct Trunk {
-    int age;
-    int segments;
-    int lastGeneration;
-}
-
-int widthOf(int generation) {
-    return higherOf(1, THICKEST - generation);
-}
-
-void leaves(Turtle site, int tip, ulong hash) {
-    Material leaf = LEAVES[cast(size_t)(roll(hash, LEAF_SALT) * LEAVES.length)];
-    site.fill(leaf, boxOf([-5, 4], [-3, 2], [tip - 4, tip + 3]));
-    site.fill(leaf, boxOf([-3, 2], [-5, 4], [tip - 4, tip + 3]));
-    site.fill(leaf, boxOf([-3, 2], [-3, 2], [tip - 6, tip + 5]));
-}
-
-bool grow(Turtle child, Branch data) {
-    Turtle tip = child.forward(1);
-    if (tip.isClaimed(SitePart.vertex) || (data.lastGeneration != ENDLESS && data.generation > data.lastGeneration)) {
-        return false;
-    } else {
-        bool isPlaced = child.place(&branch, &data, Branch.sizeof);
-        if (isPlaced) {
-            tip.claim(SitePart.vertex);
+void climb(Turtle tower, int bottom, int ground) {
+    Rows[TURN_TREADS] treads = wedgeRows(tower.column(), TREAD_IN, TREAD_OUT);
+    Rows[TURN_TREADS] rooms = wedgeRows(tower.column(), ROOM_IN, TREAD_OUT);
+    foreach (tread; -STAIR_HEADROOM .. TURN_TREADS) {
+        Rows* wedge = &treads[floorMod(tread, TURN_TREADS)];
+        int height = bottom + tread;
+        Rows* room = &rooms[floorMod(tread, TURN_TREADS)];
+        if (height >= ground - TREAD_THICKNESS) {
+            tower.clearOver(*room, tread);
         }
-        return isPlaced;
-    }
-}
-
-void branch(const(Api)* api, Site at, const(void)* data) {
-    Turtle site = Turtle(api, at);
-    Branch own = *cast(const(Branch)*) data;
-    int width = widthOf(own.generation);
-    int length = site.edgeCells();
-    site.paint(BARK, boxOf([-width, width - 1], [-width, width - 1], [own.start, length - 1]));
-    Turtle tip = site.forward(1);
-    double odds = pow(TAPER, own.generation);
-    Branch next = Branch(own.generation + 1, 0, own.lastGeneration);
-    uint grown = 0;
-    if (tip.pen().rise() > DOWNWARD && roll(tip.hash(SitePart.edge), STRAIGHT_SALT) < STRAIGHT_ODDS && grow(tip, next)) {
-        grown += 1;
-    }
-    uint sides = 0;
-    foreach (turn; SIDES) {
-        Turtle side = tip.turned(turn);
-        double rise = side.pen().rise();
-        double chance = SIDEWAYS_ODDS * odds;
-        if (rise > STEEP) {
-            chance = UPWARD_ODDS * odds;
-        }
-        if (sides < MOST_SIDE_BRANCHES && rise > DOWNWARD && roll(side.hash(SitePart.edge), SIDE_SALT) < chance && grow(side, next)) {
-            sides += 1;
-        }
-    }
-    ulong vertex = tip.hash(SitePart.vertex);
-    if (grown + sides == 0 || (own.generation >= LEAFY_GENERATION && roll(vertex, LEAF_SALT) < LEAF_ODDS)) {
-        leaves(site, length, vertex);
-    }
-}
-
-Turn limbSide(int height) {
-    return SIDES[floorMod(height - 1, TREADS) / (SIDE_TREADS + 1)];
-}
-
-void stairSegment(Turtle tower, int age) {
-    int length = tower.edgeCells();
-    foreach (index; 0 .. TREADS) {
-        Tread tread = treadAround(TRUNK, RING, SIDE_TREADS, index);
-        tower.paint(STEP, boxOf(tread.x, tread.y, [0, length - 1]), Rhythm(TREADS, floorMod(index - 1 - age * length, TREADS), 2));
-    }
-}
-
-void trunk(const(Api)* api, Site at, const(void)* data) {
-    Turtle tower = Turtle(api, at);
-    Trunk own = *cast(const(Trunk)*) data;
-    int age = own.age;
-    int length = tower.edgeCells();
-    tower.paint(BARK, boxOf([-TRUNK, TRUNK - 1], [-TRUNK, TRUNK - 1], [0, length - 1]));
-    if (age == 0) {
-        tower.paint(BARK, boxOf([-TRUNK - FLARE, TRUNK + FLARE - 1], [-TRUNK - FLARE, TRUNK + FLARE - 1], [-FLARE, 0]));
-    }
-    stairSegment(tower, age);
-    Turtle top = tower.forward(1);
-    top.claim(SitePart.vertex);
-    Trunk higher = Trunk(age + 1, own.segments, own.lastGeneration);
-    if (own.segments != ENDLESS && higher.age == own.segments) {
-        leaves(tower, length, top.hash(SitePart.vertex));
-    } else if (!top.place(&trunk, &higher, Trunk.sizeof)) {
-        tower.fail("the trunk's next segment is behind the tree");
-    }
-    Branch limb = Branch(1, LIMB_START, own.lastGeneration);
-    int vertexHeight = (age + 1) * length;
-    Turn reachable = limbSide(vertexHeight + widthOf(limb.generation));
-    grow(top.turned(reachable), limb);
-    if (roll(top.hash(SitePart.vertex), LIMB_SALT) < SECOND_LIMB_ODDS) {
-        foreach (turn; SIDES) {
-            if (turn != reachable && roll(top.turned(turn).hash(SitePart.edge), LIMB_SALT) < SECOND_LIMB_ODDS / 2) {
-                grow(top.turned(turn), limb);
+        if (tread >= 0 && height >= ground - BURIED_TREADS) {
+            tower.fillRows(STEP, *wedge, treadSpan(tread));
+            if (height >= ground) {
+                tower.paintRows(STEP, *room, treadSpan(tread));
             }
         }
     }
 }
 
+void deck(Turtle tower) {
+    Rows floor = ringRows(tower.column(), TREAD_IN, DECK_OUT);
+    Rows rail = ringRows(tower.column(), RAIL_IN, DECK_OUT);
+    tower.fillRows(DECK, floor, [0, 0]);
+    tower.fillRows(POST, rail, [1, 1]);
+    foreach (tread; 0 .. TURN_TREADS / LANTERN_EVERY) {
+        float[2] at = onWedge(tread * LANTERN_EVERY, RAIL_IN);
+        int x = cast(int) at[0];
+        int y = cast(int) at[1];
+        tower.fill(Material.lightPanel, boxOf([x, x], [y, y], [2, LANTERN_HEIGHT]));
+    }
+}
+
+void tile(const(Api)* api, Site base, const(Risen)* risen, const(void)* data) {
+    Turtle tower = Turtle(api, base);
+    segment(tower, risen.segment, risen.ground, Trunk.climbed);
+    int bottom = risen.segment * tower.edgeCells();
+    if (bottom + tower.edgeCells() > risen.ground - BURIED_TREADS) {
+        if (floorMod(risen.segment, DECK_EVERY) == 0 && bottom > risen.ground) {
+            deck(tower);
+        }
+        climb(tower, bottom, risen.ground);
+    }
+}
+
+void plant(const(Api)* api, Site at) {
+    uint kind = api.horosphere(api, 0, HorosphereForm.upright, Tag.tree, &tile, null, 0);
+    api.openHorosphere(api, at, kind, TREE_EDGES);
+}
+
 void route(Turtle tower) {
-    tower.stop(TRUNK + RING + 1.5f, middle(treadAround(TRUNK, RING, SIDE_TREADS, 0).y), 0);
-    foreach (index; 0 .. ROUTE_TREADS) {
-        Tread tread = treadAround(TRUNK, RING, SIDE_TREADS, index);
-        tower.stop(middle(tread.x), middle(tread.y), index + 1);
+    float[2] foot = onWedge(0, TREAD_OUT + 2);
+    tower.stop(foot[0], foot[1], 0);
+    foreach (tread; 0 .. ROUTE_TURNS * TURN_TREADS) {
+        float[2] at = onWedge(tread, ROUTE_RADIUS);
+        tower.stop(at[0], at[1], tread + 1);
     }
 }
 
-void lawn(const(Api)* api, Site face, const(Risen)* risen, const(void)* data) {
-    foreach (corner; cornersOf(Turtle(api, face))) {
-        upright(corner).paint(Material.grass, boxOf([0, corner.column().high], [0, corner.column().high], [-1, -1]));
-    }
-}
-
-void plant(Turtle tower, Trunk first) {
-    tower.claim(SitePart.vertex);
-    if (!tower.place(&trunk, &first, Trunk.sizeof)) {
-        tower.fail("the trunk cannot be placed at the root");
-    }
-    route(tower);
-}
-
-// A placed structure is never forgotten and grows with the deepest depth reached anywhere, so one sharing a world with
-// everything else has to be finite.
 void landmark(const(Api)* api, Site at, const(void)* data) {
-    plant(upright(Turtle(api, at)), Trunk(0, LANDMARK_SEGMENTS, LANDMARK_GENERATIONS));
+    plant(api, at);
 }
 
 void world(const(Api)* api, Site at, const(void)* data) {
-    plant(upright(Turtle(api, at)), Trunk(0, ENDLESS, ENDLESS));
+    plant(api, at);
     api.tile(api, &lawn, null, 0);
     api.look(api, NO_KIND, &LOOK);
-    upright(Turtle(api, at)).entrance(SPAWN[0], SPAWN[1], SPAWN[2]);
+    Turtle tower = Turtle(api, at).columnSite();
+    route(tower);
+    tower.entrance(SPAWN[0], SPAWN[1], SPAWN[2]);
 }
 
 pragma(mangle, ENTRY) void plugin(const(Registry)* registry) {
     registry.add(registry, "arbor", &world);
+    RisingKind rising = RisingKind(ROOT_SHARE, HorosphereForm.upright, Tag.tree, &tile, null, 0, LOOK);
+    registry.addKind(registry, "arbor", &rising);
     registry.addLandmark(registry, "arbor", &landmark);
 }

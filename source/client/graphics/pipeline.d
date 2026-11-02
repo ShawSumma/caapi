@@ -112,6 +112,17 @@ enum Blend : ubyte {
     alpha,
 }
 
+enum Depth : ubyte {
+    ignored,
+    tested,
+    written,
+}
+
+enum Culling : ubyte {
+    none,
+    backFaces,
+}
+
 struct PipelineSettings {
     VkPipelineLayout layout;
     VkRenderPass renderPass;
@@ -120,12 +131,11 @@ struct PipelineSettings {
     VkPrimitiveTopology topology;
     uint subpass;
     Blend blend;
-    bool isDepthTested;
-    bool isDepthWritten;
-    bool isCullingBackFaces;
+    Depth depth;
+    Culling culling;
 
     VkCullModeFlags cullMode() const {
-        if (isCullingBackFaces) {
+        if (culling == Culling.backFaces) {
             return VK_CULL_MODE_BACK_BIT;
         } else {
             return VK_CULL_MODE_NONE;
@@ -217,8 +227,8 @@ VkPipeline createGraphicsPipeline(VkDevice device, PipelineSettings settings) {
     multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
     VkPipelineDepthStencilStateCreateInfo depthStencil;
     depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    depthStencil.depthTestEnable = settings.isDepthTested;
-    depthStencil.depthWriteEnable = settings.isDepthWritten;
+    depthStencil.depthTestEnable = settings.depth != Depth.ignored;
+    depthStencil.depthWriteEnable = settings.depth == Depth.written;
     depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER;
     VkPipelineColorBlendAttachmentState[GEOMETRY_COLOR_ATTACHMENTS] blendAttachments = [
         settings.blendAttachment(),

@@ -1,7 +1,7 @@
 module plugins.palace.plugin;
 
-import plugins.api.api : Api, Box, ENTRY, Look, Material, NO_KIND, Registry, Risen, Site, SitePart, Turn;
-import plugins.turtle.turtle : Turtle, boxOf, cornersOf, roll, upright;
+import plugins.api.api : Api, ENTRY, Look, Material, NO_KIND, Registry, Risen, Site, SitePart, Turn;
+import plugins.turtle.turtle : Along, Turtle, boxOf, cornersOf, grass, line, roll, upright;
 
 immutable Look LOOK = Look("palace");
 
@@ -71,23 +71,15 @@ bool isExterior(ref const Footprint footprint, Turtle across) {
     return !footprint.contains(across.hash(SitePart.face));
 }
 
-void outerWall(Turtle tower, bool isAlongX) {
+void outerWall(Turtle tower, Along direction) {
     int far = tower.column().high;
-    tower.paint(STONE, line(isAlongX, [0, far], [FLOOR - 1, ROOF]));
+    tower.paint(STONE, line(direction, [0, far], [FLOOR - 1, ROOF]));
     for (int along = 2; along < far; along += WINDOW_EVERY) {
-        tower.paint(Material.glass, line(isAlongX, [along, along + 1], WINDOW_Z));
+        tower.paint(Material.glass, line(direction, [along, along + 1], WINDOW_Z));
     }
 }
 
-Box line(bool isAlongX, int[2] span, int[2] z) {
-    if (isAlongX) {
-        return boxOf(span, [0, 0], z);
-    } else {
-        return boxOf([0, 0], span, z);
-    }
-}
-
-void hall(Turtle corner, ref const Footprint footprint, bool isCentre) {
+void hall(Turtle corner, ref const Footprint footprint) {
     Turtle tower = upright(corner);
     int far = tower.column().high;
     int[2] whole = [0, far];
@@ -99,17 +91,20 @@ void hall(Turtle corner, ref const Footprint footprint, bool isCentre) {
     tower.paint(Material.steel, boxOf([LAMP, LAMP], [LAMP, LAMP], [LAMP_Z[1] + 1, CEILING - 1]));
     tower.paint(Material.lightPanel, boxOf([LAMP, LAMP], [LAMP, LAMP], LAMP_Z));
     if (isExterior(footprint, corner.left())) {
-        outerWall(tower, true);
+        outerWall(tower, Along.x);
     }
     if (isExterior(footprint, corner.right())) {
-        outerWall(tower, false);
+        outerWall(tower, Along.y);
     }
-    if (isCentre) {
-        tower.paint(Material.redCarpet, boxOf([2, BASIN - 1], [2, BASIN - 1], [FLOOR, FLOOR]));
-        tower.paint(FLOOR_STONE, boxOf([BASIN, far], [BASIN, far], [FLOOR + 1, FLOOR + 1]));
-        tower.paint(Material.water, boxOf([BASIN + 1, far], [BASIN + 1, far], [FLOOR + 1, FLOOR + 1]));
-        tower.paint(Material.water, boxOf([far, far], [far, far], [FLOOR + 2, JET_TOP]));
-    }
+}
+
+void centrePiece(Turtle corner) {
+    Turtle tower = upright(corner);
+    int far = tower.column().high;
+    tower.paint(Material.redCarpet, boxOf([2, BASIN - 1], [2, BASIN - 1], [FLOOR, FLOOR]));
+    tower.paint(FLOOR_STONE, boxOf([BASIN, far], [BASIN, far], [FLOOR + 1, FLOOR + 1]));
+    tower.paint(Material.water, boxOf([BASIN + 1, far], [BASIN + 1, far], [FLOOR + 1, FLOOR + 1]));
+    tower.paint(Material.water, boxOf([far, far], [far, far], [FLOOR + 2, JET_TOP]));
 }
 
 struct Run {
@@ -134,7 +129,7 @@ int alongIn(ref const Run run, int cell) {
     }
 }
 
-void grandStair(ref const Run run, bool isRouted) {
+void grandStair(ref const Run run) {
     run.near.paint(Material.none, boxOf(DOOR_X, [0, 0], [GROUND, GROUND + DOOR_TOP]));
     run.near.paint(TREAD, boxOf([0, LANDING - 1], STAIR_Y, [FLOOR, GROUND - 1]));
     foreach (step; 1 .. TREADS) {
@@ -144,20 +139,21 @@ void grandStair(ref const Run run, bool isRouted) {
             frameAt(run, cell).paint(TREAD, boxOf([along, along], STAIR_Y, [FLOOR, GROUND - step - 1]));
         }
     }
-    if (isRouted) {
-        float lane = (STAIR_Y[0] + STAIR_Y[1] + 1) / 2.0f;
-        int floorCell = LANDING + (TREADS - 1) * TREAD_DEPTH;
-        run.far.stop(alongIn(run, floorCell) + 0.5f, STAIR_Y[1] + 3.5f, FLOOR + 1);
-        run.far.stop(alongIn(run, floorCell) + 0.5f, lane, FLOOR + 1);
-        foreach_reverse (step; 1 .. TREADS) {
-            int cell = LANDING + (step - 1) * TREAD_DEPTH + 1;
-            frameAt(run, cell).stop(alongIn(run, cell), lane, GROUND - step);
-        }
-        float door = (DOOR_X[0] + DOOR_X[1] + 1) / 2.0f;
-        run.near.stop(door, lane, GROUND);
-        run.near.stop(door, 0.5f, GROUND);
-        run.near.stop(door, -2.5f, GROUND);
+}
+
+void stairRoute(ref const Run run) {
+    float lane = (STAIR_Y[0] + STAIR_Y[1] + 1) / 2.0f;
+    int floorCell = LANDING + (TREADS - 1) * TREAD_DEPTH;
+    run.far.stop(alongIn(run, floorCell) + 0.5f, STAIR_Y[1] + 3.5f, FLOOR + 1);
+    run.far.stop(alongIn(run, floorCell) + 0.5f, lane, FLOOR + 1);
+    foreach_reverse (step; 1 .. TREADS) {
+        int cell = LANDING + (step - 1) * TREAD_DEPTH + 1;
+        frameAt(run, cell).stop(alongIn(run, cell), lane, GROUND - step);
     }
+    float door = (DOOR_X[0] + DOOR_X[1] + 1) / 2.0f;
+    run.near.stop(door, lane, GROUND);
+    run.near.stop(door, 0.5f, GROUND);
+    run.near.stop(door, -2.5f, GROUND);
 }
 
 void lawn(const(Api)* api, Site site, const(Risen)* risen, const(void)* data) {
@@ -169,10 +165,7 @@ void lawn(const(Api)* api, Site site, const(Risen)* risen, const(void)* data) {
         index += 1;
     }
     if (index == lawn.count) {
-        foreach (corner; cornersOf(face)) {
-            int far = corner.column().high;
-            upright(corner).paint(Material.grass, boxOf([0, far], [0, far], [-1, -1]));
-        }
+        grass(face);
     }
 }
 
@@ -184,23 +177,25 @@ struct Halls {
 Halls halls(Turtle root) {
     Footprint footprint = footprintOf(root);
     Run entranceRun;
-    bool hasEntrance = false;
+    uint stairs = 0;
     foreach (face; footprint.faces[0 .. footprint.count]) {
-        bool isCentre = face.hash(SitePart.face) == footprint.hashes[0];
         foreach (corner; cornersOf(face)) {
-            hall(corner, footprint, isCentre);
+            hall(corner, footprint);
+            if (face.hash(SitePart.face) == footprint.hashes[0]) {
+                centrePiece(corner);
+            }
         }
     }
     foreach (face; footprint.faces[0 .. footprint.count]) {
         foreach (corner; cornersOf(face)) {
-            bool isFirst = !hasEntrance;
-            if (isExterior(footprint, corner.left()) && (isFirst || roll(corner.hash(SitePart.edge), STAIR_SALT) < STAIR_ODDS)) {
+            if (isExterior(footprint, corner.left()) && (stairs == 0 || roll(corner.hash(SitePart.edge), STAIR_SALT) < STAIR_ODDS)) {
                 Run run = Run(upright(corner), upright(corner.forward(1)));
-                grandStair(run, isFirst);
-                if (isFirst) {
+                grandStair(run);
+                if (stairs == 0) {
+                    stairRoute(run);
                     entranceRun = run;
-                    hasEntrance = true;
                 }
+                stairs += 1;
             }
         }
     }

@@ -1,10 +1,10 @@
 module plugins.lattice.plugin;
 
 import core.stdc.math : fabs;
-import plugins.api.api : Api, ENTRY, HorosphereForm, Look, Material, NO_KIND, Registry, Rhythm, Risen, Site, SitePart, Turn;
+import plugins.api.api : Api, ENTRY, HorosphereForm, Look, Material, NO_KIND, Registry, Rhythm, Risen, Site, SitePart, Tint, Turn;
 import plugins.turtle.turtle : Tread, Turtle, boxOf, lowerOf, roll, treadAround, upright;
 
-immutable Look LOOK = Look("lattice", [0.05f, 0.06f, 0.1f], true);
+immutable Look LOOK = Look("lattice", [0.05f, 0.06f, 0.1f], Tint.fog);
 
 enum int BEAM = 1;
 enum int PLATFORM = 6;
@@ -47,22 +47,22 @@ struct End {
     int sign;
 }
 
-Turtle along(Turtle frame, Axis axis, bool isPositive) {
+Turtle along(Turtle frame, Axis axis, int sign) {
     final switch (axis) {
         case Axis.x:
-            if (isPositive) {
+            if (sign > 0) {
                 return frame.right();
             } else {
                 return frame.left();
             }
         case Axis.y:
-            if (isPositive) {
+            if (sign > 0) {
                 return frame.pitchUp();
             } else {
                 return frame.pitchDown();
             }
         case Axis.z:
-            if (isPositive) {
+            if (sign > 0) {
                 return frame;
             } else {
                 return frame.pitchUp().pitchUp();
@@ -99,8 +99,11 @@ bool isStair(ulong edge) {
 }
 
 bool isPlatform(ref const End end, ref const Root root) {
-    bool hasStair = isStair(along(end.frame, end.vertical, true).hash(SitePart.edge)) || isStair(along(end.frame, end.vertical, false).hash(SitePart.edge));
-    return end.vertex == root.vertex || hasStair || roll(end.vertex, PLATFORM_SALT) < PLATFORM_ODDS;
+    return end.vertex == root.vertex || isStair(along(end.frame, end.vertical, 1).hash(SitePart.edge)) || isStair(along(end.frame, end.vertical, -1).hash(SitePart.edge)) || roll(end.vertex, PLATFORM_SALT) < PLATFORM_ODDS;
+}
+
+bool isUpward(ref const End end) {
+    return riseOf(end.frame, Axis.z) * end.sign > 0;
 }
 
 int[2] near(int sign, int from, int to) {
@@ -120,7 +123,7 @@ Axis acrossOf(Axis vertical) {
 }
 
 ulong lineHash(Turtle frame, Axis axis) {
-    return lowerOf(along(frame, axis, true).hash(SitePart.edge), along(frame, axis, false).hash(SitePart.edge));
+    return lowerOf(along(frame, axis, 1).hash(SitePart.edge), along(frame, axis, -1).hash(SitePart.edge));
 }
 
 bool isDesignated(ref const End end) {
@@ -180,10 +183,8 @@ void edge(const(Api)* api, Site site, const(Risen)* risen, const(void)* data) {
     int length = start.edgeCells();
     int[2] cross = [-BEAM, BEAM - 1];
     End[2] ends = [endAt(start, 1), endAt(start.forward(1), -1)];
-    bool[2] isUpward = [riseOf(start, Axis.z) > 0, riseOf(ends[1].frame, Axis.z) < 0];
-    bool[2] isRaised = [isPlatform(ends[0], root), isPlatform(ends[1], root)];
-    foreach (index, end; ends) {
-        if (isRaised[index] && end.vertical == Axis.z && isUpward[index]) {
+    foreach (end; ends) {
+        if (isPlatform(end, root) && end.vertical == Axis.z && isUpward(end)) {
             decorate(end);
         }
     }
@@ -197,8 +198,8 @@ void edge(const(Api)* api, Site site, const(Risen)* risen, const(void)* data) {
     if (ends[0].vertical == Axis.z && isStair(start.hash(SitePart.edge))) {
         spiral(start, length);
     }
-    foreach (index, end; ends) {
-        if (isRaised[index] && end.vertical != Axis.z && isDesignated(end)) {
+    foreach (end; ends) {
+        if (isPlatform(end, root) && end.vertical != Axis.z && isDesignated(end)) {
             platform(end, root);
         }
     }

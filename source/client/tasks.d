@@ -12,17 +12,21 @@ import common.worldgen.generation : ChunkParams, GeneratedVoxels, Yield;
 enum uint RESERVED_CORES = 2;
 enum size_t QUEUE_CAPACITY = 1 << 14;
 
+enum GenKind : ubyte {
+    fresh,
+    restoring,
+}
+
 struct GenRequest {
     ChunkParams params;
     ChunkSlot chunk;
-    bool isRestoring;
-    bool isUrgent;
+    GenKind kind;
 }
 
 struct GenResult {
     GeneratedVoxels generated;
     ChunkSlot chunk;
-    bool isRestoring;
+    GenKind kind;
 }
 
 struct BuildingRequest {
@@ -44,7 +48,7 @@ struct TaskQueues {
     ConcurrentQueue!BuildingResult built;
     WorkerPool* pool;
     shared uint completed;
-    shared uint isAwaiting;
+    shared uint awaiting;
 
     static TaskQueues* make() {
         TaskQueues* queues = cast(TaskQueues*) calloc(1, TaskQueues.sizeof);
@@ -59,17 +63,17 @@ struct TaskQueues {
 
     void announce() {
         atomicOp!"+="(completed, 1);
-        if (atomicLoad(isAwaiting) != 0) {
+        if (atomicLoad(awaiting) != 0) {
             wake(completed);
         }
     }
 
     void await(uint seen) {
-        atomicStore(isAwaiting, 1);
+        atomicStore(awaiting, 1);
         if (atomicLoad(completed) == seen) {
             waitWhile(completed, seen);
         }
-        atomicStore(isAwaiting, 0);
+        atomicStore(awaiting, 0);
     }
 
     void release() {
@@ -131,14 +135,16 @@ bool takeTask(void* context, uint worker) {
 void makeBuilding(TaskQueues* queues, BuildingRequest building) {
     BuildingResult made = BuildingResult(Building.make(building.plan), building.slot);
     building.plan.release();
-    bool isPushed = queues.built.push(made);
-    assert(isPushed);
+    if (!queues.built.push(made)) {
+        assert(false);
+    }
 }
 
 void generate(TaskQueues* queues, GenRequest request, uint worker) {
     JobHelp help = JobHelp(queues.pool, worker);
-    bool isPushed = queues.generated.push(GenResult(request.params.generateVoxels(Yield(&yieldToJob, &help)), request.chunk, request.isRestoring));
-    assert(isPushed);
+    if (!queues.generated.push(GenResult(request.params.generateVoxels(Yield(&yieldToJob, &help)), request.chunk, request.kind))) {
+        assert(false);
+    }
 }
 
 size_t pushedPrefix(T)(ref ConcurrentQueue!T queue, ref Array!T pending, size_t room) {

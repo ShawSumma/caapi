@@ -1,7 +1,13 @@
 module plugins.turtle.turtle;
 
-import plugins.api.api : Api, Box, Column, Material, Pen, Rhythm, Site, SitePart, Spot, Structure, Turn;
+import core.stdc.math : atan2, cos, sin;
+import plugins.api.api : Api, Box, Column, Material, Pen, Rhythm, Risen, Site, SitePart, Spot, Structure, Turn;
 
+enum double PI = 3.14159265358979323846;
+enum int TURN_TREADS = 24;
+enum int STAIR_HEADROOM = 4;
+enum int TREAD_THICKNESS = 2;
+enum uint MOST_ROWS = 48;
 enum Rhythm EVERY_HEIGHT = Rhythm(0, 0, 0);
 enum int ENDLESS_LOW = int.min;
 enum int ENDLESS_HIGH = int.max;
@@ -94,6 +100,101 @@ float middle(int[2] span) {
     return (span[0] + span[1] + 1) / 2.0f;
 }
 
+struct Row {
+    int y;
+    int[2] x;
+}
+
+struct Rows {
+    Row[MOST_ROWS] items;
+    uint count;
+
+    void add(int x, int y) {
+        if (count > 0 && items[count - 1].y == y && items[count - 1].x[1] == x - 1) {
+            items[count - 1].x[1] = x;
+        } else {
+            items[count] = Row(y, [x, x]);
+            count += 1;
+        }
+    }
+
+    const(Row)[] slice() const return {
+        return items[0 .. count];
+    }
+}
+
+bool isInRing(int x, int y, double inner, double outer) {
+    double across = x + 0.5;
+    double along = y + 0.5;
+    double squared = across * across + along * along;
+    return squared >= inner * inner && squared < outer * outer;
+}
+
+Rows ringRows(Column column, double inner, double outer) {
+    Rows rows;
+    foreach (y; column.low .. column.high + 1) {
+        foreach (x; column.low .. column.high + 1) {
+            if (isInRing(x, y, inner, outer)) {
+                rows.add(x, y);
+            }
+        }
+    }
+    return rows;
+}
+
+Rows[TURN_TREADS] wedgeRows(Column column, double inner, double outer) {
+    Rows[TURN_TREADS] wedges;
+    foreach (y; column.low .. column.high + 1) {
+        foreach (x; column.low .. column.high + 1) {
+            if (isInRing(x, y, inner, outer)) {
+                wedges[wedgeAt(x, y)].add(x, y);
+            }
+        }
+    }
+    return wedges;
+}
+
+int[2] treadSpan(int tread) {
+    return [higherOf(0, tread - TREAD_THICKNESS + 1), tread];
+}
+
+enum Along : ubyte {
+    x,
+    y,
+}
+
+Box line(Along along, int[2] span, int[2] z) {
+    if (along == Along.x) {
+        return boxOf(span, [0, 0], z);
+    } else {
+        return boxOf([0, 0], span, z);
+    }
+}
+
+void grass(Turtle face) {
+    foreach (corner; cornersOf(face)) {
+        int far = corner.column().high;
+        upright(corner).paint(Material.grass, boxOf([0, far], [0, far], [-1, -1]));
+    }
+}
+
+void lawn(const(Api)* api, Site face, const(Risen)* risen, const(void)* data) {
+    grass(Turtle(api, face));
+}
+
+uint wedgeAt(int cellX, int cellY) {
+    double turns = atan2(cellY + 0.5, cellX + 0.5) / (2 * PI);
+    if (turns < 0) {
+        turns += 1;
+    }
+    return lowerOf(cast(uint)(turns * TURN_TREADS), TURN_TREADS - 1);
+}
+
+float[2] onWedge(int tread, double radius) {
+    double angle = (floorMod(tread, TURN_TREADS) + 0.5) * 2 * PI / TURN_TREADS;
+    return [cast(float)(radius * cos(angle)), cast(float)(radius * sin(angle))];
+}
+
 Turtle upright(Turtle site) {
     return site.pitchUp().rollRight();
 }
@@ -178,6 +279,30 @@ struct Turtle {
 
     void fill(Material material, Box area, Rhythm rhythm = EVERY_HEIGHT) const {
         api.fill(api, site, material, area, rhythm);
+    }
+
+    void paintRows(Material material, ref const Rows rows, int[2] z, Rhythm rhythm = EVERY_HEIGHT) const {
+        foreach (row; rows.slice()) {
+            paint(material, boxOf(row.x, [row.y, row.y], z), rhythm);
+        }
+    }
+
+    void fillRows(Material material, ref const Rows rows, int[2] z, Rhythm rhythm = EVERY_HEIGHT) const {
+        foreach (row; rows.slice()) {
+            fill(material, boxOf(row.x, [row.y, row.y], z), rhythm);
+        }
+    }
+
+    void clearOver(ref const Rows room, int tread) const {
+        int low = higherOf(0, tread + 1);
+        int high = lowerOf(edgeCells() - 1, tread + STAIR_HEADROOM);
+        if (low <= high) {
+            paintRows(Material.none, room, [low, high]);
+        }
+    }
+
+    Turtle columnSite() const {
+        return Turtle(api, api.columnSite(api, site));
     }
 
     void stop(float x, float y, float z) const {

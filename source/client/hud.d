@@ -77,7 +77,6 @@ struct Growth {
     uint countedVersion;
     size_t countedNodes;
 
-    // The first nearby set takes many frames to build, so a count is also stale once the set has doubled since it.
     void update(ref const LocalWorld world) {
         uint start = world.graph.slotOf(world.cameraPosition.node);
         size_t nodes = world.nearby[world.published].nodes.length;
@@ -281,8 +280,6 @@ float[2] placed(float[2] center, float radius, float[2] at) {
     return [center[0] + at[0] * radius, center[1] + at[1] * radius];
 }
 
-// The foot of a point on the level plane through the eye, in the Poincare disk of that plane. Height above the plane
-// fades a node out, so the disk shows the layer the viewer walks in and not every storey above it.
 DiskPoint onDisk(Vec4!float point) {
     float height = asinhf(point.c[1]);
     float share = 1 - height * height / (DISK_BAND * DISK_BAND);

@@ -1,230 +1,276 @@
-# mined
+# CLAUDE.md
 
-A voxel engine on the hyperbolic {5,3,4} honeycomb, written in D (betterC, LDC). Worlds are plugins, shared
-libraries loaded at startup that call the engine through a table of functions.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this is
+
+mined is a voxel engine in hyperbolic 3-space, written in D (betterC, LDC, no GC, no druntime). The world is the
+{5,3,4} honeycomb: right-angled dodecahedra, four around every edge. Each dodecahedron ("node") is split into 20
+cubes ("chunks") of 12^3 voxels. Rendering is Vulkan with GPU culling and multi-draw-indirect, on X11 or Cocoa. Worlds
+are plugins: shared libraries loaded from `lib/` at startup that build through a table of function pointers. Play today
+is walking, flying and editing blocks. `PLAN.md` is a design document for a game: nothing in it is built, and its notes on
+the code were a snapshot, so check them against the tree.
+
+Other docs: `README.md` covers dependencies and controls. `UNITS.md` defines the unit system and is required reading
+before touching anything dimensional; this file does not repeat it.
 
 ## Commands
 
-- Build: `dub build -q -b release --compiler=ldc2` (add `-c headless` for the headless tools)
-- Unit tests: `dub test -q --compiler=ldc2`
-- Behavior tests (D scripts in `source/scripts/tests.d`; give name prefixes to run some):
-  `dub run -q -b release --compiler=ldc2 -c headless -- --tests [prefix ...] --out /dev/stdout`
-  (`--views` instead runs the screenshot view scripts without rendering, to check they still run)
-- Repaint check (drops every other tile and paints them again; the voxels must come out the same):
-  `dub run -q -b release --compiler=ldc2 -c headless -- --worldgen structure city --check-repaint --out /dev/stdout`
-  (also `backrooms`, `library`, `lattice`, which covers edge tiles, and `planet`, which covers strokes)
-- Forget check (builds around the anchor, moves away until eviction forgets the tiles, lines, edges and pending touches
-  there, then builds the anchor again; reports what was left and whether any voxel changed): same worlds,
-  `dub run -q -b release --compiler=ldc2 -c headless -- --worldgen structure lattice --check-forget --out /dev/stdout`
-- Material census (cells of each material in the terrain world around the origin):
-  `dub run -q -b release --compiler=ldc2 -c headless -- --material-census 5 --out /dev/stdout`
-- Structure slice (generated voxels in each quarter around the root at one height, `#` solid and `.` open):
-  `dub run -q -b release --compiler=ldc2 -c headless -- --worldgen structure backrooms --slice 1 --out /dev/stdout`
-- Load and flight benchmark: `dub run -q -b release --compiler=ldc2 -- --bench-load [--profile] [--flight-speed <units/s>] --out /dev/stdout`
-  (reports chunks loaded within 2 and 4 units of the camera per leg; use those to judge loading while moving, and
-  what keeps the rest within 4 from loading: generating, building, unscanned, scanned, unlisted, unmade; each leg also
-  counts frames over 16.7 ms, lists the first few by phase, and gives each published rebuild's frames, nearby time and
-  how far the camera moved meanwhile). Add `--worldgen structure <name>` for another world. Flights default to the
-  noclip speed (0.6 units/s); `--profile` reports load, flight and the settle after it separately.
-- World digest (a hash of the generated terrain; compare before and after any change meant to keep output identical):
-  `dub run -q -b release --compiler=ldc2 -c headless -- --world-digest --out /dev/stdout`
-- Generation and nearby search benchmarks: `-- --bench-gen [radius] --out /dev/stdout` and
-  `-- --bench-nearby [radius] [iterations] --out /dev/stdout` (same `dub run` prefix as above)
-- Hash map benchmark (NodeId churn at 2M live keys, including the slowest batch of 1024 changes):
-  `dub run -q -b release --compiler=ldc2 -c headless -- --bench-hashmap --out /dev/stdout`
-- Screenshot of a view script (`source/scripts/views.d`), rendered offscreen:
-  `dub run -q -b release --compiler=ldc2 -- --screenshot screenshots/<new name>.png --out /dev/stdout <view>`
-- Film of a list of shots (`source/scripts/films.d`), every step rendered offscreen to numbered PNGs:
-  `dub run -q -b release --compiler=ldc2 -- --film <directory> --out /dev/stdout <film>`
-  (headless `--films` instead runs the shots without rendering, to check they still run)
-- Run through `dub run`, never the built binaries directly.
-- Never open a window: no plain `dub run` of the game and no `--drive`. Only the headless configuration and the
-  windowed build's offscreen modes (`--screenshot`, `--bench-load`) may be run. Anything that needs a window is for
-  the user to run.
-- Release builds keep asserts and bounds checks (`--enable-asserts --boundscheck=on` on every `dflags` line in
-  `dub.sdl`); a failed check halts.
+Always pass `--compiler=ldc2`. The plugins are built first by `preGenerateCommands`, so every command below also
+rebuilds them. Headless tools need `--out <file>`; use `--out /dev/stdout` to see the report.
 
-## Testing
+    dub run -b release --compiler=ldc2                 # build and play
+    dub build -q -b release --compiler=ldc2            # build the game
+    dub test -q --compiler=ldc2                        # unit tests; silent on success
 
-- Behavior tests generate the world on demand around the body. A test that calls `world.live()` loads it a budget at a
-  time the way the game does; anything about streaming, loading order or frame budgets needs a live test.
-- A failed `check` stops the script from stepping but does not unwind it, so every loop in a script also stops on
-  `world.isFailed`.
-- Benchmarks: repeat runs and compare against a baseline measured the same way. Never store the numbers.
-- A flight leg where the camera moves more than about a unit per published rebuild, narrowings or abandons climb and
-  `unlisted` grows is the nearby rebuild failing. Rare failures need 20 or more legs; raise `BENCH_FLIGHT_LEGS`
-  temporarily.
-- A rebuild's cost grows with how far the camera moved since the last publish, so anything that slows rebuilds (budget
-  taken, bigger sets) pushes it into a slow regime that feeds itself. After touching the nearby search, streaming or
-  eviction, check the per-leg rebuild line at `--flight-speed 3`.
-- Don't `printf` from the windowed binary while the report goes to `/dev/stdout`; the report is a second handle on the
-  same file and the two overwrite each other.
-- Screenshots go to new filenames, compared by eye against earlier ones.
+    # behavior tests (scripts/tests.d), all or by name prefix
+    dub run -q -b release --compiler=ldc2 -c headless -- --tests --out /dev/stdout
+    dub run -q -b release --compiler=ldc2 -c headless -- --tests flat/walk structure/road --out /dev/stdout
 
-## Worlds
+    # the view and film scripts, run without rendering
+    dub run -q -b release --compiler=ldc2 -c headless -- --views --out /dev/stdout
+    dub run -q -b release --compiler=ldc2 -c headless -- --films --out /dev/stdout
 
-- No randomness outside the API. Inside a tile use `pick`; for choices neighboring tiles must agree on, use hashes
-  with salts.
-- Every plane rolls rises from its vertices with its world's odds, so horospheres stack on horospheres. Trees are
-  endless columns that must clear every plane below them; keep their odds low.
-- Rise odds compound because planes stack on planes, so adding a kind to a world means sharing out its total odds, not
-  adding to them.
-- A placed structure is never forgotten and grows with the deepest depth reached anywhere, so a landmark sharing a world
-  with others must be finite.
-- A pentagon's quarters tile the space over it only within half an edge (12 cells) above and below its plane; higher,
-  each quarter's column belongs to its own vertex and they pull apart. Floors spanning quarters stay in that slab;
-  taller work follows a single line (Babel, branches) or stacks risen planes joined by connectors (the library).
-- Brushes on a line apply in an order fixed by their tile's key (`BrushRank`, placed structures first), never by when
-  the tile was painted, so tiles dropped and painted again in any order give the same voxels. Strokes are taken in the
-  same order.
-- `api.tileEdges` runs once per honeycomb edge at its canonical site (`edgeSite`: z along the edge from its lower
-  corner) and may paint only within that edge, z from 0 to `edgeCells` - 1, which reaches the four nodes around it.
-- A world that fills space instead of following planes loads a ball growing e^2 per unit, and every unit moved brings a
-  shell about as big as the ball. Give it fog (`api.fog`) or the nearby rebuild can't keep up.
-- An entrance spawns one unit before its spot, facing it; the spot may lie outside the site's column (beyond -12..11
-  cells), since it's only a point.
+    # a dropped tile repaints identically; CI runs repaint on city, backrooms, library, lattice, planet
+    dub run -q -b release --compiler=ldc2 -c headless -- --worldgen structure city --check-repaint --out /dev/stdout
+    # evicted structure state regenerates identically; CI runs this on lattice
+    dub run -q -b release --compiler=ldc2 -c headless -- --worldgen structure lattice --check-forget --out /dev/stdout
 
-## Geometry
+    # hash of the terrain world; must not change across a refactor
+    dub run -q -b release --compiler=ldc2 -c headless -- --world-digest --out /dev/stdout
 
-- Things more than about 2 units (about 45 cells) from the viewer shrink to specks, and vertical lines spread apart
-  with height. Anything meant to be seen whole stays within that.
-- From altitude h the ground fills only 2*atan(e^-h) around straight down, and an endless column at distance d shows
-  within that angle above its foot. Aim screenshots accordingly.
-- Node transforms are float32; a node more than about 8 units from the frame origin has almost no distance information
-  left, and moving the frame toward it turns that into garbage. Re-derive transforms from the camera node
-  (`NearbyScratch.rederive`) before using them near the camera.
-- Rebasing keeps a transform's float error in its center's Minkowski norm, about cosh^2(d) x epsilon from wherever it
-  was made. Anything that keeps old transforms checks them against the rounding allowed at their current distance
-  (`isOffHyperboloid`).
-- The nearby set follows the surfaces and grows about e^1 per unit, so its outer unit holds most nodes. The shell table
-  in `--bench-load` shows the cost per shell.
-- A nearby rebuild copies the kept part of the old set a slice per frame (`continueKeeping`). Until it finishes, the
-  published set's transforms must not change, so rebases wait.
-- Reach tests written `!(x > t)` pass NaN, and a set that outlives a few units of travel drifts far enough from the
-  camera's frame to overflow its transforms. Sets being built are abandoned after `REBUILD_ABANDON_TRAVEL` for that.
-- `gravityAt` reads only the horospheres already stored for the body's node (`isGravityKnown`); with none stored it
-  would give the root plane's up. The controller keeps its up until they are stored, and anything that places the body
-  calls `ensureGravityAt`.
-- `pathBetween` (behind `refIn`, `planeOfHorosphereIn`, `nodeToNode`) walks both nodes up the first-parent tree to
-  where they meet, which can be far above two nearby nodes. Its result matches going through the root.
+    # render a view (scripts/views.d) offscreen to a PNG, which Read can then show
+    dub run -q -b release --compiler=ldc2 -- --screenshot screenshots/name.png --out /dev/stdout city
 
-## Threading
+`-- --help` lists more on both binaries: censuses, `--slice`, `--dump-structure`, `--bench-gen`, `--bench-mesh`,
+`--bench-drive`, `--bench-nearby`, `--bench-hashmap` on headless; `--film`, `--drive`, `--bench-load [--profile]`,
+`--record` on the game. `--world-digest`, `--dump-world`, the censuses and the `--bench-*` commands on headless always
+use the terrain world and ignore `--worldgen`. Unit tests have no filter: everything in `source/unit/` runs. CI
+(`.github/workflows/ci.yml`, LDC 1.36.0) runs the unit, behavior, view, film, repaint and forget checks and builds the
+game. There is no linter or formatter.
 
-- Only the main thread changes the graph. Parallel jobs (`WorkerPool.run`) read it through `graph.threadViews`, one
-  `GraphView` per thread that works out missing nodes as virtual ones, and write only their own outputs or the chunk
-  they were given. Something several threads may claim is claimed with one atomic swap. No mutexes.
-- A chunk record is one 64-bit word with its state and flags in the top byte. A parallel pass changes a neighbor's
-  state or queued flag only through `casState` / `claimQueued`.
-- Background tasks (chunk voxels, buildings) work from snapshots (`ChunkParams`, `BuildingPlan`) and hand results back
-  through lock-free queues. A task may only be submitted while its result has room in the result queue.
-- Long tasks call a yield between slices so a waiting job gets every thread quickly.
-- Paint-ahead takes candidates in the streamer's scan order (near-camera bands first); anything it misses is painted
-  node by node on the main thread.
-- Never read GPU-mapped buffers back on the CPU; keep what the CPU needs on the host side.
+## Hyperbolic space: how it has to be handled
 
-## Memory
+Euclidean instincts break here. Most of these rules exist because the obvious approach is silently wrong.
 
-- Per-slot and per-block stores are slabs mapped from the system. The eviction sweep gives back the pages of freed
-  records (`Slab.note`, `discardNoted`, a budget of `DISCARDS_PER_FRAME`), so a freed record must be reset to its
-  all-zero init or never read before it is written again.
-- The bench memory line's "free but held" is memory malloc keeps after frees. `malloc_trim` returns it but takes about
-  80-90 ms with malloc's locks held, so it isn't called.
-- Anything a tile paints must be repaintable from its key. A tile drops once nothing pins it and it has been idle
-  `TILE_IDLE_SWEEPS` sweeps, and comes back by being painted again.
-- The load radius comes from the fog (`FOG_LOAD_THRESHOLD` in `world.d`), not from the render radius directly. A
-  world's own fog (`Blueprint.fog`) caps the render radius (`LocalWorld.viewRadius`).
-- A dropped tile is forgotten once every node around every edge it painted is evicted; an edge goes with its last tile
-  (taking its nodes' pending touches), and a line once nothing touches, pins or paints it. Placed structures and
-  endless lines are kept.
-- Everything made per unit traveled must be freed as fast as it is made, or fast flight leaks. Each eviction phase may
-  stop at its deadline only after freeing as much as was made since the last sweep (`madeLive` tiles, `madeNodes`
-  nodes). Check a change with `--check-forget` and the bench memory line at `--flight-speed 3` in the lattice, which
-  makes about 13 tiles per node.
-- `HashMap.previous` holds stale copies below the migration cursor, some over pages already given back; walk a map
-  with its `opApply`, never its tables.
-- A horosphere lives while nodes list it, horospheres rise from it, tiles it painted are alive (`Horosphere.tiles`), or
-  the world opened it. It references its foot node, so far nodes that are unloaded but not evicted drop their horosphere
-  lists; otherwise the foot node would keep its own horosphere alive forever.
+### Model
+
+- Hyperboloid model with curvature radius R = 1. `Vec4` is homogeneous with signature (+,+,+,-): `minkowski` is
+  `xx + yy + zz - ww`. `Point` has `<p,p> = -1`, `w > 0`. `Normal` has `<n,n> = +1`, and `n` is positive beyond its plane.
+- One distance has several forms, and code prefers the cheap one: `cosh d = -<p,q>`, `sinh d = <n,p>` for signed
+  distance to a plane, `tanh d` is the Klein radius and the ray parameter (`Ray.at` is projective, so `>= 1` means never).
+  All are monotone in d, so compare thresholds without converting: `coshf(a + b)`, never `coshf(a) + coshf(b)`.
+- Reach tests are written `!(product > threshold)`, not `product <= threshold`, so NaN counts as in reach. Keep the form.
+- `Motion` is a Lorentz matrix, column-major (`m.c[col][row]`). Its `inverse()` is the Minkowski transpose, which is
+  cheap; do not use a general matrix inverse. It may be a reflection (`isMirroring`, determinant < 0).
+- The Klein chart `(x,y,z)/w` keeps geodesics and planes straight, so the whole pipeline is linear: `cubeToNode` is
+  projective, cell faces are flat, and `projection * camera_inverse * point` draws straight edges with no tessellation.
+  `fog.frag` recovers true distance from depth with `atanh`. Klein displacements equal lengths only near the origin at
+  body scale (see `UNITS.md`); `movedBy` is the one conversion.
+
+### There are no global coordinates
+
+- A position is `Position { NodeId node; Motion!float local; }`, normalized so the point stays inside its node
+  (`normalized`, `ensureNormalized`). Anything far from its frame's origin loses float precision exponentially, since
+  `w = cosh d`. Never accumulate a world position, and never key noise or effects on one.
+- Crossing a dodecahedron face is a **reflection**, not a translation, and face labels are preserved: `neighbors[f]`
+  leads to a node whose `neighbors[f]` leads back. Composition order is fixed:
+  - point in the neighbor's coordinates: `side.mirror * local`
+  - neighbor-to-frame: `transform * side.mirror`
+  - frame-to-neighbor: `side.mirror * inverse`
+  So chains of nodes alternate handedness. `view_parity` and `DrawTransform.reversed` in `cull.comp` undo the winding
+  flip, and anything that culls or takes a cross product of world vectors must account for it.
+- The body frame moves by right multiplication: `local * step`, then `orthonormalized()` to remove drift. Crossing a
+  face multiplies on the left, so body-frame vectors (`velocity`, `up`, `groundNormal`) stay valid across nodes. Keep
+  vectors in one frame per struct; a `float[3]` means nothing outside the frame it was taken in.
+- Drawn transforms live in a floating "nearby frame" that rebases when the camera gets far from it (`followCamera`,
+  `NearbyScratch.rebase`, `rederive`). `isOffHyperboloid` drops transforms that have drifted. Long chains of
+  transforms are composed in `double` and cast down (`nodeToNode`). Effects must key on camera-relative position or be
+  screen-space, or they pop at rebase.
+- Values that need to reach far are carried along the graph, not stored globally. `Plane` is `{up, height}` relative
+  to a node: `reflectAcross` and `carriedAlong(path)` move it, `snappedToFaces` cancels drift when it lands on a face,
+  and `PlaneMeasure` uses `logCosh` so planes very far from a node do not overflow. `NodeState` is derived this way from
+  parents, including the climate random process.
+
+### The grid is not Z^3
+
+- 20 cubes meet at a node center and five meet around each center-to-face-center line. No global integer lattice
+  exists; a flat NxN plate of voxels is not reliably flat or square.
+- Grid coordinates **reflect** at chunk borders, they do not increment. Across `Sign.minus` you enter the neighbor node
+  at the same corner; across `Sign.plus` you stay in the node at `corner.across[axis]` with axes remapped by `AxisMap`.
+  In both cases the boundary cell maps to a boundary cell (`acrossBorder`, `hopCell`). Always use these helpers, never
+  `cell + 1`.
+- Cells are not uniform in chart space. `ChunkLayout` spaces them geometrically (`gridToCube`, `cellRatio`), and
+  `voxels.vert` holds the same formula. Never divide by `dimension`. Block edges vary and tilt against gravity, so no
+  constant converts blocks to length; measure at a point (`BlockProbe`, `gridJacobian`, `UNITS.md` Local units).
+- Cube coordinate 0 is at the dodecahedron corner on the face planes and 1 is at the node center.
+
+### Ground, gravity and the surface
+
+- Naming trap: the README and the code say "horosphere", but `Horosphere.plane` and `NodeState.surface` are `Plane`s:
+  a spacelike normal, altitude `asinh(<n,p>)`. These are totally geodesic planes with intrinsic curvature -1, not true
+  horospheres (lightlike normal, intrinsically flat, measured by a Busemann function). `demo/holonomy` confirms it: five
+  right turns on the ground close a right-angled pentagon and turn the compass 90 degrees. Use plane formulas.
+- Each plane is tiled by {5,4}: right-angled pentagons, the dodecahedron faces, with sides of one honeycomb edge (about
+  1.06 R, 24 cells), four around a vertex. A "tile" is one pentagon.
+- Surfaces at constant altitude are equidistants, which curve. A body moving along a geodesic rises off them at
+  `s^2 tanh(h)`, which `flat/curve` checks.
+- Curvature means area turns frames (`UNITS.md`, Curvature and holonomy). Replayed inputs do not close loops, and
+  no orientation may be integrated open-loop: camera, body and compass re-level every frame.
+- `gravityAt` blends the nearby planes and can point along an upright column. Gravity needs node state and horospheres
+  to be known (`isGravityKnown`); code handles the case where they are not.
+- Structures run along honeycomb edge lines: these are full geodesics, and the four nodes around each form a column with
+  its own chart, `(x, y)` in `-dim .. dim-1` and `z` in cells along the line (`columnPoint`, `ColumnChunk`). Sites are
+  frames at vertices, and turns are exact quarter turns, which is why `forward(1).right()` five times closes a pentagon.
+
+### Exponential growth sets every budget
+
+- Volume grows like e^(2r), so "just look a bit farther" is never cheap. Traversals have explicit reach, capacity or
+  deadline. `NearbyScratch` only expands past `FULL_RADIUS` through nodes that may hold content (`NodeContent`,
+  `mayHoldContent`), so the far view costs a thin band and not a ball. Radii and their costs are coupled: `loadRadius`
+  follows `viewRadius`, and `radiusCut` backs off under fast travel.
+- All per-frame work is budgeted in milliseconds and resumable (`STEP_BUDGET_MILLISECONDS`, `Pacing`, `ParallelJob`
+  deadlines, `advance`, `continueKeeping`). Evictions and sweeps run incrementally. Do not add an unbounded per-frame loop.
+- Hold nothing forever: unedited chunks drop and regenerate, idle tiles drop and repaint, idle nodes evict.
 
 ## Code structure
 
-Layers depend only on the ones above them: `base` on nothing, `geometry` on `base`, `common` on both and the plugin
-API, `client` on all.
+    source/base/        containers, allocator, parallel pool, units, hashing, crash reports
+    source/geometry/    lorentz.d (model), honeycomb.d (faces, corners, mirrors, computed at compile time), cube.d, ray.d
+    source/common/      headless world: no window or GPU
+      graph.d             Graph: nodes, parents, ids, ownership of every store
+      view.d              GraphView: thread-local overlay that lets workers read and extend the graph
+      node.d chunks.d     Chunk word, Voxels, ChunkLayout, ChunkStore
+      neighbors.d         cell and chunk adjacency across borders
+      traversal.d         NearbyScratch: time-sliced BFS of nodes around the camera, with frame rebasing
+      eviction.d          incremental unload of nodes, chunks and tiles
+      raycast/ character/ ray casts; capsule controller (features collects, sweep moves, controller decides)
+      worldgen/           generation (voxels), climate, plane, horospheres, structure (sites, lines),
+                          blueprint (brushes), building (per-node stamped paint), strokes, store, spawn
+    source/client/      engine around the world
+      world.d game.d      LocalWorld (nearby, streaming, editing); Game (camera, character, step)
+      streaming.d tasks.d arrivals.d   scan, plan, generate on workers, integrate on main
+      meshing.d           voxels to packed faces
+      structures.d tiles.d plugins.d   host side of the plugin API: main-thread and tile (worker) implementations
+      script.d drive.d    test and scripted-input tooling
+      graphics/           Vulkan renderer; voxels/ has cull, mesh upload, surface, textures (game binary only)
+    source/shaders/     GLSL; compiled to shaders/spv by glslc in preBuildCommands and embedded with import()
+    source/bindings/    platform.c and kernel.c, read with ImportC for Vulkan, X11, futex
+    source/scripts/     tests (behavior), views (screenshots), films, drives, walk and climb helpers
+    source/unit/        one unittest module per engine module, imported by hand from source/unittests.d
+    plugins/api/        the ABI: api.d, flags.d
+    plugins/turtle/ box/ buildings/ connector/ blocks/ rooms/ horospheres/    sourceLibrary helpers shared by plugins
+    plugins/*/plugin.d  each world, one dynamicLibrary sub-package
 
-- `source/main.d`: windowed game (`[` and `]` step through the terrain and every registered world), screenshots and
-  the load/flight benchmark.
-- `source/headless.d`, `source/worldcheck.d`: script runner and world checks and benchmarks without a window.
-- `source/unittests.d`: the unit test runner; it imports every module with tests, in layer order. `source/unit/`: the
-  tests of production modules, one file per module, kept out of the game's own code.
-- `source/bindings/platform.c`: Vulkan with its Xlib or Metal surface, X11 and the XInput 2 calls, from the system
-  headers through ImportC. `source/bindings/kernel.c`: syscall and futex numbers from the system headers.
-- `source/base/`: containers (`array.d`, `hashmap.d`, `slab.d` with `RunPool` and `FreeIndices`, `allocator.d`),
-  `pages.d` (memory mapped from the system, given back a page at a time), `parallel.d` (worker pool, futex waits,
-  lock-free queue), `clock.d` (timers, and `FrameClock`, which steps the game by the mean of recent frames so uneven
-  frame timing doesn't show as uneven motion), `crash.d` (backtraces), `murmur.d`, `splitmix.d` (the seeded mixer behind worldgen
-  rolls and the API's `pick`), `names.d`, `units.d`, `vector3.d`, `numbers.d` (`lowerOf`, `higherOf`, `clamped`).
-- `source/geometry/`: `lorentz.d` (hyperboloid points and motions), `honeycomb.d` (the {5,3,4} cell, its faces and
-  corner cubes), `cube.d` (cells and axis maps), `ray.d`.
-- `source/common/`
-  - `graph.d`: node topology and the parts it is made of; `chunks.d`: chunk blocks and the mesh queue;
-    `view.d`: `GraphView` and the per-thread views.
-  - `node.d`: chunk layout and voxels; `neighbors.d`: cells across chunk borders; `material.d`, `settings.d`;
-    `position.d`: a node and the motion within it.
-  - `traversal.d`: the nearby search; `eviction.d`: unloading nodes, chunks and tiles.
-  - `character/`: collision and movement; `raycast/`: ray casts.
-  - `worldgen/`: `generation.d` (node state, chunk generation), `climate.d`, `plane.d`, `horospheres.d` (the root's
-    plane and what rises from every plane, as planes or upright columns, which of them reach each node, and the
-    grounds and gravity they give), `structure.d` (sites and lines, and the canonical site of each edge),
-    `blueprint.d` (what each tile painted: brushes on lines and strokes; the world's entrance, route and fog), `strokes.d` (tapered strokes along geodesics drawn with the API's pen, and the index from each
-    node they reach back to the tile that drew them), `store.d` (structure per node, buildings, and the pins that keep
-    a tile until the nodes it paints have built), `building.d` (a node's brushes and strokes, pulled from the tiles that
-    reach it), `spawn.d`.
-- `source/client/`
-  - `game.d`: the player, movement modes and stepping the world; `camera.d`: the view's heading and pitch.
-  - `arguments.d`: command line values and exit statuses shared by both programs; `config.d`: the settings file;
-    `png.d`: screenshots.
-  - `world.d`: `LocalWorld`, the per-frame update and its budget, split between nearby search and streaming after
-    taking out what eviction needed the frame before, and the fog, whose reach sets how far the world loads.
-  - `streaming.d`: which chunks to load and when; `tasks.d`: worker queues for chunks and buildings; `arrivals.d`:
-    joining arrived chunks to their neighbors in parallel passes.
-  - `structures.d`: the main-thread host of the world API (the root and placed structures); `tiles.d`: tiles planned
-    and painted on the worker threads, each with its own host of the API: faces of planes, segments of upright
-    horospheres drawn with the pen, and edges of the honeycomb.
-  - `plugins.d`: loads every library in the `lib/` beside the executable, calls its entry point (`ENTRY`, whose name
-    carries the API version) and keeps the worlds it registers.
-  - `script.d`: the `Script` API the behavior tests, views and films drive the game through, and the recorder that
-    writes a session as D; `drive.d`, `frames.d`, `images.d`: playing a list of drive actions in the window and timing
-    its frames; `sampler.d`: the profiler; `meshing.d`, `graphics/`: rendering (`graphics/voxels/textures.d` makes the
-    block textures, `graphics/overlay.d` draws the HUD and thrown blocks).
-  - `hud.d`: builds the HUD each frame as colored triangles without touching Vulkan: the Poincare disk and the compass.
-  - `cocoa.d`: the macOS window (AppKit through the Objective-C runtime, a `CAMetalLayer` for MoltenVK), reporting
-    keys as X keysyms so `main.d` handles input the same way on both platforms.
-- `source/scripts/`: `tests.d` (behavior tests), `views.d` (screenshot views), `films.d` (films, each a list of shots),
-  `drives.d` (drives), each a table of named entries, and the helpers they share: `walk.d` (walking constants and
-  checks, building walls and steps) and `climb.d` (following a structure's route).
-- `source/shaders/`: GLSL, compiled into `spv/` by the windowed build.
-- `plugins/`: dub sub-packages declared in `dub.sdl`. Source libraries are shared code compiled into each plugin that
-  uses them; each plugin is a shared library built into `lib/` before the engine, whose entry point (named by
-  `pragma(mangle, ENTRY)`) registers its worlds by name.
-  - `api/`: `plugins.api.api`, the world API: sites, boxes, materials, the pen, looks (a name and fog color),
-    the `Api` table of functions a world calls, and the `Registry` a plugin registers its worlds, rising kinds and
-    landmarks with. The engine links it too.
-  - Source libraries: `turtle/` (a site and a pen wrapped around the API, and the helpers every plugin shares:
-    `lowerOf`, `higherOf`, `clamped`, `upright`, `cornersOf`, the salted hash rolls `mixed` and `roll`, and
-    `treadAround`, the treads of a square spiral stair around a line), `box/` (the square tower and the hut), `buildings/`
-    (building types on `building.d`, chosen through `types.d`), `connector/` (the tags of the kinds, and what joins a
-    lower surface to the horosphere risen from it, meeting each at its own kind of floor: a tower, an open spiral, a
-    drift of floating steps or a lantern, rolled per pair of kinds from a table, with nothing for a pair not listed),
-    `blocks/` (city blocks and streets), `rooms/` (the backrooms' layers along the same streets, `levels.d` holding the
-    layers and biomes), `horospheres/` (the kinds of horosphere with their tiles and looks: wild terrain, city, backrooms
-    and the tree, which `tree.d` draws a segment at a time without end).
-  - Plugins, one world each: `planet` (the default world: wild terrain at the root with every kind rising, including
-    the kinds other plugins register, `road`, a tree beside the spawn and every registered landmark around it), `road`
-    (the viaduct), `city`, `backrooms`, `tower`, `crown`, `trail`, `babel` (an endless spiral stair around a hollow core,
-    also a rising kind), `library` (galleries of shelves on every face, four stories, rising as more library planes
-    joined by connectors, in fog; also a rising kind), `palace` (one sunken hall over the root face and its ten neighbors,
-    with grand stairs down from its doors), `arbor` (an endless trunk with a spiral stair, and limbs that branch along
-    edges without crossing), `lattice` (a beam on every edge with platforms, built for upright gravity and turned upside
-    down, in fog; it fills space, so it cannot join another world); `tower`, `crown`, `trail`, `babel`, `palace` and
-    `arbor` also register as landmarks; `fixtures` holds small test worlds.
-- `.github/workflows/ci.yml`: unit and behavior tests, the repaint and forget checks, and the windowed build on Linux.
+Entry points: `source/main.d` (game), `source/headless.d` with `source/worldcheck.d` (`-c headless`, no `client/graphics`),
+`source/unittests.d` (`dub test`, also no `client/script`, `drive`, `structures`, `tiles`, `scripts/`, so unit tests cannot
+place plugin worlds). Dependencies run base, geometry, common, client, scripts, with `plugins.api` usable from common up.
+Modules within a layer import each other freely, cycles included.
+
+### Data flow
+
+Nearby traversal finds nodes around the camera, and `Streamer` scans them for chunks in range. `ChunkParams.make` snapshots
+what generation needs, using a `GraphView` so workers can run it, and a worker runs `generateVoxels`. `Integrator`
+stores results in two parallel passes (store, then settle against neighbors), queues meshing, and may restore dropped
+neighbors. Chunk life: `fresh`, `generating`, `populated`, and `dropped` (voxels released, regenerable). Edited chunks are
+pinned and never dropped. A chunk proven uniform stores just its material; a chunk proven buried may defer materials (a
+dirt stand-in) until it borders air (`resolveIfExposed`).
+
+### Threading: Graph and GraphView
+
+- The main thread owns `Graph`. Worldgen functions take `ref GraphView`, which works in two modes: `owner` set (main
+  thread, mutates the graph) or `owner` null (worker overlay).
+- In a worker, missing neighbors become **virtual nodes**: handles with bit 31 set (`VIRTUAL`). So a `uint node` in view
+  code may not be a real slot. Go through view methods; never index `Graph` stores with it.
+- Workers record states, horospheres and rises in the view; `ThreadViews.finish` merges them on the main thread. Creating a
+  horosphere needs the main thread: the view records it in `wanted`, `isBlocked` becomes true, the result is discarded
+  (`forget`), and the work runs again on the main thread or a later round.
+- `Chunk` is one `ulong` holding a 56-bit voxel pointer or fill plus flags. Only state and the queued flag have atomic
+  accessors (`casState`, `loadState`, `claimQueued`). Everything else assumes a single writer in that phase.
+- Slots are reused after eviction. Keep `NodeId` for anything that outlives a frame, or hold `graph.reference(slot)`.
+
+### Determinism
+
+Worldgen is a pure function of the node. `NodeId` is `hash(firstParent, face)`, where the first parent is the lowest-index
+parent face. A node's parent faces are the faces that shorten its word from the root (`childParentFaces`, at most 3, all
+mutually adjacent), and adjacent faces' mirrors commute (`appendReduced` cancels through them), so a node gets the same
+id whichever path reaches it. Randomness comes from `id.spice()`, `SplitMix` and salts, never from visit order or
+time. That is what lets chunks and tiles be dropped and rebuilt, and what `--world-digest`, `--check-repaint` and
+`--check-forget` guard. Refactors must leave these unchanged. Changing worldgen changes the digest on purpose; say so.
+
+### Plugins and structures
+
+- `plugins/api/api.d` is the ABI, called through `Api` function pointers. `ENTRY` carries the version: any change to an API
+  struct, enum or the `Api` table must bump it. `Material` lives there too. A new material also needs an entry in the keyed
+  tables `MATERIAL_COLORS` (`common/material.d`) and `GRAIN` (`graphics/voxels/textures.d`); a missed entry silently
+  defaults to zero.
+- Plugins import only `plugins.*` and `core.stdc`, which is why `turtle.d` has its own `lowerOf`, `higherOf` and `clamped`. Do not merge
+  those with `base.numbers`. To add a world: a sub-package in `dub.sdl`, an entry in the root `preGenerateCommands`, and a
+  `pragma(mangle, ENTRY)` function that registers names. One library may register many worlds (`fixtures` does).
+- Two host implementations stand behind `Api`: `main*` in `structures.d` and `tile*` in `tiles.d`. Add a call to both.
+- Two ways to build. **Placed** structures run on the main thread in depth order (`place`, `PAINT_REACH`, `PLACE_SLACK`) and
+  may claim sites. **Tiles** run on workers in any order and may be dropped and repainted, so they decide everything from
+  `site.hash` or `api.random`, which is seeded per tile; they cannot place or claim. A paint may only touch nodes not yet
+  built (a tile: structure not finished; a placed structure: within `PAINT_REACH` of its depth), so painting "behind" is
+  refused.
+- Plugin errors are refusals, not crashes: `api.fail` and `refuse` store a message that surfaces as a `StructureProblem`.
+- Painting becomes `Brush`es on canonical `LineSpec`s (`canonicalOf`), stamped per node by `Building`. Paint order is
+  `BrushRank`, deterministic across tile arrival order.
+
+### Shaders
+
+Layouts are duplicated by hand between D and GLSL and must change together: `CommonUniforms` and `common.h`, `LayoutPush` and
+the `voxels.vert` push constants, `meshing.d` `Quad` and `face.h`, `ChunkLayout` spacing and `voxels.vert`. `voxels.vert`
+hardcodes `glowing_materials[3]`, which matches `GLOW_WORDS` only up to 96 materials. `.spv` files are generated.
+
+## Style rules
+
+Inferred from the code. They are consistent across the tree, so follow them even where a rule looks arbitrary.
+
+Language and memory:
+- betterC: no GC, classes, exceptions, associative arrays or druntime. `extern (C) int main`. Use `Array`, `HashMap`, `Slab`,
+  `RunPool` and `Bits` from `base/`. Ownership is explicit: `release()` frees, and scratch buffers are reused across frames.
+- Errors are values: `Maybe!T`, `ExitStatus`, `StartupError`, `StructureProblem`, or a null `const(char)*` message. Asserts stay
+  on in release builds (`--enable-asserts`, bounds checks on), so use them for invariants that really hold.
+- No comments anywhere, in D, GLSL or C. Types and names carry the meaning; that is why `UNITS.md` exists.
+- Declarations state their type; `auto` is close to absent. Dimensional values use `base/units.d` kinds, with `.value` only at
+  boundaries.
+
+Control flow:
+- No ternaries and no `continue`. `break` is rare. Every `if` has braces.
+- Value-returning branches are an `if / else if / else` chain with every path returning, not guard clauses; early return
+  appears mainly inside loops. Enums get `final switch`.
+- A search is a `while` over an index that ends in a comparison:
+  `while (index < n && !matches(index)) { index += 1; } return index < n;`
+- `x += 1`, not `x++`.
+- No bool parameters and no stored bool state: use a named two-value enum (`SkinRule`, `Pacing`, `Urgency`, `Cover`, `Footing`,
+  `Readiness`). Pack sets of flags in `Flags!E`, or in bits as `Chunk` does. `isX` and `hasX` are functions deriving an answer
+  from state, not fields. `Maybe.exists` is the exception.
+
+Shape:
+- Functions are small and mostly free functions whose first parameter is the subject, called with UFCS: `graph.hopCell(...)`,
+  `corner.faces`, `side.mirror`, `v.scaled(k).plus(w)`. Getters drop the parentheses.
+- Pass large values as `ref const`; pass small ones by value. Use slices in signatures. `Array` has no `opIndex`: index it with
+  `array.ptr[i]`, or take `.slice()`.
+- Constructors are `static make(...)`, `fromX(...)`, `ofX(...)`; "none" is `T.init`. Struct literals are positional.
+- Struct fields run roughly largest to smallest, so small enums come last. Enums declare a base type, usually `: ubyte`.
+- Constants: no magic numbers. Top of module, `enum float NAME = ...` with an explicit type, `immutable` for tables. Keyed tables
+  use `Material.dirt: value`. Tie derived constants to their source (`GLOW_WORDS`, `RELIEF_BOUND`).
+- Compile-time geometry where possible (`immutable Honeycomb HONEYCOMB = Honeycomb.make()`). Formulas over tables.
+
+Names and layout:
+- `PascalCase` types, `camelCase` functions and variables, `SCREAMING_SNAKE` constants, `snake_case` in GLSL.
+- Full words, no abbreviations, no Hungarian, no unit in a name the type already states. Names say what a thing is in the
+  domain: `lowerOf`, `higherOf`, `coshThreshold`, `tanhReach`, `MOST_THROWN`, `LEAST_CAPACITY`. A name holding a transform
+  of a distance says which (`cosh`, `sinh`, `tanh`).
+- First line is `module path.matching.file;`. Imports are selective, grouped `core.*` first and then project modules in
+  order, names sorted with capitals first.
+- 4 spaces, K&R braces, one statement per line. No line length limit: long signatures and calls stay on one line.
+
+Tests:
+- Test code stays out of engine modules. Unit tests are `unittest {}` blocks in `source/unit/<module>.d`; a new file must be
+  imported in `source/unittests.d`. Test constants and tolerances are named enums at the top of the test module.
+- Behavior tests are scripts driving a real `Game` by simulated keys: register in `TESTS` in `scripts/tests.d`, assert with
+  `world.check(cond, "message with %.3f measured numbers", ...)`. Failure messages state what happened, in words.
+- Prefer checking a derived physical prediction over a recorded value: see `flat/curve`, `demo/holonomy`.
+- Benchmarks are in `worldcheck.d` and `--bench-load`. Reports go to `--out`.

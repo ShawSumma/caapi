@@ -8,9 +8,13 @@ import climb = scripts.climb;
 import walk = scripts.walk;
 import scripts.walk : FLY_SPEED, NOCLIP_SPEED, SETTLE_SECONDS, STRAIGHT_DOWN_DEGREES;
 
+enum float LANDMARK_APART = 1.5f;
+
 immutable NamedScript[] VIEWS = [
     NamedScript("arborcrown", &rising!("arbor", 0.9f, 1.6f, 30)),
-    NamedScript("arbor", &backedOut!("arbor", 0.6f, -35)),
+    NamedScript("arbor", &looking!("arbor", 0, -40)),
+    NamedScript("arborclimb", &alongRoute!("arbor", 30, -30)),
+    NamedScript("arboraside", &besideAxis!("arbor", 4.0f, 0.9f, -46)),
     NamedScript("arch", &arch),
     NamedScript("babel", &looking!("babel", 0, -30)),
     NamedScript("babeltop", &rising!("babel", 1.0f, 1.5f, 50)),
@@ -46,12 +50,17 @@ immutable NamedScript[] VIEWS = [
     NamedScript("lattice", &looking!("lattice", 0, -10)),
     NamedScript("library", &looking!("library", 0, -5)),
     NamedScript("libraryroof", &rising!("library", 0, 1.9f, 60)),
+    NamedScript("librarystair", &alongRoute!("library", 46, 35)),
+    NamedScript("librarywell", &libraryWell),
     NamedScript("libraryturn", &looking!("library", 100, -10)),
     NamedScript("overview", &overview),
     NamedScript("around0", &around!(0)),
     NamedScript("around90", &around!(90)),
     NamedScript("around180", &around!(180)),
     NamedScript("around270", &around!(270)),
+    NamedScript("landmark1", &landmarkOf!(1)),
+    NamedScript("landmark2", &landmarkOf!(2)),
+    NamedScript("landmark3", &landmarkOf!(3)),
     NamedScript("palaceinside", &rising!("palace", 1.3f, 0, 25)),
     NamedScript("palace", &looking!("palace", 0, -10)),
     NamedScript("palacestair", &towardWaypoint!("palace", 6, -15)),
@@ -127,7 +136,7 @@ void towardWaypoint(string name, size_t number, double pitch)(ref Script view) {
     view.structure(name);
     view.enterRoute();
     view.wait(SETTLE_SECONDS);
-    view.look(view.routeWaypoint(number).yaw, degrees(pitch));
+    view.look(view.routeWaypoint(number).value.yaw, degrees(pitch));
     view.step();
 }
 
@@ -142,6 +151,30 @@ void routeEnd(string name, size_t last, double pitch)(ref Script view) {
     view.structure(name);
     followRoute(view, last);
     view.look(degrees(0), degrees(pitch));
+    view.step();
+}
+
+void alongRoute(string name, size_t last, double pitch)(ref Script view) {
+    view.structure(name);
+    followRoute(view, last);
+    view.look(view.routeWaypoint(last + 1).value.yaw, degrees(pitch));
+    view.step();
+}
+
+void besideAxis(string name, float height, float away, double pitch)(ref Script view) {
+    view.structure(name);
+    view.mode(MovementMode.noclip);
+    view.enterStructure(Length(height));
+    noclip(view, away, Key.back);
+    view.look(degrees(0), degrees(pitch));
+    view.step();
+}
+
+void libraryWell(ref Script view) {
+    view.structure("library");
+    view.mode(MovementMode.noclip);
+    view.enterStructure(Length(-2.0f));
+    view.look(degrees(0), degrees(55));
     view.step();
 }
 
@@ -171,6 +204,30 @@ void around(double yaw)(ref Script view) {
     view.step();
 }
 
+size_t landmarkStop(ref Script view, uint wanted) {
+    size_t stop = 1;
+    uint found = 0;
+    view.enterRoute(stop);
+    while (found < wanted && view.routeWaypoint(stop + 1).exists) {
+        if (view.routeWaypoint(stop + 1).value.horizontal.value > LANDMARK_APART) {
+            found += 1;
+        }
+        stop += 1;
+        view.enterRoute(stop);
+    }
+    return stop;
+}
+
+void landmarkOf(uint wanted)(ref Script view) {
+    view.terrain();
+    view.mode(MovementMode.noclip);
+    landmarkStop(view, wanted);
+    noclip(view, 0.9f, Key.up);
+    noclip(view, 1.2f, Key.back);
+    view.look(degrees(0), degrees(30));
+    view.step();
+}
+
 void overview(ref Script view) {
     view.mode(MovementMode.noclip);
     view.look(degrees(0), degrees(-STRAIGHT_DOWN_DEGREES));
@@ -183,7 +240,7 @@ void arch(ref Script view) {
     view.structure("crown");
     view.enterRoute();
     climb.follow(view, 45);
-    view.look(view.routeWaypoint(50).yaw, degrees(-15));
+    view.look(view.routeWaypoint(50).value.yaw, degrees(-15));
     view.step();
 }
 
@@ -320,7 +377,7 @@ void roadAerial(ref Script view) {
     view.terrain();
     view.mode(MovementMode.noclip);
     view.enterRoute();
-    view.look(view.routeWaypoint(5).yaw, degrees(0));
+    view.look(view.routeWaypoint(5).value.yaw, degrees(0));
     noclip(view, vertex * edge, Key.fwd);
     noclip(view, 0.6f, Key.left);
     noclip(view, 0.8f, Key.down);
@@ -333,7 +390,7 @@ void road(ref Script view) {
     view.mode(MovementMode.noclip);
     view.enterRoute();
     noclip(view, 0.3f, Key.up);
-    view.look(view.routeWaypoint(5).yaw, degrees(25));
+    view.look(view.routeWaypoint(5).value.yaw, degrees(25));
     view.step();
 }
 

@@ -2,7 +2,7 @@ module scripts.climb;
 
 import client.game : Key, RouteWaypoint;
 import client.script : Script, StepHook, degrees;
-import scripts.walk : BLOCKED_SPEED, Motion, SETTLE_SECONDS, checkSpeedLimit, trackMotion;
+import scripts.walk : BLOCKED_SPEED, Motion, SETTLE_SECONDS, checkSpeedLimit, lookBelow, nameOf, trackMotion;
 
 enum float REACHED_DISTANCE = 0.02f;
 enum float REACHED_RISE = 0.02f;
@@ -13,14 +13,18 @@ size_t follow(ref Script world, size_t last) {
     size_t index = 1;
     uint steps = 0;
     world.hold(Key.fwd);
-    while (!world.isFailed && index <= last && world.routeWaypoint(index).isFound) {
-        RouteWaypoint waypoint = world.routeWaypoint(index);
+    while (!world.isFailed && index <= last && world.routeWaypoint(index).exists) {
+        RouteWaypoint waypoint = world.routeWaypoint(index).value;
         float rise = waypoint.rise.value;
         if (world.isOnGround() && waypoint.horizontal.value < REACHED_DISTANCE && rise < REACHED_RISE && -rise < REACHED_RISE) {
             index += 1;
             steps = 0;
         } else {
-            world.check(steps < MAX_STEPS_PER_WAYPOINT, "stuck before waypoint %zu, %.4f away and %.4f up", index, waypoint.horizontal.value, rise);
+            if (steps >= MAX_STEPS_PER_WAYPOINT) {
+                string below = nameOf(lookBelow(world));
+                string ahead = nameOf(world.targetMaterial());
+                world.fail("stuck before waypoint %zu, %.4f away and %.4f up, altitude %.3f, on %.*s facing %.*s", index, waypoint.horizontal.value, rise, world.altitude().value, cast(int) below.length, below.ptr, cast(int) ahead.length, ahead.ptr);
+            }
             world.look(waypoint.yaw, degrees(0));
             world.step();
             world.release(Key.up);

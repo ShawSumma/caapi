@@ -1,14 +1,13 @@
 module common.character.sweep;
 
 import core.math : sqrt;
-import core.stdc.math : ceilf, fabsf;
+import core.stdc.math : ceilf;
 import base.numbers : higherOf, isNan;
 import base.vector3 : ZERO_VECTOR, cross, dot, magnitude, minus, plus, scaled;
 import common.character.features : Edge, Features, Quad, unit;
 
 enum double MIN_DISPLACEMENT_SQUARED = 1e-16;
 enum float MIN_CREASE_SINE = 1e-3f;
-enum float TEST_TOLERANCE = 1e-5f;
 
 struct Capsule {
     float[3] axis;
@@ -46,11 +45,16 @@ struct Capsule {
     }
 }
 
+enum SectionRank : ubyte {
+    upper,
+    lowest,
+}
+
 struct Contact {
     float[3] normal = [0, 0, 0];
     float stop = float.nan;
     float gap = 0;
-    bool isLowestSection;
+    SectionRank rank;
 
     bool isHit() const {
         return !isNan(stop);
@@ -75,7 +79,7 @@ struct Section {
     float[3] center;
     float radius;
     float stopRadius;
-    bool isLowest;
+    SectionRank rank;
 
     float gapAt(float separation, float stop) const {
         if (stop == 0) {
@@ -106,7 +110,7 @@ struct Section {
         } else {
             float[3] at = center.plus(direction.scaled(stop));
             if (quad.isAbove(at.minus(quad.normal.scaled(quad.separation(at))))) {
-                return accepted(best, Contact(quad.normal, stop, gapAt(separation, stop), isLowest));
+                return accepted(best, Contact(quad.normal, stop, gapAt(separation, stop), rank));
             } else {
                 return best;
             }
@@ -127,7 +131,7 @@ struct Section {
             float[3] reached = center.plus(direction.scaled(stop)).minus(edge.start);
             float position = reached.dot(line);
             if (position >= 0 && position <= length) {
-                return accepted(best, Contact(unit(reached.minus(line.scaled(position))), stop, gapAt(offsetAcross.magnitude, stop), isLowest));
+                return accepted(best, Contact(unit(reached.minus(line.scaled(position))), stop, gapAt(offsetAcross.magnitude, stop), rank));
             } else {
                 return best;
             }
@@ -140,17 +144,14 @@ struct Section {
         if (!isTouchWithin(stop, distance) || !best.isImprovedBy(stop)) {
             return best;
         } else {
-            return accepted(best, Contact(unit(center.plus(direction.scaled(stop)).minus(corner)), stop, gapAt(offset.magnitude, stop), isLowest));
+            return accepted(best, Contact(unit(center.plus(direction.scaled(stop)).minus(corner)), stop, gapAt(offset.magnitude, stop), rank));
         }
     }
 }
 
 struct Sweep {
     float[3] displacement;
-    float[3] normal = [0, 0, 0];
-    float gap = 0;
-    bool hasContact;
-    bool isLowestSection;
+    Contact contact;
 
     static Sweep fromCapsule(ref const Features features, Capsule capsule, float[3] start, float[3] displacement, const(ContactPlane)[] clipped) {
         float displacementSquared = displacement.dot(displacement);
@@ -160,7 +161,7 @@ struct Sweep {
             float distance = sqrt(displacementSquared);
             Contact contact = features.capsuleContact(capsule, start, displacement.scaled(1.0f / distance), distance, clipped);
             if (contact.isHit()) {
-                return Sweep(displacement.scaled(contact.stop / distance), contact.normal, contact.gap, true, contact.isLowestSection);
+                return Sweep(displacement.scaled(contact.stop / distance), contact);
             } else {
                 return Sweep(displacement);
             }
@@ -192,7 +193,11 @@ Contact capsuleContact(ref const Features features, Capsule capsule, float[3] st
     uint count = capsule.sectionCount();
     Contact best;
     foreach (index; 0 .. count) {
-        Section section = Section(clipped, capsule.sectionCenter(start, index, count), capsule.radius, capsule.radius + capsule.skin, index == 0);
+        SectionRank rank = SectionRank.upper;
+        if (index == 0) {
+            rank = SectionRank.lowest;
+        }
+        Section section = Section(clipped, capsule.sectionCenter(start, index, count), capsule.radius, capsule.radius + capsule.skin, rank);
         foreach (ref quad; features.quads.slice()) {
             best = section.quadContact(quad, direction, distance, best);
         }
@@ -212,34 +217,4 @@ float[3][] sectionCenters(Capsule capsule, float[3] center, float[3][] storage) 
         storage[index] = capsule.sectionCenter(center, index, count);
     }
     return storage[0 .. count];
-}
-
-unittest {
-    Capsule capsule = Capsule([0, 1, 0], 0.4f, 0.9f, 0.01f);
-    uint count = capsule.sectionCount();
-    assert(capsule.sectionOffset(0, count) == -capsule.capOffset());
-    assert(capsule.sectionOffset(count - 1, count) == capsule.capOffset());
-    float spacing = capsule.sectionOffset(1, count) - capsule.sectionOffset(0, count);
-    float half = spacing / 2;
-    assert(capsule.radius - sqrt(capsule.radius * capsule.radius - half * half) <= capsule.skin);
-    Capsule sphere = Capsule([0, 1, 0], 0.4f, 0.4f, 0.01f);
-    assert(sphere.sectionCount() == 1);
-}
-
-unittest {
-    Quad floor = Quad([[0, 1, 0], [0, 1, 1], [1, 1, 1], [1, 1, 0]], [0, 1, 0]);
-    Section section = Section(null, [0.5f, 2.0f, 0.5f], 0.4f, 0.41f, true);
-    float[3] down = [0, -1, 0];
-    Contact landing = section.quadContact(floor, down, 2.0f, Contact.init);
-    assert(landing.isHit() && fabsf(landing.stop - 0.59f) < TEST_TOLERANCE);
-    float[3] along = [1, 0, 0];
-    assert(!section.quadContact(floor, along, 2.0f, Contact.init).isHit());
-    Section resting = Section(null, [0.5f, 1.405f, 0.5f], 0.4f, 0.41f, true);
-    Contact touching = resting.quadContact(floor, down, 1.0f, Contact.init);
-    assert(touching.stop == 0 && touching.gap > 0.004f && touching.gap < 0.006f);
-    Edge rim = Edge([1, 1, 0], [1, 1, 1]);
-    Section beside = Section(null, [1.6f, 1.2f, 0.5f], 0.4f, 0.41f, true);
-    float[3] toward = [-1, 0, 0];
-    Contact edgeHit = beside.edgeContact(rim, toward, 1.0f, Contact.init);
-    assert(edgeHit.isHit() && edgeHit.normal[0] > 0 && edgeHit.normal[1] > 0);
 }

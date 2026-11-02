@@ -1,6 +1,6 @@
 module plugins.api.api;
 
-enum string ENTRY = "mined_plugin_2";
+enum string ENTRY = "mined_plugin_3";
 
 enum Material : ubyte {
     none,
@@ -89,6 +89,7 @@ enum HorosphereForm : ubyte {
     terrain,
     bare,
     upright,
+    sunken,
 }
 
 enum uint NO_KIND = uint.max;
@@ -142,10 +143,15 @@ struct Risen {
     int segment;
 }
 
+enum Tint : ubyte {
+    sky,
+    fog,
+}
+
 struct Look {
     const(char)* name;
     float[3] fog = [0, 0, 0];
-    bool hasFog;
+    Tint tint;
 }
 
 alias Structure = void function(const(Api)* api, Site site, const(void)* data);
@@ -159,6 +165,7 @@ struct RisingKind {
     const(void)* data;
     size_t size;
     Look look;
+    uint under;
 }
 
 struct Api {
@@ -182,7 +189,10 @@ struct Api {
     void function(const(Api)* api, Tile tile, const(void)* data, size_t size) tile;
     void function(const(Api)* api, Tile tile, const(void)* data, size_t size) tileEdges;
     uint function(const(Api)* api, double odds, HorosphereForm form, uint tag, Tile tile, const(void)* data, size_t size) horosphere;
+    uint function(const(Api)* api, double odds, uint under, uint tag, Tile tile, const(void)* data, size_t size) sunken;
     void function(const(Api)* api, Site site, uint kind, uint edges) openHorosphere;
+    Site function(const(Api)* api, Site site) columnSite;
+    void function(const(Api)* api, Site site) flatten;
     void function(const(Api)* api, uint kind) rooted;
     void function(const(Api)* api) invertGravity;
     void function(const(Api)* api, double units) fog;

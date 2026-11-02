@@ -20,7 +20,7 @@ void build(ref const Lots lots, Spec spec) {
     foreach (ref part; parts.slice()) {
         foreach (tier; tiers(part, spec, 0).slice()) {
             banded(part, shell(part, spec.palette, tier), tier, HIGH_ROWS);
-            if (tier.isRoofed) {
+            if (tier.isRoofed()) {
                 roof(part, spec.palette, ROOF, tier);
             }
         }

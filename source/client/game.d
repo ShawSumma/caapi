@@ -2,13 +2,16 @@ module client.game;
 
 import core.stdc.math : acoshf, atan2f, atanhf, ceilf, coshf, fabs, fabsf, floorf, sinhf, sqrt, tanhf;
 import base.array : Array;
+import base.flags : Readiness;
+import base.maybe : Maybe;
 import base.numbers : higherOf;
 import base.units : Acceleration, Angle, Length, Speed, Time;
 import base.vector3 : ZERO_VECTOR, cross, dot, magnitude, minus, negated, plus, rejectAlong, scaled;
 import client.arrivals : generateNow;
 import client.camera : CAMERA_FORWARD, Camera;
+import client.streaming : Pacing;
 import client.world : LocalWorld, Placement;
-import common.character.controller : CharacterInput, CharacterState, MovementMode, Mover, Slide, Stepped, movedBy, perpendicularTo, regionReach;
+import common.character.controller : CharacterInput, CharacterState, Footing, Jump, MovementMode, Mover, Slide, Stepped, movedBy, perpendicularTo, regionReach;
 import common.character.features : CellOverlap, CellRange, Features, LocalFrame, RequiredChunks, gridPoint, isInsideGrid, visitCells;
 import common.character.sweep : Capsule, sectionCenters;
 import common.graph : Graph, NO_SLOT, NodeId;
@@ -20,10 +23,11 @@ import common.worldgen.blueprint : RouteStop;
 import common.worldgen.generation : NodeState, Worldgen;
 import common.worldgen.horospheres : Gravity, ensureGravityAt, gravityAt, isGravityKnown;
 import common.worldgen.spawn : clearSpawnPosition, collectChunksNear;
-import common.worldgen.structure : SiteFrame, columnPoint, rootSite, siteToNode, sitePlacement, spawnBefore;
+import common.worldgen.structure : SiteFrame, atLevel, columnPoint, edgeLength, forwarded, rootSite, siteToNode, sitePlacement, spawnBefore, turned;
 import geometry.honeycomb : CORNER_COUNT, Corner, Face, cornerToNode, nodeToCorner;
 import geometry.lorentz : Motion, Point, Vec4;
-import plugins.api.api : Material;
+import plugins.api.api : Material, Turn;
+import plugins.api.flags : Flags;
 
 enum uint MAX_BODY_SECTIONS = 64;
 enum float SUN_ELEVATION_COSINE = 0.82f;
@@ -64,14 +68,19 @@ enum Key : ubyte {
 
 enum uint KEY_COUNT = Key.max + 1;
 
+enum ChunkSupply : ubyte {
+    streamed,
+    onDemand,
+}
+
 struct FrameInput {
     Angle yaw;
     Angle pitch;
-    bool[KEY_COUNT] isHeld;
+    Flags!Key held;
 }
 
-float axisValue(bool isHeld) {
-    if (isHeld) {
+float axisValue(Flags!Key held, Key key) {
+    if (held.has(key)) {
         return 1.0f;
     } else {
         return 0.0f;
@@ -111,7 +120,7 @@ struct UnloadedCount {
 }
 
 struct SolidProbe {
-    bool isSolid;
+    uint solidCells;
 
     void visitMissingNode(uint, Face) {
     }
@@ -120,9 +129,17 @@ struct SolidProbe {
         float[3] grid = gridPoint(graph.layout, slot.corner.nodeToCorner * frame.toBody.inverse());
         if (isInsideGrid(grid, graph.layout.dimension) && graph.chunks.at(slot).state == ChunkState.populated) {
             size_t cell = cellIndex(graph.layout.dimension, cast(int) floorf(grid[0]), cast(int) floorf(grid[1]), cast(int) floorf(grid[2]));
-            isSolid = isSolid || graph.chunks.at(slot).voxels.at(cell) != Material.none;
+            if (graph.chunks.at(slot).voxels.at(cell) != Material.none) {
+                solidCells += 1;
+            }
         }
     }
+}
+
+enum ThrownMotion : ubyte {
+    flying,
+    resting,
+    gone,
 }
 
 struct Thrown {
@@ -132,7 +149,7 @@ struct Thrown {
     uint trailCount;
     float untilTrail = 0;
     float age = 0;
-    bool isResting;
+    ThrownMotion motion;
 
     void remember() {
         trail[trailCount % TRAIL_POINTS] = position;
@@ -140,29 +157,27 @@ struct Thrown {
         untilTrail = TRAIL_EVERY_SECONDS;
     }
 
-    bool advance(ref const Graph graph, float gravity, Time dt) {
+    void advance(ref const Graph graph, float gravity, Time dt) {
         age += dt.value;
         if (age > THROWN_SECONDS || graph.slotOf(position.node) == NO_SLOT) {
-            return false;
-        } else {
-            if (!isResting) {
-                untilTrail -= dt.value;
-                if (untilTrail <= 0) {
-                    remember();
-                }
-                return fly(graph, gravity, dt);
+            motion = ThrownMotion.gone;
+        } else if (motion == ThrownMotion.flying) {
+            untilTrail -= dt.value;
+            if (untilTrail <= 0) {
+                remember();
             }
-            return true;
+            fly(graph, gravity, dt);
         }
     }
 
-    bool fly(ref const Graph graph, float gravity, Time dt) {
+    void fly(ref const Graph graph, float gravity, Time dt) {
         uint substeps = higherOf(cast(uint) ceilf(velocity.magnitude * dt.value / THROWN_STEP), 1u);
         float each = dt.value / substeps;
         foreach (_; 0 .. substeps) {
             uint slot = graph.slotOf(position.node);
             if (slot == NO_SLOT) {
-                return false;
+                motion = ThrownMotion.gone;
+                return;
             } else if (graph.isGravityKnown(slot)) {
                 Gravity pull = graph.gravityAt(position);
                 velocity = velocity.minus(pull.up.scaled(pull.strength * gravity * each));
@@ -170,13 +185,12 @@ struct Thrown {
             Position next = graph.movedBy(position, velocity.scaled(each));
             SolidProbe probe;
             visitCells(graph, next, Length(0), probe);
-            if (probe.isSolid) {
-                isResting = true;
-                return true;
+            if (probe.solidCells > 0) {
+                motion = ThrownMotion.resting;
+                return;
             }
             position = next;
         }
-        return true;
     }
 }
 
@@ -184,7 +198,6 @@ struct RouteWaypoint {
     Angle yaw;
     Length horizontal;
     Length rise;
-    bool isFound;
 }
 
 struct Game {
@@ -202,9 +215,9 @@ struct Game {
     float[3] compass = [0, 0, -1];
     uint materialIndex;
     MovementMode mode = MovementMode.walk;
-    bool isGeneratingOnDemand;
-    bool hasCameraVerticalVelocity;
-    bool wasJumpHeld;
+    ChunkSupply supply;
+    Readiness cameraVelocity;
+    Flags!Key lastHeld;
 
     static Game make(Worldgen worldgen, Length reach) {
         Game game;
@@ -232,8 +245,7 @@ struct Game {
         }
         picked.release();
         RequiredChunks required;
-        bool isComplete = false;
-        while (!isComplete) {
+        do {
             required.clear();
             visitCells(world.graph, position, reach, required);
             foreach (missing; required.missing.slice()) {
@@ -242,23 +254,22 @@ struct Game {
             foreach (chunk; required.chunks.slice()) {
                 world.graph.generateNow(chunk);
             }
-            isComplete = required.missing.length == 0;
-        }
+        } while (required.missing.length > 0);
         required.release();
     }
 
     void placeAtSpawn() {
-        if (world.graph.structures.blueprint.hasEntrance) {
-            RouteStop entrance = world.graph.structures.blueprint.entrance;
-            placeAt(sitePosition(entrance.site, spawnBefore(world.graph.layout, entrance.spot)), bodyExtent() + character.skin);
+        Maybe!RouteStop entrance = world.graph.structures.blueprint.entrance;
+        if (entrance.exists) {
+            placeAt(sitePosition(entrance.value.site, spawnBefore(world.graph.layout, entrance.value.spot)), bodyExtent() + character.skin);
         } else {
             Position spawn = world.graph.clearSpawnPosition(bodyReach().value);
             float[3] up = world.graph.ensureGravityAt(spawn).up;
-            characterState = CharacterState(spawn, ZERO_VECTOR, [0, 1, 0], up, up, false);
+            characterState = CharacterState(spawn, ZERO_VECTOR, [0, 1, 0], up, up);
         }
         settleToGround();
         resetView();
-        if (world.graph.structures.blueprint.hasEntrance) {
+        if (world.graph.structures.blueprint.entrance.exists) {
             camera.turn(yawToward(directionToDoor()), Angle(0));
         } else if (world.graph.worldgen.groundTiltRadians() != 0) {
             camera.turn(yawToward(uphillDirection()), Angle(0));
@@ -268,8 +279,6 @@ struct Game {
         world.settleFogColor();
     }
 
-    // Moving the body only ever shifts along the step, and a shift carries a vector parallel to itself, so a vector fixed
-    // in the body's axes stays parallel along the whole path. Only its level part has to be kept, as up changes.
     void resetCompass() {
         float[3] level = camera.heading.rotate(CAMERA_FORWARD).rejectAlong(characterState.up);
         compass = level.scaled(1.0f / level.magnitude);
@@ -304,13 +313,14 @@ struct Game {
     void stepThrown(Time dt) {
         size_t index = 0;
         while (index < thrown.length) {
-            if (thrown.ptr[index].advance(world.graph, character.gravity.value, dt)) {
-                index += 1;
-            } else {
+            thrown.ptr[index].advance(world.graph, character.gravity.value, dt);
+            if (thrown.ptr[index].motion == ThrownMotion.gone) {
                 foreach (later; index + 1 .. thrown.length) {
                     thrown.ptr[later - 1] = thrown.ptr[later];
                 }
                 thrown.length -= 1;
+            } else {
+                index += 1;
             }
         }
     }
@@ -329,7 +339,7 @@ struct Game {
         }
         features.release();
         characterState.groundNormal = drop.groundNormal;
-        characterState.isOnGround = true;
+        characterState.footing = Footing.grounded;
     }
 
     void resetView() {
@@ -338,7 +348,7 @@ struct Game {
         followBody();
         updateView();
         cameraAltitude = altitude + camera.eyeOffset;
-        hasCameraVerticalVelocity = false;
+        cameraVelocity = Readiness.pending;
     }
 
     Length currentAltitude() {
@@ -347,7 +357,7 @@ struct Game {
     }
 
     float[3] directionToDoor() {
-        RouteStop entrance = world.graph.structures.blueprint.entrance;
+        RouteStop entrance = world.graph.structures.blueprint.entrance.value;
         Motion!float siteToBody = characterState.position.local.inverse() * world.graph.view.siteToNode(entrance.site, world.graph.slotOf(characterState.position.node));
         return (siteToBody * columnPoint(world.graph.layout, entrance.spot)).v.spatial();
     }
@@ -363,7 +373,12 @@ struct Game {
     }
 
     void enterStructure(Length height) {
-        placeAt(sitePosition(rootSite(world.graph.anchorSlot), Point!float(Vec4!float([0, sinhf(height.value), 0, coshf(height.value)]))), Length(0));
+        float edge = edgeLength(world.graph.layout).value;
+        float edges = floorf(height.value / edge);
+        float rest = height.value - edges * edge;
+        SiteFrame tower = world.graph.view.turned(rootSite(world.graph.anchorSlot), Turn.pitchUp);
+        SiteFrame at = world.graph.view.atLevel(forwarded(tower, cast(int) edges), 0);
+        placeAt(sitePosition(at, Point!float(Vec4!float([0, 0, sinhf(rest), coshf(rest)]))), Length(0));
     }
 
     Position sitePosition(SiteFrame site, Point!float inSite) {
@@ -371,18 +386,18 @@ struct Game {
         return world.graph.ensureNormalized(Position(world.graph.idAt(site.node), Motion!float.shiftTo(point)));
     }
 
-    void enterRoute() {
-        RouteStop stop = world.graph.structures.blueprint.route.ptr[0];
+    void enterRoute(size_t index) {
+        RouteStop stop = world.graph.structures.blueprint.route.ptr[index];
         placeAt(sitePosition(stop.site, columnPoint(world.graph.layout, stop.spot)), bodyExtent() + character.skin);
     }
 
-    RouteWaypoint routeWaypoint(size_t index) {
+    Maybe!RouteWaypoint routeWaypoint(size_t index) {
         if (index >= world.graph.structures.blueprint.route.length) {
-            return RouteWaypoint.init;
+            return Maybe!RouteWaypoint.init;
         } else {
             RouteStop stop = world.graph.structures.blueprint.route.ptr[index];
             Motion!float siteToBody = world.graph.view.siteToNode(stop.site, world.graph.slotOf(characterState.position.node));
-            return waypointAt(siteToBody * columnPoint(world.graph.layout, stop.spot));
+            return Maybe!RouteWaypoint.of(waypointAt(siteToBody * columnPoint(world.graph.layout, stop.spot)));
         }
     }
 
@@ -392,14 +407,14 @@ struct Game {
         float length = direction.magnitude;
         float[3] toFloor = direction.scaled(acoshf(local.c[3]) / length);
         float[3] fromFeet = toFloor.plus(characterState.up.scaled(bodyExtent().value));
-        return RouteWaypoint(yawToward(toFloor), Length(fromFeet.rejectAlong(characterState.up).magnitude), Length(fromFeet.dot(characterState.up)), true);
+        return RouteWaypoint(yawToward(toFloor), Length(fromFeet.rejectAlong(characterState.up).magnitude), Length(fromFeet.dot(characterState.up)));
     }
 
     void placeAt(Position target, Length lift) {
         float[3] up = world.graph.ensureGravityAt(target).up;
         Position lifted = world.graph.ensureNormalized(Position(target.node, (target.local * Motion!float.shift(up.scaled(lift.value))).orthonormalized()));
         float[3] liftedUp = world.graph.ensureGravityAt(lifted).up;
-        characterState = CharacterState(lifted, ZERO_VECTOR, characterState.groundNormal, liftedUp, liftedUp, false);
+        characterState = CharacterState(lifted, ZERO_VECTOR, characterState.groundNormal, liftedUp, liftedUp);
         resetView();
         resetCompass();
     }
@@ -426,9 +441,9 @@ struct Game {
     }
 
     bool placeBlock() {
-        Placement placement = world.placementTarget();
-        if (placement.isFound && !isBodyOverlapping(ChunkSlot(world.graph.slotOf(placement.chunk.node), placement.chunk.corner), placement)) {
-            return world.setVoxel(placement.chunk, placement.coords, MATERIAL_PALETTE[materialIndex]);
+        Maybe!Placement placement = world.placementTarget();
+        if (placement.exists && !isBodyOverlapping(ChunkSlot(world.graph.slotOf(placement.value.chunk.node), placement.value.chunk.corner), placement.value)) {
+            return world.setVoxel(placement.value.chunk, placement.value.coords, MATERIAL_PALETTE[materialIndex]);
         } else {
             return false;
         }
@@ -438,7 +453,7 @@ struct Game {
         float[3][MAX_BODY_SECTIONS] storage;
         CellOverlap overlap = CellOverlap(sectionCenters(bodyCapsule(), ZERO_VECTOR, storage[]), slot, placement.coords, character.radius.value);
         visitCells(world.graph, characterState.position, regionReach(character), overlap);
-        return overlap.isOverlapping;
+        return overlap.overlaps > 0;
     }
 
     void look(Angle yaw, Angle pitch) {
@@ -464,12 +479,11 @@ struct Game {
 
     void step(FrameInput input, Time dt) {
         look(input.yaw, input.pitch);
-        float moveX = axisValue(input.isHeld[Key.right]) - axisValue(input.isHeld[Key.left]);
-        float moveY = axisValue(input.isHeld[Key.up]) - axisValue(input.isHeld[Key.down]);
-        float moveZ = axisValue(input.isHeld[Key.back]) - axisValue(input.isHeld[Key.fwd]);
-        bool isJumping = input.isHeld[Key.up] && !wasJumpHeld;
-        wasJumpHeld = input.isHeld[Key.up];
-        Stepped stepped = runCharacter(characterInput(moveX, moveY, moveZ, isJumping), dt);
+        float moveX = axisValue(input.held, Key.right) - axisValue(input.held, Key.left);
+        float moveY = axisValue(input.held, Key.up) - axisValue(input.held, Key.down);
+        float moveZ = axisValue(input.held, Key.back) - axisValue(input.held, Key.fwd);
+        Stepped stepped = runCharacter(characterInput(moveX, moveY, moveZ, jumpFrom(input.held)), dt);
+        lastHeld = input.held;
         traveled = traveled + stepped.traveled;
         altitude = currentAltitude();
         followBody();
@@ -478,8 +492,8 @@ struct Game {
         stepThrown(dt);
         world.approachFogColor(dt.value);
         trackCameraAcceleration(altitude + camera.eyeOffset, dt);
-        if (!isGeneratingOnDemand) {
-            world.update(false);
+        if (supply == ChunkSupply.streamed) {
+            world.update(Pacing.budgeted);
         }
         time = time + dt;
     }
@@ -516,13 +530,13 @@ struct Game {
     bool isLoadedAround() const {
         Features features;
         features.collect(world.graph, characterState.position, regionReach(character));
-        bool isLoaded = features.isLoaded;
+        uint unloaded = features.unloaded;
         features.release();
-        return isLoaded;
+        return unloaded == 0;
     }
 
     Stepped runCharacter(CharacterInput input, Time dt) {
-        if (isGeneratingOnDemand) {
+        if (supply == ChunkSupply.onDemand) {
             return runGenerating(input, dt);
         } else {
             return characterState.runStep(character, world.graph, input, dt);
@@ -542,13 +556,21 @@ struct Game {
         return stepped;
     }
 
-    CharacterInput characterInput(float moveX, float moveY, float moveZ, bool isJumping) const {
-        if (mode == MovementMode.noclip) {
-            return CharacterInput(camera.orientation.rotate([moveX, moveY, moveZ]), mode, false);
-        } else if (mode == MovementMode.fly) {
-            return CharacterInput(levelMove(moveX, moveZ).plus(characterState.up.scaled(moveY)), mode, false);
+    Jump jumpFrom(Flags!Key held) const {
+        if (held.has(Key.up) && !lastHeld.has(Key.up)) {
+            return Jump.pressed;
         } else {
-            return CharacterInput(levelMove(moveX, moveZ), mode, isJumping);
+            return Jump.none;
+        }
+    }
+
+    CharacterInput characterInput(float moveX, float moveY, float moveZ, Jump jump) const {
+        if (mode == MovementMode.noclip) {
+            return CharacterInput(camera.orientation.rotate([moveX, moveY, moveZ]), mode);
+        } else if (mode == MovementMode.fly) {
+            return CharacterInput(levelMove(moveX, moveZ).plus(characterState.up.scaled(moveY)), mode);
+        } else {
+            return CharacterInput(levelMove(moveX, moveZ), mode, jump);
         }
     }
 
@@ -558,14 +580,14 @@ struct Game {
 
     void trackCameraAcceleration(Length newCameraAltitude, Time dt) {
         Speed verticalVelocity = (newCameraAltitude - cameraAltitude) / dt;
-        if (hasCameraVerticalVelocity) {
+        if (cameraVelocity == Readiness.ready) {
             cameraVerticalAcceleration = Acceleration(fabsf(((verticalVelocity - cameraVerticalVelocity) / dt).value));
         } else {
             cameraVerticalAcceleration = Acceleration(0);
         }
         cameraAltitude = newCameraAltitude;
         cameraVerticalVelocity = verticalVelocity;
-        hasCameraVerticalVelocity = true;
+        cameraVelocity = Readiness.ready;
     }
 
     void toggleMode(MovementMode toggled) {

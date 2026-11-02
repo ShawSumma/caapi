@@ -3,6 +3,7 @@ module common.character.features;
 import core.math : sqrt;
 import core.stdc.math : coshf, fabsf, floorf;
 import base.array : Array;
+import base.maybe : Maybe;
 import base.numbers : clamped, higherOf, isNan, lowerOf;
 import base.units : Length, LocalBlock;
 import base.vector3 : cross, dot, magnitude, minus, plus, scaled;
@@ -22,7 +23,6 @@ enum int RANGE_MARGIN_CELLS = 1;
 enum uint CELL_CORNERS = 8;
 enum uint CELL_FACES = 6;
 enum uint QUAD_CORNERS = 4;
-enum float TEST_TOLERANCE = 1e-5f;
 
 struct Quad {
     float[3][QUAD_CORNERS] corners;
@@ -73,7 +73,7 @@ struct Hexahedron {
     Quad face(size_t axis, int sign) const {
         size_t uAxis = (axis + 1) % 3;
         size_t vAxis = (axis + 2) % 3;
-        uint base = sideBit(axis, sign > 0);
+        uint base = sideBit(axis, sign);
         Quad result;
         result.corners[0] = corners[base];
         result.corners[1] = corners[base | (1u << uAxis)];
@@ -93,17 +93,17 @@ struct Hexahedron {
 
     float distanceTo(float[3] point) const {
         float nearest = float.infinity;
-        bool isInside = true;
+        uint outside = 0;
         foreach (axis; 0 .. 3) {
             foreach (side; 0 .. 2) {
                 Quad candidate = face(axis, sideSign(side));
                 if (candidate.separation(point) > 0) {
-                    isInside = false;
+                    outside += 1;
                     nearest = lowerOf(candidate.distanceTo(point), nearest);
                 }
             }
         }
-        if (isInside) {
+        if (outside == 0) {
             return 0;
         } else {
             return nearest;
@@ -140,6 +140,10 @@ struct CellRange {
         return low[0] > high[0] || low[1] > high[1] || low[2] > high[2];
     }
 
+    bool contains(int[3] cell) const {
+        return cell[0] >= low[0] && cell[0] <= high[0] && cell[1] >= low[1] && cell[1] <= high[1] && cell[2] >= low[2] && cell[2] <= high[2];
+    }
+
     bool isTouching(Direction direction, ubyte dimension) const {
         if (direction.sign == Sign.plus) {
             return high[direction.axis] == dimension - 1;
@@ -153,7 +157,11 @@ struct Features {
     Array!Quad quads;
     Array!Edge edges;
     Array!(float[3]) corners;
-    bool isLoaded;
+    uint unloaded;
+
+    bool isLoaded() const {
+        return unloaded == 0;
+    }
 
     void release() {
         quads.release();
@@ -165,14 +173,14 @@ struct Features {
         quads.clear();
         edges.clear();
         corners.clear();
-        isLoaded = true;
+        unloaded = 0;
         visitCells(graph, body, reach, this);
     }
 
     void visitChunk(ref const Graph graph, LocalFrame frame, ChunkSlot slot, CellRange range) {
         ChunkCellsNear cells = ChunkCellsNear(&graph, slot, graph.chunks.at(slot));
         if (cells.chunk.state != ChunkState.populated || !graph.areNeighborsPopulated(slot, range)) {
-            isLoaded = false;
+            unloaded += 1;
         } else {
             foreach (x; range.low[0] .. range.high[0] + 1) {
                 foreach (y; range.low[1] .. range.high[1] + 1) {
@@ -188,7 +196,7 @@ struct Features {
     }
 
     void visitMissingNode(uint, Face) {
-        isLoaded = false;
+        unloaded += 1;
     }
 
     void addCell(ref const ChunkCellsNear cells, Hexahedron hexahedron, int[3] cell) {
@@ -217,24 +225,22 @@ struct CellOverlap {
     ChunkSlot target;
     Cell coords;
     float radius;
-    bool isOverlapping;
+    uint overlaps;
 
     void visitMissingNode(uint, Face) {
     }
 
     void visitChunk(ref const Graph graph, LocalFrame frame, ChunkSlot slot, CellRange range) {
         int[3] cell = [coords.c[0], coords.c[1], coords.c[2]];
-        bool isInRange = cell[0] >= range.low[0] && cell[0] <= range.high[0] && cell[1] >= range.low[1] && cell[1] <= range.high[1] && cell[2] >= range.low[2] && cell[2] <= range.high[2];
-        if (slot == target && isInRange && !isOverlapping) {
-            isOverlapping = isTouchingAny(frame.cell(graph.layout, slot.corner, cell), centers, radius);
+        if (slot == target && range.contains(cell) && overlaps == 0 && isTouchingAny(frame.cell(graph.layout, slot.corner, cell), centers, radius)) {
+            overlaps += 1;
         }
     }
 }
 
 struct BlockProbe {
     float[3] up;
-    LocalBlock block;
-    bool isFound;
+    Maybe!LocalBlock block;
 
     void visitMissingNode(uint, Face) {
     }
@@ -242,14 +248,13 @@ struct BlockProbe {
     void visitChunk(ref const Graph graph, LocalFrame frame, ChunkSlot slot, CellRange) {
         Motion!float toCorner = slot.corner.nodeToCorner * frame.toBody.inverse();
         float[3] grid = gridPoint(graph.layout, toCorner);
-        if (!isFound && isInsideGrid(grid, graph.layout.dimension)) {
+        if (!block.exists && isInsideGrid(grid, graph.layout.dimension)) {
             float[3][3] absolutePerGrid = inverted(gridJacobian(graph.layout, toCorner));
             float height = 0;
             foreach (axis; 0 .. 3) {
                 height += fabsf(absolutePerGrid[0][axis] * up[0] + absolutePerGrid[1][axis] * up[1] + absolutePerGrid[2][axis] * up[2]);
             }
-            block = LocalBlock(Length(height));
-            isFound = true;
+            block = Maybe!LocalBlock.of(LocalBlock(Length(height)));
         }
     }
 }
@@ -404,8 +409,8 @@ int[3] offsetAlong(size_t axis, int sign) {
     return offset;
 }
 
-uint sideBit(size_t axis, bool isHigh) {
-    if (isHigh) {
+uint sideBit(size_t axis, int sign) {
+    if (sign > 0) {
         return 1u << axis;
     } else {
         return 0;
@@ -428,24 +433,4 @@ float segmentDistance(float[3] start, float[3] end, float[3] point) {
     float[3] along = end.minus(start);
     float t = clamped(point.minus(start).dot(along) / along.dot(along), 0.0f, 1.0f);
     return point.minus(start.plus(along.scaled(t))).magnitude;
-}
-
-unittest {
-    Hexahedron cube;
-    foreach (corner; 0 .. CELL_CORNERS) {
-        cube.corners[corner] = [cast(float)(corner & 1), cast(float)((corner >> 1) & 1), cast(float)((corner >> 2) & 1)];
-    }
-    Quad top = cube.face(1, 1);
-    assert(top.normal[1] > 1 - TEST_TOLERANCE);
-    float[3] above = [0.5f, 2.0f, 0.5f];
-    assert(top.isAbove(above));
-    float[3] aside = [1.5f, 2.0f, 0.5f];
-    assert(!top.isAbove(aside));
-    Quad bottom = cube.face(1, -1);
-    assert(bottom.normal[1] < -1 + TEST_TOLERANCE);
-    float[3] inside = [0.5f, 0.5f, 0.5f];
-    assert(cube.distanceTo(inside) == 0);
-    assert(fabsf(cube.distanceTo(above) - 1) < TEST_TOLERANCE);
-    float[3] diagonal = [2.0f, 2.0f, 0.5f];
-    assert(fabsf(cube.distanceTo(diagonal) - sqrt(2.0f)) < TEST_TOLERANCE);
 }

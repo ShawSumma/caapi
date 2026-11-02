@@ -1,7 +1,7 @@
 module plugins.buildings.glass;
 
 import plugins.api.api : Box, Material, Rhythm;
-import plugins.buildings.building : ANTENNA, Bound, Lots, Palette, Part, PartJoin, Parts, STORY, Spec, Tier, crown, enter, footprint, helipad, makeParts, masts, middle, narrowing, pick, roof, setbacks, shell, strips, tiers, walls;
+import plugins.buildings.building : ANTENNA, Bound, Lots, Palette, Part, PartJoin, Parts, STORY, Spec, Split, Tier, crown, enter, footprint, helipad, makeParts, masts, middle, narrowing, pick, roof, setbacks, shell, strips, tiers, walls;
 import plugins.turtle.turtle : boxOf;
 
 enum int[2] STORIES = [12, 38];
@@ -29,9 +29,9 @@ void curtain(ref const Part part, Palette palette, Box box, Tier tier) {
 }
 
 Tier penthouse(ref const Part part, Palette palette, Tier tier) {
-    Box roofBox = footprint(part, tier.shrink, false, tier.high, tier.high);
+    Box roofBox = footprint(part, tier.shrink, Split.above, tier.high, tier.high);
     int inset = narrowing([roofBox.low[0], roofBox.high[0]], [roofBox.low[1], roofBox.high[1]], PENTHOUSE_SETBACK, LEAST_WIDTH);
-    Tier cap = Tier(tier.high + 1, tier.high + STORY, tier.shrink + inset, false);
+    Tier cap = Tier(tier.high + 1, tier.high + STORY, tier.shrink + inset, Split.above);
     Part closed = part;
     closed.kinds = [Bound.lot, Bound.lot, Bound.lot, Bound.lot];
     closed.joins = PartJoin.init;
@@ -40,7 +40,7 @@ Tier penthouse(ref const Part part, Palette palette, Tier tier) {
 }
 
 void antenna(ref const Part part, Palette palette, Tier tier) {
-    Box roofBox = footprint(part, tier.shrink, false, tier.high, tier.high);
+    Box roofBox = footprint(part, tier.shrink, Split.above, tier.high, tier.high);
     int x = middle(roofBox.low[0], roofBox.high[0]);
     int y = middle(roofBox.low[1], roofBox.high[1]);
     part.tower.paint(palette.trim, boxOf([x, x], [y, y], [tier.high + 1, tier.high + ANTENNA]));
@@ -53,7 +53,7 @@ void build(ref const Lots lots, Spec spec) {
     foreach (ref part; parts.slice()) {
         foreach (tier; tiers(part, spec, chosen).slice()) {
             curtain(part, spec.palette, shell(part, spec.palette, tier), tier);
-            if (tier.isRoofed) {
+            if (tier.isRoofed()) {
                 roof(part, spec.palette, ROOF, tier);
             }
         }

@@ -1,7 +1,7 @@
 module plugins.buildings.modern;
 
 import plugins.api.api : Box, Material, Rhythm;
-import plugins.buildings.building : Bound, FLOORS, Lots, Palette, Part, Parts, SIDES, STORY, Spec, Tier, WINDOW_ROWS, along, banded, crown, enter, faceOf, footprint, helipad, isEmpty, makeParts, masts, middle, movedOut, pick, roof, setbacks, shell, storefront, tiers, width, withAlong;
+import plugins.buildings.building : Bound, FLOORS, Lots, Palette, Part, Parts, SIDES, STORY, Spec, Split, Tier, WINDOW_ROWS, along, banded, crown, enter, faceOf, footprint, helipad, isEmpty, makeParts, masts, middle, movedOut, pick, roof, setbacks, shell, storefront, tiers, width, withAlong;
 import plugins.turtle.turtle : boxOf, higherOf;
 
 enum int[2] STORIES = [6, 20];
@@ -36,7 +36,7 @@ void balconied(ref const Part part, Palette palette, Box box, Tier tier) {
 }
 
 void garden(ref const Part part, Tier tier) {
-    Box lawn = footprint(part, tier.shrink + 1, false, tier.high, tier.high);
+    Box lawn = footprint(part, tier.shrink + 1, Split.above, tier.high, tier.high);
     if (!isEmpty(lawn)) {
         part.tower.paint(Material.grass, lawn);
         if (width(lawn.low[0], lawn.high[0]) >= LEAST_GARDEN && width(lawn.low[1], lawn.high[1]) >= LEAST_GARDEN) {
@@ -57,7 +57,7 @@ void build(ref const Lots lots, Spec spec) {
     foreach (ref part; parts.slice()) {
         foreach (tier; tiers(part, spec, chosen).slice()) {
             balconied(part, spec.palette, shell(part, spec.palette, tier), tier);
-            if (tier.isRoofed) {
+            if (tier.isRoofed()) {
                 roof(part, spec.palette, ROOF, tier);
             }
         }

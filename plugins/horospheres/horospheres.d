@@ -1,10 +1,10 @@
 module plugins.horospheres.horospheres;
 
-import plugins.api.api : Api, HorosphereForm, Look, Risen, Site, SitePart;
+import plugins.api.api : Api, HorosphereForm, Look, Risen, Site, SitePart, Tint;
 import blocks = plugins.blocks.blocks;
 import plugins.connector.connector : Connection, Tag, connect;
 import layout = plugins.rooms.layout;
-import plugins.horospheres.tree : segment;
+import plugins.horospheres.tree : Trunk, segment;
 import plugins.turtle.turtle : Turtle;
 
 struct Kinds {
@@ -15,8 +15,8 @@ struct Kinds {
 }
 
 immutable Look WILD_LOOK = Look("wild");
-immutable Look CITY_LOOK = Look("city", [0.74f, 0.79f, 0.86f], true);
-immutable Look BACKROOMS_LOOK = Look("backrooms", [0.78f, 0.72f, 0.45f], true);
+immutable Look CITY_LOOK = Look("city", [0.74f, 0.79f, 0.86f], Tint.fog);
+immutable Look BACKROOMS_LOOK = Look("backrooms", [0.78f, 0.72f, 0.45f], Tint.fog);
 
 Connection connectionOf(const(void)* data) {
     return *cast(const(Connection)*) data;
@@ -44,7 +44,7 @@ void backroomsTile(const(Api)* api, Site face, const(Risen)* risen, const(void)*
     Turtle at = Turtle(api, face);
     layout.Root root;
     if (hasRisen(*risen)) {
-        root = layout.Root(Turtle(api, risen.foot).hash(SitePart.vertex), true, false);
+        root = layout.Root(Turtle(api, risen.foot).hash(SitePart.vertex), layout.Shaft.open);
     }
     layout.tileAt(at, root);
     if (hasRisen(*risen) && blocks.ownsFoot(at, *risen)) {
@@ -53,7 +53,7 @@ void backroomsTile(const(Api)* api, Site face, const(Risen)* risen, const(void)*
 }
 
 void treeTile(const(Api)* api, Site base, const(Risen)* risen, const(void)* data) {
-    segment(Turtle(api, base), risen.segment);
+    segment(Turtle(api, base), risen.segment, risen.ground, Trunk.bare);
 }
 
 Kinds addKinds(const(Api)* api, double odds, double treeOdds, const(Connection)* how) {

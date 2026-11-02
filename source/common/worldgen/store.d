@@ -12,6 +12,7 @@ import common.worldgen.building : Building;
 import common.worldgen.horospheres : ROOT;
 import common.worldgen.strokes : Stroke, Strokes;
 import common.worldgen.structure : LineTouch;
+import plugins.api.flags : Flags;
 
 enum uint NO_BUILDING = 0;
 
@@ -32,19 +33,61 @@ struct TileKey {
     }
 }
 
+enum NodeMark : ubyte {
+    finished,
+    inStructure,
+    strokes,
+    pinning,
+    covered,
+    buildingQueued,
+    buildingUrgent,
+}
+
+enum Standing : ubyte {
+    unknown,
+    outside,
+    inside,
+}
+
 struct NodeStructure {
     Run touches;
     uint building;
-    bool isFinished;
-    bool isInStructure;
-    bool hasStrokes;
-    bool isPinning;
-    bool isCovered;
-    bool isBuildingQueued;
-    bool isBuildingUrgent;
+    Flags!NodeMark marks;
+
+    bool isFinished() const {
+        return marks.has(NodeMark.finished);
+    }
+
+    bool isInStructure() const {
+        return marks.has(NodeMark.inStructure);
+    }
+
+    bool isPinning() const {
+        return marks.has(NodeMark.pinning);
+    }
+
+    bool isCovered() const {
+        return marks.has(NodeMark.covered);
+    }
+
+    bool isBuildingQueued() const {
+        return marks.has(NodeMark.buildingQueued);
+    }
+
+    bool isBuildingUrgent() const {
+        return marks.has(NodeMark.buildingUrgent);
+    }
 
     bool needsBuilding() const {
-        return isInStructure || hasStrokes;
+        return marks.has(NodeMark.inStructure) || marks.has(NodeMark.strokes);
+    }
+
+    Standing standing() const {
+        if (isInStructure) {
+            return Standing.inside;
+        } else {
+            return Standing.outside;
+        }
     }
 }
 
@@ -190,23 +233,18 @@ struct StructureStore {
 }
 
 void pin(ref Graph graph, uint slot) {
-    graph.structures.at(slot).isPinning = true;
-    graph.changePins(slot, true);
+    graph.structures.at(slot).marks.set(NodeMark.pinning);
+    Blueprint* blueprint = &graph.structures.blueprint;
+    foreach (touch; graph.structures.touchesAt(slot)) {
+        blueprint.linePins.ptr[touch.line] += 1;
+    }
 }
 
 void unpin(ref Graph graph, uint slot) {
     if (graph.structures.at(slot).isPinning) {
-        graph.structures.at(slot).isPinning = false;
-        graph.changePins(slot, false);
-    }
-}
-
-void changePins(ref Graph graph, uint slot, bool isPinned) {
-    Blueprint* blueprint = &graph.structures.blueprint;
-    foreach (touch; graph.structures.touchesAt(slot)) {
-        if (isPinned) {
-            blueprint.linePins.ptr[touch.line] += 1;
-        } else {
+        graph.structures.at(slot).marks.clear(NodeMark.pinning);
+        Blueprint* blueprint = &graph.structures.blueprint;
+        foreach (touch; graph.structures.touchesAt(slot)) {
             blueprint.linePins.ptr[touch.line] -= 1;
         }
     }
@@ -237,7 +275,7 @@ void dropTile(ref Graph graph, uint tile) {
         structures.strokes.remove(id, tile);
         uint slot = graph.slotOf(id);
         if (slot != NO_SLOT && !structures.at(slot).isFinished) {
-            structures.at(slot).isCovered = false;
+            structures.at(slot).marks.clear(NodeMark.covered);
         }
     }
     uint horosphere = structures.blueprint.tiles.ptr[tile].horosphere;
@@ -248,13 +286,14 @@ void dropTile(ref Graph graph, uint tile) {
 }
 
 bool isTileGone(ref const Graph graph, uint tile) {
-    bool isGone = true;
     foreach (ref used; graph.structures.blueprint.tiles.ptr[tile].edges.slice()) {
         foreach (node; used.nodes) {
-            isGone = isGone && graph.slotOf(node) == NO_SLOT;
+            if (graph.slotOf(node) != NO_SLOT) {
+                return false;
+            }
         }
     }
-    return isGone;
+    return true;
 }
 
 void forgetTile(ref Graph graph, uint tile) {

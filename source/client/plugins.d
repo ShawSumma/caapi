@@ -4,6 +4,7 @@ import core.stdc.stdio : fprintf, snprintf, stderr;
 import core.stdc.string : strlen;
 import core.sys.posix.dirent : DIR, closedir, dirent, opendir, readdir;
 import core.sys.posix.dlfcn : RTLD_NOW, dlerror, dlopen, dlsym;
+import base.flags : Readiness;
 import plugins.api.api : ENTRY, Entry, Registry, RisingKind, Structure;
 
 enum size_t MAX_STRUCTURES = 64;
@@ -80,8 +81,6 @@ struct Worlds {
     Structure[MAX_LANDMARKS] landmarks;
     size_t landmarkCount;
 
-    // The directory lists plugins in no fixed order. Kinds are rolled by position, so the order has to be the same on
-    // every machine for the same seed to give the same world.
     void sort() {
         sortByName(names[0 .. count], structures[0 .. count]);
         sortByName(kindNames[0 .. kindCount], risingKinds[0 .. kindCount]);
@@ -188,12 +187,12 @@ void addLandmark(const(Registry)* registry, const(char)* name, Structure landmar
 }
 
 __gshared Worlds gathered;
-__gshared bool isGathered;
+__gshared Readiness gatheredState;
 
 ref const(Worlds) registry() {
-    if (!isGathered) {
+    if (gatheredState == Readiness.pending) {
         gathered.gather();
-        isGathered = true;
+        gatheredState = Readiness.ready;
     }
     return gathered;
 }

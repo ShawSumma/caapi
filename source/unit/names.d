@@ -1,6 +1,6 @@
 module unit.names;
 
-import base.names : ENUM_NAMES, NameLookup;
+import base.names : ENUM_NAMES, enumNamed;
 
 enum Kind : ubyte {
     first,
@@ -10,6 +10,6 @@ enum Kind : ubyte {
 
 unittest {
     assert(ENUM_NAMES!Kind[Kind.second] == "second");
-    assert(NameLookup!Kind.fromName("third").value == Kind.third);
-    assert(!NameLookup!Kind.fromName("fourth").isFound);
+    assert(enumNamed!Kind("third").value == Kind.third);
+    assert(!enumNamed!Kind("fourth").exists);
 }

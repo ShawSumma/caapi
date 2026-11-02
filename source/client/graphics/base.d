@@ -1,8 +1,10 @@
 module client.graphics.base;
 
 import bindings.platform : VK_ACCESS_COLOR_ATTACHMENT_READ_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_ACCESS_INPUT_ATTACHMENT_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_FORMAT_R8_UNORM, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_STORE, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR, VK_COMMAND_BUFFER_LEVEL_PRIMARY, VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR, VK_DEPENDENCY_BY_REGION_BIT, VK_FENCE_CREATE_SIGNALED_BIT, VK_FORMAT_B8G8R8A8_SRGB, VK_FORMAT_D32_SFLOAT, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_TYPE_2D, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT, VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_IMAGE_VIEW_TYPE_2D, VK_PIPELINE_BIND_POINT_GRAPHICS, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PRESENT_MODE_FIFO_KHR, VK_PRESENT_MODE_MAILBOX_KHR, VK_SAMPLE_COUNT_1_BIT, VK_SHARING_MODE_EXCLUSIVE, VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, VkAttachmentDescription, VkAttachmentReference, VkCommandBuffer, VkCommandBufferAllocateInfo, VkCommandPool, VkCommandPoolCreateInfo, VkDevice, VkDeviceMemory, VkExtent2D, VkExtent3D, VkFence, VkFenceCreateInfo, VkFormat, VkFramebuffer, VkFramebufferCreateInfo, VkImage, VkImageAspectFlags, VkImageCreateInfo, VkImageLayout, VkImageUsageFlags, VkImageView, VkImageViewCreateInfo, VkPhysicalDevice, VkPresentModeKHR, VkRenderPass, VkRenderPassCreateInfo, VkSemaphore, VkSemaphoreCreateInfo, VkSubpassDependency, VkSubpassDescription, VkSurfaceCapabilitiesKHR, VkSurfaceFormatKHR, VkSurfaceKHR, VkSwapchainCreateInfoKHR, VkSwapchainKHR, vkAllocateCommandBuffers, vkCreateCommandPool, vkCreateFence, vkCreateFramebuffer, vkCreateImage, vkCreateImageView, vkCreateRenderPass, vkCreateSemaphore, vkCreateSwapchainKHR, vkDestroyCommandPool, vkDestroyFence, vkDestroyFramebuffer, vkDestroyImage, vkDestroyImageView, vkDestroyRenderPass, vkDestroySemaphore, vkDestroySwapchainKHR, vkDeviceWaitIdle, vkFreeMemory, vkGetPhysicalDeviceSurfaceCapabilitiesKHR, vkGetPhysicalDeviceSurfaceFormatsKHR, vkGetPhysicalDeviceSurfacePresentModesKHR, vkGetSwapchainImagesKHR;
+import base.maybe : Maybe;
 import base.numbers : clamped;
 import client.graphics.pipeline : SUBPASS_EXTERNAL, VULKAN_TRUE, bindDeviceLocalImage, expectSuccess;
+import plugins.api.flags : Flags;
 
 enum uint MAX_SWAPCHAIN_IMAGES = 8;
 enum uint MAX_SURFACE_FORMATS = 64;
@@ -10,6 +12,11 @@ enum uint MAX_PRESENT_MODES = 16;
 enum uint UNDEFINED_EXTENT = uint.max;
 enum uint PRESENTING_DEPENDENCIES = 2;
 enum uint OFFSCREEN_DEPENDENCIES = 3;
+
+enum SwapchainMark : ubyte {
+    offscreen,
+    readable,
+}
 
 struct SwapchainState {
     VkImage[MAX_SWAPCHAIN_IMAGES] images;
@@ -35,8 +42,15 @@ struct SwapchainState {
     VkExtent2D extent;
     VkFormat format;
     uint imageCount;
-    bool isOffscreen;
-    bool isReadable;
+    Flags!SwapchainMark marks;
+
+    bool isOffscreen() const {
+        return marks.has(SwapchainMark.offscreen);
+    }
+
+    bool isReadable() const {
+        return marks.has(SwapchainMark.readable);
+    }
 
     void setup(VkPhysicalDevice physical, VkDevice device, VkSurfaceKHR targetSurface, uint queueFamily) {
         physicalDevice = physical;
@@ -47,7 +61,7 @@ struct SwapchainState {
 
     void setupOffscreen(VkPhysicalDevice physical, VkDevice device, uint queueFamily, VkExtent2D size) {
         physicalDevice = physical;
-        isOffscreen = true;
+        marks.set(SwapchainMark.offscreen);
         extent = size;
         format = VK_FORMAT_R8G8B8A8_SRGB;
         offscreenImage = createImage(device, format, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
@@ -154,8 +168,8 @@ struct SwapchainState {
     }
 
     void createSwapchain(VkDevice device, VkSurfaceCapabilitiesKHR capabilities) {
-        SurfaceFormat chosen = srgbSurfaceFormat(physicalDevice, surface);
-        assert(chosen.isFound);
+        Maybe!VkSurfaceFormatKHR chosen = srgbSurfaceFormat(physicalDevice, surface);
+        assert(chosen.exists);
         VkSurfaceFormatKHR surfaceFormat = chosen.value;
         format = surfaceFormat.format;
         VkSwapchainCreateInfoKHR info;
@@ -166,7 +180,7 @@ struct SwapchainState {
         info.imageColorSpace = surfaceFormat.colorSpace;
         info.imageExtent = extent;
         info.imageArrayLayers = 1;
-        isReadable = (capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
+        marks.put(SwapchainMark.readable, (capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0);
         info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         if (isReadable) {
             info.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
@@ -356,12 +370,7 @@ bool isSrgbSurfaceFormat(VkSurfaceFormatKHR candidate) {
     return candidate.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR && (candidate.format == VK_FORMAT_B8G8R8A8_SRGB || candidate.format == VK_FORMAT_R8G8B8A8_SRGB);
 }
 
-struct SurfaceFormat {
-    VkSurfaceFormatKHR value;
-    bool isFound;
-}
-
-SurfaceFormat srgbSurfaceFormat(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface) {
+Maybe!VkSurfaceFormatKHR srgbSurfaceFormat(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface) {
     VkSurfaceFormatKHR[MAX_SURFACE_FORMATS] formats;
     uint count = MAX_SURFACE_FORMATS;
     expectSuccess(vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &count, formats.ptr));
@@ -370,9 +379,9 @@ SurfaceFormat srgbSurfaceFormat(VkPhysicalDevice physicalDevice, VkSurfaceKHR su
         index += 1;
     }
     if (index < count) {
-        return SurfaceFormat(formats[index], true);
+        return Maybe!VkSurfaceFormatKHR.of(formats[index]);
     } else {
-        return SurfaceFormat.init;
+        return Maybe!VkSurfaceFormatKHR.init;
     }
 }
 

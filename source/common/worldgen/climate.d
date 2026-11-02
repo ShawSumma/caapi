@@ -1,5 +1,6 @@
 module common.worldgen.climate;
 
+import base.maybe : Maybe;
 import base.numbers : higherOf, lowerOf;
 import base.splitmix : SplitMix;
 import common.view : GraphView;
@@ -17,9 +18,6 @@ enum float BEACH_HEIGHT = 0.08f;
 enum float DEEP_WATER = 0.5f;
 enum float ROCKY_RELIEF = 2.2f;
 enum float WARMTH_CLASS_LIMIT = 0.35f;
-enum uint TEST_SAMPLES = 50;
-enum uint TEST_GENERATIONS = 2000;
-enum float TEST_TOLERANCE = 1e-4f;
 
 struct Process {
     float keep;
@@ -61,6 +59,7 @@ struct NodeClimate {
     float wetness = 0;
     float strata = 0;
     float ruggedness = 0;
+    float calm = 1;
 
     static NodeClimate fromParents(const(NodeClimate)[] parents, ulong spice) {
         NodeClimate mean;
@@ -76,7 +75,7 @@ struct NodeClimate {
     }
 
     Climate climate() const {
-        return Climate(broad + local + mountainOf(ruggedness), heat, wetness, strata);
+        return Climate(calm * (broad + local + mountainOf(ruggedness)), heat, wetness, strata);
     }
 }
 
@@ -169,9 +168,9 @@ struct CubeClimate {
     }
 }
 
-Material groundAt(float depth, Climate climate) {
+Material groundAt(float depth, float riser, Climate climate) {
     float warmth = climate.warmth();
-    if (depth < COVER_DEPTH) {
+    if (depth < higherOf(COVER_DEPTH, lowerOf(riser, SOIL_DEPTH))) {
         return coverOf(warmth, climate.wetness, climate.relief);
     } else if (depth < SOIL_DEPTH) {
         return soilOf(warmth, climate.wetness, climate.relief);
@@ -276,44 +275,12 @@ uint warmthClass(float warmth) {
     }
 }
 
-struct UniformRock {
-    Material material;
-    bool isProven;
-}
-
-UniformRock uniformRock(float shallowest, float deepest, Climate lowest, Climate highest) {
+Maybe!Material uniformRock(float shallowest, float deepest, Climate lowest, Climate highest) {
     float coldest = lowest.heat - LAPSE_RATE * highest.relief;
     float warmest = highest.heat - LAPSE_RATE * lowest.relief;
-    bool isSame = shallowest >= SOIL_DEPTH;
-    isSame = isSame && rockBand(shallowest + lowest.strata) == rockBand(deepest + highest.strata);
-    isSame = isSame && wetnessClass(lowest.wetness) == wetnessClass(highest.wetness);
-    isSame = isSame && warmthClass(coldest) == warmthClass(warmest);
-    if (isSame) {
-        return UniformRock(ROCKS[rockBand(shallowest + lowest.strata)][wetnessClass(lowest.wetness)][warmthClass(coldest)], true);
+    if (shallowest >= SOIL_DEPTH && rockBand(shallowest + lowest.strata) == rockBand(deepest + highest.strata) && wetnessClass(lowest.wetness) == wetnessClass(highest.wetness) && warmthClass(coldest) == warmthClass(warmest)) {
+        return Maybe!Material.of(ROCKS[rockBand(shallowest + lowest.strata)][wetnessClass(lowest.wetness)][warmthClass(coldest)]);
     } else {
-        return UniformRock(Material.none, false);
-    }
-}
-
-unittest {
-    NodeClimate[8] around;
-    foreach (index; 0 .. 8) {
-        around[index] = NodeClimate.fromParents(around[0 .. index], index * 977);
-    }
-    CubeClimate cube = CubeClimate.fromAround(around);
-    assert(cube.corners[7].relief == around[0].climate().relief);
-    foreach (sample; 0 .. TEST_SAMPLES) {
-        float t = cast(float) sample / TEST_SAMPLES;
-        Climate inside = cube.at([t, 1 - t, t * t]);
-        assert(inside.relief >= cube.lowest.relief - TEST_TOLERANCE && inside.relief <= cube.highest.relief + TEST_TOLERANCE);
-        UniformRock rock = uniformRock(SOIL_DEPTH + t * 4, SOIL_DEPTH + t * 4, inside, inside);
-        assert(rock.isProven && rock.material == groundAt(SOIL_DEPTH + t * 4, inside));
-    }
-    NodeClimate walked;
-    foreach (generation; 0 .. TEST_GENERATIONS) {
-        NodeClimate[1] parent = [walked];
-        walked = NodeClimate.fromParents(parent[], generation * 0x9E37);
-        assert(walked.broad <= boundOf(BROAD_RELIEF) && walked.broad >= -boundOf(BROAD_RELIEF));
-        assert(walked.heat <= boundOf(HEAT) && walked.heat >= -boundOf(HEAT));
+        return Maybe!Material.init;
     }
 }

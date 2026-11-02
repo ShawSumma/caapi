@@ -25,7 +25,7 @@ enum double ROOT_DROOP = 5;
 enum double ROOT_WANDER = 10;
 
 enum uint SEGMENT_LIMBS = 4;
-enum double BARE_SHARE = 0.4;
+enum double BARE_HEIGHT = 10;
 enum double LOWEST_LIMB_ANGLE = 85;
 enum double HIGHEST_LIMB_ANGLE = 45;
 enum double LIMB_SHARE = 0.5;
@@ -37,6 +37,15 @@ enum double LEAF_START = 0.4;
 immutable double[2] TWIG_LEAVES = [3, 4];
 immutable double[2] TIP_LEAVES = [3.5, 5];
 enum uint MOST_CHILDREN = 8;
+
+enum double FULL_TURN = 360;
+enum double QUARTER_TURN = 90;
+enum double LIMB_DRIFT = 15;
+
+enum Trunk : ubyte {
+    bare,
+    climbed,
+}
 
 struct Order {
     uint children;
@@ -71,7 +80,7 @@ void branch(Drawing start, double length, double radius, size_t order) {
     uint steps = cast(uint) higherOf(1.0, ceil(length / STEP));
     double step = length / steps;
     double tip = higherOf(THINNEST, radius * shape.tip);
-    double roll = pen.between(0, 360);
+    double roll = pen.between(0, FULL_TURN);
     double[MOST_CHILDREN] places;
     uint count = 0;
     if (order + 1 < ORDERS.length) {
@@ -103,16 +112,16 @@ void branch(Drawing start, double length, double radius, size_t order) {
     }
 }
 
-double trunkRadius(double height) {
-    return TRUNK_RADIUS + TRUNK_FLARE * exp(-higherOf(0.0, height) / TRUNK_FLARE_HEIGHT);
+double trunkRadius(double aboveGround) {
+    return TRUNK_RADIUS + TRUNK_FLARE * exp(-higherOf(0.0, aboveGround) / TRUNK_FLARE_HEIGHT);
 }
 
 void roots(Drawing base) {
-    double turn = base.between(0, 360);
+    double turn = base.between(0, FULL_TURN);
     uint steps = cast(uint) ceil(ROOT_LENGTH / STEP);
     foreach (root; 0 .. ROOT_COUNT) {
-        double around = turn + (root + 1) * 360.0 / ROOT_COUNT + base.between(-ROOT_WANDER, ROOT_WANDER);
-        Drawing pen = base.roll(around).turn(0, 90 + ROOT_DIP + base.between(-ROOT_WANDER, ROOT_WANDER));
+        double around = turn + (root + 1) * FULL_TURN / ROOT_COUNT + base.between(-ROOT_WANDER, ROOT_WANDER);
+        Drawing pen = base.roll(around).turn(0, QUARTER_TURN + ROOT_DIP + base.between(-ROOT_WANDER, ROOT_WANDER));
         foreach (index; 0 .. steps) {
             double from = ROOT_RADIUS + (ROOT_TIP - ROOT_RADIUS) * index / steps;
             double to = ROOT_RADIUS + (ROOT_TIP - ROOT_RADIUS) * (index + 1.0) / steps;
@@ -121,32 +130,41 @@ void roots(Drawing base) {
     }
 }
 
-void segment(Turtle base, int index) {
-    double edge = base.edgeCells();
-    double start = 0;
-    if (index == 0) {
-        start = -TRUNK_SINK;
+double limbRoll(Trunk trunk, Drawing pen, double firstRoll, uint limb, double along) {
+    final switch (trunk) {
+        case Trunk.bare:
+            return firstRoll + (limb + 1) * GOLDEN_ANGLE;
+        case Trunk.climbed:
+            return along * FULL_TURN + FULL_TURN / 2 - QUARTER_TURN + pen.between(-LIMB_DRIFT, LIMB_DRIFT);
     }
-    Drawing pen = base.pen().forward(start);
-    uint steps = cast(uint) ceil((edge - start) / STEP);
-    double step = (edge - start) / steps;
-    double roll = pen.between(0, 360);
-    uint limb = 0;
-    foreach (stepIndex; 0 .. steps) {
-        double height = start + stepIndex * step;
-        if (index == 0 && height <= ROOT_HEIGHT && height + step > ROOT_HEIGHT) {
-            roots(pen);
-        }
-        double low = index * edge + height;
-        pen = pen.limb(BARK, step, trunkRadius(low), trunkRadius(low + step));
-        while (limb < SEGMENT_LIMBS && (limb + 1.0) / (SEGMENT_LIMBS + 1) * edge <= height + step) {
-            double along = (limb + 1.0) / (SEGMENT_LIMBS + 1);
-            if (index > 0 || along >= BARE_SHARE) {
-                double angle = LOWEST_LIMB_ANGLE + (HIGHEST_LIMB_ANGLE - LOWEST_LIMB_ANGLE) * pen.random();
-                Drawing fork = pen.roll(roll + (limb + 1) * GOLDEN_ANGLE).turn(0, pen.between(angle - SPREAD, angle + SPREAD));
-                branch(fork, LIMB_SHARE * edge * (1 - LATER_SHORTER * pen.random()), trunkRadius(low + step) * LIMB_WIDTH, 0);
+}
+
+void segment(Turtle base, int index, int ground, Trunk trunk) {
+    double edge = base.edgeCells();
+    double bottom = index * edge;
+    double start = higherOf(0.0, ground - TRUNK_SINK - bottom);
+    if (start < edge) {
+        Drawing pen = base.pen().forward(start);
+        uint steps = cast(uint) ceil((edge - start) / STEP);
+        double step = (edge - start) / steps;
+        double roll = pen.between(0, FULL_TURN);
+        uint limb = 0;
+        foreach (stepIndex; 0 .. steps) {
+            double height = start + stepIndex * step;
+            double above = bottom + height - ground;
+            if (above <= ROOT_HEIGHT && above + step > ROOT_HEIGHT) {
+                roots(pen);
             }
-            limb += 1;
+            pen = pen.limb(BARK, step, trunkRadius(above), trunkRadius(above + step));
+            while (limb < SEGMENT_LIMBS && (limb + 1.0) / (SEGMENT_LIMBS + 1) * edge <= height + step) {
+                double along = (limb + 1.0) / (SEGMENT_LIMBS + 1);
+                if (bottom + along * edge - ground >= BARE_HEIGHT) {
+                    double angle = LOWEST_LIMB_ANGLE + (HIGHEST_LIMB_ANGLE - LOWEST_LIMB_ANGLE) * pen.random();
+                    Drawing fork = pen.roll(limbRoll(trunk, pen, roll, limb, along)).turn(0, pen.between(angle - SPREAD, angle + SPREAD));
+                    branch(fork, LIMB_SHARE * edge * (1 - LATER_SHORTER * pen.random()), trunkRadius(above + step) * LIMB_WIDTH, 0);
+                }
+                limb += 1;
+            }
         }
     }
 }

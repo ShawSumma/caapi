@@ -13,8 +13,6 @@ enum int LANDMARK_RINGS = 3;
 immutable float[3] SPAWN = [-14, 12, 0];
 immutable Connection CONNECTION = Connection.rolled();
 
-// Walks outward from the spawn, four arms of three turns each, far enough apart that the widest landmark (the palace,
-// a face and its neighbors) keeps clear of the road and of the next landmark.
 struct LandmarkSites {
     Turtle[4] arms;
     uint next;
@@ -38,9 +36,12 @@ void landmarks(const(Api)* api, Turtle at) {
     Turtle aside = at.left().forward(2);
     Turtle beyond = at.right().forward(5).right();
     LandmarkSites sites = LandmarkSites([ahead.forward(1), behind.forward(1), aside, beyond]);
-    uint index = 0;
-    while (index < LANDMARK_RINGS * sites.arms.length && api.landmark(api, index, sites.take().site)) {
-        index += 1;
+    foreach (index; 0 .. LANDMARK_RINGS * cast(uint) sites.arms.length) {
+        Turtle site = sites.take();
+        if (!api.landmark(api, index, site.site)) {
+            return;
+        }
+        api.flatten(api, site.site);
     }
 }
 

@@ -1,9 +1,10 @@
 module client.frames;
 
-import core.math : cos, sin, sqrt;
+import core.math : sqrt;
 import core.stdc.math : atan2, fabs, round;
 import core.stdc.stdio : FILE, fprintf;
 import base.clock : MILLISECONDS_PER_SECOND, PhaseTimes;
+import base.maybe : Maybe;
 import base.numbers : higherOf, lowerOf;
 import client.images : ImageDifference;
 import common.graph : Graph, NO_SLOT;
@@ -13,17 +14,10 @@ import geometry.lorentz : Motion, Point;
 
 immutable double[2] LATE_INTERVALS_MS = [20, 34];
 enum double MOVING_DISTANCE = 1e-6;
-enum uint TEST_STEPS = 7;
-immutable double[2] TEST_COUNTS = [100, -23];
-immutable double[3] TEST_START = [0.3, -0.1, 0.2];
-immutable double[3] TEST_SHIFT = [0.004, 0.0, -0.01];
-enum double TEST_TURN = 0.3;
-enum double TEST_TOLERANCE = 1e-4;
 
 struct CameraStep {
     double turned = 0;
     double moved = 0;
-    bool isMeasured;
 }
 
 struct RenderTimes {
@@ -37,26 +31,24 @@ struct RenderTimes {
 
 struct FrameRecord {
     uint frame;
-    double intervalMs = 0;
+    Maybe!double intervalMs = Maybe!double(0, false);
     double dtMs = 0;
     double stepMs = 0;
     RenderTimes render;
     double dx = 0;
     double dy = 0;
-    CameraStep step;
-    ImageDifference image;
-    bool hasInterval;
-    bool hasImage;
+    Maybe!CameraStep step;
+    Maybe!ImageDifference image;
 
     void print(FILE* report) const {
-        fprintf(report, "frame %u: interval %.2fms dt %.2fms step %.2fms render %.2fms (fence %.2f update %.2f present %.2f, gpu %.2f) input %+.0f %+.0f", frame, intervalMs, dtMs, stepMs, render.totalMs, render.fenceMs, render.updateMs, render.presentMs, render.gpuMs, dx, dy);
-        if (step.isMeasured) {
-            fprintf(report, " turned %.5f moved %.5f", step.turned, step.moved);
+        fprintf(report, "frame %u: interval %.2fms dt %.2fms step %.2fms render %.2fms (fence %.2f update %.2f present %.2f, gpu %.2f) input %+.0f %+.0f", frame, intervalMs.value, dtMs, stepMs, render.totalMs, render.fenceMs, render.updateMs, render.presentMs, render.gpuMs, dx, dy);
+        if (step.exists) {
+            fprintf(report, " turned %.5f moved %.5f", step.value.turned, step.value.moved);
         } else {
             fprintf(report, " camera step unknown");
         }
-        if (hasImage) {
-            fprintf(report, " image changed %.4f mean %.2f largest %d", image.changed, image.meanDelta, image.largestDelta);
+        if (image.exists) {
+            fprintf(report, " image changed %.4f mean %.2f largest %d", image.value.changed, image.value.meanDelta, image.value.largestDelta);
         }
         fprintf(report, "\n");
     }
@@ -115,33 +107,34 @@ struct FrameSummary {
         acquire.add(record.render.acquireMs);
         present.add(record.render.presentMs);
         gpu.add(record.render.gpuMs);
-        if (record.step.isMeasured) {
-            turnedTotal += record.step.turned;
+        if (record.step.exists) {
+            turnedTotal += record.step.value.turned;
         }
         countsTotal += sqrt(record.dx * record.dx + record.dy * record.dy);
-        if (record.hasInterval) {
+        if (record.intervalMs.exists) {
+            double interval = record.intervalMs.value;
             frames += 1;
-            intervalTotalMs += record.intervalMs;
-            worstIntervalMs = higherOf(record.intervalMs, worstIntervalMs);
+            intervalTotalMs += interval;
+            worstIntervalMs = higherOf(interval, worstIntervalMs);
             foreach (index, limit; LATE_INTERVALS_MS) {
-                if (record.intervalMs > limit) {
+                if (interval > limit) {
                     late[index] += 1;
                 }
             }
-            double error = fabs(record.dtMs - record.intervalMs);
+            double error = fabs(record.dtMs - interval);
             stepErrorTotalMs += error;
             worstStepErrorMs = higherOf(error, worstStepErrorMs);
-            if (record.step.isMeasured && record.step.moved > MOVING_DISTANCE && record.intervalMs > 0) {
-                double speed = record.step.moved / (record.intervalMs / MILLISECONDS_PER_SECOND);
+            if (record.step.exists && record.step.value.moved > MOVING_DISTANCE && interval > 0) {
+                double speed = record.step.value.moved / (interval / MILLISECONDS_PER_SECOND);
                 moving += 1;
                 speedTotal += speed;
                 slowestSpeed = lowerOf(speed, slowestSpeed);
                 fastestSpeed = higherOf(speed, fastestSpeed);
             }
         }
-        if (record.hasImage) {
+        if (record.image.exists) {
             imaged += 1;
-            if (record.image.changed == 0) {
+            if (record.image.value.changed == 0) {
                 stillImages += 1;
             }
         }
@@ -165,23 +158,20 @@ struct FrameSummary {
     }
 }
 
-CameraStep cameraStep(ref const Graph graph, Position before, Position after) {
+Maybe!CameraStep cameraStep(ref const Graph graph, Position before, Position after) {
     uint from = graph.slotOf(before.node);
     uint to = graph.slotOf(after.node);
-    Motion!double carried = before.local.as!double();
-    bool isNear = from == to && from != NO_SLOT;
-    uint face = 0;
-    while (!isNear && from != NO_SLOT && to != NO_SLOT && face < FACE_COUNT) {
-        if (graph.neighborSlot(to, cast(Face) face) == from) {
-            carried = (cast(Face) face).mirror.as!double() * carried;
-            isNear = true;
-        }
-        face += 1;
-    }
-    if (isNear) {
-        return stepBetween(carried, after.local.as!double());
+    if (from == NO_SLOT || to == NO_SLOT) {
+        return Maybe!CameraStep.init;
+    } else if (from == to) {
+        return Maybe!CameraStep.of(stepBetween(before.local.as!double(), after.local.as!double()));
     } else {
-        return CameraStep.init;
+        foreach (face; 0 .. FACE_COUNT) {
+            if (graph.neighborSlot(to, cast(Face) face) == from) {
+                return Maybe!CameraStep.of(stepBetween((cast(Face) face).mirror.as!double() * before.local.as!double(), after.local.as!double()));
+            }
+        }
+        return Maybe!CameraStep.init;
     }
 }
 
@@ -192,27 +182,5 @@ CameraStep stepBetween(Motion!double before, Motion!double after) {
     double cosine = (turn.m.c[0][0] + turn.m.c[1][1] + turn.m.c[2][2] - 1) / 2;
     double[3] axis = [turn.m.c[1][2] - turn.m.c[2][1], turn.m.c[2][0] - turn.m.c[0][2], turn.m.c[0][1] - turn.m.c[1][0]];
     double sine = sqrt(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]) / 2;
-    return CameraStep(atan2(sine, cosine), reached.distance(Point!double.origin()), true);
-}
-
-unittest {
-    MouseMotion motion = MouseMotion(TEST_COUNTS, [0, 0], TEST_STEPS, 0);
-    double[2] sum = 0;
-    while (motion.isActive()) {
-        double[2] share = motion.next();
-        foreach (axis; 0 .. 2) {
-            assert(share[axis] == round(share[axis]));
-            sum[axis] += share[axis];
-        }
-    }
-    assert(sum[0] == TEST_COUNTS[0] && sum[1] == TEST_COUNTS[1]);
-    Motion!double start = Motion!double.shift(TEST_START);
-    Motion!double turn = Motion!double.identity();
-    turn.m.c[0][0] = cos(TEST_TURN);
-    turn.m.c[0][2] = -sin(TEST_TURN);
-    turn.m.c[2][0] = sin(TEST_TURN);
-    turn.m.c[2][2] = cos(TEST_TURN);
-    CameraStep step = stepBetween(start, start * turn * Motion!double.shift(TEST_SHIFT));
-    double length = sqrt(TEST_SHIFT[0] * TEST_SHIFT[0] + TEST_SHIFT[1] * TEST_SHIFT[1] + TEST_SHIFT[2] * TEST_SHIFT[2]);
-    assert(step.isMeasured && fabs(step.moved - length) < TEST_TOLERANCE && fabs(step.turned - TEST_TURN) < TEST_TOLERANCE);
+    return CameraStep(atan2(sine, cosine), reached.distance(Point!double.origin()));
 }

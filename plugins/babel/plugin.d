@@ -1,8 +1,8 @@
 module plugins.babel.plugin;
 
-import plugins.api.api : Api, ENTRY, HorosphereForm, Look, Material, NO_KIND, Registry, Rhythm, Risen, RisingKind, Site;
+import plugins.api.api : Api, ENTRY, HorosphereForm, Look, Material, NO_KIND, Registry, Rhythm, Risen, RisingKind, Site, Tint;
 import plugins.connector.connector : Tag;
-import plugins.turtle.turtle : ENDLESS_HIGH, Tread, Turtle, boxOf, cornersOf, floorMod, middle, treadAround, upright;
+import plugins.turtle.turtle : Tread, Turtle, boxOf, floorMod, higherOf, lawn, middle, treadAround;
 
 enum int CORE = 3;
 enum int RING = 5;
@@ -18,9 +18,9 @@ enum Material WALL = Material.sandstone;
 enum Material STEP = Material.redSandstone;
 enum Material BAND = Material.marble;
 enum double COLUMN_SHARE = 0.1;
-immutable Look LOOK = Look("babel", [0.82f, 0.74f, 0.58f], true);
+enum uint COLUMN_EDGES = 2;
+immutable Look LOOK = Look("babel", [0.82f, 0.74f, 0.58f], Tint.fog);
 
-// A rhythm counts from the bottom of its site; a segment lifted above the stair's start moves every rhythm down by that much.
 void core(Turtle tower, int[2] rising, int lifted) {
     int[2] wall = [-CORE, CORE - 1];
     int[2] room = [-CORE + 1, CORE - 2];
@@ -46,38 +46,34 @@ void route(Turtle tower) {
     }
 }
 
-void lawn(const(Api)* api, Site face, const(Risen)* risen, const(void)* data) {
-    foreach (corner; cornersOf(Turtle(api, face))) {
-        upright(corner).paint(Material.grass, boxOf([0, corner.column().high], [0, corner.column().high], [-1, -1]));
+void column(const(Api)* api, Site base, const(Risen)* risen, const(void)* data) {
+    Turtle tower = Turtle(api, base);
+    int length = tower.edgeCells();
+    int lifted = risen.segment * length;
+    int plaza = risen.ground - lifted;
+    if (plaza >= 0 && plaza < length) {
+        tower.fill(WALL, boxOf([-PLAZA, PLAZA - 1], [-PLAZA, PLAZA - 1], [plaza - FOOTING, plaza - 1]));
+        tower.paint(Material.granite, boxOf([-PLAZA, PLAZA - 1], [-PLAZA, PLAZA - 1], [plaza, plaza]));
+    }
+    if (plaza < length) {
+        int[2] rising = [higherOf(0, plaza), length - 1];
+        core(tower, rising, lifted);
+        stair(tower, rising, lifted);
     }
 }
 
 void landmark(const(Api)* api, Site site, const(void)* data) {
-    Turtle tower = upright(Turtle(api, site));
-    tower.paint(Material.granite, boxOf([-PLAZA, PLAZA - 1], [-PLAZA, PLAZA - 1], [0, 0]));
-    core(tower, [0, ENDLESS_HIGH], 0);
-    stair(tower, [0, ENDLESS_HIGH], 0);
-    route(tower);
-}
-
-void column(const(Api)* api, Site base, const(Risen)* risen, const(void)* data) {
-    Turtle tower = Turtle(api, base);
-    int length = tower.edgeCells();
-    int[2] rising = [0, length - 1];
-    int lifted = risen.segment * length;
-    if (risen.segment == 0) {
-        tower.fill(WALL, boxOf([-PLAZA, PLAZA - 1], [-PLAZA, PLAZA - 1], [-FOOTING, -1]));
-        tower.paint(Material.granite, boxOf([-PLAZA, PLAZA - 1], [-PLAZA, PLAZA - 1], [0, 0]));
-    }
-    core(tower, rising, lifted);
-    stair(tower, rising, lifted);
+    uint kind = api.horosphere(api, 0, HorosphereForm.upright, Tag.column, &column, null, 0);
+    api.openHorosphere(api, site, kind, COLUMN_EDGES);
 }
 
 void world(const(Api)* api, Site site, const(void)* data) {
     landmark(api, site, data);
     api.tile(api, &lawn, null, 0);
     api.look(api, NO_KIND, &LOOK);
-    upright(Turtle(api, site)).entrance(SPAWN[0], SPAWN[1], SPAWN[2]);
+    Turtle tower = Turtle(api, site).columnSite();
+    route(tower);
+    tower.entrance(SPAWN[0], SPAWN[1], SPAWN[2]);
 }
 
 pragma(mangle, ENTRY) void plugin(const(Registry)* registry) {

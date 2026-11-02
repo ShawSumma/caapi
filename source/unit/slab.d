@@ -2,7 +2,7 @@ module unit.slab;
 
 import base.array : Array;
 import base.pages : pageSize;
-import base.slab : FreeIndices, NOTED_PAGES_PER_DISCARD, Run, RunPool, SLAB_SHIFT, SLAB_SIZE, Slab;
+import base.slab : DiscardPass, FreeIndices, NOTED_PAGES_PER_DISCARD, Run, RunPool, SLAB_SHIFT, SLAB_SIZE, Slab;
 
 enum uint RUNS = 3000;
 enum uint INDICES = 10000;
@@ -49,7 +49,7 @@ unittest {
     do {
         uint calls = 1;
         slab.discardNoted(free, count, 1, calls);
-    } while (slab.isDiscarding);
+    } while (slab.pass == DiscardPass.sweeping);
     assert(slab.notedCount == 0);
     assert(slab.at(straddling).values[0] == straddling + 1 && slab.at(inside).values[0] == inside + 1);
     foreach (index; 0 .. count) {

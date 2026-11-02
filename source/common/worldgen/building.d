@@ -4,7 +4,7 @@ import core.stdc.stdlib : calloc, free, malloc;
 import base.array : Array;
 import base.numbers : higherOf, lowerOf;
 import common.graph : Graph;
-import common.worldgen.blueprint : Brush, BrushRank, CellBox, LineSpec, Paint, Painted;
+import common.worldgen.blueprint : Brush, BrushRank, CellBox, Cover, LineSpec, Paint, Painted;
 import common.worldgen.strokes : Stroke, StrokeReach, StrokeRun;
 import common.worldgen.structure : ColumnChunk, LineTouch, isOnTouch, isTouchInRange;
 import geometry.honeycomb : CORNER_COUNT, Corner, NODE_RADIUS;
@@ -216,7 +216,7 @@ struct Building {
         if (chunkPaints !is null && chunkPaints[corner] !is null) {
             paint = chunkPaints[corner][cells.cellIndex(cell)];
         }
-        if (paint.material == 0 || (paint.isIntoAirOnly && existing != Material.none)) {
+        if (paint.material == 0 || (paint.cover == Cover.intoAir && existing != Material.none)) {
             return existing;
         } else {
             return materials.ptr[paint.material - 1];

@@ -3,14 +3,12 @@ module common.worldgen.plane;
 import core.stdc.math : asinh, exp, fabs, fabsf, log, log1p, sqrt, sqrtf, tanh;
 import common.character.chart : applied, gridJacobian;
 import common.node : ChunkLayout;
-import geometry.honeycomb : Corner, FACE_COUNT, FACE_DISTANCE, Face, cubeToNode, direction, mirror, nodeToCorner, opposite;
+import geometry.honeycomb : Corner, FACE_COUNT, FACE_DISTANCE, Face, cubeToNode, direction, mirror, nodeToCorner;
 import geometry.lorentz : Mat4, Motion, Point, Vec4;
 
 enum double LARGEST_DIRECT_SCALE = 600;
 enum float SNAP_TOLERANCE = 0.05f;
 enum float SNAP_ALIGNMENT = 0.99f;
-enum float TEST_TOLERANCE = 1e-3f;
-enum uint TEST_STEPS = 8;
 
 struct Plane {
     float[3] up;
@@ -148,36 +146,4 @@ double logCosh(double x) {
 float[3] unit(double[3] v) {
     double length = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
     return [cast(float)(v[0] / length), cast(float)(v[1] / length), cast(float)(v[2] / length)];
-}
-
-Face alternatingFace(uint step) {
-    if (step % 2 == 0) {
-        return Face.f0;
-    } else {
-        return Face.f0.opposite;
-    }
-}
-
-unittest {
-    Plane ground = Plane.ofFace(Face.f0);
-    assert(fabsf(ground.distanceTo(Point!float.origin()) + FACE_DISTANCE) < TEST_TOLERANCE);
-    Plane across = ground.reflectAcross(Face.f0);
-    assert(fabsf(across.distanceTo(Point!float.origin()) - FACE_DISTANCE) < TEST_TOLERANCE);
-    Point!float point = Motion!float.shift([0.3f, -0.2f, 0.4f]) * Point!float.origin();
-    Plane far = ground;
-    foreach (step; 0 .. TEST_STEPS) {
-        far = far.reflectAcross(alternatingFace(step));
-    }
-    assert(far.height > TEST_STEPS / 2);
-    Plane back = far;
-    foreach_reverse (step; 0 .. TEST_STEPS) {
-        back = back.reflectAcross(alternatingFace(step));
-    }
-    assert(fabsf(back.distanceTo(point) - ground.distanceTo(point)) < TEST_TOLERANCE);
-    Plane nudged = Plane([ground.up[0] + 1e-3f, ground.up[1], ground.up[2]], ground.height + 1e-3f);
-    Plane snapped = nudged.snappedToFaces();
-    assert(snapped.height == ground.height && snapped.up[0] == ground.up[0] && snapped.up[1] == ground.up[1] && snapped.up[2] == ground.up[2]);
-    assert((-nudged).snappedToFaces().height == -ground.height);
-    Plane fromItsNormal = Plane.fromNormal(Vec4!float([ground.up[0] * 1.2f, ground.up[1] * 1.2f, ground.up[2] * 1.2f, 0.0f]).toNormal().v);
-    assert(fabsf(fromItsNormal.height) < TEST_TOLERANCE);
 }

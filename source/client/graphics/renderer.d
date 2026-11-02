@@ -5,6 +5,7 @@ import core.stdc.string : memcpy;
 import bindings.platform : VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_HOST_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_ERROR_OUT_OF_DATE_KHR, VK_FORMAT_B8G8R8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, VK_STRUCTURE_TYPE_PRESENT_ID_KHR, VkPresentIdKHR, VkImage, VkImageLayout, VkImageMemoryBarrier, VkImageSubresourceRange, VK_PIPELINE_BIND_POINT_GRAPHICS, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_QUERY_RESULT_64_BIT, VK_QUERY_TYPE_TIMESTAMP, VK_SHADER_STAGE_VERTEX_BIT, VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, VK_STRUCTURE_TYPE_MEMORY_BARRIER, VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, VK_STRUCTURE_TYPE_SUBMIT_INFO, VK_SUBOPTIMAL_KHR, VK_SUBPASS_CONTENTS_INLINE, VK_SUCCESS, VkBufferImageCopy, VkClearValue, VkCommandBuffer, VkCommandBufferBeginInfo, VkDescriptorSet, VkDevice, VkDeviceSize, VkDrawIndirectCommand, VkExtent2D, VkExtent3D, VkImageSubresourceLayers, VkMemoryBarrier, VkPhysicalDevice, VkPhysicalDeviceProperties, VkPipelineStageFlags, VkPresentInfoKHR, VkQueryPool, VkQueryPoolCreateInfo, VkRect2D, VkRenderPassBeginInfo, VkResult, VkSubmitInfo, VkViewport, vkAcquireNextImageKHR, vkBeginCommandBuffer, vkCmdBeginRenderPass, vkCmdBindDescriptorSets, vkCmdBindPipeline, vkCmdCopyImageToBuffer, vkCmdDrawIndirect, vkCmdEndRenderPass, vkCmdNextSubpass, vkCmdPipelineBarrier, vkCmdPushConstants, vkCmdResetQueryPool, vkCmdSetScissor, vkCmdSetViewport, vkCmdWriteTimestamp, vkCreateQueryPool, vkDestroyQueryPool, vkDeviceWaitIdle, vkEndCommandBuffer, vkGetPhysicalDeviceProperties, vkGetQueryPoolResults, vkQueuePresentKHR, vkQueueSubmit, vkResetCommandBuffer, vkResetFences, vkWaitForFences;
 import base.array : Array;
 import base.clock : NANOSECONDS_PER_MILLISECOND, nowMilliseconds;
+import base.maybe : Maybe;
 import base.numbers : RADIANS_PER_DEGREE, lowerOf;
 import base.parallel : ParallelJob;
 import base.units : Angle;
@@ -19,8 +20,9 @@ import client.graphics.overlay : HudPipeline, MarkerPipeline;
 import client.hud : HudVertex, Marker;
 import client.graphics.pipeline : GpuBuffer, QUEUE_FAMILY_IGNORED, VULKAN_TRUE, expectSuccess;
 import client.graphics.voxels.cull : CullPipeline;
-import client.graphics.voxels.meshes : ChunkMeshes, meshJob;
+import client.graphics.voxels.meshes : ChunkMeshes, Replaced, meshJob;
 import client.graphics.voxels.surface : COLOR_CHANNELS, CommonUniforms, FACES_BINDING, LayoutPush, SurfacePipeline, TRANSFORMS_BINDING, glowingMaterials;
+import client.images : PixelOrder;
 import client.world : FOG_SHARPNESS, LocalWorld, fogReach;
 import common.node : ChunkLayout;
 import common.raycast.graph : GraphCastHit;
@@ -28,6 +30,7 @@ import common.traversal : NOT_COLLECTED;
 import geometry.honeycomb : CUBE_RADIUS, cubeToNode;
 import geometry.lorentz : Motion, Normal, Point, Vec4;
 import plugins.api.api : Material;
+import plugins.api.flags : Flags;
 
 enum Angle HALF_VERTICAL_FOV = Angle(cast(float)(45 * RADIANS_PER_DEGREE));
 enum float NEAR_PLANE = 1.0e-4f;
@@ -53,7 +56,17 @@ struct HighlightTarget {
     float[MATRIX_FLOATS] model;
     float[3] low;
     float[3] high;
-    bool isFound;
+}
+
+enum CaptureMark : ubyte {
+    wanted,
+    copying,
+    ready,
+}
+
+enum SubmitKind : ubyte {
+    offscreen,
+    presenting,
 }
 
 struct GpuTimes {
@@ -137,9 +150,7 @@ struct Renderer {
     ubyte dimension;
     uint backlog;
     ulong presentCount;
-    bool isCapturing;
-    bool hasCopy;
-    bool isCaptureReady;
+    Flags!CaptureMark captureMarks;
 
     const(char)* setup(SurfaceSource source, ubyte chunkDimension) {
         prepare(chunkDimension);
@@ -161,15 +172,19 @@ struct Renderer {
     }
 
     const(ubyte)[] capturedImage() const {
-        if (isCaptureReady) {
+        if (captureMarks.has(CaptureMark.ready)) {
             return captured.slice();
         } else {
             return null;
         }
     }
 
-    bool isCapturedBgra() const {
-        return swapchain.format == VK_FORMAT_B8G8R8A8_SRGB;
+    PixelOrder capturedOrder() const {
+        if (swapchain.format == VK_FORMAT_B8G8R8A8_SRGB) {
+            return PixelOrder.bgra;
+        } else {
+            return PixelOrder.rgba;
+        }
     }
 
     const(char)* setupOffscreen(VkExtent2D extent, ubyte chunkDimension) {
@@ -207,7 +222,7 @@ struct Renderer {
     }
 
     void render(ref LocalWorld world) {
-        isCaptureReady = false;
+        captureMarks.clear(CaptureMark.ready);
         if (swapchain.isMinimized()) {
             recreateSwapchain();
         }
@@ -258,7 +273,7 @@ struct Renderer {
         double updateStart = nowMilliseconds();
         frameTimes.fenceWaitMs = updateStart - waitStart;
         frameTimes.gpu = timer.read(core.device, frameTimes.gpu);
-        if (hasCopy) {
+        if (captureMarks.has(CaptureMark.copying)) {
             takeCopy();
         }
         CommonUniforms uniforms = commonUniforms(world);
@@ -266,11 +281,11 @@ struct Renderer {
         hud.upload(hudVertices);
         updateChunks(world);
         frameTimes.chunkUpdateMs = nowMilliseconds() - updateStart;
-        HighlightTarget target = findHighlightTarget(world);
+        Maybe!HighlightTarget target = findHighlightTarget(world);
         if (swapchain.isOffscreen) {
             expectSuccess(vkResetFences(core.device, 1, &swapchain.inFlightFence));
             recordCommands(OFFSCREEN_IMAGE, target);
-            submit(false);
+            submit(SubmitKind.offscreen);
         } else {
             double presentStart = nowMilliseconds();
             uint imageIndex;
@@ -282,7 +297,7 @@ struct Renderer {
                 expectSuccess(vkResetFences(core.device, 1, &swapchain.inFlightFence));
                 frameTimes.acquireMs = nowMilliseconds() - presentStart;
                 recordCommands(imageIndex, target);
-                submit(true);
+                submit(SubmitKind.presenting);
                 present(imageIndex);
             }
             frameTimes.presentMs = nowMilliseconds() - presentStart;
@@ -299,7 +314,7 @@ struct Renderer {
         world.unloaded.clear();
         meshes.list(world.nearby[world.published], world.listVersion);
         meshChanged(world);
-        if (meshes.hasReplacedFaces || meshes.hasReplacedDrawBuffers) {
+        if (meshes.replaced.has(Replaced.faces) || meshes.replaced.has(Replaced.drawBuffers)) {
             bindMeshBuffers();
         }
     }
@@ -318,21 +333,21 @@ struct Renderer {
         backlog = cast(uint) world.graph.chunks.pending().length;
     }
 
-    HighlightTarget findHighlightTarget(ref const LocalWorld world) const {
+    Maybe!HighlightTarget findHighlightTarget(ref const LocalWorld world) const {
         GraphCastHit hit = world.castCenterRay();
         uint index = world.nearby[world.published].indexOf(world.graph.slotOf(hit.chunk.node));
         if (!hit.isHit() || index == NOT_COLLECTED) {
-            return HighlightTarget.init;
+            return Maybe!HighlightTarget.init;
         } else {
             float[MATRIX_FLOATS] chunkToWorld = matrixMultiply(flatten(world.cachedNodes[index].transform.m), flatten(hit.chunk.corner.cubeToNode));
             ubyte[3] cell = hit.voxelCoords.c;
             float[3] low = [layout.gridToCube(cell[0]), layout.gridToCube(cell[1]), layout.gridToCube(cell[2])];
             float[3] high = [layout.gridToCube(cell[0] + 1), layout.gridToCube(cell[1] + 1), layout.gridToCube(cell[2] + 1)];
-            return HighlightTarget(chunkToWorld, low, high, true);
+            return Maybe!HighlightTarget.of(HighlightTarget(chunkToWorld, low, high));
         }
     }
 
-    void recordCommands(uint imageIndex, HighlightTarget target) {
+    void recordCommands(uint imageIndex, Maybe!HighlightTarget target) {
         VkCommandBuffer commands = swapchain.commandBuffer;
         vkResetCommandBuffer(commands, 0);
         VkCommandBufferBeginInfo beginInfo;
@@ -372,8 +387,8 @@ struct Renderer {
             vkCmdDrawIndirect(commands, meshes.commands.buffer, cast(VkDeviceSize) drawn * VkDrawIndirectCommand.sizeof, batch, VkDrawIndirectCommand.sizeof);
             drawn += batch;
         }
-        if (target.isFound) {
-            highlight.draw(commands, voxels.commonSet, target.model, target.low, target.high);
+        if (target.exists) {
+            highlight.draw(commands, voxels.commonSet, target.value.model, target.value.low, target.value.high);
         }
         marker.draw(commands, voxels.commonSet, markers);
         vkCmdNextSubpass(commands, VK_SUBPASS_CONTENTS_INLINE);
@@ -383,9 +398,9 @@ struct Renderer {
         vkCmdEndRenderPass(commands);
         if (swapchain.isOffscreen) {
             recordReadback(commands, swapchain.offscreenImage);
-        } else if (isCapturing && swapchain.isReadable) {
+        } else if (captureMarks.has(CaptureMark.wanted) && swapchain.isReadable) {
             recordPresentedReadback(commands, swapchain.images[imageIndex]);
-            hasCopy = true;
+            captureMarks.set(CaptureMark.copying);
             copiedExtent = swapchain.extent;
         }
         timer.end(commands);
@@ -397,8 +412,8 @@ struct Renderer {
         captured.resize(bytes);
         memcpy(captured.ptr, readback.mapped, bytes);
         capturedExtent = copiedExtent;
-        isCaptureReady = true;
-        hasCopy = false;
+        captureMarks.set(CaptureMark.ready);
+        captureMarks.clear(CaptureMark.copying);
     }
 
     void recordPresentedReadback(VkCommandBuffer commands, VkImage image) {
@@ -419,13 +434,13 @@ struct Renderer {
         vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, null, 0, null);
     }
 
-    void submit(bool isPresenting) {
+    void submit(SubmitKind kind) {
         VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSubmitInfo submitInfo;
         submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         submitInfo.commandBufferCount = 1;
         submitInfo.pCommandBuffers = &swapchain.commandBuffer;
-        if (isPresenting) {
+        if (kind == SubmitKind.presenting) {
             submitInfo.waitSemaphoreCount = 1;
             submitInfo.pWaitSemaphores = &swapchain.imageAvailableSemaphore;
             submitInfo.pWaitDstStageMask = &waitStage;
@@ -474,7 +489,7 @@ struct Renderer {
     void recreateSwapchain() {
         swapchain.recreate(core.device);
         presentCount = 0;
-        hasCopy = false;
+        captureMarks.clear(CaptureMark.copying);
         if (!swapchain.isMinimized()) {
             ensureReadback();
             voxels.updateInputDescriptors(core.device, swapchain.depthView, swapchain.glowView);

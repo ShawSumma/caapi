@@ -96,6 +96,11 @@ bool isIndirectDrawingSupported(VkPhysicalDevice device) {
     return features.multiDrawIndirect != 0 && features.drawIndirectFirstInstance != 0;
 }
 
+enum CoreTarget : ubyte {
+    offscreen,
+    window,
+}
+
 struct VulkanCore {
     VkInstance instance;
     VkPhysicalDevice physicalDevice;
@@ -105,10 +110,18 @@ struct VulkanCore {
     PFN_vkWaitForPresentKHR waitForPresent;
     uint graphicsQueueFamily = NO_QUEUE_FAMILY;
     uint maxDrawIndirectCount;
-    bool isPresenting;
+    CoreTarget target;
+
+    bool isPresenting() const {
+        return target == CoreTarget.window;
+    }
 
     bool isPresentWaitable() const {
         return waitForPresent !is null;
+    }
+
+    bool wantsPresentWait() const {
+        return isPresenting() && supportsPresentWait();
     }
 
     bool supportsPresentWait() const {
@@ -125,7 +138,7 @@ struct VulkanCore {
     }
 
     const(char)* setup(SurfaceSource source) {
-        isPresenting = true;
+        target = CoreTarget.window;
         if (!createInstance()) {
             return NO_INSTANCE;
         } else {
@@ -135,7 +148,7 @@ struct VulkanCore {
     }
 
     const(char)* setupOffscreen() {
-        isPresenting = false;
+        target = CoreTarget.offscreen;
         if (!createInstance()) {
             return NO_INSTANCE;
         } else {
@@ -179,7 +192,7 @@ struct VulkanCore {
     }
 
     bool hasSurfaceFormat(VkPhysicalDevice candidate) {
-        return !isPresenting || srgbSurfaceFormat(candidate, surface).isFound;
+        return !isPresenting || srgbSurfaceFormat(candidate, surface).exists;
     }
 
     uint usableRank(VkPhysicalDevice candidate) {
@@ -247,11 +260,10 @@ struct VulkanCore {
         queueInfo.pQueuePriorities = &queuePriority;
         ExtensionList extensions;
         extensions.add(DEVICE_EXTENSIONS);
-        bool isWaitable = isPresenting && supportsPresentWait();
         if (isPresenting) {
             extensions.add(SWAPCHAIN_EXTENSIONS);
         }
-        if (isWaitable) {
+        if (wantsPresentWait()) {
             extensions.add(PRESENT_WAIT_EXTENSIONS);
         }
         VkPhysicalDeviceFeatures features;
@@ -266,7 +278,7 @@ struct VulkanCore {
         id.presentId = VULKAN_TRUE;
         VkDeviceCreateInfo info;
         info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-        if (isWaitable) {
+        if (wantsPresentWait()) {
             info.pNext = &id;
         }
         info.queueCreateInfoCount = 1;
@@ -276,7 +288,7 @@ struct VulkanCore {
         info.ppEnabledExtensionNames = extensions.names.ptr;
         expectSuccess(vkCreateDevice(physicalDevice, &info, null, &device));
         vkGetDeviceQueue(device, graphicsQueueFamily, 0, &graphicsQueue);
-        if (isWaitable) {
+        if (wantsPresentWait()) {
             waitForPresent = cast(PFN_vkWaitForPresentKHR) vkGetDeviceProcAddr(device, "vkWaitForPresentKHR");
         }
     }

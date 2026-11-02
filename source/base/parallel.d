@@ -39,6 +39,16 @@ version (OSX) {
     }
 }
 
+enum Pace : ubyte {
+    onTime,
+    late,
+}
+
+enum PoolLife : ubyte {
+    serving,
+    stopping,
+}
+
 struct ParallelJob {
     void function(void* context, size_t index, uint worker) run;
     void* context;
@@ -46,23 +56,26 @@ struct ParallelJob {
     size_t count;
     size_t grain = 1;
     shared size_t claimed;
-    shared bool isLate;
+    shared Pace pace;
 
     void work(uint worker) {
-        bool isDone = false;
-        while (!isDone && !atomicLoad(isLate)) {
+        while (atomicLoad(pace) == Pace.onTime) {
             size_t first = atomicFetchAdd(claimed, grain);
-            isDone = first >= count;
-            if (!isDone) {
-                size_t end = lowerOf(first + grain, count);
-                foreach (index; first .. end) {
-                    run(context, index, worker);
-                }
-                if (deadline != double.infinity && nowMilliseconds() >= deadline) {
-                    atomicStore(isLate, true);
-                }
+            if (first >= count) {
+                return;
+            }
+            size_t end = lowerOf(first + grain, count);
+            foreach (index; first .. end) {
+                run(context, index, worker);
+            }
+            if (deadline != double.infinity && nowMilliseconds() >= deadline) {
+                atomicStore(pace, Pace.late);
             }
         }
+    }
+
+    bool hasOpenWork() const {
+        return atomicLoad(claimed) < count && atomicLoad(pace) == Pace.onTime;
     }
 
     void finish() {
@@ -88,8 +101,8 @@ struct WorkerPool {
     shared uint active;
     shared uint epoch;
     shared uint sleepers;
-    shared uint isJoining;
-    shared bool isStopping;
+    shared uint joiners;
+    shared PoolLife life;
     uint workerCount;
     uint runs;
     double waitedMs = 0;
@@ -119,11 +132,11 @@ struct WorkerPool {
     }
 
     void serve(uint worker) {
-        while (!atomicLoad(isStopping)) {
+        while (atomicLoad(life) == PoolLife.serving) {
             uint seen = atomicLoad(epoch);
             if (!joinJob(worker) && !source.take(source.context, worker)) {
                 atomicOp!"+="(sleepers, 1);
-                if (atomicLoad(epoch) == seen && !atomicLoad(isStopping)) {
+                if (atomicLoad(epoch) == seen && atomicLoad(life) == PoolLife.serving) {
                     waitWhile(epoch, seen);
                 }
                 atomicOp!"-="(sleepers, 1);
@@ -133,15 +146,17 @@ struct WorkerPool {
 
     bool joinJob(uint worker) {
         atomicOp!"+="(active, 1);
-        ParallelJob* current = cast(ParallelJob*) atomicLoad(job);
-        bool hasWork = current !is null && atomicLoad(current.claimed) < current.count && !atomicLoad(current.isLate);
-        if (hasWork) {
-            current.work(worker);
+        ParallelJob* open = cast(ParallelJob*) atomicLoad(job);
+        if (open !is null && !open.hasOpenWork()) {
+            open = null;
         }
-        if (atomicOp!"-="(active, 1) == 0 && atomicLoad(isJoining) != 0) {
+        if (open !is null) {
+            open.work(worker);
+        }
+        if (atomicOp!"-="(active, 1) == 0 && atomicLoad(joiners) != 0) {
             wake(active);
         }
-        return hasWork;
+        return open !is null;
     }
 
     void helpWithJob(uint worker) {
@@ -159,20 +174,20 @@ struct WorkerPool {
         parallel.work(MAIN_WORKER);
         atomicStore(job, 0);
         double start = nowMilliseconds();
-        atomicStore(isJoining, 1);
+        atomicStore(joiners, 1);
         uint inside = atomicLoad(active);
         while (inside != 0) {
             waitWhile(active, inside);
             inside = atomicLoad(active);
         }
-        atomicStore(isJoining, 0);
+        atomicStore(joiners, 0);
         parallel.finish();
         runs += 1;
         waitedMs += nowMilliseconds() - start;
     }
 
     void release() {
-        atomicStore(isStopping, true);
+        atomicStore(life, PoolLife.stopping);
         signal();
         wake(epoch);
         foreach (index; 0 .. workerCount) {

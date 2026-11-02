@@ -2,17 +2,17 @@ module scripts.tests;
 
 import core.math : sqrt;
 import core.stdc.math : atan2, exp, fabs, sin;
+import base.maybe : Maybe;
 import base.numbers : RADIANS_PER_DEGREE, higherOf, lowerOf;
 import base.units : AngularSpeed, Length, Time;
 import client.game : Key, RouteWaypoint, UnloadedCount;
 import client.hud : Growth;
 import client.script : NamedScript, ONE_SECOND, Script, StepHook, degrees;
-import client.world : TargetMaterial;
 import common.character.controller : MovementMode;
 import plugins.api.api : Material;
 import climb = scripts.climb;
 import walk = scripts.walk;
-import scripts.walk : Across, Motion;
+import scripts.walk : Across, ClimbGoal, Motion;
 
 immutable NamedScript[] TESTS = [
     NamedScript("api", &api),
@@ -39,13 +39,14 @@ immutable NamedScript[] TESTS = [
     NamedScript("slope/turning", &slopeTurning),
     NamedScript("slope/uphill", &slopeUphill),
     NamedScript("slope/wall", &slopeWall),
-    NamedScript("structure/arbor", &climbing!("arbor", 0.8f, true)),
-    NamedScript("structure/arch", &climbing!("crown", 1.8f, false)),
+    NamedScript("structure/arbor", &climbing!("arbor", 2.5f, SpawnCheck.checked)),
+    NamedScript("structure/arborendless", &structureArborEndless),
+    NamedScript("structure/arch", &climbing!("crown", 1.8f, SpawnCheck.skipped)),
     NamedScript("structure/axis", &structureAxis),
-    NamedScript("structure/babel", &climbing!("babel", 1.2f, true)),
+    NamedScript("structure/babel", &climbing!("babel", 1.2f, SpawnCheck.checked)),
     NamedScript("structure/backrooms", &structureBackrooms),
-    NamedScript("structure/backroomsbasement", &climbing!("basement", 0.2f, false)),
-    NamedScript("structure/backroomsstairs", &climbing!("backroomsstairs", 0.25f, false)),
+    NamedScript("structure/backroomsbasement", &climbing!("basement", 0.2f, SpawnCheck.skipped)),
+    NamedScript("structure/backroomsstairs", &climbing!("backroomsstairs", 0.25f, SpawnCheck.skipped)),
     NamedScript("structure/backroomsworld", &structureBackroomsWorld),
     NamedScript("structure/chain", &structureChain),
     NamedScript("structure/city", &structureCity),
@@ -53,15 +54,19 @@ immutable NamedScript[] TESTS = [
     NamedScript("structure/endless", &structureEndless),
     NamedScript("structure/hamlet", &structureHamlet),
     NamedScript("structure/lattice", &structureLattice),
-    NamedScript("structure/library", &climbing!("library", 0.7f, true)),
-    NamedScript("structure/palace", &climbing!("palace", 0.35f, true)),
+    NamedScript("structure/library", &structureLibrary),
+    NamedScript("structure/libraryendless", &structureLibraryEndless),
+    NamedScript("structure/librarylive", &structureLibraryLive),
+    NamedScript("structure/libraryflight", &structureLibraryFlight),
+    NamedScript("structure/librarynohole", &structureLibraryNoHole),
+    NamedScript("structure/palace", &climbing!("palace", 0.35f, SpawnCheck.checked)),
     NamedScript("structure/risen", &risen!("risencity", 1.5f, Material.concrete, "the risen city's paved lot")),
     NamedScript("structure/road", &structureRoad),
     NamedScript("structure/spiral", &risen!("spiralcity", 1.5f, Material.concrete, "the spiral's landing")),
     NamedScript("structure/drift", &risen!("driftcity", 1.5f, Material.concrete, "the drift's landing")),
     NamedScript("structure/lantern", &risen!("lanterncity", 1.5f, Material.concrete, "the lantern's landing")),
     NamedScript("structure/stacked", &risen!("stacked", 1.5f, Material.concrete, "the connector's landing")),
-    NamedScript("structure/stairs", &climbing!("tower", 2.5f, false)),
+    NamedScript("structure/stairs", &climbing!("tower", 2.5f, SpawnCheck.skipped)),
     NamedScript("structure/tower", &structureTower),
     NamedScript("structure/trail", &structureTrail),
     NamedScript("structure/treetrunk", &structureTreetrunk),
@@ -74,16 +79,28 @@ enum float TIMESTEP_TOLERANCE = 1e-6f;
 enum float CLOCK_TOLERANCE = 1e-4f;
 enum float REST_TOLERANCE = 5e-5f;
 
+enum SpawnCheck : ubyte {
+    skipped,
+    checked,
+}
+
+enum Launch : ubyte {
+    still,
+    moving,
+}
+
 struct HookCount {
     uint steps;
-    bool isAlwaysRefused = true;
+    uint allowed;
 }
 
 void countHook(ref Script world, void* context) {
     HookCount* count = cast(HookCount*) context;
     count.steps += 1;
     world.wait(1);
-    count.isAlwaysRefused = world.takeFailure() && count.isAlwaysRefused;
+    if (!world.takeFailure()) {
+        count.allowed += 1;
+    }
 }
 
 void api(ref Script world) {
@@ -110,7 +127,7 @@ void api(ref Script world) {
     world.onStep(StepHook(&countHook, &count));
     world.wait(0.1);
     world.check(count.steps == 5, "the step hook ran %u times in 5 steps", count.steps);
-    world.check(count.isAlwaysRefused, "a step hook cannot advance time");
+    world.check(count.allowed == 0, "a step hook cannot advance time");
     world.onStep(StepHook.init);
     world.wait(0.1);
     world.check(count.steps == 5, "a removed step hook does not run");
@@ -240,13 +257,13 @@ void riseTo(ref Script world, float altitude) {
     world.step();
 }
 
-Fall fall(ref Script world, bool isMoving) {
-    if (isMoving) {
+Fall fall(ref Script world, Launch launch) {
+    if (launch == Launch.moving) {
         world.hold(Key.fwd);
         world.step();
     }
     world.mode(MovementMode.walk);
-    if (isMoving) {
+    if (launch == Launch.moving) {
         world.release(Key.fwd);
     }
     float altitude = world.altitude().value;
@@ -259,9 +276,9 @@ void flatCurve(ref Script world) {
     world.plane(degrees(0));
     walk.spawn(world);
     riseTo(world, CURVE_ALTITUDE);
-    Fall still = fall(world, false);
+    Fall still = fall(world, Launch.still);
     riseTo(world, CURVE_ALTITUDE);
-    Fall moving = fall(world, true);
+    Fall moving = fall(world, Launch.moving);
     double doubled = exp(2.0 * moving.altitude);
     double predicted = moving.speed * moving.speed * (doubled - 1) / (doubled + 1) * FALL_SECONDS;
     double gained = moving.vertical - still.vertical;
@@ -277,7 +294,7 @@ enum double THROUGH_SECONDS = 2;
 enum double FREE_SECONDS = 1;
 enum float MIN_FREE_FRACTION = 0.8f;
 
-bool isWall(TargetMaterial target) {
+bool isWall(Maybe!Material target) {
     return walk.isMaterial(target, walk.LAYER_MATERIALS[0]) || walk.isMaterial(target, walk.LAYER_MATERIALS[1]);
 }
 
@@ -446,7 +463,7 @@ void flatTimestep(ref Script world) {
     walk.checkStanding(world, "after walking in long steps");
     walk.buildStep(world);
     float standing = world.altitude().value;
-    walk.climbForward(world, TIMESTEP_CLIMB_SECONDS, CLIMB_STEP, true, standing);
+    walk.climbForward(world, TIMESTEP_CLIMB_SECONDS, CLIMB_STEP, ClimbGoal.ontoStep, standing);
     world.wait(walk.SETTLE_SECONDS);
     walk.checkOnStep(world, standing, "after jumping onto the step in 0.25 s steps");
 }
@@ -537,16 +554,16 @@ enum double AWAY_FROM_TREE_DEGREES = 180;
 enum Length CLOSE = Length(0.5f);
 
 struct Probe {
-    TargetMaterial below;
+    Maybe!Material below;
     float depth = 0;
 }
 
 Probe groundBelow(ref Script world) {
     uint mostSteps = cast(uint)(MOST_PROBE_DEPTH / (walk.NOCLIP_SPEED * world.timestep.value) + 0.999f);
-    TargetMaterial below = walk.lookBelow(world);
+    Maybe!Material below = walk.lookBelow(world);
     uint steps = 0;
     world.hold(Key.down);
-    while (!world.isFailed && !below.isFound && steps < mostSteps) {
+    while (!world.isFailed && !below.exists && steps < mostSteps) {
         world.step();
         steps += 1;
         below = walk.lookBelow(world);
@@ -572,7 +589,7 @@ void liveFar(ref Script world) {
         float altitude = world.altitude().value;
         UnloadedCount unloaded = world.unloadedWithin(CLOSE);
         Probe probe = groundBelow(world);
-        world.check(fabs(altitude - start) < ALTITUDE_DRIFT && probe.below.isFound, "after %.0f units: altitude %.3f from %.3f, %u fresh %u generating %u nodes missing, below found %d within %.2f", (leg + 1) * FAR_LEG_DISTANCE, altitude, start, unloaded.fresh, unloaded.generating, unloaded.missingNodes, cast(int) probe.below.isFound, probe.depth);
+        world.check(fabs(altitude - start) < ALTITUDE_DRIFT && probe.below.exists, "after %.0f units: altitude %.3f from %.3f, %u fresh %u generating %u nodes missing, below found %d within %.2f", (leg + 1) * FAR_LEG_DISTANCE, altitude, start, unloaded.fresh, unloaded.generating, unloaded.missingNodes, cast(int) probe.below.exists, probe.depth);
     }
 }
 
@@ -660,7 +677,7 @@ void slopeSteep(ref Script world) {
     Motion motion;
     walk.trackMotion(world, &motion);
     float start = world.altitude().value;
-    walk.climbForward(world, SLOPE_WALK_SECONDS, world.timestep, false, 0);
+    walk.climbForward(world, SLOPE_WALK_SECONDS, world.timestep, ClimbGoal.timed, 0);
     world.wait(walk.LANDING_SECONDS);
     world.onStep(StepHook.init);
     walk.checkSpeedLimit(world, motion);
@@ -725,9 +742,9 @@ void slopeWall(ref Script world) {
     }
 }
 
-void climbing(string name, float minClimb, bool isSpawnChecked)(ref Script world) {
+void climbing(string name, float minClimb, SpawnCheck spawnCheck)(ref Script world) {
     world.structure(name);
-    if (isSpawnChecked) {
+    if (spawnCheck == SpawnCheck.checked) {
         walk.spawn(world);
     }
     climb.route(world, minClimb);
@@ -740,7 +757,7 @@ void structureAxis(ref Script world) {
         world.enterStructure(Length(height));
         world.look(degrees(0), degrees(walk.STRAIGHT_DOWN_DEGREES));
         world.step();
-        world.check(world.targetMaterial().isFound, "%.2f up the axis: no floor within reach below", height);
+        world.check(world.targetMaterial().exists, "%.2f up the axis: no floor within reach below", height);
         world.look(degrees(0), degrees(-walk.STRAIGHT_DOWN_DEGREES));
     }
 }
@@ -749,9 +766,9 @@ enum float RISEN_BACKROOMS_ALTITUDE = 1.5f;
 
 void checkBackroomsAround(ref Script world) {
     world.look(degrees(0), degrees(walk.STRAIGHT_DOWN_DEGREES));
-    TargetMaterial below = world.targetMaterial();
+    Maybe!Material below = world.targetMaterial();
     world.look(degrees(0), degrees(-2 * walk.STRAIGHT_DOWN_DEGREES));
-    TargetMaterial above = world.targetMaterial();
+    Maybe!Material above = world.targetMaterial();
     string floor = walk.nameOf(below);
     string ceiling = walk.nameOf(above);
     world.check(walk.isOneOf(below, walk.BACKROOMS_FLOORS[]), "standing on %.*s instead of the backrooms' floor", cast(int) floor.length, floor.ptr);
@@ -765,7 +782,7 @@ void structureBackrooms(ref Script world) {
     world.check(world.altitude().value < RISEN_BACKROOMS_ALTITUDE, "starting on the ground, %.3f up", world.altitude().value);
     size_t reached = climb.follow(world, climb.EVERY_WAYPOINT);
     world.wait(walk.SETTLE_SECONDS);
-    world.check(!world.routeWaypoint(reached + 1).isFound, "stopped after %zu waypoints", reached);
+    world.check(!world.routeWaypoint(reached + 1).exists, "stopped after %zu waypoints", reached);
     world.check(world.isOnGround(), "standing in the backrooms");
     world.check(world.altitude().value > RISEN_BACKROOMS_ALTITUDE, "ended only %.3f above the ground", world.altitude().value);
     checkBackroomsAround(world);
@@ -789,7 +806,7 @@ void structureChain(ref Script world) {
     world.check(start > CHAIN_LOWER_ALTITUDE, "starting only %.3f above the ground, not on the first city", start);
     size_t reached = climb.follow(world, climb.EVERY_WAYPOINT);
     world.wait(walk.SETTLE_SECONDS);
-    world.check(!world.routeWaypoint(reached + 1).isFound, "stopped after %zu waypoints", reached);
+    world.check(!world.routeWaypoint(reached + 1).exists, "stopped after %zu waypoints", reached);
     world.check(world.isOnGround(), "standing in the city risen from the first");
     world.check(fabs(world.altitude().value - start) > LEAST_MOVED, "ended %.3f above the ground from %.3f, still by the first city", world.altitude().value, start);
     world.look(degrees(0), degrees(walk.STRAIGHT_DOWN_DEGREES));
@@ -831,7 +848,7 @@ void structureCrown(ref Script world) {
     world.wait(walk.SETTLE_SECONDS);
     float walked = world.traveled().value - start;
     world.look(degrees(0), degrees(walk.STRAIGHT_DOWN_DEGREES));
-    TargetMaterial below = world.targetMaterial();
+    Maybe!Material below = world.targetMaterial();
     string name = walk.nameOf(below);
     world.check(world.isOnGround(), "standing in the hall");
     world.check(walked >= CROWN_MIN_WALKED * walk.SPEED * CROWN_WALK_SECONDS, "walked only %.3f toward the hall door", walked);
@@ -849,9 +866,9 @@ void structureEndless(ref Script world) {
         world.press(ENDLESS_FLIGHT / ENDLESS_SAMPLES / walk.NOCLIP_SPEED, Key.fwd);
         world.look(degrees(0), degrees(walk.STRAIGHT_DOWN_DEGREES));
         world.step();
-        TargetMaterial below = world.targetMaterial();
+        Maybe!Material below = world.targetMaterial();
         string name = walk.nameOf(below);
-        world.check(below.isFound && below.material != walk.GROUND, "bare %.*s below after %.1f of %.1f", cast(int) name.length, name.ptr, sample * ENDLESS_FLIGHT / ENDLESS_SAMPLES, ENDLESS_FLIGHT);
+        world.check(below.exists && below.value != walk.GROUND, "bare %.*s below after %.1f of %.1f", cast(int) name.length, name.ptr, sample * ENDLESS_FLIGHT / ENDLESS_SAMPLES, ENDLESS_FLIGHT);
         world.look(degrees(0), degrees(-walk.STRAIGHT_DOWN_DEGREES));
     }
 }
@@ -862,8 +879,8 @@ enum double HAMLET_WALK_SECONDS = 6;
 
 void structureHamlet(ref Script world) {
     world.structure("hamlet");
-    world.check(world.routeWaypoint(HUTS * STOPS_PER_HUT).isFound, "every hut added its stair route");
-    world.check(!world.routeWaypoint(HUTS * STOPS_PER_HUT + 1).isFound, "and nothing else did");
+    world.check(world.routeWaypoint(HUTS * STOPS_PER_HUT).exists, "every hut added its stair route");
+    world.check(!world.routeWaypoint(HUTS * STOPS_PER_HUT + 1).exists, "and nothing else did");
     walk.spawn(world);
     float ground = world.altitude().value;
     world.press(HAMLET_WALK_SECONDS, Key.fwd);
@@ -901,7 +918,7 @@ void risen(string name, float risenAltitude, Material landing, string what)(ref 
     world.check(world.altitude().value < risenAltitude, "starting on the ground, %.3f up", world.altitude().value);
     size_t reached = climb.follow(world, climb.EVERY_WAYPOINT);
     world.wait(walk.SETTLE_SECONDS);
-    world.check(!world.routeWaypoint(reached + 1).isFound, "stopped after %zu waypoints", reached);
+    world.check(!world.routeWaypoint(reached + 1).exists, "stopped after %zu waypoints", reached);
     world.check(world.isOnGround(), "standing at the end of the route");
     world.check(world.altitude().value > risenAltitude, "ended only %.3f above the ground", world.altitude().value);
     world.look(degrees(0), degrees(walk.STRAIGHT_DOWN_DEGREES));
@@ -916,7 +933,7 @@ void structureRoad(ref Script world) {
     size_t reached = climb.follow(world, climb.EVERY_WAYPOINT);
     world.wait(walk.SETTLE_SECONDS);
     world.check(world.isOnGround(), "standing on the road after %zu waypoints", reached);
-    world.check(!world.routeWaypoint(reached + 1).isFound, "stopped after %zu waypoints", reached);
+    world.check(!world.routeWaypoint(reached + 1).exists, "stopped after %zu waypoints", reached);
     world.look(degrees(0), degrees(walk.STRAIGHT_DOWN_DEGREES));
     string below = walk.nameOf(world.targetMaterial());
     world.check(walk.isOneOf(world.targetMaterial(), walk.STREET_MATERIALS[]), "standing on %.*s instead of the road", cast(int) below.length, below.ptr);
@@ -943,7 +960,7 @@ void structureTower(ref Script world) {
     float walked = world.traveled().value - start;
     float free = walk.SPEED * TOWER_WALK_SECONDS;
     world.look(degrees(0), degrees(walk.STRAIGHT_DOWN_DEGREES));
-    TargetMaterial below = world.targetMaterial();
+    Maybe!Material below = world.targetMaterial();
     string name = walk.nameOf(below);
     world.check(world.isOnGround(), "standing inside the tower");
     world.check(world.altitude().value - ground > walk.MIN_BLOCK_EDGE / 2, "rose %.3f, not onto the ground floor through the door", world.altitude().value - ground);
@@ -957,7 +974,7 @@ enum float MAX_STRAIGHTNESS = 0.8f;
 
 size_t stopCount(ref Script world) {
     size_t count = 0;
-    while (world.routeWaypoint(count + 1).isFound) {
+    while (world.routeWaypoint(count + 1).exists) {
         count += 1;
     }
     return count;
@@ -973,7 +990,7 @@ void structureTrail(ref Script world) {
     world.wait(walk.SETTLE_SECONDS);
     world.check(reached == TRAIL_STOPS, "walked %zu of %zu trail stops", reached, TRAIL_STOPS);
     world.check(stopCount(world) > built, "the trail did not grow past its first %zu stops as the world grew", built);
-    float back = world.routeWaypoint(1).horizontal.value;
+    float back = world.routeWaypoint(1).value.horizontal.value;
     float walked = world.traveled().value - start;
     world.check(back < MAX_STRAIGHTNESS * walked, "the trail ran straight: %.3f back to its start after walking %.3f", back, walked);
     world.look(degrees(0), degrees(walk.STRAIGHT_DOWN_DEGREES));
@@ -986,14 +1003,118 @@ enum float TRUNK_CLIMB = 0.1f;
 enum float NUDGE = 0.01f;
 enum uint MOST_NUDGES = 200;
 
+immutable Material[2] TREE_MATERIALS = [Material.oakWood, Material.oakLeaves];
+
 void approachBark(ref Script world) {
     uint nudges = 0;
-    while (!world.isFailed && !walk.isMaterial(world.targetMaterial(), Material.oakWood) && nudges < MOST_NUDGES) {
+    while (!world.isFailed && !walk.isOneOf(world.targetMaterial(), TREE_MATERIALS[]) && nudges < MOST_NUDGES) {
         world.press(NUDGE / walk.NOCLIP_SPEED, Key.fwd);
         nudges += 1;
     }
     string facing = walk.nameOf(world.targetMaterial());
-    world.check(walk.isMaterial(world.targetMaterial(), Material.oakWood), "no bark ahead at altitude %.3f, facing %.*s", world.altitude().value, cast(int) facing.length, facing.ptr);
+    world.check(walk.isOneOf(world.targetMaterial(), TREE_MATERIALS[]), "no tree ahead at altitude %.3f, facing %.*s", world.altitude().value, cast(int) facing.length, facing.ptr);
+}
+
+immutable float[6] ENDLESS_SPOTS = [2.1f, 5.3f, 9.7f, 14.2f, 20.4f, 40.0f];
+enum float LIBRARY_LEAST_DESCENT = 20.0f;
+enum double MOST_FLOOR_TILT = 3;
+enum double LIBRARY_LOAD_SECONDS = 3;
+enum float LIBRARY_FLIGHT_DEPTH = 30.0f;
+enum float LIBRARY_FLIGHT_LEG = 0.5f;
+enum float LIBRARY_MOST_FALL = 0.5f;
+enum double LIBRARY_FREE_SECONDS = 0.1;
+enum float LIBRARY_NUDGE = 0.03f;
+enum uint LIBRARY_MOST_NUDGES = 10;
+
+void structureArborEndless(ref Script world) {
+    world.structure("arbor");
+    world.mode(MovementMode.noclip);
+    foreach (height; ENDLESS_SPOTS) {
+        world.enterStructure(Length(height));
+        world.step();
+        world.look(degrees(0), degrees(walk.STRAIGHT_DOWN_DEGREES));
+        string below = walk.nameOf(world.targetMaterial());
+        world.check(walk.isOneOf(world.targetMaterial(), TREE_MATERIALS[]), "standing in the trunk %.1f up, facing %.*s", height, cast(int) below.length, below.ptr);
+        world.look(degrees(0), degrees(-walk.STRAIGHT_DOWN_DEGREES));
+    }
+}
+
+void walkDownShaft(ref Script world) {
+    world.check(world.isOnGround(), "standing at the top of the shaft's stair");
+    float start = world.altitude().value;
+    size_t reached = climb.follow(world, climb.EVERY_WAYPOINT);
+    world.wait(walk.SETTLE_SECONDS);
+    double tilt = world.floorTilt().value / RADIANS_PER_DEGREE;
+    world.check(!world.routeWaypoint(reached + 1).exists, "stopped after %zu waypoints", reached);
+    world.check(world.isOnGround(), "standing in the shaft after %zu waypoints", reached);
+    world.check(start - world.altitude().value >= LIBRARY_LEAST_DESCENT, "went down only %.3f", start - world.altitude().value);
+    world.check(tilt <= MOST_FLOOR_TILT, "standing still, the floor tilts %.1f degrees against gravity at altitude %.2f", tilt, world.altitude().value);
+}
+
+void structureLibraryFlight(ref Script world) {
+    world.structure("library");
+    world.live();
+    world.enterRoute();
+    world.wait(LIBRARY_LOAD_SECONDS);
+    world.mode(MovementMode.noclip);
+    float start = world.altitude().value;
+    while (!world.isFailed && start - world.altitude().value < LIBRARY_FLIGHT_DEPTH) {
+        world.press(LIBRARY_FLIGHT_LEG / walk.NOCLIP_SPEED, Key.down);
+        Maybe!Material below = walk.lookBelow(world);
+        world.check(below.exists, "flying down the stair's ring, no floor below after %.1f down", start - world.altitude().value);
+    }
+}
+
+void structureLibrary(ref Script world) {
+    world.structure("library");
+    walk.spawn(world);
+    world.enterRoute();
+    world.wait(walk.SETTLE_SECONDS);
+    walkDownShaft(world);
+}
+
+void structureLibraryLive(ref Script world) {
+    world.structure("library");
+    world.live();
+    world.enterRoute();
+    world.wait(LIBRARY_LOAD_SECONDS);
+    walkDownShaft(world);
+}
+
+void structureLibraryEndless(ref Script world) {
+    world.structure("library");
+    world.mode(MovementMode.noclip);
+    foreach (depth; ENDLESS_SPOTS) {
+        world.enterStructure(Length(-depth));
+        world.step();
+        Maybe!Material below = walk.lookBelow(world);
+        string name = walk.nameOf(below);
+        world.check(walk.isMaterial(below, Material.glass), "no glass floor over the well %.1f down, facing %.*s", depth, cast(int) name.length, name.ptr);
+    }
+}
+
+void structureLibraryNoHole(ref Script world) {
+    world.structure("library");
+    foreach (depth; ENDLESS_SPOTS) {
+        world.mode(MovementMode.noclip);
+        world.enterStructure(Length(-depth));
+        float dropped = world.altitude().value;
+        uint nudges = 0;
+        world.mode(MovementMode.walk);
+        world.wait(LIBRARY_FREE_SECONDS);
+        while (!world.isFailed && world.altitude().value == dropped && nudges < LIBRARY_MOST_NUDGES) {
+            world.mode(MovementMode.noclip);
+            world.press(LIBRARY_NUDGE / walk.NOCLIP_SPEED, Key.up);
+            dropped = world.altitude().value;
+            world.mode(MovementMode.walk);
+            world.wait(LIBRARY_FREE_SECONDS);
+            nudges += 1;
+        }
+        world.check(world.altitude().value != dropped, "stuck in solid %.1f down after %u nudges", depth, nudges);
+        world.wait(walk.LANDING_SECONDS);
+        world.check(world.isOnGround(), "still falling down the well after %.1f from %.1f down", cast(double)(dropped - world.altitude().value), depth);
+        world.check(dropped - world.altitude().value < LIBRARY_MOST_FALL, "fell %.2f down the well from %.1f down", cast(double)(dropped - world.altitude().value), depth);
+    }
 }
 
 void structureTreetrunk(ref Script world) {

@@ -1,8 +1,9 @@
 module plugins.rooms.rooms;
 
 import plugins.api.api : Box, Material;
+import plugins.api.flags : Flags;
 import plugins.buildings.building : SIDES, Side;
-import plugins.rooms.levels : Biome, Hall, LAYERS, Level;
+import plugins.rooms.levels : Biome, Hall, LAYERS, Level, Vents;
 import plugins.turtle.turtle : PERCENT, Turtle, boxOf, floorDiv, higherOf, lowerOf;
 
 enum int SEPARATION = 3;
@@ -37,11 +38,33 @@ enum int GRID_OFFSET = 8;
 enum int GRID_SIZE = 32;
 enum size_t MOST_ROOMS = 64;
 enum size_t MOST_STOPS = 32;
+enum uint NO_STAIR = uint.max;
 
 enum Axis : ubyte {
     x,
     y,
 }
+
+enum WallForm : ubyte {
+    standing,
+    missing,
+}
+
+enum QuarterKind : ubyte {
+    plain,
+    lobby,
+    lobbyWithShaft,
+}
+
+enum FrameMark : ubyte {
+    lobby,
+    shaft,
+    top,
+    skirting,
+}
+
+alias Halls = Flags!Axis;
+alias Owns = Flags!Side;
 
 immutable Axis[2] AXES = [Axis.x, Axis.y];
 immutable int[2][4] MOVES = [[1, 0], [-1, 0], [0, 1], [0, -1]];
@@ -79,10 +102,10 @@ struct Region {
 struct Doors {
     int[2] at;
     uint count;
-    bool isOpen;
+    WallForm form;
 
     static Doors one(int door) {
-        return Doors([door, 0], 1, false);
+        return Doors([door, 0], 1);
     }
 
     const(int)[] slice() const return {
@@ -90,37 +113,27 @@ struct Doors {
     }
 }
 
-struct Halls {
-    bool x;
-    bool y;
-}
-
-struct Owns {
-    bool xHigh;
-    bool yHigh;
-}
-
 struct Grid {
-    bool[GRID_SIZE][GRID_SIZE] cells;
+    uint[GRID_SIZE] rows;
 
     bool opIndex(int x, int y) const {
-        return cells[x + GRID_OFFSET][y + GRID_OFFSET];
+        return (rows[x + GRID_OFFSET] & (1u << (y + GRID_OFFSET))) != 0;
     }
 
     void mark(int x, int y) {
-        cells[x + GRID_OFFSET][y + GRID_OFFSET] = true;
+        rows[x + GRID_OFFSET] |= 1u << (y + GRID_OFFSET);
     }
 }
 
 struct Forbid {
-    bool[GRID_SIZE][2] cells;
+    uint[2] cells;
 
     bool has(Axis axis, int at) const {
-        return cells[axis][at + GRID_OFFSET];
+        return (cells[axis] & (1u << (at + GRID_OFFSET))) != 0;
     }
 
     void mark(Axis axis, int at) {
-        cells[axis][at + GRID_OFFSET] = true;
+        cells[axis] |= 1u << (at + GRID_OFFSET);
     }
 }
 
@@ -141,25 +154,42 @@ struct Found {
 struct Floor {
     uint layer;
     int base;
-    bool isTop;
 
     ref immutable(Level) level() const {
         return LAYERS[layer];
+    }
+
+    bool isTop() const {
+        return layer == 0;
     }
 }
 
 struct Quarter {
     Turtle tower;
-    bool isLobby;
-    bool hasShaft;
+    QuarterKind kind;
+
+    bool isLobby() const {
+        return kind != QuarterKind.plain;
+    }
+
+    bool hasShaft() const {
+        return kind == QuarterKind.lobbyWithShaft;
+    }
 }
 
 struct Stair {
-    uint upper;
+    uint upper = NO_STAIR;
     uint lower;
     int x;
     int y;
-    bool isForced;
+
+    bool isPresent() const {
+        return upper != NO_STAIR;
+    }
+
+    bool isOn(uint layer) const {
+        return isPresent() && (upper == layer || lower == layer);
+    }
 }
 
 struct Frame {
@@ -171,17 +201,29 @@ struct Frame {
     int far;
     const(Biome)* biome;
     Hall hall;
-    bool hasHallX;
-    bool hasHallY;
-    bool isLobby;
-    bool hasShaft;
-    bool isTop;
-    bool hasSkirting;
+    Halls halls;
+    Flags!FrameMark marks;
     int x0;
     int y0;
     Region region;
     Grid nearDoors;
     Owns owns;
+
+    bool isLobby() const {
+        return marks.has(FrameMark.lobby);
+    }
+
+    bool hasShaft() const {
+        return marks.has(FrameMark.shaft);
+    }
+
+    bool isTop() const {
+        return marks.has(FrameMark.top);
+    }
+
+    bool hasSkirting() const {
+        return marks.has(FrameMark.skirting);
+    }
 }
 
 bool chance(ref const Frame f, double odds) {
@@ -244,8 +286,8 @@ int ceilingZ(ref const Frame f) {
     return f.base + f.room + 1;
 }
 
-int origin(bool hasHall, ref const Level level) {
-    if (hasHall) {
+int origin(Halls halls, Axis axis, ref const Level level) {
+    if (halls.has(axis)) {
         return level.hallWidth + 1;
     } else {
         return 1;
@@ -268,7 +310,7 @@ struct Pieces {
 
 Pieces outsideShaft(ref const Frame f, Region area) {
     Pieces pieces;
-    if (!f.hasShaft) {
+    if (!f.hasShaft()) {
         pieces.add(area);
     } else {
         if (area.x[1] > SHAFT) {
@@ -292,7 +334,7 @@ struct Spans {
 
 Spans outsideLobby(ref const Frame f, int at, int[2] span) {
     Spans spans;
-    if (!f.isLobby || at > LOBBY) {
+    if (!f.isLobby() || at > LOBBY) {
         spans.items[0] = span;
         spans.count = 1;
     } else if (span[1] > LOBBY) {
@@ -318,10 +360,10 @@ void doorway(ref Frame f, Axis axis, int at, int door) {
 void wall(ref Frame f, Axis axis, int at, int[2] span, const(int)[] doors) {
     foreach (piece; outsideLobby(f, at, span).slice()) {
         f.tower.paint(f.biome.wall, line(axis, at, piece, roomZ(f)));
-        if (f.hasSkirting) {
+        if (f.hasSkirting()) {
             f.tower.paint(f.biome.trim, line(axis, at, piece, [f.base + 1, f.base + 1]));
         }
-        if (f.biome.hasVents && chance(f, VENT_ODDS)) {
+        if (f.biome.vents == Vents.some && chance(f, VENT_ODDS)) {
             int vent = between(f, piece[0], piece[1]);
             f.tower.paint(Material.steel, line(axis, at, [vent, vent], [f.base + f.room, f.base + f.room]));
         }
@@ -339,10 +381,10 @@ void slab(ref const Frame f, Material material, Region area, int z) {
 
 Pieces bands(ref const Frame f) {
     Pieces list;
-    if (f.hasHallY) {
+    if (f.halls.has(Axis.y)) {
         list.add(Region([0, f.far], [0, f.hallWidth - 1]));
     }
-    if (f.hasHallX) {
+    if (f.halls.has(Axis.x)) {
         list.add(Region([0, f.hallWidth - 1], [0, f.far]));
     }
     return list;
@@ -359,14 +401,14 @@ void shell(ref const Frame f) {
         slab(f, f.hall.floor, band, f.base);
         slab(f, f.hall.ceiling, band, ceilingZ(f));
     }
-    if (f.isTop) {
+    if (f.isTop()) {
         slab(f, Material.steel, whole, ceilingZ(f) + ROOF);
     }
 }
 
-int hallEdge(bool hasHall, int hallWidth) {
-    if (hasHall) {
-        return hallWidth;
+int hallEdge(ref const Frame f, Axis axis) {
+    if (f.halls.has(axis)) {
+        return f.hallWidth;
     } else {
         return 0;
     }
@@ -379,8 +421,8 @@ struct PlannedWall {
     Doors doors;
 }
 
-Doors wallDoors(bool hasHall, Doors doors) {
-    if (hasHall) {
+Doors wallDoors(ref const Frame f, Axis axis, Doors doors) {
+    if (f.halls.has(axis)) {
         return Doors.init;
     } else {
         return doors;
@@ -388,17 +430,17 @@ Doors wallDoors(bool hasHall, Doors doors) {
 }
 
 Forbid walls(ref Frame f, ref const Doors[4] lines) {
-    int fromX = hallEdge(f.hasHallX, f.hallWidth);
-    int fromY = hallEdge(f.hasHallY, f.hallWidth);
+    int fromX = hallEdge(f, Axis.x);
+    int fromY = hallEdge(f, Axis.y);
     PlannedWall[4] sides;
-    sides[Side.yLow] = PlannedWall(Axis.y, fromY, [fromX, f.far], wallDoors(f.hasHallY, lines[Side.yLow]));
-    sides[Side.xLow] = PlannedWall(Axis.x, fromX, [fromY, f.far], wallDoors(f.hasHallX, lines[Side.xLow]));
+    sides[Side.yLow] = PlannedWall(Axis.y, fromY, [fromX, f.far], wallDoors(f, Axis.y, lines[Side.yLow]));
+    sides[Side.xLow] = PlannedWall(Axis.x, fromX, [fromY, f.far], wallDoors(f, Axis.x, lines[Side.xLow]));
     sides[Side.xHigh] = PlannedWall(Axis.x, f.far, [fromY, f.far], lines[Side.xHigh]);
     sides[Side.yHigh] = PlannedWall(Axis.y, f.far, [fromX, f.far], lines[Side.yHigh]);
     Forbid forbid;
     foreach (side; SIDES) {
         PlannedWall planned = sides[side];
-        if (!planned.doors.isOpen) {
+        if (planned.doors.form == WallForm.standing) {
             wall(f, planned.axis, planned.at, planned.span, planned.doors.slice());
             foreach (door; planned.doors.slice()) {
                 forbid.mark(other(planned.axis), door);
@@ -418,8 +460,7 @@ void split(ref Frame f, Region region, Forbid forbid, ref Found found, int depth
             axisCount += 1;
         }
     }
-    bool isStopped = chance(f, f.biome.big * lowerOf(depth, 1));
-    if (axisCount == 0 || isStopped) {
+    if (chance(f, f.biome.big * lowerOf(depth, 1)) || axisCount == 0) {
         found.add(region);
     } else {
         Axis axis = axes[f.tower.pick(axisCount)];
@@ -462,17 +503,17 @@ void split(ref Frame f, Region region, Forbid forbid, ref Found found, int depth
 
 void hallDoors(ref Frame f, ref const Found found) {
     foreach (room; found.slice()) {
-        if (f.hasHallY && room.y[0] == f.y0 && chance(f, f.biome.hallDoors)) {
+        if (f.halls.has(Axis.y) && room.y[0] == f.y0 && chance(f, f.biome.hallDoors)) {
             doorway(f, Axis.y, f.hallWidth, between(f, room.x[0], room.x[1] - DOOR_WIDTH + 1));
         }
-        if (f.hasHallX && room.x[0] == f.x0 && chance(f, f.biome.hallDoors)) {
+        if (f.halls.has(Axis.x) && room.x[0] == f.x0 && chance(f, f.biome.hallDoors)) {
             doorway(f, Axis.x, f.hallWidth, between(f, room.y[0], room.y[1] - DOOR_WIDTH + 1));
         }
     }
 }
 
 bool isShaft(ref const Frame f, int x, int y) {
-    return f.hasShaft && x <= SHAFT && y <= SHAFT;
+    return f.hasShaft() && x <= SHAFT && y <= SHAFT;
 }
 
 void light(ref const Frame f, Material material, int x, int y) {
@@ -489,7 +530,7 @@ void skylight(ref const Frame f, int x, int y) {
 }
 
 void lamp(ref const Frame f, Material material, double odds, int x, int y) {
-    if (f.isTop && chance(f, odds)) {
+    if (f.isTop() && chance(f, odds)) {
         skylight(f, x, y);
     } else {
         light(f, material, x, y);
@@ -510,7 +551,6 @@ void boxes(ref const Frame f, Region room) {
     if (width(span) >= LEAST_ATTACHED_WALL) {
         int from = between(f, span[0], span[1] - 1);
         int[2][2] cells;
-        bool isBlocked = false;
         foreach (step; 0 .. 2) {
             int x = from + step;
             int y = from + step;
@@ -520,9 +560,8 @@ void boxes(ref const Frame f, Region room) {
                 y = edgeOn(room.y, side);
             }
             cells[step] = [x, y];
-            isBlocked = isBlocked || f.nearDoors[x, y];
         }
-        if (!isBlocked) {
+        if (!f.nearDoors[cells[0][0], cells[0][1]] && !f.nearDoors[cells[1][0], cells[1][1]]) {
             int top = f.base + between(f, 2, lowerOf(f.biome.boxHeight, f.room));
             foreach (cell; cells) {
                 f.tower.paint(f.biome.boxes, boxOf([cell[0], cell[0]], [cell[1], cell[1]], [f.base + 1, top]));
@@ -559,9 +598,8 @@ void furnish(ref Frame f, ref const Found found) {
         }
     }
     foreach (band; bands(f).slice()) {
-        bool isAlongX = band.x[1] == f.far;
         for (int at = LIGHT_FROM; at <= f.far; at += LIGHT_EVERY) {
-            if (isAlongX) {
+            if (band.x[1] == f.far) {
                 lamp(f, f.hall.light, f.hall.skylight, at, 0);
             } else {
                 lamp(f, f.hall.light, f.hall.skylight, 0, at);
@@ -612,8 +650,7 @@ void maze(ref Frame f, ref const Doors[4] lines) {
         }
     }
     Maze carved;
-    bool[MAZE_CELLS * MAZE_CELLS] visited;
-    visited[mazeKey(0, 0)] = true;
+    uint visited = 1u << mazeKey(0, 0);
     int[2][MAZE_CELLS * MAZE_CELLS] trail;
     size_t depth = 1;
     while (depth > 0) {
@@ -623,7 +660,7 @@ void maze(ref Frame f, ref const Doors[4] lines) {
         foreach (move; MOVES) {
             int i = at[0] + move[0];
             int j = at[1] + move[1];
-            if (i >= 0 && i < cells && j >= 0 && j < cells && !visited[mazeKey(i, j)]) {
+            if (i >= 0 && i < cells && j >= 0 && j < cells && (visited & (1u << mazeKey(i, j))) == 0) {
                 moves[moveCount] = [i, j];
                 moveCount += 1;
             }
@@ -632,7 +669,7 @@ void maze(ref Frame f, ref const Doors[4] lines) {
             depth -= 1;
         } else {
             int[2] chosen = moves[f.tower.pick(moveCount)];
-            visited[mazeKey(chosen[0], chosen[1])] = true;
+            visited |= 1u << mazeKey(chosen[0], chosen[1]);
             carved.open(f, at, chosen);
             trail[depth] = chosen;
             depth += 1;
@@ -655,8 +692,7 @@ void maze(ref Frame f, ref const Doors[4] lines) {
     }
     foreach (side; SIDES) {
         Axis axis = axisOf(side);
-        bool isOwned = (side == Side.xHigh && f.owns.xHigh) || (side == Side.yHigh && f.owns.yHigh);
-        if (isLow(side) || isOwned) {
+        if (isLow(side) || f.owns.has(side)) {
             int at = 0;
             if (!isLow(side)) {
                 at = f.far;
@@ -798,13 +834,13 @@ void stairs(ref const Frame lower, ref const Frame upper, Stair stair, bool isRo
     }
 }
 
-Frame frameOf(ref const Quarter q, Halls halls, Floor floor, const(Biome)* biome, const(Stair)* stair, bool isLobby, Owns owns) {
+Frame frameOf(ref const Quarter q, Halls halls, Floor floor, const(Biome)* biome, ref const Stair stair, Plan plan, Owns owns) {
     immutable(Level)* level = &floor.level();
     int far = q.tower.column().high;
-    int x0 = origin(halls.x, *level);
-    int y0 = origin(halls.y, *level);
+    int x0 = origin(halls, Axis.x, *level);
+    int y0 = origin(halls, Axis.y, *level);
     int regionY = y0;
-    if (stair !is null) {
+    if (stair.isOn(floor.layer)) {
         regionY = stair.y + STAIR_DEPTH;
     }
     Frame f;
@@ -816,16 +852,15 @@ Frame frameOf(ref const Quarter q, Halls halls, Floor floor, const(Biome)* biome
     f.far = far;
     f.biome = biome;
     f.hall = level.hall;
-    f.hasHallX = halls.x;
-    f.hasHallY = halls.y;
-    f.isLobby = isLobby;
-    f.hasShaft = q.hasShaft && !level.isMaze;
-    f.isTop = floor.isTop;
+    f.halls = halls;
+    f.marks.put(FrameMark.lobby, plan == Plan.lobby);
+    f.marks.put(FrameMark.shaft, q.hasShaft() && !level.isMaze());
+    f.marks.put(FrameMark.top, floor.isTop());
     f.x0 = x0;
     f.y0 = y0;
     f.region = Region([x0, far - 1], [regionY, far - 1]);
     f.owns = owns;
-    f.hasSkirting = biome.trim != Material.none && chance(f, SKIRTING_ODDS);
+    f.marks.put(FrameMark.skirting, biome.trim != Material.none && chance(f, SKIRTING_ODDS));
     return f;
 }
 

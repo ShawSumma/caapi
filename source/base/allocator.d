@@ -5,12 +5,8 @@ import base.array : Array;
 import base.hashmap : HashMap;
 
 enum uint NO_RANGE = uint.max;
+enum uint NO_OFFSET = uint.max;
 enum uint SIZE_CLASSES = 32;
-
-struct Allocation {
-    uint offset;
-    bool isFound;
-}
 
 struct FreeRange {
     uint offset;
@@ -36,7 +32,7 @@ struct RangeAllocator {
     uint capacity;
     uint available;
 
-    Allocation allocate(uint count) {
+    uint allocate(uint count) {
         uint size = sizeClass(count);
         uint found = NO_RANGE;
         uint larger = size + 1;
@@ -52,7 +48,7 @@ struct RangeAllocator {
             }
         }
         if (found == NO_RANGE) {
-            return Allocation(0, false);
+            return NO_OFFSET;
         } else {
             FreeRange range = ranges.ptr[found];
             unlink(found);
@@ -60,7 +56,7 @@ struct RangeAllocator {
                 link(range.offset + count, range.count - count);
             }
             available -= count;
-            return Allocation(range.offset, true);
+            return range.offset;
         }
     }
 

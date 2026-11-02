@@ -1,6 +1,6 @@
 module common.worldgen.strokes;
 
-import core.stdc.math : acoshf, atanhf, cosh, coshf, fabsf, sinh, sqrtf, tanh;
+import core.stdc.math : acoshf, atanhf, cosh, coshf, sinh, sqrtf, tanh;
 import base.array : Array;
 import base.hashmap : HashMap;
 import base.numbers : higherOf;
@@ -15,9 +15,11 @@ enum float LEAF_CORE = 0.5f;
 enum float LEAF_CORE_DENSITY = 0.95f;
 enum float LEAF_EDGE_DENSITY = 0.3f;
 enum float FRAME_SLACK = 1e-3f;
-enum double TEST_LENGTH = 0.8;
-enum double TEST_SIDE = 0.3;
-enum float TEST_TOLERANCE = 1e-4f;
+
+enum StrokeForm : ubyte {
+    solid,
+    leafy,
+}
 
 struct Stroke {
     Vec4!float start;
@@ -30,11 +32,11 @@ struct Stroke {
     float endRadius;
     float coshReach;
     Material material;
-    bool isLeafy;
+    StrokeForm form;
 
-    static Stroke make(Motion!double frame, double length, float startRadius, float endRadius, Material material, bool isLeafy) {
+    static Stroke make(Motion!double frame, double length, float startRadius, float endRadius, Material material, StrokeForm form) {
         float widest = higherOf(startRadius, endRadius);
-        return Stroke(frame.m.column(3).as!float(), frame.m.column(2).as!float(), cast(float) length, cast(float) cosh(length), cast(float) sinh(length), cast(float) tanh(length), startRadius, endRadius, coshf(widest), material, isLeafy);
+        return Stroke(frame.m.column(3).as!float(), frame.m.column(2).as!float(), cast(float) length, cast(float) cosh(length), cast(float) sinh(length), cast(float) tanh(length), startRadius, endRadius, coshf(widest), material, form);
     }
 
     Stroke moved(Motion!double motion) const {
@@ -87,7 +89,7 @@ struct Stroke {
             return false;
         } else {
             float radius = radiusAt(found.along);
-            if (!isLeafy) {
+            if (form == StrokeForm.solid) {
                 return found.coshDistance <= coshf(radius);
             } else {
                 float depth = acoshf(higherOf(1.0f, found.coshDistance)) / radius;
@@ -180,17 +182,11 @@ struct Strokes {
 
     void note(NodeId id, StrokeReach reach, ref Array!NodeId reached) {
         Array!StrokeReach* list = &listOf(id);
-        bool hasRecord = false;
-        bool hasRun = false;
-        foreach (ref existing; list.slice()) {
-            hasRecord = hasRecord || existing.record == reach.record;
-            hasRun = hasRun || (existing.record == reach.record && existing.run == reach.run);
-        }
-        if (!hasRun) {
-            list.append(reach);
-        }
-        if (!hasRecord) {
+        if (!hasRecord(list.slice(), reach.record)) {
             reached.append(id);
+        }
+        if (!hasRun(list.slice(), reach)) {
+            list.append(reach);
         }
     }
 
@@ -243,19 +239,22 @@ struct Strokes {
     }
 }
 
-unittest {
-    Motion!double start = Motion!double.shift([0.2, -0.1, 0.3]);
-    Stroke stroke = Stroke.make(start, TEST_LENGTH, 0.1f, 0.05f, Material.oakWood, false);
-    Vec4!float beside = (start * Motion!double.shift([0, 0, TEST_LENGTH / 2]) * Motion!double.shift([TEST_SIDE, 0, 0]) * Point!double.origin()).v.as!float();
-    Nearest middle = stroke.nearest(beside);
-    assert(fabsf(acoshf(middle.coshDistance) - TEST_SIDE) < TEST_TOLERANCE && fabsf(middle.along - TEST_LENGTH / 2) < TEST_TOLERANCE);
-    Vec4!float past = (start * Motion!double.shift([0, 0, TEST_LENGTH + TEST_SIDE]) * Point!double.origin()).v.as!float();
-    Nearest end = stroke.nearest(past);
-    assert(fabsf(acoshf(end.coshDistance) - TEST_SIDE) < TEST_TOLERANCE && end.along == stroke.length);
-    Vec4!float behind = (start * Motion!double.shift([0, 0, -TEST_SIDE]) * Point!double.origin()).v.as!float();
-    assert(fabsf(acoshf(stroke.nearest(behind).coshDistance) - TEST_SIDE) < TEST_TOLERANCE);
-    assert(stroke.holds((start * Motion!double.shift([0.05, 0, 0.1]) * Point!double.origin()).v.as!float(), 0));
-    assert(!stroke.holds(beside, 0));
+bool hasRecord(const(StrokeReach)[] list, uint record) {
+    foreach (ref existing; list) {
+        if (existing.record == record) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool hasRun(const(StrokeReach)[] list, ref const StrokeReach reach) {
+    foreach (ref existing; list) {
+        if (existing.record == reach.record && existing.run == reach.run) {
+            return true;
+        }
+    }
+    return false;
 }
 
 StrokeVisit containing(ref GraphView view, uint node, Vec4!double point) {

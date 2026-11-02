@@ -11,31 +11,33 @@ import bindings.platform : VkExtent2D;
 import base.array : Array;
 import base.clock : FrameClock, MILLISECONDS_PER_SECOND, NANOSECONDS_PER_SECOND, PhaseTimes, nowSeconds, threadCpuMilliseconds;
 import base.crash : reportCrashes, reportHangAfter;
+import base.flags : Bits;
 import base.hashmap : HashMap, HashSlot;
-import base.names : ENUM_NAMES;
+import base.maybe : Maybe;
+import base.names : ENUM_NAMES, textFor;
 import base.numbers : higherOf, lowerOf;
 import base.parallel : ConcurrentQueue, QueueCell;
 import base.slab : RunPool, SLAB_SIZE, Slab;
 import base.units : Angle, AngularSpeed, Speed, Time;
-import client.arguments : ExitStatus, FlagValue, NumberArgument, StartupError, VERSION, WorldgenArgument, exitStatus;
-import client.config : ClientConfig;
+import client.arguments : ExitStatus, FlagValue, StartupError, VERSION, WorldgenArgument, exitStatus, numberIn;
+import client.config : ClientConfig, PitchAxis;
 import client.drive : DriveEventKind, DriveHost, DriveInput, DriveKey, LEFT_BUTTON, NamedDrive;
 import client.frames : RenderTimes;
-import client.game : FrameInput, Game, KEY_COUNT, Key, MATERIAL_PALETTE, axisValue;
+import client.game : ChunkSupply, FrameInput, Game, Key, MATERIAL_PALETTE, axisValue;
 import client.graphics.core : SurfaceSource;
-import client.graphics.renderer : FrameTimes, HALF_VERTICAL_FOV, Renderer;
+import client.graphics.renderer : CaptureMark, FrameTimes, HALF_VERTICAL_FOV, Renderer;
 import client.graphics.voxels.meshes : ChunkMeshes;
 import client.hud : Hud, worldNameOf;
 import client.meshing : Mesher;
 import client.png : writePng;
 import client.sampler : Sampler;
 import client.script : NamedScript, Script, ScriptRecorder, StepHook, named;
-import client.streaming : Streamer;
+import client.streaming : Pacing, Streamer;
 import client.plugins : registry;
 import client.structures : StructureHost, StructureProblem, growthProblem, placeStructure, restartGame, tileCounts;
 import client.tasks : TaskQueues;
 import client.tiles : PlanOutputs, TileHost, TilePainter, TileWork;
-import client.world : LocalWorld, NearbyStats, RENDER_RADIUS, StepPhases, fogVisibility;
+import client.world : LocalWorld, NearbyStage, NearbyStats, RENDER_RADIUS, StepPhases, fogVisibility;
 import common.character.controller : MovementMode;
 import common.graph : Graph, NO_SLOT, Node, childParentFaces;
 import common.neighbors : chunkNeighborSlot, needsMesh;
@@ -46,13 +48,14 @@ import common.view : GraphView;
 import common.worldgen.blueprint : Blueprint, Brush, LineRun, RunRef;
 import common.worldgen.building : Building;
 import common.worldgen.generation : NodeState, StructureWorld, Worldgen, WorldgenKind;
-import common.worldgen.horospheres : Horospheres, NodeHorospheres, NodeRises;
+import common.worldgen.horospheres : HorosphereStage, Horospheres, NodeHorospheres, NodeRises;
 import common.worldgen.store : NodeStructure, StructureStore;
 import common.worldgen.structure : nodeToNode;
 import geometry.cube : DIRECTIONS;
 import geometry.honeycomb : CORNER_COUNT, CUBE_RADIUS, Corner, FACE_COUNT, Face, NODE_RADIUS, cubeCenter, mirror;
 import geometry.lorentz : Motion, Point;
 import plugins.api.api : Material;
+import plugins.api.flags : Flags;
 import scripts.drives : DRIVES;
 import scripts.films : FILMS, NamedFilm;
 import scripts.views : VIEWS;
@@ -98,7 +101,7 @@ tools:
 ";
 
 version (OSX) {
-    import client.cocoa : Button1, Button3, CocoaWindow, KeyEvent, KeySym, WindowEvents, XK_1, XK_9, XK_bracketleft, XK_bracketright, XK_Escape, XK_Down, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_n, XK_s, XK_space, XK_v, XK_w;
+    import client.cocoa : Button1, Button3, CocoaWindow, KeyAction, KeyEvent, KeySym, WindowEvents, XK_1, XK_9, XK_bracketleft, XK_bracketright, XK_Escape, XK_Down, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_n, XK_s, XK_space, XK_v, XK_w;
 
     enum string WINDOW_REQUIREMENT = "cannot open a window";
     enum int MACH_TASK_BASIC_INFO = 20;
@@ -165,20 +168,22 @@ version (OSX) {
     enum uint BITS_PER_BYTE = 8;
     enum int NO_DEVICE = -1;
 
+    enum AxisMode : ubyte {
+        relative,
+        absolute,
+    }
+
     struct PointerAxis {
         double countsPerValue = 1;
-        double last = 0;
-        bool isAbsolute;
-        bool hasLast;
+        Maybe!double last;
+        AxisMode mode;
 
         double delta(double value) {
-            if (isAbsolute) {
-                double previous = last;
-                bool hadLast = hasLast;
-                last = value;
-                hasLast = true;
-                if (hadLast) {
-                    return (value - previous) * countsPerValue;
+            if (mode == AxisMode.absolute) {
+                Maybe!double previous = last;
+                last = Maybe!double.of(value);
+                if (previous.exists) {
+                    return (value - previous.value) * countsPerValue;
                 } else {
                     return 0;
                 }
@@ -234,6 +239,36 @@ struct HeapBytes {
     size_t held;
 }
 
+enum RunKind : ubyte {
+    play,
+    help,
+    showVersion,
+    benchLoad,
+}
+
+enum Profiling : ubyte {
+    off,
+    on,
+}
+
+enum KeyStroke : ubyte {
+    first,
+    repeated,
+}
+
+enum WorldStep : ubyte {
+    previous,
+    next,
+}
+
+enum SessionMark : ubyte {
+    captured,
+    recording,
+    driven,
+    stopped,
+    titleStale,
+}
+
 struct Arguments {
     StartupError error;
     const(char)* program;
@@ -247,15 +282,12 @@ struct Arguments {
     const(NamedFilm)* film;
     const(NamedDrive)* drive;
     Worldgen worldgen;
-    float sensitivity = 0;
+    Maybe!float sensitivity;
     float renderRadius = RENDER_RADIUS;
     float flightSpeed = 0;
-    bool hasSensitivity;
-    bool isYInverted;
-    bool isBenchLoad;
-    bool isProfiled;
-    bool isHelp;
-    bool isVersion;
+    PitchAxis pitchAxis;
+    RunKind kind;
+    Profiling profiling;
 
     static Arguments fromArgv(int argc, char** argv) {
         Arguments arguments = Arguments(StartupError.init, argv[0]);
@@ -290,7 +322,7 @@ struct Arguments {
             parseRenderRadius(value);
             return index + 2;
         } else if (strcmp(argument, "--invert-y") == 0) {
-            isYInverted = true;
+            pitchAxis = PitchAxis.inverted;
             return index + 1;
         } else if (strcmp(argument, "--worldgen") == 0) {
             WorldgenArgument parsed = WorldgenArgument.fromArgv(argc, argv, index);
@@ -306,10 +338,10 @@ struct Arguments {
             error = value.error;
             return index + 2;
         } else if (strcmp(argument, "--bench-load") == 0) {
-            isBenchLoad = true;
+            kind = RunKind.benchLoad;
             return index + 1;
         } else if (strcmp(argument, "--profile") == 0) {
-            isProfiled = true;
+            profiling = Profiling.on;
             return index + 1;
         } else if (strcmp(argument, "--flight-speed") == 0) {
             parseFlightSpeed(value);
@@ -319,11 +351,11 @@ struct Arguments {
             error = value.error;
             return index + 2;
         } else if (strcmp(argument, "--help") == 0) {
-            isHelp = true;
-            return index + 1;
+            kind = RunKind.help;
+            return argc;
         } else if (strcmp(argument, "--version") == 0) {
-            isVersion = true;
-            return index + 1;
+            kind = RunKind.showVersion;
+            return argc;
         } else if (argument[0] == '-') {
             error = StartupError(null, "unknown option", argument);
             return index + 1;
@@ -356,11 +388,8 @@ struct Arguments {
         if (value.error.isPresent()) {
             error = value.error;
         } else {
-            NumberArgument number = NumberArgument.fromText(value.text);
-            if (number.isPresent) {
-                sensitivity = number.value;
-                hasSensitivity = true;
-            } else {
+            sensitivity = numberIn(value.text);
+            if (!sensitivity.exists) {
                 error = StartupError(null, "sensitivity is not a number", value.text);
             }
         }
@@ -370,8 +399,8 @@ struct Arguments {
         if (value.error.isPresent()) {
             error = value.error;
         } else {
-            NumberArgument number = NumberArgument.fromText(value.text);
-            if (number.isPresent && number.value > 0) {
+            Maybe!float number = numberIn(value.text);
+            if (number.exists && number.value > 0) {
                 renderRadius = number.value;
             } else {
                 error = StartupError(null, "render radius is not a positive number", value.text);
@@ -383,8 +412,8 @@ struct Arguments {
         if (value.error.isPresent()) {
             error = value.error;
         } else {
-            NumberArgument number = NumberArgument.fromText(value.text);
-            if (number.isPresent && number.value > 0) {
+            Maybe!float number = numberIn(value.text);
+            if (number.exists && number.value > 0) {
                 flightSpeed = number.value;
             } else {
                 error = StartupError(null, "flight speed is not a positive number", value.text);
@@ -393,15 +422,15 @@ struct Arguments {
     }
 
     StartupError usageError() const {
-        if (isHelp || isVersion) {
+        if (kind == RunKind.help || kind == RunKind.showVersion) {
             return StartupError.init;
-        } else if (isBenchLoad && reportPath is null) {
+        } else if (kind == RunKind.benchLoad && reportPath is null) {
             return StartupError(null, "needs --out", "--bench-load");
-        } else if (isProfiled && !isBenchLoad) {
+        } else if (profiling == Profiling.on && kind != RunKind.benchLoad) {
             return StartupError(null, "is only for --bench-load", "--profile");
-        } else if (flightSpeed > 0 && !isBenchLoad) {
+        } else if (flightSpeed > 0 && kind != RunKind.benchLoad) {
             return StartupError(null, "is only for --bench-load", "--flight-speed");
-        } else if (drive !is null && (screenshotPath !is null || isBenchLoad || recordPath !is null)) {
+        } else if (drive !is null && (screenshotPath !is null || kind == RunKind.benchLoad || recordPath !is null)) {
             return StartupError(null, "does not mix with --screenshot, --bench-load or --record", "--drive");
         } else if (drive !is null && reportPath is null) {
             return StartupError(null, "needs --out", "--drive");
@@ -411,7 +440,7 @@ struct Arguments {
             return StartupError(null, "needs --out and a film", "--film");
         } else if (screenshotPath is null && filmPath is null && viewName !is null) {
             return StartupError(null, "a view is only for --screenshot, a film only for --film, unexpected", viewName);
-        } else if (screenshotPath is null && filmPath is null && !isBenchLoad && drive is null && reportPath !is null) {
+        } else if (screenshotPath is null && filmPath is null && kind != RunKind.benchLoad && drive is null && reportPath !is null) {
             return StartupError(null, "is only for --screenshot, --film, --drive and --bench-load", "--out");
         } else {
             return StartupError.init;
@@ -486,7 +515,7 @@ struct Session {
         Atom deleteAtom;
         RawPointer pointer;
         int screen;
-        bool[KEYCODE_COUNT] isKeyDown;
+        Bits keysDown;
     }
     double mouseDx = 0;
     double mouseDy = 0;
@@ -495,12 +524,24 @@ struct Session {
     float fps = 0;
     float worstFrameMs = 0;
     uint worldIndex;
-    bool[KEY_COUNT] isHeld;
-    bool isCaptured;
-    bool isRecording;
-    bool isDriven;
-    bool isRunning = true;
-    bool isTitleDirty = true;
+    Flags!Key held;
+    Flags!SessionMark marks;
+
+    bool isCaptured() const {
+        return marks.has(SessionMark.captured);
+    }
+
+    bool isRecording() const {
+        return marks.has(SessionMark.recording);
+    }
+
+    bool isDriven() const {
+        return marks.has(SessionMark.driven);
+    }
+
+    bool isRunning() const {
+        return !marks.has(SessionMark.stopped);
+    }
 
     ExitStatus run(Arguments arguments) {
         if (arguments.drive !is null) {
@@ -508,12 +549,11 @@ struct Session {
         } else if (arguments.recordPath is null) {
             return runWindow(arguments);
         } else {
-            bool isOpened = recorder.open(arguments.recordPath);
-            if (!isOpened) {
+            if (!recorder.open(arguments.recordPath)) {
                 StartupError(null, "cannot open the recording file", arguments.recordPath).report(arguments.program);
                 return ExitStatus.failed;
             } else {
-                isRecording = true;
+                marks.set(SessionMark.recording);
                 ExitStatus status = runWindow(arguments);
                 recorder.close();
                 return status;
@@ -527,8 +567,8 @@ struct Session {
             StartupError(null, "cannot open the report file", arguments.reportPath).report(arguments.program);
             return ExitStatus.failed;
         } else {
-            isDriven = true;
-            isCaptured = true;
+            marks.set(SessionMark.driven);
+            marks.set(SessionMark.captured);
             drive.start(arguments.drive.name.ptr, arguments.drive.actions, report, config.mouseTurnPerCount.value);
             ExitStatus status = runWindow(arguments);
             drive.finish();
@@ -541,15 +581,19 @@ struct Session {
         }
     }
 
+    bool isSettled() {
+        return game.world.isWorldgenSettled() && renderer.meshBacklog() == 0;
+    }
+
     DriveInput driveFrame() {
-        DriveInput input = drive.next(game.world.isWorldgenSettled() && renderer.meshBacklog() == 0);
+        DriveInput input = drive.next(isSettled());
         foreach (event; input.events) {
             final switch (event.kind) {
                 case DriveEventKind.press:
-                    handleKeyPress(DRIVE_KEYSYMS[event.key], false);
+                    handleKeyPress(DRIVE_KEYSYMS[event.key], KeyStroke.first);
                     break;
                 case DriveEventKind.release:
-                    setMovementKey(DRIVE_KEYSYMS[event.key], false);
+                    releaseMovementKey(DRIVE_KEYSYMS[event.key]);
                     break;
                 case DriveEventKind.click:
                     handleButton(driveButton(event.button));
@@ -564,8 +608,7 @@ struct Session {
     }
 
     ExitStatus runWindow(Arguments arguments) {
-        bool isWindowOpen = openWindow();
-        if (!isWindowOpen) {
+        if (!openWindow()) {
             StartupError(null, WINDOW_REQUIREMENT, null).report(arguments.program);
             return ExitStatus.failed;
         } else {
@@ -584,19 +627,19 @@ struct Session {
 
     ExitStatus runGame(Arguments arguments) {
         if (isDriven) {
-            fprintf(drive.report, "drive: frames %s for the display\n", waitedText(renderer.core.isPresentWaitable()));
+            fprintf(drive.report, "drive: frames %s for the display\n", textFor(renderer.core.isPresentWaitable(), "wait", "cannot wait"));
         }
         game = Game.make(arguments.worldgen, config.reach);
         worldIndex = worldIndexOf(arguments.worldgen);
         game.world.renderRadius = arguments.renderRadius;
-        bool isPlaced = isStructurePlaced(game, arguments);
-        if (isPlaced) {
+        ExitStatus status = placedStatus(game, arguments);
+        if (status == ExitStatus.ok) {
             runLoop();
+            status = grownStatus(game, arguments);
         }
-        bool isGrown = isPlaced && isStructureGrown(game, arguments);
         hud.release();
         game.release();
-        return exitStatus(isGrown);
+        return status;
     }
 
     version (OSX) {
@@ -615,24 +658,32 @@ struct Session {
 
         void capturePointer() {
             window.capturePointer();
-            isCaptured = true;
-            isTitleDirty = true;
+            marks.set(SessionMark.captured);
+            marks.set(SessionMark.titleStale);
         }
 
         void releasePointer() {
             if (isCaptured) {
                 window.releasePointer();
-                isCaptured = false;
-                isTitleDirty = true;
+                marks.clear(SessionMark.captured);
+                marks.set(SessionMark.titleStale);
             }
-            isHeld[] = false;
+            held = Flags!Key.init;
         }
 
         void handleKey(KeyEvent key) {
-            if (!isDriven && key.isPressed) {
-                handleKeyPress(key.symbol, key.isRepeat);
-            } else if (!isDriven) {
-                setMovementKey(key.symbol, false);
+            if (!isDriven) {
+                final switch (key.action) {
+                    case KeyAction.pressed:
+                        handleKeyPress(key.symbol, KeyStroke.first);
+                        break;
+                    case KeyAction.repeated:
+                        handleKeyPress(key.symbol, KeyStroke.repeated);
+                        break;
+                    case KeyAction.released:
+                        releaseMovementKey(key.symbol);
+                        break;
+                }
             }
         }
 
@@ -652,7 +703,7 @@ struct Session {
         void pollEvents() {
             window.poll(WindowEvents(&handleKey, &handleWindowButton, &handleMotion));
             if (!window.isOpen()) {
-                isRunning = false;
+                marks.set(SessionMark.stopped);
             } else if (isCaptured && !isDriven && !window.isFocused()) {
                 releasePointer();
             }
@@ -662,7 +713,7 @@ struct Session {
             window.setTitle(title);
         }
 
-        bool handleThrowKey(KeySym symbol, bool isRepeat) {
+        bool handleThrowKey(KeySym symbol, KeyStroke press) {
             return false;
         }
     } else {
@@ -682,8 +733,8 @@ struct Session {
                 XColor black;
                 invisibleCursor = XCreatePixmapCursor(display, bitmap, bitmap, &black, &black, 0, 0);
                 XFreePixmap(display, bitmap);
-                bool isPointerSelected = selectRawPointer();
-                if (!isPointerSelected) {
+                keysDown.cover(KEYCODE_COUNT);
+                if (!selectRawPointer()) {
                     closeWindow();
                     return false;
                 } else {
@@ -701,8 +752,7 @@ struct Session {
         bool selectRawPointer() {
             int firstEvent;
             int firstError;
-            int hasExtension = XQueryExtension(display, "XInputExtension", &pointer.opcode, &firstEvent, &firstError);
-            if (hasExtension == 0) {
+            if (XQueryExtension(display, "XInputExtension", &pointer.opcode, &firstEvent, &firstError) == 0) {
                 return false;
             } else {
                 int major = XI_REQUIRED_MAJOR;
@@ -725,23 +775,24 @@ struct Session {
             XFreeCursor(display, invisibleCursor);
             XDestroyWindow(display, window);
             XCloseDisplay(display);
+            keysDown.release();
         }
 
         void capturePointer() {
             int grab = XGrabPointer(display, window, True, POINTER_GRAB_MASK, GrabModeAsync, GrabModeAsync, window, invisibleCursor, CurrentTime);
             if (grab == GrabSuccess) {
-                isCaptured = true;
-                isTitleDirty = true;
+                marks.set(SessionMark.captured);
+                marks.set(SessionMark.titleStale);
             }
         }
 
         void releasePointer() {
             if (isCaptured) {
                 XUngrabPointer(display, CurrentTime);
-                isCaptured = false;
-                isTitleDirty = true;
+                marks.clear(SessionMark.captured);
+                marks.set(SessionMark.titleStale);
             }
-            isHeld[] = false;
+            held = Flags!Key.init;
         }
 
         void loadPointerAxes(int deviceId) {
@@ -756,7 +807,7 @@ struct Session {
                         if (info.type == XIValuatorClass) {
                             XIValuatorClassInfo* valuator = cast(XIValuatorClassInfo*) info;
                             if (valuator.number >= 0 && valuator.number < POINTER_AXES && valuator.mode == XIModeAbsolute && valuator.max > valuator.min) {
-                                pointer.axes[valuator.number].isAbsolute = true;
+                                pointer.axes[valuator.number].mode = AxisMode.absolute;
                                 pointer.axes[valuator.number].countsPerValue = screenExtent[valuator.number] / (valuator.max - valuator.min);
                             }
                         }
@@ -788,8 +839,7 @@ struct Session {
 
         void handleGenericEvent(XGenericEventCookie* cookie) {
             if (cookie.extension == pointer.opcode) {
-                int hasData = XGetEventData(display, cookie);
-                if (hasData != 0) {
+                if (XGetEventData(display, cookie) != 0) {
                     if (cookie.evtype == XI_RawMotion) {
                         handleRawMotion(cast(const(XIRawEvent)*) cookie.data);
                     } else if (cookie.evtype == XI_DeviceChanged) {
@@ -803,22 +853,26 @@ struct Session {
         void processEvent(XEvent* event) {
             if (event.type == KeyPress) {
                 uint keycode = event.xkey.keycode % KEYCODE_COUNT;
-                handleKeyPress(XLookupKeysym(&event.xkey, 0), isKeyDown[keycode]);
-                isKeyDown[keycode] = true;
+                if (keysDown.has(keycode)) {
+                    handleKeyPress(XLookupKeysym(&event.xkey, 0), KeyStroke.repeated);
+                } else {
+                    handleKeyPress(XLookupKeysym(&event.xkey, 0), KeyStroke.first);
+                }
+                keysDown.set(keycode);
             } else if (event.type == KeyRelease) {
-                isKeyDown[event.xkey.keycode % KEYCODE_COUNT] = false;
-                setMovementKey(XLookupKeysym(&event.xkey, 0), false);
+                keysDown.clear(event.xkey.keycode % KEYCODE_COUNT);
+                releaseMovementKey(XLookupKeysym(&event.xkey, 0));
             } else if (event.type == GenericEvent) {
                 handleGenericEvent(&event.xcookie);
             } else if (event.type == ButtonPress) {
                 handleButton(event.xbutton.button);
             } else if (event.type == FocusOut) {
                 releasePointer();
-                isKeyDown[] = false;
+                keysDown.clearAll();
             } else if (event.type == UnmapNotify) {
                 releasePointer();
             } else if (event.type == ClientMessage && cast(Atom) event.xclient.data.l[0] == deleteAtom) {
-                isRunning = false;
+                marks.set(SessionMark.stopped);
             }
         }
 
@@ -836,8 +890,8 @@ struct Session {
             XStoreName(display, window, title);
         }
 
-        bool handleThrowKey(KeySym symbol, bool isRepeat) {
-            if (symbol == XK_t && !isRepeat) {
+        bool handleThrowKey(KeySym symbol, KeyStroke press) {
+            if (symbol == XK_t && press == KeyStroke.first) {
                 game.throwBlock();
                 return true;
             } else {
@@ -856,38 +910,48 @@ struct Session {
         if (isRecording) {
             recorder.recordMode(game.mode);
         }
-        isTitleDirty = true;
+        marks.set(SessionMark.titleStale);
     }
 
-    void setMovementKey(KeySym symbol, bool isPressed) {
+    void pressMovementKey(KeySym symbol) {
         foreach (binding; KEY_BINDINGS) {
             if (binding.symbol == symbol) {
-                isHeld[binding.key] = isPressed;
+                held.set(binding.key);
             }
         }
     }
 
-    void handleKeyPress(KeySym symbol, bool isRepeat) {
-        if (symbol == XK_Escape) {
-            releasePointer();
-        } else if (isCaptured) {
-            handleGameKey(symbol, isRepeat);
+    void releaseMovementKey(KeySym symbol) {
+        foreach (binding; KEY_BINDINGS) {
+            if (binding.symbol == symbol) {
+                held.clear(binding.key);
+            }
         }
     }
 
-    void handleGameKey(KeySym symbol, bool isRepeat) {
-        if (symbol == XK_v && !isRepeat) {
+    void handleKeyPress(KeySym symbol, KeyStroke press) {
+        if (symbol == XK_Escape) {
+            releasePointer();
+        } else if (isCaptured) {
+            handleGameKey(symbol, press);
+        }
+    }
+
+    void handleGameKey(KeySym symbol, KeyStroke press) {
+        if (symbol == XK_v && press == KeyStroke.first) {
             game.toggleMode(MovementMode.walk);
             recordModeChange();
-        } else if (symbol == XK_n && !isRepeat) {
+        } else if (symbol == XK_n && press == KeyStroke.first) {
             game.toggleMode(MovementMode.noclip);
             recordModeChange();
         } else if (symbol >= XK_1 && symbol <= XK_9) {
             selectMaterial(cast(uint)(symbol - XK_1));
-        } else if ((symbol == XK_bracketleft || symbol == XK_bracketright) && !isRepeat && !isRecording) {
-            switchWorld(symbol == XK_bracketright);
-        } else if (!handleThrowKey(symbol, isRepeat)) {
-            setMovementKey(symbol, true);
+        } else if (symbol == XK_bracketleft && press == KeyStroke.first && !isRecording) {
+            switchWorld(WorldStep.previous);
+        } else if (symbol == XK_bracketright && press == KeyStroke.first && !isRecording) {
+            switchWorld(WorldStep.next);
+        } else if (!handleThrowKey(symbol, press)) {
+            pressMovementKey(symbol);
         }
     }
 
@@ -897,14 +961,14 @@ struct Session {
             if (isRecording) {
                 recorder.recordMaterial(index + 1);
             }
-            isTitleDirty = true;
+            marks.set(SessionMark.titleStale);
         }
     }
 
     void handleButton(uint button) {
         if (!isCaptured && isDriven) {
-            isCaptured = true;
-            isTitleDirty = true;
+            marks.set(SessionMark.captured);
+            marks.set(SessionMark.titleStale);
         } else if (!isCaptured) {
             capturePointer();
         } else if (button == Button1) {
@@ -928,33 +992,34 @@ struct Session {
             snprintf(title.ptr, title.length, "mined - %s - click to capture mouse - FPS %.0f, worst frame %.0fms", modes.ptr, cast(double) fps, cast(double) worstFrameMs);
         }
         storeTitle(title.ptr);
-        isTitleDirty = false;
+        marks.clear(SessionMark.titleStale);
     }
 
-    void switchWorld(bool isNext) {
+    void switchWorld(WorldStep direction) {
         uint count = cast(uint) registry().allNames().length + 1;
         uint step = count - 1;
-        if (isNext) {
+        if (direction == WorldStep.next) {
             step = 1;
         }
         worldIndex = (worldIndex + step) % count;
         StructureProblem problem = restartGame(game, worldgenAt(worldIndex));
         if (problem.isPresent) {
             fprintf(stderr, "%s\n", problem.text.ptr);
-            isRunning = false;
+            marks.set(SessionMark.stopped);
         }
-        isTitleDirty = true;
+        marks.set(SessionMark.titleStale);
     }
 
     FrameInput buildFrameInput(Time dt) {
-        AngularSpeed yawRate = config.keyTurnRate * (axisValue(isHeld[Key.yawRight]) - axisValue(isHeld[Key.yawLeft]));
-        AngularSpeed pitchRate = config.keyTurnRate * (axisValue(isHeld[Key.pitchDown]) - axisValue(isHeld[Key.pitchUp]));
+        AngularSpeed yawRate = config.keyTurnRate * (axisValue(held, Key.yawRight) - axisValue(held, Key.yawLeft));
+        AngularSpeed pitchRate = config.keyTurnRate * (axisValue(held, Key.pitchDown) - axisValue(held, Key.pitchUp));
         Angle yaw = yawRate * dt + config.mouseTurnPerCount * cast(float) mouseDx;
-        Angle pitch = pitchRate * dt + config.mouseTurnPerCount * cast(float) mouseDy * pitchSign(config.isYInverted);
-        return FrameInput(yaw, pitch, isHeld);
+        Angle pitch = pitchRate * dt + config.mouseTurnPerCount * cast(float) mouseDy * pitchSign(config.pitchAxis);
+        return FrameInput(yaw, pitch, held);
     }
 
     void runLoop() {
+        marks.set(SessionMark.titleStale);
         double lastTitleTime = nowSeconds();
         FrameClock clock = FrameClock.startingAt(lastTitleTime);
         uint framesSinceTitle = 0;
@@ -979,7 +1044,7 @@ struct Session {
                 double renderStart = nowSeconds();
                 if (isDriven) {
                     drive.record(now, dt.value, (renderStart - stepStart) * MILLISECONDS_PER_SECOND, driven, game.world.cameraPosition, game.world.graph);
-                    renderer.isCapturing = drive.wantsImage();
+                    renderer.captureMarks.put(CaptureMark.wanted, drive.wantsImage());
                 }
                 hud.buildMarkers(game);
                 hud.build(game, renderer.swapchain.extent.width, renderer.swapchain.extent.height);
@@ -989,8 +1054,10 @@ struct Session {
                 if (isDriven) {
                     FrameTimes times = renderer.frameTimes;
                     RenderTimes rendered = RenderTimes((nowSeconds() - renderStart) * MILLISECONDS_PER_SECOND, times.fenceWaitMs, times.chunkUpdateMs, times.acquireMs, times.presentMs, times.gpu.frameMs);
-                    drive.finishFrame(rendered, renderer.capturedImage(), renderer.capturedExtent.width, renderer.capturedExtent.height, renderer.isCapturedBgra());
-                    isRunning = !drive.isDone();
+                    drive.finishFrame(rendered, renderer.capturedImage(), renderer.capturedExtent.width, renderer.capturedExtent.height, renderer.capturedOrder());
+                    if (drive.isDone()) {
+                        marks.set(SessionMark.stopped);
+                    }
                 }
                 framesSinceTitle += 1;
                 if (now - lastTitleTime >= TITLE_INTERVAL_SECONDS) {
@@ -999,9 +1066,9 @@ struct Session {
                     clock.worst = 0;
                     framesSinceTitle = 0;
                     lastTitleTime = now;
-                    isTitleDirty = true;
+                    marks.set(SessionMark.titleStale);
                 }
-                if (isTitleDirty) {
+                if (marks.has(SessionMark.titleStale)) {
                     updateWindowTitle();
                 }
             }
@@ -1030,8 +1097,8 @@ uint worldIndexOf(Worldgen worldgen) {
     }
 }
 
-float pitchSign(bool isYInverted) {
-    if (isYInverted) {
+float pitchSign(PitchAxis axis) {
+    if (axis == PitchAxis.inverted) {
         return -1.0f;
     } else {
         return 1.0f;
@@ -1046,75 +1113,53 @@ void pauseUntilFrameEnd(double frameStart) {
     }
 }
 
-immutable(char)* waitedText(bool isWaited) {
-    if (isWaited) {
-        return "wait";
-    } else {
-        return "cannot wait";
-    }
-}
-
-immutable(char)* writtenText(bool isWritten) {
-    if (isWritten) {
-        return "written";
-    } else {
-        return "failed";
-    }
-}
-
-immutable(char)* settledText(bool isSettled) {
-    if (isSettled) {
-        return "settled";
-    } else {
-        return "still loading";
-    }
-}
-
-bool renderScreenshot(Arguments arguments) {
+ExitStatus renderScreenshot(Arguments arguments) {
     FILE* report = fopen(arguments.reportPath, "w");
     if (report is null) {
         StartupError(null, "cannot open the report file", arguments.reportPath).report(arguments.program);
-        return false;
+        return ExitStatus.failed;
     } else {
         ClientConfig config;
         Renderer* renderer = cast(Renderer*) malloc(Renderer.sizeof);
         *renderer = Renderer.init;
         const(char)* problem = renderer.setupOffscreen(VkExtent2D(SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT), CHUNK_DIMENSION);
-        bool isWritten = false;
+        ExitStatus status = ExitStatus.failed;
         if (problem !is null) {
             StartupError(null, problem, null).report(arguments.program);
         } else {
             Game game = Game.make(arguments.worldgen, config.reach);
             game.world.renderRadius = arguments.renderRadius;
-            game.isGeneratingOnDemand = true;
-            bool isPlaced = isStructurePlaced(game, arguments);
-            isWritten = isPlaced && captureScreenshot(arguments, report, *renderer, game);
+            game.supply = ChunkSupply.onDemand;
+            status = placedStatus(game, arguments);
+            if (status == ExitStatus.ok) {
+                status = captureScreenshot(arguments, report, *renderer, game);
+            }
             renderer.cleanup();
             game.release();
         }
         free(renderer);
         fclose(report);
-        return isWritten;
+        return status;
     }
 }
 
-bool captureScreenshot(Arguments arguments, FILE* report, ref Renderer renderer, ref Game game) {
+ExitStatus captureScreenshot(Arguments arguments, FILE* report, ref Renderer renderer, ref Game game) {
     Script script = Script.make(&game, report);
-    if (!script.run(arguments.view.run)) {
+    if (script.run(arguments.view.run) != ExitStatus.ok) {
         fprintf(report, "screenshot: not taken, the view failed\n");
-        return false;
+        return ExitStatus.failed;
     } else {
         return renderSettled(arguments, report, renderer, game);
     }
 }
 
-bool renderSettled(Arguments arguments, FILE* report, ref Renderer renderer, ref Game game) {
+ExitStatus renderSettled(Arguments arguments, FILE* report, ref Renderer renderer, ref Game game) {
     SettledFrame frame = SettledFrame.of(renderer, game, report, SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT);
-    bool isSettled = frame.render();
-    bool isWritten = writePng(arguments.screenshotPath, SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT, renderer.capture());
-    fprintf(report, "screenshot: %s after %u frames (%u chunks meshed, %u faces)\n", writtenText(isWritten), frame.frames, renderer.meshes.meshedChunks, renderer.meshes.allocator.used());
+    ExitStatus settled = frame.render();
+    ExitStatus written = exitStatus(writePng(arguments.screenshotPath, SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT, renderer.capture()));
+    fprintf(report, "screenshot: %s after %u frames (%u chunks meshed, %u faces)\n", textFor(written == ExitStatus.ok, "written", "failed"), frame.frames, renderer.meshes.meshedChunks, renderer.meshes.allocator.used());
     frame.release();
-    return isWritten && isSettled;
+    return exitStatus(written == ExitStatus.ok && settled == ExitStatus.ok);
 }
 
 struct SettledFrame {
@@ -1136,9 +1181,9 @@ struct SettledFrame {
         return frame;
     }
 
-    bool render() {
+    ExitStatus render() {
         while (!game.world.isWorldgenSettled()) {
-            game.world.update(true);
+            game.world.update(Pacing.unbudgeted);
             game.world.streamer.settle(game.world.graph);
         }
         StructureProblem grown = growthProblem(game.world.graph);
@@ -1154,7 +1199,7 @@ struct SettledFrame {
             renderer.render(game.world);
             frames += 1;
         } while (renderer.meshBacklog() > 0);
-        return !grown.isPresent;
+        return exitStatus(!grown.isPresent);
     }
 
     void release() {
@@ -1166,62 +1211,69 @@ struct FilmRoll {
     SettledFrame frame;
     const(char)* directory;
     uint written;
-    bool isFailed;
+    uint failures;
 }
 
 void filmFrame(ref Script script, void* context) {
     FilmRoll* roll = cast(FilmRoll*) context;
-    roll.isFailed = !roll.frame.render() || roll.isFailed;
+    if (roll.frame.render() != ExitStatus.ok) {
+        roll.failures += 1;
+    }
     char[PATH_CAPACITY] path;
     snprintf(path.ptr, path.length, "%s/frame%05u.png", roll.directory, roll.written);
     if (!writePng(path.ptr, FILM_WIDTH, FILM_HEIGHT, roll.frame.renderer.capture())) {
         fprintf(roll.frame.report, "film: could not write %s\n", path.ptr);
-        roll.isFailed = true;
+        roll.failures += 1;
     }
     roll.written += 1;
 }
 
-bool renderFilm(Arguments arguments) {
+ExitStatus renderFilm(Arguments arguments) {
     FILE* report = fopen(arguments.reportPath, "w");
     if (report is null) {
         StartupError(null, "cannot open the report file", arguments.reportPath).report(arguments.program);
-        return false;
+        return ExitStatus.failed;
     } else {
         mkdir(arguments.filmPath, DIRECTORY_MODE);
         ClientConfig config;
         Renderer* renderer = cast(Renderer*) malloc(Renderer.sizeof);
         *renderer = Renderer.init;
         const(char)* problem = renderer.setupOffscreen(VkExtent2D(FILM_WIDTH, FILM_HEIGHT), CHUNK_DIMENSION);
-        bool isFilmed = false;
+        ExitStatus status = ExitStatus.failed;
         if (problem !is null) {
             StartupError(null, problem, null).report(arguments.program);
         } else {
             Game game = Game.make(arguments.worldgen, config.reach);
             game.world.renderRadius = arguments.renderRadius;
-            game.isGeneratingOnDemand = true;
-            isFilmed = isStructurePlaced(game, arguments) && filmShots(arguments, report, *renderer, game);
+            game.supply = ChunkSupply.onDemand;
+            status = placedStatus(game, arguments);
+            if (status == ExitStatus.ok) {
+                status = filmShots(arguments, report, *renderer, game);
+            }
             renderer.cleanup();
             game.release();
         }
         free(renderer);
         fclose(report);
-        return isFilmed;
+        return status;
     }
 }
 
-bool filmShots(Arguments arguments, FILE* report, ref Renderer renderer, ref Game game) {
+ExitStatus filmShots(Arguments arguments, FILE* report, ref Renderer renderer, ref Game game) {
     FilmRoll roll = FilmRoll(SettledFrame.of(renderer, game, report, FILM_WIDTH, FILM_HEIGHT), arguments.filmPath);
     foreach (ref shot; arguments.film.shots) {
         size_t before = roll.written;
         Script script = Script.make(&game, report);
         script.camera = StepHook(&filmFrame, &roll);
-        roll.isFailed = !script.run(shot.run) || roll.isFailed;
+        if (script.run(shot.run) != ExitStatus.ok) {
+            roll.failures += 1;
+        }
         fprintf(report, "%.*s: %zu frames\n", cast(int) shot.name.length, shot.name.ptr, roll.written - before);
         fflush(report);
     }
     fprintf(report, "film: %u frames in %s\n", roll.written, arguments.filmPath);
     roll.frame.release();
-    return !roll.isFailed;
+    return exitStatus(roll.failures == 0);
 }
 
 struct RenderBreakdown {
@@ -1243,41 +1295,41 @@ struct RenderBreakdown {
     }
 }
 
-bool benchLoad(Arguments arguments) {
+ExitStatus benchLoad(Arguments arguments) {
     FILE* report = fopen(arguments.reportPath, "w");
     if (report is null) {
         StartupError(null, "cannot open the report file", arguments.reportPath).report(arguments.program);
-        return false;
+        return ExitStatus.failed;
     } else {
         Renderer* renderer = cast(Renderer*) malloc(Renderer.sizeof);
         *renderer = Renderer.init;
         const(char)* problem = renderer.setupOffscreen(VkExtent2D(SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT), CHUNK_DIMENSION);
-        bool isGrown = false;
+        ExitStatus status = ExitStatus.failed;
         if (problem !is null) {
             StartupError(null, problem, null).report(arguments.program);
         } else {
-            isGrown = benchLoadWith(arguments, report, *renderer);
+            status = benchLoadWith(arguments, report, *renderer);
             renderer.cleanup();
         }
         free(renderer);
         fclose(report);
-        return isGrown;
+        return status;
     }
 }
 
-bool benchLoadWith(Arguments arguments, FILE* report, ref Renderer renderer) {
+ExitStatus benchLoadWith(Arguments arguments, FILE* report, ref Renderer renderer) {
     ClientConfig config;
     Game game = Game.make(arguments.worldgen, config.reach);
     game.world.renderRadius = arguments.renderRadius;
-    bool isPlaced = isStructurePlaced(game, arguments);
+    ExitStatus status = placedStatus(game, arguments);
     Sampler sampler;
-    if (isPlaced) {
-        if (arguments.isProfiled) {
+    if (status == ExitStatus.ok) {
+        if (arguments.profiling == Profiling.on) {
             sampler.start();
         }
         reportHangAfter(BENCH_TIME_LIMIT_SECONDS);
         measureLoad(report, renderer, game);
-        if (arguments.isProfiled) {
+        if (arguments.profiling == Profiling.on) {
             sampler.report(report, "load");
             sampler.start();
         }
@@ -1286,35 +1338,37 @@ bool benchLoadWith(Arguments arguments, FILE* report, ref Renderer renderer) {
             game.character.noclipSpeed = Speed(arguments.flightSpeed);
         }
         measureFlight(report, renderer, game);
-        if (arguments.isProfiled) {
+        if (arguments.profiling == Profiling.on) {
             sampler.report(report, "flight");
             sampler.start();
         }
         measureSettle(report, renderer, game);
-        if (arguments.isProfiled) {
+        if (arguments.profiling == Profiling.on) {
             sampler.report(report, "settle");
         }
     }
     sampler.release();
-    bool isGrown = isPlaced && isStructureGrown(game, arguments);
+    if (status == ExitStatus.ok) {
+        status = grownStatus(game, arguments);
+    }
     game.release();
-    return isGrown;
+    return status;
 }
 
-bool isStructurePlaced(ref Game game, Arguments arguments) {
+ExitStatus placedStatus(ref Game game, Arguments arguments) {
     StructureProblem problem = game.placeStructure();
     if (problem.isPresent) {
         StartupError(null, problem.text.ptr, null).report(arguments.program);
     }
-    return !problem.isPresent;
+    return exitStatus(!problem.isPresent);
 }
 
-bool isStructureGrown(ref const Game game, Arguments arguments) {
+ExitStatus grownStatus(ref const Game game, Arguments arguments) {
     StructureProblem problem = growthProblem(game.world.graph);
     if (problem.isPresent) {
         StartupError(null, problem.text.ptr, null).report(arguments.program);
     }
-    return !problem.isPresent;
+    return exitStatus(!problem.isPresent);
 }
 
 void measureLoad(FILE* report, ref Renderer renderer, ref Game game) {
@@ -1341,7 +1395,7 @@ void measureLoad(FILE* report, ref Renderer renderer, ref Game game) {
         frame.add((rendered - frameStart) * MILLISECONDS_PER_SECOND);
         breakdown.add(renderer.frameTimes);
         frames += 1;
-        if (nearbyFrame == 0 && game.world.hasNearby) {
+        if (nearbyFrame == 0 && game.world.nearbyStage != NearbyStage.initial) {
             nearbyFrame = frames;
         }
         if (generatedFrame == 0 && game.world.isWorldgenSettled()) {
@@ -1408,12 +1462,17 @@ bool isSettledSolid(const(Chunk)* chunk) {
 }
 
 bool isBesideDropped(ref const Graph graph, ChunkSlot chunk) {
-    bool isBeside = false;
     foreach (direction; DIRECTIONS) {
         ChunkSlot neighbor = graph.chunkNeighborSlot(chunk, direction);
-        isBeside = isBeside || (neighbor.slot != NO_SLOT && graph.chunks.at(neighbor).state == ChunkState.dropped);
+        if (neighbor.slot != NO_SLOT && graph.chunks.at(neighbor).state == ChunkState.dropped) {
+            return true;
+        }
     }
-    return isBeside;
+    return false;
+}
+
+bool isResident(ChunkState state) {
+    return state == ChunkState.populated || state == ChunkState.dropped;
 }
 
 void measureFlight(FILE* report, ref Renderer renderer, ref Game game) {
@@ -1436,7 +1495,7 @@ void measureSettle(FILE* report, ref Renderer renderer, ref Game game) {
     } while (frames < BENCH_SETTLE_FRAMES && (renderer.meshBacklog() > 0 || !game.world.isWorldgenSettled()));
     LoadedAround around;
     around.count(game.world);
-    fprintf(report, "stopped after the flight for %u frames (at most %u): %s, nearby %zu nodes reaching %.2f\n", frames, BENCH_SETTLE_FRAMES, settledText(game.world.isWorldgenSettled()), game.world.cachedNodes.length, cast(double)(game.world.loadRadius() - game.world.radiusCut));
+    fprintf(report, "stopped after the flight for %u frames (at most %u): %s, nearby %zu nodes reaching %.2f\n", frames, BENCH_SETTLE_FRAMES, textFor(game.world.isWorldgenSettled(), "settled", "still loading"), game.world.cachedNodes.length, cast(double)(game.world.loadRadius() - game.world.radiusCut));
     around.print(report);
     around.release();
     printMemory(report, game.world);
@@ -1493,13 +1552,12 @@ struct LoadedAround {
                 Corner corner = cast(Corner) index;
                 ChunkState state = graph.chunks.at(ChunkSlot(current.slot, corner)).state;
                 float product = eye.coshDistance(current.transform * corner.cubeCenter);
-                bool isLoaded = state == ChunkState.populated || state == ChunkState.dropped;
                 foreach (radius, distance; CENSUS_RADII) {
-                    if (isLoaded && !(product > coshf(distance))) {
+                    if (isResident(state) && !(product > coshf(distance))) {
                         loaded[radius] += 1;
                     }
                 }
-                if (!isLoaded && !(product > outer)) {
+                if (!isResident(state) && !(product > outer)) {
                     Shortfall reason = waiting;
                     if (state == ChunkState.generating) {
                         reason = Shortfall.generating;
@@ -1558,18 +1616,10 @@ struct SlowFrames {
             if (shown < SLOW_FRAMES_SHOWN) {
                 const(StepPhases)* phases = &world.phases;
                 double phased = phases.paint.lastMs + phases.nearby.lastMs + phases.streamer.lastMs + phases.evict.lastMs;
-                fprintf(report, "  slow frame %u: %.1fms, step %.1f (paint ahead %.1f, nearby %.1f, streamer %.1f, evict %.1f, the rest %.1f), render %.1f (chunk update %.1f)%s%s%s\n", frame, stepMs + renderMs, stepMs, phases.paint.lastMs, phases.nearby.lastMs, phases.streamer.lastMs, phases.evict.lastMs, stepMs - phased, renderMs, times.chunkUpdateMs, eventText(world.nearbyStats.rebases != before.rebases, " rebased"), eventText(world.nearbyStats.publishes != before.publishes, " published"), eventText(world.nearbyStats.grown != before.grown, " started a rebuild"));
+                fprintf(report, "  slow frame %u: %.1fms, step %.1f (paint ahead %.1f, nearby %.1f, streamer %.1f, evict %.1f, the rest %.1f), render %.1f (chunk update %.1f)%s%s%s\n", frame, stepMs + renderMs, stepMs, phases.paint.lastMs, phases.nearby.lastMs, phases.streamer.lastMs, phases.evict.lastMs, stepMs - phased, renderMs, times.chunkUpdateMs, textFor(world.nearbyStats.rebases != before.rebases, " rebased", ""), textFor(world.nearbyStats.publishes != before.publishes, " published", ""), textFor(world.nearbyStats.grown != before.grown, " started a rebuild", ""));
                 shown += 1;
             }
         }
-    }
-}
-
-immutable(char)* eventText(bool isHappened, immutable(char)* text) {
-    if (isHappened) {
-        return text;
-    } else {
-        return "";
     }
 }
 
@@ -1582,7 +1632,7 @@ void measureLeg(FILE* report, ref Renderer renderer, ref Game game) {
     SlowFrames slow;
     uint backloggedFrames = 0;
     FrameInput forward;
-    forward.isHeld[Key.fwd] = true;
+    forward.held.set(Key.fwd);
     game.world.phases = StepPhases.init;
     PhaseTimes stepCpu;
     NearbyStats start = game.world.nearbyStats;
@@ -1679,7 +1729,7 @@ void printMemory(FILE* report, ref const LocalWorld world) {
         if (node.liveChildren > 0) {
             parents += 1;
         }
-        if (slot < world.evictor.isRecent.length && world.evictor.isRecent.ptr[slot]) {
+        if (slot < world.evictor.recent.count && world.evictor.recent.has(slot)) {
             recent += 1;
         }
     }
@@ -1692,7 +1742,7 @@ void printMemory(FILE* report, ref const LocalWorld world) {
     size_t liveHorospheres = 0;
     size_t tiledHorospheres = 0;
     foreach (ref horosphere; graph.horospheres.horospheres.slice()) {
-        if (horosphere.isKnown) {
+        if (horosphere.stage != HorosphereStage.free) {
             liveHorospheres += 1;
         }
         if (horosphere.tiles > 0) {
@@ -1761,7 +1811,7 @@ size_t bytesIn(T)(ref const ConcurrentQueue!T queue) {
 }
 
 size_t bytesIn(ref const NearbyScratch scratch) {
-    size_t bytes = bytesIn(scratch.nodes) + bytesIn(scratch.collected) + bytesIn(scratch.candidates) + bytesIn(scratch.kinds) + bytesIn(scratch.blocks) + bytesIn(scratch.around) + bytesIn(scratch.chain) + bytesIn(scratch.claimed) + bytesIn(scratch.isRederived) + bytesIn(scratch.derived) + bytesIn(scratch.outputs);
+    size_t bytes = bytesIn(scratch.nodes) + bytesIn(scratch.collected) + bytesIn(scratch.candidates) + bytesIn(scratch.kinds) + bytesIn(scratch.blocks) + bytesIn(scratch.around) + bytesIn(scratch.chain) + bytesIn(scratch.claimed) + bytesIn(scratch.rederived.words) + bytesIn(scratch.derived) + bytesIn(scratch.outputs);
     foreach (ref batch; scratch.derived.slice()) {
         bytes += bytesIn(batch);
     }
@@ -1849,7 +1899,7 @@ void printMemoryParts(FILE* report, ref const LocalWorld world, ref const Render
     size_t streamBytes = bytesIn(streamer.requests) + bytesIn(streamer.urgentRequests) + bytesIn(streamer.buildingSlots) + bytesIn(streamer.urgentBuildingSlots) + bytesIn(streamer.planned) + bytesIn(streamer.made) + bytesIn(streamer.facts) + bytesIn(streamer.waiting) + bytesIn(streamer.nearCamera) + bytesIn(streamer.integrator.arrivals);
     const(TaskQueues)* queues = streamer.queues;
     size_t queueBytes = bytesIn(queues.generations) + bytesIn(queues.urgent) + bytesIn(queues.buildings) + bytesIn(queues.urgentBuildings) + bytesIn(queues.generated) + bytesIn(queues.built);
-    fprintf(report, "  streaming: rescan marks %zu, work lists %zu, task queues %zu, eviction marks %zu\n", megabytes(bytesIn(streamer.rescanAt)), megabytes(streamBytes), megabytes(queueBytes), megabytes(bytesIn(world.evictor.isRecent) + bytesIn(world.evictor.stack)));
+    fprintf(report, "  streaming: rescan marks %zu, work lists %zu, task queues %zu, eviction marks %zu\n", megabytes(bytesIn(streamer.rescanAt)), megabytes(streamBytes), megabytes(queueBytes), megabytes(bytesIn(world.evictor.recent.words) + bytesIn(world.evictor.stack)));
     const(ChunkMeshes)* meshes = &renderer.meshes;
     size_t drawBytes = bytesIn(meshes.renderBlocks) + bytesIn(meshes.freeRenderBlocks) + bytesIn(meshes.drawableChunks) + bytesIn(meshes.drawableRecords) + bytesIn(meshes.placedVersions) + bytesIn(meshes.unlisted);
     size_t allocatorBytes = bytesIn(meshes.allocator.ranges) + bytesIn(meshes.allocator.spare) + bytesIn(meshes.allocator.starts) + bytesIn(meshes.allocator.ends);
@@ -1887,8 +1937,7 @@ bool isSingleFill(ref const Graph graph, uint slot) {
 }
 
 bool isFilledLike(const(Chunk)* chunk, const(Chunk)* first) {
-    bool isSettled = chunk.state == ChunkState.populated && chunk.voxels.isUniform() && !chunk.isEdited && !chunk.isQueued;
-    return isSettled && chunk.voxels.bits == first.voxels.bits && chunk.hasDeferredMaterials == first.hasDeferredMaterials;
+    return chunk.state == ChunkState.populated && chunk.voxels.isUniform() && !chunk.isEdited && !chunk.isQueued && chunk.voxels.bits == first.voxels.bits && chunk.hasDeferredMaterials == first.hasDeferredMaterials;
 }
 
 void printShells(FILE* report, ref const LocalWorld world, ref const Renderer renderer) {
@@ -1955,11 +2004,11 @@ ExitStatus runWindowed(Arguments arguments) {
     Session* session = cast(Session*) malloc(Session.sizeof);
     *session = Session.init;
     session.config = ClientConfig.fromFile(arguments.configPath);
-    if (arguments.hasSensitivity) {
-        session.config.mouseTurnPerCount = Angle(arguments.sensitivity);
+    if (arguments.sensitivity.exists) {
+        session.config.mouseTurnPerCount = Angle(arguments.sensitivity.value);
     }
-    if (arguments.isYInverted) {
-        session.config.isYInverted = true;
+    if (arguments.pitchAxis == PitchAxis.inverted) {
+        session.config.pitchAxis = PitchAxis.inverted;
     }
     ExitStatus status = session.run(arguments);
     free(session);
@@ -1972,18 +2021,18 @@ extern (C) int main(int argc, char** argv) {
     if (arguments.error.isPresent()) {
         arguments.error.report(argv[0]);
         return ExitStatus.usage;
-    } else if (arguments.isHelp) {
+    } else if (arguments.kind == RunKind.help) {
         printf("%s", USAGE.ptr);
         return ExitStatus.ok;
-    } else if (arguments.isVersion) {
+    } else if (arguments.kind == RunKind.showVersion) {
         printf("mined %s\n", VERSION.ptr);
         return ExitStatus.ok;
-    } else if (arguments.isBenchLoad) {
-        return exitStatus(benchLoad(arguments));
+    } else if (arguments.kind == RunKind.benchLoad) {
+        return benchLoad(arguments);
     } else if (arguments.screenshotPath !is null) {
-        return exitStatus(renderScreenshot(arguments));
+        return renderScreenshot(arguments);
     } else if (arguments.filmPath !is null) {
-        return exitStatus(renderFilm(arguments));
+        return renderFilm(arguments);
     } else {
         return runWindowed(arguments);
     }

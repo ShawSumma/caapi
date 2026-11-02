@@ -7,6 +7,7 @@ import core.sys.posix.pthread : pthread_equal, pthread_self, pthread_t;
 import core.sys.posix.signal : SA_RESTART, SIGPROF, sigaction, sigaction_t, sigemptyset;
 import core.sys.posix.sys.time : itimerval, setitimer, timeval;
 import base.array : Array;
+import base.flags : Bits;
 import base.hashmap : FIBONACCI_MULTIPLIER, HashMap;
 import base.numbers : lowerOf;
 
@@ -48,10 +49,20 @@ version (OSX) {
     alias errnoLocation = __errno_location;
 }
 
+enum SampledThread : ubyte {
+    worker,
+    main,
+}
+
+enum SamplerState : ubyte {
+    stopped,
+    running,
+}
+
 struct Sample {
     void*[SAMPLE_FRAMES] frames;
     int depth;
-    bool isMain;
+    SampledThread thread;
 }
 
 __gshared Sample* samples;
@@ -60,25 +71,29 @@ shared uint sampleCount;
 
 extern (C) void recordWorkerSample(int signal) {
     if (pthread_equal(pthread_self(), mainThread) == 0) {
-        record(false);
+        record(SampledThread.worker);
     }
 }
 
 extern (C) void recordMainSample(int signal) {
-    record(true);
+    record(SampledThread.main);
 }
 
 extern (C) void recordAnySample(int signal) {
-    record(pthread_equal(pthread_self(), mainThread) != 0);
+    if (pthread_equal(pthread_self(), mainThread) != 0) {
+        record(SampledThread.main);
+    } else {
+        record(SampledThread.worker);
+    }
 }
 
-void record(bool isMain) {
+void record(SampledThread thread) {
     int saved = *errnoLocation();
     uint index = atomicOp!"+="(sampleCount, 1) - 1;
     if (index < SAMPLE_CAPACITY) {
         Sample* sample = &samples[index];
         sample.depth = backtrace(sample.frames.ptr, SAMPLE_FRAMES);
-        sample.isMain = isMain;
+        sample.thread = thread;
     }
     *errnoLocation() = saved;
 }
@@ -120,7 +135,7 @@ struct Sampler {
     } else {
         timer_t mainTimer;
     }
-    bool isRunning;
+    SamplerState state;
 
     void start() {
         if (samples is null) {
@@ -145,7 +160,7 @@ struct Sampler {
         }
         itimerval timer = itimerval(timeval(0, SAMPLE_MICROSECONDS), timeval(0, SAMPLE_MICROSECONDS));
         setitimer(ITIMER_PROF, &timer, null);
-        isRunning = true;
+        state = SamplerState.running;
     }
 
     void handle(int signal, typeof(sigaction_t.sa_handler) handler) {
@@ -163,7 +178,7 @@ struct Sampler {
         } else {
             timer_delete(mainTimer);
         }
-        isRunning = false;
+        state = SamplerState.stopped;
     }
 
     void report(FILE* output, const(char)* title) {
@@ -179,7 +194,7 @@ struct Sampler {
         uint workerSamples = 0;
         foreach (index; 0 .. count) {
             Sample* sample = &samples[index];
-            if (sample.isMain) {
+            if (sample.thread == SampledThread.main) {
                 mainSamples += 1;
             } else {
                 workerSamples += 1;
@@ -188,24 +203,23 @@ struct Sampler {
             foreach (depth; SIGNAL_FRAMES .. sample.depth) {
                 uint current = functionOf(sample.frames[depth], byAddress, byStart, functions);
                 FunctionCounts* counts = &functions.ptr[current];
-                bool isSelf = depth == SIGNAL_FRAMES;
-                bool isFirst = counts.lastSample != index + 1;
+                uint lastSeen = counts.lastSample;
                 counts.lastSample = index + 1;
-                if (sample.isMain) {
-                    if (isSelf) {
+                if (sample.thread == SampledThread.main) {
+                    if (depth == SIGNAL_FRAMES) {
                         counts.selfMain += 1;
                     }
-                    if (isFirst) {
+                    if (lastSeen != index + 1) {
                         counts.totalMain += 1;
                     }
                     if (callee != uint.max && callee != current) {
                         countCall(CallKey(callee, current), index, callIndex, calls);
                     }
                 } else {
-                    if (isSelf) {
+                    if (depth == SIGNAL_FRAMES) {
                         counts.selfWorker += 1;
                     }
-                    if (isFirst) {
+                    if (lastSeen != index + 1) {
                         counts.totalWorker += 1;
                     }
                 }
@@ -226,7 +240,7 @@ struct Sampler {
     }
 
     void release() {
-        if (isRunning) {
+        if (state == SamplerState.running) {
             stop();
         }
         free(samples);
@@ -268,10 +282,10 @@ void readableName(const(char)* symbol, size_t start, ref char[NAME_CAPACITY] nam
     } else if (symbol[0] == '_' && symbol[1] == 'D' && symbol[2] >= '0' && symbol[2] <= '9') {
         size_t written = 0;
         const(char)* cursor = symbol + 2;
-        bool isTemplate = false;
-        while (written + 1 < NAME_CAPACITY && !isTemplate && (isDigit(*cursor) || isTemplateMark(cursor))) {
-            isTemplate = isTemplateMark(cursor);
-            if (isTemplate) {
+        while (written + 1 < NAME_CAPACITY && (isDigit(*cursor) || isTemplateMark(cursor))) {
+            char joiner = '.';
+            if (isTemplateMark(cursor)) {
+                joiner = '!';
                 cursor += 3;
             }
             size_t length = 0;
@@ -280,10 +294,7 @@ void readableName(const(char)* symbol, size_t start, ref char[NAME_CAPACITY] nam
                 cursor += 1;
             }
             if (written > 0) {
-                name[written] = '.';
-                if (isTemplate) {
-                    name[written] = '!';
-                }
+                name[written] = joiner;
                 written += 1;
             }
             foreach (_; 0 .. length) {
@@ -294,6 +305,9 @@ void readableName(const(char)* symbol, size_t start, ref char[NAME_CAPACITY] nam
                 if (*cursor != 0) {
                     cursor += 1;
                 }
+            }
+            if (joiner == '!') {
+                break;
             }
         }
         name[written] = 0;
@@ -321,49 +335,46 @@ void countCall(CallKey key, uint sample, ref HashMap!(CallKey, uint) callIndex, 
 
 void listCallers(FILE* output, ref Array!FunctionCounts functions, ref Array!CallCounts calls, uint samples) {
     fprintf(output, "  main callers of the heaviest functions (total%%):\n");
-    Array!bool isListed;
-    isListed.resize(functions.length);
-    uint listed = 0;
-    bool isExhausted = samples == 0;
-    while (listed < LISTED_CALLEES && !isExhausted) {
+    Bits listed;
+    listed.cover(functions.length);
+    uint count = 0;
+    while (samples > 0 && count < LISTED_CALLEES) {
         size_t best = functions.length;
         foreach (index, ref counts; functions.slice()) {
-            bool isShared = 100.0 * counts.totalMain / samples >= SHARED_FRAME_PERCENT;
-            if (!isListed.ptr[index] && !isShared && counts.totalMain > 0 && (best == functions.length || counts.totalMain > functions.ptr[best].totalMain)) {
+            if (!listed.has(index) && 100.0 * counts.totalMain / samples < SHARED_FRAME_PERCENT && counts.totalMain > 0 && (best == functions.length || counts.totalMain > functions.ptr[best].totalMain)) {
                 best = index;
             }
         }
-        isExhausted = best == functions.length;
-        if (!isExhausted) {
-            isListed.ptr[best] = true;
-            fprintf(output, "    %5.1f  %s\n", 100.0 * functions.ptr[best].totalMain / samples, functions.ptr[best].name.ptr);
-            listCallersOf(output, functions, calls, cast(uint) best, samples);
-            listed += 1;
+        if (best == functions.length) {
+            break;
         }
+        listed.set(best);
+        fprintf(output, "    %5.1f  %s\n", 100.0 * functions.ptr[best].totalMain / samples, functions.ptr[best].name.ptr);
+        listCallersOf(output, functions, calls, cast(uint) best, samples);
+        count += 1;
     }
-    isListed.release();
+    listed.release();
 }
 
 void listCallersOf(FILE* output, ref Array!FunctionCounts functions, ref Array!CallCounts calls, uint callee, uint samples) {
-    Array!bool isListed;
-    isListed.resize(calls.length);
-    uint listed = 0;
-    bool isExhausted = false;
-    while (listed < LISTED_CALLERS && !isExhausted) {
+    Bits listed;
+    listed.cover(calls.length);
+    uint count = 0;
+    while (count < LISTED_CALLERS) {
         size_t best = calls.length;
         foreach (index, ref counts; calls.slice()) {
-            if (!isListed.ptr[index] && counts.key.callee == callee && (best == calls.length || counts.main > calls.ptr[best].main)) {
+            if (!listed.has(index) && counts.key.callee == callee && (best == calls.length || counts.main > calls.ptr[best].main)) {
                 best = index;
             }
         }
-        isExhausted = best == calls.length;
-        if (!isExhausted) {
-            isListed.ptr[best] = true;
-            fprintf(output, "           %5.1f  from %s\n", 100.0 * calls.ptr[best].main / samples, functions.ptr[calls.ptr[best].key.caller].name.ptr);
-            listed += 1;
+        if (best == calls.length) {
+            break;
         }
+        listed.set(best);
+        fprintf(output, "           %5.1f  from %s\n", 100.0 * calls.ptr[best].main / samples, functions.ptr[calls.ptr[best].key.caller].name.ptr);
+        count += 1;
     }
-    isListed.release();
+    listed.release();
 }
 
 bool isDigit(char text) {
@@ -396,24 +407,23 @@ uint countIn(ref const FunctionCounts counts, Column column) {
 
 void listTop(FILE* output, const(char)* heading, ref Array!FunctionCounts functions, uint samples, Column rank, Column self, Column total) {
     fprintf(output, "  %s (total%% self%%):\n", heading);
-    Array!bool isListed;
-    isListed.resize(functions.length);
-    uint listed = 0;
-    bool isExhausted = samples == 0;
-    while (listed < LISTED_FUNCTIONS && !isExhausted) {
+    Bits listed;
+    listed.cover(functions.length);
+    uint count = 0;
+    while (samples > 0 && count < LISTED_FUNCTIONS) {
         size_t best = functions.length;
         foreach (index, ref counts; functions.slice()) {
-            if (!isListed.ptr[index] && countIn(counts, rank) > 0 && (best == functions.length || countIn(counts, rank) > countIn(functions.ptr[best], rank))) {
+            if (!listed.has(index) && countIn(counts, rank) > 0 && (best == functions.length || countIn(counts, rank) > countIn(functions.ptr[best], rank))) {
                 best = index;
             }
         }
-        isExhausted = best == functions.length;
-        if (!isExhausted) {
-            isListed.ptr[best] = true;
-            FunctionCounts* counts = &functions.ptr[best];
-            fprintf(output, "    %5.1f %5.1f  %s\n", 100.0 * countIn(*counts, total) / samples, 100.0 * countIn(*counts, self) / samples, counts.name.ptr);
-            listed += 1;
+        if (best == functions.length) {
+            break;
         }
+        listed.set(best);
+        FunctionCounts* counts = &functions.ptr[best];
+        fprintf(output, "    %5.1f %5.1f  %s\n", 100.0 * countIn(*counts, total) / samples, 100.0 * countIn(*counts, self) / samples, counts.name.ptr);
+        count += 1;
     }
-    isListed.release();
+    listed.release();
 }

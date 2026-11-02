@@ -157,7 +157,6 @@ size_t textureBytes() {
     return mipOffset(TEXTURE_MIPS);
 }
 
-// One noise field shared by every material, shifted per layer, so materials differ without a noise field each.
 void fillFirstMip(ubyte[] pixels) {
     float[] noise = makeNoise();
     size_t at = 0;
@@ -182,8 +181,6 @@ void fillFirstMip(ubyte[] pixels) {
     free(noise.ptr);
 }
 
-// Alpha takes the most of its four texels and color averages only the opaque ones, so distant glass closes into a solid
-// pane instead of its frame fading out and leaving a hole.
 void downsample(const(ubyte)[] from, ubyte[] to, uint side) {
     foreach (layer; 0 .. TEXTURE_LAYERS) {
         foreach (y; 0 .. side / 2) {
