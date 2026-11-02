@@ -1,13 +1,246 @@
 name "mined"
-description "Hyperbolic voxel engine - D port of hypermine"
-license "Apache-2.0"
+description "Hyperbolic voxel engine"
+license "MIT"
 targetType "executable"
-targetName "mined"
-mainSourceFile "source/main.d"
 sourcePaths "source"
 importPaths "source"
-stringImportPaths "source/shaders/spv"
-libs "vulkan"
-lflags "-L/opt/homebrew/lib" "obj/cocoa.o" "-framework" "Cocoa" "-framework" "QuartzCore"
+dependency "mined:api" version="*"
 
-preBuildCommands "mkdir -p obj" "clang -fobjc-arc -c source/bindings/cocoa.m -o obj/cocoa.o" "mkdir -p source/shaders/spv" "glslc source/shaders/cube.vert -o source/shaders/spv/cube.vert.spv" "glslc source/shaders/cube.frag -o source/shaders/spv/cube.frag.spv" "glslc -I source/shaders source/shaders/voxels.vert -o source/shaders/spv/voxels.vert.spv" "glslc source/shaders/voxels.frag -o source/shaders/spv/voxels.frag.spv" "glslc -I source/shaders --target-env=vulkan1.1 source/shaders/extract.comp -o source/shaders/spv/extract.comp.spv" "glslc source/shaders/fullscreen.vert -o source/shaders/spv/fullscreen.vert.spv" "glslc -I source/shaders source/shaders/fog.frag -o source/shaders/spv/fog.frag.spv"
+dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+libs "dl" "m" "pthread"
+preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :planet" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :road" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :city" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :backrooms" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :tower" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :crown" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :trail" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :fixtures" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :babel" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :library" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :palace" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :arbor" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :lattice"
+
+configuration "application" {
+	targetName "mined"
+	mainSourceFile "source/main.d"
+	excludedSourceFiles "source/headless.d" "source/worldcheck.d" "source/unittests.d" "source/unit/*"
+	stringImportPaths "source/shaders/spv"
+	libs "vulkan" "X11" ":libXi.so.6" platform="linux"
+	lflags "--export-dynamic" platform="linux"
+	dflags "-P-I/opt/homebrew/include" platform="osx"
+	libs "vulkan" "objc" platform="osx"
+	lflags "-L/opt/homebrew/lib" "-framework" "AppKit" "-framework" "QuartzCore" platform="osx"
+	preBuildCommands "mkdir -p source/shaders/spv" "glslc -I source/shaders source/shaders/voxels.vert -o source/shaders/spv/voxels.vert.spv" "glslc source/shaders/voxels.frag -o source/shaders/spv/voxels.frag.spv" "glslc source/shaders/fullscreen.vert -o source/shaders/spv/fullscreen.vert.spv" "glslc -I source/shaders source/shaders/fog.frag -o source/shaders/spv/fog.frag.spv" "glslc -I source/shaders source/shaders/highlight.vert -o source/shaders/spv/highlight.vert.spv" "glslc source/shaders/highlight.frag -o source/shaders/spv/highlight.frag.spv" "glslc -I source/shaders source/shaders/cull.comp -o source/shaders/spv/cull.comp.spv" "glslc source/shaders/crosshair.vert -o source/shaders/spv/crosshair.vert.spv" "glslc source/shaders/crosshair.frag -o source/shaders/spv/crosshair.frag.spv" "glslc source/shaders/hud.vert -o source/shaders/spv/hud.vert.spv" "glslc source/shaders/hud.frag -o source/shaders/spv/hud.frag.spv" "glslc -I source/shaders source/shaders/marker.vert -o source/shaders/spv/marker.vert.spv" "glslc source/shaders/marker.frag -o source/shaders/spv/marker.frag.spv"
+}
+
+configuration "headless" {
+	targetName "mined-headless"
+	mainSourceFile "source/headless.d"
+	excludedSourceFiles "source/main.d" "source/unittests.d" "source/unit/*" "source/bindings/platform.c" "source/client/cocoa.d" "source/client/graphics/*" "source/client/graphics/voxels/*"
+	lflags "--export-dynamic" platform="linux"
+}
+
+configuration "unittest" {
+	targetName "mined-unittest"
+	mainSourceFile "source/unittests.d"
+	excludedSourceFiles "source/main.d" "source/headless.d" "source/worldcheck.d" "source/bindings/platform.c" "source/client/cocoa.d" "source/client/graphics/*" "source/client/graphics/voxels/*" "source/client/script.d" "source/client/drive.d" "source/client/structures.d" "source/client/tiles.d" "source/scripts/*"
+	lflags "--export-dynamic" platform="linux"
+}
+
+subPackage {
+	name "api"
+	targetType "sourceLibrary"
+	sourcePaths "plugins/api"
+	importPaths "."
+}
+
+subPackage {
+	name "turtle"
+	targetType "sourceLibrary"
+	sourcePaths "plugins/turtle"
+	importPaths "."
+	dependency "mined:api" version="*"
+}
+
+subPackage {
+	name "box"
+	targetType "sourceLibrary"
+	sourcePaths "plugins/box"
+	importPaths "."
+	dependency "mined:turtle" version="*"
+}
+
+subPackage {
+	name "buildings"
+	targetType "sourceLibrary"
+	sourcePaths "plugins/buildings"
+	importPaths "."
+	dependency "mined:turtle" version="*"
+}
+
+subPackage {
+	name "connector"
+	targetType "sourceLibrary"
+	sourcePaths "plugins/connector"
+	importPaths "."
+	dependency "mined:turtle" version="*"
+}
+
+subPackage {
+	name "blocks"
+	targetType "sourceLibrary"
+	sourcePaths "plugins/blocks"
+	importPaths "."
+	dependency "mined:buildings" version="*"
+	dependency "mined:connector" version="*"
+}
+
+subPackage {
+	name "rooms"
+	targetType "sourceLibrary"
+	sourcePaths "plugins/rooms"
+	importPaths "."
+	dependency "mined:blocks" version="*"
+}
+
+subPackage {
+	name "horospheres"
+	targetType "sourceLibrary"
+	sourcePaths "plugins/horospheres"
+	importPaths "."
+	dependency "mined:rooms" version="*"
+}
+
+subPackage {
+	name "planet"
+	targetType "dynamicLibrary"
+	targetPath "lib"
+	sourcePaths "plugins/planet"
+	importPaths "."
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	libs "m"
+	dependency "mined:horospheres" version="*"
+}
+
+subPackage {
+	name "road"
+	targetType "dynamicLibrary"
+	targetPath "lib"
+	sourcePaths "plugins/road"
+	importPaths "."
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	libs "m"
+	dependency "mined:turtle" version="*"
+}
+
+subPackage {
+	name "city"
+	targetType "dynamicLibrary"
+	targetPath "lib"
+	sourcePaths "plugins/city"
+	importPaths "."
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	libs "m"
+	dependency "mined:horospheres" version="*"
+}
+
+subPackage {
+	name "backrooms"
+	targetType "dynamicLibrary"
+	targetPath "lib"
+	sourcePaths "plugins/backrooms"
+	importPaths "."
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	libs "m"
+	dependency "mined:horospheres" version="*"
+}
+
+subPackage {
+	name "tower"
+	targetType "dynamicLibrary"
+	targetPath "lib"
+	sourcePaths "plugins/tower"
+	importPaths "."
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	libs "m"
+	dependency "mined:box" version="*"
+}
+
+subPackage {
+	name "crown"
+	targetType "dynamicLibrary"
+	targetPath "lib"
+	sourcePaths "plugins/crown"
+	importPaths "."
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	libs "m"
+	dependency "mined:box" version="*"
+}
+
+subPackage {
+	name "trail"
+	targetType "dynamicLibrary"
+	targetPath "lib"
+	sourcePaths "plugins/trail"
+	importPaths "."
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	libs "m"
+	dependency "mined:box" version="*"
+}
+
+subPackage {
+	name "babel"
+	targetType "dynamicLibrary"
+	targetPath "lib"
+	sourcePaths "plugins/babel"
+	importPaths "."
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	libs "m"
+	dependency "mined:connector" version="*"
+}
+
+subPackage {
+	name "library"
+	targetType "dynamicLibrary"
+	targetPath "lib"
+	sourcePaths "plugins/library"
+	importPaths "."
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	libs "m"
+	dependency "mined:blocks" version="*"
+}
+
+subPackage {
+	name "palace"
+	targetType "dynamicLibrary"
+	targetPath "lib"
+	sourcePaths "plugins/palace"
+	importPaths "."
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	libs "m"
+	dependency "mined:turtle" version="*"
+}
+
+subPackage {
+	name "arbor"
+	targetType "dynamicLibrary"
+	targetPath "lib"
+	sourcePaths "plugins/arbor"
+	importPaths "."
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	libs "m"
+	dependency "mined:horospheres" version="*"
+}
+
+subPackage {
+	name "lattice"
+	targetType "dynamicLibrary"
+	targetPath "lib"
+	sourcePaths "plugins/lattice"
+	importPaths "."
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	libs "m"
+	dependency "mined:turtle" version="*"
+}
+
+subPackage {
+	name "fixtures"
+	targetType "dynamicLibrary"
+	targetPath "lib"
+	sourcePaths "plugins/fixtures"
+	importPaths "."
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	libs "m"
+	dependency "mined:horospheres" version="*"
+	dependency "mined:box" version="*"
+}

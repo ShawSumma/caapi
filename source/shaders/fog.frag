@@ -2,20 +2,20 @@
 
 #include "common.h"
 
-layout(location = 0) in vec2 texcoords;
+layout(location = 0) in vec2 screen;
 
 layout(location = 0) out vec4 fog;
 
-layout(input_attachment_index=0, set=0, binding=1) uniform subpassInput depth;
+layout(input_attachment_index = 0, set = 0, binding = 1) uniform subpassInput depth_input;
+layout(input_attachment_index = 1, set = 0, binding = 2) uniform subpassInput glow_input;
 
 void main() {
-    vec4 clip_pos = vec4(texcoords * 2.0 - 1.0, subpassLoad(depth).x, 1.0);
-    vec4 scaled_view_pos = inverse_projection * clip_pos;
-    // Cancel out perspective, obtaining klein ball position
-    vec3 view_pos = scaled_view_pos.xyz / scaled_view_pos.w;
-    float view_length = length(view_pos);
-    // Convert to true hyperbolic distance, taking care to respect atanh's domain
-    float dist = view_length >= 1.0 ? INFINITY : atanh(view_length);
-    // Exponential^k fog
-    fog = vec4(0.5, 0.65, 0.9, exp(-pow(dist * fog_density, 5)));
+    vec2 slope = (screen * 2.0 - 1.0) * half_tangents;
+    float klein_depth = depth_scale / (subpassLoad(depth_input).x + depth_scale);
+    float radius = klein_depth * sqrt(1.0 + dot(slope, slope));
+    float away = INFINITY;
+    if (radius < 1.0) {
+        away = atanh(radius);
+    }
+    fog = vec4(fog_color.rgb, mix(exp(-pow(away / fog_reach, fog_sharpness)), 1.0, subpassLoad(glow_input).x));
 }

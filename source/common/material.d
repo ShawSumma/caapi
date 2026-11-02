@@ -1,0 +1,85 @@
+module common.material;
+
+import plugins.api.api : Material;
+
+enum uint MATERIAL_COUNT = Material.max + 1;
+
+bool isSeeThrough(Material material) {
+    return material == Material.none || material == Material.glass;
+}
+
+bool isShownAgainst(Material material, Material beside) {
+    return material != Material.none && isSeeThrough(beside) && !(material == Material.glass && beside == Material.glass);
+}
+
+bool isGlowing(Material material) {
+    return material == Material.lightPanel || material == Material.sunlight || material == Material.lava;
+}
+
+immutable ubyte[3][MATERIAL_COUNT] MATERIAL_COLORS = [
+    Material.none: [0, 0, 0],
+    Material.dirt: [120, 85, 58],
+    Material.sand: [219, 203, 150],
+    Material.redSand: [190, 100, 60],
+    Material.silt: [160, 140, 110],
+    Material.clay: [170, 110, 80],
+    Material.mud: [90, 70, 50],
+    Material.sandyLoam: [150, 120, 80],
+    Material.siltyLoam: [130, 105, 75],
+    Material.clayLoam: [135, 90, 65],
+    Material.gravel: [135, 130, 125],
+    Material.grass: [90, 140, 50],
+    Material.lushGrass: [70, 150, 50],
+    Material.coarseGrass: [110, 130, 60],
+    Material.tanGrass: [170, 160, 90],
+    Material.mudGrass: [90, 110, 50],
+    Material.caveGrass: [70, 100, 80],
+    Material.snow: [245, 248, 250],
+    Material.ice: [180, 215, 240],
+    Material.iceSlush: [200, 220, 230],
+    Material.limestone: [200, 195, 175],
+    Material.dolomite: [210, 205, 190],
+    Material.shale: [95, 95, 100],
+    Material.slate: [75, 80, 90],
+    Material.sandstone: [205, 175, 125],
+    Material.redSandstone: [170, 80, 55],
+    Material.marble: [235, 235, 230],
+    Material.granite: [165, 150, 145],
+    Material.diorite: [200, 200, 195],
+    Material.andesite: [130, 130, 130],
+    Material.gabbro: [60, 60, 60],
+    Material.basalt: [50, 50, 55],
+    Material.olivine: [110, 130, 60],
+    Material.water: [50, 90, 170],
+    Material.lava: [220, 80, 20],
+    Material.oakWood: [105, 75, 45],
+    Material.oakLeaves: [60, 120, 40],
+    Material.birchWood: [215, 210, 195],
+    Material.birchLeaves: [125, 175, 70],
+    Material.spruceWood: [80, 58, 38],
+    Material.spruceLeaves: [45, 85, 55],
+    Material.woodPlanks: [180, 140, 90],
+    Material.greyBrick: [130, 130, 135],
+    Material.whiteBrick: [220, 220, 215],
+    Material.concrete: [160, 160, 155],
+    Material.steel: [115, 120, 130],
+    Material.glass: [165, 205, 225],
+    Material.jungleWood: [125, 95, 55],
+    Material.jungleLeaves: [35, 125, 35],
+    Material.acaciaWood: [140, 115, 95],
+    Material.acaciaLeaves: [125, 145, 50],
+    Material.cherryLeaves: [235, 165, 195],
+    Material.mapleLeaves: [205, 95, 40],
+    Material.willowLeaves: [145, 175, 75],
+    Material.cactus: [70, 130, 60],
+    Material.wallpaper: [214, 197, 124],
+    Material.stainedWallpaper: [188, 168, 98],
+    Material.carpet: [166, 148, 92],
+    Material.dampCarpet: [132, 118, 72],
+    Material.ceilingTile: [224, 218, 194],
+    Material.lightPanel: [252, 250, 236],
+    Material.redCarpet: [128, 36, 40],
+    Material.sunlight: [252, 236, 168],
+    Material.plaster: [218, 208, 186],
+    Material.wetConcrete: [118, 118, 112],
+];

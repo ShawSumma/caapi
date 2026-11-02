@@ -1,0 +1,70 @@
+#version 450
+
+#include "common.h"
+#include "draw.h"
+
+const uint VERTICES_PER_FACE = 6;
+const uint FRUSTUM_PLANES = 5;
+const uint NOT_LISTED = 0xffffffffu;
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 1) readonly restrict buffer CubeFrames {
+    CubeFrame cube_frames[];
+};
+
+layout(set = 0, binding = 2) readonly restrict buffer Nodes {
+    mat4 nodes[];
+};
+
+layout(set = 0, binding = 3) readonly restrict buffer Drawables {
+    Drawable drawables[];
+};
+
+layout(set = 0, binding = 4) writeonly restrict buffer Transforms {
+    DrawTransform transforms[];
+};
+
+layout(set = 0, binding = 5) writeonly restrict buffer Commands {
+    DrawCommand commands[];
+};
+
+layout(push_constant) uniform PushConstants {
+    uint drawable_count;
+};
+
+float minkowski(vec4 a, vec4 b) {
+    return dot(a.xyz, b.xyz) - a.w * b.w;
+}
+
+bool is_in_frustum(vec4 center) {
+    for (uint plane = 0; plane < FRUSTUM_PLANES; plane++) {
+        if (minkowski(frustum_planes[plane], center) < -cull_sinh_radius) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void main() {
+    uint index = gl_GlobalInvocationID.x;
+    if (index < drawable_count) {
+        Drawable drawable = drawables[index];
+        DrawCommand command = DrawCommand(0, 0, 0, index);
+        if (drawable.node != NOT_LISTED && drawable.face_count > 0) {
+            mat4 node = nodes[drawable.node];
+            CubeFrame frame = cube_frames[drawable.corner];
+            mat4 transform = node * frame.cube_to_node;
+            transforms[index].transform = transform;
+            float reversed = 0.0;
+            if (view_parity * determinant(transform) < 0.0) {
+                reversed = 1.0;
+            }
+            transforms[index].reversed = vec4(reversed);
+            if (is_in_frustum(camera_inverse * (node * frame.center))) {
+                command = DrawCommand(drawable.face_count * VERTICES_PER_FACE, 1, drawable.face_offset * VERTICES_PER_FACE, index);
+            }
+        }
+        commands[index] = command;
+    }
+}

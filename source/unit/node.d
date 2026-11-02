@@ -1,0 +1,68 @@
+module unit.node;
+
+import core.stdc.math : fabsf;
+import base.numbers : higherOf, lowerOf;
+import common.node : ChunkLayout, Voxels, cellCount, cellIndex;
+import geometry.honeycomb : CORNER_COUNT;
+import plugins.api.api : Material;
+
+enum ubyte LAYOUT_DIMENSION = 12;
+enum ubyte VOXEL_DIMENSION = 4;
+enum float NODE_VOLUME = 4.3062076f;
+enum float MOST_VOLUME_SPREAD = 2.0f;
+enum float GRID_TOLERANCE = 1e-3f;
+enum float VOLUME_TOLERANCE = 1e-3f;
+immutable float[3] GAUSS_POINTS = [-0.7745967f, 0.0f, 0.7745967f];
+immutable float[3] GAUSS_WEIGHTS = [5.0f / 9.0f, 8.0f / 9.0f, 5.0f / 9.0f];
+
+float kleinBoxVolume(float[3] low, float[3] high) {
+    float[3] middle = [(low[0] + high[0]) / 2, (low[1] + high[1]) / 2, (low[2] + high[2]) / 2];
+    float[3] half = [(high[0] - low[0]) / 2, (high[1] - low[1]) / 2, (high[2] - low[2]) / 2];
+    float total = 0;
+    foreach (i; 0 .. GAUSS_POINTS.length) {
+        foreach (j; 0 .. GAUSS_POINTS.length) {
+            foreach (k; 0 .. GAUSS_POINTS.length) {
+                float x = middle[0] + half[0] * GAUSS_POINTS[i];
+                float y = middle[1] + half[1] * GAUSS_POINTS[j];
+                float z = middle[2] + half[2] * GAUSS_POINTS[k];
+                float inside = 1.0f - x * x - y * y - z * z;
+                total += GAUSS_WEIGHTS[i] * GAUSS_WEIGHTS[j] * GAUSS_WEIGHTS[k] / (inside * inside);
+            }
+        }
+    }
+    return total * half[0] * half[1] * half[2];
+}
+
+unittest {
+    ChunkLayout layout = ChunkLayout.make(LAYOUT_DIMENSION);
+    float smallest = float.infinity;
+    float largest = 0;
+    float total = 0;
+    foreach (x; 0 .. LAYOUT_DIMENSION) {
+        foreach (y; 0 .. LAYOUT_DIMENSION) {
+            foreach (z; 0 .. LAYOUT_DIMENSION) {
+                assert(fabsf(layout.cubeToGrid(layout.gridToCube(x)) - x) < GRID_TOLERANCE);
+                float volume = kleinBoxVolume([layout.gridToKlein(x), layout.gridToKlein(y), layout.gridToKlein(z)], [layout.gridToKlein(x + 1), layout.gridToKlein(y + 1), layout.gridToKlein(z + 1)]);
+                smallest = lowerOf(smallest, volume);
+                largest = higherOf(largest, volume);
+                total += volume;
+            }
+        }
+    }
+    assert(largest / smallest < MOST_VOLUME_SPREAD);
+    assert(fabsf(total * CORNER_COUNT / NODE_VOLUME - 1) < VOLUME_TOLERANCE);
+}
+
+unittest {
+    Voxels stone = Voxels.filled(Material.granite);
+    assert(stone.isUniform() && stone.isOpaqueFill() && stone.at(5) == Material.granite);
+    Material[] cells = stone.toDense(VOXEL_DIMENSION);
+    assert(!stone.isUniform() && cells.length == cellCount(VOXEL_DIMENSION) && stone.at(5) == Material.granite);
+    stone.compress(VOXEL_DIMENSION);
+    assert(stone.isFilledWith(Material.granite));
+    stone.toDense(VOXEL_DIMENSION)[cellIndex(VOXEL_DIMENSION, 1, 2, 3)] = Material.glass;
+    stone.compress(VOXEL_DIMENSION);
+    assert(!stone.isUniform() && stone.at(cellIndex(VOXEL_DIMENSION, 1, 2, 3)) == Material.glass);
+    stone.release();
+    assert(!Voxels.filled(Material.none).isOpaqueFill() && !Voxels.filled(Material.glass).isOpaqueFill());
+}
