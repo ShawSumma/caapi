@@ -166,6 +166,13 @@ struct CubeClimate {
     Climate mean() const {
         return Climate.mean(corners[]);
     }
+
+    CubeClimate reachingFlat() const {
+        CubeClimate reaching = this;
+        reaching.lowest.relief = lowerOf(lowest.relief, 0.0f);
+        reaching.highest.relief = higherOf(highest.relief, 0.0f);
+        return reaching;
+    }
 }
 
 Material groundAt(float depth, float riser, Climate climate) {

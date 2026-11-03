@@ -403,6 +403,8 @@ void shell(ref const Frame f) {
     }
     if (f.isTop()) {
         slab(f, Material.steel, whole, ceilingZ(f) + ROOF);
+    } else if (f.hasShaft()) {
+        f.tower.paint(Material.none, boxOf([0, SHAFT], [0, SHAFT], [f.base, ceilingZ(f) + SEPARATION]));
     }
 }
 

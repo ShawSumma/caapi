@@ -374,10 +374,10 @@ const(TileCall)* callFor(ref const Graph graph, ref const TileCalls calls, uint 
 
 Risen risenOf(ref const Graph graph, uint horosphere, int segment) {
     if (horosphere == ROOT) {
-        return Risen(Site.init, 0, 0, 0, 0, NO_KIND, segment);
+        return Risen(Site.init, 0, 0, 0, NO_KIND, segment);
     } else {
         const(Horosphere)* found = &graph.horospheres.horosphere(horosphere);
-        return Risen(siteOf(found.foot), found.edges, found.ground, found.below, found.balance, graph.horospheres.tagOf(found.parent), segment);
+        return Risen(siteOf(found.foot), found.edges, found.ground, found.balance, graph.horospheres.tagOf(found.parent), segment);
     }
 }
 
@@ -510,7 +510,9 @@ struct TileHost {
             if (isTiledBy(graph, *calls, ROOT)) {
                 planRing(graph, (*view).groundRing((*view).groundNodeOf(candidate, ROOT), Face.f0), Face.f0, ROOT);
             }
-            foreach (near; (*view).ensureHorospheresAt(candidate)) {
+            size_t count = (*view).ensureHorospheresAt(candidate).length;
+            foreach (which; 0 .. count) {
+                HorosphereRef near = (*view).horospheresAt(candidate)[which];
                 if (!view.isBlocked && isTiledBy(graph, *calls, near.horosphere)) {
                     if (view.horospheres.isUpright(near.horosphere)) {
                         planSegments(graph, near);

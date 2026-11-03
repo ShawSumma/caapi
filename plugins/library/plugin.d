@@ -212,6 +212,8 @@ void tile(const(Api)* api, Site site, const(Risen)* risen, const(void)* data) {
 void stories(Turtle tower, double outer, int[2] z, Material floor) {
     Rows ring = ringRows(tower.column(), WELL, outer);
     Rows well = ringRows(tower.column(), 0, WELL);
+    tower.paintRows(Material.none, ring, z);
+    tower.paintRows(Material.none, well, z);
     tower.paintRows(floor, ring, z, Rhythm(STORY, 0, 1));
     tower.paintRows(Material.glass, well, z, Rhythm(STORY, 0, 1));
     tower.paintRows(CEILING, ring, z, Rhythm(STORY, CEILING_AT, 1));
@@ -278,7 +280,7 @@ void route(Turtle tower) {
 void world(const(Api)* api, Site site, const(void)* data) {
     Turtle at = Turtle(api, site);
     Connection connection = Connection.rolled();
-    uint kind = api.horosphere(api, RISE_ODDS, HorosphereForm.bare, Tag.library, &tile, &connection, Connection.sizeof);
+    uint kind = api.horosphere(api, RISE_ODDS, HorosphereForm.solid, Tag.library, &tile, &connection, Connection.sizeof);
     api.rooted(api, kind);
     api.look(api, kind, &LOOK);
     uint stacks = api.sunken(api, SHAFT_ODDS, Tag.library, Tag.stacks, &shaft, null, 0);
@@ -291,7 +293,7 @@ void world(const(Api)* api, Site site, const(void)* data) {
 
 pragma(mangle, ENTRY) void plugin(const(Registry)* registry) {
     registry.add(registry, "library", &world);
-    RisingKind rising = RisingKind(1, HorosphereForm.bare, Tag.library, &tile, &ROLLED, Connection.sizeof, LOOK);
+    RisingKind rising = RisingKind(1, HorosphereForm.solid, Tag.library, &tile, &ROLLED, Connection.sizeof, LOOK);
     registry.addKind(registry, "library", &rising);
     RisingKind stacks = RisingKind(SHAFT_SHARE, HorosphereForm.sunken, Tag.stacks, &shaft, null, 0, LOOK, Tag.library);
     registry.addKind(registry, "librarystacks", &stacks);

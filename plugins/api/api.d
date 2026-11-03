@@ -1,6 +1,6 @@
 module plugins.api.api;
 
-enum string ENTRY = "mined_plugin_3";
+enum string ENTRY = "mined_plugin_5";
 
 enum Material : ubyte {
     none,
@@ -87,6 +87,7 @@ enum SitePart : ubyte {
 
 enum HorosphereForm : ubyte {
     terrain,
+    solid,
     bare,
     upright,
     sunken,
@@ -137,7 +138,6 @@ struct Risen {
     Site foot;
     int edges;
     int ground;
-    int below;
     int balance;
     uint lower;
     int segment;

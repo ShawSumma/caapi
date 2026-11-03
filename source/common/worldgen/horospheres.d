@@ -7,10 +7,10 @@ import base.array : Array;
 import base.flags : Readiness;
 import base.hashmap : FIBONACCI_MULTIPLIER, HashMap;
 import base.maybe : Maybe;
-import base.numbers : higherOf, lowerOf;
+import base.numbers : clamped, higherOf, lowerOf;
 import base.slab : Run, RunPool, Slab;
 import base.splitmix : unitOf;
-import base.vector3 : cross, dot, magnitude, negated, scaled;
+import base.vector3 : cross, dot, magnitude, negated, plus, scaled;
 import common.graph : Graph, NO_SLOT, NodeId, ParentEntry, ParentList;
 import common.position : Position;
 import common.traversal : MIRRORED_ORIGINS;
@@ -20,7 +20,7 @@ import common.worldgen.climate : Climate, CubeClimate, NodeClimate, RELIEF_BOUND
 import common.worldgen.generation : NodeState;
 import common.worldgen.plane : Plane, PlaneMeasure, logCosh;
 import common.worldgen.structure : ClaimKey, ColumnSpot, GROUND_RING, SiteFrame, atLevel, columnPoint, edgeCells, edgeLength, forwarded, groundRing, groundSite, parentOnCorner, pathBetween, rootedCorner, sideAxis, siteHash, siteOrigin, sitePlacement, turned;
-import geometry.honeycomb : CORNER_COUNT, Corner, FACE_COUNT, FACE_DISTANCE, Face, NODE_RADIUS, across, cornerToNode, cubeScale, faces, mirror, nodeToCorner;
+import geometry.honeycomb : CORNER_COUNT, CUBE_RADIUS, Corner, FACE_COUNT, FACE_DISTANCE, Face, NODE_RADIUS, across, cornerToNode, cubeScale, faces, mirror, nodeToCorner;
 import geometry.lorentz : Motion, Point, Vec4;
 import plugins.api.api : HorosphereForm, Look, NO_KIND, SitePart, Turn;
 
@@ -29,7 +29,13 @@ enum ubyte NO_RISE = 0;
 enum uint MAX_GROUNDS = 4;
 enum uint MOST_NEAR_RINGS = GROUND_RING * GROUND_RING;
 enum float RISE_REACH = 7.0f;
-enum float GROUND_REACH = 3.0f;
+enum float GROUND_REACH = 4.5f;
+enum float GRAVITY_REACH = GROUND_REACH - NODE_RADIUS;
+enum float GRAVITY_FADE = 0.7f;
+enum float LEAST_PULL = 1e-4f;
+enum float OPPOSED_FROM = 0.88f;
+enum float OPPOSED_FULLY = 0.95f;
+enum float OPPOSED_WEIGHT = 0.1f;
 enum uint GROUND_EDGES = 4;
 enum ubyte LOWEST_RISE_EDGES = 2;
 enum ubyte RISE_EDGE_CHOICES = 3;
@@ -48,6 +54,11 @@ enum double DESCENT_TIE_FLOOR = 1e-3;
 enum float COLUMN_REACH_EDGES = 1.5f;
 enum int COLUMN_GROUND_EDGES = 3;
 enum float COLUMN_GRAVITY_REACH = 0.8f;
+enum float COLUMN_GRAVITY_FULL = 0.55f;
+enum float COLUMN_GRAVITY_RISE = 0.3f;
+enum float FLAT_CORE = 0.6f;
+enum float FLAT_EDGE = 1.5f;
+enum uint MOST_FLAT_LINES = 4;
 
 enum Fill : ubyte {
     none,
@@ -90,7 +101,6 @@ struct Horosphere {
     uint users;
     uint tiles;
     int ground;
-    int below;
     int balance;
     Face label;
     ubyte kind;
@@ -107,13 +117,9 @@ struct HorosphereRef {
     Plane[2] column;
     uint horosphere;
 
-    HorosphereRef across(Face side, ref const Horospheres horospheres) const {
+    HorosphereRef across(Face side) const {
         Face[1] path = [side];
-        Plane[2] carried = column;
-        if (horospheres.isUpright(horosphere)) {
-            carried = [column[0].carriedAlong(path[]), column[1].carriedAlong(path[])];
-        }
-        return HorosphereRef(plane.carriedAlong(path[]), carried, horosphere);
+        return HorosphereRef(plane.carriedAlong(path[]), [column[0].carriedAlong(path[]), column[1].carriedAlong(path[])], horosphere);
     }
 }
 
@@ -125,15 +131,63 @@ bool contains(ref const Array!HorosphereRef found, uint horosphere) {
     return index < found.length;
 }
 
-float columnDistanceOf(ref const HorosphereRef near, Point!float point) {
-    float first = sinhf(near.column[0].distanceTo(point));
-    float second = sinhf(near.column[1].distanceTo(point));
+float lineDistanceOf(ref const Plane[2] line, Point!float point) {
+    float first = sinhf(line[0].distanceTo(point));
+    float second = sinhf(line[1].distanceTo(point));
     return acoshf(sqrtf(1 + first * first + second * second));
+}
+
+float columnDistanceOf(ref const HorosphereRef near, Point!float point) {
+    return lineDistanceOf(near.column, point);
+}
+
+float smoothRamp(float value, float low, float high) {
+    float share = clamped((value - low) / (high - low), 0.0f, 1.0f);
+    return share * share * (3 - 2 * share);
+}
+
+float reliefShareAway(float distance) {
+    return smoothRamp(distance, FLAT_CORE, FLAT_EDGE);
+}
+
+struct FlatLines {
+    Plane[2][MOST_FLAT_LINES] lines;
+    uint count;
+
+    float reliefShareAt(Point!float point) const {
+        float share = 1;
+        foreach (ref line; lines[0 .. count]) {
+            share = lowerOf(share, reliefShareAway(lineDistanceOf(line, point)));
+        }
+        return share;
+    }
+}
+
+FlatLines flatLinesNear(ref const Horospheres horospheres, const(HorosphereRef)[] near, Point!float center) {
+    FlatLines found;
+    foreach (ref line; near) {
+        if (found.count < MOST_FLAT_LINES && !horospheres.isUpright(line.horosphere) && columnDistanceOf(line, center) <= FLAT_EDGE + CUBE_RADIUS) {
+            found.lines[found.count] = line.column;
+            found.count += 1;
+        }
+    }
+    return found;
+}
+
+float reliefShareAmong(ref const Horospheres horospheres, const(HorosphereRef)[] near, Point!float point) {
+    float share = 1;
+    foreach (ref line; near) {
+        if (!horospheres.isUpright(line.horosphere)) {
+            share = lowerOf(share, reliefShareAway(columnDistanceOf(line, point)));
+        }
+    }
+    return share;
 }
 
 struct Ground {
     Plane surface;
     Fill fill;
+    uint horosphere;
 }
 
 struct Grounds {
@@ -143,7 +197,7 @@ struct Grounds {
     uint farthestRisen() const {
         uint farthest = 1;
         foreach (index; 2 .. count) {
-            if (fabsf(items[index].surface.distanceTo(Point!float.origin())) > fabsf(items[farthest].surface.distanceTo(Point!float.origin()))) {
+            if (items[index].surface.distanceTo(Point!float.origin()) > items[farthest].surface.distanceTo(Point!float.origin())) {
                 farthest = index;
             }
         }
@@ -270,7 +324,8 @@ struct Horospheres {
     }
 
     bool isUprightKind(ubyte kind) const {
-        return kinds.ptr[kind - 1].form != HorosphereForm.terrain && kinds.ptr[kind - 1].form != HorosphereForm.bare;
+        HorosphereForm form = kinds.ptr[kind - 1].form;
+        return form == HorosphereForm.upright || form == HorosphereForm.sunken;
     }
 
     bool isSunken(uint index) const {
@@ -283,6 +338,8 @@ struct Horospheres {
             return rootFill;
         } else if (kinds.ptr[kind - 1].form == HorosphereForm.terrain) {
             return Fill.terrain;
+        } else if (kinds.ptr[kind - 1].form == HorosphereForm.solid) {
+            return Fill.flat;
         } else {
             return Fill.none;
         }
@@ -431,8 +488,12 @@ bool isNear(ref const GraphView view, ref const HorosphereRef near) {
     if (view.horospheres.isUpright(near.horosphere)) {
         return columnDistanceOf(near, Point!float.origin()) <= view.columnReach() + NODE_RADIUS;
     } else {
-        return fabsf(near.plane.distanceTo(Point!float.origin())) <= GROUND_REACH + NODE_RADIUS;
+        return near.plane.distanceTo(Point!float.origin()) <= GROUND_REACH + NODE_RADIUS;
     }
+}
+
+bool isWithinRisingReach(Plane plane) {
+    return fabsf(plane.distanceTo(Point!float.origin())) <= RISE_REACH + NODE_RADIUS;
 }
 
 void discoverHorospheres(ref GraphView view, uint slot, ref Array!HorosphereRef found) {
@@ -440,7 +501,7 @@ void discoverHorospheres(ref GraphView view, uint slot, ref Array!HorosphereRef 
     foreach (link; parents.links[0 .. parents.count]) {
         foreach (near; view.ensureHorospheresAt(link.slot)) {
             if (!found.contains(near.horosphere)) {
-                HorosphereRef moved = near.across(link.side, view.horospheres);
+                HorosphereRef moved = near.across(link.side);
                 if (view.isNear(moved)) {
                     found.append(moved);
                 }
@@ -451,7 +512,7 @@ void discoverHorospheres(ref GraphView view, uint slot, ref Array!HorosphereRef 
     size_t index = 0;
     while (index < found.length) {
         uint over = found.ptr[index].horosphere;
-        if (!view.horospheres.isUpright(over)) {
+        if (!view.horospheres.isUpright(over) && isWithinRisingReach(found.ptr[index].plane)) {
             view.addRisingOver(slot, over, found);
         }
         index += 1;
@@ -504,7 +565,7 @@ bool isRiseReached(ref const GraphView view, ref const HorosphereRef near) {
     if (view.horospheres.isUpright(near.horosphere)) {
         return columnDistanceOf(near, Point!float.origin()) <= view.columnReach() + NODE_RADIUS;
     } else {
-        return fabsf(near.plane.distanceTo(Point!float.origin())) <= RISE_REACH + NODE_RADIUS;
+        return near.plane.distanceTo(Point!float.origin()) <= RISE_REACH + NODE_RADIUS;
     }
 }
 
@@ -524,7 +585,7 @@ HorosphereRef inheritedRefOf(ref GraphView view, uint horosphere, uint slot) {
     foreach (link; parents.links[0 .. parents.count]) {
         foreach (near; view.horospheresAt(link.slot)) {
             if (near.horosphere == horosphere) {
-                return near.across(link.side, view.horospheres);
+                return near.across(link.side);
             }
         }
     }
@@ -534,11 +595,7 @@ HorosphereRef inheritedRefOf(ref GraphView view, uint horosphere, uint slot) {
 HorosphereRef refIn(ref const GraphView view, uint horosphere, uint slot) {
     const(Horosphere)* found = &view.horospheres.horosphere(horosphere);
     Array!Face path = view.pathBetween(found.footNode, slot);
-    Plane[2] column = found.column;
-    if (view.horospheres.isUpright(horosphere)) {
-        column = [found.column[0].carriedAlong(path.slice()), found.column[1].carriedAlong(path.slice())];
-    }
-    HorosphereRef carried = HorosphereRef(found.plane.carriedAlong(path.slice()), column, horosphere);
+    HorosphereRef carried = HorosphereRef(found.plane.carriedAlong(path.slice()), [found.column[0].carriedAlong(path.slice()), found.column[1].carriedAlong(path.slice())], horosphere);
     path.release();
     return carried;
 }
@@ -711,8 +768,8 @@ Plane planeOfHorosphereIn(ref GraphView view, uint horosphere, uint slot) {
 }
 
 bool isApart(Plane first, Plane second, float separation) {
-    double product = fabs(first.scaledNormal().minkowski(second.scaledNormal()));
-    return product > 0 && log(product) + logCosh(first.height) + logCosh(second.height) >= log(cosh(separation)) - APART_TOLERANCE;
+    double product = first.scaledNormal().minkowski(second.scaledNormal());
+    return product < 0 && log(-product) + logCosh(first.height) + logCosh(second.height) >= log(cosh(separation)) - APART_TOLERANCE;
 }
 
 bool isClearOfAncestors(ref GraphView view, uint face, Corner corner, uint horosphere, ubyte edges) {
@@ -745,25 +802,29 @@ uint airSideNode(ref GraphView view, uint node, Corner corner, Face label) {
     return slot;
 }
 
+Plane[2] edgeLineOver(Corner corner, Face label) {
+    Plane[2] line;
+    uint count = 0;
+    foreach (side; corner.faces) {
+        if (side != label) {
+            line[count] = Plane.ofFace(side);
+            count += 1;
+        }
+    }
+    return line;
+}
+
 Horosphere risenHorosphere(ref Graph graph, uint face, Corner corner, uint parent, Rise rise) {
     Face parentLabel = graph.horospheres.labelOf(parent);
     if (graph.horospheres.isUprightKind(rise.kind)) {
         uint foot = graph.view.airSideNode(face, corner, parentLabel);
-        Plane[2] column;
-        uint count = 0;
-        foreach (side; corner.faces) {
-            if (side != parentLabel) {
-                column[count] = Plane.ofFace(side);
-                count += 1;
-            }
-        }
-        return Horosphere(graph.view.planeOfHorosphereIn(parent, foot), column, groundSite(foot, corner, parentLabel), CornerKey.init, 0, parent, foot, 0, 0, 0, 0, 0, parentLabel, cast(ubyte)(rise.kind - 1), rise.edges, HorosphereStage.open);
+        return Horosphere(graph.view.planeOfHorosphereIn(parent, foot), edgeLineOver(corner, parentLabel), groundSite(foot, corner, parentLabel), CornerKey.init, 0, parent, foot, 0, 0, 0, 0, parentLabel, cast(ubyte)(rise.kind - 1), rise.edges, HorosphereStage.open);
     } else {
         SiteFrame tower = graph.view.turned(groundSite(face, corner, parentLabel), Turn.pitchUp);
         SiteFrame top = graph.view.atLevel(forwarded(tower, rise.edges), 0);
         Face label = top.zSide();
         uint foot = graph.view.airSideNode(top.node, top.corner, label);
-        return Horosphere(-Plane.ofFace(label), [Plane.init, Plane.init], groundSite(foot, top.corner, label), CornerKey.init, 0, parent, foot, 0, 0, 0, 0, 0, label, cast(ubyte)(rise.kind - 1), rise.edges, HorosphereStage.open);
+        return Horosphere(-Plane.ofFace(label), edgeLineOver(top.corner, label), groundSite(foot, top.corner, label), CornerKey.init, 0, parent, foot, 0, 0, 0, 0, label, cast(ubyte)(rise.kind - 1), rise.edges, HorosphereStage.open);
     }
 }
 
@@ -850,14 +911,14 @@ Grounds groundsOf(ref const Horospheres horospheres, Plane surface, const(Horosp
     grounds.items[0] = Ground(surface, horospheres.fillOf(ROOT));
     grounds.count = 1;
     foreach (found; near) {
-        if (!horospheres.isUpright(found.horosphere) && fabsf(found.plane.distanceTo(Point!float.origin())) <= GROUND_REACH) {
-            Ground ground = Ground(found.plane, horospheres.fillOf(found.horosphere));
+        if (!horospheres.isUpright(found.horosphere) && found.plane.distanceTo(Point!float.origin()) <= GROUND_REACH) {
+            Ground ground = Ground(found.plane, horospheres.fillOf(found.horosphere), found.horosphere);
             if (grounds.count < MAX_GROUNDS) {
                 grounds.items[grounds.count] = ground;
                 grounds.count += 1;
             } else {
                 uint farthest = grounds.farthestRisen();
-                if (fabsf(found.plane.distanceTo(Point!float.origin())) < fabsf(grounds.items[farthest].surface.distanceTo(Point!float.origin()))) {
+                if (found.plane.distanceTo(Point!float.origin()) < grounds.items[farthest].surface.distanceTo(Point!float.origin())) {
                     grounds.items[farthest] = ground;
                 }
             }
@@ -934,15 +995,15 @@ const(Look)* lookAt(ref const Graph graph, Position position) {
     }
 }
 
-bool isAlongColumn(ref const Horospheres horospheres, ref const HorosphereRef near, Point!float point) {
+float columnGravityShare(ref const Horospheres horospheres, ref const HorosphereRef near, Point!float point) {
     if (!horospheres.isUpright(near.horosphere)) {
-        return false;
+        return 0;
     } else {
         float height = near.plane.distanceTo(point);
         if (horospheres.isSunken(near.horosphere)) {
             height = -height;
         }
-        return height > 0 && columnDistanceOf(near, point) <= COLUMN_GRAVITY_REACH;
+        return smoothRamp(height, 0, COLUMN_GRAVITY_RISE) * (1 - smoothRamp(columnDistanceOf(near, point), COLUMN_GRAVITY_FULL, COLUMN_GRAVITY_REACH));
     }
 }
 
@@ -961,48 +1022,107 @@ Gravity gravityAt(ref const Graph graph, Position position) {
     assert(graph.isGravityKnown(slot));
     Grounds grounds = graph.groundsIn(slot);
     float sign = graph.horospheres.gravitySign();
-    if (grounds.count == 1) {
-        float[3] up = grounds.items[0].surface.upAt(position.local);
-        Point!float point = position.local * Point!float.origin();
-        foreach (ref near; graph.horospheres.horospheresAt(slot)) {
-            if (graph.horospheres.isAlongColumn(near, point)) {
-                up = columnUp(near, position.local);
-            }
-        }
-        return Gravity(up.scaled(sign), 1.0f);
-    } else {
-        Point!float point = position.local * Point!float.origin();
+    Point!float point = position.local * Point!float.origin();
+    float[MAX_GROUNDS] weights = [1, 0, 0, 0];
+    Gravity field = Gravity(grounds.items[0].surface.upAt(position.local).scaled(sign), 1.0f);
+    if (grounds.count > 1) {
         float relief = graph.loadedClimateAt(slot, point).relief;
         float[MAX_GROUNDS] heights = void;
+        float[MAX_GROUNDS] shares = void;
         float[3][MAX_GROUNDS] ups = void;
         foreach (index, ground; grounds.items[0 .. grounds.count]) {
-            heights[index] = sign * heightAbove(relief, ground.surface.distanceTo(point), ground.fill);
+            float altitude = ground.surface.distanceTo(point);
+            heights[index] = sign * heightAbove(relief, altitude, ground.fill);
+            shares[index] = 1 - smoothRamp(altitude, GRAVITY_REACH - GRAVITY_FADE, GRAVITY_REACH);
             ups[index] = ground.surface.upAt(position.local).scaled(sign);
         }
-        return blendedGravity(heights[0 .. grounds.count], ups[0 .. grounds.count]);
+        heights[0] = lowerOf(heights[0], GRAVITY_REACH);
+        shares[0] = 1;
+        weights = groundWeights(heights[0 .. grounds.count], shares[0 .. grounds.count]);
+        field = weightedGravity(weights[0 .. grounds.count], ups[0 .. grounds.count]);
+    }
+    return graph.bentAlongColumns(field, grounds, weights, position, point);
+}
+
+Gravity bentAlongColumns(ref const Graph graph, Gravity field, ref const Grounds grounds, ref const float[MAX_GROUNDS] weights, Position position, Point!float point) {
+    float[3] pull = field.up.scaled(field.strength);
+    Readiness bent = Readiness.pending;
+    foreach (ref near; graph.horospheres.horospheresAt(graph.slotOf(position.node))) {
+        float share = graph.horospheres.columnGravityShare(near, point);
+        if (share > 0) {
+            uint parent = graph.horospheres.horosphere(near.horosphere).parent;
+            float kept = 1;
+            foreach (index; 1 .. grounds.count) {
+                if (grounds.items[index].horosphere != parent) {
+                    kept -= weights[index];
+                }
+            }
+            float mixed = share * kept;
+            pull = pull.scaled(1 - mixed).plus(columnUp(near, position.local).scaled(graph.horospheres.gravitySign() * mixed));
+            bent = Readiness.ready;
+        }
+    }
+    if (bent == Readiness.pending) {
+        return field;
+    } else {
+        return gravityOfPull(pull, field.up, pull.magnitude);
     }
 }
 
-Gravity blendedGravity(const(float)[] heights, const(float[3])[] ups) {
-    size_t nearest = 0;
+float[MAX_GROUNDS] groundWeights(const(float)[] heights, const(float)[] shares) {
+    float lowest = float.infinity;
     foreach (index, height; heights) {
-        if (height < heights[nearest]) {
-            nearest = index;
+        if (shares[index] > 0) {
+            lowest = lowerOf(lowest, height);
         }
     }
-    float[3] up = ups[nearest];
-    float along = 0;
+    float[MAX_GROUNDS] weights = 0;
     float total = 0;
     foreach (index, height; heights) {
-        float weight = expf(-(height - heights[nearest]) / GRAVITY_FALLOFF);
-        along += weight * (ups[index][0] * up[0] + ups[index][1] * up[1] + ups[index][2] * up[2]);
-        total += weight;
+        if (shares[index] > 0) {
+            weights[index] = shares[index] * expf(-(height - lowest) / GRAVITY_FALLOFF);
+            total += weights[index];
+        }
     }
-    return Gravity(up, higherOf(0.0f, along / total));
+    foreach (index; 0 .. heights.length) {
+        weights[index] = weights[index] / total;
+    }
+    return weights;
+}
+
+Gravity weightedGravity(const(float)[] weights, const(float[3])[] ups) {
+    float[3] pull = [0, 0, 0];
+    size_t heaviest = 0;
+    foreach (index, weight; weights) {
+        pull = pull.plus(ups[index].scaled(weight));
+        if (weight > weights[heaviest]) {
+            heaviest = index;
+        }
+    }
+    float opposed = 0;
+    foreach (index, weight; weights) {
+        opposed = higherOf(opposed, smoothRamp(weight, 0, OPPOSED_WEIGHT) * smoothRamp(-ups[index].dot(ups[heaviest]), OPPOSED_FROM, OPPOSED_FULLY));
+    }
+    float[3] toward = pull.scaled(1 - opposed).plus(ups[heaviest].scaled(opposed));
+    return gravityOfPull(toward, ups[heaviest], higherOf(0.0f, pull.dot(ups[heaviest])));
+}
+
+Gravity gravityOfPull(float[3] pull, float[3] idleUp, float strength) {
+    float length = pull.magnitude;
+    if (length < LEAST_PULL) {
+        return Gravity(idleUp, 0);
+    } else {
+        return Gravity(pull.scaled(1 / length), strength);
+    }
+}
+
+Gravity blendedGravity(const(float)[] heights, const(float)[] shares, const(float[3])[] ups) {
+    float[MAX_GROUNDS] weights = groundWeights(heights, shares);
+    return weightedGravity(weights[0 .. heights.length], ups);
 }
 
 bool isPaintedBy(ref GraphView view, uint slot, HorosphereRef near) {
-    return view.horospheres.isUpright(near.horosphere) || view.isOnRisenSide(slot, near) || view.isOnFootLine(slot, near.horosphere);
+    return view.horospheres.isUpright(near.horosphere) || (isWithinRisingReach(near.plane) && (view.isOnRisenSide(slot, near) || view.isOnFootLine(slot, near.horosphere)));
 }
 
 bool isOnRisenSide(ref GraphView view, uint slot, HorosphereRef near) {
@@ -1079,7 +1199,9 @@ float planeHeightAt(ref GraphView view, uint horosphere, Position position) {
 
 Climate climateAt(ref GraphView view, uint slot, Point!float point) {
     ChunkPoint at = chunkPointOf(point);
-    return CubeClimate.around(view, slot, at.corner).at(at.coords);
+    Climate here = CubeClimate.around(view, slot, at.corner).at(at.coords);
+    here.relief = here.relief * view.horospheres.reliefShareAmong(view.ensureHorospheresAt(slot), point);
+    return here;
 }
 
 Climate loadedClimateAt(ref const Graph graph, uint slot, Point!float point) {
@@ -1099,7 +1221,9 @@ Climate loadedClimateAt(ref const Graph graph, uint slot, Point!float point) {
             around[crossed] = graph.stateAt(node).climate;
         }
     }
-    return CubeClimate.fromAround(around).at(at.coords);
+    Climate here = CubeClimate.fromAround(around).at(at.coords);
+    here.relief = here.relief * graph.horospheres.reliefShareAmong(graph.horospheres.horospheresAt(slot), point);
+    return here;
 }
 
 Position cellOnLine(ref GraphView view, SiteFrame line, int cell) {
@@ -1144,7 +1268,6 @@ int balanceAlong(ref GraphView view, SiteFrame line, uint horosphere, int most) 
 
 struct RiseMeasure {
     int ground;
-    int below;
     int balance;
 }
 
@@ -1154,19 +1277,16 @@ RiseMeasure measureOf(ref GraphView view, uint horosphere) {
         return RiseMeasure.init;
     } else if (view.horospheres.isUpright(horosphere)) {
         int reach = COLUMN_GROUND_EDGES * edgeCells(view.layout.dimension);
-        return RiseMeasure(view.groundAlong(view.turned(measured.foot, Turn.pitchUp), measured.parent, reach), 0, 0);
+        return RiseMeasure(view.groundAlong(view.turned(measured.foot, Turn.pitchUp), measured.parent, reach), 0);
     } else {
         int span = measured.edges * edgeCells(view.layout.dimension);
-        SiteFrame up = view.turned(measured.foot, Turn.pitchUp);
-        SiteFrame down = view.turned(view.turned(forwarded(up, measured.edges), Turn.pitchUp), Turn.pitchUp);
-        return RiseMeasure(view.groundAlong(up, horosphere, span), view.groundAlong(down, measured.parent, span), view.balanceAlong(up, horosphere, span));
+        return RiseMeasure(0, view.balanceAlong(view.turned(measured.foot, Turn.pitchUp), horosphere, span));
     }
 }
 
 void storeMeasure(ref Graph graph, uint horosphere, RiseMeasure measure) {
     Horosphere* stored = &graph.horospheres.horospheres.ptr[horosphere - 1];
     stored.ground = measure.ground;
-    stored.below = measure.below;
     stored.balance = measure.balance;
     stored.stage = HorosphereStage.measured;
 }

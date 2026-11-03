@@ -66,9 +66,19 @@ immutable NamedScript[] TESTS = [
     NamedScript("structure/drift", &risen!("driftcity", 1.5f, Material.concrete, "the drift's landing")),
     NamedScript("structure/lantern", &risen!("lanterncity", 1.5f, Material.concrete, "the lantern's landing")),
     NamedScript("structure/stacked", &risen!("stacked", 1.5f, Material.concrete, "the connector's landing")),
+    NamedScript("structure/stackedrooms", &risen!("stackedrooms", 1.5f, Material.concrete, "the connector's landing")),
     NamedScript("structure/stairs", &climbing!("tower", 2.5f, SpawnCheck.skipped)),
     NamedScript("structure/tower", &structureTower),
     NamedScript("structure/trail", &structureTrail),
+    NamedScript("structure/tripcity", &roundTrip!("tripcity")),
+    NamedScript("structure/tripwild", &roundTrip!("tripwild")),
+    NamedScript("structure/triprooms", &roundTrip!("triprooms")),
+    NamedScript("structure/tripstacked", &roundTrip!("tripstacked")),
+    NamedScript("structure/tripcities", &roundTrip!("tripcities")),
+    NamedScript("structure/tripwildwild", &roundTrip!("tripwildwild")),
+    NamedScript("structure/tripspiral", &roundTrip!("tripspiral")),
+    NamedScript("structure/tripdrift", &roundTrip!("tripdrift")),
+    NamedScript("structure/triplantern", &roundTrip!("triplantern")),
     NamedScript("structure/treetrunk", &structureTreetrunk),
     NamedScript("structure/wild", &risen!("risenwild", 2.0f, Material.concrete, "the connector's landing")),
 ];
@@ -924,6 +934,50 @@ void risen(string name, float risenAltitude, Material landing, string what)(ref 
     world.look(degrees(0), degrees(walk.STRAIGHT_DOWN_DEGREES));
     string below = walk.nameOf(world.targetMaterial());
     world.check(walk.isMaterial(world.targetMaterial(), landing), "standing on %.*s instead of %.*s", cast(int) below.length, below.ptr, cast(int) what.length, what.ptr);
+}
+
+enum float TRIP_LEAST_RISE = 1.5f;
+enum float TRIP_HOME_TOLERANCE = 0.1f;
+enum float MOST_PULL_PER_STEP = 0.15f;
+
+struct PullWatch {
+    float[3] last = [0, 0, 0];
+    float largest = 0;
+    float highest = 0;
+    uint steps;
+}
+
+void pullWatchHook(ref Script world, void* context) {
+    PullWatch* watch = cast(PullWatch*) context;
+    float[3] pull = world.game.characterState.pull;
+    if (watch.steps > 0) {
+        float[3] apart = [pull[0] - watch.last[0], pull[1] - watch.last[1], pull[2] - watch.last[2]];
+        watch.largest = higherOf(watch.largest, sqrt(apart[0] * apart[0] + apart[1] * apart[1] + apart[2] * apart[2]));
+    }
+    watch.last = pull;
+    watch.highest = higherOf(watch.highest, world.altitude().value);
+    watch.steps += 1;
+}
+
+void roundTrip(string name)(ref Script world) {
+    world.structure(name);
+    world.enterRoute();
+    world.wait(walk.SETTLE_SECONDS);
+    world.check(world.isOnGround(), "standing at the start of the round trip");
+    float start = world.altitude().value;
+    PullWatch watch;
+    world.onStep(StepHook(&pullWatchHook, &watch));
+    size_t reached = climb.follow(world, climb.EVERY_WAYPOINT);
+    world.wait(walk.SETTLE_SECONDS);
+    world.onStep(StepHook.init);
+    world.check(!world.routeWaypoint(reached + 1).exists, "stopped after %zu waypoints", reached);
+    world.check(world.isOnGround(), "standing at the end of the round trip");
+    world.check(watch.highest - start > TRIP_LEAST_RISE, "rose only %.3f on the way", watch.highest - start);
+    world.check(fabs(world.altitude().value - start) < TRIP_HOME_TOLERANCE, "came back to altitude %.3f from %.3f", world.altitude().value, start);
+    world.check(watch.largest <= MOST_PULL_PER_STEP, "gravity jumped %.3f in one step of the round trip", watch.largest);
+    world.look(degrees(0), degrees(walk.STRAIGHT_DOWN_DEGREES));
+    string below = walk.nameOf(world.targetMaterial());
+    world.check(walk.isMaterial(world.targetMaterial(), Material.concrete), "ended on %.*s instead of the lower landing", cast(int) below.length, below.ptr);
 }
 
 void structureRoad(ref Script world) {

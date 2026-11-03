@@ -1,16 +1,18 @@
 module unit.horospheres;
 
 import core.stdc.math : fabsf, floorf;
+import base.numbers : higherOf;
+import base.vector3 : magnitude, minus, scaled;
 import common.graph : Graph;
 import common.position : Position;
 import common.traversal : NearbyNode, NearbyScratch;
 import common.view : GraphView;
 import common.worldgen.blueprint : BlueprintBuilder, CellBox, Cover, EVERY_HEIGHT, PaintResult;
 import common.worldgen.generation : ChunkParams, GeneratedVoxels, StructureWorld, Worldgen;
-import common.worldgen.horospheres : ChunkPoint, CLEARANCE_EDGES, GROUND_EDGES, Grounds, Horosphere, HorosphereKind, HorosphereRef, Horospheres, LOWEST_RISE_EDGES, MAX_GROUNDS, ROOT, Rise, RiseMeasure, blendedGravity, chunkPointOf, columnDistanceOf, edgeOf, ensureHorospheresAt, groundNodeOf, groundsOf, horosphereOver, isApart, isOnFootLine, isRayApart, measureOf, openHorosphere, planeOfHorosphereIn, riseLineOver, risenPlaneOver, risingFrom, segmentSite, segmentsNear;
+import common.worldgen.horospheres : ChunkPoint, CLEARANCE_EDGES, FLAT_EDGE, GROUND_EDGES, Gravity, loadedClimateAt, refIn, Grounds, Horosphere, HorosphereKind, HorosphereRef, Horospheres, LOWEST_RISE_EDGES, MAX_GROUNDS, ROOT, Rise, RiseMeasure, blendedGravity, chunkPointOf, climateAt, columnDistanceOf, edgeOf, ensureGravityAt, ensureHorospheresAt, groundNodeOf, groundsOf, horosphereOver, isApart, isClearOfAncestors, isOnFootLine, isRayApart, measureOf, openHorosphere, planeOfHorosphereIn, riseLineOver, risenPlaneOver, risingFrom, segmentSite, segmentsNear;
 import common.worldgen.plane : Plane;
 import common.worldgen.structure : ColumnSpot, GROUND_RING, SiteFrame, atLevel, columnPoint, edgeCells, forwarded, groundRing, rootSite, sitePlacement, siteToNode, turned;
-import geometry.honeycomb : FACE_DISTANCE, Face, NODE_RADIUS;
+import geometry.honeycomb : CORNER_COUNT, Corner, FACE_DISTANCE, Face, NODE_RADIUS, opposite;
 import geometry.lorentz : Motion, Point, Vec4;
 import plugins.api.api : HorosphereForm, Material, Turn;
 import unit.structure : isCanonicalMatch, isSamePoint;
@@ -23,6 +25,16 @@ enum int RISE_EDGES = 3;
 enum int ALONG_EDGES = 4;
 enum int FARTHEST_EDGES = 8;
 enum float FARTHEST_GROUND = 2.0f;
+enum uint DEEP_STEPS = 6;
+enum ubyte FAR_RISE_EDGES = 4;
+enum float PULL_STEP = 0.02f;
+enum uint PULL_STEPS = 150;
+enum int PULL_CELL_STRIDE = 12;
+enum float MOST_PULL_CHANGE = 0.2f;
+enum double RISING_SKY_ODDS = 0.05;
+enum int CLEARING_CELLS = 8;
+enum float NESTING_RADIUS = 5.0f;
+immutable float[3][6] PULL_HEADINGS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
 immutable float[5] GROUND_HEIGHTS = [-2.5f, 1.0f, -0.5f, 2.0f, 1.5f];
 immutable int[3][3] PAINTED_CELLS = [
     [5, 6, 19],
@@ -32,6 +44,69 @@ immutable int[3][3] PAINTED_CELLS = [
 
 Graph structureGraph() {
     return Graph.make(DIMENSION, Worldgen.fromStructure(StructureWorld.fromName("test")));
+}
+
+size_t airIn(ref Graph graph, uint slot) {
+    size_t air = 0;
+    foreach (index; 0 .. CORNER_COUNT) {
+        GeneratedVoxels generated = ChunkParams.make(graph.view, slot, cast(Corner) index).generateVoxels();
+        foreach (cell; 0 .. cast(size_t) DIMENSION * DIMENSION * DIMENSION) {
+            if (generated.voxels.at(cell) == Material.none) {
+                air += 1;
+            }
+        }
+        generated.voxels.release();
+    }
+    return air;
+}
+
+float[3] pullAt(ref Graph graph, Position at) {
+    graph.view.climateAt(graph.slotOf(at.node), at.local * Point!float.origin());
+    Gravity gravity = graph.ensureGravityAt(at);
+    return gravity.up.scaled(gravity.strength);
+}
+
+float largestPullChange(ref Graph graph, Position start, float[3] heading, uint steps) {
+    Position at = start;
+    float[3] last = graph.pullAt(at);
+    float largest = 0;
+    Motion!float step = Motion!float.shift(heading.scaled(PULL_STEP));
+    foreach (_; 0 .. steps) {
+        at = graph.ensureNormalized(Position(at.node, (at.local * step).orthonormalized()));
+        float[3] pull = graph.pullAt(at);
+        largest = higherOf(largest, pull.minus(last).magnitude);
+        last = pull;
+    }
+    return largest;
+}
+
+float largestPullChangeAround(ref Graph graph, SiteFrame tower, int bottom, int top) {
+    float largest = 0;
+    int cell = bottom;
+    while (cell <= top) {
+        Point!float center = sitePlacement(tower, graph.layout) * columnPoint(graph.layout, ColumnSpot(0.5f, 0.5f, cell + 0.5f));
+        Position start = graph.ensureNormalized(Position(graph.idAt(tower.node), Motion!float.shiftTo(center)));
+        foreach (heading; PULL_HEADINGS) {
+            largest = higherOf(largest, graph.largestPullChange(start, heading, PULL_STEPS));
+        }
+        cell += PULL_CELL_STRIDE;
+    }
+    return largest;
+}
+
+void checkBuriedBeyond(ref Graph graph, uint risen) {
+    Horosphere made = graph.horospheres.horosphere(risen);
+    uint node = graph.ensureNeighborSlot(made.footNode, made.label);
+    Face side = made.label.opposite;
+    float altitude = graph.view.planeOfHorosphereIn(risen, node).distanceTo(Point!float.origin());
+    foreach (_; 0 .. DEEP_STEPS) {
+        node = graph.ensureNeighborSlot(node, side);
+        side = side.opposite;
+        float deeper = graph.view.planeOfHorosphereIn(risen, node).distanceTo(Point!float.origin());
+        assert(deeper < altitude);
+        altitude = deeper;
+        assert(graph.airIn(node) == 0);
+    }
 }
 
 unittest {
@@ -113,11 +188,16 @@ unittest {
     float[3] down = [0, -1, 0];
     float[3] up = [0, 1, 0];
     float[2] equal = [0.5f, 0.5f];
+    float[2] whole = [1, 1];
     float[3][2] opposed = [up, down];
-    assert(blendedGravity(equal[], opposed[]).strength < PLANE_TOLERANCE);
+    assert(blendedGravity(equal[], whole[], opposed[]).strength < PLANE_TOLERANCE);
     float[1] alone = [0.5f];
+    float[1] all = [1];
     float[3][1] single = [up];
-    assert(blendedGravity(alone[], single[]).strength == 1.0f);
+    assert(blendedGravity(alone[], all[], single[]).strength == 1.0f);
+    float[2] nearFaded = [-1, 0];
+    float[2] faded = [0, 1];
+    assert(blendedGravity(nearFaded[], faded[], opposed[]).up[1] == down[1]);
     scratch.release();
     graph.release();
 }
@@ -132,8 +212,9 @@ unittest {
     }
     Grounds grounds = groundsOf(horospheres, Plane.ofFace(Face.f0), near[]);
     assert(grounds.count == MAX_GROUNDS);
+    assert(grounds.items[1].surface.height == GROUND_HEIGHTS[0]);
     foreach (ground; grounds.items[1 .. grounds.count]) {
-        assert(fabsf(ground.surface.height) < FARTHEST_GROUND);
+        assert(ground.surface.height < FARTHEST_GROUND);
     }
     horospheres.release();
 }
@@ -141,24 +222,142 @@ unittest {
 unittest {
     Graph graph = Graph.make(DIMENSION, Worldgen.makeTerrain());
     graph.horospheres.kinds.append(HorosphereKind(0, HorosphereForm.terrain, 0));
-    graph.horospheres.kinds.append(HorosphereKind(0, HorosphereForm.bare, 1));
     SiteFrame root = rootSite(graph.anchorSlot);
-    SiteFrame beside = graph.view.turned(forwarded(graph.view.turned(root, Turn.right), 2), Turn.left);
     assert(graph.openHorosphere(root, Rise(1, LOWEST_RISE_EDGES)));
-    assert(graph.openHorosphere(beside, Rise(2, LOWEST_RISE_EDGES)));
+    uint risen = graph.view.horosphereOver(graph.anchorSlot, root.corner, ROOT);
+    assert(risen != ROOT);
+    graph.checkBuriedBeyond(risen);
+    graph.release();
+}
+
+unittest {
+    Graph graph = Graph.make(DIMENSION, Worldgen.makeTerrain());
+    graph.horospheres.kinds.append(HorosphereKind(0, HorosphereForm.solid, 0));
+    SiteFrame root = rootSite(graph.anchorSlot);
+    assert(graph.openHorosphere(root, Rise(1, LOWEST_RISE_EDGES)));
+    uint risen = graph.view.horosphereOver(graph.anchorSlot, root.corner, ROOT);
+    assert(risen != ROOT);
+    graph.checkBuriedBeyond(risen);
+    graph.release();
+}
+
+unittest {
+    Graph graph = Graph.make(DIMENSION, Worldgen.makeTerrain());
+    graph.horospheres.kinds.append(HorosphereKind(0, HorosphereForm.bare, 0));
+    SiteFrame root = rootSite(graph.anchorSlot);
+    assert(graph.openHorosphere(root, Rise(1, LOWEST_RISE_EDGES)));
     uint risen = graph.view.horosphereOver(graph.anchorSlot, root.corner, ROOT);
     assert(risen != ROOT);
     Horosphere made = graph.horospheres.horosphere(risen);
-    uint solid = graph.ensureNeighborSlot(made.footNode, made.label);
-    GeneratedVoxels generated = ChunkParams.make(graph.view, solid, made.foot.corner).generateVoxels();
-    assert(!generated.voxels.isFilledWith(Material.none));
-    generated.voxels.release();
-    SiteFrame at = graph.view.atLevel(beside, 0);
-    uint bare = graph.view.horosphereOver(at.node, at.corner, ROOT);
-    Horosphere empty = graph.horospheres.horosphere(bare);
-    generated = ChunkParams.make(graph.view, graph.ensureNeighborSlot(empty.footNode, empty.label), empty.foot.corner).generateVoxels();
+    GeneratedVoxels generated = ChunkParams.make(graph.view, graph.ensureNeighborSlot(made.footNode, made.label), made.foot.corner).generateVoxels();
     assert(generated.voxels.isFilledWith(Material.none));
     generated.voxels.release();
+    graph.release();
+}
+
+unittest {
+    Graph graph = Graph.make(DIMENSION, Worldgen.makeTerrain());
+    graph.horospheres.kinds.append(HorosphereKind(0, HorosphereForm.terrain, 0));
+    SiteFrame root = rootSite(graph.anchorSlot);
+    assert(graph.openHorosphere(root, Rise(1, FAR_RISE_EDGES)));
+    assert(graph.view.horosphereOver(graph.anchorSlot, root.corner, ROOT) != ROOT);
+    int length = FAR_RISE_EDGES * edgeCells(DIMENSION);
+    assert(graph.largestPullChangeAround(graph.view.turned(root, Turn.pitchUp), PULL_CELL_STRIDE, length - PULL_CELL_STRIDE) <= MOST_PULL_CHANGE);
+    graph.release();
+}
+
+unittest {
+    Graph graph = Graph.make(DIMENSION, Worldgen.makeTerrain());
+    graph.horospheres.kinds.append(HorosphereKind(0, HorosphereForm.terrain, 0));
+    SiteFrame root = rootSite(graph.anchorSlot);
+    assert(graph.openHorosphere(root, Rise(1, FAR_RISE_EDGES)));
+    uint risen = graph.view.horosphereOver(graph.anchorSlot, root.corner, ROOT);
+    assert(risen != ROOT);
+    Horosphere made = graph.horospheres.horosphere(risen);
+    SiteFrame[2] feet = [graph.view.turned(root, Turn.pitchUp), graph.view.turned(made.foot, Turn.pitchUp)];
+    foreach (foot; feet) {
+        foreach (x; -CLEARING_CELLS .. CLEARING_CELLS) {
+            foreach (y; -CLEARING_CELLS .. CLEARING_CELLS) {
+                Point!float spot = sitePlacement(foot, graph.layout) * columnPoint(graph.layout, ColumnSpot(x + 0.5f, y + 0.5f, 0.5f));
+                Position at = graph.ensureNormalized(Position(graph.idAt(foot.node), Motion!float.shiftTo(spot)));
+                uint slot = graph.slotOf(at.node);
+                graph.ensureGravityAt(at);
+                assert(graph.view.climateAt(slot, at.local * Point!float.origin()).relief == 0);
+                assert(graph.loadedClimateAt(slot, at.local * Point!float.origin()).relief == 0);
+            }
+        }
+    }
+    NearbyScratch scratch;
+    foreach (foot; feet) {
+        Position center = Position(graph.idAt(foot.node), Motion!float.identity());
+        foreach (node; scratch.collectAll(graph, center, RADIUS)) {
+            HorosphereRef expected = graph.view.refIn(risen, node.slot);
+            if (columnDistanceOf(expected, Point!float.origin()) <= FLAT_EDGE + NODE_RADIUS) {
+                uint found = 0;
+                foreach (near; graph.view.ensureHorospheresAt(node.slot)) {
+                    if (near.horosphere == risen) {
+                        found += 1;
+                    }
+                }
+                assert(found > 0);
+            }
+        }
+    }
+    scratch.release();
+    graph.release();
+}
+
+unittest {
+    Graph graph = structureGraph();
+    graph.horospheres.kinds.append(HorosphereKind(RISING_SKY_ODDS, HorosphereForm.solid, 0));
+    NearbyScratch scratch;
+    uint planes = 0;
+    foreach (node; scratch.collectAll(graph, Position(graph.idAt(graph.anchorSlot), Motion!float.identity()), NESTING_RADIUS)) {
+        const(HorosphereRef)[] near = graph.view.ensureHorospheresAt(node.slot);
+        foreach (index; 0 .. near.length) {
+            HorosphereRef first = graph.view.horospheresAt(node.slot)[index];
+            float altitude = first.plane.distanceTo(Point!float.origin());
+            if (altitude > 0 && altitude < FACE_DISTANCE + PLANE_TOLERANCE) {
+                planes += 1;
+                foreach (other; graph.view.horospheresAt(node.slot)) {
+                    assert(other.plane.distanceTo(Point!float.origin()) > 0);
+                }
+                assert(graph.view.stateAt(node.slot).surface.distanceTo(Point!float.origin()) > 0);
+            }
+        }
+    }
+    assert(planes > 0);
+    scratch.release();
+    graph.release();
+}
+
+unittest {
+    Graph graph = structureGraph();
+    graph.horospheres.kinds.append(HorosphereKind(RISING_SKY_ODDS, HorosphereForm.solid, 0));
+    int length = FAR_RISE_EDGES * edgeCells(DIMENSION);
+    assert(graph.largestPullChangeAround(graph.view.turned(rootSite(graph.anchorSlot), Turn.pitchUp), PULL_CELL_STRIDE, length) <= MOST_PULL_CHANGE);
+    graph.release();
+}
+
+unittest {
+    Graph graph = structureGraph();
+    graph.horospheres.kinds.append(HorosphereKind(0, HorosphereForm.upright, 0));
+    SiteFrame root = rootSite(graph.anchorSlot);
+    assert(graph.openHorosphere(root, Rise(1, LOWEST_RISE_EDGES)));
+    assert(graph.view.horosphereOver(graph.anchorSlot, root.corner, ROOT) != ROOT);
+    int length = FAR_RISE_EDGES * edgeCells(DIMENSION);
+    assert(graph.largestPullChangeAround(graph.view.turned(root, Turn.pitchUp), PULL_CELL_STRIDE, length) <= MOST_PULL_CHANGE);
+    graph.release();
+}
+
+unittest {
+    Graph graph = structureGraph();
+    graph.horospheres.kinds.append(HorosphereKind(0, HorosphereForm.solid, 0));
+    SiteFrame root = rootSite(graph.anchorSlot);
+    assert(graph.openHorosphere(root, Rise(1, FAR_RISE_EDGES)));
+    uint first = graph.view.horosphereOver(graph.anchorSlot, root.corner, ROOT);
+    Horosphere made = graph.horospheres.horosphere(first);
+    assert(!graph.view.isClearOfAncestors(made.footNode, made.foot.corner, first, LOWEST_RISE_EDGES));
     graph.release();
 }
 

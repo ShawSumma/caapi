@@ -3,3 +3,5 @@ obj/
 mined
 mined-server
 mined-test-library
+mined-headless
+mined-unittest

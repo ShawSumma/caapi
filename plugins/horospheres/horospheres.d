@@ -59,8 +59,8 @@ void treeTile(const(Api)* api, Site base, const(Risen)* risen, const(void)* data
 Kinds addKinds(const(Api)* api, double odds, double treeOdds, const(Connection)* how) {
     Kinds kinds;
     kinds.wild = api.horosphere(api, odds, HorosphereForm.terrain, Tag.wild, &wildTile, how, Connection.sizeof);
-    kinds.city = api.horosphere(api, odds, HorosphereForm.bare, Tag.city, &cityTile, how, Connection.sizeof);
-    kinds.backrooms = api.horosphere(api, odds, HorosphereForm.bare, Tag.backrooms, &backroomsTile, how, Connection.sizeof);
+    kinds.city = api.horosphere(api, odds, HorosphereForm.solid, Tag.city, &cityTile, how, Connection.sizeof);
+    kinds.backrooms = api.horosphere(api, odds, HorosphereForm.solid, Tag.backrooms, &backroomsTile, how, Connection.sizeof);
     kinds.tree = api.horosphere(api, treeOdds, HorosphereForm.upright, Tag.tree, &treeTile, how, Connection.sizeof);
     api.look(api, kinds.wild, &WILD_LOOK);
     api.look(api, kinds.city, &CITY_LOOK);

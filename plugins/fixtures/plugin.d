@@ -45,9 +45,43 @@ void stacked(const(Api)* api, Site site, const(void)* data) {
     api.openHorosphere(api, site, kinds.city, RISE_EDGES);
 }
 
+void stackedRooms(const(Api)* api, Site site, const(void)* data) {
+    Kinds kinds = routedKinds(api);
+    api.rooted(api, kinds.backrooms);
+    api.openHorosphere(api, site, kinds.backrooms, RISE_EDGES);
+}
+
+enum Ground : ubyte {
+    plain,
+    wild,
+    city,
+    backrooms,
+}
+
+uint kindOf(Kinds kinds, Ground ground) {
+    final switch (ground) {
+        case Ground.plain:
+        case Ground.wild:
+            return kinds.wild;
+        case Ground.city:
+            return kinds.city;
+        case Ground.backrooms:
+            return kinds.backrooms;
+    }
+}
+
+void trip(Style style, Ground lower, Ground upper)(const(Api)* api, Site site, const(void)* data) {
+    immutable Connection how = Connection.forced(style, Routing.roundTrip);
+    Kinds kinds = addKinds(api, 0, 0, &how);
+    if (lower != Ground.plain) {
+        api.rooted(api, kindOf(kinds, lower));
+    }
+    api.openHorosphere(api, site, kindOf(kinds, upper), RISE_EDGES);
+}
+
 void chain(const(Api)* api, Site site, const(void)* data) {
     Kinds kinds = addKinds(api, 0, 0, &UNROUTED);
-    uint upper = api.horosphere(api, 0, HorosphereForm.bare, Tag.city, &cityTile, &ROUTED, Connection.sizeof);
+    uint upper = api.horosphere(api, 0, HorosphereForm.solid, Tag.city, &cityTile, &ROUTED, Connection.sizeof);
     api.openHorosphere(api, site, kinds.city, RISE_EDGES);
     Turtle along = Turtle(api, site).pitchUp().forward(RISE_EDGES).pitchUp().forward(CHAIN_EDGES);
     api.openHorosphere(api, along.site, upper, RISE_EDGES);
@@ -110,6 +144,16 @@ pragma(mangle, ENTRY) void plugin(const(Registry)* registry) {
     registry.add(registry, "risenwild", &risenWild);
     registry.add(registry, "risenbackrooms", &risenBackrooms);
     registry.add(registry, "stacked", &stacked);
+    registry.add(registry, "stackedrooms", &stackedRooms);
+    registry.add(registry, "tripcity", &trip!(Style.tower, Ground.plain, Ground.city));
+    registry.add(registry, "tripwild", &trip!(Style.tower, Ground.plain, Ground.wild));
+    registry.add(registry, "triprooms", &trip!(Style.tower, Ground.plain, Ground.backrooms));
+    registry.add(registry, "tripstacked", &trip!(Style.tower, Ground.backrooms, Ground.backrooms));
+    registry.add(registry, "tripcities", &trip!(Style.tower, Ground.city, Ground.city));
+    registry.add(registry, "tripwildwild", &trip!(Style.tower, Ground.wild, Ground.wild));
+    registry.add(registry, "tripspiral", &trip!(Style.spiral, Ground.plain, Ground.wild));
+    registry.add(registry, "tripdrift", &trip!(Style.drift, Ground.plain, Ground.backrooms));
+    registry.add(registry, "triplantern", &trip!(Style.lantern, Ground.city, Ground.city));
     registry.add(registry, "chain", &chain);
     registry.add(registry, "basement", &basement);
     registry.add(registry, "backroomsstairs", &backroomsStairs);

@@ -14,7 +14,7 @@ import common.view : GraphView;
 import common.worldgen.building : Building;
 import common.worldgen.climate : COVER_DEPTH, Climate, CubeClimate, NodeClimate, SNOW_WARMTH, SOIL_DEPTH, WATER_LEVEL, groundAt, isDesert, openAt, uniformRock;
 import common.worldgen.plane : Plane, PlaneMeasure, chunkPoint, cubePoint;
-import common.worldgen.horospheres : Fill, Ground, Grounds, MAX_GROUNDS, ROOT, groundsAt;
+import common.worldgen.horospheres : Fill, FlatLines, Ground, Grounds, MAX_GROUNDS, ROOT, ensureHorospheresAt, flatLinesNear, groundsAt;
 import common.worldgen.store : Standing;
 import common.worldgen.strokes : Stroke, StrokeForm;
 import common.worldgen.structure : calmAt, firstSideAmong, ringFaces;
@@ -237,6 +237,7 @@ struct ChunkParams {
     const(Stroke)[] strokes;
     ulong nodeSpice;
     Grounds grounds;
+    FlatLines flats;
     CubeClimate climate;
     Plane reference;
     float slopeTangent;
@@ -254,12 +255,18 @@ struct ChunkParams {
         ChunkStructure structure = view.chunkStructureAt(slot);
         assert(structure.isKnown);
         NodeState state = view.stateAt(slot);
+        FlatLines flats = flatLinesNear(view.horospheres, view.ensureHorospheresAt(slot), cubeCenter(chunk));
+        CubeClimate climate = CubeClimate.around(view, slot, chunk);
+        if (flats.count > 0) {
+            climate = climate.reachingFlat();
+        }
         return ChunkParams(
             structure.building,
             strokesNear(strokesIn(structure.building), chunk),
             view.idAt(slot).spice(),
             view.groundsAt(slot),
-            CubeClimate.around(view, slot, chunk),
+            flats,
+            climate,
             state.reference,
             tanf(view.worldgen.groundTiltRadians()),
             1.0f / cosf(view.worldgen.groundTiltRadians()),
@@ -490,7 +497,7 @@ struct TerrainGenerator {
             uint rivals = params.rivalsOf(ground);
             if (rock.exists && rivals == 0) {
                 fillEmpty(rock.value);
-            } else if (params.materials == MaterialPass.deferring && !params.hasStructure && params.strokes.length == 0 && params.grounds.count == 1 && params.isProvenBelowTerrain(altitudes.high)) {
+            } else if (params.materials == MaterialPass.deferring && !params.hasStructure && params.strokes.length == 0 && rivals == 0 && params.isProvenBelowTerrain(altitudes.high)) {
                 voxels = Voxels.filled(DEFERRED_STAND_IN_MATERIAL);
                 materials = Materials.deferred;
             } else {
@@ -608,9 +615,15 @@ struct TerrainGenerator {
         return SplitMix(params.nodeSpice ^ (cast(ulong) params.chunk << CHUNK_ROLL_SHIFT) ^ index).roll();
     }
 
-    float depthAt(uint ground, uint[3] cell) const {
+    Climate climateOfCell(uint[3] cell) const {
         float[3] center = centerOf(cell[0], cell[1], cell[2]);
-        return params.climate.at(center).relief - surfaces[ground].distanceTo(cubePoint(toNode, center));
+        Climate here = params.climate.at(center);
+        here.relief = here.relief * params.flats.reliefShareAt(cubePoint(toNode, center));
+        return here;
+    }
+
+    float depthAt(uint ground, uint[3] cell) const {
+        return climateOfCell(cell).relief - surfaces[ground].distanceTo(cubePoint(toNode, centerOf(cell[0], cell[1], cell[2])));
     }
 
     float riserAt(uint ground, uint[3] cell, float depth) const {
@@ -628,7 +641,7 @@ struct TerrainGenerator {
     }
 
     void generateTerrainVoxel(uint ground, uint[3] cell, float altitude, size_t index) {
-        Climate here = params.climate.at(centerOf(cell[0], cell[1], cell[2]));
+        Climate here = climateOfCell(cell);
         float depth = here.relief - altitude;
         Material material;
         if (depth >= SOIL_DEPTH) {
@@ -664,7 +677,8 @@ struct TerrainGenerator {
 
     void placeTree(uint ground, int[3] base, TreeKind kind) {
         ubyte dimension = params.dimension;
-        if (voxels.at(cellIndex(dimension, base[0], base[1], base[2])) == Material.none) {
+        prepareCells();
+        if (voxels.at(cellIndex(dimension, base[0], base[1], base[2])) == Material.none && params.flats.reliefShareAt(cubePoint(toNode, centerOf(base[0], base[1], base[2]))) > 0) {
             int upDirection = params.ground(ground).surface.risingNeighbor(params.chunk, params.layout, base);
             int[3] up = CELL_STEPS[upDirection];
             if (voxels.at(cellIndex(dimension, base[0] + up[0], base[1] + up[1], base[2] + up[2])) == Material.none && isGroundFor(kind,voxels.at(cellIndex(dimension, base[0] - up[0], base[1] - up[1], base[2] - up[2])))) {

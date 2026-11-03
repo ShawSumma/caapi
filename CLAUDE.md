@@ -119,6 +119,11 @@ Euclidean instincts break here. Most of these rules exist because the obvious ap
   no orientation may be integrated open-loop: camera, body and compass re-level every frame.
 - `gravityAt` blends the nearby planes and can point along an upright column. Gravity needs node state and horospheres
   to be known (`isGravityKnown`); code handles the case where they are not.
+- Gravity is continuous by construction, so a node face or a plane leaving reach can never change it. Anything that adds a
+  ground must fade it out before `GRAVITY_REACH` (`GROUND_REACH - NODE_RADIUS`); the straight-line tests in
+  `unit/horospheres.d` and the round trips in `scripts/tests.d` measure this.
+- A plane's negative side is a half-space that runs forever, so reach tests on non-upright planes are signed, and risen
+  planes must face their ancestors (`isApart`). Their rock never contains the ground they rose from.
 - Structures run along honeycomb edge lines: these are full geodesics, and the four nodes around each form a column with
   its own chart, `(x, y)` in `-dim .. dim-1` and `z` in cells along the line (`columnPoint`, `ColumnChunk`). Sites are
   frames at vertices, and turns are exact quarter turns, which is why `forward(1).right()` five times closes a pentagon.
@@ -182,6 +187,8 @@ dirt stand-in) until it borders air (`resolveIfExposed`).
   thread, mutates the graph) or `owner` null (worker overlay).
 - In a worker, missing neighbors become **virtual nodes**: handles with bit 31 set (`VIRTUAL`). So a `uint node` in view
   code may not be a real slot. Go through view methods; never index `Graph` stores with it.
+- A slice from `horospheresAt` dangles as soon as anything calls `ensureHorospheresAt`, which `measureOf` and `climateAt` do.
+  A loop that calls out re-fetches it by index, as `cover` and `planCandidate` do.
 - Workers record states, horospheres and rises in the view; `ThreadViews.finish` merges them on the main thread. Creating a
   horosphere needs the main thread: the view records it in `wanted`, `isBlocked` becomes true, the result is discarded
   (`forget`), and the work runs again on the main thread or a later round.
@@ -213,6 +220,8 @@ time. That is what lets chunks and tiles be dropped and rebuilt, and what `--wor
   `site.hash` or `api.random`, which is seeded per tile; they cannot place or claim. A paint may only touch nodes not yet
   built (a tile: structure not finished; a placed structure: within `PAINT_REACH` of its depth), so painting "behind" is
   refused.
+- `HorosphereForm` sets what is behind a plane: `terrain` and `solid` fill forever, `bare` is empty. Tiles on a filled ground
+  carve their own air, and connectors assume solid ground at both ends, with terrain flattened around their axis.
 - Plugin errors are refusals, not crashes: `api.fail` and `refuse` store a message that surfaces as a `StructureProblem`.
 - Painting becomes `Brush`es on canonical `LineSpec`s (`canonicalOf`), stamped per node by `Building`. Paint order is
   `BrushRank`, deterministic across tile arrival order.
