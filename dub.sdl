@@ -38,6 +38,24 @@ configuration "unittest" {
 }
 
 subPackage {
+	name "web"
+	targetType "executable"
+	targetName "web-build"
+	targetPath "obj/web"
+	sourcePaths "web/tool"
+	importPaths "web/tool"
+}
+
+subPackage {
+	name "webdrive"
+	targetType "executable"
+	targetName "web-drive"
+	targetPath "obj/web"
+	sourcePaths "web/drive"
+	importPaths "web/drive"
+}
+
+subPackage {
 	name "api"
 	targetType "sourceLibrary"
 	sourcePaths "plugins/api"

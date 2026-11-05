@@ -6,7 +6,8 @@ import core.stdc.string : memset;
 import base.numbers : lowerOf;
 import base.pages : giveBack;
 
-enum size_t FIBONACCI_MULTIPLIER = 0x9E3779B97F4A7C15;
+enum ulong FIBONACCI_MULTIPLIER = 0x9E3779B97F4A7C15;
+enum size_t TABLE_MULTIPLIER = cast(size_t)(FIBONACCI_MULTIPLIER >> (ulong.sizeof - size_t.sizeof) * 8);
 enum size_t INITIAL_HASH_MAP_CAPACITY = 16;
 enum size_t MIGRATED_SLOTS_PER_CHANGE = 8;
 enum size_t RELEASED_BYTES = 1 << 20;
@@ -42,6 +43,7 @@ struct HashTable(K, V) {
     void allocate(size_t count) {
         controls = cast(ubyte*) calloc(count, 1);
         slots = cast(HashSlot!(K, V)*) malloc(count * HashSlot!(K, V).sizeof);
+        assert(controls !is null && slots !is null);
         capacity = count;
         used = 0;
         released = 0;
@@ -49,7 +51,7 @@ struct HashTable(K, V) {
     }
 
     static size_t hashOf(K key) {
-        return key.toHash() * FIBONACCI_MULTIPLIER;
+        return key.toHash() * TABLE_MULTIPLIER;
     }
 
     ubyte tagOf(size_t hash) const {

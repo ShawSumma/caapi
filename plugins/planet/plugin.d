@@ -1,6 +1,6 @@
 module plugins.planet.plugin;
 
-import plugins.api.api : Api, ENTRY, NO_KIND, Registry, Site;
+import plugins.api.api : Api, NO_KIND, Registry, Site, entryOf;
 import plugins.connector.connector : Connection;
 import plugins.horospheres.horospheres : Kinds, WILD_LOOK, addKinds;
 import plugins.turtle.turtle : Turtle;
@@ -58,6 +58,6 @@ void world(const(Api)* api, Site site, const(void)* data) {
     landmarks(api, at);
 }
 
-pragma(mangle, ENTRY) void plugin(const(Registry)* registry) {
+pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
     registry.add(registry, "planet", &world);
 }

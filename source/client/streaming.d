@@ -3,12 +3,11 @@ module client.streaming;
 import core.atomic : atomicLoad;
 import core.stdc.math : acoshf, coshf;
 import core.stdc.stdlib : calloc, free;
-import core.sys.posix.unistd : _SC_NPROCESSORS_ONLN, sysconf;
 import base.array : Array;
 import base.clock : nowMilliseconds;
 import base.flags : Readiness;
 import base.numbers : lowerOf;
-import base.parallel : ConcurrentQueue, Executor, ParallelJob, TaskSource, WorkerPool;
+import base.parallel : ConcurrentQueue, Executor, MAIN_WORKER, ParallelJob, TaskSource, WorkerPool;
 import base.units : Length;
 import client.arrivals : Integrator;
 import client.tasks : BuildingRequest, BuildingResult, GenKind, GenRequest, GenResult, QUEUE_CAPACITY, TaskQueues, pushedPrefix, takeTask, workerThreadCount;
@@ -235,8 +234,15 @@ struct Streamer {
     static Streamer make() {
         Streamer streamer;
         streamer.queues = TaskQueues.make();
-        streamer.workerCount = workerThreadCount(sysconf(_SC_NPROCESSORS_ONLN));
-        streamer.pool = WorkerPool.make(streamer.workerCount, TaskSource(&takeTask, streamer.queues));
+        version (WebAssembly) {
+            streamer.workerCount = 1;
+            streamer.pool = WorkerPool.make(0, TaskSource(&takeTask, streamer.queues));
+        } else {
+            import core.sys.posix.unistd : _SC_NPROCESSORS_ONLN, sysconf;
+
+            streamer.workerCount = workerThreadCount(sysconf(_SC_NPROCESSORS_ONLN));
+            streamer.pool = WorkerPool.make(streamer.workerCount, TaskSource(&takeTask, streamer.queues));
+        }
         streamer.queues.pool = streamer.pool;
         streamer.integrator = Integrator.make(streamer.pool.participants());
         streamer.bands = cast(NearBands*) calloc(streamer.pool.participants(), NearBands.sizeof);
@@ -281,6 +287,11 @@ struct Streamer {
 
     void runParallel(ParallelJob* job) {
         pool.run(job);
+    }
+
+    void runTasksUntil(double deadline) {
+        while (nowMilliseconds() < deadline && takeTask(queues, MAIN_WORKER)) {
+        }
     }
 
     Executor executor() {

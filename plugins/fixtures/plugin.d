@@ -1,6 +1,6 @@
 module plugins.fixtures.plugin;
 
-import plugins.api.api : Api, ENTRY, HorosphereForm, Registry, Site, SitePart;
+import plugins.api.api : Api, HorosphereForm, Registry, Site, SitePart, entryOf;
 import box = plugins.box.box;
 import plugins.buildings.building : Bound, Lot, Lots, Side, Spec;
 import plugins.buildings.types : Type, build, palettes;
@@ -136,7 +136,7 @@ void hamlet(const(Api)* api, Site site, const(void)* data) {
     }
 }
 
-pragma(mangle, ENTRY) void plugin(const(Registry)* registry) {
+pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
     registry.add(registry, "risencity", &risenCity);
     registry.add(registry, "spiralcity", &styled!(Style.spiral));
     registry.add(registry, "driftcity", &styled!(Style.drift));

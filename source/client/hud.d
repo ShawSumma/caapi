@@ -75,15 +75,17 @@ struct Growth {
     uint generation;
     uint countedSlot = NO_SLOT;
     uint countedVersion;
+    uint countedEpoch;
     size_t countedNodes;
 
     void update(ref const LocalWorld world) {
         uint start = world.graph.slotOf(world.cameraPosition.node);
         size_t nodes = world.nearby[world.published].nodes.length;
-        if (start != countedSlot || world.nearbyVersion != countedVersion || nodes > 2 * countedNodes) {
+        if (start != countedSlot || world.nearbyVersion != countedVersion || world.epoch != countedEpoch || nodes > 2 * countedNodes) {
             count(world, start);
             countedSlot = start;
             countedVersion = world.nearbyVersion;
+            countedEpoch = world.epoch;
             countedNodes = nodes;
         }
     }

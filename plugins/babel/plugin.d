@@ -1,6 +1,6 @@
 module plugins.babel.plugin;
 
-import plugins.api.api : Api, ENTRY, HorosphereForm, Look, Material, NO_KIND, Registry, Rhythm, Risen, RisingKind, Site, Tint;
+import plugins.api.api : Api, HorosphereForm, Look, Material, NO_KIND, Registry, Rhythm, Risen, RisingKind, Site, Tint, entryOf;
 import plugins.connector.connector : Tag;
 import plugins.turtle.turtle : Tread, Turtle, boxOf, floorMod, higherOf, lawn, middle, treadAround;
 
@@ -76,7 +76,7 @@ void world(const(Api)* api, Site site, const(void)* data) {
     tower.entrance(SPAWN[0], SPAWN[1], SPAWN[2]);
 }
 
-pragma(mangle, ENTRY) void plugin(const(Registry)* registry) {
+pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
     registry.add(registry, "babel", &world);
     RisingKind rising = RisingKind(COLUMN_SHARE, HorosphereForm.upright, Tag.column, &column, null, 0, LOOK);
     registry.addKind(registry, "babel", &rising);

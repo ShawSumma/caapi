@@ -7,13 +7,10 @@ import base.array : Array, grownCapacity;
 import base.slab : Slab;
 import client.graphics.matrices : MATRIX_FLOATS, flatten;
 import client.graphics.pipeline : GpuBuffer;
-import client.meshing : Mesher, Quad;
+import client.meshing : MeshBatch, MeshRecord, Quad;
 import common.eviction : Unloaded;
-import common.graph : Graph, NO_SLOT;
-import common.neighbors : chunkNeighborSlot;
-import common.node : Chunk, ChunkSlot, ChunkState;
+import common.node : ChunkSlot;
 import common.traversal : NOT_COLLECTED, NearbyScratch;
-import geometry.cube : DIRECTIONS;
 import geometry.honeycomb : CORNER_COUNT, Corner, cubeCenter, cubeToNode;
 import plugins.api.flags : Flags;
 
@@ -58,59 +55,6 @@ struct RenderChunk {
     uint drawable;
     uint slot;
     Flags!ChunkMark marks;
-}
-
-struct MeshRecord {
-    ChunkSlot slot;
-    uint block;
-    uint offset;
-    uint count;
-}
-
-struct WorkerMeshes {
-    Mesher mesher;
-    Array!Quad faces;
-    Array!MeshRecord records;
-    Array!ChunkSlot waiting;
-    Array!ChunkSlot dropped;
-}
-
-struct MeshBatch {
-    Array!WorkerMeshes workers;
-    const(Graph)* graph;
-}
-
-bool isBesideUnsettled(ref const Graph graph, ChunkSlot slot) {
-    foreach (direction; DIRECTIONS) {
-        ChunkSlot neighbor = graph.chunkNeighborSlot(slot, direction);
-        if (neighbor.slot != NO_SLOT && (graph.chunks.at(neighbor).state == ChunkState.generating || graph.chunks.at(neighbor).state == ChunkState.dropped)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-void meshJob(void* context, size_t index, uint worker) {
-    MeshBatch* batch = cast(MeshBatch*) context;
-    const(Graph)* graph = batch.graph;
-    ChunkSlot slot = graph.chunks.pending()[index];
-    const(Chunk)* chunk = graph.chunks.at(slot);
-    WorkerMeshes* output = &batch.workers.ptr[worker];
-    if (chunk.state == ChunkState.populated && !chunk.voxels.isOpaqueFill()) {
-        foreach (direction; DIRECTIONS) {
-            ChunkSlot neighbor = (*graph).chunkNeighborSlot(slot, direction);
-            if (neighbor.slot != NO_SLOT && graph.chunks.at(neighbor).state == ChunkState.dropped) {
-                output.dropped.append(neighbor);
-            }
-        }
-        if ((*graph).isBesideUnsettled(slot)) {
-            output.waiting.append(slot);
-        } else {
-            const(Quad)[] meshed = output.mesher.mesh(*graph, slot);
-            output.records.append(MeshRecord(slot, graph.chunks.blockOf(slot.slot), cast(uint) output.faces.length, cast(uint) meshed.length));
-            output.faces.appendAll(meshed);
-        }
-    }
 }
 
 struct BufferCopy {
@@ -300,35 +244,6 @@ struct ChunkMeshes {
         unlisted.length = kept;
     }
 
-    void prepareBatch(ref const Graph graph, uint workers) {
-        batch.graph = &graph;
-        while (batch.workers.length < workers) {
-            batch.workers.append(WorkerMeshes.init);
-            batch.workers.ptr[batch.workers.length - 1].mesher.setup(dimension);
-        }
-        foreach (i; 0 .. batch.workers.length) {
-            batch.workers.ptr[i].faces.clear();
-            batch.workers.ptr[i].records.clear();
-            batch.workers.ptr[i].waiting.clear();
-            batch.workers.ptr[i].dropped.clear();
-        }
-    }
-
-    void requeueWaiting(ref Graph graph) {
-        foreach (worker; batch.workers.slice()) {
-            foreach (slot; worker.waiting.slice()) {
-                graph.markChanged(slot);
-            }
-            foreach (slot; worker.dropped.slice()) {
-                Chunk* chunk = graph.chunks.existing(slot);
-                if (chunk.state == ChunkState.dropped) {
-                    chunk.state = ChunkState.generating;
-                    graph.chunks.restores.append(slot);
-                }
-            }
-        }
-    }
-
     void applyBatch(ref const NearbyScratch nearby) {
         size_t batchFaces = 0;
         foreach (worker; batch.workers.slice()) {
@@ -497,14 +412,7 @@ struct ChunkMeshes {
         drawables.destroy(device);
         transforms.destroy(device);
         commands.destroy(device);
-        foreach (i; 0 .. batch.workers.length) {
-            batch.workers.ptr[i].mesher.release();
-            batch.workers.ptr[i].faces.release();
-            batch.workers.ptr[i].records.release();
-            batch.workers.ptr[i].waiting.release();
-            batch.workers.ptr[i].dropped.release();
-        }
-        batch.workers.release();
+        batch.release();
         retired.release();
         uploads.release();
         growthCopies.release();

@@ -5,3 +5,6 @@ mined-server
 mined-test-library
 mined-headless
 mined-unittest
+mined.html
+.venv/
+.firefox-check/

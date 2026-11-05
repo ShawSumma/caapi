@@ -2,26 +2,54 @@ module base.clock;
 
 import base.numbers : higherOf, lowerOf;
 
-version (OSX) {
-    import core.sys.posix.time : timespec;
-
-    enum int CLOCK_MONOTONIC = 6;
-    enum int CLOCK_THREAD_CPUTIME_ID = 16;
-
-    extern (C) int clock_gettime(int clock, timespec* time) nothrow @nogc;
-} else {
-    import core.sys.posix.time : CLOCK_MONOTONIC, CLOCK_THREAD_CPUTIME_ID, clock_gettime, timespec;
-}
-
 enum double NANOSECONDS_PER_SECOND = 1e9;
 enum double NANOSECONDS_PER_MILLISECOND = 1e6;
 enum double MILLISECONDS_PER_SECOND = 1e3;
 enum uint SMOOTHED_FRAMES = 8;
 
-double nowSeconds() {
-    timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    return now.tv_sec + now.tv_nsec / NANOSECONDS_PER_SECOND;
+version (WebAssembly) {
+    extern (C) double web_now() nothrow @nogc;
+
+    double nowSeconds() {
+        return web_now() / MILLISECONDS_PER_SECOND;
+    }
+
+    double nowMilliseconds() {
+        return web_now();
+    }
+
+    double threadCpuMilliseconds() {
+        return web_now();
+    }
+} else {
+    version (OSX) {
+        import core.sys.posix.time : timespec;
+
+        enum int CLOCK_MONOTONIC = 6;
+        enum int CLOCK_THREAD_CPUTIME_ID = 16;
+
+        extern (C) int clock_gettime(int clock, timespec* time) nothrow @nogc;
+    } else {
+        import core.sys.posix.time : CLOCK_MONOTONIC, CLOCK_THREAD_CPUTIME_ID, clock_gettime, timespec;
+    }
+
+    double nowSeconds() {
+        timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        return now.tv_sec + now.tv_nsec / NANOSECONDS_PER_SECOND;
+    }
+
+    double nowMilliseconds() {
+        timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        return now.tv_sec * MILLISECONDS_PER_SECOND + now.tv_nsec / NANOSECONDS_PER_MILLISECOND;
+    }
+
+    double threadCpuMilliseconds() {
+        timespec used;
+        clock_gettime(CLOCK_THREAD_CPUTIME_ID, &used);
+        return used.tv_sec * MILLISECONDS_PER_SECOND + used.tv_nsec / NANOSECONDS_PER_MILLISECOND;
+    }
 }
 
 struct PhaseTimes {
@@ -71,16 +99,4 @@ struct FrameClock {
         }
         return total / used;
     }
-}
-
-double nowMilliseconds() {
-    timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    return now.tv_sec * MILLISECONDS_PER_SECOND + now.tv_nsec / NANOSECONDS_PER_MILLISECOND;
-}
-
-double threadCpuMilliseconds() {
-    timespec used;
-    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &used);
-    return used.tv_sec * MILLISECONDS_PER_SECOND + used.tv_nsec / NANOSECONDS_PER_MILLISECOND;
 }

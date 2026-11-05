@@ -20,9 +20,10 @@ import client.graphics.overlay : HudPipeline, MarkerPipeline;
 import client.hud : HudVertex, Marker;
 import client.graphics.pipeline : GpuBuffer, QUEUE_FAMILY_IGNORED, VULKAN_TRUE, expectSuccess;
 import client.graphics.voxels.cull : CullPipeline;
-import client.graphics.voxels.meshes : ChunkMeshes, Replaced, meshJob;
+import client.graphics.voxels.meshes : ChunkMeshes, Replaced;
 import client.graphics.voxels.surface : COLOR_CHANNELS, CommonUniforms, FACES_BINDING, LayoutPush, SurfacePipeline, TRANSFORMS_BINDING, glowingMaterials;
 import client.images : PixelOrder;
+import client.meshing : meshJob;
 import client.world : FOG_SHARPNESS, LocalWorld, fogReach;
 import common.node : ChunkLayout;
 import common.raycast.graph : GraphCastHit;
@@ -321,14 +322,14 @@ struct Renderer {
 
     void meshChanged(ref LocalWorld world) {
         if (world.graph.chunks.hasChanges()) {
-            meshes.prepareBatch(world.graph, world.streamer.workerCount + 1);
+            meshes.batch.prepare(world.graph, world.streamer.workerCount + 1, meshes.dimension);
             ParallelJob job = ParallelJob(&meshJob, &meshes.batch, nowMilliseconds() + MESH_BUDGET_MILLISECONDS, world.graph.chunks.pending().length);
             world.streamer.runParallel(&job);
             foreach (_; 0 .. job.count) {
                 world.graph.chunks.takeChanged();
             }
             meshes.applyBatch(world.nearby[world.published]);
-            meshes.requeueWaiting(world.graph);
+            meshes.batch.requeueWaiting(world.graph);
         }
         backlog = cast(uint) world.graph.chunks.pending().length;
     }

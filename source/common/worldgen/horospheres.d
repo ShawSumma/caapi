@@ -5,7 +5,7 @@ import core.stdc.math : acoshf, cosh, coshf, expf, fabs, fabsf, floorf, log, sin
 import core.stdc.string : memcpy;
 import base.array : Array;
 import base.flags : Readiness;
-import base.hashmap : FIBONACCI_MULTIPLIER, HashMap;
+import base.hashmap : HashMap, TABLE_MULTIPLIER;
 import base.maybe : Maybe;
 import base.numbers : clamped, higherOf, lowerOf;
 import base.slab : Run, RunPool, Slab;
@@ -234,7 +234,7 @@ struct CornerKey {
     Corner corner;
 
     size_t toHash() const {
-        return node.toHash() ^ (cast(size_t) corner * FIBONACCI_MULTIPLIER);
+        return node.toHash() ^ (cast(size_t) corner * TABLE_MULTIPLIER);
     }
 }
 

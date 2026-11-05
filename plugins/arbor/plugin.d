@@ -1,6 +1,6 @@
 module plugins.arbor.plugin;
 
-import plugins.api.api : Api, ENTRY, HorosphereForm, Look, Material, NO_KIND, Registry, Risen, RisingKind, Site, Tint;
+import plugins.api.api : Api, HorosphereForm, Look, Material, NO_KIND, Registry, Risen, RisingKind, Site, Tint, entryOf;
 import plugins.connector.connector : Tag;
 import plugins.horospheres.tree : TRUNK_RADIUS, Trunk, segment;
 import plugins.turtle.turtle : Rows, STAIR_HEADROOM, TREAD_THICKNESS, TURN_TREADS, Turtle, boxOf, floorMod, lawn, onWedge, ringRows, treadSpan, wedgeRows;
@@ -96,7 +96,7 @@ void world(const(Api)* api, Site at, const(void)* data) {
     tower.entrance(SPAWN[0], SPAWN[1], SPAWN[2]);
 }
 
-pragma(mangle, ENTRY) void plugin(const(Registry)* registry) {
+pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
     registry.add(registry, "arbor", &world);
     RisingKind rising = RisingKind(ROOT_SHARE, HorosphereForm.upright, Tag.tree, &tile, null, 0, LOOK);
     registry.addKind(registry, "arbor", &rising);

@@ -4,7 +4,7 @@ import core.atomic : atomicLoad, atomicOp, atomicStore;
 import core.stdc.stdlib : calloc;
 import base.array : Array;
 import base.numbers : higherOf;
-import base.parallel : ConcurrentQueue, WorkerPool, waitWhile, wake;
+import base.parallel : ConcurrentQueue, MAIN_WORKER, WorkerPool, waitWhile, wake;
 import common.node : ChunkSlot;
 import common.worldgen.building : Building, BuildingPlan;
 import common.worldgen.generation : ChunkParams, GeneratedVoxels, Yield;
@@ -69,6 +69,9 @@ struct TaskQueues {
     }
 
     void await(uint seen) {
+        version (WebAssembly) {
+            takeTask(&this, MAIN_WORKER);
+        }
         atomicStore(awaiting, 1);
         if (atomicLoad(completed) == seen) {
             waitWhile(completed, seen);

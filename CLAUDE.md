@@ -166,6 +166,9 @@ Euclidean instincts break here. Most of these rules exist because the obvious ap
     plugins/api/        the ABI: api.d, flags.d
     plugins/turtle/ box/ buildings/ connector/ blocks/ rooms/ horospheres/    sourceLibrary helpers shared by plugins
     plugins/*/plugin.d  each world, one dynamicLibrary sub-package
+    web/                browser build, single-threaded on WebGL2: main.d (entry, session), renderer.d (CPU culling, face texture),
+                        glue.js and shaders.js (WebGL2, WASI stubs), play.js, shell.html; tool/ links and packs mined.html through
+                        zig from .venv; check.js and drive/ test it in headless Firefox
 
 Entry points: `source/main.d` (game), `source/headless.d` with `source/worldcheck.d` (`-c headless`, no `client/graphics`),
 `source/unittests.d` (`dub test`, also no `client/script`, `drive`, `structures`, `tiles`, `scripts/`, so unit tests cannot

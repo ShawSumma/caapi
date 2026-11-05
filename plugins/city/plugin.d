@@ -1,6 +1,6 @@
 module plugins.city.plugin;
 
-import plugins.api.api : Api, ENTRY, NO_KIND, Registry, Site;
+import plugins.api.api : Api, NO_KIND, Registry, Site, entryOf;
 import blocks = plugins.blocks.blocks;
 import plugins.horospheres.horospheres : CITY_LOOK;
 import plugins.turtle.turtle : Turtle;
@@ -15,6 +15,6 @@ void world(const(Api)* api, Site site, const(void)* data) {
     at.right().entrance(SPAWN[0], SPAWN[1], SPAWN[2]);
 }
 
-pragma(mangle, ENTRY) void plugin(const(Registry)* registry) {
+pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
     registry.add(registry, "city", &world);
 }

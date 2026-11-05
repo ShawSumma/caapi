@@ -2,6 +2,7 @@ module client.meshing;
 
 import core.stdc.stdlib : free, malloc;
 import core.stdc.string : memcpy;
+import base.array : Array;
 import base.maybe : Maybe;
 import base.splitmix : SplitMix;
 import common.graph : Graph, NO_SLOT;
@@ -213,6 +214,99 @@ struct Mesher {
                     }
                 }
             }
+        }
+    }
+}
+
+struct MeshRecord {
+    ChunkSlot slot;
+    uint block;
+    uint offset;
+    uint count;
+}
+
+struct WorkerMeshes {
+    Mesher mesher;
+    Array!Quad faces;
+    Array!MeshRecord records;
+    Array!ChunkSlot waiting;
+    Array!ChunkSlot dropped;
+}
+
+struct MeshBatch {
+    Array!WorkerMeshes workers;
+    const(Graph)* graph;
+
+    void prepare(ref const Graph source, uint workerCount, ubyte dimension) {
+        graph = &source;
+        while (workers.length < workerCount) {
+            workers.append(WorkerMeshes.init);
+            workers.ptr[workers.length - 1].mesher.setup(dimension);
+        }
+        foreach (i; 0 .. workers.length) {
+            workers.ptr[i].faces.clear();
+            workers.ptr[i].records.clear();
+            workers.ptr[i].waiting.clear();
+            workers.ptr[i].dropped.clear();
+        }
+    }
+
+    void requeueWaiting(ref Graph target) {
+        foreach (worker; workers.slice()) {
+            foreach (slot; worker.waiting.slice()) {
+                target.markChanged(slot);
+            }
+            foreach (slot; worker.dropped.slice()) {
+                Chunk* chunk = target.chunks.existing(slot);
+                if (chunk.state == ChunkState.dropped) {
+                    chunk.state = ChunkState.generating;
+                    target.chunks.restores.append(slot);
+                }
+            }
+        }
+    }
+
+    void release() {
+        foreach (i; 0 .. workers.length) {
+            workers.ptr[i].mesher.release();
+            workers.ptr[i].faces.release();
+            workers.ptr[i].records.release();
+            workers.ptr[i].waiting.release();
+            workers.ptr[i].dropped.release();
+        }
+        workers.release();
+    }
+}
+
+bool isBesideUnsettled(ref const Graph graph, ChunkSlot slot) {
+    foreach (direction; DIRECTIONS) {
+        ChunkSlot neighbor = graph.chunkNeighborSlot(slot, direction);
+        if (neighbor.slot != NO_SLOT && (graph.chunks.at(neighbor).state == ChunkState.generating || graph.chunks.at(neighbor).state == ChunkState.dropped)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void meshJob(void* context, size_t index, uint worker) {
+    MeshBatch* batch = cast(MeshBatch*) context;
+    const(Graph)* graph = batch.graph;
+    ChunkSlot slot = graph.chunks.pending()[index];
+    const(Chunk)* chunk = graph.chunks.at(slot);
+    WorkerMeshes* output = &batch.workers.ptr[worker];
+    if (chunk.state == ChunkState.populated && !chunk.voxels.isOpaqueFill()) {
+        foreach (direction; DIRECTIONS) {
+            ChunkSlot neighbor = (*graph).chunkNeighborSlot(slot, direction);
+            if (neighbor.slot != NO_SLOT && graph.chunks.at(neighbor).state == ChunkState.dropped) {
+                output.dropped.append(neighbor);
+            }
+        }
+        if ((*graph).isBesideUnsettled(slot)) {
+            output.waiting.append(slot);
+        } else {
+            const(Quad)[] meshed = output.mesher.mesh(*graph, slot);
+            output.records.append(MeshRecord(slot, graph.chunks.blockOf(slot.slot), cast(uint) output.faces.length, cast(uint) meshed.length));
+            output.faces.appendAll(meshed);
         }
     }
 }

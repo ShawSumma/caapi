@@ -1,6 +1,6 @@
 module plugins.trail.plugin;
 
-import plugins.api.api : Api, ENTRY, Look, Material, NO_KIND, Registry, Site, SitePart;
+import plugins.api.api : Api, Look, Material, NO_KIND, Registry, Site, SitePart, entryOf;
 import box = plugins.box.box;
 import plugins.turtle.turtle : Turtle, boxOf;
 
@@ -80,7 +80,7 @@ void world(const(Api)* api, Site site, const(void)* data) {
     stretch(api, site, &left);
 }
 
-pragma(mangle, ENTRY) void plugin(const(Registry)* registry) {
+pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
     registry.add(registry, "trail", &world);
     registry.addLandmark(registry, "trail", &landmark);
 }

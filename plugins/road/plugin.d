@@ -1,7 +1,7 @@
 module plugins.road.plugin;
 
 import core.stdc.math : fabs, floor, sqrt;
-import plugins.api.api : Api, Column, ENTRY, Look, Material, NO_KIND, Registry, Rhythm, Site;
+import plugins.api.api : Api, Column, Look, Material, NO_KIND, Registry, Rhythm, Site, entryOf;
 import plugins.turtle.turtle : ENDLESS_HIGH, ENDLESS_LOW, Turtle, boxOf, higherOf;
 
 immutable Look LOOK = Look("road");
@@ -115,6 +115,6 @@ void lookedWorld(const(Api)* api, Site at, const(void)* data) {
     world(api, at, data);
 }
 
-pragma(mangle, ENTRY) void plugin(const(Registry)* registry) {
+pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
     registry.add(registry, "road", &lookedWorld);
 }

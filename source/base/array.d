@@ -24,6 +24,7 @@ struct Array(T) {
         if (wanted > capacity) {
             capacity = grownCapacity(capacity, wanted);
             ptr = cast(T*) realloc(ptr, capacity * T.sizeof);
+            assert(ptr !is null);
         }
     }
 

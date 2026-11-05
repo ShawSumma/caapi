@@ -1,6 +1,6 @@
 module plugins.palace.plugin;
 
-import plugins.api.api : Api, ENTRY, Look, Material, NO_KIND, Registry, Risen, Site, SitePart, Turn;
+import plugins.api.api : Api, Look, Material, NO_KIND, Registry, Risen, Site, SitePart, Turn, entryOf;
 import plugins.turtle.turtle : Along, Turtle, boxOf, cornersOf, grass, line, roll, upright;
 
 immutable Look LOOK = Look("palace");
@@ -214,7 +214,7 @@ void world(const(Api)* api, Site site, const(void)* data) {
     api.look(api, NO_KIND, &LOOK);
 }
 
-pragma(mangle, ENTRY) void plugin(const(Registry)* registry) {
+pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
     registry.add(registry, "palace", &world);
     registry.addLandmark(registry, "palace", &landmark);
 }

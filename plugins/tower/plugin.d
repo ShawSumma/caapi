@@ -1,6 +1,6 @@
 module plugins.tower.plugin;
 
-import plugins.api.api : Api, ENTRY, Look, NO_KIND, Registry, Site;
+import plugins.api.api : Api, Look, NO_KIND, Registry, Site, entryOf;
 import box = plugins.box.box;
 import plugins.turtle.turtle : Turtle;
 
@@ -22,7 +22,7 @@ void world(const(Api)* api, Site site, const(void)* data) {
     Turtle(api, site).pitchUp().entrance(-box.HALF_WIDTH, 0, 1);
 }
 
-pragma(mangle, ENTRY) void plugin(const(Registry)* registry) {
+pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
     registry.add(registry, "tower", &world);
     registry.addLandmark(registry, "tower", &landmark);
 }

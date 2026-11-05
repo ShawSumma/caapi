@@ -1,7 +1,7 @@
 module plugins.lattice.plugin;
 
 import core.stdc.math : fabs;
-import plugins.api.api : Api, ENTRY, HorosphereForm, Look, Material, NO_KIND, Registry, Rhythm, Risen, Site, SitePart, Tint, Turn;
+import plugins.api.api : Api, HorosphereForm, Look, Material, NO_KIND, Registry, Rhythm, Risen, Site, SitePart, Tint, Turn, entryOf;
 import plugins.turtle.turtle : Tread, Turtle, boxOf, lowerOf, roll, treadAround, upright;
 
 immutable Look LOOK = Look("lattice", [0.05f, 0.06f, 0.1f], Tint.fog);
@@ -217,6 +217,6 @@ void world(const(Api)* api, Site at, const(void)* data) {
     upright(root).entrance(SPAWN[0], SPAWN[1], SPAWN[2]);
 }
 
-pragma(mangle, ENTRY) void plugin(const(Registry)* registry) {
+pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
     registry.add(registry, "lattice", &world);
 }

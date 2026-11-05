@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mined</title>
+<style>
+html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+#game { display: block; width: 100%; height: 100%; }
+#status { position: fixed; left: 8px; top: 8px; color: #fff; font: 13px monospace; text-shadow: 0 0 3px #000; white-space: pre-wrap; pointer-events: none; }
+#failure { position: fixed; left: 8px; right: 8px; bottom: 8px; color: #fff; background: #800; padding: 8px; font: 13px monospace; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="status">Loading mined...</div>
+<div id="failure" hidden></div>
+<script>
+__SCRIPTS__
+</script>
+</body>
+</html>

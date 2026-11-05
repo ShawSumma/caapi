@@ -1,6 +1,6 @@
 module plugins.backrooms.plugin;
 
-import plugins.api.api : Api, ENTRY, NO_KIND, Registry, Site, SitePart;
+import plugins.api.api : Api, NO_KIND, Registry, Site, SitePart, entryOf;
 import plugins.connector.connector : BACKROOMS_GROUND;
 import plugins.horospheres.horospheres : BACKROOMS_LOOK;
 import layout = plugins.rooms.layout;
@@ -16,6 +16,6 @@ void world(const(Api)* api, Site site, const(void)* data) {
     upright(at).entrance(SPAWN[0], SPAWN[1], SPAWN[2]);
 }
 
-pragma(mangle, ENTRY) void plugin(const(Registry)* registry) {
+pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
     registry.add(registry, "backrooms", &world);
 }

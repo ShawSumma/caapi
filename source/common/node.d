@@ -183,7 +183,7 @@ struct Chunk {
     ulong word;
 
     const(Voxels) voxels() const {
-        return Voxels(word & VOXEL_MASK);
+        return Voxels(cast(size_t)(word & VOXEL_MASK));
     }
 
     void voxels(Voxels value) {

@@ -1,6 +1,6 @@
 module plugins.crown.plugin;
 
-import plugins.api.api : Api, Box, ENTRY, Look, Material, NO_KIND, Registry, Rhythm, Site;
+import plugins.api.api : Api, Box, Look, Material, NO_KIND, Registry, Rhythm, Site, entryOf;
 import box = plugins.box.box;
 import plugins.turtle.turtle : Along, FACE_CORNERS, Turtle, boxOf, cornersOf, upright;
 
@@ -154,7 +154,7 @@ void world(const(Api)* api, Site root, const(void)* data) {
     site.entrance(0, 1, site.edgeCells() / 2);
 }
 
-pragma(mangle, ENTRY) void plugin(const(Registry)* registry) {
+pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
     registry.add(registry, "crown", &world);
     registry.addLandmark(registry, "crown", &landmark);
 }

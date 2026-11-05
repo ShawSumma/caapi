@@ -2,7 +2,6 @@ module base.parallel;
 
 import core.atomic : atomicFetchAdd, atomicLoad, atomicOp, atomicStore, cas;
 import core.stdc.stdlib : calloc, free;
-import core.sys.posix.pthread : pthread_create, pthread_join, pthread_t;
 import base.clock : nowMilliseconds;
 import base.numbers : higherOf, lowerOf;
 
@@ -10,7 +9,26 @@ enum uint MAIN_WORKER = 0;
 enum size_t CACHE_LINE = 64;
 enum size_t GRAINS_PER_PARTICIPANT = 8;
 
-version (OSX) {
+version (WebAssembly) {
+    alias pthread_t = uint;
+    alias ThreadMain = extern (C) void* function(void*);
+
+    int pthread_create(pthread_t* thread, const(void)* attributes, ThreadMain start, void* argument) {
+        assert(false);
+    }
+
+    int pthread_join(pthread_t thread, void** result) {
+        assert(false);
+    }
+
+    void waitWhile(ref shared uint word, uint expected) {
+    }
+
+    void wake(ref shared uint word) {
+    }
+} else version (OSX) {
+    import core.sys.posix.pthread : pthread_create, pthread_join, pthread_t;
+
     enum uint OS_SYNC_NONE = 0;
 
     extern (C) int os_sync_wait_on_address(shared(void)* address, ulong value, size_t size, uint flags) nothrow @nogc;
@@ -24,6 +42,7 @@ version (OSX) {
         os_sync_wake_by_address_all(&word, uint.sizeof, OS_SYNC_NONE);
     }
 } else {
+    import core.sys.posix.pthread : pthread_create, pthread_join, pthread_t;
     import bindings.kernel : CALL_FUTEX, FUTEX_WAIT_HERE, FUTEX_WAKE_HERE;
 
     enum int WAKE_ALL = int.max;

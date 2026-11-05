@@ -2,8 +2,6 @@ module client.plugins;
 
 import core.stdc.stdio : fprintf, snprintf, stderr;
 import core.stdc.string : strlen;
-import core.sys.posix.dirent : DIR, closedir, dirent, opendir, readdir;
-import core.sys.posix.dlfcn : RTLD_NOW, dlerror, dlopen, dlsym;
 import base.flags : Readiness;
 import plugins.api.api : ENTRY, Entry, Registry, RisingKind, Structure;
 
@@ -12,7 +10,23 @@ enum size_t MAX_KINDS = 32;
 enum size_t MAX_LANDMARKS = 32;
 enum size_t PATH_CAPACITY = 4096;
 enum string PLUGIN_DIRECTORY = "lib";
-version (OSX) {
+version (WebAssembly) {
+    import arbor = plugins.arbor.plugin;
+    import babel = plugins.babel.plugin;
+    import backrooms = plugins.backrooms.plugin;
+    import city = plugins.city.plugin;
+    import crown = plugins.crown.plugin;
+    import fixtures = plugins.fixtures.plugin;
+    import lattice = plugins.lattice.plugin;
+    import library = plugins.library.plugin;
+    import palace = plugins.palace.plugin;
+    import planet = plugins.planet.plugin;
+    import road = plugins.road.plugin;
+    import tower = plugins.tower.plugin;
+    import trail = plugins.trail.plugin;
+} else version (OSX) {
+    import core.sys.posix.dirent : DIR, closedir, dirent, opendir, readdir;
+    import core.sys.posix.dlfcn : RTLD_NOW, dlerror, dlopen, dlsym;
     import core.sys.posix.stdlib : realpath;
 
     enum string LIBRARY_SUFFIX = ".dylib";
@@ -29,6 +43,8 @@ version (OSX) {
         }
     }
 } else {
+    import core.sys.posix.dirent : DIR, closedir, dirent, opendir, readdir;
+    import core.sys.posix.dlfcn : RTLD_NOW, dlerror, dlopen, dlsym;
     import core.sys.posix.unistd : readlink;
 
     enum string LIBRARY_SUFFIX = ".so";
@@ -87,51 +103,62 @@ struct Worlds {
         sortByName(landmarkNames[0 .. landmarkCount], landmarks[0 .. landmarkCount]);
     }
 
-    void gather() {
-        char[PATH_CAPACITY] directory = 0;
-        size_t length = executablePath(directory);
-        while (length > 0 && directory[length - 1] != '/') {
-            length -= 1;
-        }
-        if (length == 0) {
-            fprintf(stderr, "cannot find the executable's own path, so no plugins are loaded\n");
-        } else {
-            snprintf(directory.ptr + length, directory.length - length, "%s", PLUGIN_DIRECTORY.ptr);
-            gatherFrom(directory.ptr);
+    version (WebAssembly) {
+        void gather() {
+            Registry registry = Registry(&this, &add, &addKind, &addLandmark);
+            Entry[13] entries = [&arbor.plugin, &babel.plugin, &backrooms.plugin, &city.plugin, &crown.plugin, &fixtures.plugin, &lattice.plugin, &library.plugin, &palace.plugin, &planet.plugin, &road.plugin, &tower.plugin, &trail.plugin];
+            foreach (entry; entries) {
+                entry(&registry);
+            }
             sort();
         }
-    }
-
-    void gatherFrom(const(char)* path) {
-        DIR* directory = opendir(path);
-        if (directory is null) {
-            fprintf(stderr, "cannot open the plugin directory '%s'\n", path);
-        } else {
-            dirent* entry = readdir(directory);
-            while (entry !is null) {
-                const(char)[] name = entry.d_name.ptr[0 .. strlen(entry.d_name.ptr)];
-                if (name.length > LIBRARY_SUFFIX.length && name[$ - LIBRARY_SUFFIX.length .. $] == LIBRARY_SUFFIX) {
-                    load(path, name);
-                }
-                entry = readdir(directory);
+    } else {
+        void gather() {
+            char[PATH_CAPACITY] directory = 0;
+            size_t length = executablePath(directory);
+            while (length > 0 && directory[length - 1] != '/') {
+                length -= 1;
             }
-            closedir(directory);
-        }
-    }
-
-    void load(const(char)* directory, const(char)[] file) {
-        char[PATH_CAPACITY] path = 0;
-        snprintf(path.ptr, path.length, "%s/%.*s", directory, cast(int) file.length, file.ptr);
-        void* library = dlopen(path.ptr, RTLD_NOW);
-        if (library is null) {
-            fprintf(stderr, "cannot load the plugin '%s': %s\n", path.ptr, dlerror());
-        } else {
-            Entry plugin = cast(Entry) dlsym(library, ENTRY.ptr);
-            if (plugin is null) {
-                fprintf(stderr, "the plugin '%s' has no '%s'; it may have been built against another version of the API\n", path.ptr, ENTRY.ptr);
+            if (length == 0) {
+                fprintf(stderr, "cannot find the executable's own path, so no plugins are loaded\n");
             } else {
-                Registry registry = Registry(&this, &add, &addKind, &addLandmark);
-                plugin(&registry);
+                snprintf(directory.ptr + length, directory.length - length, "%s", PLUGIN_DIRECTORY.ptr);
+                gatherFrom(directory.ptr);
+                sort();
+            }
+        }
+
+        void gatherFrom(const(char)* path) {
+            DIR* directory = opendir(path);
+            if (directory is null) {
+                fprintf(stderr, "cannot open the plugin directory '%s'\n", path);
+            } else {
+                dirent* entry = readdir(directory);
+                while (entry !is null) {
+                    const(char)[] name = entry.d_name.ptr[0 .. strlen(entry.d_name.ptr)];
+                    if (name.length > LIBRARY_SUFFIX.length && name[$ - LIBRARY_SUFFIX.length .. $] == LIBRARY_SUFFIX) {
+                        load(path, name);
+                    }
+                    entry = readdir(directory);
+                }
+                closedir(directory);
+            }
+        }
+
+        void load(const(char)* directory, const(char)[] file) {
+            char[PATH_CAPACITY] path = 0;
+            snprintf(path.ptr, path.length, "%s/%.*s", directory, cast(int) file.length, file.ptr);
+            void* library = dlopen(path.ptr, RTLD_NOW);
+            if (library is null) {
+                fprintf(stderr, "cannot load the plugin '%s': %s\n", path.ptr, dlerror());
+            } else {
+                Entry plugin = cast(Entry) dlsym(library, ENTRY.ptr);
+                if (plugin is null) {
+                    fprintf(stderr, "the plugin '%s' has no '%s'; it may have been built against another version of the API\n", path.ptr, ENTRY.ptr);
+                } else {
+                    Registry registry = Registry(&this, &add, &addKind, &addLandmark);
+                    plugin(&registry);
+                }
             }
         }
     }

@@ -2,6 +2,12 @@ module plugins.api.api;
 
 enum string ENTRY = "mined_plugin_5";
 
+version (WebAssembly) {
+    enum string entryOf(string unit) = ENTRY ~ "_" ~ unit;
+} else {
+    enum string entryOf(string unit) = ENTRY;
+}
+
 enum Material : ubyte {
     none,
     dirt,

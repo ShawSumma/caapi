@@ -1,6 +1,6 @@
 module plugins.library.plugin;
 
-import plugins.api.api : Api, ENTRY, HorosphereForm, Look, Material, Registry, Rhythm, Risen, RisingKind, Site, SitePart, Tint;
+import plugins.api.api : Api, HorosphereForm, Look, Material, Registry, Rhythm, Risen, RisingKind, Site, SitePart, Tint, entryOf;
 import blocks = plugins.blocks.blocks;
 import plugins.connector.connector : Connection, Tag, connect;
 import plugins.turtle.turtle : Along, Rows, STAIR_HEADROOM, TURN_TREADS, Turtle, boxOf, cornersOf, floorDiv, floorMod, higherOf, line, lowerOf, onWedge, ringRows, roll, treadSpan, upright, wedgeRows;
@@ -291,7 +291,7 @@ void world(const(Api)* api, Site site, const(void)* data) {
     tower.entrance(SPAWN[0], SPAWN[1], SPAWN[2]);
 }
 
-pragma(mangle, ENTRY) void plugin(const(Registry)* registry) {
+pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
     registry.add(registry, "library", &world);
     RisingKind rising = RisingKind(1, HorosphereForm.solid, Tag.library, &tile, &ROLLED, Connection.sizeof, LOOK);
     registry.addKind(registry, "library", &rising);
