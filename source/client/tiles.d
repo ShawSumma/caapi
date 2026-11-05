@@ -508,7 +508,7 @@ struct TileHost {
         uint tileStart = cast(uint) plan.tiles.length;
         if (!graph.isFinished(candidate)) {
             if (isTiledBy(graph, *calls, ROOT)) {
-                planRing(graph, (*view).groundRing((*view).groundNodeOf(candidate, ROOT), Face.f0), Face.f0, ROOT);
+                planRing(graph, (*view).groundRing((*view).groundNodeOf(candidate, ROOT), Face.first), Face.first, ROOT);
             }
             size_t count = (*view).ensureHorospheresAt(candidate).length;
             foreach (which; 0 .. count) {

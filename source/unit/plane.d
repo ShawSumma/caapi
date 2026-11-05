@@ -10,16 +10,16 @@ enum uint STEPS = 8;
 
 Face alternatingFace(uint step) {
     if (step % 2 == 0) {
-        return Face.f0;
+        return Face.first;
     } else {
-        return Face.f0.opposite;
+        return Face.first.opposite;
     }
 }
 
 unittest {
-    Plane ground = Plane.ofFace(Face.f0);
+    Plane ground = Plane.ofFace(Face.first);
     assert(fabsf(ground.distanceTo(Point!float.origin()) + FACE_DISTANCE) < TOLERANCE);
-    Plane across = ground.reflectAcross(Face.f0);
+    Plane across = ground.reflectAcross(Face.first);
     assert(fabsf(across.distanceTo(Point!float.origin()) - FACE_DISTANCE) < TOLERANCE);
     Point!float point = Motion!float.shift([0.3f, -0.2f, 0.4f]) * Point!float.origin();
     Plane far = ground;

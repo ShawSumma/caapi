@@ -22,7 +22,7 @@ enum int BEHIND_EDGES = 10;
 enum int RISE_EDGES = 3;
 enum uint DEEP_STEPS = 40;
 enum uint SIDE_STRIDE = 5;
-immutable Face[3] EDGE_WALK = [Face.f3, Face.f7, Face.f1];
+immutable Face[3] EDGE_WALK = [cast(Face) 3, cast(Face) 7, cast(Face) 1];
 immutable int[3][4] CELLS = [
     [0, 0, 0],
     [3, 1, 2],
@@ -280,7 +280,7 @@ unittest {
 
 unittest {
     Graph graph = testGraph();
-    uint[GROUND_RING] ring = graph.view.groundRing(graph.anchorSlot, Face.f0);
+    uint[GROUND_RING] ring = graph.view.groundRing(graph.anchorSlot, Face.first);
     foreach (index, slot; ring) {
         assert(fabsf(altitude(*graph.ensureState(slot)) - FACE_DISTANCE) < TOLERANCE.value);
         foreach (other; ring[index + 1 .. $]) {

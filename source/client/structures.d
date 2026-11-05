@@ -267,7 +267,7 @@ struct StructureHost {
         builder.graph = &graph;
         if (!problem.isPresent && hasCover()) {
             if (isTiledBy(graph, calls, ROOT)) {
-                coverRing(graph, graph.view.groundRing(graph.view.groundNodeOf(slot, ROOT), Face.f0), Face.f0, ROOT);
+                coverRing(graph, graph.view.groundRing(graph.view.groundNodeOf(slot, ROOT), Face.first), Face.first, ROOT);
             }
             size_t count = graph.view.ensureHorospheresAt(slot).length;
             foreach (index; 0 .. count) {

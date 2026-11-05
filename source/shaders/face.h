@@ -1,4 +1,4 @@
-#ifndef FACE_H
+#if !defined(FACE_H)
 #define FACE_H
 
 const uint COORD_BITS = 8u;

@@ -134,7 +134,7 @@ unittest {
     float footAltitude = graph.view.planeOfHorosphereIn(risen, made.footNode).distanceTo(Point!float.origin());
     float anchorAltitude = graph.ensureState(graph.anchorSlot).surface.distanceTo(Point!float.origin());
     assert(fabsf(footAltitude - anchorAltitude) < PLANE_TOLERANCE);
-    uint[GROUND_RING] ring = graph.view.groundRing(graph.anchorSlot, Face.f0);
+    uint[GROUND_RING] ring = graph.view.groundRing(graph.anchorSlot, Face.first);
     SiteFrame high = graph.view.atLevel(forwarded(graph.view.turned(root, Turn.pitchUp), RISE_EDGES), 0);
     uint below = graph.view.groundNodeOf(high.node, ROOT);
     uint index = 0;
@@ -182,7 +182,7 @@ unittest {
         assert(graph.ensureBuildingAt(graph.slotOf(at.node)).materialAt(inChunk.corner, voxel, Material.none) == Material.granite);
     }
     builder.release();
-    Plane over = risenPlaneOver(root.corner, Face.f0, LOWEST_RISE_EDGES, graph.view.edgeOf());
+    Plane over = risenPlaneOver(root.corner, Face.first, LOWEST_RISE_EDGES, graph.view.edgeOf());
     Plane stored = graph.view.planeOfHorosphereIn(risen, graph.anchorSlot);
     assert(fabsf(over.distanceTo(Point!float.origin()) - stored.distanceTo(Point!float.origin())) < PLANE_TOLERANCE);
     float[3] down = [0, -1, 0];
@@ -210,7 +210,7 @@ unittest {
         horospheres.horospheres.append(Horosphere.init);
         near[index] = HorosphereRef(Plane([0, 1, 0], height), [Plane.init, Plane.init], cast(uint) index + 1);
     }
-    Grounds grounds = groundsOf(horospheres, Plane.ofFace(Face.f0), near[]);
+    Grounds grounds = groundsOf(horospheres, Plane.ofFace(Face.first), near[]);
     assert(grounds.count == MAX_GROUNDS);
     assert(grounds.items[1].surface.height == GROUND_HEIGHTS[0]);
     foreach (ground; grounds.items[1 .. grounds.count]) {
@@ -380,8 +380,8 @@ unittest {
     }
     assert(found > 0);
     float edge = graph.view.edgeOf();
-    Vec4!float[2] line = riseLineOver(root.corner, Face.f0, edge);
-    Plane above = risenPlaneOver(root.corner, Face.f0, LOWEST_RISE_EDGES, edge);
+    Vec4!float[2] line = riseLineOver(root.corner, Face.first, edge);
+    Plane above = risenPlaneOver(root.corner, Face.first, LOWEST_RISE_EDGES, edge);
     assert(!isRayApart(line[0], line[1], above, edge));
     assert(isRayApart(line[0], -line[1], above, edge));
     graph.release();

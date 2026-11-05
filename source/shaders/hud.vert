@@ -6,35 +6,35 @@ const float SRGB_POWER = 2.2;
 
 STAGE_LINK(0) out vec4 shade;
 
-#ifdef GL_ES
-layout(location = 0) in vec2 vertex_at;
-layout(location = 1) in vec4 vertex_written;
+#if defined(GL_ES)
+    layout(location = 0) in vec2 vertex_at;
+    layout(location = 1) in vec4 vertex_written;
 
-vec2 position_of_vertex() {
-    return vertex_at;
-}
+    vec2 position_of_vertex() {
+        return vertex_at;
+    }
 
-vec4 written_of_vertex() {
-    return vertex_written;
-}
+    vec4 written_of_vertex() {
+        return vertex_written;
+    }
 #else
-struct Vertex {
-    vec2 at;
-    uint color;
-    uint unused;
-};
+    struct Vertex {
+        vec2 at;
+        uint color;
+        uint unused;
+    };
 
-BOUND(0, 0) readonly restrict buffer Vertices {
-    Vertex vertices[];
-};
+    BOUND(0, 0) readonly restrict buffer Vertices {
+        Vertex vertices[];
+    };
 
-vec2 position_of_vertex() {
-    return vertices[VERTEX_INDEX].at;
-}
+    vec2 position_of_vertex() {
+        return vertices[VERTEX_INDEX].at;
+    }
 
-vec4 written_of_vertex() {
-    return unpackUnorm4x8(vertices[VERTEX_INDEX].color);
-}
+    vec4 written_of_vertex() {
+        return unpackUnorm4x8(vertices[VERTEX_INDEX].color);
+    }
 #endif
 
 void main() {

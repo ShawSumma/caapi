@@ -1,15 +1,15 @@
-#ifndef DEPTH_H
+#if !defined(DEPTH_H)
 #define DEPTH_H
 
-#ifdef GL_ES
-in vec2 depth_ratio;
+#if defined(GL_ES)
+    in vec2 depth_ratio;
 
-void write_depth() {
-    gl_FragDepth = depth_ratio.x / depth_ratio.y;
-}
+    void write_depth() {
+        gl_FragDepth = depth_ratio.x / depth_ratio.y;
+    }
 #else
-void write_depth() {
-}
+    void write_depth() {
+    }
 #endif
 
 #endif

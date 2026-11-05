@@ -17,37 +17,37 @@ STAGE_LINK(0) out vec3 texcoords;
 STAGE_LINK(1) out float brightness;
 STAGE_LINK(2) flat out float glowing;
 
-#ifdef GL_ES
-const uint FACE_ROW_SHIFT = 12u;
-const uint FACE_COLUMN_MASK = 4095u;
+#if defined(GL_ES)
+    const uint FACE_ROW_SHIFT = 12u;
+    const uint FACE_COLUMN_MASK = 4095u;
 
-uniform usampler2D face_texture;
-uniform DrawTransform current_draw;
+    uniform usampler2D face_texture;
+    uniform DrawTransform current_draw;
 
-Face load_face(uint index) {
-    uvec2 words = texelFetch(face_texture, ivec2(index & FACE_COLUMN_MASK, index >> FACE_ROW_SHIFT), 0).rg;
-    return Face(words.x, words.y);
-}
+    Face load_face(uint index) {
+        uvec2 words = texelFetch(face_texture, ivec2(index & FACE_COLUMN_MASK, index >> FACE_ROW_SHIFT), 0).rg;
+        return Face(words.x, words.y);
+    }
 
-DrawTransform load_draw() {
-    return current_draw;
-}
+    DrawTransform load_draw() {
+        return current_draw;
+    }
 #else
-BOUND(1, 0) readonly restrict buffer Faces {
-    Face faces[];
-};
+    BOUND(1, 0) readonly restrict buffer Faces {
+        Face faces[];
+    };
 
-BOUND(1, 2) readonly restrict buffer Transforms {
-    DrawTransform draws[];
-};
+    BOUND(1, 2) readonly restrict buffer Transforms {
+        DrawTransform draws[];
+    };
 
-Face load_face(uint index) {
-    return faces[index];
-}
+    Face load_face(uint index) {
+        return faces[index];
+    }
 
-DrawTransform load_draw() {
-    return draws[gl_InstanceIndex];
-}
+    DrawTransform load_draw() {
+        return draws[gl_InstanceIndex];
+    }
 #endif
 
 PUSH_BEGIN

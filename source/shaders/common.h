@@ -1,4 +1,4 @@
-#ifndef COMMON_H
+#if !defined(COMMON_H)
 #define COMMON_H
 
 #include "target.h"

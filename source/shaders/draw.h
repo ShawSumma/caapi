@@ -1,4 +1,4 @@
-#ifndef DRAW_H
+#if !defined(DRAW_H)
 #define DRAW_H
 
 struct CubeFrame {

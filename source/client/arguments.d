@@ -1,6 +1,6 @@
 module client.arguments;
 
-import core.stdc.stdio : fprintf, stderr;
+import core.stdc.stdio : FILE, fclose, fopen, fprintf, stderr, stdout;
 import core.stdc.stdlib : strtof;
 import core.stdc.string : strlen;
 import base.maybe : Maybe;
@@ -9,6 +9,11 @@ import client.plugins : registry;
 import common.worldgen.generation : PlaneWorld, STRUCTURE_NAME_CAPACITY, StructureWorld, Worldgen, WorldgenKind, degreesToRadians;
 
 enum string VERSION = "0.0.1";
+
+enum OptionSpec WORLDGEN_OPTION = OptionSpec("--worldgen", "terrain | plane <tilt in degrees> | structure <world>", "the world to use");
+enum OptionSpec OUTPUT_OPTION = OptionSpec("--out", "<file>", "where a tool writes its report (default stdout)");
+enum OptionSpec HELP_OPTION = OptionSpec("--help", "", "show this text");
+enum OptionSpec VERSION_OPTION = OptionSpec("--version", "", "show the version");
 
 enum ExitStatus : int {
     ok = 0,
@@ -28,13 +33,18 @@ struct StartupError {
     const(string)[] choices;
     const(char)* message;
     const(char)* argument;
+    const(char)[] flag;
 
     bool isPresent() const {
         return message !is null;
     }
 
     void report(const(char)* program) const {
-        fprintf(stderr, "%s: %s", program, message);
+        fprintf(stderr, "%s: ", program);
+        if (flag.length > 0) {
+            fprintf(stderr, "%.*s ", cast(int) flag.length, flag.ptr);
+        }
+        fprintf(stderr, "%s", message);
         if (argument !is null) {
             fprintf(stderr, " '%s'", argument);
         }
@@ -53,16 +63,89 @@ immutable(char)* choiceSeparator(size_t index) {
     }
 }
 
-struct FlagValue {
-    StartupError error;
-    const(char)* text;
+struct OptionSpec {
+    string name;
+    string value;
+    string help;
+}
 
-    static FlagValue fromArgv(int argc, char** argv, int flagIndex) {
-        if (flagIndex + 1 < argc) {
-            return FlagValue(StartupError.init, argv[flagIndex + 1]);
-        } else {
-            return FlagValue(StartupError(null, "missing a value after", argv[flagIndex]), null);
+string usageOf()(const(OptionSpec)[] options) {
+    string text;
+    foreach (option; options) {
+        text ~= "  " ~ option.name;
+        if (option.value.length > 0) {
+            text ~= " " ~ option.value;
         }
+        text ~= "  " ~ option.help ~ "\n";
+    }
+    return text;
+}
+
+Maybe!E optionNamed(E)(const(OptionSpec)[] options, const(char)[] name) {
+    uint index = 0;
+    while (index < options.length && options[index].name != name) {
+        index += 1;
+    }
+    if (index < options.length) {
+        return Maybe!E.of(cast(E) index);
+    } else {
+        return Maybe!E.init;
+    }
+}
+
+const(char)[] sliceOf(const(char)* text) {
+    return text[0 .. strlen(text)];
+}
+
+struct ArgumentCursor {
+    char** argv;
+    int count;
+    int index = 1;
+
+    bool hasMore() const {
+        return index < count;
+    }
+
+    const(char)* next() {
+        const(char)* argument = argv[index];
+        index += 1;
+        return argument;
+    }
+
+    void stop() {
+        index = count;
+    }
+}
+
+void parseOptions(E, A)(ref A arguments, const(OptionSpec)[] options, int argc, char** argv) {
+    ArgumentCursor cursor = ArgumentCursor(argv, argc);
+    while (cursor.hasMore && !arguments.error.isPresent()) {
+        const(char)* argument = cursor.next();
+        Maybe!E option = optionNamed!E(options, sliceOf(argument));
+        if (!option.exists) {
+            arguments.applyPositional(argument);
+        } else if (options[option.value].value.length > 0 && !cursor.hasMore) {
+            arguments.error = StartupError(null, "needs a value", null, options[option.value].name);
+        } else {
+            arguments.apply(option.value, cursor);
+        }
+    }
+    if (!arguments.error.isPresent()) {
+        arguments.error = arguments.usageError();
+    }
+}
+
+FILE* openReport(const(char)* path) {
+    if (path is null) {
+        return stdout;
+    } else {
+        return fopen(path, "w");
+    }
+}
+
+void closeReport(FILE* report) {
+    if (report !is stdout) {
+        fclose(report);
     }
 }
 
@@ -79,62 +162,57 @@ Maybe!float numberIn(const(char)* text) {
 struct WorldgenArgument {
     StartupError error;
     Worldgen worldgen;
-    int consumed;
 
-    static WorldgenArgument fromArgv(int argc, char** argv, int flagIndex) {
-        FlagValue kindText = FlagValue.fromArgv(argc, argv, flagIndex);
-        if (kindText.error.isPresent()) {
-            return WorldgenArgument(kindText.error, Worldgen.init, 1);
+    static WorldgenArgument from(ref ArgumentCursor cursor) {
+        const(char)* kindText = cursor.next();
+        Maybe!WorldgenKind kind = enumNamed!WorldgenKind(sliceOf(kindText));
+        if (!kind.exists) {
+            return WorldgenArgument(StartupError(ENUM_NAMES!WorldgenKind[], "unknown worldgen", kindText), Worldgen.init);
         } else {
-            Maybe!WorldgenKind kind = enumNamed!WorldgenKind(kindText.text[0 .. strlen(kindText.text)]);
-            if (!kind.exists) {
-                return WorldgenArgument(StartupError(ENUM_NAMES!WorldgenKind[], "unknown worldgen", kindText.text), Worldgen.init, 2);
-            } else {
-                return WorldgenArgument.ofKind(argc, argv, flagIndex + 1, kind.value);
-            }
+            return WorldgenArgument.ofKind(cursor, kind.value);
         }
     }
 
-    static WorldgenArgument ofKind(int argc, char** argv, int kindIndex, WorldgenKind kind) {
+    static WorldgenArgument ofKind(ref ArgumentCursor cursor, WorldgenKind kind) {
         WorldgenArgument parsed = void;
         final switch (kind) {
             case WorldgenKind.terrain:
-                parsed = WorldgenArgument(StartupError.init, Worldgen.makeTerrain(), 2);
+                parsed = WorldgenArgument(StartupError.init, Worldgen.makeTerrain());
                 break;
             case WorldgenKind.plane:
-                parsed = WorldgenArgument.plane(argc, argv, kindIndex);
+                parsed = WorldgenArgument.plane(cursor);
                 break;
             case WorldgenKind.structure:
-                parsed = WorldgenArgument.structure(argc, argv, kindIndex);
+                parsed = WorldgenArgument.structure(cursor);
                 break;
         }
         return parsed;
     }
 
-    static WorldgenArgument plane(int argc, char** argv, int kindIndex) {
-        FlagValue text = FlagValue.fromArgv(argc, argv, kindIndex);
-        if (text.error.isPresent()) {
-            return WorldgenArgument(text.error, Worldgen.init, 2);
+    static WorldgenArgument plane(ref ArgumentCursor cursor) {
+        if (!cursor.hasMore) {
+            return WorldgenArgument(StartupError(null, "plane needs a tilt in degrees"), Worldgen.init);
         } else {
-            Maybe!float tilt = numberIn(text.text);
+            const(char)* text = cursor.next();
+            Maybe!float tilt = numberIn(text);
             if (!tilt.exists) {
-                return WorldgenArgument(StartupError(null, "plane tilt in degrees is not a number", text.text), Worldgen.init, 3);
+                return WorldgenArgument(StartupError(null, "plane tilt in degrees is not a number", text), Worldgen.init);
             } else {
-                return WorldgenArgument(StartupError.init, Worldgen.fromPlane(PlaneWorld(degreesToRadians(tilt.value))), 3);
+                return WorldgenArgument(StartupError.init, Worldgen.fromPlane(PlaneWorld(degreesToRadians(tilt.value))));
             }
         }
     }
 
-    static WorldgenArgument structure(int argc, char** argv, int kindIndex) {
-        FlagValue text = FlagValue.fromArgv(argc, argv, kindIndex);
-        if (text.error.isPresent()) {
-            return WorldgenArgument(text.error, Worldgen.init, 2);
+    static WorldgenArgument structure(ref ArgumentCursor cursor) {
+        if (!cursor.hasMore) {
+            return WorldgenArgument(StartupError(registry().allNames(), "structure needs a world name"), Worldgen.init);
         } else {
-            StructureName name = StructureName.fromText(text.text[0 .. strlen(text.text)]);
+            const(char)* text = cursor.next();
+            StructureName name = StructureName.fromText(sliceOf(text));
             if (name.problem !is null) {
-                return WorldgenArgument(StartupError(name.choices, name.problem, text.text), Worldgen.init, 3);
+                return WorldgenArgument(StartupError(name.choices, name.problem, text), Worldgen.init);
             } else {
-                return WorldgenArgument(StartupError.init, Worldgen.fromStructure(name.world), 3);
+                return WorldgenArgument(StartupError.init, Worldgen.fromStructure(name.world));
             }
         }
     }

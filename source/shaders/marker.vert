@@ -28,16 +28,16 @@ PUSH_BEGIN
     PUSHED uint marker_color;
 PUSH_END
 
-#ifdef GL_ES
-const float CHANNEL_MOST = 255.0;
+#if defined(GL_ES)
+    const float CHANNEL_MOST = 255.0;
 
-vec3 written_color() {
-    return vec3(float(marker_color & 255u), float((marker_color >> 8u) & 255u), float((marker_color >> 16u) & 255u)) / CHANNEL_MOST;
-}
+    vec3 written_color() {
+        return vec3(float(marker_color & 255u), float((marker_color >> 8u) & 255u), float((marker_color >> 16u) & 255u)) / CHANNEL_MOST;
+    }
 #else
-vec3 written_color() {
-    return unpackUnorm4x8(marker_color).rgb;
-}
+    vec3 written_color() {
+        return unpackUnorm4x8(marker_color).rgb;
+    }
 #endif
 
 void main() {

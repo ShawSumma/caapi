@@ -10,10 +10,11 @@ import core.sys.posix.time : nanosleep, timespec;
 import core.sys.posix.unistd : close, getcwd;
 import base.array : Array;
 import base64 : decodeInto;
-import files : PATH_CAPACITY, writeFile;
+import files : Outcome, PATH_CAPACITY, writeFile;
 
 enum ushort MARIONETTE_PORT = 2828;
 enum string LOOPBACK = "127.0.0.1";
+enum string GAME_PAGE = "mined.html";
 enum uint CONNECT_ATTEMPTS = 120;
 enum uint CONNECT_PAUSE_MILLISECONDS = 500;
 enum uint LOAD_MILLISECONDS = 6000;
@@ -34,6 +35,21 @@ enum size_t PARAMETERS_CAPACITY = 2048;
 enum size_t REQUEST_CAPACITY = 4096;
 enum size_t LENGTH_DIGITS = 32;
 enum uint RADIX = 10;
+enum string NEW_SESSION = "WebDriver:NewSession";
+enum string SET_TIMEOUTS = "WebDriver:SetTimeouts";
+enum string SET_WINDOW_RECT = "WebDriver:SetWindowRect";
+enum string NAVIGATE = "WebDriver:Navigate";
+enum string EXECUTE_SCRIPT = "WebDriver:ExecuteScript";
+enum string TAKE_SCREENSHOT = "WebDriver:TakeScreenshot";
+enum string PERFORM_ACTIONS = "WebDriver:PerformActions";
+enum string QUIT = "Marionette:Quit";
+enum string NO_PARAMETERS = "{}";
+enum string REQUEST_FORMAT = "[0,%u,\"%s\",%s]";
+enum string SCRIPT_FORMAT = "{\"script\":\"%.*s\",\"args\":[]}";
+enum string NAVIGATE_FORMAT = "{\"url\":\"file://%s/%s%s\"}";
+enum string CLICK_FORMAT = `{"actions":[{"type":"pointer","id":"mouse","parameters":{"pointerType":"mouse"},"actions":[{"type":"pointerMove","x":%d,"y":%d,"duration":0,"origin":"viewport"},{"type":"pointerDown","button":%d},{"type":"pointerUp","button":%d}]}]}`;
+enum string MOVE_FORMAT = `{"actions":[{"type":"pointer","id":"mouse","parameters":{"pointerType":"mouse"},"actions":[{"type":"pointerMove","x":%d,"y":%d,"duration":200,"origin":"pointer"}]}]}`;
+enum string HOLD_FORMAT = `{"actions":[{"type":"key","id":"keyboard","actions":[{"type":"keyDown","value":"%s"},{"type":"pause","duration":%u},{"type":"keyUp","value":"%s"}]}]}`;
 enum string NO_TIMEOUTS = `{"script":3600000,"pageLoad":3600000,"implicit":0}`;
 enum string WIDE_WINDOW = `{"x":0,"y":0,"width":1280,"height":800}`;
 enum string SMALL_WINDOW = `{"x":0,"y":0,"width":900,"height":600}`;
@@ -46,11 +62,6 @@ enum string SHOT_START = "{\"full\":false,\"hash\":false}";
 enum string SHOT_DIRECTORY = ".firefox-check/";
 enum string VALUE_MARK = "\"value\":\"";
 
-enum ExitStatus : int {
-    ok,
-    failed,
-}
-
 void pause(uint milliseconds) {
     timespec wanted = timespec(milliseconds / MILLISECONDS_PER_SECOND, (milliseconds % MILLISECONDS_PER_SECOND) * NANOSECONDS_PER_MILLISECOND);
     nanosleep(&wanted, null);
@@ -62,34 +73,57 @@ struct Marionette {
     int connection = -1;
     uint nextId = 1;
 
-    bool connectedTo(ref sockaddr_in address) {
+    Outcome connectTo(ref sockaddr_in address) {
         connection = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-        if (connect(connection, cast(sockaddr*) &address, address.sizeof) == 0) {
-            return true;
+        int status = connect(connection, cast(sockaddr*) &address, address.sizeof);
+        if (status == 0) {
+            return Outcome.done;
         } else {
             close(connection);
-            pause(CONNECT_PAUSE_MILLISECONDS);
-            return false;
+            return Outcome.failed;
         }
     }
 
-    bool open() {
+    Outcome open() {
         sockaddr_in address;
         address.sin_family = AF_INET;
         address.sin_port = htons(MARIONETTE_PORT);
         address.sin_addr.s_addr = inet_addr(LOOPBACK.ptr);
-        uint attempt = 0;
-        while (attempt < CONNECT_ATTEMPTS && !connectedTo(address)) {
+        Outcome linked = connectTo(address);
+        uint attempt = 1;
+        while (linked == Outcome.failed && attempt < CONNECT_ATTEMPTS) {
+            pause(CONNECT_PAUSE_MILLISECONDS);
+            linked = connectTo(address);
             attempt += 1;
         }
-        return attempt < CONNECT_ATTEMPTS && receive();
+        if (linked == Outcome.done) {
+            return receive();
+        } else {
+            return linked;
+        }
     }
 
-    size_t frameEnd() const {
+    Outcome start() {
+        Outcome status = open();
+        if (status == Outcome.done) {
+            status = call(NEW_SESSION, NO_PARAMETERS);
+        }
+        if (status == Outcome.done) {
+            status = call(SET_TIMEOUTS, NO_TIMEOUTS);
+        }
+        return status;
+    }
+
+    size_t colonInPending() const {
         size_t colon = 0;
         while (colon < pending.length && pending.ptr[colon] != ':') {
             colon += 1;
         }
+        return colon;
+    }
+
+    size_t frameEnd() const {
+        size_t colon = colonInPending();
         if (colon == pending.length) {
             return 0;
         } else {
@@ -104,21 +138,18 @@ struct Marionette {
         }
     }
 
-    bool receive() {
+    Outcome receive() {
         size_t end = frameEnd();
         while (end == 0) {
             char[RECEIVE_BYTES] chunk;
             ptrdiff_t got = recv(connection, chunk.ptr, chunk.length, 0);
             if (got <= 0) {
-                return false;
+                return Outcome.failed;
             }
             pending.appendAll(chunk[0 .. got]);
             end = frameEnd();
         }
-        size_t colon = 0;
-        while (pending.ptr[colon] != ':') {
-            colon += 1;
-        }
+        size_t colon = colonInPending();
         reply.clear();
         reply.appendAll(pending.ptr[colon + 1 .. end]);
         reply.append('\0');
@@ -127,24 +158,25 @@ struct Marionette {
             pending.ptr[index] = pending.ptr[end + index];
         }
         pending.length = left;
-        return true;
+        return Outcome.done;
     }
 
-    bool call(const(char)* name, const(char)* parameters) {
+    Outcome call(const(char)* name, const(char)* parameters) {
         char[REQUEST_CAPACITY] request = 0;
-        int written = snprintf(request.ptr, request.length, "[0,%u,\"%s\",%s]", nextId, name, parameters);
+        int written = snprintf(request.ptr, request.length, REQUEST_FORMAT.ptr, nextId, name, parameters);
         char[LENGTH_DIGITS] prefix = 0;
         int prefixLength = snprintf(prefix.ptr, prefix.length, "%d:", written);
         nextId += 1;
         send(connection, prefix.ptr, prefixLength, 0);
         send(connection, request.ptr, written, 0);
-        if (!receive()) {
-            return false;
+        Outcome received = receive();
+        if (received == Outcome.failed) {
+            return Outcome.failed;
         } else if (hasError()) {
             fprintf(stderr, "%s failed: %s\n", name, reply.ptr);
-            return false;
+            return Outcome.failed;
         } else {
-            return true;
+            return Outcome.done;
         }
     }
 
@@ -195,36 +227,35 @@ struct Marionette {
         printf("\n");
     }
 
-    bool script(const(char)[] source) {
+    Outcome script(const(char)[] source) {
         char[PARAMETERS_CAPACITY] parameters = 0;
-        snprintf(parameters.ptr, parameters.length, "{\"script\":\"%.*s\",\"args\":[]}", cast(int) source.length, source.ptr);
-        return call("WebDriver:ExecuteScript", parameters.ptr);
-    }
-
-    void state(const(char)* label) {
-        printf("%s: ", label);
-        if (script(STATE_SCRIPT)) {
-            printValue();
-        }
+        snprintf(parameters.ptr, parameters.length, SCRIPT_FORMAT.ptr, cast(int) source.length, source.ptr);
+        return call(EXECUTE_SCRIPT, parameters.ptr);
     }
 
     void report(const(char)* label, const(char)[] source) {
         printf("%s: ", label);
-        if (script(source)) {
+        Outcome ran = script(source);
+        if (ran == Outcome.done) {
             printValue();
         }
     }
 
-    bool navigate(const(char)* page, const(char)* query) {
+    void state(const(char)* label) {
+        report(label, STATE_SCRIPT);
+    }
+
+    Outcome navigate(const(char)* page, const(char)* query) {
         char[PATH_CAPACITY] directory = 0;
         getcwd(directory.ptr, directory.length);
         char[PARAMETERS_CAPACITY] parameters = 0;
-        snprintf(parameters.ptr, parameters.length, "{\"url\":\"file://%s/%s%s\"}", directory.ptr, page, query);
-        return call("WebDriver:Navigate", parameters.ptr);
+        snprintf(parameters.ptr, parameters.length, NAVIGATE_FORMAT.ptr, directory.ptr, page, query);
+        return call(NAVIGATE, parameters.ptr);
     }
 
     void shot(const(char)* name) {
-        if (call("WebDriver:TakeScreenshot", SHOT_START.ptr)) {
+        Outcome taken = call(TAKE_SCREENSHOT, SHOT_START);
+        if (taken == Outcome.done) {
             Array!ubyte image;
             decodeInto(replyValue(), image);
             char[PATH_CAPACITY] path = 0;
@@ -236,29 +267,29 @@ struct Marionette {
 
     void click(int button) {
         char[PARAMETERS_CAPACITY] parameters = 0;
-        snprintf(parameters.ptr, parameters.length, `{"actions":[{"type":"pointer","id":"mouse","parameters":{"pointerType":"mouse"},"actions":[{"type":"pointerMove","x":%d,"y":%d,"duration":0,"origin":"viewport"},{"type":"pointerDown","button":%d},{"type":"pointerUp","button":%d}]}]}`, CENTER_X, CENTER_Y, button, button);
-        call("WebDriver:PerformActions", parameters.ptr);
+        snprintf(parameters.ptr, parameters.length, CLICK_FORMAT.ptr, CENTER_X, CENTER_Y, button, button);
+        call(PERFORM_ACTIONS, parameters.ptr);
     }
 
     void moveBy(int dx, int dy) {
         char[PARAMETERS_CAPACITY] parameters = 0;
-        snprintf(parameters.ptr, parameters.length, `{"actions":[{"type":"pointer","id":"mouse","parameters":{"pointerType":"mouse"},"actions":[{"type":"pointerMove","x":%d,"y":%d,"duration":200,"origin":"pointer"}]}]}`, dx, dy);
-        call("WebDriver:PerformActions", parameters.ptr);
+        snprintf(parameters.ptr, parameters.length, MOVE_FORMAT.ptr, dx, dy);
+        call(PERFORM_ACTIONS, parameters.ptr);
     }
 
     void hold(const(char)* key, uint milliseconds) {
         char[PARAMETERS_CAPACITY] parameters = 0;
-        snprintf(parameters.ptr, parameters.length, `{"actions":[{"type":"key","id":"keyboard","actions":[{"type":"keyDown","value":"%s"},{"type":"pause","duration":%u},{"type":"keyUp","value":"%s"}]}]}`, key, milliseconds, key);
-        call("WebDriver:PerformActions", parameters.ptr);
+        snprintf(parameters.ptr, parameters.length, HOLD_FORMAT.ptr, key, milliseconds, key);
+        call(PERFORM_ACTIONS, parameters.ptr);
     }
 
     void quit() {
-        call("Marionette:Quit", "{}");
+        call(QUIT, NO_PARAMETERS);
     }
 }
 
 void playThrough(ref Marionette browser) {
-    browser.call("WebDriver:SetWindowRect", WIDE_WINDOW.ptr);
+    browser.call(SET_WINDOW_RECT, WIDE_WINDOW);
     browser.state("loaded");
     pause(LOAD_MILLISECONDS);
     browser.state("loaded for a while, nothing pressed");
@@ -289,7 +320,7 @@ void playThrough(ref Marionette browser) {
     browser.state("after release");
     browser.hold("w", SETTLE_MILLISECONDS);
     browser.state("W while released");
-    browser.call("WebDriver:SetWindowRect", SMALL_WINDOW.ptr);
+    browser.call(SET_WINDOW_RECT, SMALL_WINDOW);
     pause(WORLD_MILLISECONDS);
     browser.state("resized");
     browser.report("canvas", CANVAS_SCRIPT);
@@ -297,7 +328,7 @@ void playThrough(ref Marionette browser) {
 }
 
 extern (C) int main(int count, char** arguments) {
-    const(char)* page = "mined.html";
+    const(char)* page = GAME_PAGE;
     const(char)* query = "";
     if (count > 1) {
         page = arguments[1];
@@ -306,22 +337,26 @@ extern (C) int main(int count, char** arguments) {
         query = arguments[2];
     }
     Marionette browser;
-    if (!browser.open() || !browser.call("WebDriver:NewSession", "{}") || !browser.call("WebDriver:SetTimeouts", NO_TIMEOUTS.ptr)) {
+    Outcome started = browser.start();
+    if (started == Outcome.failed) {
         fprintf(stderr, "cannot reach Firefox; start it with --marionette\n");
-        return ExitStatus.failed;
-    } else if (!browser.navigate(page, query)) {
-        browser.quit();
-        return ExitStatus.failed;
+        return Outcome.failed;
     } else {
-        if (count > 1) {
-            browser.call("WebDriver:SetWindowRect", SHEET_WINDOW.ptr);
-            browser.report("result", RESULT_SCRIPT);
-            browser.shot("check");
+        Outcome navigated = browser.navigate(page, query);
+        if (navigated == Outcome.failed) {
+            browser.quit();
+            return Outcome.failed;
         } else {
-            playThrough(browser);
+            if (count > 1) {
+                browser.call(SET_WINDOW_RECT, SHEET_WINDOW);
+                browser.report("result", RESULT_SCRIPT);
+                browser.shot("check");
+            } else {
+                playThrough(browser);
+            }
+            browser.quit();
+            printf("driven to the end\n");
+            return Outcome.done;
         }
-        browser.quit();
-        printf("driven to the end\n");
-        return ExitStatus.ok;
     }
 }

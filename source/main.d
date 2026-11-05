@@ -4,7 +4,6 @@ import core.bitop : bsf;
 import core.stdc.math : asinf, coshf, floorf, sinhf, tanf;
 import core.stdc.stdio : FILE, fclose, fflush, fopen, fprintf, fscanf, printf, snprintf, stderr;
 import core.stdc.stdlib : free, malloc;
-import core.stdc.string : strcmp, strlen;
 import core.sys.posix.sys.stat : mkdir;
 import core.sys.posix.time : nanosleep, timespec;
 import bindings.platform : VkExtent2D;
@@ -19,7 +18,7 @@ import base.numbers : higherOf, lowerOf;
 import base.parallel : ConcurrentQueue, QueueCell;
 import base.slab : RunPool, SLAB_SIZE, Slab;
 import base.units : Angle, AngularSpeed, Speed, Time;
-import client.arguments : ExitStatus, FlagValue, StartupError, VERSION, WorldgenArgument, exitStatus, numberIn;
+import client.arguments : ArgumentCursor, ExitStatus, HELP_OPTION, OUTPUT_OPTION, OptionSpec, StartupError, VERSION, VERSION_OPTION, WORLDGEN_OPTION, WorldgenArgument, closeReport, exitStatus, numberIn, openReport, parseOptions, sliceOf, usageOf;
 import client.config : ClientConfig, PitchAxis;
 import client.drive : DriveEventKind, DriveHost, DriveInput, DriveKey, LEFT_BUTTON, NamedDrive;
 import client.frames : RenderTimes;
@@ -84,22 +83,44 @@ enum double TITLE_INTERVAL_SECONDS = 1.0;
 enum double MAX_STEP_SECONDS = 0.1;
 enum size_t TEXT_CAPACITY = 256;
 enum size_t BYTES_PER_MEGABYTE = 1024 * 1024;
-enum string USAGE = "usage: mined [options]
-  --worldgen terrain | plane <tilt in degrees> | structure <world>
-                          the world to start in ([ and ] switch worlds while playing)
-  --config <file>         settings file (default mined.cfg in the working directory)
-  --sensitivity <number>  mouse turn in radians per count
-  --invert-y              invert vertical mouse look
-  --render-radius <units> how far to draw
-  --record <file>         record the session as a D script body
-  --help, --version
-tools:
-  --screenshot <png> --out <report> <view>   run a view script (scripts/views.d) and render it offscreen
-  --film <directory> --out <report> <film>   render every step of a film (scripts/films.d) offscreen to numbered PNGs
-  --drive <name> --out <report>              play a drive (scripts/drives.d) in the window
-  --bench-load [--profile] [--flight-speed <units/s>] --out <report>
-                                             load and flight benchmark
-";
+enum string DEFAULT_CONFIG = "mined.cfg";
+enum string USAGE = "usage: mined [options] [view or film]\n" ~ usageOf(OPTIONS[]);
+
+enum Option : ubyte {
+    worldgen,
+    config,
+    sensitivity,
+    invertY,
+    renderRadius,
+    record,
+    screenshot,
+    film,
+    drive,
+    benchLoad,
+    profile,
+    flightSpeed,
+    output,
+    help,
+    showVersion,
+}
+
+immutable OptionSpec[Option.max + 1] OPTIONS = [
+    Option.worldgen: WORLDGEN_OPTION,
+    Option.config: OptionSpec("--config", "<file>", "settings file (default " ~ DEFAULT_CONFIG ~ " in the working directory)"),
+    Option.sensitivity: OptionSpec("--sensitivity", "<number>", "mouse turn in radians per count"),
+    Option.invertY: OptionSpec("--invert-y", "", "invert vertical mouse look"),
+    Option.renderRadius: OptionSpec("--render-radius", "<units>", "how far to draw"),
+    Option.record: OptionSpec("--record", "<file>", "record the session as a D script body"),
+    Option.screenshot: OptionSpec("--screenshot", "<png>", "run the named view (scripts/views.d) and render it offscreen"),
+    Option.film: OptionSpec("--film", "<directory>", "render every step of the named film (scripts/films.d) offscreen to numbered PNGs"),
+    Option.drive: OptionSpec("--drive", "<name>", "play a drive (scripts/drives.d) in the window"),
+    Option.benchLoad: OptionSpec("--bench-load", "", "load and flight benchmark"),
+    Option.profile: OptionSpec("--profile", "", "sample the threads during the benchmark"),
+    Option.flightSpeed: OptionSpec("--flight-speed", "<units/s>", "how fast the benchmark flies"),
+    Option.output: OUTPUT_OPTION,
+    Option.help: HELP_OPTION,
+    Option.showVersion: VERSION_OPTION,
+];
 
 version (OSX) {
     import client.cocoa : Button1, Button3, CocoaWindow, KeyAction, KeyEvent, KeySym, WindowEvents, XK_1, XK_9, XK_bracketleft, XK_bracketright, XK_Escape, XK_Down, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_n, XK_s, XK_space, XK_v, XK_w;
@@ -273,7 +294,7 @@ enum SessionMark : ubyte {
 struct Arguments {
     StartupError error;
     const(char)* program;
-    const(char)* configPath = "mined.cfg";
+    const(char)* configPath = DEFAULT_CONFIG;
     const(char)* recordPath;
     const(char)* screenshotPath;
     const(char)* filmPath;
@@ -292,157 +313,138 @@ struct Arguments {
 
     static Arguments fromArgv(int argc, char** argv) {
         Arguments arguments = Arguments(StartupError.init, argv[0]);
-        int index = 1;
-        while (index < argc && !arguments.error.isPresent()) {
-            index = arguments.parseAt(argc, argv, index);
-        }
-        if (!arguments.error.isPresent()) {
-            arguments.error = arguments.usageError();
-        }
+        arguments.parseOptions!Option(OPTIONS[], argc, argv);
         return arguments;
     }
 
-    int parseAt(int argc, char** argv, int index) {
-        const(char)* argument = argv[index];
-        FlagValue value = FlagValue.fromArgv(argc, argv, index);
-        if (strcmp(argument, "--config") == 0) {
-            configPath = value.text;
-            error = value.error;
-            return index + 2;
-        } else if (strcmp(argument, "--record") == 0) {
-            recordPath = value.text;
-            error = value.error;
-            return index + 2;
-        } else if (strcmp(argument, "--drive") == 0) {
-            parseDrive(value);
-            return index + 2;
-        } else if (strcmp(argument, "--sensitivity") == 0) {
-            parseSensitivity(value);
-            return index + 2;
-        } else if (strcmp(argument, "--render-radius") == 0) {
-            parseRenderRadius(value);
-            return index + 2;
-        } else if (strcmp(argument, "--invert-y") == 0) {
-            pitchAxis = PitchAxis.inverted;
-            return index + 1;
-        } else if (strcmp(argument, "--worldgen") == 0) {
-            WorldgenArgument parsed = WorldgenArgument.fromArgv(argc, argv, index);
-            worldgen = parsed.worldgen;
-            error = parsed.error;
-            return index + parsed.consumed;
-        } else if (strcmp(argument, "--screenshot") == 0) {
-            screenshotPath = value.text;
-            error = value.error;
-            return index + 2;
-        } else if (strcmp(argument, "--film") == 0) {
-            filmPath = value.text;
-            error = value.error;
-            return index + 2;
-        } else if (strcmp(argument, "--bench-load") == 0) {
-            kind = RunKind.benchLoad;
-            return index + 1;
-        } else if (strcmp(argument, "--profile") == 0) {
-            profiling = Profiling.on;
-            return index + 1;
-        } else if (strcmp(argument, "--flight-speed") == 0) {
-            parseFlightSpeed(value);
-            return index + 2;
-        } else if (strcmp(argument, "--out") == 0) {
-            reportPath = value.text;
-            error = value.error;
-            return index + 2;
-        } else if (strcmp(argument, "--help") == 0) {
-            kind = RunKind.help;
-            return argc;
-        } else if (strcmp(argument, "--version") == 0) {
-            kind = RunKind.showVersion;
-            return argc;
-        } else if (argument[0] == '-') {
+    void apply(Option option, ref ArgumentCursor cursor) {
+        final switch (option) {
+            case Option.worldgen:
+                parseWorldgen(cursor);
+                break;
+            case Option.config:
+                configPath = cursor.next();
+                break;
+            case Option.sensitivity:
+                parseSensitivity(cursor.next());
+                break;
+            case Option.invertY:
+                pitchAxis = PitchAxis.inverted;
+                break;
+            case Option.renderRadius:
+                renderRadius = positiveNumber(option, cursor.next());
+                break;
+            case Option.record:
+                recordPath = cursor.next();
+                break;
+            case Option.screenshot:
+                screenshotPath = cursor.next();
+                break;
+            case Option.film:
+                filmPath = cursor.next();
+                break;
+            case Option.drive:
+                parseDrive(cursor.next());
+                break;
+            case Option.benchLoad:
+                kind = RunKind.benchLoad;
+                break;
+            case Option.profile:
+                profiling = Profiling.on;
+                break;
+            case Option.flightSpeed:
+                flightSpeed = positiveNumber(option, cursor.next());
+                break;
+            case Option.output:
+                reportPath = cursor.next();
+                break;
+            case Option.help:
+                kind = RunKind.help;
+                cursor.stop();
+                break;
+            case Option.showVersion:
+                kind = RunKind.showVersion;
+                cursor.stop();
+                break;
+        }
+    }
+
+    void applyPositional(const(char)* argument) {
+        if (argument[0] == '-') {
             error = StartupError(null, "unknown option", argument);
-            return index + 1;
         } else if (viewName !is null) {
             error = StartupError(null, "only one view is rendered, unexpected", argument);
-            return index + 1;
         } else {
             viewName = argument;
-            view = named(VIEWS, argument[0 .. strlen(argument)]);
-            film = named(FILMS, argument[0 .. strlen(argument)]);
+            view = named(VIEWS, sliceOf(argument));
+            film = named(FILMS, sliceOf(argument));
             if (view is null && film is null) {
                 error = StartupError(null, "unknown view or film", argument);
             }
-            return index + 1;
         }
     }
 
-    void parseDrive(FlagValue value) {
-        if (value.error.isPresent()) {
-            error = value.error;
-        } else {
-            drive = named(DRIVES, value.text[0 .. strlen(value.text)]);
-            if (drive is null) {
-                error = StartupError(null, "unknown drive", value.text);
-            }
+    void parseWorldgen(ref ArgumentCursor cursor) {
+        WorldgenArgument parsed = WorldgenArgument.from(cursor);
+        worldgen = parsed.worldgen;
+        error = parsed.error;
+    }
+
+    void parseDrive(const(char)* text) {
+        drive = named(DRIVES, sliceOf(text));
+        if (drive is null) {
+            error = StartupError(null, "unknown drive", text);
         }
     }
 
-    void parseSensitivity(FlagValue value) {
-        if (value.error.isPresent()) {
-            error = value.error;
-        } else {
-            sensitivity = numberIn(value.text);
-            if (!sensitivity.exists) {
-                error = StartupError(null, "sensitivity is not a number", value.text);
-            }
+    void parseSensitivity(const(char)* text) {
+        sensitivity = numberIn(text);
+        if (!sensitivity.exists) {
+            error = StartupError(null, "needs a number, got", text, OPTIONS[Option.sensitivity].name);
         }
     }
 
-    void parseRenderRadius(FlagValue value) {
-        if (value.error.isPresent()) {
-            error = value.error;
-        } else {
-            Maybe!float number = numberIn(value.text);
-            if (number.exists && number.value > 0) {
-                renderRadius = number.value;
-            } else {
-                error = StartupError(null, "render radius is not a positive number", value.text);
-            }
+    float positiveNumber(Option option, const(char)* text) {
+        Maybe!float number = numberIn(text);
+        if (!number.exists || !(number.value > 0)) {
+            error = StartupError(null, "needs a positive number, got", text, OPTIONS[option].name);
         }
+        return number.value;
     }
 
-    void parseFlightSpeed(FlagValue value) {
-        if (value.error.isPresent()) {
-            error = value.error;
-        } else {
-            Maybe!float number = numberIn(value.text);
-            if (number.exists && number.value > 0) {
-                flightSpeed = number.value;
-            } else {
-                error = StartupError(null, "flight speed is not a positive number", value.text);
-            }
-        }
+    StartupError onlyFor(Option option, Option tool) const {
+        return StartupError(null, "is only for", OPTIONS[tool].name.ptr, OPTIONS[option].name);
+    }
+
+    StartupError mixed(Option other) const {
+        return StartupError(null, "does not mix with", OPTIONS[other].name.ptr, OPTIONS[Option.drive].name);
+    }
+
+    bool isTool() const {
+        return screenshotPath !is null || filmPath !is null || drive !is null || kind == RunKind.benchLoad;
     }
 
     StartupError usageError() const {
         if (kind == RunKind.help || kind == RunKind.showVersion) {
             return StartupError.init;
-        } else if (kind == RunKind.benchLoad && reportPath is null) {
-            return StartupError(null, "needs --out", "--bench-load");
         } else if (profiling == Profiling.on && kind != RunKind.benchLoad) {
-            return StartupError(null, "is only for --bench-load", "--profile");
+            return onlyFor(Option.profile, Option.benchLoad);
         } else if (flightSpeed > 0 && kind != RunKind.benchLoad) {
-            return StartupError(null, "is only for --bench-load", "--flight-speed");
-        } else if (drive !is null && (screenshotPath !is null || kind == RunKind.benchLoad || recordPath !is null)) {
-            return StartupError(null, "does not mix with --screenshot, --bench-load or --record", "--drive");
-        } else if (drive !is null && reportPath is null) {
-            return StartupError(null, "needs --out", "--drive");
-        } else if (screenshotPath !is null && (reportPath is null || view is null)) {
-            return StartupError(null, "needs --out and a view", "--screenshot");
-        } else if (filmPath !is null && (reportPath is null || film is null)) {
-            return StartupError(null, "needs --out and a film", "--film");
+            return onlyFor(Option.flightSpeed, Option.benchLoad);
+        } else if (drive !is null && screenshotPath !is null) {
+            return mixed(Option.screenshot);
+        } else if (drive !is null && kind == RunKind.benchLoad) {
+            return mixed(Option.benchLoad);
+        } else if (drive !is null && recordPath !is null) {
+            return mixed(Option.record);
+        } else if (screenshotPath !is null && view is null) {
+            return StartupError(null, "needs a view", null, OPTIONS[Option.screenshot].name);
+        } else if (filmPath !is null && film is null) {
+            return StartupError(null, "needs a film", null, OPTIONS[Option.film].name);
         } else if (screenshotPath is null && filmPath is null && viewName !is null) {
-            return StartupError(null, "a view is only for --screenshot, a film only for --film, unexpected", viewName);
-        } else if (screenshotPath is null && filmPath is null && kind != RunKind.benchLoad && drive is null && reportPath !is null) {
-            return StartupError(null, "is only for --screenshot, --film, --drive and --bench-load", "--out");
+            return StartupError(null, "nothing was asked to render this view or film", viewName);
+        } else if (!isTool() && reportPath !is null) {
+            return StartupError(null, "is only for a tool, not for playing", null, OPTIONS[Option.output].name);
         } else {
             return StartupError.init;
         }
@@ -550,7 +552,8 @@ struct Session {
         } else if (arguments.recordPath is null) {
             return runWindow(arguments);
         } else {
-            if (!recorder.open(arguments.recordPath)) {
+            ExitStatus opened = exitStatus(recorder.open(arguments.recordPath));
+            if (opened != ExitStatus.ok) {
                 StartupError(null, "cannot open the recording file", arguments.recordPath).report(arguments.program);
                 return ExitStatus.failed;
             } else {
@@ -563,7 +566,7 @@ struct Session {
     }
 
     ExitStatus runDriven(Arguments arguments) {
-        FILE* report = fopen(arguments.reportPath, "w");
+        FILE* report = openReport(arguments.reportPath);
         if (report is null) {
             StartupError(null, "cannot open the report file", arguments.reportPath).report(arguments.program);
             return ExitStatus.failed;
@@ -573,7 +576,7 @@ struct Session {
             drive.start(arguments.drive.name.ptr, arguments.drive.actions, report, config.mouseTurnPerCount.value);
             ExitStatus status = runWindow(arguments);
             drive.finish();
-            fclose(report);
+            closeReport(report);
             if (drive.isFailed) {
                 return ExitStatus.failed;
             } else {
@@ -609,7 +612,8 @@ struct Session {
     }
 
     ExitStatus runWindow(Arguments arguments) {
-        if (!openWindow()) {
+        ExitStatus opened = openWindow();
+        if (opened != ExitStatus.ok) {
             StartupError(null, WINDOW_REQUIREMENT, null).report(arguments.program);
             return ExitStatus.failed;
         } else {
@@ -644,8 +648,8 @@ struct Session {
     }
 
     version (OSX) {
-        bool openWindow() {
-            return window.open(WINDOW_WIDTH, WINDOW_HEIGHT);
+        ExitStatus openWindow() {
+            return exitStatus(window.open(WINDOW_WIDTH, WINDOW_HEIGHT));
         }
 
         SurfaceSource surfaceSource() const {
@@ -714,14 +718,14 @@ struct Session {
             window.setTitle(title);
         }
 
-        bool handleThrowKey(KeySym symbol, KeyStroke press) {
+        bool isThrowKey(KeySym symbol, KeyStroke press) const {
             return false;
         }
     } else {
-        bool openWindow() {
+        ExitStatus openWindow() {
             display = XOpenDisplay(null);
             if (display is null) {
-                return false;
+                return ExitStatus.failed;
             } else {
                 screen = XDefaultScreen(display);
                 window = XCreateSimpleWindow(display, XRootWindow(display, screen), 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT, 0, XBlackPixel(display, screen), XBlackPixel(display, screen));
@@ -735,14 +739,14 @@ struct Session {
                 invisibleCursor = XCreatePixmapCursor(display, bitmap, bitmap, &black, &black, 0, 0);
                 XFreePixmap(display, bitmap);
                 keysDown.cover(KEYCODE_COUNT);
-                if (!selectRawPointer()) {
+                ExitStatus selected = selectRawPointer();
+                if (selected != ExitStatus.ok) {
                     closeWindow();
-                    return false;
                 } else {
                     XMapWindow(display, window);
                     XFlush(display);
-                    return true;
                 }
+                return selected;
             }
         }
 
@@ -750,24 +754,25 @@ struct Session {
             return SurfaceSource(display, window);
         }
 
-        bool selectRawPointer() {
+        ExitStatus selectRawPointer() {
             int firstEvent;
             int firstError;
-            if (XQueryExtension(display, "XInputExtension", &pointer.opcode, &firstEvent, &firstError) == 0) {
-                return false;
+            int found = XQueryExtension(display, "XInputExtension", &pointer.opcode, &firstEvent, &firstError);
+            if (found == 0) {
+                return ExitStatus.failed;
             } else {
                 int major = XI_REQUIRED_MAJOR;
                 int minor = XI_REQUIRED_MINOR;
                 int versionStatus = XIQueryVersion(display, &major, &minor);
                 if (versionStatus != Success || !isXInputVersionSufficient(major, minor)) {
-                    return false;
+                    return ExitStatus.failed;
                 } else {
                     ubyte[XI_MASK_BYTES] mask = 0;
                     setEventBit(mask[], XI_RawMotion);
                     setEventBit(mask[], XI_DeviceChanged);
                     XIEventMask eventMask = XIEventMask(XIAllMasterDevices, cast(int) mask.length, mask.ptr);
                     XISelectEvents(display, XRootWindow(display, screen), &eventMask, 1);
-                    return true;
+                    return ExitStatus.ok;
                 }
             }
         }
@@ -840,7 +845,8 @@ struct Session {
 
         void handleGenericEvent(XGenericEventCookie* cookie) {
             if (cookie.extension == pointer.opcode) {
-                if (XGetEventData(display, cookie) != 0) {
+                int loaded = XGetEventData(display, cookie);
+                if (loaded != 0) {
                     if (cookie.evtype == XI_RawMotion) {
                         handleRawMotion(cast(const(XIRawEvent)*) cookie.data);
                     } else if (cookie.evtype == XI_DeviceChanged) {
@@ -878,12 +884,14 @@ struct Session {
         }
 
         void pollEvents() {
-            while (XPending(display) > 0) {
+            int pending = XPending(display);
+            while (pending > 0) {
                 XEvent event;
                 XNextEvent(display, &event);
                 if (!isDriven || event.type == ClientMessage) {
                     processEvent(&event);
                 }
+                pending = XPending(display);
             }
         }
 
@@ -891,13 +899,8 @@ struct Session {
             XStoreName(display, window, title);
         }
 
-        bool handleThrowKey(KeySym symbol, KeyStroke press) {
-            if (symbol == XK_t && press == KeyStroke.first) {
-                game.throwBlock();
-                return true;
-            } else {
-                return false;
-            }
+        bool isThrowKey(KeySym symbol, KeyStroke press) const {
+            return symbol == XK_t && press == KeyStroke.first;
         }
     }
 
@@ -951,7 +954,9 @@ struct Session {
             switchWorld(WorldStep.previous);
         } else if (symbol == XK_bracketright && press == KeyStroke.first && !isRecording) {
             switchWorld(WorldStep.next);
-        } else if (!handleThrowKey(symbol, press)) {
+        } else if (isThrowKey(symbol, press)) {
+            game.throwBlock();
+        } else {
             pressMovementKey(symbol);
         }
     }
@@ -1115,7 +1120,7 @@ void pauseUntilFrameEnd(double frameStart) {
 }
 
 ExitStatus renderScreenshot(Arguments arguments) {
-    FILE* report = fopen(arguments.reportPath, "w");
+    FILE* report = openReport(arguments.reportPath);
     if (report is null) {
         StartupError(null, "cannot open the report file", arguments.reportPath).report(arguments.program);
         return ExitStatus.failed;
@@ -1139,14 +1144,15 @@ ExitStatus renderScreenshot(Arguments arguments) {
             game.release();
         }
         free(renderer);
-        fclose(report);
+        closeReport(report);
         return status;
     }
 }
 
 ExitStatus captureScreenshot(Arguments arguments, FILE* report, ref Renderer renderer, ref Game game) {
     Script script = Script.make(&game, report);
-    if (script.run(arguments.view.run) != ExitStatus.ok) {
+    ExitStatus ran = script.run(arguments.view.run);
+    if (ran != ExitStatus.ok) {
         fprintf(report, "screenshot: not taken, the view failed\n");
         return ExitStatus.failed;
     } else {
@@ -1217,12 +1223,14 @@ struct FilmRoll {
 
 void filmFrame(ref Script script, void* context) {
     FilmRoll* roll = cast(FilmRoll*) context;
-    if (roll.frame.render() != ExitStatus.ok) {
+    ExitStatus settled = roll.frame.render();
+    if (settled != ExitStatus.ok) {
         roll.failures += 1;
     }
     char[PATH_CAPACITY] path;
     snprintf(path.ptr, path.length, "%s/frame%05u.png", roll.directory, roll.written);
-    if (!writePng(path.ptr, FILM_WIDTH, FILM_HEIGHT, roll.frame.renderer.capture())) {
+    ExitStatus written = exitStatus(writePng(path.ptr, FILM_WIDTH, FILM_HEIGHT, roll.frame.renderer.capture()));
+    if (written != ExitStatus.ok) {
         fprintf(roll.frame.report, "film: could not write %s\n", path.ptr);
         roll.failures += 1;
     }
@@ -1230,7 +1238,7 @@ void filmFrame(ref Script script, void* context) {
 }
 
 ExitStatus renderFilm(Arguments arguments) {
-    FILE* report = fopen(arguments.reportPath, "w");
+    FILE* report = openReport(arguments.reportPath);
     if (report is null) {
         StartupError(null, "cannot open the report file", arguments.reportPath).report(arguments.program);
         return ExitStatus.failed;
@@ -1255,7 +1263,7 @@ ExitStatus renderFilm(Arguments arguments) {
             game.release();
         }
         free(renderer);
-        fclose(report);
+        closeReport(report);
         return status;
     }
 }
@@ -1266,7 +1274,8 @@ ExitStatus filmShots(Arguments arguments, FILE* report, ref Renderer renderer, r
         size_t before = roll.written;
         Script script = Script.make(&game, report);
         script.camera = StepHook(&filmFrame, &roll);
-        if (script.run(shot.run) != ExitStatus.ok) {
+        ExitStatus ran = script.run(shot.run);
+        if (ran != ExitStatus.ok) {
             roll.failures += 1;
         }
         fprintf(report, "%.*s: %zu frames\n", cast(int) shot.name.length, shot.name.ptr, roll.written - before);
@@ -1297,7 +1306,7 @@ struct RenderBreakdown {
 }
 
 ExitStatus benchLoad(Arguments arguments) {
-    FILE* report = fopen(arguments.reportPath, "w");
+    FILE* report = openReport(arguments.reportPath);
     if (report is null) {
         StartupError(null, "cannot open the report file", arguments.reportPath).report(arguments.program);
         return ExitStatus.failed;
@@ -1313,7 +1322,7 @@ ExitStatus benchLoad(Arguments arguments) {
             renderer.cleanup();
         }
         free(renderer);
-        fclose(report);
+        closeReport(report);
         return status;
     }
 }
@@ -1929,7 +1938,7 @@ uint shellAt(Point!float eye, Point!float center) {
 }
 
 bool isSingleFill(ref const Graph graph, uint slot) {
-    const(Chunk)* first = graph.chunks.at(ChunkSlot(slot, Corner.c0));
+    const(Chunk)* first = graph.chunks.at(ChunkSlot(slot, Corner.first));
     uint corner = 0;
     while (corner < CORNER_COUNT && isFilledLike(graph.chunks.at(ChunkSlot(slot, cast(Corner) corner)), first)) {
         corner += 1;
@@ -2023,7 +2032,7 @@ extern (C) int main(int argc, char** argv) {
         arguments.error.report(argv[0]);
         return ExitStatus.usage;
     } else if (arguments.kind == RunKind.help) {
-        printf("%s", USAGE.ptr);
+        printf("%.*s", cast(int) USAGE.length, USAGE.ptr);
         return ExitStatus.ok;
     } else if (arguments.kind == RunKind.showVersion) {
         printf("mined %s\n", VERSION.ptr);

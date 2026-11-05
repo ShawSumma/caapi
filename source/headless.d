@@ -1,12 +1,11 @@
 module headless;
 
-import core.stdc.stdio : FILE, fclose, fflush, fopen, fprintf, printf;
-import core.stdc.string : strcmp, strlen;
+import core.stdc.stdio : FILE, fflush, fprintf, printf;
 import base.array : Array;
 import base.clock : nowSeconds;
 import base.crash : reportCrashes, reportHangAfter;
 import base.maybe : Maybe;
-import client.arguments : ExitStatus, FlagValue, StartupError, VERSION, WorldgenArgument, exitStatus, numberIn;
+import client.arguments : ArgumentCursor, ExitStatus, HELP_OPTION, OUTPUT_OPTION, OptionSpec, StartupError, VERSION, VERSION_OPTION, WORLDGEN_OPTION, WorldgenArgument, closeReport, exitStatus, numberIn, openReport, optionNamed, parseOptions, sliceOf, usageOf;
 import client.config : ClientConfig;
 import client.game : ChunkSupply, Game;
 import client.plugins : registry;
@@ -25,40 +24,70 @@ enum float DEFAULT_NEARBY_RADIUS = 4.5f;
 enum uint DEFAULT_NEARBY_ITERATIONS = 50;
 enum int DEFAULT_SLICE_HEIGHT = 1;
 enum uint TEST_HANG_SECONDS = 120;
-enum string USAGE = "usage: mined-headless --out <report> --tests [name prefix ...]
-       mined-headless --out <report> [--worldgen <world>] <command> [radius] [iterations]
-  --worldgen terrain | plane <tilt in degrees> | structure <world>
-commands:
-  --tests [name prefix ...]   run the behavior tests (all, or those whose names start with a prefix)
-  --views [name prefix ...]   run the screenshot view scripts without rendering, to check they still run
-  --films [name prefix ...]   run the film shots without rendering, to check they still run
-  --world-digest, --dump-world, --material-census, --surface-census [radius]
-  --dump-structure, --check-repaint, --check-forget, --slice [height]   (need --worldgen structure <world>)
-  --bench-gen [radius], --bench-mesh [radius], --bench-drive [radius]
-  --bench-nearby [radius] [iterations], --bench-hashmap
-  --help, --version
-";
+enum string USAGE = "usage: mined-headless [options] <command> [name prefix ...]\noptions:\n" ~ usageOf(OPTIONS[]) ~ "commands:\n" ~ usageOf(COMMANDS[]);
 
-enum Command : ubyte {
-    none,
+enum Option : ubyte {
+    worldgen,
+    output,
+    radius,
+    iterations,
+    height,
     help,
     showVersion,
+}
+
+immutable OptionSpec[Option.max + 1] OPTIONS = [
+    Option.worldgen: WORLDGEN_OPTION,
+    Option.output: OUTPUT_OPTION,
+    Option.radius: OptionSpec("--radius", "<units>", "how far a census, dump or benchmark reaches"),
+    Option.iterations: OptionSpec("--iterations", "<count>", "how many times bench-nearby runs"),
+    Option.height: OptionSpec("--height", "<cells>", "the height slice prints"),
+    Option.help: HELP_OPTION,
+    Option.showVersion: VERSION_OPTION,
+];
+
+enum Command : ubyte {
     tests,
     views,
     films,
-    dumpWorld,
     worldDigest,
+    dumpWorld,
     materialCensus,
     surfaceCensus,
     dumpStructure,
-    slices,
+    slice,
     checkRepaint,
     checkForget,
     benchGen,
+    benchMesh,
     benchDrive,
     benchNearby,
-    benchMesh,
     benchHashMap,
+}
+
+immutable OptionSpec[Command.max + 1] COMMANDS = [
+    Command.tests: OptionSpec("tests", "", "run the behavior tests (all, or those whose names start with a prefix)"),
+    Command.views: OptionSpec("views", "", "run the screenshot view scripts without rendering, to check they still run"),
+    Command.films: OptionSpec("films", "", "run the film shots without rendering, to check they still run"),
+    Command.worldDigest: OptionSpec("world-digest", "", "hash the terrain world"),
+    Command.dumpWorld: OptionSpec("dump-world", "", "print the terrain world"),
+    Command.materialCensus: OptionSpec("material-census", "", "count the terrain world's materials"),
+    Command.surfaceCensus: OptionSpec("surface-census", "", "count the terrain world's surfaces"),
+    Command.dumpStructure: OptionSpec("dump-structure", "", "print a structure world"),
+    Command.slice: OptionSpec("slice", "", "print slices of a structure world"),
+    Command.checkRepaint: OptionSpec("check-repaint", "", "check a dropped tile repaints identically"),
+    Command.checkForget: OptionSpec("check-forget", "", "check evicted structure state regenerates identically"),
+    Command.benchGen: OptionSpec("bench-gen", "", "benchmark generation"),
+    Command.benchMesh: OptionSpec("bench-mesh", "", "benchmark meshing"),
+    Command.benchDrive: OptionSpec("bench-drive", "", "benchmark driving through the world"),
+    Command.benchNearby: OptionSpec("bench-nearby", "", "benchmark the nearby traversal"),
+    Command.benchHashMap: OptionSpec("bench-hashmap", "", "benchmark the hash map"),
+];
+
+enum RunKind : ubyte {
+    command,
+    help,
+    showVersion,
 }
 
 struct HeadlessArguments {
@@ -68,120 +97,88 @@ struct HeadlessArguments {
     Worldgen worldgen;
     Maybe!float radius;
     Maybe!float iterations;
-    Command command;
+    Maybe!float height;
+    Maybe!Command command;
+    RunKind kind;
 
     static HeadlessArguments fromArgv(int argc, char** argv) {
         HeadlessArguments arguments;
-        int index = 1;
-        while (index < argc && !arguments.error.isPresent()) {
-            index = arguments.parseAt(argc, argv, index);
-        }
-        if (!arguments.error.isPresent()) {
-            arguments.error = arguments.usageError();
-        }
+        arguments.parseOptions!Option(OPTIONS[], argc, argv);
         return arguments;
     }
 
-    int parseAt(int argc, char** argv, int index) {
-        const(char)* argument = argv[index];
-        Maybe!float number = numberIn(argument);
-        if (strcmp(argument, "--out") == 0) {
-            FlagValue value = FlagValue.fromArgv(argc, argv, index);
-            outputPath = value.text;
-            error = value.error;
-            return index + 2;
-        } else if (strcmp(argument, "--worldgen") == 0) {
-            WorldgenArgument parsed = WorldgenArgument.fromArgv(argc, argv, index);
-            worldgen = parsed.worldgen;
-            error = parsed.error;
-            return index + parsed.consumed;
-        } else if (strcmp(argument, "--tests") == 0) {
-            command = Command.tests;
-            return index + 1;
-        } else if (strcmp(argument, "--views") == 0) {
-            command = Command.views;
-            return index + 1;
-        } else if (strcmp(argument, "--films") == 0) {
-            command = Command.films;
-            return index + 1;
-        } else if (strcmp(argument, "--dump-world") == 0) {
-            command = Command.dumpWorld;
-            return index + 1;
-        } else if (strcmp(argument, "--world-digest") == 0) {
-            command = Command.worldDigest;
-            return index + 1;
-        } else if (strcmp(argument, "--material-census") == 0) {
-            command = Command.materialCensus;
-            return index + 1;
-        } else if (strcmp(argument, "--surface-census") == 0) {
-            command = Command.surfaceCensus;
-            return index + 1;
-        } else if (strcmp(argument, "--dump-structure") == 0) {
-            command = Command.dumpStructure;
-            return index + 1;
-        } else if (strcmp(argument, "--slice") == 0) {
-            command = Command.slices;
-            return index + 1;
-        } else if (strcmp(argument, "--check-repaint") == 0) {
-            command = Command.checkRepaint;
-            return index + 1;
-        } else if (strcmp(argument, "--check-forget") == 0) {
-            command = Command.checkForget;
-            return index + 1;
-        } else if (strcmp(argument, "--bench-gen") == 0) {
-            command = Command.benchGen;
-            return index + 1;
-        } else if (strcmp(argument, "--bench-drive") == 0) {
-            command = Command.benchDrive;
-            return index + 1;
-        } else if (strcmp(argument, "--bench-nearby") == 0) {
-            command = Command.benchNearby;
-            return index + 1;
-        } else if (strcmp(argument, "--bench-mesh") == 0) {
-            command = Command.benchMesh;
-            return index + 1;
-        } else if (strcmp(argument, "--bench-hashmap") == 0) {
-            command = Command.benchHashMap;
-            return index + 1;
-        } else if (strcmp(argument, "--help") == 0) {
-            command = Command.help;
-            return argc;
-        } else if (strcmp(argument, "--version") == 0) {
-            command = Command.showVersion;
-            return argc;
-        } else if ((command == Command.tests || command == Command.views || command == Command.films) && argument[0] != '-') {
-            prefixes.append(argument);
-            return index + 1;
-        } else if (number.exists && !radius.exists) {
-            radius = number;
-            return index + 1;
-        } else if (number.exists && !iterations.exists) {
-            iterations = number;
-            return index + 1;
-        } else if (number.exists) {
-            error = StartupError(null, "too many numbers, unexpected", argument);
-            return index + 1;
-        } else {
-            error = StartupError(null, "unknown argument", argument);
-            return index + 1;
+    void apply(Option option, ref ArgumentCursor cursor) {
+        final switch (option) {
+            case Option.worldgen:
+                parseWorldgen(cursor);
+                break;
+            case Option.output:
+                outputPath = cursor.next();
+                break;
+            case Option.radius:
+                radius = number(option, cursor.next());
+                break;
+            case Option.iterations:
+                iterations = number(option, cursor.next());
+                break;
+            case Option.height:
+                height = number(option, cursor.next());
+                break;
+            case Option.help:
+                kind = RunKind.help;
+                cursor.stop();
+                break;
+            case Option.showVersion:
+                kind = RunKind.showVersion;
+                cursor.stop();
+                break;
         }
     }
 
+    void applyPositional(const(char)* argument) {
+        if (argument[0] == '-') {
+            error = StartupError(null, "unknown option", argument);
+        } else if (!command.exists) {
+            command = optionNamed!Command(COMMANDS[], sliceOf(argument));
+            if (!command.exists) {
+                error = StartupError(null, "unknown command", argument);
+            }
+        } else if (takesPrefixes()) {
+            prefixes.append(argument);
+        } else {
+            error = StartupError(null, "unexpected", argument);
+        }
+    }
+
+    void parseWorldgen(ref ArgumentCursor cursor) {
+        WorldgenArgument parsed = WorldgenArgument.from(cursor);
+        worldgen = parsed.worldgen;
+        error = parsed.error;
+    }
+
+    Maybe!float number(Option option, const(char)* text) {
+        Maybe!float parsed = numberIn(text);
+        if (!parsed.exists) {
+            error = StartupError(null, "needs a number, got", text, OPTIONS[option].name);
+        }
+        return parsed;
+    }
+
+    bool takesPrefixes() const {
+        return command.value == Command.tests || command.value == Command.views || command.value == Command.films;
+    }
+
+    bool needsStructure() const {
+        return command.value == Command.dumpStructure || command.value == Command.slice || command.value == Command.checkRepaint || command.value == Command.checkForget;
+    }
+
     StartupError usageError() const {
-        if (command == Command.help || command == Command.showVersion) {
+        if (kind != RunKind.command) {
             return StartupError.init;
-        } else if (outputPath is null) {
-            return StartupError(null, "needs a report file", "--out");
-        } else if (command == Command.none) {
-            return StartupError(null, "nothing to do: give a command after", "--out");
-        } else if (command == Command.dumpStructure && worldgen.kind != WorldgenKind.structure) {
-            return StartupError(registry().allNames(), "needs --worldgen structure <name>", "--dump-structure");
-        } else if (command == Command.checkRepaint && worldgen.kind != WorldgenKind.structure) {
-            return StartupError(registry().allNames(), "needs --worldgen structure <name>", "--check-repaint");
-        } else if (command == Command.checkForget && worldgen.kind != WorldgenKind.structure) {
-            return StartupError(registry().allNames(), "needs --worldgen structure <name>", "--check-forget");
-        } else if (command == Command.slices && worldgen.kind != WorldgenKind.structure) {
-            return StartupError(registry().allNames(), "needs --worldgen structure <name>", "--slice");
+        } else if (!command.exists) {
+            return StartupError(null, "nothing to do: give a command");
+        } else if (needsStructure() && worldgen.kind != WorldgenKind.structure) {
+            return StartupError(registry().allNames(), "needs a structure world", null, COMMANDS[command.value].name);
         } else {
             return StartupError.init;
         }
@@ -190,9 +187,9 @@ struct HeadlessArguments {
     float commandRadius() const {
         if (radius.exists) {
             return radius.value;
-        } else if (command == Command.dumpWorld || command == Command.worldDigest || command == Command.materialCensus || command == Command.surfaceCensus) {
+        } else if (command.value == Command.dumpWorld || command.value == Command.worldDigest || command.value == Command.materialCensus || command.value == Command.surfaceCensus) {
             return DEFAULT_DUMP_RADIUS;
-        } else if (command == Command.benchNearby) {
+        } else if (command.value == Command.benchNearby) {
             return DEFAULT_NEARBY_RADIUS;
         } else {
             return DEFAULT_GEN_RADIUS;
@@ -200,8 +197,8 @@ struct HeadlessArguments {
     }
 
     int sliceHeight() const {
-        if (radius.exists) {
-            return cast(int) radius.value;
+        if (height.exists) {
+            return cast(int) height.value;
         } else {
             return DEFAULT_SLICE_HEIGHT;
         }
@@ -218,15 +215,14 @@ struct HeadlessArguments {
 
 bool isChosen(ref const HeadlessArguments arguments, string name) {
     size_t index = 0;
-    while (index < arguments.prefixes.length && !isPrefixOf(arguments.prefixes.ptr[index], name)) {
+    while (index < arguments.prefixes.length && !isPrefixOf(sliceOf(arguments.prefixes.ptr[index]), name)) {
         index += 1;
     }
     return arguments.prefixes.length == 0 || index < arguments.prefixes.length;
 }
 
-bool isPrefixOf(const(char)* prefix, string name) {
-    size_t length = strlen(prefix);
-    return length <= name.length && name[0 .. length] == prefix[0 .. length];
+bool isPrefixOf(const(char)[] prefix, string name) {
+    return prefix.length <= name.length && name[0 .. prefix.length] == prefix;
 }
 
 ExitStatus runTest(ref const NamedScript test, Worldgen worldgen, FILE* report) {
@@ -262,7 +258,8 @@ immutable(char)* sessionSuffix(ExitStatus status) {
 ExitStatus runFilms(ref const HeadlessArguments arguments, FILE* report) {
     ExitStatus status = ExitStatus.ok;
     foreach (ref film; FILMS) {
-        if (runScripts(arguments, film.shots, report) != ExitStatus.ok) {
+        ExitStatus ran = runScripts(arguments, film.shots, report);
+        if (ran != ExitStatus.ok) {
             status = ExitStatus.failed;
         }
     }
@@ -274,7 +271,8 @@ ExitStatus runScripts(ref const HeadlessArguments arguments, const(NamedScript)[
     uint failed = 0;
     foreach (ref test; scripts) {
         if (arguments.isChosen(test.name)) {
-            if (runTest(test, arguments.worldgen, report) == ExitStatus.ok) {
+            ExitStatus ran = runTest(test, arguments.worldgen, report);
+            if (ran == ExitStatus.ok) {
                 passed += 1;
             } else {
                 failed += 1;
@@ -285,58 +283,70 @@ ExitStatus runScripts(ref const HeadlessArguments arguments, const(NamedScript)[
     return exitStatus(failed == 0);
 }
 
-ExitStatus runWorldCommand(ref const HeadlessArguments arguments, FILE* output) {
-    if (arguments.command == Command.tests) {
-        return runScripts(arguments, TESTS, output);
-    } else if (arguments.command == Command.views) {
-        return runScripts(arguments, VIEWS, output);
-    } else if (arguments.command == Command.films) {
-        return runFilms(arguments, output);
-    } else if (arguments.command == Command.dumpStructure) {
-        return dumpStructure(output, CHUNK_DIMENSION, arguments.worldgen);
-    } else if (arguments.command == Command.slices) {
-        return printSlices(output, CHUNK_DIMENSION, arguments.worldgen, arguments.sliceHeight());
-    } else if (arguments.command == Command.checkRepaint) {
-        return checkRepaint(output, CHUNK_DIMENSION, arguments.worldgen);
-    } else if (arguments.command == Command.checkForget) {
-        return checkForget(output, CHUNK_DIMENSION, arguments.worldgen);
-    } else {
-        runMeasurement(arguments, output);
-        return ExitStatus.ok;
-    }
-}
-
-void runMeasurement(ref const HeadlessArguments arguments, FILE* output) {
+ExitStatus runCommand(ref const HeadlessArguments arguments, FILE* output) {
     float radius = arguments.commandRadius();
-    if (arguments.command == Command.dumpWorld) {
-        dumpWorld(output, radius, CHUNK_DIMENSION);
-    } else if (arguments.command == Command.worldDigest) {
-        printWorldDigest(output, radius, CHUNK_DIMENSION);
-    } else if (arguments.command == Command.materialCensus) {
-        printMaterialCensus(output, radius, CHUNK_DIMENSION);
-    } else if (arguments.command == Command.surfaceCensus) {
-        printSurfaceCensus(output, radius, CHUNK_DIMENSION);
-    } else if (arguments.command == Command.benchGen) {
-        benchGen(output, radius, CHUNK_DIMENSION);
-    } else if (arguments.command == Command.benchDrive) {
-        benchDrive(output, radius, CHUNK_DIMENSION);
-    } else if (arguments.command == Command.benchMesh) {
-        benchMesh(output, radius, CHUNK_DIMENSION);
-    } else if (arguments.command == Command.benchHashMap) {
-        benchHashMap(output);
-    } else {
-        benchNearby(output, radius, arguments.iterationCount(), CHUNK_DIMENSION);
+    ExitStatus status = ExitStatus.ok;
+    final switch (arguments.command.value) {
+        case Command.tests:
+            status = runScripts(arguments, TESTS, output);
+            break;
+        case Command.views:
+            status = runScripts(arguments, VIEWS, output);
+            break;
+        case Command.films:
+            status = runFilms(arguments, output);
+            break;
+        case Command.worldDigest:
+            printWorldDigest(output, radius, CHUNK_DIMENSION);
+            break;
+        case Command.dumpWorld:
+            dumpWorld(output, radius, CHUNK_DIMENSION);
+            break;
+        case Command.materialCensus:
+            printMaterialCensus(output, radius, CHUNK_DIMENSION);
+            break;
+        case Command.surfaceCensus:
+            printSurfaceCensus(output, radius, CHUNK_DIMENSION);
+            break;
+        case Command.dumpStructure:
+            status = dumpStructure(output, CHUNK_DIMENSION, arguments.worldgen);
+            break;
+        case Command.slice:
+            status = printSlices(output, CHUNK_DIMENSION, arguments.worldgen, arguments.sliceHeight());
+            break;
+        case Command.checkRepaint:
+            status = checkRepaint(output, CHUNK_DIMENSION, arguments.worldgen);
+            break;
+        case Command.checkForget:
+            status = checkForget(output, CHUNK_DIMENSION, arguments.worldgen);
+            break;
+        case Command.benchGen:
+            benchGen(output, radius, CHUNK_DIMENSION);
+            break;
+        case Command.benchMesh:
+            benchMesh(output, radius, CHUNK_DIMENSION);
+            break;
+        case Command.benchDrive:
+            benchDrive(output, radius, CHUNK_DIMENSION);
+            break;
+        case Command.benchNearby:
+            benchNearby(output, radius, arguments.iterationCount(), CHUNK_DIMENSION);
+            break;
+        case Command.benchHashMap:
+            benchHashMap(output);
+            break;
     }
+    return status;
 }
 
 ExitStatus runWithOutput(ref const HeadlessArguments arguments, const(char)* program) {
-    FILE* output = fopen(arguments.outputPath, "w");
+    FILE* output = openReport(arguments.outputPath);
     if (output is null) {
         StartupError(null, "cannot open the report file", arguments.outputPath).report(program);
         return ExitStatus.failed;
     } else {
-        ExitStatus status = runWorldCommand(arguments, output);
-        fclose(output);
+        ExitStatus status = runCommand(arguments, output);
+        closeReport(output);
         return status;
     }
 }
@@ -345,10 +355,10 @@ ExitStatus startCommand(ref const HeadlessArguments arguments, const(char)* prog
     if (arguments.error.isPresent()) {
         arguments.error.report(program);
         return ExitStatus.usage;
-    } else if (arguments.command == Command.help) {
-        printf("%s", USAGE.ptr);
+    } else if (arguments.kind == RunKind.help) {
+        printf("%.*s", cast(int) USAGE.length, USAGE.ptr);
         return ExitStatus.ok;
-    } else if (arguments.command == Command.showVersion) {
+    } else if (arguments.kind == RunKind.showVersion) {
         printf("mined %s\n", VERSION.ptr);
         return ExitStatus.ok;
     } else {

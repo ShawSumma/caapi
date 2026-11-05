@@ -296,7 +296,7 @@ struct Horospheres {
 
     Face labelOf(uint index) const {
         if (index == ROOT) {
-            return Face.f0;
+            return Face.first;
         } else {
             return horosphere(index).label;
         }
@@ -525,7 +525,7 @@ uint groundNodeOf(ref GraphView view, uint slot, uint horosphere) {
     Plane carried = view.planeOfHorosphereIn(horosphere, current);
     float altitude = fabsf(carried.distanceTo(Point!float.origin()));
     while (altitude > DESCENT_ALTITUDE) {
-        Face lowest = Face.f0;
+        Face lowest = Face.first;
         float lowestAltitude = float.infinity;
         PlaneMeasure measured = carried.measure();
         double[FACE_COUNT] along = void;
@@ -1150,8 +1150,8 @@ bool isOnFootLine(ref const GraphView view, uint slot, uint horosphere) {
 }
 
 float edgeLineDistance() {
-    Vec4!float corner = (Corner.c0.cornerToNode * Point!float.origin()).v;
-    Vec4!float next = (Corner.c0.across[0].cornerToNode * Point!float.origin()).v;
+    Vec4!float corner = (Corner.first.cornerToNode * Point!float.origin()).v;
+    Vec4!float next = (Corner.first.across[0].cornerToNode * Point!float.origin()).v;
     Vec4!float edge = next + corner * corner.minkowski(next);
     Vec4!float along = edge * (1.0f / sqrtf(edge.minkowski(edge)));
     Vec4!float center = Point!float.origin().v;

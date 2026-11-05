@@ -254,7 +254,7 @@ SlotTouch[EDGE_NODES] aroundEdge(ref GraphView view, SlotTouch edge, ref const L
 }
 
 SiteFrame rootSite(uint anchor) {
-    return faceSite(anchor, Face.f0);
+    return faceSite(anchor, Face.first);
 }
 
 SiteFrame faceSite(uint node, Face label) {
@@ -700,8 +700,8 @@ Face firstSideAmong(ushort faces) {
 }
 
 uint anchorSlotOf(ref Graph graph) {
-    uint sky = graph.ensureNeighborSlot(graph.slotOf(ROOT_NODE), Face.f0);
-    return graph.ensureNeighborSlot(sky, firstSideAmong(ringFaces(Face.f0)));
+    uint sky = graph.ensureNeighborSlot(graph.slotOf(ROOT_NODE), Face.first);
+    return graph.ensureNeighborSlot(sky, firstSideAmong(ringFaces(Face.first)));
 }
 
 ulong anchorBits(ref const Graph graph, uint slot) {

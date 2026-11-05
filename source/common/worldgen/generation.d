@@ -199,7 +199,7 @@ struct NodeState {
     static NodeState uncalmed(ref GraphView view, uint slot) {
         ParentList parents = view.parents(slot);
         if (parents.count == 0) {
-            return NodeState(Plane.ofFace(Face.f0), Plane.ofFace(firstSideAmong(ringFaces(Face.f0))), NodeClimate.init);
+            return NodeState(Plane.ofFace(Face.first), Plane.ofFace(firstSideAmong(ringFaces(Face.first))), NodeClimate.init);
         } else {
             NodeClimate[MAX_PARENTS] climates;
             foreach (index, link; parents.links[0 .. parents.count]) {

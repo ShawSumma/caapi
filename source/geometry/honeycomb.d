@@ -5,46 +5,19 @@ import base.numbers : acoshAtCompileTime, asinhAtCompileTime, higherOf;
 import geometry.cube : AxisMap;
 import geometry.lorentz : Mat4, Motion, Normal, Point, Vec4;
 
+enum uint FACE_COUNT = 12;
+enum uint CORNER_COUNT = 20;
+
 enum Face : ubyte {
-    f0,
-    f1,
-    f2,
-    f3,
-    f4,
-    f5,
-    f6,
-    f7,
-    f8,
-    f9,
-    f10,
-    f11,
+    first,
+    last = FACE_COUNT - 1,
 }
 
 enum Corner : ubyte {
-    c0,
-    c1,
-    c2,
-    c3,
-    c4,
-    c5,
-    c6,
-    c7,
-    c8,
-    c9,
-    c10,
-    c11,
-    c12,
-    c13,
-    c14,
-    c15,
-    c16,
-    c17,
-    c18,
-    c19,
+    first,
+    last = CORNER_COUNT - 1,
 }
 
-enum uint FACE_COUNT = 12;
-enum uint CORNER_COUNT = 20;
 enum ubyte NO_CORNER = ubyte.max;
 enum double ORTHOGONAL_TOLERANCE = 1e-12;
 enum double GOLDEN = 1.6180339887498948482;

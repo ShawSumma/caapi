@@ -24,10 +24,11 @@ On macOS the build looks for the Vulkan loader and MoltenVK under `/opt/homebrew
 
 Build and run:
 
-    dub run -b release --compiler=ldc2
+```sh
+dub run -b release --compiler=ldc2
+```
 
-The plugins are built into `lib/` next to the executable before the engine itself, and the engine loads them
-from there. `dub run -b release --compiler=ldc2 -- --help` lists the options.
+The plugins are built into `lib/` next to the executable before the engine itself, and the engine loads them from there. `dub run -b release --compiler=ldc2 -- --help` lists the options.
 
 ## Playing
 
@@ -55,11 +56,12 @@ when it loads instead of misreading the engine's tables.
 
 ## Tests
 
-    dub test -q --compiler=ldc2
-    dub run -q -b release --compiler=ldc2 -c headless -- --tests --out /dev/stdout
+```sh
+dub test -q --compiler=ldc2
+dub run -q -b release --compiler=ldc2 -c headless -- tests
+```
 
-`dub run -q -b release --compiler=ldc2 -c headless -- --help` lists the world checks and benchmarks. `CLAUDE.md`
-describes the code's structure and the rules it keeps.
+`dub run -q -b release --compiler=ldc2 -c headless -- --help` lists the world checks and benchmarks. `CLAUDE.md` describes the code's structure and the rules it keeps.
 
 ## License
 

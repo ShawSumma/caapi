@@ -3,7 +3,7 @@ module pack;
 import core.stdc.stdio : fprintf, stderr;
 import base.array : Array;
 import base64 : encodeInto;
-import files : readFile, writeFile;
+import files : Outcome, readFile, writeFile;
 
 enum string WASM_FILE = "obj/web/mined.wasm";
 enum string CHECK_PAGE = "obj/web/check.html";
@@ -16,11 +16,6 @@ enum string SCRIPTS_MARK = "__SCRIPTS__";
 enum string WASM_START = "const MINED_WASM = \"";
 enum string WASM_END = "\";\n";
 
-enum ExitStatus : int {
-    ok,
-    failed,
-}
-
 size_t markIn(const(ubyte)[] shell) {
     size_t at = 0;
     while (at + SCRIPTS_MARK.length <= shell.length && cast(const(char)[]) shell[at .. at + SCRIPTS_MARK.length] != SCRIPTS_MARK) {
@@ -29,7 +24,7 @@ size_t markIn(const(ubyte)[] shell) {
     return at;
 }
 
-bool packPage(const(char)[] path, const(ubyte)[] shell, const(ubyte)[] encoded, const(char)[] script) {
+Outcome packPage(const(char)[] path, const(ubyte)[] shell, const(ubyte)[] encoded, const(char)[] script) {
     size_t mark = markIn(shell);
     assert(mark + SCRIPTS_MARK.length <= shell.length);
     Array!ubyte page;
@@ -37,28 +32,37 @@ bool packPage(const(char)[] path, const(ubyte)[] shell, const(ubyte)[] encoded, 
     page.appendAll(cast(const(ubyte)[]) WASM_START);
     page.appendAll(encoded);
     page.appendAll(cast(const(ubyte)[]) WASM_END);
-    if (readFile(GLUE_FILE, page) && readFile(script, page)) {
-        page.appendAll(shell[mark + SCRIPTS_MARK.length .. $]);
-        return writeFile(path, page.slice());
-    } else {
-        return false;
+    Outcome status = readFile(GLUE_FILE, page);
+    if (status == Outcome.done) {
+        status = readFile(script, page);
     }
+    if (status == Outcome.done) {
+        page.appendAll(shell[mark + SCRIPTS_MARK.length .. $]);
+        status = writeFile(path, page.slice());
+    }
+    return status;
 }
 
 extern (C) int main() {
     Array!ubyte wasm;
     Array!ubyte shell;
     Array!ubyte encoded;
-    if (!readFile(WASM_FILE, wasm) || !readFile(SHELL_FILE, shell)) {
+    Outcome read = readFile(WASM_FILE, wasm);
+    if (read == Outcome.done) {
+        read = readFile(SHELL_FILE, shell);
+    }
+    if (read == Outcome.failed) {
         fprintf(stderr, "cannot read the wasm file or the page shell\n");
-        return ExitStatus.failed;
+        return Outcome.failed;
     } else {
         encodeInto(wasm.slice(), encoded);
-        if (!packPage(GAME_PAGE, shell.slice(), encoded.slice(), PLAY_FILE) || !packPage(CHECK_PAGE, shell.slice(), encoded.slice(), CHECK_FILE)) {
-            fprintf(stderr, "cannot write the pages\n");
-            return ExitStatus.failed;
-        } else {
-            return ExitStatus.ok;
+        Outcome written = packPage(GAME_PAGE, shell.slice(), encoded.slice(), PLAY_FILE);
+        if (written == Outcome.done) {
+            written = packPage(CHECK_PAGE, shell.slice(), encoded.slice(), CHECK_FILE);
         }
+        if (written == Outcome.failed) {
+            fprintf(stderr, "cannot write the pages\n");
+        }
+        return written;
     }
 }
