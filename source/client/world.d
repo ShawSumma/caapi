@@ -40,7 +40,11 @@ enum float CAMERA_REACH = 2.0f;
 enum double STEP_BUDGET_MILLISECONDS = 8.0;
 enum double NEARBY_LEAST_MILLISECONDS = 1.0;
 enum double STREAMER_LEAST_MILLISECONDS = 1.0;
-enum size_t STRUCTURE_CANDIDATES = 256;
+version (WebAssembly) {
+    enum size_t STRUCTURE_CANDIDATES = 16;
+} else {
+    enum size_t STRUCTURE_CANDIDATES = 256;
+}
 enum double RECOVERY_BUDGET_MILLISECONDS = 8.0;
 enum float FOG_COLOR_RATE = 1.5f;
 enum float[3] SKY_SRGB = [0.55f, 0.7f, 0.94f];

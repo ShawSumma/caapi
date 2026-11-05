@@ -16,7 +16,11 @@ import geometry.lorentz : Motion, Point, Vec4;
 enum double NO_DEADLINE = double.infinity;
 enum uint NOT_COLLECTED = uint.max;
 enum size_t EXPAND_BATCH = 256;
-enum size_t PAINT_BATCH = 256;
+version (WebAssembly) {
+    enum size_t PAINT_BATCH = 16;
+} else {
+    enum size_t PAINT_BATCH = 256;
+}
 enum size_t DERIVE_BATCH = 64;
 enum double SHELL_FLOOR = 0.01;
 enum double SHELL_ROUNDING = 64 * float.epsilon;

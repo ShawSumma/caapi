@@ -1,13 +1,13 @@
 module client.structures;
 
 import core.stdc.math : asin, asinh, atan2, cos, cosh, sin, sinh, sqrt;
-import core.stdc.stdio : snprintf;
 import core.stdc.stdlib : free, malloc;
 import core.stdc.string : memcpy, strlen;
 import base.array : Array;
 import base.numbers : RADIANS_PER_DEGREE, clamped, higherOf;
 import base.parallel : Executor;
 import base.splitmix : SplitMix;
+import base.stdio : snprintf;
 import client.game : Game;
 import client.plugins : registry;
 import client.tiles : TileCall, TileCalls, TileSpan, TileWork, edgeKey, faceKey, isTiledBy, segmentKey;

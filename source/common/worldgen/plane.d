@@ -115,6 +115,10 @@ struct PlaneMeasure {
     double logScale;
     double scale;
 
+    double sinhDistanceTo(Point!float point) const {
+        return normal.minkowski(point.v.as!double()) * scale;
+    }
+
     float distanceTo(Point!float point) const {
         double value = normal.minkowski(point.v.as!double());
         if (logScale < LARGEST_DIRECT_SCALE) {

@@ -1,6 +1,8 @@
 #version 450
 
+#include "target.h"
 #include "common.h"
+#include "clip.h"
 
 const vec3 CORNERS[8] = vec3[](
     vec3(0, 0, 0), vec3(1, 0, 0), vec3(0, 1, 0), vec3(1, 1, 0),
@@ -16,13 +18,13 @@ const int EDGES[24] = int[](
 const vec3 VOXEL_CENTER = vec3(0.5);
 const float OUTLINE_SCALE = 1.01;
 
-layout(push_constant) uniform PushConstants {
-    mat4 model;
-    vec4 low;
-    vec4 high;
-};
+PUSH_BEGIN
+    PUSHED mat4 model;
+    PUSHED vec4 low;
+    PUSHED vec4 high;
+PUSH_END
 
 void main() {
-    vec3 c = VOXEL_CENTER + (CORNERS[EDGES[gl_VertexIndex]] - VOXEL_CENTER) * OUTLINE_SCALE;
-    gl_Position = projection * camera_inverse * model * vec4(mix(low.xyz, high.xyz, c), 1.0);
+    vec3 c = VOXEL_CENTER + (CORNERS[EDGES[VERTEX_INDEX]] - VOXEL_CENTER) * OUTLINE_SCALE;
+    place_clip(projection * camera_inverse * model * vec4(mix(low.xyz, high.xyz, c), 1.0));
 }

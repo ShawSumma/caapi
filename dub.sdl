@@ -20,7 +20,7 @@ configuration "application" {
 	dflags "-P-I/opt/homebrew/include" platform="osx"
 	libs "vulkan" "objc" platform="osx"
 	lflags "-L/opt/homebrew/lib" "-framework" "AppKit" "-framework" "QuartzCore" platform="osx"
-	preBuildCommands "mkdir -p source/shaders/spv" "glslc -I source/shaders source/shaders/voxels.vert -o source/shaders/spv/voxels.vert.spv" "glslc source/shaders/voxels.frag -o source/shaders/spv/voxels.frag.spv" "glslc source/shaders/fullscreen.vert -o source/shaders/spv/fullscreen.vert.spv" "glslc -I source/shaders source/shaders/fog.frag -o source/shaders/spv/fog.frag.spv" "glslc -I source/shaders source/shaders/highlight.vert -o source/shaders/spv/highlight.vert.spv" "glslc source/shaders/highlight.frag -o source/shaders/spv/highlight.frag.spv" "glslc -I source/shaders source/shaders/cull.comp -o source/shaders/spv/cull.comp.spv" "glslc source/shaders/crosshair.vert -o source/shaders/spv/crosshair.vert.spv" "glslc source/shaders/crosshair.frag -o source/shaders/spv/crosshair.frag.spv" "glslc source/shaders/hud.vert -o source/shaders/spv/hud.vert.spv" "glslc source/shaders/hud.frag -o source/shaders/spv/hud.frag.spv" "glslc -I source/shaders source/shaders/marker.vert -o source/shaders/spv/marker.vert.spv" "glslc source/shaders/marker.frag -o source/shaders/spv/marker.frag.spv"
+	preBuildCommands "mkdir -p source/shaders/spv" "glslc -I source/shaders source/shaders/voxels.vert -o source/shaders/spv/voxels.vert.spv" "glslc -I source/shaders source/shaders/voxels.frag -o source/shaders/spv/voxels.frag.spv" "glslc -I source/shaders source/shaders/fullscreen.vert -o source/shaders/spv/fullscreen.vert.spv" "glslc -I source/shaders source/shaders/fog.frag -o source/shaders/spv/fog.frag.spv" "glslc -I source/shaders source/shaders/highlight.vert -o source/shaders/spv/highlight.vert.spv" "glslc -I source/shaders source/shaders/highlight.frag -o source/shaders/spv/highlight.frag.spv" "glslc -I source/shaders source/shaders/cull.comp -o source/shaders/spv/cull.comp.spv" "glslc -I source/shaders source/shaders/crosshair.vert -o source/shaders/spv/crosshair.vert.spv" "glslc -I source/shaders source/shaders/crosshair.frag -o source/shaders/spv/crosshair.frag.spv" "glslc -I source/shaders source/shaders/hud.vert -o source/shaders/spv/hud.vert.spv" "glslc -I source/shaders source/shaders/hud.frag -o source/shaders/spv/hud.frag.spv" "glslc -I source/shaders source/shaders/marker.vert -o source/shaders/spv/marker.vert.spv" "glslc -I source/shaders source/shaders/marker.frag -o source/shaders/spv/marker.frag.spv"
 }
 
 configuration "headless" {
@@ -40,19 +40,40 @@ configuration "unittest" {
 subPackage {
 	name "web"
 	targetType "executable"
-	targetName "web-build"
+	targetName "mined"
 	targetPath "obj/web"
+	sourcePaths "web"
+	excludedSourceFiles "web/tool/*"
+	importPaths "." "source"
+	stringImportPaths "source/shaders"
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on" "-i" "--fvisibility=hidden" "--mattr=+bulk-memory,+nontrapping-fptoint,+sign-ext,+mutable-globals,+simd128"
+	lflags "--no-entry" "--stack-first" "-z" "stack-size=33554432" "--max-memory=4294901760" "--allow-undefined-file=web/imports.syms" "--export=_initialize" "--export=web_start" "--export=web_frame" "--export=web_resize" "--export=web_key_down" "--export=web_key_up" "--export=web_button" "--export=web_motion" "--export=web_capture" "/usr/lib/wasm32-wasi/crt1-reactor.o" "-L/usr/lib/wasm32-wasi" "-lc" "-lm"
+	extraDependencyFiles "web/glue.js" "web/play.js" "web/check.js" "web/shell.html" "web/imports.syms" "web/tool/pack.d" "web/tool/base64.d" "web/tool/files.d"
+	postBuildCommands "$DUB run -q --root=$PACKAGE_DIR --compiler=$DC :webpack"
+}
+
+subPackage {
+	name "webpack"
+	targetType "executable"
+	targetName "pack"
+	targetPath "obj/web/tool"
 	sourcePaths "web/tool"
-	importPaths "web/tool"
+	excludedSourceFiles "web/tool/drive.d"
+	sourceFiles "source/base/array.d"
+	importPaths "source" "web/tool"
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 }
 
 subPackage {
 	name "webdrive"
 	targetType "executable"
-	targetName "web-drive"
-	targetPath "obj/web"
-	sourcePaths "web/drive"
-	importPaths "web/drive"
+	targetName "drive"
+	targetPath "obj/web/tool"
+	sourcePaths "web/tool"
+	excludedSourceFiles "web/tool/pack.d"
+	sourceFiles "source/base/array.d"
+	importPaths "source" "web/tool"
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 }
 
 subPackage {

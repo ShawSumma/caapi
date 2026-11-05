@@ -1,63 +1,108 @@
 module web.renderer;
 
-import core.stdc.math : powf, sinhf;
+import core.stdc.stdlib : free;
 import base.allocator : NO_OFFSET, RangeAllocator;
 import base.array : Array, grownCapacity;
 import base.clock : nowMilliseconds;
 import base.maybe : Maybe;
-import base.numbers : RADIANS_PER_DEGREE;
 import base.parallel : ParallelJob;
 import base.slab : Slab;
-import base.units : Angle;
-import client.graphics.frustum : FRUSTUM_PLANE_COUNT, Frustum, kleinDepthScale;
+import client.graphics.frustum : FRUSTUM_PLANE_COUNT;
 import client.graphics.matrices : MATRIX_FLOATS, determinant, flatten, matrixMultiply;
+import client.graphics.uniforms : COLOR_CHANNELS, CommonUniforms, GLOW_WORDS, HighlightTarget, commonUniforms, findHighlightTarget, glowingMaterials, srgbToLinear;
 import client.graphics.voxels.textures : TEXTURE_LAYERS, TEXTURE_MIPS, TEXTURE_SIZE, makeTexturePixels;
 import client.hud : HudVertex, Marker;
 import client.meshing : MeshBatch, MeshRecord, Quad, meshJob;
-import client.world : FOG_SHARPNESS, LocalWorld, fogReach;
+import client.world : LocalWorld;
 import common.eviction : Unloaded;
-import common.graph : Graph;
-import common.material : MATERIAL_COUNT, isGlowing;
-import common.node : Chunk, ChunkLayout, ChunkSlot, ChunkState;
-import common.raycast.graph : GraphCastHit;
+import common.node : ChunkLayout, ChunkSlot;
 import common.traversal : NOT_COLLECTED, NearbyScratch;
-import core.stdc.stdlib : free;
-import geometry.honeycomb : CORNER_COUNT, CUBE_RADIUS, Corner, cubeCenter, cubeToNode;
-import geometry.lorentz : Motion, Normal, Point, Vec4;
+import geometry.honeycomb : CORNER_COUNT, Corner, cubeCenter, cubeToNode;
 import plugins.api.api : Material;
 import plugins.api.flags : Flags;
 
-enum Angle HALF_VERTICAL_FOV = Angle(cast(float)(45 * RADIANS_PER_DEGREE));
-enum float NEAR_PLANE = 1.0e-4f;
 enum double MESH_BUDGET_MILLISECONDS = 3.0;
-enum uint COLOR_CHANNELS = 3;
 enum uint POINT_FLOATS = 4;
 enum uint VERTICES_PER_FACE = 6;
-enum uint BITS_PER_WORD = 32;
-enum uint GLOW_WORDS = (MATERIAL_COUNT + BITS_PER_WORD - 1) / BITS_PER_WORD;
 enum uint INITIAL_FACE_CAPACITY = 2 ^^ 20;
 enum uint INITIAL_NODE_CAPACITY = 2 ^^ 12;
 enum uint NO_VERSION = uint.max;
 
-enum float SRGB_LINEAR_LIMIT = 0.04045f;
-enum float SRGB_LINEAR_SLOPE = 12.92f;
-enum float SRGB_OFFSET = 0.055f;
-enum float SRGB_GAMMA = 2.4f;
+enum string NATIVE_VERSION_LINE = "#version 450";
+enum string WEB_VERSION_LINE = "#version 300 es";
+enum string INCLUDE_START = "#include \"";
 
-struct CommonUniforms {
-    float[MATRIX_FLOATS] projection;
-    float[MATRIX_FLOATS] cameraInverse;
-    float[4][FRUSTUM_PLANE_COUNT] frustumPlanes;
-    float[4] fogColor;
-    float[4] sun;
-    float[4] eye;
-    float[2] halfTangents;
-    float depthScale;
-    float fogReach;
-    float fogSharpness;
-    float viewParity;
-    float cullSinhRadius;
+struct ShaderHeader {
+    string name;
+    string text;
 }
+
+immutable ShaderHeader[6] SHADER_HEADERS = [
+    ShaderHeader("target.h", import("target.h")),
+    ShaderHeader("common.h", import("common.h")),
+    ShaderHeader("draw.h", import("draw.h")),
+    ShaderHeader("face.h", import("face.h")),
+    ShaderHeader("clip.h", import("clip.h")),
+    ShaderHeader("depth.h", import("depth.h")),
+];
+
+string headerNamed()(string name) {
+    size_t index = 0;
+    while (index < SHADER_HEADERS.length && SHADER_HEADERS[index].name != name) {
+        index += 1;
+    }
+    assert(index < SHADER_HEADERS.length);
+    return SHADER_HEADERS[index].text;
+}
+
+string expanded()(string source) {
+    string result;
+    size_t start = 0;
+    while (start < source.length) {
+        size_t end = start;
+        while (end < source.length && source[end] != '\n') {
+            end += 1;
+        }
+        string line = source[start .. end];
+        if (line.length > INCLUDE_START.length && line[0 .. INCLUDE_START.length] == INCLUDE_START) {
+            result ~= expanded(headerNamed(line[INCLUDE_START.length .. $ - 1]));
+        } else {
+            result ~= line;
+            result ~= "\n";
+        }
+        start = end + 1;
+    }
+    return result;
+}
+
+string webShader()(string source) {
+    return WEB_VERSION_LINE ~ expanded(source[NATIVE_VERSION_LINE.length .. $]);
+}
+
+enum Program : uint {
+    voxels,
+    highlight,
+    marker,
+    fog,
+    crosshair,
+    hud,
+    present,
+}
+
+struct ProgramSource {
+    string vertex;
+    string fragment;
+}
+
+immutable ProgramSource[Program.max + 1] PROGRAM_SOURCES = [
+    Program.voxels: ProgramSource(webShader(import("voxels.vert")), webShader(import("voxels.frag"))),
+    Program.highlight: ProgramSource(webShader(import("highlight.vert")), webShader(import("highlight.frag"))),
+    Program.marker: ProgramSource(webShader(import("marker.vert")), webShader(import("marker.frag"))),
+    Program.fog: ProgramSource(webShader(import("fullscreen.vert")), webShader(import("fog.frag"))),
+    Program.crosshair: ProgramSource(webShader(import("crosshair.vert")), webShader(import("crosshair.frag"))),
+    Program.hud: ProgramSource(webShader(import("hud.vert")), webShader(import("hud.frag"))),
+    Program.present: ProgramSource(webShader(import("fullscreen.vert")), webShader(import("present.frag"))),
+];
 
 struct VisibleChunk {
     float[MATRIX_FLOATS] transform;
@@ -67,13 +112,8 @@ struct VisibleChunk {
     uint unused;
 }
 
-struct MarkerDraw {
-    float[MATRIX_FLOATS] model;
-    float half;
-    uint color;
-}
-
 extern (C) nothrow @nogc {
+    void web_gl_program(uint program, const(char)* vertex, uint vertexLength, const(char)* fragment, uint fragmentLength);
     void web_gl_setup(const(ubyte)* pixels, uint size, uint mips, uint layers, uint faceCapacity);
     void web_gl_grow_faces(uint capacity);
     void web_gl_upload_faces(uint offset, uint count, const(Quad)* faces);
@@ -82,16 +122,6 @@ extern (C) nothrow @nogc {
     void web_gl_highlight(const(float)* model, const(float)* low, const(float)* high);
     void web_gl_marker(const(float)* model, float half, uint color);
     void web_gl_finish(float widthOverHeight, const(HudVertex)* hud, uint hudVertices);
-}
-
-uint[GLOW_WORDS] glowingMaterials() {
-    uint[GLOW_WORDS] words = 0;
-    foreach (index; 0 .. MATERIAL_COUNT) {
-        if (isGlowing(cast(Material) index)) {
-            words[index / BITS_PER_WORD] |= 1u << (index % BITS_PER_WORD);
-        }
-    }
-    return words;
 }
 
 float minkowski(float[POINT_FLOATS] a, float[POINT_FLOATS] b) {
@@ -392,32 +422,10 @@ struct WebMeshes {
     }
 }
 
-float srgbToLinear(float encoded) {
-    if (encoded > SRGB_LINEAR_LIMIT) {
-        return powf((encoded + SRGB_OFFSET) / (1.0f + SRGB_OFFSET), SRGB_GAMMA);
-    } else {
-        return encoded / SRGB_LINEAR_SLOPE;
-    }
-}
-
-float parityOf(float value) {
-    if (value < 0) {
-        return -1.0f;
-    } else {
-        return 1.0f;
-    }
-}
-
-struct HighlightTarget {
-    float[MATRIX_FLOATS] model;
-    float[POINT_FLOATS] low = 0;
-    float[POINT_FLOATS] high = 0;
-}
-
 struct WebRenderer {
     WebMeshes meshes;
     Array!VisibleChunk visible;
-    float[COLOR_CHANNELS] fogLinear = [0, 0, 0];
+    float[4] fogLinear = [0, 0, 0, 1];
     uint width;
     uint height;
     uint worldEpoch = NO_VERSION;
@@ -427,6 +435,9 @@ struct WebRenderer {
         width = pixelsWide;
         height = pixelsHigh;
         meshes.setup(chunkDimension);
+        foreach (index, source; PROGRAM_SOURCES) {
+            web_gl_program(cast(uint) index, source.vertex.ptr, cast(uint) source.vertex.length, source.fragment.ptr, cast(uint) source.fragment.length);
+        }
         ubyte[] pixels = makeTexturePixels();
         web_gl_setup(pixels.ptr, TEXTURE_SIZE, TEXTURE_MIPS, TEXTURE_LAYERS, meshes.allocator.capacity);
         free(pixels.ptr);
@@ -439,33 +450,6 @@ struct WebRenderer {
 
     float aspect() const {
         return cast(float) width / cast(float) height;
-    }
-
-    CommonUniforms commonUniforms(ref const LocalWorld world) const {
-        Frustum frustum = Frustum.fromVerticalHalf(HALF_VERTICAL_FOV, aspect());
-        float[MATRIX_FLOATS] cameraInverse = flatten(world.cameraInNearbyFrame().inverse().m);
-        float[MATRIX_FLOATS] projection = frustum.projection(NEAR_PLANE);
-        Normal!float[FRUSTUM_PLANE_COUNT] planes = frustum.planes();
-        float[4][FRUSTUM_PLANE_COUNT] frustumPlanes;
-        foreach (i; 0 .. FRUSTUM_PLANE_COUNT) {
-            frustumPlanes[i] = planes[i].v.c;
-        }
-        Motion!float camera = world.cameraInNearbyFrame();
-        float[3] sunward = world.sunward;
-        return CommonUniforms(
-            projection,
-            cameraInverse,
-            frustumPlanes,
-            [fogLinear[0], fogLinear[1], fogLinear[2], 1],
-            (camera * Vec4!float([sunward[0], sunward[1], sunward[2], 1])).c,
-            (camera * Point!float.origin()).v.c,
-            [frustum.tanHalfWidth, frustum.tanHalfHeight],
-            kleinDepthScale(NEAR_PLANE),
-            fogReach(world.viewRadius()),
-            FOG_SHARPNESS,
-            parityOf(determinant(matrixMultiply(projection, cameraInverse))),
-            sinhf(CUBE_RADIUS),
-        );
     }
 
     void updateChunks(ref LocalWorld world) {
@@ -493,36 +477,18 @@ struct WebRenderer {
         backlog = cast(uint) world.graph.chunks.pending().length;
     }
 
-    Maybe!HighlightTarget findHighlightTarget(ref const LocalWorld world) const {
-        GraphCastHit hit = world.castCenterRay();
-        uint index = world.nearby[world.published].indexOf(world.graph.slotOf(hit.chunk.node));
-        if (!hit.isHit() || index == NOT_COLLECTED) {
-            return Maybe!HighlightTarget.init;
-        } else {
-            ChunkLayout layout = world.graph.layout;
-            ubyte[3] cell = hit.voxelCoords.c;
-            HighlightTarget target;
-            target.model = matrixMultiply(flatten(world.cachedNodes[index].transform.m), flatten(hit.chunk.corner.cubeToNode));
-            foreach (axis; 0 .. COLOR_CHANNELS) {
-                target.low[axis] = layout.gridToCube(cell[axis]);
-                target.high[axis] = layout.gridToCube(cell[axis] + 1);
-            }
-            return Maybe!HighlightTarget.of(target);
-        }
-    }
-
     void render(ref LocalWorld world, const(HudVertex)[] hudVertices, const(Marker)[] markers) {
         foreach (channel; 0 .. COLOR_CHANNELS) {
             fogLinear[channel] = srgbToLinear(world.fogColor[channel]);
         }
-        CommonUniforms uniforms = commonUniforms(world);
+        CommonUniforms uniforms = commonUniforms(world, fogLinear, aspect());
         updateChunks(world);
         meshes.collectVisible(uniforms, visible);
         web_gl_begin(&uniforms, CommonUniforms.sizeof, fogLinear[0], fogLinear[1], fogLinear[2]);
         uint[GLOW_WORDS] glowing = glowingMaterials();
         ChunkLayout layout = world.graph.layout;
         web_gl_voxels(visible.ptr, cast(uint) visible.length, layout.dimension, layout.cellRatio, glowing.ptr, Material.glass);
-        Maybe!HighlightTarget target = findHighlightTarget(world);
+        Maybe!HighlightTarget target = world.findHighlightTarget();
         if (target.exists) {
             web_gl_highlight(target.value.model.ptr, target.value.low.ptr, target.value.high.ptr);
         }

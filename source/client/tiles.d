@@ -1,7 +1,6 @@
 module client.tiles;
 
 import core.stdc.math : asin, asinh;
-import core.stdc.stdio : snprintf;
 import core.stdc.stdlib : calloc, free;
 import base.array : Array;
 import base.hashmap : HashMap;
@@ -10,6 +9,7 @@ import base.maybe : Maybe;
 import base.numbers : RADIANS_PER_DEGREE, clamped, higherOf, lowerOf;
 import base.parallel : Executor, ParallelJob;
 import base.splitmix : SplitMix;
+import base.stdio : snprintf;
 import client.structures : AHEAD, ACROSS, MESSAGE_CAPACITY, PenFrame, UP, axisOf, boxRefusal, engineRhythm, unitNormal, worldNamed;
 import common.graph : Graph, NO_SLOT, NodeId;
 import common.view : GraphView;

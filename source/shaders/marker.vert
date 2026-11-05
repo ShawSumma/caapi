@@ -1,6 +1,8 @@
 #version 450
 
+#include "target.h"
 #include "common.h"
+#include "clip.h"
 
 const float SRGB_POWER = 2.2;
 
@@ -18,15 +20,27 @@ const int TRIANGLES[36] = int[](
     1, 5, 7, 7, 3, 1
 );
 
-layout(location = 0) out vec3 shade;
+STAGE_LINK(0) out vec3 shade;
 
-layout(push_constant) uniform PushConstants {
-    mat4 model;
-    float half_side;
-    uint marker_color;
-};
+PUSH_BEGIN
+    PUSHED mat4 model;
+    PUSHED float half_side;
+    PUSHED uint marker_color;
+PUSH_END
+
+#ifdef GL_ES
+const float CHANNEL_MOST = 255.0;
+
+vec3 written_color() {
+    return vec3(float(marker_color & 255u), float((marker_color >> 8u) & 255u), float((marker_color >> 16u) & 255u)) / CHANNEL_MOST;
+}
+#else
+vec3 written_color() {
+    return unpackUnorm4x8(marker_color).rgb;
+}
+#endif
 
 void main() {
-    shade = pow(unpackUnorm4x8(marker_color).rgb, vec3(SRGB_POWER));
-    gl_Position = projection * camera_inverse * model * vec4(CORNERS[TRIANGLES[gl_VertexIndex]] * half_side, 1.0);
+    shade = pow(written_color(), vec3(SRGB_POWER));
+    place_clip(projection * camera_inverse * model * vec4(CORNERS[TRIANGLES[VERTEX_INDEX]] * half_side, 1.0));
 }

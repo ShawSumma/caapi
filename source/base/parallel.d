@@ -10,17 +10,6 @@ enum size_t CACHE_LINE = 64;
 enum size_t GRAINS_PER_PARTICIPANT = 8;
 
 version (WebAssembly) {
-    alias pthread_t = uint;
-    alias ThreadMain = extern (C) void* function(void*);
-
-    int pthread_create(pthread_t* thread, const(void)* attributes, ThreadMain start, void* argument) {
-        assert(false);
-    }
-
-    int pthread_join(pthread_t thread, void** result) {
-        assert(false);
-    }
-
     void waitWhile(ref shared uint word, uint expected) {
     }
 
@@ -114,8 +103,11 @@ struct WorkerStart {
 
 struct WorkerPool {
     TaskSource source;
-    pthread_t* threads;
-    WorkerStart* starts;
+    version (WebAssembly) {
+    } else {
+        pthread_t* threads;
+        WorkerStart* starts;
+    }
     shared size_t job;
     shared uint active;
     shared uint epoch;
@@ -130,11 +122,15 @@ struct WorkerPool {
         WorkerPool* pool = cast(WorkerPool*) calloc(1, WorkerPool.sizeof);
         pool.source = source;
         pool.workerCount = workers;
-        pool.threads = cast(pthread_t*) calloc(workers, pthread_t.sizeof);
-        pool.starts = cast(WorkerStart*) calloc(workers, WorkerStart.sizeof);
-        foreach (index; 0 .. workers) {
-            pool.starts[index] = WorkerStart(pool, index + 1);
-            pthread_create(&pool.threads[index], null, &workerMain, &pool.starts[index]);
+        version (WebAssembly) {
+            assert(workers == 0);
+        } else {
+            pool.threads = cast(pthread_t*) calloc(workers, pthread_t.sizeof);
+            pool.starts = cast(WorkerStart*) calloc(workers, WorkerStart.sizeof);
+            foreach (index; 0 .. workers) {
+                pool.starts[index] = WorkerStart(pool, index + 1);
+                pthread_create(&pool.threads[index], null, &workerMain, &pool.starts[index]);
+            }
         }
         return pool;
     }
@@ -209,11 +205,14 @@ struct WorkerPool {
         atomicStore(life, PoolLife.stopping);
         signal();
         wake(epoch);
-        foreach (index; 0 .. workerCount) {
-            pthread_join(threads[index], null);
+        version (WebAssembly) {
+        } else {
+            foreach (index; 0 .. workerCount) {
+                pthread_join(threads[index], null);
+            }
+            free(threads);
+            free(starts);
         }
-        free(threads);
-        free(starts);
     }
 }
 
@@ -221,10 +220,13 @@ size_t grainFor(size_t count, uint participants) {
     return higherOf(count / (cast(size_t) participants * GRAINS_PER_PARTICIPANT), size_t(1));
 }
 
-extern (C) void* workerMain(void* argument) {
-    WorkerStart* start = cast(WorkerStart*) argument;
-    start.pool.serve(start.worker);
-    return null;
+version (WebAssembly) {
+} else {
+    extern (C) void* workerMain(void* argument) {
+        WorkerStart* start = cast(WorkerStart*) argument;
+        start.pool.serve(start.worker);
+        return null;
+    }
 }
 
 struct Executor {

@@ -1,6 +1,6 @@
 module common.worldgen.generation;
 
-import core.stdc.math : asinhf, atanf, cosf, coshf, fabsf, sinhf, tanf;
+import core.stdc.math : asinhf, atanf, cosf, coshf, fabsf, sinh, sinhf, tanf;
 import core.stdc.stdlib : abs;
 import core.stdc.string : memcpy;
 import base.array : Array;
@@ -49,6 +49,7 @@ enum ulong SHRUB_ODDS = 8;
 enum ulong CHOICE_SHIFT = 8;
 enum uint CHUNK_ROLL_SHIFT = 32;
 enum float RISER_MARGIN = 1.2f;
+enum float CLEAR_MARGIN = 1e-3f;
 
 struct PlaneWorld {
     float tiltRadians;
@@ -502,15 +503,18 @@ struct TerrainGenerator {
                 materials = Materials.deferred;
             } else {
                 prepareCells();
+                double sinhClear = sinh(higherOf(params.climate.highest.relief, WATER_LEVEL) + CLEAR_MARGIN);
                 foreach (x; 0 .. dimension) {
                     foreach (y; 0 .. dimension) {
                         foreach (z; 0 .. dimension) {
                             size_t index = cellIndex(dimension, x, y, z);
                             if (voxels.at(index) == Material.none) {
                                 Point!float point = cubePoint(toNode, centerOf(x, y, z));
-                                float altitude = surfaces[ground].distanceTo(point);
-                                if (rivals == 0 || isNearest(ground, altitude, point)) {
-                                    generateTerrainVoxel(ground, [x, y, z], altitude, index);
+                                if (!(surfaces[ground].sinhDistanceTo(point) > sinhClear)) {
+                                    float altitude = surfaces[ground].distanceTo(point);
+                                    if (rivals == 0 || isNearest(ground, altitude, point)) {
+                                        generateTerrainVoxel(ground, [x, y, z], altitude, index);
+                                    }
                                 }
                             }
                         }

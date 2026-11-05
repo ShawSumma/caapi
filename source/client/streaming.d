@@ -25,8 +25,13 @@ import geometry.lorentz : Motion, Point;
 
 enum size_t LOOKAHEAD_PER_CANDIDATE = 8;
 enum double RESCAN = 0;
-enum uint MAX_SCAN_NODES_PER_FRAME = 4096;
-enum size_t SCAN_WINDOW = 4096;
+version (WebAssembly) {
+    enum uint MAX_SCAN_NODES_PER_FRAME = uint.max;
+    enum size_t SCAN_WINDOW = 256;
+} else {
+    enum uint MAX_SCAN_NODES_PER_FRAME = 4096;
+    enum size_t SCAN_WINDOW = 4096;
+}
 enum uint IN_FLIGHT_PER_WORKER = 256;
 enum uint FAR_BUILDINGS_PER_WORKER = 4;
 enum size_t INTEGRATION_BATCH = 4096;
@@ -335,13 +340,24 @@ struct Streamer {
             findNearCamera(nearby, range.camera);
         }
         requestAround(graph, focus);
+        version (WebAssembly) {
+            while (scanAndPlan(graph, nearby, range, pacing, deadline) > 0 && nowMilliseconds() < deadline) {
+            }
+        } else {
+            scanAndPlan(graph, nearby, range, pacing, deadline);
+        }
+    }
+
+    size_t scanAndPlan(ref Graph graph, const(NearbyNode)[] nearby, ScanRange range, Pacing pacing, double deadline) {
         uint budget = requestBudget(pacing);
         rescanBuilt(graph, nearby, range, budget);
         if (scanNearCamera(graph, nearby, range, budget, deadline) == ScanProgress.through) {
             scanCursor = cast(uint) scan(graph, nearby, range, budget, deadline);
         }
+        size_t plans = planned.length;
         planParams(graph);
         submitRequests(graph);
+        return plans;
     }
 
     void rescanBuilt(ref Graph graph, const(NearbyNode)[] nearby, ScanRange range, uint budget) {

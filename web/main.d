@@ -1,9 +1,9 @@
 module web.main;
 
-import core.stdc.stdio : snprintf;
 import core.stdc.stdlib : calloc;
 import base.clock : FrameClock, MILLISECONDS_PER_SECOND, nowMilliseconds, nowSeconds;
 import base.names : ENUM_NAMES;
+import base.stdio : snprintf;
 import base.units : Angle, AngularSpeed, Time;
 import client.config : ClientConfig, PitchAxis;
 import client.game : FrameInput, Game, Key, MATERIAL_PALETTE, axisValue;
@@ -307,20 +307,4 @@ extern (C) void web_motion(double dx, double dy) {
 
 extern (C) void web_capture(uint state) {
     session.capture(cast(Capture) state);
-}
-
-extern (C) uint web_backlog() {
-    return session.renderer.backlog;
-}
-
-extern (C) uint web_visible_chunks() {
-    return cast(uint) session.renderer.visible.length;
-}
-
-extern (C) uint web_drawable_chunks() {
-    return session.renderer.meshes.drawableCount;
-}
-
-extern (C) uint web_settled() {
-    return cast(uint)(session.game.world.isWorldgenSettled() && session.renderer.backlog == 0);
 }

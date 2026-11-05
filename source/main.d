@@ -25,7 +25,8 @@ import client.drive : DriveEventKind, DriveHost, DriveInput, DriveKey, LEFT_BUTT
 import client.frames : RenderTimes;
 import client.game : ChunkSupply, FrameInput, Game, Key, MATERIAL_PALETTE, axisValue;
 import client.graphics.core : SurfaceSource;
-import client.graphics.renderer : CaptureMark, FrameTimes, HALF_VERTICAL_FOV, Renderer;
+import client.graphics.renderer : CaptureMark, FrameTimes, Renderer;
+import client.graphics.uniforms : HALF_VERTICAL_FOV;
 import client.graphics.voxels.meshes : ChunkMeshes;
 import client.hud : Hud, worldNameOf;
 import client.meshing : Mesher;

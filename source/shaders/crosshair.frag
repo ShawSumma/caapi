@@ -1,5 +1,7 @@
 #version 450
 
+#include "target.h"
+
 const float CROSSHAIR_OPACITY = 0.75;
 
 layout(location = 0) out vec4 color;

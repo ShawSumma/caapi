@@ -1,9 +1,9 @@
 #ifndef COMMON_H
 #define COMMON_H
 
-const float INFINITY = 1.0 / 0.0;
+#include "target.h"
 
-layout(set = 0, binding = 0) uniform Common {
+BOUND(0, 0) uniform Common {
     mat4 projection;
     mat4 camera_inverse;
     vec4 frustum_planes[5];

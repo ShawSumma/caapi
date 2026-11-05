@@ -1,8 +1,8 @@
 module client.plugins;
 
-import core.stdc.stdio : fprintf, snprintf, stderr;
 import core.stdc.string : strlen;
 import base.flags : Readiness;
+import base.stdio : fprintf, snprintf, stderr;
 import plugins.api.api : ENTRY, Entry, Registry, RisingKind, Structure;
 
 enum size_t MAX_STRUCTURES = 64;

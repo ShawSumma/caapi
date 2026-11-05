@@ -42,6 +42,15 @@ rebuilds them. Headless tools need `--out <file>`; use `--out /dev/stdout` to se
     # render a view (scripts/views.d) offscreen to a PNG, which Read can then show
     dub run -q -b release --compiler=ldc2 -- --screenshot screenshots/name.png --out /dev/stdout city
 
+    # build the web page, mined.html; needs lld and wasi-libc
+    dub build -q -b release --compiler=ldc2 --arch=wasm32-unknown-wasi :web
+
+    # web checks; drive quits Firefox after each run, so start it again for each one
+    dub build -q -b release --compiler=ldc2 :webdrive
+    firefox --headless --marionette --no-remote --profile .firefox-check
+    obj/web/tool/drive obj/web/check.html "?mode=bench"    # modes: run, actions, tour, flight, world, bench
+    obj/web/tool/drive                                     # plays mined.html with real input
+
 `-- --help` lists more on both binaries: censuses, `--slice`, `--dump-structure`, `--bench-gen`, `--bench-mesh`,
 `--bench-drive`, `--bench-nearby`, `--bench-hashmap` on headless; `--film`, `--drive`, `--bench-load [--profile]`,
 `--record` on the game. `--world-digest`, `--dump-world`, the censuses and the `--bench-*` commands on headless always
@@ -137,10 +146,11 @@ Euclidean instincts break here. Most of these rules exist because the obvious ap
 - All per-frame work is budgeted in milliseconds and resumable (`STEP_BUDGET_MILLISECONDS`, `Pacing`, `ParallelJob`
   deadlines, `advance`, `continueKeeping`). Evictions and sweeps run incrementally. Do not add an unbounded per-frame loop.
 - Hold nothing forever: unedited chunks drop and regenerate, idle tiles drop and repaint, idle nodes evict.
+- The web build has one thread, so its batch sizes in `streaming.d`, `traversal.d` and `world.d` are tuned for that. Size them by deadline, not by count.
 
 ## Code structure
 
-    source/base/        containers, allocator, parallel pool, units, hashing, crash reports
+    source/base/        containers, allocator, parallel pool, units, hashing, crash reports, stdio (C stdio declared for wasm)
     source/geometry/    lorentz.d (model), honeycomb.d (faces, corners, mirrors, computed at compile time), cube.d, ray.d
     source/common/      headless world: no window or GPU
       graph.d             Graph: nodes, parents, ids, ownership of every store
@@ -158,19 +168,20 @@ Euclidean instincts break here. Most of these rules exist because the obvious ap
       meshing.d           voxels to packed faces
       structures.d tiles.d plugins.d   host side of the plugin API: main-thread and tile (worker) implementations
       script.d drive.d    test and scripted-input tooling
-      graphics/           Vulkan renderer; voxels/ has cull, mesh upload, surface, textures (game binary only)
-    source/shaders/     GLSL; compiled to shaders/spv by glslc in preBuildCommands and embedded with import()
+      graphics/           Vulkan renderer; voxels/ has cull, mesh upload, surface, textures (game binary only);
+                          uniforms.d, frustum.d, matrices.d, voxels/textures.d have no Vulkan and are shared with web/
+    source/shaders/     GLSL for both renderers; compiled to shaders/spv by glslc in preBuildCommands and embedded with import(), or expanded to GLSL ES at compile time by web/renderer.d
     source/bindings/    platform.c and kernel.c, read with ImportC for Vulkan, X11, futex
     source/scripts/     tests (behavior), views (screenshots), films, drives, walk and climb helpers
     source/unit/        one unittest module per engine module, imported by hand from source/unittests.d
     plugins/api/        the ABI: api.d, flags.d
     plugins/turtle/ box/ buildings/ connector/ blocks/ rooms/ horospheres/    sourceLibrary helpers shared by plugins
     plugins/*/plugin.d  each world, one dynamicLibrary sub-package
-    web/                browser build, single-threaded on WebGL2: main.d (entry, session), renderer.d (CPU culling, face texture),
-                        glue.js and shaders.js (WebGL2, WASI stubs), play.js, shell.html; tool/ links and packs mined.html through
-                        zig from .venv; check.js and drive/ test it in headless Firefox
+    web/                the game as one local page, single-threaded on WebGL2: main.d (exports, session), renderer.d (CPU culling, face texture),
+                        glue.js (imports for wasm), play.js (the page), check.js (test and benchmark page), shell.html, imports.syms (the allowed JS imports)
+    web/tool/           pack.d packs mined.html and obj/web/check.html; drive.d drives Firefox over Marionette, playing mined.html with real input or reporting a check page
 
-Entry points: `source/main.d` (game), `source/headless.d` with `source/worldcheck.d` (`-c headless`, no `client/graphics`),
+Entry points: `source/main.d` (game), `web/main.d` (`:web`, wasm32 linked by `wasm-ld` against wasi-libc, plugins linked in, no threads), `source/headless.d` with `source/worldcheck.d` (`-c headless`, no `client/graphics`),
 `source/unittests.d` (`dub test`, also no `client/script`, `drive`, `structures`, `tiles`, `scripts/`, so unit tests cannot
 place plugin worlds). Dependencies run base, geometry, common, client, scripts, with `plugins.api` usable from common up.
 Modules within a layer import each other freely, cycles included.
@@ -207,6 +218,7 @@ mutually adjacent), and adjacent faces' mirrors commute (`appendReduced` cancels
 id whichever path reaches it. Randomness comes from `id.spice()`, `SplitMix` and salts, never from visit order or
 time. That is what lets chunks and tiles be dropped and rebuilt, and what `--world-digest`, `--check-repaint` and
 `--check-forget` guard. Refactors must leave these unchanged. Changing worldgen changes the digest on purpose; say so.
+Keep `FIBONACCI_MULTIPLIER` 64-bit, because world hashes depend on it; `TABLE_MULTIPLIER` is the one for hash tables.
 
 ### Plugins and structures
 
@@ -215,8 +227,9 @@ time. That is what lets chunks and tiles be dropped and rebuilt, and what `--wor
   tables `MATERIAL_COLORS` (`common/material.d`) and `GRAIN` (`graphics/voxels/textures.d`); a missed entry silently
   defaults to zero.
 - Plugins import only `plugins.*` and `core.stdc`, which is why `turtle.d` has its own `lowerOf`, `higherOf` and `clamped`. Do not merge
-  those with `base.numbers`. To add a world: a sub-package in `dub.sdl`, an entry in the root `preGenerateCommands`, and a
-  `pragma(mangle, ENTRY)` function that registers names. One library may register many worlds (`fixtures` does).
+  those with `base.numbers`. To add a world: a sub-package in `dub.sdl`, an entry in the root `preGenerateCommands`, a
+  `pragma(mangle, entryOf!__MODULE__)` function that registers names, and an entry in the web table in `client/plugins.d`.
+  One library may register many worlds (`fixtures` does).
 - Two host implementations stand behind `Api`: `main*` in `structures.d` and `tile*` in `tiles.d`. Add a call to both.
 - Two ways to build. **Placed** structures run on the main thread in depth order (`place`, `PAINT_REACH`, `PLACE_SLACK`) and
   may claim sites. **Tiles** run on workers in any order and may be dropped and repainted, so they decide everything from
@@ -231,9 +244,14 @@ time. That is what lets chunks and tiles be dropped and rebuilt, and what `--wor
 
 ### Shaders
 
+One source serves Vulkan and WebGL2: `target.h` hides the differences behind macros and `GL_ES` selects the branch, `clip.h` and
+`depth.h` hold the clip and reverse-Z differences. `cull.comp` is native only and `present.frag` is web only. A new header goes
+in `SHADER_HEADERS` in `web/renderer.d`.
+
 Layouts are duplicated by hand between D and GLSL and must change together: `CommonUniforms` and `common.h`, `LayoutPush` and
-the `voxels.vert` push constants, `meshing.d` `Quad` and `face.h`, `ChunkLayout` spacing and `voxels.vert`. `voxels.vert`
-hardcodes `glowing_materials[3]`, which matches `GLOW_WORDS` only up to 96 materials. `.spv` files are generated.
+the `voxels.vert` push constants, `meshing.d` `Quad` and `face.h`, `ChunkLayout` spacing and `voxels.vert`, the push blocks and the
+uniform calls in `web/glue.js`. `voxels.vert` hardcodes `glowing_materials[3]`, which matches `GLOW_WORDS` only up to 96 materials.
+`.spv` files are generated.
 
 ## Style rules
 
