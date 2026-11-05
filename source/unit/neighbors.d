@@ -1,5 +1,6 @@
 module unit.neighbors;
 
+import base.vector3 : Vec3;
 import common.graph : Graph, ROOT_NODE;
 import common.neighbors : CellHop, hopCell, isOutside, neighborAxisMap;
 import common.node : ChunkSlot;
@@ -18,7 +19,7 @@ CellHop hopRemaining(ref const Graph graph, CellHop hop) {
     if (axis == 0) {
         return hop;
     } else {
-        return graph.hopCell(hop.chunk, hop.cell, axis - 1);
+        return graph.hopCell(hop.chunk.value, hop.cell, axis - 1);
     }
 }
 
@@ -28,7 +29,7 @@ bool isSameCell(CellHop a, CellHop b) {
 
 unittest {
     Graph graph = Graph.make(DIMENSION, Worldgen.makeTerrain());
-    uint root = graph.slotOf(ROOT_NODE);
+    uint root = graph.slotOf(ROOT_NODE).value;
     foreach (face; 0 .. FACE_COUNT) {
         uint neighbor = graph.ensureNeighborSlot(root, cast(Face) face);
         foreach (outer; 0 .. FACE_COUNT) {
@@ -42,7 +43,7 @@ unittest {
         foreach (a; 0 .. AXIS_COUNT) {
             foreach (b; a + 1 .. AXIS_COUNT) {
                 foreach (signs; 0 .. 4u) {
-                    int[3] edge = [EDGE_CELL, EDGE_CELL, EDGE_CELL];
+                    Vec3!int edge = Vec3!int(EDGE_CELL, EDGE_CELL, EDGE_CELL);
                     edge[a] = -1;
                     if ((signs & 1) != 0) {
                         edge[a] = DIMENSION;
@@ -64,16 +65,16 @@ unittest {
             }
         }
         foreach (direction; DIRECTIONS) {
-            int[3] past = [EDGE_CELL, 1, 0];
+            Vec3!int past = Vec3!int(EDGE_CELL, 1, 0);
             past[direction.axis] = beyondBoundary(DIMENSION, direction.sign);
             CellHop there = graph.hopCell(chunk, past, direction.axis);
             Axis back = neighborAxisMap(chunk.corner, direction).to[direction.axis];
-            int[3] stepped = there.cell;
+            Vec3!int stepped = there.cell;
             stepped[back] = beyondBoundary(DIMENSION, direction.sign);
-            CellHop home = graph.hopCell(there.chunk, stepped, back);
-            int[3] expected = past;
+            CellHop home = graph.hopCell(there.chunk.value, stepped, back);
+            Vec3!int expected = past;
             expected[direction.axis] = boundaryOf(DIMENSION, direction.sign);
-            assert(home.chunk == chunk && home.cell == expected);
+            assert(home.chunk.value == chunk && home.cell == expected);
         }
     }
     assert(valenceFourEdges == CORNER_COUNT * AXIS_COUNT * 3);

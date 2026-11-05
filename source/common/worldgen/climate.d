@@ -3,6 +3,7 @@ module common.worldgen.climate;
 import base.maybe : Maybe;
 import base.numbers : higherOf, lowerOf;
 import base.splitmix : SplitMix;
+import base.vector3 : Vec3;
 import common.view : GraphView;
 import geometry.honeycomb : Corner, Face, faces;
 import plugins.api.api : Material;
@@ -138,7 +139,7 @@ struct CubeClimate {
         return cube;
     }
 
-    static CubeClimate around(ref GraphView view, uint slot, Corner chunk) {
+    static CubeClimate ensureAround(ref GraphView view, uint slot, Corner chunk) {
         Face[3] sides = chunk.faces;
         NodeClimate[8] around;
         foreach (crossed; 0 .. 8) {
@@ -148,19 +149,19 @@ struct CubeClimate {
                     node = view.ensureNeighborSlot(node, sides[axis]);
                 }
             }
-            around[crossed] = view.stateAt(node).climate;
+            around[crossed] = view.ensureState(node).climate;
         }
         return fromAround(around);
     }
 
-    Climate at(float[3] cube) const {
+    Climate at(Vec3!float cube) const {
         Climate[4] alongX;
         foreach (index; 0 .. 4) {
-            alongX[index] = Climate.lerp(corners[2 * index], corners[2 * index + 1], cube[0]);
+            alongX[index] = Climate.lerp(corners[2 * index], corners[2 * index + 1], cube.x);
         }
-        Climate low = Climate.lerp(alongX[0], alongX[1], cube[1]);
-        Climate high = Climate.lerp(alongX[2], alongX[3], cube[1]);
-        return Climate.lerp(low, high, cube[2]);
+        Climate low = Climate.lerp(alongX[0], alongX[1], cube.y);
+        Climate high = Climate.lerp(alongX[2], alongX[3], cube.y);
+        return Climate.lerp(low, high, cube.z);
     }
 
     Climate mean() const {

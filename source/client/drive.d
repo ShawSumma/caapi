@@ -1,11 +1,13 @@
 module client.drive;
 
 import core.stdc.stdio : FILE, fflush, fprintf;
+import core.sys.posix.sys.stat : mkdir;
 import base.array : Array;
 import base.clock : MILLISECONDS_PER_SECOND;
+import base.flags : Readiness;
 import base.maybe : Maybe;
 import base.names : textFor;
-import client.frames : FrameRecord, FrameSummary, MouseMotion, RenderTimes, cameraStep;
+import client.frames : FrameRecord, FrameSummary, MouseCounts, MouseMotion, RenderTimes, cameraStep;
 import client.images : ImageDifference, PixelOrder, RGBA_BYTES, copyAsRgba, differenceOf;
 import client.png : writePng;
 import common.graph : Graph;
@@ -14,6 +16,8 @@ import plugins.api.flags : Flags;
 
 enum uint LEFT_BUTTON = 1;
 enum uint RIGHT_BUTTON = 3;
+enum uint DIRECTORY_MODE = 0x1ED;
+enum string CAPTURE_DIRECTORY = "screenshots";
 
 enum DriveKey : ubyte {
     w,
@@ -109,47 +113,58 @@ struct NamedDrive {
 }
 
 DriveAction framesOf(uint count) {
-    return DriveAction(DriveActionKind.frames, count);
+    DriveAction action = {kind: DriveActionKind.frames, frames: count};
+    return action;
 }
 
 DriveAction moveBy(double dx, double dy, uint count) {
-    return DriveAction(DriveActionKind.move, count, dx, dy);
+    DriveAction action = {kind: DriveActionKind.move, frames: count, dx: dx, dy: dy};
+    return action;
 }
 
 DriveAction holdKey(DriveKey key) {
-    return DriveAction(DriveActionKind.hold, 0, 0, 0, key);
+    DriveAction action = {kind: DriveActionKind.hold, key: key};
+    return action;
 }
 
 DriveAction releaseKey(DriveKey key) {
-    return DriveAction(DriveActionKind.release, 0, 0, 0, key);
+    DriveAction action = {kind: DriveActionKind.release, key: key};
+    return action;
 }
 
 DriveAction tapKey(DriveKey key) {
-    return DriveAction(DriveActionKind.tap, 0, 0, 0, key);
+    DriveAction action = {kind: DriveActionKind.tap, key: key};
+    return action;
 }
 
 DriveAction clickButton(uint button) {
-    return DriveAction(DriveActionKind.click, 0, 0, 0, DriveKey.init, button);
+    DriveAction action = {kind: DriveActionKind.click, button: button};
+    return action;
 }
 
 DriveAction settleWithin(uint limit) {
-    return DriveAction(DriveActionKind.settle, limit);
+    DriveAction action = {kind: DriveActionKind.settle, frames: limit};
+    return action;
 }
 
 DriveAction captureTo(string path) {
-    return DriveAction(DriveActionKind.capture, 0, 0, 0, DriveKey.init, 0, path);
+    DriveAction action = {kind: DriveActionKind.capture, text: path};
+    return action;
 }
 
 DriveAction watching(Toggle toggle) {
-    return DriveAction(DriveActionKind.watch, 0, 0, 0, DriveKey.init, 0, null, toggle);
+    DriveAction action = {kind: DriveActionKind.watch, toggle: toggle};
+    return action;
 }
 
 DriveAction logging(Toggle toggle) {
-    return DriveAction(DriveActionKind.log, 0, 0, 0, DriveKey.init, 0, null, toggle);
+    DriveAction action = {kind: DriveActionKind.log, toggle: toggle};
+    return action;
 }
 
 DriveAction summaryOf(string title) {
-    return DriveAction(DriveActionKind.summary, 0, 0, 0, DriveKey.init, 0, title);
+    DriveAction action = {kind: DriveActionKind.summary, text: title};
+    return action;
 }
 
 struct DriveHost {
@@ -183,6 +198,7 @@ struct DriveHost {
         report = output;
         fprintf(report, "drive: %s, the mouse turns %g radians per count\n", name, cast(double) sensitivity);
         actions = chosen;
+        mkdir(CAPTURE_DIRECTORY.ptr, DIRECTORY_MODE);
     }
 
     void fail(const(char)* message) {
@@ -191,11 +207,11 @@ struct DriveHost {
         marks.set(DriveMark.finished);
     }
 
-    DriveInput next(bool isWorldSettled) {
+    DriveInput next(Readiness world) {
         events.clear();
         events.appendAll(later.slice());
         later.clear();
-        if (marks.has(DriveMark.settling) && isWorldSettled) {
+        if (marks.has(DriveMark.settling) && world == Readiness.ready) {
             finishSettling("settled");
         }
         while (pendingFrames == 0 && !marks.has(DriveMark.finished)) {
@@ -210,9 +226,9 @@ struct DriveHost {
         if (pendingFrames > 0) {
             pendingFrames -= 1;
             if (motion.isActive()) {
-                double[2] share = motion.next();
-                input.dx = share[0];
-                input.dy = share[1];
+                MouseCounts share = motion.next();
+                input.dx = share.dx;
+                input.dy = share.dy;
             }
             if (pendingFrames == 0 && marks.has(DriveMark.settling)) {
                 finishSettling("not settled");
@@ -231,25 +247,28 @@ struct DriveHost {
                 if (action.frames == 0) {
                     fail("mouse motion needs at least one frame");
                 } else {
-                    motion = MouseMotion([action.dx, action.dy], [0, 0], action.frames, 0);
+                    motion = MouseMotion.init;
+                    motion.total = MouseCounts(action.dx, action.dy);
+                    motion.steps = action.frames;
                     pendingFrames = action.frames;
                 }
                 break;
             case DriveActionKind.hold:
-                events.append(DriveEvent(DriveEventKind.press, action.key, 0));
+                events.append(DriveEvent(DriveEventKind.press, action.key));
                 break;
             case DriveActionKind.release:
-                events.append(DriveEvent(DriveEventKind.release, action.key, 0));
+                events.append(DriveEvent(DriveEventKind.release, action.key));
                 break;
             case DriveActionKind.tap:
-                events.append(DriveEvent(DriveEventKind.press, action.key, 0));
-                later.append(DriveEvent(DriveEventKind.release, action.key, 0));
+                events.append(DriveEvent(DriveEventKind.press, action.key));
+                later.append(DriveEvent(DriveEventKind.release, action.key));
                 break;
             case DriveActionKind.click:
                 if (action.button != LEFT_BUTTON && action.button != RIGHT_BUTTON) {
                     fail("the button is 1 (left) or 3 (right)");
                 } else {
-                    events.append(DriveEvent(DriveEventKind.click, DriveKey.init, action.button));
+                    DriveEvent click = {kind: DriveEventKind.click, button: action.button};
+                    events.append(click);
                 }
                 break;
             case DriveActionKind.settle:
@@ -355,7 +374,8 @@ struct DriveHost {
             }
             if (waitingPath.length > 0) {
                 waitingPath.append('\0');
-                fprintf(report, "frame %u: %s %s\n", waiting.frame, textFor(writePng(waitingPath.ptr, width, height, current.slice()), "captured", "could not write"), waitingPath.ptr);
+                bool written = writePng(waitingPath.ptr, width, height, current.slice());
+                fprintf(report, "frame %u: %s %s\n", waiting.frame, textFor(written, "captured", "could not write"), waitingPath.ptr);
             }
             Array!ubyte swapped = previous;
             previous = current;

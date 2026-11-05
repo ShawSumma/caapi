@@ -2,13 +2,19 @@ module client.hud;
 
 import core.stdc.math : asinhf, cosf, sinf, sqrtf;
 import base.array : Array;
+import base.clock : FrameClock, MILLISECONDS_PER_SECOND;
+import base.maybe : MaybeIndex;
+import base.names : ENUM_NAMES;
 import base.numbers : PI, higherOf, lowerOf;
+import base.stdio : snprintf;
+import base.vector3 : Vec3;
 import client.camera : Quaternion;
 import client.game : Game, TRAIL_POINTS;
 import client.world : LocalWorld;
-import common.graph : Graph, NO_SLOT;
+import common.character.controller : MovementMode;
+import common.graph : Graph;
 import common.position : Position;
-import common.traversal : NOT_COLLECTED, NearbyScratch;
+import common.traversal : NearbyScratch;
 import common.worldgen.generation : Worldgen, WorldgenKind;
 import geometry.honeycomb : FACE_COUNT, Face;
 import geometry.lorentz : Motion, Vec4;
@@ -28,6 +34,8 @@ enum float NEEDLE_THICKNESS = 1.5f;
 enum float LINK_THICKNESS = 0.7f;
 enum float BLOCK_HALF = 0.02f;
 enum float TRAIL_HALF = 0.005f;
+enum double STATUS_INTERVAL_SECONDS = 1.0;
+enum size_t STATUS_CAPACITY = 256;
 enum uint WHITE = rgba(255, 255, 255, 255);
 enum uint PANEL = rgba(12, 16, 26, 150);
 enum uint RIM = rgba(225, 225, 215, 210);
@@ -44,8 +52,13 @@ uint faded(uint color, float share) {
     return (color & 0x00FFFFFF) | (cast(uint)((color >> 24) * share) << 24);
 }
 
+struct ScreenPoint {
+    float x;
+    float y;
+}
+
 struct HudVertex {
-    float[2] at;
+    ScreenPoint at;
     uint color;
     uint unused;
 }
@@ -67,22 +80,68 @@ const(char)[] worldNameOf(ref const Worldgen worldgen) {
     }
 }
 
+enum MouseCapture : ubyte {
+    released,
+    captured,
+}
+
+struct FrameMeter {
+    double last = 0;
+    float fps = 0;
+    float worstFrameMs = 0;
+    uint frames;
+
+    static FrameMeter startingAt(double now) {
+        FrameMeter meter;
+        meter.last = now;
+        return meter;
+    }
+
+    bool tick(double now, ref FrameClock clock) {
+        frames += 1;
+        bool refreshed = now - last >= STATUS_INTERVAL_SECONDS;
+        if (refreshed) {
+            fps = cast(float)(frames / (now - last));
+            worstFrameMs = cast(float)(clock.worst * MILLISECONDS_PER_SECOND);
+            clock.worst = 0;
+            frames = 0;
+            last = now;
+        }
+        return refreshed;
+    }
+}
+
+char[STATUS_CAPACITY] statusLine(ref const Game game, MouseCapture mouse, ref const FrameMeter meter) {
+    char[STATUS_CAPACITY] text;
+    string mode = ENUM_NAMES!MovementMode[game.mode];
+    const(char)[] world = worldNameOf(game.world.graph.worldgen);
+    final switch (mouse) {
+        case MouseCapture.captured:
+            snprintf(text.ptr, text.length, "mined - %.*s ([ ]) - %.*s (V) - [%u] - Esc to release mouse - FPS %.0f, worst frame %.0fms", cast(int) world.length, world.ptr, cast(int) mode.length, mode.ptr, game.materialIndex + 1, cast(double) meter.fps, cast(double) meter.worstFrameMs);
+            break;
+        case MouseCapture.released:
+            snprintf(text.ptr, text.length, "mined - %.*s ([ ]) - %.*s (V) - click to capture mouse - FPS %.0f, worst frame %.0fms", cast(int) world.length, world.ptr, cast(int) mode.length, mode.ptr, cast(double) meter.fps, cast(double) meter.worstFrameMs);
+            break;
+    }
+    return text;
+}
+
 struct Growth {
     Array!uint seen;
     Array!uint placeOf;
     Array!uint queue;
     uint[GROWTH_STEPS + 1] within;
     uint generation;
-    uint countedSlot = NO_SLOT;
+    MaybeIndex!uint countedSlot;
     uint countedVersion;
     uint countedEpoch;
     size_t countedNodes;
 
     void update(ref const LocalWorld world) {
-        uint start = world.graph.slotOf(world.cameraPosition.node);
+        MaybeIndex!uint start = world.graph.slotOf(world.cameraPosition.node);
         size_t nodes = world.nearby[world.published].nodes.length;
         if (start != countedSlot || world.nearbyVersion != countedVersion || world.epoch != countedEpoch || nodes > 2 * countedNodes) {
-            count(world, start);
+            count(world, start.value);
             countedSlot = start;
             countedVersion = world.nearbyVersion;
             countedEpoch = world.epoch;
@@ -106,9 +165,9 @@ struct Growth {
                 foreach (index; first .. end) {
                     uint slot = queue.ptr[index];
                     foreach (face; 0 .. FACE_COUNT) {
-                        uint next = graph.neighborSlot(slot, cast(Face) face);
-                        if (next != NO_SLOT && seen.ptr[next] != generation && nearby.indexOf(next) != NOT_COLLECTED) {
-                            visit(next);
+                        MaybeIndex!uint next = graph.neighborSlot(slot, cast(Face) face);
+                        if (next.exists && seen.ptr[next.value] != generation && nearby.indexOf(next.value).exists) {
+                            visit(next.value);
                         }
                     }
                 }
@@ -135,7 +194,7 @@ struct Growth {
 }
 
 struct DiskPoint {
-    float[2] at;
+    ScreenPoint at;
     float share;
 }
 
@@ -149,10 +208,10 @@ struct Hud {
     float scale = 1;
 
     void rect(float x, float y, float w, float h, uint color) {
-        quad([x, y], [x + w, y], [x + w, y + h], [x, y + h], color);
+        quad(ScreenPoint(x, y), ScreenPoint(x + w, y), ScreenPoint(x + w, y + h), ScreenPoint(x, y + h), color);
     }
 
-    void quad(float[2] a, float[2] b, float[2] c, float[2] d, uint color) {
+    void quad(ScreenPoint a, ScreenPoint b, ScreenPoint c, ScreenPoint d, uint color) {
         if (vertices.length + QUAD_VERTICES <= MOST_VERTICES) {
             vertex(a, color);
             vertex(b, color);
@@ -163,25 +222,25 @@ struct Hud {
         }
     }
 
-    void vertex(float[2] at, uint color) {
-        vertices.append(HudVertex([2 * at[0] / width - 1, 2 * at[1] / height - 1], color, 0));
+    void vertex(ScreenPoint at, uint color) {
+        vertices.append(HudVertex(ScreenPoint(2 * at.x / width - 1, 2 * at.y / height - 1), color));
     }
 
-    void line(float[2] from, float[2] to, float thickness, uint color) {
-        float dx = to[0] - from[0];
-        float dy = to[1] - from[1];
+    void line(ScreenPoint from, ScreenPoint to, float thickness, uint color) {
+        float dx = to.x - from.x;
+        float dy = to.y - from.y;
         float length = sqrtf(dx * dx + dy * dy);
         if (length > 0) {
             float nx = -dy / length * thickness * 0.5f;
             float ny = dx / length * thickness * 0.5f;
-            quad([from[0] + nx, from[1] + ny], [to[0] + nx, to[1] + ny], [to[0] - nx, to[1] - ny], [from[0] - nx, from[1] - ny], color);
+            quad(ScreenPoint(from.x + nx, from.y + ny), ScreenPoint(to.x + nx, to.y + ny), ScreenPoint(to.x - nx, to.y - ny), ScreenPoint(from.x - nx, from.y - ny), color);
         }
     }
 
-    void circle(float[2] center, float radius, uint fill, uint rim) {
+    void circle(ScreenPoint center, float radius, uint fill, uint rim) {
         foreach (segment; 0 .. CIRCLE_SEGMENTS) {
-            float[2] a = onCircle(center, radius, segment);
-            float[2] b = onCircle(center, radius, segment + 1);
+            ScreenPoint a = onCircle(center, radius, segment);
+            ScreenPoint b = onCircle(center, radius, segment + 1);
             if (vertices.length + 3 <= MOST_VERTICES) {
                 vertex(center, fill);
                 vertex(a, fill);
@@ -203,11 +262,11 @@ struct Hud {
     }
 
     void addMarker(ref const Game game, const(NearbyScratch)* nearby, Position position, float half, uint color) {
-        uint slot = game.world.graph.slotOf(position.node);
-        if (slot != NO_SLOT) {
-            uint index = nearby.indexOf(slot);
-            if (index != NOT_COLLECTED) {
-                markers.append(Marker(nearby.nodes.ptr[index].transform * position.local, half, color));
+        MaybeIndex!uint slot = game.world.graph.slotOf(position.node);
+        if (slot.exists) {
+            MaybeIndex!uint index = nearby.indexOf(slot.value);
+            if (index.exists) {
+                markers.append(Marker(nearby.nodes.ptr[index.value].transform * position.local, half, color));
             }
         }
     }
@@ -217,7 +276,7 @@ struct Hud {
         width = pixelsWide;
         height = pixelsHigh;
         scale = higherOf(1u, pixelsHigh / BASE_HEIGHT);
-        if (game.world.cameraNearbyIndex() != NOT_COLLECTED) {
+        if (game.world.cameraNearbyIndex().exists) {
             growth.update(game.world);
             buildPoincareDisk(game);
         }
@@ -226,43 +285,42 @@ struct Hud {
 
     void buildCompass(ref const Game game) {
         float radius = COMPASS_SHARE * height;
-        float[2] center = [width - MARGIN * scale - radius, height - MARGIN * scale - radius];
+        ScreenPoint center = ScreenPoint(width - MARGIN * scale - radius, height - MARGIN * scale - radius);
         circle(center, radius, PANEL, RIM);
         float off = game.compassOff().value;
-        float[2] ahead = [center[0], center[1] - radius * 0.8f];
+        ScreenPoint ahead = ScreenPoint(center.x, center.y - radius * 0.8f);
         line(center, ahead, scale, faded(WHITE, 0.45f));
-        float[2] tip = [center[0] - sinf(off) * radius * 0.92f, center[1] - cosf(off) * radius * 0.92f];
+        ScreenPoint tip = ScreenPoint(center.x - sinf(off) * radius * 0.92f, center.y - cosf(off) * radius * 0.92f);
         line(center, tip, NEEDLE_THICKNESS * scale, GOLD);
     }
 
     void buildPoincareDisk(ref const Game game) {
         float radius = DISK_SHARE * height;
-        float[2] center = [width - MARGIN * scale - radius, MARGIN * scale + radius];
+        ScreenPoint center = ScreenPoint(width - MARGIN * scale - radius, MARGIN * scale + radius);
         circle(center, radius, PANEL, RIM);
         const(LocalWorld)* world = &game.world;
         const(Graph)* graph = &world.graph;
         const(NearbyScratch)* nearby = &world.nearby[world.published];
-        Motion!float level = Quaternion.fromAxisAngle([1, 0, 0], game.camera.pitch.value).toMotion() * world.cameraInNearbyFrame().inverse();
+        Motion!float level = Quaternion.fromAxisAngle(Vec3!float(1, 0, 0), game.camera.pitch.value).toMotion() * world.cameraInNearbyFrame().inverse();
         const(uint)[] nearest = growth.queue.slice()[0 .. lowerOf(growth.queue.length, MOST_DISK_NODES)];
         disk.resize(nearest.length);
         foreach (index, slot; nearest) {
-            disk.ptr[index] = onDisk(level * nearby.nodes.ptr[nearby.indexOf(slot)].transform.m.column(3));
+            disk.ptr[index] = onDisk(level * nearby.nodes.ptr[nearby.indexOf(slot).value].transform.m.column(3));
         }
         foreach (index, slot; nearest) {
             DiskPoint from = disk.ptr[index];
             if (from.share > 0) {
                 foreach (face; 0 .. FACE_COUNT) {
-                    uint next = graph.neighborSlot(slot, cast(Face) face);
-                    if (next != NO_SLOT && next > slot && growth.isCounted(next) && growth.placeOf.ptr[next] < nearest.length && disk.ptr[growth.placeOf.ptr[next]].share > 0) {
-                        DiskPoint to = disk.ptr[growth.placeOf.ptr[next]];
+                    MaybeIndex!uint next = graph.neighborSlot(slot, cast(Face) face);
+                    if (next.exists && next.value > slot && growth.isCounted(next.value) && growth.placeOf.ptr[next.value] < nearest.length && disk.ptr[growth.placeOf.ptr[next.value]].share > 0) {
+                        DiskPoint to = disk.ptr[growth.placeOf.ptr[next.value]];
                         line(placed(center, radius, from.at), placed(center, radius, to.at), LINK_THICKNESS * scale, faded(CYAN, lowerOf(from.share, to.share)));
                     }
                 }
             }
         }
-        float[2] eye = center;
-        line(eye, [eye[0], eye[1] - 4 * scale], NEEDLE_THICKNESS * scale, GOLD);
-        rect(eye[0] - scale, eye[1] - scale, 2 * scale, 2 * scale, WHITE);
+        line(center, ScreenPoint(center.x, center.y - 4 * scale), NEEDLE_THICKNESS * scale, GOLD);
+        rect(center.x - scale, center.y - scale, 2 * scale, 2 * scale, WHITE);
     }
 
     void release() {
@@ -273,23 +331,23 @@ struct Hud {
     }
 }
 
-float[2] onCircle(float[2] center, float radius, uint segment) {
+ScreenPoint onCircle(ScreenPoint center, float radius, uint segment) {
     float angle = segment * 2 * PI / CIRCLE_SEGMENTS;
-    return [center[0] + cosf(angle) * radius, center[1] + sinf(angle) * radius];
+    return ScreenPoint(center.x + cosf(angle) * radius, center.y + sinf(angle) * radius);
 }
 
-float[2] placed(float[2] center, float radius, float[2] at) {
-    return [center[0] + at[0] * radius, center[1] + at[1] * radius];
+ScreenPoint placed(ScreenPoint center, float radius, ScreenPoint at) {
+    return ScreenPoint(center.x + at.x * radius, center.y + at.y * radius);
 }
 
 DiskPoint onDisk(Vec4!float point) {
     float height = asinhf(point.c[1]);
     float share = 1 - height * height / (DISK_BAND * DISK_BAND);
     if (!(point.c[3] < DISK_FARTHEST_W) || !(share > 0)) {
-        return DiskPoint([0, 0], 0);
+        return DiskPoint(ScreenPoint(0, 0), 0);
     } else {
         float foot = sqrtf(1 + point.c[1] * point.c[1]);
         float over = 1 / (foot + point.c[3]);
-        return DiskPoint([point.c[0] * over, point.c[2] * over], share);
+        return DiskPoint(ScreenPoint(point.c[0] * over, point.c[2] * over), share);
     }
 }

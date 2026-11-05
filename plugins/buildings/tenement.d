@@ -1,9 +1,9 @@
 module plugins.buildings.tenement;
 
-import plugins.api.api : Material;
+import plugins.api.api : Material, Span;
 import plugins.buildings.building : Lots, Palette, Parts, Spec, chimney, crown, enter, makeParts, masonry, pick, roof, shell, storefront, tiers, waterTower;
 
-enum int[2] STORIES = [5, 9];
+enum Span STORIES = Span(5, 9);
 enum Material ROOF = Material.basalt;
 
 immutable Palette[5] PALETTES = [
@@ -27,7 +27,8 @@ void build(ref const Lots lots, Spec spec) {
         storefront(part);
     }
     enter(parts, spec);
-    if (pick(parts, 3) < 2) {
+    uint choice = pick(parts, 3);
+    if (choice < 2) {
         crown(parts, spec.palette, &waterTower);
     } else {
         crown(parts, spec.palette, &chimney);

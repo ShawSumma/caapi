@@ -23,11 +23,11 @@ Always pass `--compiler=ldc2`. The plugins are built first by `preGenerateComman
 - Evicted structure state regenerates identically, worth running on lattice: `dub run -q -b release --compiler=ldc2 -c headless -- --worldgen structure lattice check-forget`
 - Hash of the terrain world, which must not change across a refactor: `dub run -q -b release --compiler=ldc2 -c headless -- world-digest`
 - Render a view (`scripts/views.d`) offscreen to a PNG in an existing directory, which Read can then show: `dub run -q -b release --compiler=ldc2 -- --screenshot screenshots/name.png city`
-- Build the web page, `mined.html`, which needs lld and wasi-libc: `dub build -q -b release --compiler=ldc2 --arch=wasm32-unknown-wasi :web`
+- Build the web page, `mined.html`, which needs lld and wasi-libc: `dub build -q -b release --compiler=ldc2 :web`
 - Build the web check driver: `dub build -q -b release --compiler=ldc2 :webdrive`
 - Start Firefox for a web check; drive quits it after each run, so start it again for each one: `firefox --headless --marionette --no-remote --profile .firefox-check`
-- Run a web check page, with modes run, actions, tour, flight, world and bench: `obj/web/tool/drive obj/web/check.html "?mode=bench"`
-- Play `mined.html` with real input: `obj/web/tool/drive`
+- Run a web check page, with modes run, actions, tour, flight, world and bench: `obj/web/tool/drive check bench`, and values after the mode: `obj/web/tool/drive check world index=3 frames=300`
+- Play `mined.html` with real input: `obj/web/tool/drive play`
 
 `--help` lists every option and command on both binaries, generated from the tables in `source/main.d` and `source/headless.d`. `world-digest`, `dump-world`, the censuses and the `bench-*` commands on headless always use the terrain world and ignore `--worldgen`. The game adds `--film`, `--drive`, `--bench-load [--profile]` and `--record`. Unit tests have no filter: everything in `source/unit/` runs. There is no linter or formatter.
 
@@ -72,7 +72,7 @@ Euclidean instincts break here. Most of these rules exist because the obvious ap
 
 ### Exponential growth sets every budget
 
-- Volume grows like e^(2r), so "just look a bit farther" is never cheap. Traversals have explicit reach, capacity or deadline. `NearbyScratch` only expands past `FULL_RADIUS` through nodes that may hold content (`NodeContent`, `mayHoldContent`), so the far view costs a thin band and not a ball. Radii and their costs are coupled: `loadRadius` follows `viewRadius`, and `radiusCut` backs off under fast travel.
+- Volume grows like e^(2r), so "just look a bit farther" is never cheap. Traversals have explicit reach, capacity or deadline. `NearbyScratch` only expands past `FULL_RADIUS` through nodes that may hold content (`NodeContent`, `probeMayHoldContent`), so the far view costs a thin band and not a ball. Radii and their costs are coupled: `loadRadius` follows `viewRadius`, and `radiusCut` backs off under fast travel.
 - All per-frame work is budgeted in milliseconds and resumable (`STEP_BUDGET_MILLISECONDS`, `Pacing`, `ParallelJob` deadlines, `advance`, `continueKeeping`). Evictions and sweeps run incrementally. Do not add an unbounded per-frame loop.
 - Hold nothing forever: unedited chunks drop and regenerate, idle tiles drop and repaint, idle nodes evict.
 - The web build has one thread, so its batch sizes in `streaming.d`, `traversal.d` and `world.d` are tuned for that. Size them by deadline, not by count.
@@ -123,6 +123,7 @@ Euclidean instincts break here. Most of these rules exist because the obvious ap
 - `source/client/graphics/frustum.d`: no Vulkan, shared with `web/`
 - `source/client/graphics/matrices.d`: no Vulkan, shared with `web/`
 - `source/client/graphics/voxels/textures.d`: no Vulkan, shared with `web/`
+- `source/client/graphics/voxels/drawlist.d`: no Vulkan, drawable bookkeeping shared with `web/`
 - `source/shaders/`: GLSL for both renderers; compiled to `shaders/spv` by glslc in `preBuildCommands` and embedded with `import()`, or expanded to GLSL ES at compile time by `web/renderer.d`
 - `source/bindings/platform.c`: read with ImportC for Vulkan and X11
 - `source/bindings/kernel.c`: read with ImportC for futex
@@ -185,7 +186,7 @@ Worldgen is a pure function of the node. `NodeId` is `hash(firstParent, face)`, 
 - `plugins/api/api.d` is the ABI, called through `Api` function pointers. `ENTRY` carries the version: any change to an API struct, enum or the `Api` table must bump it. `Material` lives there too. A new material also needs an entry in the keyed tables `MATERIAL_COLORS` (`common/material.d`) and `GRAIN` (`graphics/voxels/textures.d`); a missed entry silently defaults to zero.
 - Plugins import only `plugins.*` and `core.stdc`, which is why `turtle.d` has its own `lowerOf`, `higherOf` and `clamped`. Do not merge those with `base.numbers`. To add a world: a sub-package in `dub.sdl`, an entry in the root `preGenerateCommands`, a `pragma(mangle, entryOf!__MODULE__)` function that registers names, and an entry in the web table in `client/plugins.d`. One library may register many worlds (`fixtures` does).
 - Two host implementations stand behind `Api`: `main*` in `structures.d` and `tile*` in `tiles.d`. Add a call to both.
-- Two ways to build. **Placed** structures run on the main thread in depth order (`place`, `PAINT_REACH`, `PLACE_SLACK`) and may claim sites. **Tiles** run on workers in any order and may be dropped and repainted, so they decide everything from `site.hash` or `api.random`, which is seeded per tile; they cannot place or claim. A paint may only touch nodes not yet built (a tile: structure not finished; a placed structure: within `PAINT_REACH` of its depth), so painting "behind" is refused.
+- Two ways to build. **Placed** structures run on the main thread in depth order (`place`, `PAINT_REACH`, `PLACE_SLACK`) and may claim sites. **Tiles** run on workers in any order and may be dropped and repainted, so they decide everything from `site.probeHash` or `api.random`, which is seeded per tile; they cannot place or claim. A paint may only touch nodes not yet built (a tile: structure not finished; a placed structure: within `PAINT_REACH` of its depth), so painting "behind" is refused.
 - `HorosphereForm` sets what is behind a plane: `terrain` and `solid` fill forever, `bare` is empty. Tiles on a filled ground carve their own air, and connectors assume solid ground at both ends, with terrain flattened around their axis.
 - Plugin errors are refusals, not crashes: `api.fail` and `refuse` store a message that surfaces as a `StructureProblem`.
 - Painting becomes `Brush`es on canonical `LineSpec`s (`canonicalOf`), stamped per node by `Building`. Paint order is `BrushRank`, deterministic across tile arrival order.

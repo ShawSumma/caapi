@@ -1,9 +1,9 @@
 module plugins.buildings.brownstone;
 
-import plugins.api.api : Material;
+import plugins.api.api : Material, Span;
 import plugins.buildings.building : Lots, Palette, Parts, Spec, chimney, crown, enter, makeParts, masonry, pick, roof, shell, tiers;
 
-enum int[2] STORIES = [4, 5];
+enum Span STORIES = Span(4, 5);
 enum Material ROOF = Material.slate;
 
 immutable Palette[5] PALETTES = [
@@ -26,7 +26,8 @@ void build(ref const Lots lots, Spec spec) {
         }
     }
     enter(parts, spec);
-    if (pick(parts, 2) == 0) {
+    uint choice = pick(parts, 2);
+    if (choice == 0) {
         crown(parts, spec.palette, &chimney);
     }
 }

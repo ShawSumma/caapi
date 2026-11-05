@@ -157,6 +157,10 @@ size_t textureBytes() {
     return mipOffset(TEXTURE_MIPS);
 }
 
+ubyte shaded(ubyte channel, float shade) {
+    return cast(ubyte) clamped(floorf(channel * shade + 0.5f), 0.0f, CHANNEL_MOST);
+}
+
 void fillFirstMip(ubyte[] pixels) {
     float[] noise = makeNoise();
     size_t at = 0;
@@ -167,9 +171,9 @@ void fillFirstMip(ubyte[] pixels) {
         foreach (v; 0 .. TEXTURE_SIZE) {
             foreach (u; 0 .. TEXTURE_SIZE) {
                 float shade = 1 + grain * noise[((v + shift) % TEXTURE_SIZE) * TEXTURE_SIZE + (u + shift) % TEXTURE_SIZE];
-                foreach (channel; 0 .. COLOR_CHANNELS) {
-                    pixels[at + channel] = cast(ubyte) clamped(floorf(MATERIAL_COLORS[material][channel] * shade + 0.5f), 0.0f, CHANNEL_MOST);
-                }
+                pixels[at] = shaded(MATERIAL_COLORS[material].red, shade);
+                pixels[at + 1] = shaded(MATERIAL_COLORS[material].green, shade);
+                pixels[at + 2] = shaded(MATERIAL_COLORS[material].blue, shade);
                 pixels[at + COLOR_CHANNELS] = TEXTURE_OPAQUE;
                 if (material == Material.glass && insideFrame(u, v)) {
                     pixels[at + COLOR_CHANNELS] = TEXTURE_CLEAR;

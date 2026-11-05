@@ -4,13 +4,14 @@ import core.bitop : bsf;
 import base.array : Array;
 import base.flags : Readiness;
 import base.hashmap : HashMap;
-import common.graph : ALL_FACES, Graph, NO_FACE, NO_SLOT, NodeId, ParentEntry, ParentList, childId, childParentFaces, farthestFaceBeyond;
+import base.maybe : Maybe, MaybeIndex;
+import common.graph : ALL_FACES, Graph, NodeId, ParentEntry, ParentList, childId, childParentFaces, farthestFaceBeyond;
 import common.node : ChunkLayout;
 import common.position : Position;
 import common.worldgen.blueprint : Blueprint;
 import common.worldgen.building : Building;
 import common.worldgen.generation : ChunkStructure, NodeState, Worldgen;
-import common.worldgen.horospheres : CornerKey, GroundKey, HorosphereRef, Horospheres, ROOT, Rise, RisingList, applyDiscoveries, makeHorosphere, makeWantedHorospheres;
+import common.worldgen.horospheres : CornerKey, GroundKey, HorosphereId, HorosphereRef, Horospheres, Rise, RisingList, applyDiscoveries, makeHorosphere, makeWantedHorospheres;
 import common.worldgen.store : NodeStructure, Standing;
 import common.worldgen.structure : ClaimKey;
 import geometry.honeycomb : CORNER_COUNT, Corner, FACE_COUNT, Face, faceBit, mirror;
@@ -20,7 +21,7 @@ enum uint VIRTUAL = 1u << 31;
 
 struct ViewNode {
     ParentList parents;
-    uint[FACE_COUNT] children;
+    MaybeIndex!uint[FACE_COUNT] children;
     NodeId id;
     NodeState state;
     uint depth;
@@ -63,7 +64,7 @@ struct WantedHorosphere {
     uint start;
     uint pathStart;
     uint pathLength;
-    uint parent;
+    HorosphereId parent;
     Corner corner;
 }
 
@@ -79,7 +80,7 @@ struct GraphView {
     Array!uint statedSlots;
     Array!HorosphereRef refs;
     HashMap!(SlotKey, RefRange) refsOfNodes;
-    Array!uint risingFound;
+    Array!HorosphereId risingFound;
     HashMap!(GroundKey, RisingList) rising;
     HashMap!(SlotCorner, Rise) choices;
     Array!uint storedSlots;
@@ -188,21 +189,21 @@ struct GraphView {
         }
     }
 
-    uint slotOf(NodeId id) const {
-        uint slot = graph.slotOf(id);
-        if (slot != NO_SLOT) {
+    MaybeIndex!uint slotOf(NodeId id) const {
+        MaybeIndex!uint slot = graph.slotOf(id);
+        if (slot.exists) {
             return slot;
         } else {
             const(uint)* known = virtualIds.find(id);
             if (known is null) {
-                return NO_SLOT;
+                return MaybeIndex!uint.init;
             } else {
-                return *known;
+                return MaybeIndex!uint.of(*known);
             }
         }
     }
 
-    uint neighborSlot(uint node, Face face) const {
+    MaybeIndex!uint neighborSlot(uint node, Face face) const {
         if (!isVirtual(node)) {
             return graph.neighborSlot(node, face);
         } else if ((virtualAt(node).parentFaces & faceBit(face)) != 0) {
@@ -211,21 +212,21 @@ struct GraphView {
             while (list.links[index].side != face) {
                 index += 1;
             }
-            return list.links[index].slot;
+            return MaybeIndex!uint.of(list.links[index].slot);
         } else {
             return virtualAt(node).children[face];
         }
     }
 
     uint ensureNeighborSlot(uint node, Face face) {
-        uint existing = neighborSlot(node, face);
-        if (existing != NO_SLOT) {
-            return existing;
+        MaybeIndex!uint existing = neighborSlot(node, face);
+        if (existing.exists) {
+            return existing.value;
         } else if (owner !is null) {
             return owner.addChild(node, face);
         } else if (isVirtual(node)) {
             uint child = virtualChild(node, face);
-            virtualAt(node).children[face] = child;
+            virtualAt(node).children[face] = MaybeIndex!uint.of(child);
             return child;
         } else {
             const(uint)* known = missingChildren.find(SideKey(node, face));
@@ -248,7 +249,7 @@ struct GraphView {
             remaining &= remaining - 1;
             uint parent = node;
             if (through != face) {
-                parent = ensureNeighborSlot(neighborSlot(node, through), face);
+                parent = ensureNeighborSlot(neighborSlot(node, through).value, face);
             }
             list.links[list.count] = ParentEntry(parent, through);
             list.count += 1;
@@ -260,7 +261,6 @@ struct GraphView {
         } else {
             ViewNode made;
             made.parents = list;
-            made.children[] = NO_SLOT;
             made.id = id;
             made.depth = depthOf(node) + 1;
             made.parentFaces = parentFaces;
@@ -272,11 +272,11 @@ struct GraphView {
     }
 
     Position ensureNormalized(Position start) {
-        uint node = slotOf(start.node);
-        uint face = farthestFaceBeyond(start.local * Point!float.origin(), ALL_FACES);
-        while (face != NO_FACE) {
-            node = ensureNeighborSlot(node, cast(Face) face);
-            start.local = mirror(cast(Face) face) * start.local;
+        uint node = slotOf(start.node).value;
+        Maybe!Face face = farthestFaceBeyond(start.local * Point!float.origin(), ALL_FACES);
+        while (face.exists) {
+            node = ensureNeighborSlot(node, face.value);
+            start.local = mirror(face.value) * start.local;
             face = farthestFaceBeyond(start.local * Point!float.origin(), ALL_FACES);
         }
         return Position(idAt(node), start.local);
@@ -293,7 +293,7 @@ struct GraphView {
         }
     }
 
-    NodeState stateAt(uint node) {
+    NodeState ensureState(uint node) {
         if (owner !is null) {
             return *owner.ensureState(node);
         } else if (isVirtual(node)) {
@@ -321,9 +321,10 @@ struct GraphView {
         return !isVirtual(node) && graph.isFinished(node);
     }
 
-    ChunkStructure chunkStructureAt(uint slot) {
+    ChunkStructure ensureChunkStructure(uint slot) {
         if (owner !is null) {
-            if (owner.ensureStructureAt(slot)) {
+            bool needsBuilding = owner.ensureStructureAt(slot);
+            if (needsBuilding) {
                 return ChunkStructure(owner.ensureBuildingAt(slot), owner.structures.at(slot).standing);
             } else {
                 return ChunkStructure(null, Standing.outside);
@@ -368,17 +369,17 @@ struct GraphView {
         }
     }
 
-    const(uint)[] knownRising(GroundKey key) const {
-        const(uint)[] global = graph.horospheres.knownRising(key);
+    Maybe!(const(HorosphereId)[]) knownRising(GroundKey key) const {
+        Maybe!(const(HorosphereId)[]) global = graph.horospheres.knownRising(key);
         const(RisingList)* local = rising.find(key);
-        if (global !is null || local is null) {
+        if (global.exists || local is null) {
             return global;
         } else {
-            return risingFound.ptr[local.start .. local.start + local.count];
+            return Maybe!(const(HorosphereId)[]).of(risingFound.ptr[local.start .. local.start + local.count]);
         }
     }
 
-    const(uint)[] storeRising(GroundKey key, const(uint)[] found) {
+    const(HorosphereId)[] storeRising(GroundKey key, const(HorosphereId)[] found) {
         if (owner !is null) {
             return owner.horospheres.storeRising(key, found);
         } else {
@@ -417,17 +418,17 @@ struct GraphView {
         return CornerKey(idAt(key.slot), cast(Corner) key.feature);
     }
 
-    uint ensureHorosphere(ClaimKey rooted, uint face, Corner corner, uint parent, Rise rise) {
-        const(uint)* known = graph.horospheres.horosphereOf.find(cornerKeyOf(rooted));
+    Maybe!HorosphereId ensureHorosphere(ClaimKey rooted, uint face, Corner corner, HorosphereId parent, Rise rise) {
+        const(HorosphereId)* known = graph.horospheres.horosphereOf.find(cornerKeyOf(rooted));
         if (known !is null) {
-            return *known;
+            return Maybe!HorosphereId.of(*known);
         } else if (owner !is null) {
-            return (*owner).makeHorosphere(rooted, face, corner, parent, rise);
+            return Maybe!HorosphereId.of((*owner).makeHorosphere(rooted, face, corner, parent, rise));
         } else {
             uint pathStart = cast(uint) wantedPaths.length;
             uint start = pathTo(face, wantedPaths);
             wanted.append(WantedHorosphere(start, pathStart, cast(uint) wantedPaths.length - pathStart, parent, corner));
-            return ROOT;
+            return Maybe!HorosphereId.init;
         }
     }
 

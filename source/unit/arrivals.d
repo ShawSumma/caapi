@@ -1,10 +1,11 @@
 module unit.arrivals;
 
 import base.hashmap : FIBONACCI_MULTIPLIER;
+import base.maybe : Maybe;
 import base.parallel : Executor;
 import client.arrivals : Integrator;
 import client.tasks : GenKind, GenResult;
-import common.graph : Graph, NO_SLOT, ROOT_NODE;
+import common.graph : Graph, ROOT_NODE;
 import common.neighbors : chunkNeighborSlot, needsMesh;
 import common.node : Chunk, ChunkSlot, ChunkState, Materials, Voxels, cellCount;
 import common.worldgen.generation : GeneratedVoxels, Worldgen;
@@ -41,8 +42,8 @@ bool isArrivedIn(ChunkSlot chunk, size_t batch) {
 
 bool isBesideArrivalIn(ref const Graph graph, ChunkSlot chunk, size_t batch) {
     foreach (direction; DIRECTIONS) {
-        ChunkSlot neighbor = graph.chunkNeighborSlot(chunk, direction);
-        if (neighbor.slot != NO_SLOT && isArrivedIn(neighbor, batch)) {
+        Maybe!ChunkSlot neighbor = graph.chunkNeighborSlot(chunk, direction);
+        if (neighbor.exists && isArrivedIn(neighbor.value, batch)) {
             return true;
         }
     }
@@ -51,7 +52,7 @@ bool isBesideArrivalIn(ref const Graph graph, ChunkSlot chunk, size_t batch) {
 
 unittest {
     Graph graph = Graph.make(DIMENSION, Worldgen.makeTerrain());
-    uint root = graph.slotOf(ROOT_NODE);
+    uint root = graph.slotOf(ROOT_NODE).value;
     foreach (face; 0 .. FACE_COUNT) {
         graph.ensureNeighborSlot(root, cast(Face) face);
     }

@@ -1,5 +1,6 @@
 module scripts.films;
 
+import base.maybe : Maybe;
 import base.units : Time;
 import client.game : Key;
 import client.script : NamedScript, Script, degrees;
@@ -12,6 +13,7 @@ enum float BLOCK_EDGE = 1.0613f;
 enum double LEG_SECONDS = 3;
 enum double TURN_SECONDS = 1;
 enum uint PENTAGON_LEGS = 5;
+enum size_t SPIRAL_WAYPOINTS = 40;
 
 struct NamedFilm {
     string name;
@@ -49,7 +51,7 @@ void spiralClimb(ref Script shot) {
     shot.enterRoute();
     shot.wait(SETTLE_SECONDS);
     shot.roll();
-    climb.follow(shot, 40);
+    climb.follow(shot, Maybe!size_t.of(SPIRAL_WAYPOINTS));
 }
 
 void lanternPass(ref Script shot) {

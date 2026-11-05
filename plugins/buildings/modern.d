@@ -1,10 +1,10 @@
 module plugins.buildings.modern;
 
-import plugins.api.api : Box, Material, Rhythm;
-import plugins.buildings.building : Bound, FLOORS, Lots, Palette, Part, Parts, SIDES, STORY, Spec, Split, Tier, WINDOW_ROWS, along, banded, crown, enter, faceOf, footprint, helipad, isEmpty, makeParts, masts, middle, movedOut, pick, roof, setbacks, shell, storefront, tiers, width, withAlong;
+import plugins.api.api : Box, Material, Rhythm, Span;
+import plugins.buildings.building : Bound, FLOORS, Lots, Palette, Part, Parts, SIDES, STORY, Spec, Split, Tier, WINDOW_ROWS, along, banded, crown, enter, faceOf, footprint, helipad, isEmpty, makeParts, masts, middle, movedOut, pick, roof, setbacks, shell, storefront, tiers, width, withAlong, xSpan, ySpan;
 import plugins.turtle.turtle : boxOf, higherOf;
 
-enum int[2] STORIES = [6, 20];
+enum Span STORIES = Span(6, 20);
 enum int SETBACKS = 1;
 enum Material ROOF = Material.concrete;
 enum Rhythm RAILS = Rhythm(STORY, 1, 1);
@@ -24,8 +24,8 @@ void balconied(ref const Part part, Palette palette, Box box, Tier tier) {
         foreach (side; SIDES) {
             if (part.kinds[side] == Bound.street) {
                 Box slab = movedOut(faceOf(box, side), side, 1);
-                int[2] run = along(slab, side);
-                slab = withAlong(slab, side, [run[0] + 1, run[1] - 1]);
+                Span run = along(slab, side);
+                slab = withAlong(slab, side, Span(run.low + 1, run.high - 1));
                 slab.low[2] = low;
                 slab.high[2] = tier.high - 1;
                 part.tower.paint(palette.floor, slab, FLOORS);
@@ -39,13 +39,13 @@ void garden(ref const Part part, Tier tier) {
     Box lawn = footprint(part, tier.shrink + 1, Split.above, tier.high, tier.high);
     if (!isEmpty(lawn)) {
         part.tower.paint(Material.grass, lawn);
-        if (width(lawn.low[0], lawn.high[0]) >= LEAST_GARDEN && width(lawn.low[1], lawn.high[1]) >= LEAST_GARDEN) {
-            int x = middle(lawn.low[0], lawn.high[0]);
-            int y = middle(lawn.low[1], lawn.high[1]);
+        if (width(xSpan(lawn)) >= LEAST_GARDEN && width(ySpan(lawn)) >= LEAST_GARDEN) {
+            int x = middle(xSpan(lawn));
+            int y = middle(ySpan(lawn));
             int z = tier.high;
-            part.tower.paint(Material.oakLeaves, boxOf([x - 1, x + 1], [y - 1, y + 1], [z + 3, z + 4]));
-            part.tower.paint(Material.oakLeaves, boxOf([x, x], [y, y], [z + 5, z + 5]));
-            part.tower.paint(Material.oakWood, boxOf([x, x], [y, y], [z + 1, z + 3]));
+            part.tower.paint(Material.oakLeaves, boxOf(Span(x - 1, x + 1), Span(y - 1, y + 1), Span(z + 3, z + 4)));
+            part.tower.paint(Material.oakLeaves, boxOf(Span(x, x), Span(y, y), Span(z + 5, z + 5)));
+            part.tower.paint(Material.oakWood, boxOf(Span(x, x), Span(y, y), Span(z + 1, z + 3)));
         }
     }
 }

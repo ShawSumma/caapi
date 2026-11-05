@@ -227,8 +227,12 @@ VkPipeline createGraphicsPipeline(VkDevice device, PipelineSettings settings) {
     multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
     VkPipelineDepthStencilStateCreateInfo depthStencil;
     depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    depthStencil.depthTestEnable = settings.depth != Depth.ignored;
-    depthStencil.depthWriteEnable = settings.depth == Depth.written;
+    if (settings.depth != Depth.ignored) {
+        depthStencil.depthTestEnable = VULKAN_TRUE;
+    }
+    if (settings.depth == Depth.written) {
+        depthStencil.depthWriteEnable = VULKAN_TRUE;
+    }
     depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER;
     VkPipelineColorBlendAttachmentState[GEOMETRY_COLOR_ATTACHMENTS] blendAttachments = [
         settings.blendAttachment(),

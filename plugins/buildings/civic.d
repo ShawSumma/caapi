@@ -1,11 +1,11 @@
 module plugins.buildings.civic;
 
 import core.stdc.math : floor, sqrt;
-import plugins.api.api : Box, Material;
-import plugins.buildings.building : Bound, Lots, Palette, Part, Parts, SIDES, STORY, Spec, Split, Tier, along, crown, enter, faceOf, footprint, makeParts, masonry, middle, movedOut, narrowestOf, pick, pyramid, roof, setbacks, shell, strips, tiers, withAlong;
+import plugins.api.api : Box, Material, Span;
+import plugins.buildings.building : Bound, Lots, Palette, Part, Parts, SIDES, STORY, Spec, Split, Tier, along, crown, enter, faceOf, footprint, makeParts, masonry, middle, movedOut, narrowestOf, pick, pyramid, roof, setbacks, shell, strips, tiers, withAlong, xSpan, ySpan;
 import plugins.turtle.turtle : boxOf, floorDiv;
 
-enum int[2] STORIES = [3, 6];
+enum Span STORIES = Span(3, 6);
 enum int SETBACKS = 1;
 enum Material ROOF = Material.slate;
 enum int COLUMN_SPACING = 3;
@@ -27,8 +27,8 @@ void arcade(ref const Part part, Palette palette) {
                 part.tower.paint(palette.trim, column);
             }
             Box behind = movedOut(face, side, -1);
-            int[2] run = along(behind, side);
-            part.tower.paint(Material.glass, withAlong(behind, side, [run[0] + 1, run[1] - 1]));
+            Span run = along(behind, side);
+            part.tower.paint(Material.glass, withAlong(behind, side, Span(run.low + 1, run.high - 1)));
         }
     }
 }
@@ -36,12 +36,12 @@ void arcade(ref const Part part, Palette palette) {
 void dome(ref const Part part, Palette palette, Tier tier) {
     Box roofBox = footprint(part, tier.shrink + 1, Split.above, tier.high, tier.high);
     int reach = floorDiv(narrowestOf(roofBox) - 1, 2);
-    int x = middle(roofBox.low[0], roofBox.high[0]);
-    int y = middle(roofBox.low[1], roofBox.high[1]);
+    int x = middle(xSpan(roofBox));
+    int y = middle(ySpan(roofBox));
     foreach (level; 0 .. reach + 1) {
         int spread = cast(int) floor(sqrt(cast(double)(reach * reach - level * level)) + 0.5);
         int z = tier.high + level + 1;
-        part.tower.paint(palette.roof, boxOf([x - spread, x + spread], [y - spread, y + spread], [z, z]));
+        part.tower.paint(palette.roof, boxOf(Span(x - spread, x + spread), Span(y - spread, y + spread), Span(z, z)));
     }
 }
 
@@ -59,7 +59,8 @@ void build(ref const Lots lots, Spec spec) {
         arcade(part, spec.palette);
     }
     enter(parts, spec);
-    if (pick(parts, 3) < 2) {
+    uint choice = pick(parts, 3);
+    if (choice < 2) {
         crown(parts, spec.palette, &dome);
     } else {
         crown(parts, spec.palette, &pyramid);

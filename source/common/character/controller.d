@@ -4,9 +4,9 @@ import core.stdc.math : acosf, atanhf, ceilf, cosf, expf, fabsf, sinf;
 import base.maybe : Maybe;
 import base.numbers : clamped, higherOf;
 import base.units : Length, Ratio, Speed, Time;
-import base.vector3 : ZERO_VECTOR, cappedTo, cross, dot, magnitude, minus, negated, plus, projectedOntoPlane, rejectAlong, scaled;
+import base.vector3 : Vec3, ZERO_VECTOR, cappedTo, cross, dot, magnitude, minus, negated, plus, projectedOntoPlane, rejectAlong, scaled;
 import common.character.features : BlockProbe, Features, visitCells;
-import common.character.sweep : Capsule, ContactPlane, MIN_CREASE_SINE, SectionRank, Sweep, isSameDirection;
+import common.character.sweep : Capsule, Contact, ContactPlane, MIN_CREASE_SINE, SectionRank, Sweep, isSameDirection;
 import common.graph : Graph;
 import common.position : Position;
 import common.settings : CharacterConfig;
@@ -51,7 +51,7 @@ enum SlideMark : ubyte {
 }
 
 struct CharacterInput {
-    float[3] movement = [0, 0, 0];
+    Vec3!float movement = Vec3!float(0, 0, 0);
     MovementMode mode;
     Jump jump;
 }
@@ -71,10 +71,10 @@ Length regionReach(ref const CharacterConfig character) {
 
 struct CharacterState {
     Position position;
-    float[3] velocity = [0, 0, 0];
-    float[3] groundNormal = [0, 1, 0];
-    float[3] up = [0, 1, 0];
-    float[3] pull = [0, 1, 0];
+    Vec3!float velocity = Vec3!float(0, 0, 0);
+    Vec3!float groundNormal = Vec3!float(0, 1, 0);
+    Vec3!float up = Vec3!float(0, 1, 0);
+    Vec3!float pull = Vec3!float(0, 1, 0);
     Footing footing;
 
     bool isOnGround() const {
@@ -86,33 +86,33 @@ struct CharacterState {
         Time dt = step / cast(float) substeps;
         Stepped stepped;
         Features features;
-        float[3] movement = input.movement;
+        Vec3!float movement = input.movement;
         foreach (_; 0 .. substeps) {
             Gravity gravity = Gravity(up, 0);
-            if (graph.isGravityKnown(graph.slotOf(position.node))) {
+            if (graph.isGravityKnown(graph.slotOf(position.node).value)) {
                 gravity = graph.gravityAt(position);
             }
-            float[3] turned = up;
+            Vec3!float turned = up;
             if (gravity.strength >= character.leastTurningGravity.value) {
                 turned = turnedToward(up, gravity.up, (character.upTurnRate * dt).value);
             }
-            float[3] pivot = turned.minus(up).scaled((character.halfHeight - character.radius).value);
+            Vec3!float pivot = turned.minus(up).scaled((character.halfHeight - character.radius).value);
             if (up.dot(gravity.up) < 0) {
                 pivot = pivot.negated;
             }
             movement = rotatedBetween(movement, up, turned);
-            float[3] halfway = turned.plus(turned.minus(up).scaled(0.5f));
+            Vec3!float halfway = turned.plus(turned.minus(up).scaled(0.5f));
             input.movement = rotatedBetween(movement, turned, halfway.scaled(1.0f / halfway.magnitude));
             up = turned;
             pull = gravity.up.scaled(gravity.strength);
-            float[3] offset = ZERO_VECTOR;
+            Vec3!float offset = ZERO_VECTOR;
             if (input.mode == MovementMode.noclip) {
                 offset = noclipStep(character, input, dt);
             } else {
                 features.collect(graph, position, regionReach(character));
                 if (features.isLoaded) {
                     Mover mover = Mover.make(character, features, up, stepRiseAhead(character, graph, input));
-                    float[3] pivoted = mover.slide(ZERO_VECTOR, pivot, ZERO_VECTOR, SlideKind.move, PlaneSet.init).position;
+                    Vec3!float pivoted = mover.slide(ZERO_VECTOR, pivot, ZERO_VECTOR, SlideKind.move, PlaneSet.init).position;
                     if (input.mode == MovementMode.fly) {
                         offset = flyStep(mover, pivoted, input, dt);
                     } else {
@@ -132,12 +132,12 @@ struct CharacterState {
     }
 
     Length stepRiseAhead(ref const CharacterConfig character, ref const Graph graph, CharacterInput input) const {
-        float[3] level = input.movement.rejectAlong(up);
+        Vec3!float level = input.movement.rejectAlong(up);
         float length = level.magnitude;
         if (input.mode != MovementMode.walk || length == 0) {
             return Length(0);
         } else {
-            float[3] ahead = level.scaled((character.radius + character.skin).value / length).minus(up.scaled((character.halfHeight - character.radius).value));
+            Vec3!float ahead = level.scaled((character.radius + character.skin).value / length).minus(up.scaled((character.halfHeight - character.radius).value));
             BlockProbe probe = BlockProbe(up);
             visitCells(graph, Position(position.node, position.local * Motion!float.shift(ahead)), Length(0), probe);
             if (probe.block.exists) {
@@ -158,22 +158,22 @@ struct CharacterState {
         }
     }
 
-    float[3] noclipStep(ref const CharacterConfig character, CharacterInput input, Time dt) {
+    Vec3!float noclipStep(ref const CharacterConfig character, CharacterInput input, Time dt) {
         velocity = input.movement.cappedTo(MAX_INPUT_LENGTH).scaled(character.noclipSpeed.value);
         footing = Footing.airborne;
         return velocity.scaled(dt.value);
     }
 
-    float[3] flyStep(ref const Mover mover, float[3] at, CharacterInput input, Time dt) {
-        float[3] flyVelocity = input.movement.cappedTo(MAX_INPUT_LENGTH).scaled(mover.character.flySpeed.value);
+    Vec3!float flyStep(ref const Mover mover, Vec3!float at, CharacterInput input, Time dt) {
+        Vec3!float flyVelocity = input.movement.cappedTo(MAX_INPUT_LENGTH).scaled(mover.character.flySpeed.value);
         Slide moved = mover.slide(at, flyVelocity.scaled(dt.value), flyVelocity, SlideKind.move, PlaneSet.init);
         velocity = moved.velocity;
         footing = Footing.airborne;
         return moved.position;
     }
 
-    float[3] walkStep(ref const Mover mover, float[3] at, CharacterInput input, Time dt) {
-        float[3] wish = input.movement.cappedTo(MAX_INPUT_LENGTH).rejectAlong(mover.up);
+    Vec3!float walkStep(ref const Mover mover, Vec3!float at, CharacterInput input, Time dt) {
+        Vec3!float wish = input.movement.cappedTo(MAX_INPUT_LENGTH).rejectAlong(mover.up);
         if (isOnGround && input.jump == Jump.pressed) {
             velocity = alongGround(velocity, groundNormal).plus(mover.up.scaled(mover.character.jumpSpeed.value));
             footing = Footing.airborne;
@@ -185,17 +185,17 @@ struct CharacterState {
         }
     }
 
-    float[3] steered(ref const Mover mover, float[3] wish, Time dt) const {
-        float[3] across = velocity.rejectAlong(mover.up);
-        float[3] pushed = across.plus(wish.scaled((mover.character.steering * dt).value));
+    Vec3!float steered(ref const Mover mover, Vec3!float wish, Time dt) const {
+        Vec3!float across = velocity.rejectAlong(mover.up);
+        Vec3!float pushed = across.plus(wish.scaled((mover.character.steering * dt).value));
         return velocity.minus(across).plus(pushed.cappedTo(higherOf(across.magnitude, mover.character.walkSpeed.value)));
     }
 
-    float[3] groundMove(ref const Mover mover, float[3] at, float[3] walking, Time dt) {
+    Vec3!float groundMove(ref const Mover mover, Vec3!float at, Vec3!float walking, Time dt) {
         float decay = expf(-(mover.character.walkResponse * dt).value);
-        float[3] lag = alongGround(velocity, groundNormal).minus(walking);
-        float[3] reached = walking.plus(lag.scaled(decay));
-        float[3] displacement = walking.scaled(dt.value).plus(lag.scaled((Ratio(1.0f - decay) / mover.character.walkResponse).value));
+        Vec3!float lag = alongGround(velocity, groundNormal).minus(walking);
+        Vec3!float reached = walking.plus(lag.scaled(decay));
+        Vec3!float displacement = walking.scaled(dt.value).plus(lag.scaled((Ratio(1.0f - decay) / mover.character.walkResponse).value));
         PlaneSet ground;
         ground.add(ContactPlane(groundNormal, 0));
         Slide moved = mover.steppedOver(at, displacement, reached, mover.slide(at, displacement, reached, SlideKind.move, ground));
@@ -215,10 +215,10 @@ struct CharacterState {
         }
     }
 
-    float[3] unsupportedMove(ref const Mover mover, float[3] at, float[3] wish, Time dt) {
+    Vec3!float unsupportedMove(ref const Mover mover, Vec3!float at, Vec3!float wish, Time dt) {
         velocity = steered(mover, wish, dt);
-        float[3] fallen = velocity.minus(pull.scaled((mover.character.gravity * dt).value));
-        float[3] displacement = velocity.plus(fallen).scaled(0.5f * dt.value);
+        Vec3!float fallen = velocity.minus(pull.scaled((mover.character.gravity * dt).value));
+        Vec3!float displacement = velocity.plus(fallen).scaled(0.5f * dt.value);
         Slide moved = mover.slide(at, displacement, fallen, SlideKind.move, PlaneSet.init);
         velocity = moved.velocity;
         footing = Footing.airborne;
@@ -230,7 +230,7 @@ struct CharacterState {
     }
 }
 
-Position movedBy(ref const Graph graph, Position start, float[3] klein) {
+Position movedBy(ref const Graph graph, Position start, Vec3!float klein) {
     float length = klein.magnitude;
     if (length == 0) {
         return start;
@@ -240,44 +240,42 @@ Position movedBy(ref const Graph graph, Position start, float[3] klein) {
     }
 }
 
-float[3] turnedToward(float[3] from, float[3] to, float most) {
+Vec3!float turnedToward(Vec3!float from, Vec3!float to, float most) {
     float angle = acosf(clamped(from.dot(to), -1.0f, 1.0f));
     if (angle <= most) {
         return to;
     } else {
-        float[3] axis = from.cross(to);
+        Vec3!float axis = from.cross(to);
         if (axis.magnitude == 0) {
             axis = from.cross(perpendicularTo(from));
         }
-        float[3] side = axis.scaled(1.0f / axis.magnitude).cross(from);
-        float[3] rotated = from.scaled(cosf(most)).plus(side.scaled(sinf(most)));
+        Vec3!float side = axis.scaled(1.0f / axis.magnitude).cross(from);
+        Vec3!float rotated = from.scaled(cosf(most)).plus(side.scaled(sinf(most)));
         return rotated.scaled(1.0f / rotated.magnitude);
     }
 }
 
-float[3] rotatedBetween(float[3] v, float[3] from, float[3] to) {
-    float[3] axis = from.cross(to);
+Vec3!float rotatedBetween(Vec3!float v, Vec3!float from, Vec3!float to) {
+    Vec3!float axis = from.cross(to);
     float sine = axis.magnitude;
     if (sine == 0) {
         return v;
     } else {
-        float[3] unitAxis = axis.scaled(1.0f / sine);
+        Vec3!float unitAxis = axis.scaled(1.0f / sine);
         float cosine = from.dot(to);
         return v.scaled(cosine).plus(unitAxis.cross(v).scaled(sine)).plus(unitAxis.scaled(unitAxis.dot(v) * (1.0f - cosine)));
     }
 }
 
-float[3] perpendicularTo(float[3] direction) {
-    float[3] xAxis = [1, 0, 0];
-    float[3] yAxis = [0, 1, 0];
-    if (fabsf(direction[0]) < fabsf(direction[1])) {
-        return xAxis;
+Vec3!float perpendicularTo(Vec3!float direction) {
+    if (fabsf(direction.x) < fabsf(direction.y)) {
+        return Vec3!float(1, 0, 0);
     } else {
-        return yAxis;
+        return Vec3!float(0, 1, 0);
     }
 }
 
-float[3] alongGround(float[3] wish, float[3] normal) {
+Vec3!float alongGround(Vec3!float wish, Vec3!float normal) {
     return wish.minus(normal.scaled(wish.dot(normal)));
 }
 
@@ -285,18 +283,18 @@ struct Mover {
     const(Features)* features;
     Capsule capsule;
     CharacterConfig character;
-    float[3] up;
+    Vec3!float up;
     Length stepRise;
 
-    static Mover make(ref const CharacterConfig character, ref const Features features, float[3] up, Length stepRise) {
+    static Mover make(ref const CharacterConfig character, ref const Features features, Vec3!float up, Length stepRise) {
         return Mover(&features, Capsule(up, character.radius.value, character.halfHeight.value, character.skin.value), character, up, stepRise);
     }
 
-    Slide settle(float[3] start, Length distance) const {
+    Slide settle(Vec3!float start, Length distance) const {
         return slide(start, up.negated.scaled(distance.value), ZERO_VECTOR, SlideKind.settle, PlaneSet.init);
     }
 
-    Slide steppedOver(float[3] start, float[3] displacement, float[3] velocity, Slide walked) const {
+    Slide steppedOver(Vec3!float start, Vec3!float displacement, Vec3!float velocity, Slide walked) const {
         float length = displacement.magnitude;
         if (!walked.isObstructed || stepRise.value == 0 || length == 0 || !isStepClear(start, displacement, walked)) {
             return walked;
@@ -312,47 +310,48 @@ struct Mover {
         }
     }
 
-    bool isStepClear(float[3] start, float[3] displacement, ref const Slide walked) const {
+    bool isStepClear(Vec3!float start, Vec3!float displacement, ref const Slide walked) const {
         float length = displacement.magnitude;
-        float[3] reach = displacement.scaled(higherOf(length, (character.radius + character.skin).value) / length);
+        Vec3!float reach = displacement.scaled(higherOf(length, (character.radius + character.skin).value) / length);
         Slide raised = slide(start, up.scaled(stepRise.value), ZERO_VECTOR, SlideKind.move, PlaneSet.init);
         Slide across = slide(raised.position, reach, ZERO_VECTOR, SlideKind.move, PlaneSet.init);
         Slide lowered = settle(across.position, Length(raised.position.minus(start).dot(up)) + character.skin);
         return lowered.hasLanded && lowered.position.minus(walked.position).dot(up) > character.skin.value && lowered.position.minus(start).dot(reach) > walked.position.minus(start).dot(reach);
     }
 
-    Slide slide(float[3] start, float[3] displacement, float[3] velocity, SlideKind kind, PlaneSet planes) const {
+    Slide slide(Vec3!float start, Vec3!float displacement, Vec3!float velocity, SlideKind kind, PlaneSet planes) const {
         return slideFrom(Slide(start, velocity), planes, clipToPlanes(planes.slice(), displacement, SkinRule.restore), kind, MAX_CONTACT_PLANES);
     }
 
-    Slide slideFrom(Slide current, PlaneSet planes, float[3] remaining, SlideKind kind, uint contactsLeft) const {
+    Slide slideFrom(Slide current, PlaneSet planes, Vec3!float remaining, SlideKind kind, uint contactsLeft) const {
         if (contactsLeft == 0) {
             return current;
         } else {
             Sweep sweep = Sweep.fromCapsule(*features, capsule, current.position, remaining, planes.slice());
             Slide moved = current;
             moved.position = current.position.plus(sweep.displacement);
-            if (!sweep.contact.isHit()) {
-                return moved;
-            } else {
+            if (sweep.contact.exists) {
                 return slideAfterContact(moved, planes, remaining, kind, sweep, contactsLeft - 1);
+            } else {
+                return moved;
             }
         }
     }
 
-    Slide slideAfterContact(Slide current, PlaneSet planes, float[3] remaining, SlideKind kind, ref const Sweep sweep, uint contactsLeft) const {
-        float[3] shortened = remaining.scaled(1.0f - sweep.displacement.magnitude / remaining.magnitude);
+    Slide slideAfterContact(Slide current, PlaneSet planes, Vec3!float remaining, SlideKind kind, ref const Sweep sweep, uint contactsLeft) const {
+        Vec3!float shortened = remaining.scaled(1.0f - sweep.displacement.magnitude / remaining.magnitude);
         Slide contacted = current;
         PlaneSet clipping = planes;
-        clipping.add(ContactPlane(sweep.contact.normal, character.skin.value - sweep.contact.gap));
-        float[3] rest = shortened;
-        if (shortened.dot(up) < 0 && sweep.contact.rank == SectionRank.lowest && sweep.contact.normal.dot(up) >= character.minSupportCosine) {
+        Contact contact = sweep.contact.value;
+        clipping.add(ContactPlane(contact.normal, character.skin.value - contact.gap));
+        Vec3!float rest = shortened;
+        if (shortened.dot(up) < 0 && contact.rank == SectionRank.lowest && contact.normal.dot(up) >= character.minSupportCosine) {
             contacted.marks.set(SlideMark.landed);
-            contacted.groundNormal = sweep.contact.normal;
+            contacted.groundNormal = contact.normal;
             contacted.velocity = clipToPlanes(clipping.slice(), current.velocity.rejectAlong(up), SkinRule.ignore);
             rest = landedRemainder(shortened, kind);
         } else {
-            if (sweep.contact.normal.dot(up) < character.minSupportCosine) {
+            if (contact.normal.dot(up) < character.minSupportCosine) {
                 contacted.marks.set(SlideMark.obstructed);
             }
             contacted.velocity = clipToPlanes(clipping.slice(), current.velocity, SkinRule.ignore);
@@ -360,7 +359,7 @@ struct Mover {
         return slideFrom(contacted, clipping, clipToPlanes(clipping.slice(), rest, SkinRule.restore), kind, contactsLeft);
     }
 
-    float[3] landedRemainder(float[3] remaining, SlideKind kind) const {
+    Vec3!float landedRemainder(Vec3!float remaining, SlideKind kind) const {
         if (kind == SlideKind.settle) {
             return ZERO_VECTOR;
         } else {
@@ -397,9 +396,9 @@ struct PlaneSet {
 }
 
 struct Slide {
-    float[3] position = [0, 0, 0];
-    float[3] velocity = [0, 0, 0];
-    float[3] groundNormal = [0, 0, 0];
+    Vec3!float position = Vec3!float(0, 0, 0);
+    Vec3!float velocity = Vec3!float(0, 0, 0);
+    Vec3!float groundNormal = Vec3!float(0, 0, 0);
     Flags!SlideMark marks;
 
     bool hasLanded() const {
@@ -423,7 +422,7 @@ float target(ContactPlane plane, SkinRule skin) {
     }
 }
 
-bool isSatisfyingPlanes(const(ContactPlane)[] planes, float[3] v, SkinRule skin, size_t skipA, size_t skipB) {
+bool isSatisfyingPlanes(const(ContactPlane)[] planes, Vec3!float v, SkinRule skin, size_t skipA, size_t skipB) {
     size_t k = 0;
     while (k < planes.length && (k == skipA || k == skipB || !(v.dot(planes[k].normal) < target(planes[k], skin)))) {
         k += 1;
@@ -431,11 +430,11 @@ bool isSatisfyingPlanes(const(ContactPlane)[] planes, float[3] v, SkinRule skin,
     return k == planes.length;
 }
 
-float[3] planeCandidate(ContactPlane plane, float[3] v, SkinRule skin) {
+Vec3!float planeCandidate(ContactPlane plane, Vec3!float v, SkinRule skin) {
     return v.projectedOntoPlane(plane.normal, plane.normal, target(plane, skin));
 }
 
-bool isPlaneClip(const(ContactPlane)[] planes, float[3] v, SkinRule skin, size_t i) {
+bool isPlaneClip(const(ContactPlane)[] planes, Vec3!float v, SkinRule skin, size_t i) {
     return v.dot(planes[i].normal) < target(planes[i], skin) && isSatisfyingPlanes(planes, planeCandidate(planes[i], v, skin), skin, i, i);
 }
 
@@ -443,10 +442,10 @@ float creaseSine(const(ContactPlane)[] planes, size_t i, size_t j) {
     return planes[i].normal.cross(planes[j].normal).magnitude;
 }
 
-float[3] creaseCandidate(const(ContactPlane)[] planes, float[3] v, SkinRule skin, size_t i, size_t j) {
-    float[3] crease = planes[i].normal.cross(planes[j].normal);
+Vec3!float creaseCandidate(const(ContactPlane)[] planes, Vec3!float v, SkinRule skin, size_t i, size_t j) {
+    Vec3!float crease = planes[i].normal.cross(planes[j].normal);
     float sine = crease.magnitude;
-    float[3] line = crease.scaled(1.0f / sine);
+    Vec3!float line = crease.scaled(1.0f / sine);
     float cosine = planes[i].normal.dot(planes[j].normal);
     float determinant = sine * sine;
     float targetI = target(planes[i], skin);
@@ -456,40 +455,40 @@ float[3] creaseCandidate(const(ContactPlane)[] planes, float[3] v, SkinRule skin
     return line.scaled(v.dot(line)).plus(planes[i].normal.scaled(alongI).plus(planes[j].normal.scaled(alongJ)));
 }
 
-bool isCreaseClip(const(ContactPlane)[] planes, float[3] v, SkinRule skin, size_t i, size_t j) {
+bool isCreaseClip(const(ContactPlane)[] planes, Vec3!float v, SkinRule skin, size_t i, size_t j) {
     return j > i && creaseSine(planes, i, j) >= MIN_CREASE_SINE && isSatisfyingPlanes(planes, creaseCandidate(planes, v, skin, i, j), skin, i, j);
 }
 
-Maybe!(float[3]) clipToCrease(const(ContactPlane)[] planes, float[3] v, SkinRule skin) {
+Maybe!(Vec3!float) clipToCrease(const(ContactPlane)[] planes, Vec3!float v, SkinRule skin) {
     size_t n = planes.length;
     size_t pair = 0;
     while (pair < n * n && !isCreaseClip(planes, v, skin, pair / n, pair % n)) {
         pair += 1;
     }
     if (pair < n * n) {
-        return Maybe!(float[3]).of(creaseCandidate(planes, v, skin, pair / n, pair % n));
+        return Maybe!(Vec3!float).of(creaseCandidate(planes, v, skin, pair / n, pair % n));
     } else {
-        return Maybe!(float[3]).init;
+        return Maybe!(Vec3!float).init;
     }
 }
 
-Maybe!(float[3]) clipToPlane(const(ContactPlane)[] planes, float[3] v, SkinRule skin) {
+Maybe!(Vec3!float) clipToPlane(const(ContactPlane)[] planes, Vec3!float v, SkinRule skin) {
     size_t index = 0;
     while (index < planes.length && !isPlaneClip(planes, v, skin, index)) {
         index += 1;
     }
     if (index < planes.length) {
-        return Maybe!(float[3]).of(planeCandidate(planes[index], v, skin));
+        return Maybe!(Vec3!float).of(planeCandidate(planes[index], v, skin));
     } else {
         return clipToCrease(planes, v, skin);
     }
 }
 
-float[3] clipToPlanes(const(ContactPlane)[] planes, float[3] v, SkinRule skin) {
+Vec3!float clipToPlanes(const(ContactPlane)[] planes, Vec3!float v, SkinRule skin) {
     if (isSatisfyingPlanes(planes, v, skin, planes.length, planes.length)) {
         return v;
     } else {
-        Maybe!(float[3]) clip = clipToPlane(planes, v, skin);
+        Maybe!(Vec3!float) clip = clipToPlane(planes, v, skin);
         if (clip.exists) {
             return clip.value;
         } else if (skin == SkinRule.restore) {

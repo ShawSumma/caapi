@@ -1,5 +1,6 @@
 module geometry.cube;
 
+import base.vector3 : Vec3;
 import geometry.honeycomb : Face;
 
 enum Axis : ubyte {
@@ -29,13 +30,13 @@ immutable Direction[6] DIRECTIONS = [
     Direction(Axis.z, Sign.minus),
 ];
 
-immutable int[3][6] CELL_STEPS = [
-    [-1, 0, 0],
-    [1, 0, 0],
-    [0, -1, 0],
-    [0, 1, 0],
-    [0, 0, -1],
-    [0, 0, 1],
+immutable Vec3!int[6] CELL_STEPS = [
+    Vec3!int(-1, 0, 0),
+    Vec3!int(1, 0, 0),
+    Vec3!int(0, -1, 0),
+    Vec3!int(0, 1, 0),
+    Vec3!int(0, 0, -1),
+    Vec3!int(0, 0, 1),
 ];
 
 size_t directionIndex(Direction direction) {
@@ -46,9 +47,7 @@ size_t directionIndex(Direction direction) {
     }
 }
 
-struct Cell {
-    ubyte[3] c;
-}
+alias Cell = Vec3!ubyte;
 
 ubyte boundaryOf(ubyte dimension, Sign sign) {
     if (sign == Sign.plus) {
@@ -81,8 +80,8 @@ struct AxisMap {
         return map;
     }
 
-    T[3] apply(T)(T[3] cell) const {
-        T[3] result;
+    Vec3!T apply(T)(Vec3!T cell) const {
+        Vec3!T result;
         foreach (i; 0 .. 3) {
             result[to[i]] = cell[i];
         }

@@ -25,7 +25,8 @@ unittest {
     Slab!uint sparse;
     *sparse.touch(SLAB_SIZE * 5) = 7;
     assert(sparse.blocks.ptr[0] is null);
-    assert(*sparse.touch(SLAB_SIZE * 5) == 7);
+    uint* touched = sparse.touch(SLAB_SIZE * 5);
+    assert(*touched == 7);
     sparse.release();
 }
 
@@ -93,15 +94,18 @@ unittest {
         free.add(step * INDEX_STRIDE % INDICES);
     }
     foreach (expected; 0 .. INDICES / 2) {
-        assert(free.takeLowest() == expected);
+        uint lowest = free.takeLowest();
+        assert(lowest == expected);
     }
     free.add(INDEX_STRIDE);
     assert(free.contains(INDEX_STRIDE) && !free.contains(INDEX_STRIDE + 1));
     assert(free.containsAll(INDICES / 2, INDICES) && !free.containsAll(INDICES / 2 - 1, INDICES));
     assert(free.containsAll(INDEX_STRIDE, INDEX_STRIDE + 1) && !free.containsAll(0, INDEX_STRIDE + 1));
-    assert(free.takeLowest() == INDEX_STRIDE);
+    uint added = free.takeLowest();
+    assert(added == INDEX_STRIDE);
     free.drop(INDICES / 2);
-    assert(free.takeLowest() == INDICES / 2 + 1);
+    uint afterDropped = free.takeLowest();
+    assert(afterDropped == INDICES / 2 + 1);
     assert(free.count == INDICES / 2 - 2);
     free.release();
 }

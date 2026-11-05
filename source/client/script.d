@@ -310,7 +310,7 @@ struct Script {
         return game.placeBlock();
     }
 
-    Maybe!Material targetMaterial() {
+    Maybe!Material targetMaterial() const {
         return game.world.targetMaterial();
     }
 
@@ -330,13 +330,25 @@ struct Script {
         }
     }
 
-    Maybe!RouteWaypoint routeWaypoint(size_t number) {
+    Maybe!RouteWaypoint routeWaypoint(size_t number) const {
         Maybe!RouteWaypoint waypoint;
         if (number >= 1) {
             waypoint = game.routeWaypoint(number - 1);
-            waypoint.value.yaw = -waypoint.value.yaw;
+            if (waypoint.exists) {
+                waypoint.value.yaw = -waypoint.value.yaw;
+            }
         }
         return waypoint;
+    }
+
+    RouteWaypoint needWaypoint(size_t number) {
+        Maybe!RouteWaypoint waypoint = routeWaypoint(number);
+        if (waypoint.exists) {
+            return waypoint.value;
+        } else {
+            fail("the route has no stop %zu", number);
+            return RouteWaypoint.init;
+        }
     }
 
     Length traveled() const {
@@ -363,8 +375,8 @@ struct Script {
         return game.unloadedWithin(radius);
     }
 
-    Length frameDrift(Length radius) {
-        return game.frameDrift(radius);
+    Length probeFrameDrift(Length radius) {
+        return game.probeFrameDrift(radius);
     }
 
     Length altitude() const {

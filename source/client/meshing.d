@@ -3,14 +3,16 @@ module client.meshing;
 import core.stdc.stdlib : free, malloc;
 import core.stdc.string : memcpy;
 import base.array : Array;
-import base.maybe : Maybe;
+import base.maybe : Maybe, MaybeIndex;
 import base.splitmix : SplitMix;
-import common.graph : Graph, NO_SLOT;
+import base.vector3 : Vec3;
+import common.graph : Graph;
 import common.material : isShownAgainst;
 import common.neighbors : acrossBorder, chunkNeighborSlot, indexIn, isCellOccupied, isOutside;
 import common.node : Chunk, ChunkSlot, ChunkState, cellIndex;
 import geometry.cube : AXIS_COUNT, DIRECTIONS, beyondBoundary, boundaryOf;
 import plugins.api.api : Material;
+import plugins.api.flags : Flags;
 
 enum uint CORNERS_PER_FACE = 4;
 enum uint OCCLUSION_LEVELS = 3;
@@ -31,11 +33,17 @@ enum Facing : ubyte {
     inward,
 }
 
+enum CornerCell : ubyte {
+    edgeB,
+    edgeC,
+    diagonal,
+}
+
 struct Quad {
     uint posAxis;
     uint occlusionMaterial;
 
-    static Quad fromVoxel(int[3] voxel, size_t axis, Facing facing, Material material, uint[CORNERS_PER_FACE] occlusion, uint window) {
+    static Quad fromVoxel(Vec3!int voxel, size_t axis, Facing facing, Material material, uint[CORNERS_PER_FACE] occlusion, uint window) {
         uint axisCode = cast(uint) axis;
         if (facing == Facing.inward) {
             axisCode |= REVERSED_BIT;
@@ -47,7 +55,7 @@ struct Quad {
         foreach (corner; 0 .. CORNERS_PER_FACE) {
             packed |= occlusion[corner] << (OCCLUSION_SHIFT + OCCLUSION_BITS * corner);
         }
-        return Quad(cast(uint) voxel[0] | cast(uint) voxel[1] << COORD_BITS | cast(uint) voxel[2] << (2 * COORD_BITS) | axisCode << AXIS_SHIFT, packed);
+        return Quad(cast(uint) voxel.x | cast(uint) voxel.y << COORD_BITS | cast(uint) voxel.z << (2 * COORD_BITS) | axisCode << AXIS_SHIFT, packed);
     }
 }
 
@@ -63,7 +71,7 @@ struct ChunkCells {
         return cast(uint)(SplitMix(seed ^ (index << CELL_SEED_SHIFT | axis)).next() >> (ulong.sizeof * 8 - WINDOW_BITS));
     }
 
-    bool isOccupied(int[3] voxel) const {
+    bool isOccupied(Vec3!int voxel) const {
         uint outside = 0;
         foreach (axis; 0 .. AXIS_COUNT) {
             if (isOutside(dimension, voxel[axis])) {
@@ -77,20 +85,24 @@ struct ChunkCells {
         }
     }
 
-    uint[CORNERS_PER_FACE] faceOcclusion(int[3] base, size_t axis) const {
+    uint[CORNERS_PER_FACE] faceOcclusion(Vec3!int base, size_t axis) const {
         size_t bAxis = (axis + 1) % AXIS_COUNT;
         size_t cAxis = (axis + 2) % AXIS_COUNT;
         uint[CORNERS_PER_FACE] result;
         foreach (corner; 0 .. CORNERS_PER_FACE) {
             int stepB = cast(int)(corner & 1) * 2 - 1;
             int stepC = cast(int)(corner >> 1) * 2 - 1;
-            int[3] edgeB = base;
+            Vec3!int edgeB = base;
             edgeB[bAxis] += stepB;
-            int[3] edgeC = base;
+            Vec3!int edgeC = base;
             edgeC[cAxis] += stepC;
-            int[3] diagonal = edgeB;
+            Vec3!int diagonal = edgeB;
             diagonal[cAxis] += stepC;
-            result[corner] = cornerOcclusion(isOccupied(edgeB), isOccupied(edgeC), isOccupied(diagonal));
+            Flags!CornerCell occupied;
+            occupied.put(CornerCell.edgeB, isOccupied(edgeB));
+            occupied.put(CornerCell.edgeC, isOccupied(edgeC));
+            occupied.put(CornerCell.diagonal, isOccupied(diagonal));
+            result[corner] = cornerOcclusion(occupied);
         }
         return result;
     }
@@ -110,11 +122,11 @@ struct ChunkCells {
                         size_t index = rowStart + a * step;
                         Maybe!Facing facing = facingAt(padded[index], padded[index - step], a);
                         if (facing.exists) {
-                            int[3] voxel;
+                            Vec3!int voxel;
                             voxel[axis] = cast(int) a;
                             voxel[bAxis] = cast(int) b;
                             voxel[cAxis] = cast(int) c;
-                            int[3] base = voxel;
+                            Vec3!int base = voxel;
                             base[axis] -= solidSideStep(facing.value);
                             quads[count] = Quad.fromVoxel(voxel, axis, facing.value, solidMaterial(index, step, facing.value), faceOcclusion(base, axis), windowOf(index, axis));
                             count += 1;
@@ -127,13 +139,11 @@ struct ChunkCells {
     }
 
     Maybe!Facing facingAt(Material self, Material other, uint a) const {
-        if (isShownAgainst(other, self)) {
-            if (a < dimension || isShownAgainst(self, other)) {
-                return Maybe!Facing.of(Facing.inward);
-            } else {
-                return Maybe!Facing.init;
-            }
-        } else if (a > 0 && isShownAgainst(self, other)) {
+        bool otherShows = isShownAgainst(other, self);
+        bool selfShows = isShownAgainst(self, other);
+        if (otherShows && (a < dimension || selfShows)) {
+            return Maybe!Facing.of(Facing.inward);
+        } else if (!otherShows && a > 0 && selfShows) {
             return Maybe!Facing.of(Facing.outward);
         } else {
             return Maybe!Facing.init;
@@ -181,7 +191,7 @@ struct Mesher {
         const(Chunk)* own = graph.chunks.at(chunk);
         foreach (z; 0 .. dimension) {
             foreach (y; 0 .. dimension) {
-                Material* row = padded + paddedIndex(dimension, [0, y, z]);
+                Material* row = padded + paddedIndex(dimension, Vec3!int(0, y, z));
                 if (own.voxels.isUniform()) {
                     row[0 .. dimension] = own.voxels.fill;
                 } else {
@@ -190,16 +200,16 @@ struct Mesher {
             }
         }
         foreach (direction; DIRECTIONS) {
-            ChunkSlot neighbor = graph.chunkNeighborSlot(chunk, direction);
+            Maybe!ChunkSlot neighbor = graph.chunkNeighborSlot(chunk, direction);
             const(Chunk)* other = null;
-            if (neighbor.slot != NO_SLOT && graph.chunks.at(neighbor).state == ChunkState.populated) {
-                other = graph.chunks.at(neighbor);
+            if (neighbor.exists && graph.chunks.at(neighbor.value).state == ChunkState.populated) {
+                other = graph.chunks.at(neighbor.value);
             }
             size_t u = (direction.axis + 1) % AXIS_COUNT;
             size_t v = (direction.axis + 2) % AXIS_COUNT;
-            int[3] past;
+            Vec3!int past;
             past[direction.axis] = beyondBoundary(dimension, direction.sign);
-            int[3] inside;
+            Vec3!int inside;
             inside[direction.axis] = boundaryOf(dimension, direction.sign);
             foreach (j; 0 .. dimension) {
                 foreach (i; 0 .. dimension) {
@@ -220,7 +230,7 @@ struct Mesher {
 
 struct MeshRecord {
     ChunkSlot slot;
-    uint block;
+    MaybeIndex!uint block;
     uint offset;
     uint count;
 }
@@ -280,8 +290,8 @@ struct MeshBatch {
 
 bool isBesideUnsettled(ref const Graph graph, ChunkSlot slot) {
     foreach (direction; DIRECTIONS) {
-        ChunkSlot neighbor = graph.chunkNeighborSlot(slot, direction);
-        if (neighbor.slot != NO_SLOT && (graph.chunks.at(neighbor).state == ChunkState.generating || graph.chunks.at(neighbor).state == ChunkState.dropped)) {
+        Maybe!ChunkSlot neighbor = graph.chunkNeighborSlot(slot, direction);
+        if (neighbor.exists && (graph.chunks.at(neighbor.value).state == ChunkState.generating || graph.chunks.at(neighbor.value).state == ChunkState.dropped)) {
             return true;
         }
     }
@@ -296,9 +306,9 @@ void meshJob(void* context, size_t index, uint worker) {
     WorkerMeshes* output = &batch.workers.ptr[worker];
     if (chunk.state == ChunkState.populated && !chunk.voxels.isOpaqueFill()) {
         foreach (direction; DIRECTIONS) {
-            ChunkSlot neighbor = (*graph).chunkNeighborSlot(slot, direction);
-            if (neighbor.slot != NO_SLOT && graph.chunks.at(neighbor).state == ChunkState.dropped) {
-                output.dropped.append(neighbor);
+            Maybe!ChunkSlot neighbor = (*graph).chunkNeighborSlot(slot, direction);
+            if (neighbor.exists && graph.chunks.at(neighbor.value).state == ChunkState.dropped) {
+                output.dropped.append(neighbor.value);
             }
         }
         if ((*graph).isBesideUnsettled(slot)) {
@@ -311,9 +321,9 @@ void meshJob(void* context, size_t index, uint worker) {
     }
 }
 
-size_t paddedIndex(ubyte dimension, int[3] cell) {
+size_t paddedIndex(ubyte dimension, Vec3!int cell) {
     size_t side = dimension + 2;
-    return (cell[0] + 1) + (cell[1] + 1) * side + (cell[2] + 1) * side * side;
+    return (cell.x + 1) + (cell.y + 1) * side + (cell.z + 1) * side * side;
 }
 
 size_t paddedCellCount(ubyte dimension) {
@@ -325,19 +335,15 @@ uint maxQuads(ubyte dimension) {
     return AXIS_COUNT * (dimension * dimension * dimension + dimension * dimension);
 }
 
-uint cornerOcclusion(bool edgeB, bool edgeC, bool diagonal) {
-    if (edgeB && edgeC) {
+uint cornerOcclusion(Flags!CornerCell occupied) {
+    if (occupied.has(CornerCell.edgeB) && occupied.has(CornerCell.edgeC)) {
         return 0;
     } else {
         uint level = OCCLUSION_LEVELS;
-        if (edgeB) {
-            level -= 1;
-        }
-        if (edgeC) {
-            level -= 1;
-        }
-        if (diagonal) {
-            level -= 1;
+        foreach (cell; [CornerCell.edgeB, CornerCell.edgeC, CornerCell.diagonal]) {
+            if (occupied.has(cell)) {
+                level -= 1;
+            }
         }
         return level;
     }

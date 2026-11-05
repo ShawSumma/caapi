@@ -2,9 +2,11 @@ module client.arrivals;
 
 import core.stdc.stdlib : calloc, free;
 import base.array : Array;
+import base.clock : Deadline;
+import base.maybe : Maybe;
 import base.parallel : Executor, ParallelJob;
 import client.tasks : GenKind, GenResult;
-import common.graph : Graph, NO_SLOT;
+import common.graph : Graph;
 import common.neighbors : chunkNeighborSlot, isBorderingVoid, isPredictionContradicted, needsMesh, touchChunksAround;
 import common.node : Chunk, ChunkSlot, ChunkState, Materials;
 import common.worldgen.generation : ChunkParams, GeneratedVoxels, MaterialPass;
@@ -89,7 +91,7 @@ struct Integrator {
 }
 
 void runPass(Executor executor, void function(void* context, size_t item, uint worker) pass, IntegrationJob* context, size_t count) {
-    ParallelJob job = ParallelJob(pass, context, double.infinity, count);
+    ParallelJob job = ParallelJob(pass, context, Deadline.init, count);
     executor.run(&job);
 }
 
@@ -119,17 +121,24 @@ void settle(ref Graph graph, GenResult arrival, ref IntegrationOutput output) {
         output.exposed.append(arrival.chunk);
     }
     foreach (direction; DIRECTIONS) {
-        ChunkSlot neighbor = graph.chunkNeighborSlot(arrival.chunk, direction);
-        if (neighbor.slot != NO_SLOT && graph.chunks.has(neighbor.slot)) {
-            Chunk* other = graph.chunks.existing(neighbor);
-            if (arrival.kind == GenKind.fresh && other.casState(ChunkState.dropped, ChunkState.generating)) {
-                output.restored.append(neighbor);
-            } else if (other.loadState() == ChunkState.populated) {
-                if (arrival.kind == GenKind.fresh) {
-                    queueMesh(graph, neighbor, output);
-                }
-                if (other.hasDeferredMaterials && graph.isBorderingVoid(neighbor)) {
-                    output.exposed.append(neighbor);
+        Maybe!ChunkSlot neighbor = graph.chunkNeighborSlot(arrival.chunk, direction);
+        if (neighbor.exists && graph.chunks.has(neighbor.value.slot)) {
+            Chunk* other = graph.chunks.existing(neighbor.value);
+            bool restored = false;
+            if (arrival.kind == GenKind.fresh) {
+                restored = other.casState(ChunkState.dropped, ChunkState.generating);
+            }
+            if (restored) {
+                output.restored.append(neighbor.value);
+            } else {
+                ChunkState state = other.loadState();
+                if (state == ChunkState.populated) {
+                    if (arrival.kind == GenKind.fresh) {
+                        queueMesh(graph, neighbor.value, output);
+                    }
+                    if (other.hasDeferredMaterials && graph.isBorderingVoid(neighbor.value)) {
+                        output.exposed.append(neighbor.value);
+                    }
                 }
             }
         }
@@ -137,8 +146,11 @@ void settle(ref Graph graph, GenResult arrival, ref IntegrationOutput output) {
 }
 
 void queueMesh(ref Graph graph, ChunkSlot target, ref IntegrationOutput output) {
-    if (graph.needsMesh(target) && graph.chunks.existing(target).claimQueued()) {
-        output.changed.append(target);
+    if (graph.needsMesh(target)) {
+        bool claimed = graph.chunks.existing(target).claimQueued();
+        if (claimed) {
+            output.changed.append(target);
+        }
     }
 }
 
@@ -173,9 +185,9 @@ void resolveMaterials(ref Graph graph, ChunkSlot chunk) {
     target.materials = Materials.resolved;
     graph.markChanged(chunk);
     foreach (direction; DIRECTIONS) {
-        ChunkSlot neighbor = graph.chunkNeighborSlot(chunk, direction);
-        if (neighbor.slot != NO_SLOT && graph.chunks.at(neighbor).state == ChunkState.populated) {
-            graph.markChanged(neighbor);
+        Maybe!ChunkSlot neighbor = graph.chunkNeighborSlot(chunk, direction);
+        if (neighbor.exists && graph.chunks.at(neighbor.value).state == ChunkState.populated) {
+            graph.markChanged(neighbor.value);
         }
     }
 }

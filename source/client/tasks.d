@@ -63,7 +63,8 @@ struct TaskQueues {
 
     void announce() {
         atomicOp!"+="(completed, 1);
-        if (atomicLoad(awaiting) != 0) {
+        uint waiting = atomicLoad(awaiting);
+        if (waiting != 0) {
             wake(completed);
         }
     }
@@ -73,36 +74,46 @@ struct TaskQueues {
             takeTask(&this, MAIN_WORKER);
         }
         atomicStore(awaiting, 1);
-        if (atomicLoad(completed) == seen) {
+        uint latest = atomicLoad(completed);
+        if (latest == seen) {
             waitWhile(completed, seen);
         }
         atomicStore(awaiting, 0);
     }
 
     void release() {
-        GenRequest request;
-        while (generations.pop(request)) {
+        void dropRequest(ref GenRequest request) {
         }
-        while (urgent.pop(request)) {
+        void dropPlan(ref BuildingRequest request) {
+            request.plan.release();
         }
-        BuildingRequest building;
-        while (buildings.pop(building) || urgentBuildings.pop(building)) {
-            building.plan.release();
-        }
-        GenResult result;
-        while (generated.pop(result)) {
+        void dropVoxels(ref GenResult result) {
             result.generated.voxels.release();
         }
-        BuildingResult made;
-        while (built.pop(made)) {
-            made.building.release();
+        void dropBuilding(ref BuildingResult result) {
+            result.building.release();
         }
+        drained!dropRequest(generations);
+        drained!dropRequest(urgent);
+        drained!dropPlan(buildings);
+        drained!dropPlan(urgentBuildings);
+        drained!dropVoxels(generated);
+        drained!dropBuilding(built);
         generations.release();
         urgent.release();
         buildings.release();
         urgentBuildings.release();
         generated.release();
         built.release();
+    }
+}
+
+void drained(alias drop, T)(ref ConcurrentQueue!T queue) {
+    T item;
+    bool popped = queue.pop(item);
+    while (popped) {
+        drop(item);
+        popped = queue.pop(item);
     }
 }
 
@@ -120,40 +131,55 @@ bool takeTask(void* context, uint worker) {
     TaskQueues* queues = cast(TaskQueues*) context;
     BuildingRequest building;
     GenRequest request;
-    if (queues.urgentBuildings.pop(building)) {
+    bool took = queues.urgentBuildings.pop(building);
+    if (took) {
         makeBuilding(queues, building);
-    } else if (queues.urgent.pop(request)) {
-        generate(queues, request, worker);
-    } else if (queues.buildings.pop(building)) {
-        makeBuilding(queues, building);
-    } else if (queues.generations.pop(request)) {
-        generate(queues, request, worker);
-    } else {
-        return false;
     }
-    queues.announce();
-    return true;
+    if (!took) {
+        took = queues.urgent.pop(request);
+        if (took) {
+            generate(queues, request, worker);
+        }
+    }
+    if (!took) {
+        took = queues.buildings.pop(building);
+        if (took) {
+            makeBuilding(queues, building);
+        }
+    }
+    if (!took) {
+        took = queues.generations.pop(request);
+        if (took) {
+            generate(queues, request, worker);
+        }
+    }
+    if (took) {
+        queues.announce();
+    }
+    return took;
 }
 
 void makeBuilding(TaskQueues* queues, BuildingRequest building) {
     BuildingResult made = BuildingResult(Building.make(building.plan), building.slot);
     building.plan.release();
-    if (!queues.built.push(made)) {
-        assert(false);
-    }
+    bool accepted = queues.built.push(made);
+    assert(accepted);
 }
 
 void generate(TaskQueues* queues, GenRequest request, uint worker) {
     JobHelp help = JobHelp(queues.pool, worker);
-    if (!queues.generated.push(GenResult(request.params.generateVoxels(Yield(&yieldToJob, &help)), request.chunk, request.kind))) {
-        assert(false);
-    }
+    bool accepted = queues.generated.push(GenResult(request.params.generateVoxels(Yield(&yieldToJob, &help)), request.chunk, request.kind));
+    assert(accepted);
 }
 
 size_t pushedPrefix(T)(ref ConcurrentQueue!T queue, ref Array!T pending, size_t room) {
     size_t pushed = 0;
-    while (pushed < pending.length && pushed < room && queue.push(pending.ptr[pushed])) {
-        pushed += 1;
+    bool accepted = true;
+    while (accepted && pushed < pending.length && pushed < room) {
+        accepted = queue.push(pending.ptr[pushed]);
+        if (accepted) {
+            pushed += 1;
+        }
     }
     foreach (index; pushed .. pending.length) {
         pending.ptr[index - pushed] = pending.ptr[index];

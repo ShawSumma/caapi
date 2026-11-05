@@ -2,7 +2,7 @@ module common.worldgen.spawn;
 
 import core.stdc.math : coshf;
 import base.array : Array;
-import base.vector3 : scaled;
+import base.vector3 : Vec3, scaled;
 import common.graph : Graph, ROOT_NODE;
 import common.node : ChunkSlot;
 import common.position : Position;
@@ -18,7 +18,7 @@ Array!ChunkSlot collectChunksNear(ref Graph graph, Position position, float dist
     Vec4!float point = (position.local * Point!float.origin()).v;
     Array!ChunkSlot chunks;
     Array!NodeVisit visits;
-    visits.append(NodeVisit(graph.slotOf(position.node), Motion!float.identity()));
+    visits.append(NodeVisit(graph.slotOf(position.node).value, Motion!float.identity()));
     size_t front = 0;
     while (front < visits.length) {
         NodeVisit visit = visits.ptr[front];
@@ -45,7 +45,7 @@ Array!ChunkSlot collectChunksNear(ref Graph graph, Position position, float dist
     return chunks;
 }
 
-bool isEveryChunkProvenClear(ref Graph graph, const(ChunkSlot)[] chunks) {
+bool probeEveryChunkClear(ref Graph graph, const(ChunkSlot)[] chunks) {
     uint unproven = 0;
     foreach (chunk; chunks) {
         ChunkParams params = ChunkParams.make(graph.view, chunk.slot, chunk.corner);
@@ -56,27 +56,29 @@ bool isEveryChunkProvenClear(ref Graph graph, const(ChunkSlot)[] chunks) {
     return unproven == 0;
 }
 
-bool isRegionProvenClear(ref Graph graph, Position position, float distance) {
+bool probeRegionClear(ref Graph graph, Position position, float distance) {
     Array!ChunkSlot chunks = graph.collectChunksNear(position, distance);
-    bool isClear = graph.isEveryChunkProvenClear(chunks.slice());
+    bool clear = graph.probeEveryChunkClear(chunks.slice());
     chunks.release();
-    return isClear;
+    return clear;
 }
 
-Position clearSpawnPosition(ref Graph graph, float bodyReach) {
-    float rootAltitude = graph.horospheres.gravitySign() * graph.ensureState(graph.slotOf(ROOT_NODE)).surface.distanceTo(Point!float.origin());
-    float[3] up = graph.ensureGravityAt(Position.origin()).up;
+Position findSpawnPosition(ref Graph graph, float bodyReach) {
+    float rootAltitude = graph.horospheres.gravitySign() * graph.ensureState(graph.slotOf(ROOT_NODE).value).surface.distanceTo(Point!float.origin());
+    Vec3!float up = graph.ensureGravityAt(Position.origin()).up;
     float altitude = bodyReach;
-    Position candidate = graph.positionAtRise(up, altitude - rootAltitude);
-    while (!graph.isRegionProvenClear(candidate, bodyReach)) {
+    Position candidate = graph.ensurePositionAtRise(up, altitude - rootAltitude);
+    bool clear = graph.probeRegionClear(candidate, bodyReach);
+    while (!clear) {
         altitude += bodyReach;
-        candidate = graph.positionAtRise(up, altitude - rootAltitude);
+        candidate = graph.ensurePositionAtRise(up, altitude - rootAltitude);
+        clear = graph.probeRegionClear(candidate, bodyReach);
     }
     return candidate;
 }
 
-Position positionAtRise(ref Graph graph, float[3] up, float rise) {
+Position ensurePositionAtRise(ref Graph graph, Vec3!float up, float rise) {
     Position result = graph.ensureNormalized(Position(ROOT_NODE, Motion!float.shift(up.scaled(rise))));
-    graph.ensureState(graph.slotOf(result.node));
+    graph.ensureState(graph.slotOf(result.node).value);
     return result;
 }

@@ -6,9 +6,9 @@ import base.array : Array;
 import base.maybe : Maybe;
 import base.numbers : clamped, higherOf, isNan, lowerOf;
 import base.units : Length, LocalBlock;
-import base.vector3 : cross, dot, magnitude, minus, plus, scaled;
-import common.character.chart : chunkPointInNode, gridJacobian, inverted;
-import common.graph : Graph, NO_SLOT;
+import base.vector3 : Vec3, cross, dot, magnitude, minus, plus, scaled;
+import common.character.chart : Matrix3, chunkPointInNode, gridJacobian, inverted;
+import common.graph : Graph;
 import common.neighbors : chunkNeighborSlot, indexIn, isInside, materialNear;
 import common.node : Chunk, ChunkLayout, ChunkSlot, ChunkState;
 import common.position : Position;
@@ -25,14 +25,14 @@ enum uint CELL_FACES = 6;
 enum uint QUAD_CORNERS = 4;
 
 struct Quad {
-    float[3][QUAD_CORNERS] corners;
-    float[3] normal;
+    Vec3!float[QUAD_CORNERS] corners;
+    Vec3!float normal;
 
-    float separation(float[3] point) const {
+    float separation(Vec3!float point) const {
         return normal.dot(point.minus(corners[0]));
     }
 
-    bool isAbove(float[3] point) const {
+    bool isAbove(Vec3!float point) const {
         uint index = 0;
         while (index < QUAD_CORNERS && normal.dot(corners[(index + 1) % QUAD_CORNERS].minus(corners[index]).cross(point.minus(corners[index]))) >= 0) {
             index += 1;
@@ -40,13 +40,13 @@ struct Quad {
         return index == QUAD_CORNERS;
     }
 
-    float distanceTo(float[3] point) const {
-        float[3] projected = point.minus(normal.scaled(separation(point)));
+    float distanceTo(Vec3!float point) const {
+        Vec3!float projected = point.minus(normal.scaled(separation(point)));
         if (isAbove(projected)) {
             return fabsf(separation(point));
         } else {
-            float nearest = float.infinity;
-            foreach (index; 0 .. QUAD_CORNERS) {
+            float nearest = segmentDistance(corners[0], corners[1], point);
+            foreach (index; 1 .. QUAD_CORNERS) {
                 nearest = lowerOf(segmentDistance(corners[index], corners[(index + 1) % QUAD_CORNERS], point), nearest);
             }
             return nearest;
@@ -55,15 +55,15 @@ struct Quad {
 }
 
 struct Edge {
-    float[3] start;
-    float[3] end;
+    Vec3!float start;
+    Vec3!float end;
 }
 
 struct Hexahedron {
-    float[3][CELL_CORNERS] corners;
+    Vec3!float[CELL_CORNERS] corners;
 
-    float[3] center() const {
-        float[3] sum = [0, 0, 0];
+    Vec3!float center() const {
+        Vec3!float sum = Vec3!float(0, 0, 0);
         foreach (corner; corners) {
             sum = sum.plus(corner);
         }
@@ -79,10 +79,10 @@ struct Hexahedron {
         result.corners[1] = corners[base | (1u << uAxis)];
         result.corners[2] = corners[base | (1u << uAxis) | (1u << vAxis)];
         result.corners[3] = corners[base | (1u << vAxis)];
-        float[3] normal = unit(result.corners[1].minus(result.corners[0]).cross(result.corners[3].minus(result.corners[0])));
-        float[3] faceCenter = result.corners[0].plus(result.corners[2]).scaled(0.5f);
+        Vec3!float normal = unit(result.corners[1].minus(result.corners[0]).cross(result.corners[3].minus(result.corners[0])));
+        Vec3!float faceCenter = result.corners[0].plus(result.corners[2]).scaled(0.5f);
         if (normal.dot(faceCenter.minus(center())) < 0) {
-            float[3] second = result.corners[1];
+            Vec3!float second = result.corners[1];
             result.corners[1] = result.corners[3];
             result.corners[3] = second;
             normal = normal.scaled(-1);
@@ -91,38 +91,38 @@ struct Hexahedron {
         return result;
     }
 
-    float distanceTo(float[3] point) const {
-        float nearest = float.infinity;
+    float distanceTo(Vec3!float point) const {
+        float nearest = 0;
         uint outside = 0;
         foreach (axis; 0 .. 3) {
             foreach (side; 0 .. 2) {
                 Quad candidate = face(axis, sideSign(side));
                 if (candidate.separation(point) > 0) {
+                    float distance = candidate.distanceTo(point);
+                    if (outside == 0) {
+                        nearest = distance;
+                    }
                     outside += 1;
-                    nearest = lowerOf(candidate.distanceTo(point), nearest);
+                    nearest = lowerOf(distance, nearest);
                 }
             }
         }
-        if (outside == 0) {
-            return 0;
-        } else {
-            return nearest;
-        }
+        return nearest;
     }
 }
 
 struct LocalFrame {
     Motion!float toBody;
 
-    float[3] klein(Point!float point) const {
+    Vec3!float klein(Point!float point) const {
         Vec4!float local = toBody * point.v;
-        return [local.c[0] / local.c[3], local.c[1] / local.c[3], local.c[2] / local.c[3]];
+        return Vec3!float(local.c[0] / local.c[3], local.c[1] / local.c[3], local.c[2] / local.c[3]);
     }
 
-    Hexahedron cell(ref const ChunkLayout layout, Corner corner, int[3] cell) const {
+    Hexahedron cell(ref const ChunkLayout layout, Corner corner, Vec3!int cell) const {
         Hexahedron result;
         foreach (cellCorner; 0 .. CELL_CORNERS) {
-            float[3] chunk;
+            Vec3!float chunk;
             foreach (axis; 0 .. 3) {
                 chunk[axis] = layout.gridToCube(cell[axis] + ((cellCorner >> axis) & 1));
             }
@@ -133,15 +133,15 @@ struct LocalFrame {
 }
 
 struct CellRange {
-    int[3] low;
-    int[3] high;
+    Vec3!int low;
+    Vec3!int high;
 
     bool isEmpty() const {
-        return low[0] > high[0] || low[1] > high[1] || low[2] > high[2];
+        return low.x > high.x || low.y > high.y || low.z > high.z;
     }
 
-    bool contains(int[3] cell) const {
-        return cell[0] >= low[0] && cell[0] <= high[0] && cell[1] >= low[1] && cell[1] <= high[1] && cell[2] >= low[2] && cell[2] <= high[2];
+    bool contains(Vec3!int cell) const {
+        return cell.x >= low.x && cell.x <= high.x && cell.y >= low.y && cell.y <= high.y && cell.z >= low.z && cell.z <= high.z;
     }
 
     bool isTouching(Direction direction, ubyte dimension) const {
@@ -156,7 +156,7 @@ struct CellRange {
 struct Features {
     Array!Quad quads;
     Array!Edge edges;
-    Array!(float[3]) corners;
+    Array!(Vec3!float) corners;
     uint unloaded;
 
     bool isLoaded() const {
@@ -182,11 +182,11 @@ struct Features {
         if (cells.chunk.state != ChunkState.populated || !graph.areNeighborsPopulated(slot, range)) {
             unloaded += 1;
         } else {
-            foreach (x; range.low[0] .. range.high[0] + 1) {
-                foreach (y; range.low[1] .. range.high[1] + 1) {
-                    foreach (z; range.low[2] .. range.high[2] + 1) {
-                        int[3] cell = [x, y, z];
-                        if (cells.isSolid(cell, [0, 0, 0]) && cells.hasExposedFace(cell)) {
+            foreach (x; range.low.x .. range.high.x + 1) {
+                foreach (y; range.low.y .. range.high.y + 1) {
+                    foreach (z; range.low.z .. range.high.z + 1) {
+                        Vec3!int cell = Vec3!int(x, y, z);
+                        if (cells.isSolid(cell, Vec3!int(0, 0, 0)) && cells.hasExposedFace(cell)) {
                             addCell(cells, frame.cell(graph.layout, slot.corner, cell), cell);
                         }
                     }
@@ -199,7 +199,7 @@ struct Features {
         unloaded += 1;
     }
 
-    void addCell(ref const ChunkCellsNear cells, Hexahedron hexahedron, int[3] cell) {
+    void addCell(ref const ChunkCellsNear cells, Hexahedron hexahedron, Vec3!int cell) {
         foreach (axis; 0 .. 3) {
             foreach (side; 0 .. 2) {
                 int sign = sideSign(side);
@@ -221,7 +221,7 @@ struct Features {
 }
 
 struct CellOverlap {
-    float[3][] centers;
+    Vec3!float[] centers;
     ChunkSlot target;
     Cell coords;
     float radius;
@@ -231,7 +231,7 @@ struct CellOverlap {
     }
 
     void visitChunk(ref const Graph graph, LocalFrame frame, ChunkSlot slot, CellRange range) {
-        int[3] cell = [coords.c[0], coords.c[1], coords.c[2]];
+        Vec3!int cell = coords.as!int();
         if (slot == target && range.contains(cell) && overlaps == 0 && isTouchingAny(frame.cell(graph.layout, slot.corner, cell), centers, radius)) {
             overlaps += 1;
         }
@@ -239,7 +239,7 @@ struct CellOverlap {
 }
 
 struct BlockProbe {
-    float[3] up;
+    Vec3!float up;
     Maybe!LocalBlock block;
 
     void visitMissingNode(uint, Face) {
@@ -247,25 +247,25 @@ struct BlockProbe {
 
     void visitChunk(ref const Graph graph, LocalFrame frame, ChunkSlot slot, CellRange) {
         Motion!float toCorner = slot.corner.nodeToCorner * frame.toBody.inverse();
-        float[3] grid = gridPoint(graph.layout, toCorner);
+        Vec3!float grid = gridPoint(graph.layout, toCorner);
         if (!block.exists && isInsideGrid(grid, graph.layout.dimension)) {
-            float[3][3] absolutePerGrid = inverted(gridJacobian(graph.layout, toCorner));
+            Matrix3 absolutePerGrid = inverted(gridJacobian(graph.layout, toCorner));
             float height = 0;
             foreach (axis; 0 .. 3) {
-                height += fabsf(absolutePerGrid[0][axis] * up[0] + absolutePerGrid[1][axis] * up[1] + absolutePerGrid[2][axis] * up[2]);
+                height += fabsf(absolutePerGrid.x[axis] * up.x + absolutePerGrid.y[axis] * up.y + absolutePerGrid.z[axis] * up.z);
             }
             block = Maybe!LocalBlock.of(LocalBlock(Length(height)));
         }
     }
 }
 
-float[3] gridPoint(ref const ChunkLayout layout, Motion!float toCorner) {
+Vec3!float gridPoint(ref const ChunkLayout layout, Motion!float toCorner) {
     Vec4!float at = (toCorner * Point!float.origin()).v;
-    return [layout.kleinToGrid(at.c[0] / at.c[3]), layout.kleinToGrid(at.c[1] / at.c[3]), layout.kleinToGrid(at.c[2] / at.c[3])];
+    return Vec3!float(layout.kleinToGrid(at.c[0] / at.c[3]), layout.kleinToGrid(at.c[1] / at.c[3]), layout.kleinToGrid(at.c[2] / at.c[3]));
 }
 
-bool isInsideGrid(float[3] grid, ubyte dimension) {
-    return grid[0] >= 0 && grid[0] < dimension && grid[1] >= 0 && grid[1] < dimension && grid[2] >= 0 && grid[2] < dimension;
+bool isInsideGrid(Vec3!float grid, ubyte dimension) {
+    return grid.x >= 0 && grid.x < dimension && grid.y >= 0 && grid.y < dimension && grid.z >= 0 && grid.z < dimension;
 }
 
 struct NodeSide {
@@ -295,11 +295,11 @@ struct RequiredChunks {
         chunks.append(slot);
         foreach (direction; DIRECTIONS) {
             if (range.isTouching(direction, graph.layout.dimension)) {
-                ChunkSlot neighbor = graph.chunkNeighborSlot(slot, direction);
-                if (neighbor.slot == NO_SLOT) {
-                    missing.append(NodeSide(slot.slot, slot.corner.faces[direction.axis]));
+                Maybe!ChunkSlot neighbor = graph.chunkNeighborSlot(slot, direction);
+                if (neighbor.exists) {
+                    chunks.append(neighbor.value);
                 } else {
-                    chunks.append(neighbor);
+                    missing.append(NodeSide(slot.slot, slot.corner.faces[direction.axis]));
                 }
             }
         }
@@ -311,7 +311,7 @@ void visitCells(V)(ref const Graph graph, Position body, Length reach, ref V vis
     Motion!float bodyInverse = body.local.inverse();
     float nodeThreshold = coshf(reach.value + NODE_RADIUS + CUBE_RADIUS);
     float chunkThreshold = coshf(reach.value + CUBE_RADIUS);
-    VisitQueue!FEATURE_MAX_NODES queue = VisitQueue!FEATURE_MAX_NODES.fromSlot(graph.slotOf(body.node));
+    VisitQueue!FEATURE_MAX_NODES queue = VisitQueue!FEATURE_MAX_NODES.fromSlot(graph.slotOf(body.node).value);
     while (queue.hasNext()) {
         NodeVisit visit = queue.current();
         Vec4!float local = visit.inverse * point;
@@ -327,7 +327,7 @@ void visitCells(V)(ref const Graph graph, Position body, Length reach, ref V vis
         }
         foreach (index; 0 .. FACE_COUNT) {
             Face side = cast(Face) index;
-            if (graph.neighborSlot(visit.slot, side) == NO_SLOT && !((side.mirror * visit.inverse * point).c[3] > nodeThreshold)) {
+            if (!graph.neighborSlot(visit.slot, side).exists && !((side.mirror * visit.inverse * point).c[3] > nodeThreshold)) {
                 visitor.visitMissingNode(visit.slot, side);
             }
         }
@@ -337,11 +337,11 @@ void visitCells(V)(ref const Graph graph, Position body, Length reach, ref V vis
 
 CellRange cellRange(ref const ChunkLayout layout, Corner corner, Vec4!float local, Length reach) {
     Motion!float toCorner = corner.nodeToCorner * Motion!float.shiftTo(Point!float(local));
-    float[3] grid = gridPoint(layout, toCorner);
-    float[3][3] jacobian = gridJacobian(layout, toCorner);
+    Vec3!float grid = gridPoint(layout, toCorner);
+    Matrix3 jacobian = gridJacobian(layout, toCorner);
     CellRange range;
     foreach (axis; 0 .. 3) {
-        float extent = jacobian[axis][0] * jacobian[axis][0] + jacobian[axis][1] * jacobian[axis][1] + jacobian[axis][2] * jacobian[axis][2];
+        float extent = jacobian[axis].dot(jacobian[axis]);
         float span = sqrt(extent) * reach.value;
         if (isNan(grid[axis]) || isNan(span)) {
             range.low[axis] = 0;
@@ -367,8 +367,8 @@ bool areNeighborsPopulated(ref const Graph graph, ChunkSlot slot, CellRange rang
 }
 
 bool isNeighborPopulated(ref const Graph graph, ChunkSlot slot, Direction direction) {
-    ChunkSlot neighbor = graph.chunkNeighborSlot(slot, direction);
-    return neighbor.slot != NO_SLOT && graph.chunks.at(neighbor).state == ChunkState.populated;
+    Maybe!ChunkSlot neighbor = graph.chunkNeighborSlot(slot, direction);
+    return neighbor.exists && graph.chunks.at(neighbor.value).state == ChunkState.populated;
 }
 
 struct ChunkCellsNear {
@@ -376,8 +376,8 @@ struct ChunkCellsNear {
     ChunkSlot slot;
     const(Chunk)* chunk;
 
-    bool isSolid(int[3] cell, int[3] offset) const {
-        int[3] at = [cell[0] + offset[0], cell[1] + offset[1], cell[2] + offset[2]];
+    bool isSolid(Vec3!int cell, Vec3!int offset) const {
+        Vec3!int at = Vec3!int(cell.x + offset.x, cell.y + offset.y, cell.z + offset.z);
         ubyte dimension = graph.layout.dimension;
         if (isInside(dimension, at)) {
             return chunk.voxels.at(indexIn(dimension, at)) != Material.none;
@@ -386,7 +386,7 @@ struct ChunkCellsNear {
         }
     }
 
-    bool hasExposedFace(int[3] cell) const {
+    bool hasExposedFace(Vec3!int cell) const {
         uint face = 0;
         while (face < CELL_FACES && isSolid(cell, offsetAlong(face / 2, sideSign(face % 2)))) {
             face += 1;
@@ -395,7 +395,7 @@ struct ChunkCellsNear {
     }
 }
 
-bool isTouchingAny(Hexahedron hexahedron, const(float[3])[] centers, float radius) {
+bool isTouchingAny(Hexahedron hexahedron, const(Vec3!float)[] centers, float radius) {
     size_t index = 0;
     while (index < centers.length && !(hexahedron.distanceTo(centers[index]) < radius)) {
         index += 1;
@@ -403,8 +403,8 @@ bool isTouchingAny(Hexahedron hexahedron, const(float[3])[] centers, float radiu
     return index < centers.length;
 }
 
-int[3] offsetAlong(size_t axis, int sign) {
-    int[3] offset = [0, 0, 0];
+Vec3!int offsetAlong(size_t axis, int sign) {
+    Vec3!int offset = Vec3!int(0, 0, 0);
     offset[axis] = sign;
     return offset;
 }
@@ -425,12 +425,12 @@ int sideSign(int side) {
     }
 }
 
-float[3] unit(float[3] v) {
+Vec3!float unit(Vec3!float v) {
     return v.scaled(1.0f / v.magnitude);
 }
 
-float segmentDistance(float[3] start, float[3] end, float[3] point) {
-    float[3] along = end.minus(start);
+float segmentDistance(Vec3!float start, Vec3!float end, Vec3!float point) {
+    Vec3!float along = end.minus(start);
     float t = clamped(point.minus(start).dot(along) / along.dot(along), 0.0f, 1.0f);
     return point.minus(start.plus(along.scaled(t))).magnitude;
 }

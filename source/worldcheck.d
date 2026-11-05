@@ -4,13 +4,14 @@ import core.stdc.math : coshf, floorf;
 import core.stdc.stdio : FILE, fprintf, fputc;
 import core.stdc.stdlib : free, malloc;
 import base.array : Array;
-import base.clock : NANOSECONDS_PER_MILLISECOND, nowMilliseconds;
+import base.clock : Deadline, NANOSECONDS_PER_MILLISECOND, nowMilliseconds;
 import base.hashmap : HashMap, Present;
-import base.murmur : murmurHash3;
+import base.murmur : Hash128, murmurHash3;
 import base.names : ENUM_NAMES;
 import base.numbers : higherOf;
 import base.parallel : Executor;
 import base.splitmix : SplitMix;
+import base.vector3 : Vec3;
 import client.arguments : ExitStatus, exitStatus;
 import client.arrivals : populateChunk, resolveMaterials;
 import client.meshing : Mesher;
@@ -18,17 +19,17 @@ import client.streaming : Pacing, Streamer;
 import client.structures : StructureProblem, growthProblem, placeWorldStructure;
 import client.world : FULL_RADIUS;
 import common.eviction : Evictor, Unloaded;
-import common.graph : Graph, NO_SLOT, NodeId;
+import common.graph : Graph, NodeId;
 import common.material : MATERIAL_COUNT;
 import common.neighbors : needsMesh;
 import common.node : Chunk, ChunkSlot, ChunkState, Materials, Voxels, cellIndex;
 import common.position : Position;
-import common.traversal : NO_DEADLINE, NearbyNode, NearbyScratch;
-import common.worldgen.blueprint : Blueprint;
+import common.traversal : NearbyNode, NearbyScratch;
+import common.worldgen.blueprint : Blueprint, EdgeUses;
 import common.worldgen.generation : ChunkParams, GeneratedVoxels, Worldgen;
 import common.worldgen.horospheres : ChunkPoint, chunkPointOf;
 import common.worldgen.store : dropTile;
-import common.worldgen.structure : ColumnSpot, SiteFrame, altitude, columnPoint, edgeLength, forwarded, rootSite, sitePlacement, turned;
+import common.worldgen.structure : ColumnSpot, SiteFrame, altitude, columnPoint, edgeLength, forwarded, rootSite, sitePlacement, turnSite;
 import geometry.honeycomb : CORNER_COUNT, CUBE_RADIUS, Corner, FACE_COUNT, Face, cubeCenter;
 import geometry.lorentz : Motion, Point;
 import plugins.api.api : Material, Turn;
@@ -50,8 +51,8 @@ enum float FORGET_NEAR_RADIUS = 1.0f;
 enum uint FORGET_SWEEPS = 4000;
 
 struct ContentHashes {
-    ulong[2] materials;
-    ulong[2] occupancy;
+    Hash128 materials;
+    Hash128 occupancy;
 
     static ContentHashes fromVoxels(Corner corner, const Voxels voxels, ubyte dimension) {
         size_t cells = cast(size_t) dimension * dimension * dimension;
@@ -83,8 +84,8 @@ struct ContentHashes {
 }
 
 struct WorldDigest {
-    ulong[2] materials;
-    ulong[2] occupancy;
+    Hash128 materials;
+    Hash128 occupancy;
     size_t populated;
 
     static WorldDigest fromGraph(ref const Graph graph) {
@@ -100,10 +101,10 @@ struct WorldDigest {
     }
 
     void add(ContentHashes hashes) {
-        materials[0] += hashes.materials[0];
-        materials[1] += hashes.materials[1];
-        occupancy[0] += hashes.occupancy[0];
-        occupancy[1] += hashes.occupancy[1];
+        materials.first += hashes.materials.first;
+        materials.second += hashes.materials.second;
+        occupancy.first += hashes.occupancy.first;
+        occupancy.second += hashes.occupancy.second;
         populated += 1;
     }
 
@@ -191,8 +192,8 @@ void generateWorld(ref Graph graph, float radius) {
     scratch.release();
 }
 
-void printHash(FILE* output, ulong[2] hash) {
-    fprintf(output, "%016llx%016llx", hash[0], hash[1]);
+void printHash(FILE* output, Hash128 hash) {
+    fprintf(output, "%016llx%016llx", hash.first, hash.second);
 }
 
 void printChunkLine(FILE* output, NodeId node, Corner corner, ContentHashes hashes) {
@@ -204,7 +205,14 @@ void printChunkLine(FILE* output, NodeId node, Corner corner, ContentHashes hash
     fprintf(output, "\n");
 }
 
-void dumpWorld(FILE* output, float radius, ubyte dimension) {
+ExitStatus finishWorld(FILE* output, ref Graph graph) {
+    StructureProblem problem = growthProblem(graph);
+    printProblem(output, problem);
+    graph.release();
+    return exitStatus(!problem.isPresent);
+}
+
+ExitStatus dumpWorld(FILE* output, float radius, ubyte dimension) {
     Graph graph = terrainGraph(dimension);
     graph.generateWorld(radius);
     foreach (index; 0 .. cast(size_t) graph.slotCount * CORNER_COUNT) {
@@ -215,10 +223,10 @@ void dumpWorld(FILE* output, float radius, ubyte dimension) {
         }
     }
     WorldDigest.fromGraph(graph).print(output);
-    graph.release();
+    return finishWorld(output, graph);
 }
 
-void printMaterialCensus(FILE* output, float radius, ubyte dimension) {
+ExitStatus printMaterialCensus(FILE* output, float radius, ubyte dimension) {
     Graph graph = terrainGraph(dimension);
     graph.generateWorld(radius);
     size_t[MATERIAL_COUNT] counts;
@@ -235,15 +243,15 @@ void printMaterialCensus(FILE* output, float radius, ubyte dimension) {
             fprintf(output, "%.*s %zu\n", cast(int) ENUM_NAMES!Material[material].length, ENUM_NAMES!Material[material].ptr, count);
         }
     }
-    graph.release();
+    return finishWorld(output, graph);
 }
 
-bool touchesAir(const(Chunk)* chunk, ubyte dimension, int[3] cell) {
+bool touchesAir(const(Chunk)* chunk, ubyte dimension, Vec3!int cell) {
     foreach (axis; 0 .. 3) {
         foreach (step; [-1, 1]) {
-            int[3] beside = cell;
+            Vec3!int beside = cell;
             beside[axis] += step;
-            if (beside[axis] >= 0 && beside[axis] < dimension && chunk.voxels.at(cellIndex(dimension, beside[0], beside[1], beside[2])) == Material.none) {
+            if (beside[axis] >= 0 && beside[axis] < dimension && chunk.voxels.at(cellIndex(dimension, beside.x, beside.y, beside.z)) == Material.none) {
                 return true;
             }
         }
@@ -251,7 +259,7 @@ bool touchesAir(const(Chunk)* chunk, ubyte dimension, int[3] cell) {
     return false;
 }
 
-void printSurfaceCensus(FILE* output, float radius, ubyte dimension) {
+ExitStatus printSurfaceCensus(FILE* output, float radius, ubyte dimension) {
     Graph graph = terrainGraph(dimension);
     graph.generateWorld(radius);
     size_t[MATERIAL_COUNT] counts;
@@ -262,7 +270,7 @@ void printSurfaceCensus(FILE* output, float radius, ubyte dimension) {
                 foreach (y; 0 .. dimension) {
                     foreach (z; 0 .. dimension) {
                         Material material = chunk.voxels.at(cellIndex(dimension, x, y, z));
-                        if (material != Material.none && touchesAir(chunk, dimension, [x, y, z])) {
+                        if (material != Material.none && touchesAir(chunk, dimension, Vec3!int(x, y, z))) {
                             counts[material] += 1;
                         }
                     }
@@ -275,17 +283,23 @@ void printSurfaceCensus(FILE* output, float radius, ubyte dimension) {
             fprintf(output, "%.*s %zu\n", cast(int) ENUM_NAMES!Material[material].length, ENUM_NAMES!Material[material].ptr, count);
         }
     }
-    graph.release();
+    return finishWorld(output, graph);
 }
 
-void printWorldDigest(FILE* output, float radius, ubyte dimension) {
+void printProblem(FILE* output, ref const StructureProblem problem) {
+    if (problem.isPresent) {
+        fprintf(output, "%s\n", problem.text.ptr);
+    }
+}
+
+ExitStatus printWorldDigest(FILE* output, float radius, ubyte dimension) {
     Graph graph = terrainGraph(dimension);
     graph.generateWorld(radius);
     WorldDigest.fromGraph(graph).print(output);
-    graph.release();
+    return finishWorld(output, graph);
 }
 
-size_t filledVoxels(ref Graph graph, uint slot) {
+size_t countFilled(ref Graph graph, uint slot) {
     size_t filled = 0;
     foreach (cornerIndex; 0 .. CORNER_COUNT) {
         GeneratedVoxels generated = ChunkParams.make(graph.view, slot, cast(Corner) cornerIndex).generateVoxels();
@@ -310,17 +324,16 @@ ExitStatus dumpStructure(FILE* output, ubyte dimension, Worldgen worldgen) {
         NearbyScratch scratch;
         NearbyNode[] nearby = scratch.collectAll(graph, Position(graph.idAt(graph.anchorSlot), Motion!float.identity()), STRUCTURE_DUMP_RADIUS);
         foreach (node; nearby) {
-            if (graph.ensureStructureAt(node.slot)) {
-                fprintf(output, "altitude=%.3f filled=%zu\n", cast(double)(*graph.ensureState(node.slot)).altitude(), graph.filledVoxels(node.slot));
+            bool needsBuilding = graph.ensureStructureAt(node.slot);
+            if (needsBuilding) {
+                fprintf(output, "altitude=%.3f filled=%zu\n", cast(double)(*graph.ensureState(node.slot)).altitude(), graph.countFilled(node.slot));
             }
         }
         scratch.release();
         fprintf(output, "lines=%zu brushes=%zu stops=%zu claims=%u edge=%.4f\n", graph.structures.blueprint.lines.length, graph.structures.blueprint.brushTotal(), graph.structures.blueprint.route.length, graph.structures.blueprint.claimCount, cast(double) edgeLength(graph.layout).value);
         problem = growthProblem(graph);
     }
-    if (problem.isPresent) {
-        fprintf(output, "%s\n", problem.text.ptr);
-    }
+    printProblem(output, problem);
     ExitStatus status = exitStatus(!problem.isPresent);
     graph.release();
     return status;
@@ -335,8 +348,9 @@ ExitStatus checkRepaint(FILE* output, ubyte dimension, Worldgen worldgen) {
         NearbyNode[] nearby = scratch.collectAll(graph, Position(graph.idAt(graph.anchorSlot), Motion!float.identity()), STRUCTURE_DUMP_RADIUS);
         Array!ulong painted;
         foreach (node; nearby) {
-            if (graph.ensureStructureAt(node.slot)) {
-                painted.append(graph.generatedHash(node.slot));
+            bool needsBuilding = graph.ensureStructureAt(node.slot);
+            if (needsBuilding) {
+                painted.append(graph.hashGenerated(node.slot));
             }
         }
         size_t tiles = graph.structures.blueprint.tiles.length;
@@ -350,8 +364,10 @@ ExitStatus checkRepaint(FILE* output, ubyte dimension, Worldgen worldgen) {
         }
         size_t index = 0;
         foreach (node; nearby) {
-            if (graph.ensureStructureAt(node.slot)) {
-                if (graph.generatedHash(node.slot) != painted.ptr[index]) {
+            bool needsBuilding = graph.ensureStructureAt(node.slot);
+            if (needsBuilding) {
+                ulong repainted = graph.hashGenerated(node.slot);
+                if (repainted != painted.ptr[index]) {
                     differing += 1;
                 }
                 index += 1;
@@ -362,9 +378,7 @@ ExitStatus checkRepaint(FILE* output, ubyte dimension, Worldgen worldgen) {
         scratch.release();
         problem = growthProblem(graph);
     }
-    if (problem.isPresent) {
-        fprintf(output, "%s\n", problem.text.ptr);
-    }
+    printProblem(output, problem);
     graph.release();
     return exitStatus(!problem.isPresent && differing == 0);
 }
@@ -387,8 +401,9 @@ struct StructureCounts {
 
 void hashStructured(ref Graph graph, const(NearbyNode)[] nearby, ref HashMap!(NodeId, ulong) hashes) {
     foreach (node; nearby) {
-        if (graph.ensureStructureAt(node.slot)) {
-            hashes.insert(graph.idAt(node.slot), graph.generatedHash(node.slot));
+        bool needsBuilding = graph.ensureStructureAt(node.slot);
+        if (needsBuilding) {
+            hashes.insert(graph.idAt(node.slot), graph.hashGenerated(node.slot));
         }
     }
 }
@@ -424,13 +439,13 @@ ExitStatus checkForget(FILE* output, ubyte dimension, Worldgen worldgen) {
         evicting = nowMilliseconds() - evicting;
         forgotten = evictor.forgottenTiles;
         StructureCounts left = StructureCounts.of(graph);
-        uint[3] edgeUses = graph.structures.blueprint.edgeUses();
+        EdgeUses edgeUses = graph.structures.blueprint.edgeUses();
         HashMap!(NodeId, Present) kept;
         size_t structured = 0;
         size_t keptCount = 0;
         foreach (ref const id, ref const hash; first) {
             structured += 1;
-            if (graph.slotOf(id) != NO_SLOT) {
+            if (graph.slotOf(id).exists) {
                 kept.insert(id, Present.init);
                 keptCount += 1;
             }
@@ -445,12 +460,14 @@ ExitStatus checkForget(FILE* output, ubyte dimension, Worldgen worldgen) {
                 missing += 1;
             } else if (*repainted != hash) {
                 differing += 1;
-                keptDiffering += kept.find(id) !is null;
+                if (kept.find(id) !is null) {
+                    keptDiffering += 1;
+                }
             }
         }
         differing += missing;
         fprintf(output, "forget evicting %u nodes and %u tiles took %.0fms\n", evictor.evicted, evictor.droppedTiles, evicting);
-        fprintf(output, "forget structured=%zu (%zu never evicted) forgot=%u of %u dropped tiles,lines %zu->%zu edges %zu->%zu (kept %u, used %u, unused %u) pending %zu->%zu tiles %zu->%zu, differing=%u (%u never evicted, %u missing)\n", structured, keptCount, forgotten, evictor.droppedTiles, painted.lines, left.lines, painted.edges, left.edges, edgeUses[0], edgeUses[1], edgeUses[2], painted.pending, left.pending, painted.tiles, left.tiles, differing, keptDiffering, missing);
+        fprintf(output, "forget structured=%zu (%zu never evicted) forgot=%u of %u dropped tiles,lines %zu->%zu edges %zu->%zu (kept %u, used %u, unused %u) pending %zu->%zu tiles %zu->%zu, differing=%u (%u never evicted, %u missing)\n", structured, keptCount, forgotten, evictor.droppedTiles, painted.lines, left.lines, painted.edges, left.edges, edgeUses.kept, edgeUses.used, edgeUses.unused, painted.pending, left.pending, painted.tiles, left.tiles, differing, keptDiffering, missing);
         kept.release();
         first.release();
         again.release();
@@ -460,9 +477,7 @@ ExitStatus checkForget(FILE* output, ubyte dimension, Worldgen worldgen) {
         scratch.release();
         problem = growthProblem(graph);
     }
-    if (problem.isPresent) {
-        fprintf(output, "%s\n", problem.text.ptr);
-    }
+    printProblem(output, problem);
     graph.release();
     return exitStatus(!problem.isPresent && differing == 0 && forgotten > 0);
 }
@@ -478,32 +493,31 @@ ExitStatus printSlices(FILE* output, ubyte dimension, Worldgen worldgen, int hei
             foreach (index; 0 .. SLICE_QUARTERS_AROUND) {
                 fprintf(output, "vertex %u quarter %u\n", cast(uint) vertex, cast(uint) index);
                 graph.printQuarter(output, around, height);
-                around = graph.view.turned(around, Turn.right);
+                around = graph.view.turnSite(around, Turn.right);
             }
         }
         SiteFrame corner = root;
         foreach (index; 0 .. SLICE_QUARTERS_OF_FACE) {
             fprintf(output, "face quarter %u\n", cast(uint) index);
             graph.printQuarter(output, corner, height);
-            corner = graph.view.turned(forwarded(corner, 1), Turn.right);
+            corner = graph.view.turnSite(forwarded(corner, 1), Turn.right);
         }
         problem = growthProblem(graph);
     }
-    if (problem.isPresent) {
-        fprintf(output, "%s\n", problem.text.ptr);
-    }
+    printProblem(output, problem);
     ExitStatus status = exitStatus(!problem.isPresent);
     graph.release();
     return status;
 }
 
 void printQuarter(ref Graph graph, FILE* output, SiteFrame quarter, int height) {
-    SiteFrame tower = graph.view.turned(graph.view.turned(quarter, Turn.pitchUp), Turn.rollRight);
+    SiteFrame tower = graph.view.turnSite(graph.view.turnSite(quarter, Turn.pitchUp), Turn.rollRight);
     int far = graph.layout.dimension - 1;
     foreach_reverse (y; 0 .. far + 1) {
         foreach (x; 0 .. far + 1) {
             char mark = '#';
-            if (graph.generatedAt(tower, [x, y, height]) == Material.none) {
+            Material generated = graph.generateAt(tower, Vec3!int(x, y, height));
+            if (generated == Material.none) {
                 mark = '.';
             }
             fputc(mark, output);
@@ -512,26 +526,26 @@ void printQuarter(ref Graph graph, FILE* output, SiteFrame quarter, int height) 
     }
 }
 
-Material generatedAt(ref Graph graph, SiteFrame tower, int[3] cell) {
-    Point!float center = sitePlacement(tower, graph.layout) * columnPoint(graph.layout, ColumnSpot(cell[0] + 0.5f, cell[1] + 0.5f, cell[2] + 0.5f));
+Material generateAt(ref Graph graph, SiteFrame tower, Vec3!int cell) {
+    Point!float center = sitePlacement(tower, graph.layout) * columnPoint(graph.layout, ColumnSpot(cell.x + 0.5f, cell.y + 0.5f, cell.z + 0.5f));
     Position at = graph.ensureNormalized(Position(graph.idAt(tower.node), Motion!float.shiftTo(center)));
-    uint slot = graph.slotOf(at.node);
+    uint slot = graph.slotOf(at.node).value;
     ChunkPoint inChunk = chunkPointOf(at.local * Point!float.origin());
-    int[3] voxel = void;
+    Vec3!int voxel = void;
     foreach (axis; 0 .. 3) {
         voxel[axis] = cast(int) floorf(graph.layout.cubeToGrid(inChunk.coords[axis]));
     }
     GeneratedVoxels generated = ChunkParams.make(graph.view, slot, inChunk.corner).generateVoxels();
-    Material material = generated.voxels.at(cellIndex(graph.layout.dimension, voxel[0], voxel[1], voxel[2]));
+    Material material = generated.voxels.at(cellIndex(graph.layout.dimension, voxel.x, voxel.y, voxel.z));
     generated.voxels.release();
     return material;
 }
 
-ulong generatedHash(ref Graph graph, uint slot) {
+ulong hashGenerated(ref Graph graph, uint slot) {
     ulong hash = 0;
     foreach (cornerIndex; 0 .. CORNER_COUNT) {
         GeneratedVoxels generated = ChunkParams.make(graph.view, slot, cast(Corner) cornerIndex).generateVoxels();
-        hash += ContentHashes.fromVoxels(cast(Corner) cornerIndex, generated.voxels, graph.layout.dimension).materials[0];
+        hash += ContentHashes.fromVoxels(cast(Corner) cornerIndex, generated.voxels, graph.layout.dimension).materials.first;
         generated.voxels.release();
     }
     return hash;
@@ -605,11 +619,11 @@ void benchDrive(FILE* output, float radius, ubyte dimension) {
     uint drives = 0;
     do {
         double driveStart = nowMilliseconds();
-        streamer.drive(graph, nearby, Position.origin(), Motion!float.identity(), radius, DRIVE_NEARBY_VERSION, Pacing.budgeted, driveStart + DRIVE_BUDGET_MILLISECONDS);
+        streamer.drive(graph, nearby, Position.origin(), Motion!float.identity(), radius, DRIVE_NEARBY_VERSION, Pacing.budgeted, Deadline.at(driveStart + DRIVE_BUDGET_MILLISECONDS));
         driveMs += nowMilliseconds() - driveStart;
         drives += 1;
         if (streamer.inFlight > 0) {
-            streamer.integrate(graph, NO_DEADLINE);
+            streamer.integrate(graph, Deadline.init);
         }
     } while (streamer.inFlight > 0 || streamer.scanCursor < nearby.length);
     double totalMs = nowMilliseconds() - start;
@@ -622,7 +636,7 @@ void benchDrive(FILE* output, float radius, ubyte dimension) {
     fprintf(output, "bench-drive dim=%u radius=%.2f populated=%u nodes=%u->%u drives=%u total=%.1fms drive=%.1fms integrate_and_wait=%.1fms\n", cast(uint) dimension, cast(double) radius, populated, nodesBefore, graph.slotCount, drives, totalMs, driveMs, totalMs - driveMs);
     double idleStart = nowMilliseconds();
     foreach (_; 0 .. DRIVE_IDLE_ITERATIONS) {
-        streamer.drive(graph, nearby, Position.origin(), Motion!float.identity(), radius, DRIVE_NEARBY_VERSION, Pacing.budgeted, nowMilliseconds() + DRIVE_BUDGET_MILLISECONDS);
+        streamer.drive(graph, nearby, Position.origin(), Motion!float.identity(), radius, DRIVE_NEARBY_VERSION, Pacing.budgeted, Deadline.at(nowMilliseconds() + DRIVE_BUDGET_MILLISECONDS));
     }
     fprintf(output, "bench-drive idle scan=%.3fms/drive nodes=%zu\n", (nowMilliseconds() - idleStart) / DRIVE_IDLE_ITERATIONS, nearby.length);
     streamer.release();
@@ -646,7 +660,7 @@ void benchNearby(FILE* output, float radius, uint iterations, ubyte dimension) {
 }
 
 NodeId benchKey(ulong index) {
-    return NodeId([SplitMix(index).next(), SplitMix(~index).next()]);
+    return NodeId(Hash128(SplitMix(index).next(), SplitMix(~index).next()));
 }
 
 struct WorstBatch {
@@ -700,6 +714,6 @@ void benchHashMap(FILE* output) {
 
 NearbyNode[] collectPruned(ref NearbyScratch scratch, ref Graph graph, float radius) {
     scratch.begin(graph, Position.origin(), radius, FULL_RADIUS);
-    scratch.advance(graph, NO_DEADLINE, Executor.init);
+    scratch.advance(graph, Deadline.init, Executor.init);
     return scratch.nodes.slice();
 }

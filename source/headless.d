@@ -5,10 +5,10 @@ import base.array : Array;
 import base.clock : nowSeconds;
 import base.crash : reportCrashes, reportHangAfter;
 import base.maybe : Maybe;
-import client.arguments : ArgumentCursor, ExitStatus, HELP_OPTION, OUTPUT_OPTION, OptionSpec, StartupError, VERSION, VERSION_OPTION, WORLDGEN_OPTION, WorldgenArgument, closeReport, exitStatus, numberIn, openReport, optionNamed, parseOptions, sliceOf, usageOf;
+import client.arguments : ArgumentCursor, ExitStatus, HELP_OPTION, NOT_A_NUMBER, OUTPUT_OPTION, OptionSpec, REPORT_UNOPENED, StartupError, UNKNOWN_OPTION, VERSION_OPTION, VERSION_TEXT, WORLDGEN_OPTION, WorldgenArgument, closeReport, exitStatus, numberIn, openReport, optionNamed, parseOptions, sliceOf, usageOf;
 import client.config : ClientConfig;
 import client.game : ChunkSupply, Game;
-import client.plugins : registry;
+import client.plugins : gatherWorlds, registry;
 import client.script : NamedScript, Script;
 import client.structures : StructureProblem, placeStructure;
 import common.settings : CHUNK_DIMENSION;
@@ -137,7 +137,7 @@ struct HeadlessArguments {
 
     void applyPositional(const(char)* argument) {
         if (argument[0] == '-') {
-            error = StartupError(null, "unknown option", argument);
+            error = StartupError(null, UNKNOWN_OPTION, argument);
         } else if (!command.exists) {
             command = optionNamed!Command(COMMANDS[], sliceOf(argument));
             if (!command.exists) {
@@ -159,7 +159,7 @@ struct HeadlessArguments {
     Maybe!float number(Option option, const(char)* text) {
         Maybe!float parsed = numberIn(text);
         if (!parsed.exists) {
-            error = StartupError(null, "needs a number, got", text, OPTIONS[option].name);
+            error = StartupError(null, NOT_A_NUMBER, text, OPTIONS[option].name);
         }
         return parsed;
     }
@@ -297,16 +297,16 @@ ExitStatus runCommand(ref const HeadlessArguments arguments, FILE* output) {
             status = runFilms(arguments, output);
             break;
         case Command.worldDigest:
-            printWorldDigest(output, radius, CHUNK_DIMENSION);
+            status = printWorldDigest(output, radius, CHUNK_DIMENSION);
             break;
         case Command.dumpWorld:
-            dumpWorld(output, radius, CHUNK_DIMENSION);
+            status = dumpWorld(output, radius, CHUNK_DIMENSION);
             break;
         case Command.materialCensus:
-            printMaterialCensus(output, radius, CHUNK_DIMENSION);
+            status = printMaterialCensus(output, radius, CHUNK_DIMENSION);
             break;
         case Command.surfaceCensus:
-            printSurfaceCensus(output, radius, CHUNK_DIMENSION);
+            status = printSurfaceCensus(output, radius, CHUNK_DIMENSION);
             break;
         case Command.dumpStructure:
             status = dumpStructure(output, CHUNK_DIMENSION, arguments.worldgen);
@@ -342,7 +342,7 @@ ExitStatus runCommand(ref const HeadlessArguments arguments, FILE* output) {
 ExitStatus runWithOutput(ref const HeadlessArguments arguments, const(char)* program) {
     FILE* output = openReport(arguments.outputPath);
     if (output is null) {
-        StartupError(null, "cannot open the report file", arguments.outputPath).report(program);
+        StartupError(null, REPORT_UNOPENED, arguments.outputPath).report(program);
         return ExitStatus.failed;
     } else {
         ExitStatus status = runCommand(arguments, output);
@@ -359,7 +359,7 @@ ExitStatus startCommand(ref const HeadlessArguments arguments, const(char)* prog
         printf("%.*s", cast(int) USAGE.length, USAGE.ptr);
         return ExitStatus.ok;
     } else if (arguments.kind == RunKind.showVersion) {
-        printf("mined %s\n", VERSION.ptr);
+        printf("%s", VERSION_TEXT.ptr);
         return ExitStatus.ok;
     } else {
         return runWithOutput(arguments, program);
@@ -368,6 +368,7 @@ ExitStatus startCommand(ref const HeadlessArguments arguments, const(char)* prog
 
 extern (C) int main(int argc, char** argv) {
     reportCrashes();
+    gatherWorlds();
     HeadlessArguments arguments = HeadlessArguments.fromArgv(argc, argv);
     ExitStatus status = startCommand(arguments, argv[0]);
     arguments.prefixes.release();

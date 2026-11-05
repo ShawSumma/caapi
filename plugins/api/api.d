@@ -1,6 +1,6 @@
 module plugins.api.api;
 
-enum string ENTRY = "mined_plugin_5";
+enum string ENTRY = "mined_plugin_8";
 
 version (WebAssembly) {
     enum string entryOf(string unit) = ENTRY ~ "_" ~ unit;
@@ -99,7 +99,28 @@ enum HorosphereForm : ubyte {
     sunken,
 }
 
-enum uint NO_KIND = uint.max;
+struct MaybeIndex(Indexed) {
+    uint bits;
+
+    static MaybeIndex of(uint value) {
+        assert(value != uint.max);
+        return MaybeIndex(value + 1);
+    }
+
+    bool exists() const {
+        return bits != 0;
+    }
+
+    uint value() const {
+        assert(exists);
+        return bits - 1;
+    }
+}
+
+struct Tagged;
+
+alias KindTag = MaybeIndex!Tagged;
+alias KindId = MaybeIndex!RisingKind;
 
 struct Site {
     int level;
@@ -112,15 +133,44 @@ struct Site {
     byte zSign;
 }
 
+enum Extent : ubyte {
+    bounded,
+    endless,
+}
+
+struct ColumnCell {
+    int x;
+    int y;
+    int z;
+
+    ref inout(int) opIndex(size_t axis) inout return {
+        if (axis == 0) {
+            return x;
+        } else if (axis == 1) {
+            return y;
+        } else {
+            assert(axis == 2);
+            return z;
+        }
+    }
+}
+
 struct Box {
-    int[3] low;
-    int[3] high;
+    ColumnCell low;
+    ColumnCell high;
+    Extent extent;
+}
+
+enum Repeat : ubyte {
+    rhythmic,
+    always,
 }
 
 struct Rhythm {
     int every;
     int from;
     int span;
+    Repeat repeat;
 }
 
 struct Spot {
@@ -129,7 +179,7 @@ struct Spot {
     float z;
 }
 
-struct Column {
+struct Span {
     int low;
     int high;
 }
@@ -140,13 +190,23 @@ struct Pen {
     uint node;
 }
 
+enum Rising : ubyte {
+    root,
+    risen,
+}
+
 struct Risen {
     Site foot;
     int edges;
     int ground;
     int balance;
-    uint lower;
+    KindTag lower;
     int segment;
+    Rising rising;
+
+    bool hasRisen() const {
+        return rising == Rising.risen;
+    }
 }
 
 enum Tint : ubyte {
@@ -154,9 +214,15 @@ enum Tint : ubyte {
     fog,
 }
 
+struct Color {
+    float red;
+    float green;
+    float blue;
+}
+
 struct Look {
     const(char)* name;
-    float[3] fog = [0, 0, 0];
+    Color fog = Color(0, 0, 0);
     Tint tint;
 }
 
@@ -179,32 +245,32 @@ struct Api {
     const(char)* function(const(Api)* api) failure;
     void function(const(Api)* api, const(char)* message) fail;
     Site function(const(Api)* api, Site site, int edges) forward;
-    Site function(const(Api)* api, Site site, Turn turn) turned;
-    Column function(const(Api)* api) column;
+    Site function(const(Api)* api, Site site, Turn turn) turn;
+    Span function(const(Api)* api) column;
     int function(const(Api)* api) edgeCells;
     uint function(const(Api)* api, uint count) pick;
     double function(const(Api)* api) random;
-    ulong function(const(Api)* api, Site site, SitePart part) hash;
+    ulong function(const(Api)* api, Site site, SitePart part) probeHash;
     void function(const(Api)* api, Site site, Material material, Box box, Rhythm rhythm) paint;
     void function(const(Api)* api, Site site, Material material, Box box, Rhythm rhythm) fill;
     void function(const(Api)* api, Site site, Spot spot) stop;
     void function(const(Api)* api, Site site, Spot spot) entrance;
     bool function(const(Api)* api, Site site, Structure structure, const(void)* data, size_t size) place;
     bool function(const(Api)* api, Site site, SitePart part) claim;
-    bool function(const(Api)* api, Site site, SitePart part) isClaimed;
+    bool function(const(Api)* api, Site site, SitePart part) probeClaimed;
     void function(const(Api)* api, Tile tile, const(void)* data, size_t size) tile;
     void function(const(Api)* api, Tile tile, const(void)* data, size_t size) tileEdges;
-    uint function(const(Api)* api, double odds, HorosphereForm form, uint tag, Tile tile, const(void)* data, size_t size) horosphere;
-    uint function(const(Api)* api, double odds, uint under, uint tag, Tile tile, const(void)* data, size_t size) sunken;
-    void function(const(Api)* api, Site site, uint kind, uint edges) openHorosphere;
+    KindId function(const(Api)* api, double odds, HorosphereForm form, uint tag, Tile tile, const(void)* data, size_t size) horosphere;
+    KindId function(const(Api)* api, double odds, uint under, uint tag, Tile tile, const(void)* data, size_t size) sunken;
+    void function(const(Api)* api, Site site, KindId kind, uint edges) openHorosphere;
     Site function(const(Api)* api, Site site) columnSite;
     void function(const(Api)* api, Site site) flatten;
-    void function(const(Api)* api, uint kind) rooted;
+    void function(const(Api)* api, KindId kind) rooted;
     void function(const(Api)* api) invertGravity;
     void function(const(Api)* api, double units) fog;
-    uint function(const(Api)* api, Site site) rising;
-    int function(const(Api)* api, Site site, int most) balance;
-    Pen function(const(Api)* api, Site site) pen;
+    KindTag function(const(Api)* api, Site site) probeRising;
+    int function(const(Api)* api, Site site, int most) probeBalance;
+    Pen function(const(Api)* api, Site site) openPen;
     Pen function(const(Api)* api, Pen pen, double cells) penForward;
     Pen function(const(Api)* api, Pen pen, double yaw, double pitch) penTurn;
     Pen function(const(Api)* api, Pen pen, double degrees) penRoll;
@@ -214,7 +280,8 @@ struct Api {
     void function(const(Api)* api, Pen pen, Material material, double cells, double fromRadius, double toRadius) limb;
     void function(const(Api)* api, Pen pen, Material material, double radius) leaves;
     bool function(const(Api)* api, const(char)* world, Site site) build;
-    void function(const(Api)* api, uint kind, const(Look)* look) look;
+    void function(const(Api)* api, KindId kind, const(Look)* look) look;
+    void function(const(Api)* api, const(Look)* look) worldLook;
     void function(const(Api)* api, double odds) risingKinds;
     bool function(const(Api)* api, uint index, Site site) landmark;
 }

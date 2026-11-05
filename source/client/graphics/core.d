@@ -1,6 +1,7 @@
 module client.graphics.core;
 
 import bindings.platform : PFN_vkWaitForPresentKHR, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR, VkPhysicalDeviceFeatures2, VkPhysicalDevicePresentIdFeaturesKHR, VkPhysicalDevicePresentWaitFeaturesKHR, vkGetDeviceProcAddr, vkGetPhysicalDeviceFeatures2, VULKAN_API_1_1, VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU, VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU, VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU, VK_QUEUE_GRAPHICS_BIT, VK_STRUCTURE_TYPE_APPLICATION_INFO, VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, VK_SUCCESS, VkApplicationInfo, VkBool32, VkDevice, VkDeviceCreateInfo, VkDeviceQueueCreateInfo, VkInstance, VkInstanceCreateFlags, VkInstanceCreateInfo, VkPhysicalDevice, VkPhysicalDeviceFeatures, VkPhysicalDeviceProperties, VkQueue, VkQueueFamilyProperties, VkResult, VkSurfaceKHR, vkCreateDevice, vkCreateInstance, vkDestroyDevice, vkDestroyInstance, vkDestroySurfaceKHR, vkDeviceWaitIdle, vkEnumeratePhysicalDevices, vkGetDeviceQueue, vkGetPhysicalDeviceFeatures, vkGetPhysicalDeviceProperties, vkGetPhysicalDeviceQueueFamilyProperties, vkGetPhysicalDeviceSurfaceSupportKHR;
+import base.maybe : Maybe;
 import client.graphics.base : srgbSurfaceFormat;
 import client.graphics.pipeline : VULKAN_TRUE, expectSuccess;
 
@@ -9,13 +10,7 @@ enum string NO_DEVICE = "no usable Vulkan device: needs multiDrawIndirect, drawI
 enum uint MAX_PHYSICAL_DEVICES = 16;
 enum uint MAX_QUEUE_FAMILIES = 32;
 enum uint MAX_EXTENSIONS = 5;
-enum uint NO_QUEUE_FAMILY = uint.max;
 enum uint APPLICATION_VERSION = 1;
-enum uint RANK_UNUSABLE = 0;
-enum uint RANK_OTHER = 1;
-enum uint RANK_VIRTUAL = 2;
-enum uint RANK_INTEGRATED = 3;
-enum uint RANK_DISCRETE = 4;
 immutable string[1] SWAPCHAIN_EXTENSIONS = ["VK_KHR_swapchain"];
 immutable string[2] PRESENT_WAIT_EXTENSIONS = ["VK_KHR_present_id", "VK_KHR_present_wait"];
 
@@ -76,17 +71,25 @@ struct ExtensionList {
     }
 }
 
-uint deviceTypeRank(VkPhysicalDevice device) {
+enum DeviceRank : ubyte {
+    unusable,
+    other,
+    simulated,
+    integrated,
+    discrete,
+}
+
+DeviceRank deviceTypeRank(VkPhysicalDevice device) {
     VkPhysicalDeviceProperties properties;
     vkGetPhysicalDeviceProperties(device, &properties);
     if (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
-        return RANK_DISCRETE;
+        return DeviceRank.discrete;
     } else if (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) {
-        return RANK_INTEGRATED;
+        return DeviceRank.integrated;
     } else if (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU) {
-        return RANK_VIRTUAL;
+        return DeviceRank.simulated;
     } else {
-        return RANK_OTHER;
+        return DeviceRank.other;
     }
 }
 
@@ -108,7 +111,7 @@ struct VulkanCore {
     VkQueue graphicsQueue;
     VkSurfaceKHR surface;
     PFN_vkWaitForPresentKHR waitForPresent;
-    uint graphicsQueueFamily = NO_QUEUE_FAMILY;
+    uint graphicsQueueFamily;
     uint maxDrawIndirectCount;
     CoreTarget target;
 
@@ -121,7 +124,11 @@ struct VulkanCore {
     }
 
     bool wantsPresentWait() const {
-        return isPresenting() && supportsPresentWait();
+        if (isPresenting()) {
+            return supportsPresentWait();
+        } else {
+            return false;
+        }
     }
 
     bool supportsPresentWait() const {
@@ -139,7 +146,8 @@ struct VulkanCore {
 
     const(char)* setup(SurfaceSource source) {
         target = CoreTarget.window;
-        if (!createInstance()) {
+        bool created = createInstance();
+        if (!created) {
             return NO_INSTANCE;
         } else {
             surface = createSurface(instance, source);
@@ -149,7 +157,8 @@ struct VulkanCore {
 
     const(char)* setupOffscreen() {
         target = CoreTarget.offscreen;
-        if (!createInstance()) {
+        bool created = createInstance();
+        if (!created) {
             return NO_INSTANCE;
         } else {
             return startDevice();
@@ -157,7 +166,8 @@ struct VulkanCore {
     }
 
     const(char)* startDevice() {
-        if (!pickPhysicalDevice()) {
+        bool picked = pickPhysicalDevice();
+        if (!picked) {
             if (isPresenting) {
                 vkDestroySurfaceKHR(instance, surface, null);
             }
@@ -188,18 +198,26 @@ struct VulkanCore {
         info.pApplicationInfo = &applicationInfo;
         info.enabledExtensionCount = extensions.count;
         info.ppEnabledExtensionNames = extensions.names.ptr;
-        return vkCreateInstance(&info, null, &instance) == VK_SUCCESS;
+        VkResult created = vkCreateInstance(&info, null, &instance);
+        return created == VK_SUCCESS;
     }
 
     bool hasSurfaceFormat(VkPhysicalDevice candidate) {
-        return !isPresenting || srgbSurfaceFormat(candidate, surface).exists;
+        if (isPresenting) {
+            return srgbSurfaceFormat(candidate, surface).exists;
+        } else {
+            return true;
+        }
     }
 
-    uint usableRank(VkPhysicalDevice candidate) {
-        if (usableGraphicsFamily(candidate) != NO_QUEUE_FAMILY && isIndirectDrawingSupported(candidate) && hasSurfaceFormat(candidate)) {
+    DeviceRank usableRank(VkPhysicalDevice candidate) {
+        Maybe!uint family = usableGraphicsFamily(candidate);
+        bool indirect = isIndirectDrawingSupported(candidate);
+        bool formatted = hasSurfaceFormat(candidate);
+        if (family.exists && indirect && formatted) {
             return deviceTypeRank(candidate);
         } else {
-            return RANK_UNUSABLE;
+            return DeviceRank.unusable;
         }
     }
 
@@ -207,18 +225,18 @@ struct VulkanCore {
         VkPhysicalDevice[MAX_PHYSICAL_DEVICES] devices;
         uint deviceCount = MAX_PHYSICAL_DEVICES;
         expectSuccess(vkEnumeratePhysicalDevices(instance, &deviceCount, devices.ptr));
-        uint bestRank = RANK_UNUSABLE;
+        DeviceRank bestRank = DeviceRank.unusable;
         foreach (candidate; devices[0 .. deviceCount]) {
-            uint rank = usableRank(candidate);
+            DeviceRank rank = usableRank(candidate);
             if (rank > bestRank) {
                 physicalDevice = candidate;
                 bestRank = rank;
             }
         }
-        if (bestRank == RANK_UNUSABLE) {
+        if (bestRank == DeviceRank.unusable) {
             return false;
         } else {
-            graphicsQueueFamily = usableGraphicsFamily(physicalDevice);
+            graphicsQueueFamily = usableGraphicsFamily(physicalDevice).value;
             VkPhysicalDeviceProperties properties;
             vkGetPhysicalDeviceProperties(physicalDevice, &properties);
             maxDrawIndirectCount = properties.limits.maxDrawIndirectCount;
@@ -236,19 +254,19 @@ struct VulkanCore {
         }
     }
 
-    uint usableGraphicsFamily(VkPhysicalDevice candidate) {
+    Maybe!uint usableGraphicsFamily(VkPhysicalDevice candidate) {
         VkQueueFamilyProperties[MAX_QUEUE_FAMILIES] families;
         uint familyCount = MAX_QUEUE_FAMILIES;
         vkGetPhysicalDeviceQueueFamilyProperties(candidate, &familyCount, families.ptr);
-        uint family = 0;
-        while (family < familyCount && !((families[family].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0 && isPresentable(candidate, family))) {
-            family += 1;
+        foreach (family; 0 .. familyCount) {
+            if ((families[family].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0) {
+                bool presentable = isPresentable(candidate, family);
+                if (presentable) {
+                    return Maybe!uint.of(family);
+                }
+            }
         }
-        if (family < familyCount) {
-            return family;
-        } else {
-            return NO_QUEUE_FAMILY;
-        }
+        return Maybe!uint.init;
     }
 
     void createDevice() {
@@ -263,7 +281,8 @@ struct VulkanCore {
         if (isPresenting) {
             extensions.add(SWAPCHAIN_EXTENSIONS);
         }
-        if (wantsPresentWait()) {
+        bool presentWait = wantsPresentWait();
+        if (presentWait) {
             extensions.add(PRESENT_WAIT_EXTENSIONS);
         }
         VkPhysicalDeviceFeatures features;
@@ -278,7 +297,7 @@ struct VulkanCore {
         id.presentId = VULKAN_TRUE;
         VkDeviceCreateInfo info;
         info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-        if (wantsPresentWait()) {
+        if (presentWait) {
             info.pNext = &id;
         }
         info.queueCreateInfoCount = 1;
@@ -288,7 +307,7 @@ struct VulkanCore {
         info.ppEnabledExtensionNames = extensions.names.ptr;
         expectSuccess(vkCreateDevice(physicalDevice, &info, null, &device));
         vkGetDeviceQueue(device, graphicsQueueFamily, 0, &graphicsQueue);
-        if (wantsPresentWait()) {
+        if (presentWait) {
             waitForPresent = cast(PFN_vkWaitForPresentKHR) vkGetDeviceProcAddr(device, "vkWaitForPresentKHR");
         }
     }

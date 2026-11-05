@@ -1,10 +1,10 @@
 module plugins.buildings.deco;
 
-import plugins.api.api : Box, Material;
-import plugins.buildings.building : Lots, Palette, Part, Parts, Spec, Split, Tier, crown, enter, footprint, makeParts, masonry, middle, pick, pyramid, roof, setbacks, shell, storefront, tiers;
+import plugins.api.api : Box, Material, Span;
+import plugins.buildings.building : Lots, Palette, Part, Parts, Spec, Split, Tier, crown, enter, footprint, makeParts, masonry, middle, pick, pyramid, roof, setbacks, shell, storefront, tiers, xSpan, ySpan;
 import plugins.turtle.turtle : boxOf;
 
-enum int[2] STORIES = [14, 34];
+enum Span STORIES = Span(14, 34);
 enum int SETBACKS = 2;
 enum Material ROOF = Material.slate;
 enum int SPIRE = 10;
@@ -19,10 +19,10 @@ immutable Palette[5] PALETTES = [
 
 void spire(ref const Part part, Palette palette, Tier tier) {
     Box roofBox = footprint(part, tier.shrink, Split.above, tier.high, tier.high);
-    int x = middle(roofBox.low[0], roofBox.high[0]);
-    int y = middle(roofBox.low[1], roofBox.high[1]);
-    part.tower.paint(palette.trim, boxOf([x - 1, x + 1], [y - 1, y + 1], [tier.high + 1, tier.high + 2]));
-    part.tower.paint(palette.trim, boxOf([x, x], [y, y], [tier.high + 3, tier.high + SPIRE]));
+    int x = middle(xSpan(roofBox));
+    int y = middle(ySpan(roofBox));
+    part.tower.paint(palette.trim, boxOf(Span(x - 1, x + 1), Span(y - 1, y + 1), Span(tier.high + 1, tier.high + 2)));
+    part.tower.paint(palette.trim, boxOf(Span(x, x), Span(y, y), Span(tier.high + 3, tier.high + SPIRE)));
 }
 
 void build(ref const Lots lots, Spec spec) {
@@ -39,7 +39,8 @@ void build(ref const Lots lots, Spec spec) {
         storefront(part);
     }
     enter(parts, spec);
-    if (pick(parts, 3) < 2) {
+    uint choice = pick(parts, 3);
+    if (choice < 2) {
         crown(parts, spec.palette, &spire);
     } else {
         crown(parts, spec.palette, &pyramid);

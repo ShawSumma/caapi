@@ -1,26 +1,22 @@
 module web.main;
 
 import core.stdc.stdlib : calloc;
-import base.clock : FrameClock, MILLISECONDS_PER_SECOND, nowMilliseconds, nowSeconds;
-import base.names : ENUM_NAMES;
-import base.stdio : snprintf;
-import base.units : Angle, AngularSpeed, Time;
-import client.config : ClientConfig, PitchAxis;
-import client.game : FrameInput, Game, Key, MATERIAL_PALETTE, axisValue;
-import client.hud : Hud, worldNameOf;
-import client.plugins : registry;
-import client.structures : StructureProblem, growthProblem, placeStructure, restartGame;
+import base.clock : FrameClock, nowMilliseconds, nowSeconds;
+import base.maybe : Maybe;
+import base.units : Time;
+import client.config : ClientConfig;
+import client.game : Command, CommandBinding, Game, Key, KeyBinding, KeyStroke, MAX_STEP_SECONDS, chooseMaterial, commandOf, frameInputOf, holdBound, letGoBound;
+import client.hud : FrameMeter, Hud, MouseCapture, STATUS_CAPACITY, statusLine;
+import client.plugins : gatherWorlds;
+import client.structures : StructureProblem, WorldStep, growthProblem, placeStructure, restartGame, steppedWorld, worldgenAt;
 import common.character.controller : MovementMode;
 import common.settings : CHUNK_DIMENSION;
-import common.worldgen.generation : StructureWorld, Worldgen;
+import common.worldgen.generation : Worldgen;
 import plugins.api.flags : Flags;
 import web.renderer : WebRenderer;
 
-enum double MAX_STEP_SECONDS = 0.1;
-enum double TITLE_INTERVAL_SECONDS = 1.0;
 enum double FRAME_WORK_MILLISECONDS = 13.0;
 enum double LEAST_TASK_MILLISECONDS = 2.0;
-enum size_t TEXT_CAPACITY = 256;
 enum uint LEFT_BUTTON = 0;
 enum uint RIGHT_BUTTON = 2;
 
@@ -44,43 +40,30 @@ enum WebKey : uint {
     digit9 = digit1 + 8,
 }
 
-enum KeyStroke : uint {
-    first,
-    repeated,
-}
-
-enum Capture : uint {
-    released,
-    captured,
-}
-
-enum WorldStep : ubyte {
-    previous,
-    next,
-}
-
 enum SessionMark : ubyte {
-    captured,
     stopped,
     titleStale,
 }
 
-struct KeyBinding {
-    WebKey symbol;
-    Key key;
-}
+immutable KeyBinding!WebKey[Key.max + 1] KEY_BINDINGS = [
+    KeyBinding!WebKey(WebKey.w, Key.fwd),
+    KeyBinding!WebKey(WebKey.s, Key.back),
+    KeyBinding!WebKey(WebKey.a, Key.left),
+    KeyBinding!WebKey(WebKey.d, Key.right),
+    KeyBinding!WebKey(WebKey.space, Key.up),
+    KeyBinding!WebKey(WebKey.shift, Key.down),
+    KeyBinding!WebKey(WebKey.left, Key.yawLeft),
+    KeyBinding!WebKey(WebKey.right, Key.yawRight),
+    KeyBinding!WebKey(WebKey.up, Key.pitchUp),
+    KeyBinding!WebKey(WebKey.down, Key.pitchDown),
+];
 
-immutable KeyBinding[10] KEY_BINDINGS = [
-    KeyBinding(WebKey.w, Key.fwd),
-    KeyBinding(WebKey.s, Key.back),
-    KeyBinding(WebKey.a, Key.left),
-    KeyBinding(WebKey.d, Key.right),
-    KeyBinding(WebKey.space, Key.up),
-    KeyBinding(WebKey.shift, Key.down),
-    KeyBinding(WebKey.left, Key.yawLeft),
-    KeyBinding(WebKey.right, Key.yawRight),
-    KeyBinding(WebKey.up, Key.pitchUp),
-    KeyBinding(WebKey.down, Key.pitchDown),
+immutable CommandBinding!WebKey[Command.max + 1] COMMAND_BINDINGS = [
+    CommandBinding!WebKey(WebKey.v, Command.walkMode),
+    CommandBinding!WebKey(WebKey.n, Command.noclipMode),
+    CommandBinding!WebKey(WebKey.bracketLeft, Command.previousWorld),
+    CommandBinding!WebKey(WebKey.bracketRight, Command.nextWorld),
+    CommandBinding!WebKey(WebKey.t, Command.throwBlock),
 ];
 
 extern (C) nothrow @nogc {
@@ -94,18 +77,16 @@ struct Session {
     Hud hud;
     ClientConfig config;
     FrameClock clock;
+    FrameMeter meter;
     double mouseDx = 0;
     double mouseDy = 0;
-    double lastTitleTime = 0;
-    float fps = 0;
-    float worstFrameMs = 0;
-    uint framesSinceTitle;
     uint worldIndex;
     Flags!Key held;
     Flags!SessionMark marks;
+    MouseCapture mouse;
 
     bool isCaptured() const {
-        return marks.has(SessionMark.captured);
+        return mouse == MouseCapture.captured;
     }
 
     bool isRunning() const {
@@ -115,10 +96,12 @@ struct Session {
     void start(uint width, uint height, float renderRadius) {
         renderer.setup(CHUNK_DIMENSION, width, height);
         game = Game.make(Worldgen.makeTerrain(), config.reach);
+        game.world.graph.bindView();
         game.world.renderRadius = renderRadius;
         report(game.placeStructure());
-        lastTitleTime = nowSeconds();
-        clock = FrameClock.startingAt(lastTitleTime);
+        double started = nowSeconds();
+        clock = FrameClock.startingAt(started);
+        meter = FrameMeter.startingAt(started);
         marks.set(SessionMark.titleStale);
     }
 
@@ -133,7 +116,7 @@ struct Session {
         double frameStart = nowMilliseconds();
         double now = nowSeconds();
         Time dt = Time(cast(float) clock.tick(now, MAX_STEP_SECONDS));
-        game.step(buildFrameInput(dt), dt);
+        game.step(frameInputOf(config, held, mouseDx, mouseDy, dt), dt);
         mouseDx = 0;
         mouseDy = 0;
         hud.buildMarkers(game);
@@ -146,13 +129,8 @@ struct Session {
         }
         game.world.streamer.runTasksUntil(deadline);
         report(growthProblem(game.world.graph));
-        framesSinceTitle += 1;
-        if (now - lastTitleTime >= TITLE_INTERVAL_SECONDS) {
-            fps = cast(float)(framesSinceTitle / (now - lastTitleTime));
-            worstFrameMs = cast(float)(clock.worst * MILLISECONDS_PER_SECOND);
-            clock.worst = 0;
-            framesSinceTitle = 0;
-            lastTitleTime = now;
+        bool refreshed = meter.tick(now, clock);
+        if (refreshed) {
             marks.set(SessionMark.titleStale);
         }
         if (marks.has(SessionMark.titleStale)) {
@@ -160,75 +138,56 @@ struct Session {
         }
     }
 
-    FrameInput buildFrameInput(Time dt) {
-        AngularSpeed yawRate = config.keyTurnRate * (axisValue(held, Key.yawRight) - axisValue(held, Key.yawLeft));
-        AngularSpeed pitchRate = config.keyTurnRate * (axisValue(held, Key.pitchDown) - axisValue(held, Key.pitchUp));
-        Angle yaw = yawRate * dt + config.mouseTurnPerCount * cast(float) mouseDx;
-        Angle pitch = pitchRate * dt + config.mouseTurnPerCount * cast(float) mouseDy * pitchSign(config.pitchAxis);
-        return FrameInput(yaw, pitch, held);
-    }
-
     void updateStatus() {
-        char[TEXT_CAPACITY] text;
-        string mode = ENUM_NAMES!MovementMode[game.mode];
-        const(char)[] world = worldNameOf(game.world.graph.worldgen);
-        if (isCaptured) {
-            snprintf(text.ptr, text.length, "mined - %.*s ([ ]) - %.*s (V) - [%u] - Esc to release mouse - FPS %.0f, worst frame %.0fms", cast(int) world.length, world.ptr, cast(int) mode.length, mode.ptr, game.materialIndex + 1, cast(double) fps, cast(double) worstFrameMs);
-        } else {
-            snprintf(text.ptr, text.length, "mined - %.*s ([ ]) - %.*s (V) - click to capture mouse - FPS %.0f, worst frame %.0fms", cast(int) world.length, world.ptr, cast(int) mode.length, mode.ptr, cast(double) fps, cast(double) worstFrameMs);
-        }
+        char[STATUS_CAPACITY] text = statusLine(game, mouse, meter);
         web_status(text.ptr);
         marks.clear(SessionMark.titleStale);
     }
 
     void keyDown(WebKey symbol, KeyStroke press) {
         if (isCaptured) {
-            if (symbol == WebKey.v && press == KeyStroke.first) {
-                game.toggleMode(MovementMode.walk);
-                marks.set(SessionMark.titleStale);
-            } else if (symbol == WebKey.n && press == KeyStroke.first) {
-                game.toggleMode(MovementMode.noclip);
-                marks.set(SessionMark.titleStale);
+            Maybe!Command command = COMMAND_BINDINGS[].commandOf(symbol, press);
+            if (command.exists) {
+                run(command.value);
             } else if (symbol >= WebKey.digit1 && symbol <= WebKey.digit9) {
                 selectMaterial(cast(uint)(symbol - WebKey.digit1));
-            } else if (symbol == WebKey.bracketLeft && press == KeyStroke.first) {
-                switchWorld(WorldStep.previous);
-            } else if (symbol == WebKey.bracketRight && press == KeyStroke.first) {
-                switchWorld(WorldStep.next);
-            } else if (symbol == WebKey.t && press == KeyStroke.first) {
-                game.throwBlock();
             } else {
-                foreach (binding; KEY_BINDINGS) {
-                    if (binding.symbol == symbol) {
-                        held.set(binding.key);
-                    }
-                }
+                held.holdBound(KEY_BINDINGS[], symbol);
             }
         }
     }
 
-    void keyUp(WebKey symbol) {
-        foreach (binding; KEY_BINDINGS) {
-            if (binding.symbol == symbol) {
-                held.clear(binding.key);
-            }
+    void run(Command command) {
+        final switch (command) {
+            case Command.walkMode:
+                game.toggleMode(MovementMode.walk);
+                marks.set(SessionMark.titleStale);
+                break;
+            case Command.noclipMode:
+                game.toggleMode(MovementMode.noclip);
+                marks.set(SessionMark.titleStale);
+                break;
+            case Command.previousWorld:
+                switchWorld(WorldStep.previous);
+                break;
+            case Command.nextWorld:
+                switchWorld(WorldStep.next);
+                break;
+            case Command.throwBlock:
+                game.throwBlock();
+                break;
         }
     }
 
     void selectMaterial(uint index) {
-        if (index < MATERIAL_PALETTE.length && index != game.materialIndex) {
-            game.materialIndex = index;
+        bool changed = game.chooseMaterial(index);
+        if (changed) {
             marks.set(SessionMark.titleStale);
         }
     }
 
     void switchWorld(WorldStep direction) {
-        uint count = cast(uint) registry().allNames().length + 1;
-        uint step = count - 1;
-        if (direction == WorldStep.next) {
-            step = 1;
-        }
-        worldIndex = (worldIndex + step) % count;
+        worldIndex = steppedWorld(worldIndex, direction);
         report(restartGame(game, worldgenAt(worldIndex)));
         marks.set(SessionMark.titleStale);
     }
@@ -241,36 +200,19 @@ struct Session {
         }
     }
 
-    void capture(Capture state) {
-        if (state == Capture.captured) {
-            marks.set(SessionMark.captured);
-        } else {
-            marks.clear(SessionMark.captured);
+    void capture(MouseCapture state) {
+        mouse = state;
+        if (state == MouseCapture.released) {
             held = Flags!Key.init;
         }
         marks.set(SessionMark.titleStale);
     }
 }
 
-Worldgen worldgenAt(uint index) {
-    if (index == 0) {
-        return Worldgen.makeTerrain();
-    } else {
-        return Worldgen.fromStructure(StructureWorld.fromName(registry().allNames()[index - 1]));
-    }
-}
-
-float pitchSign(PitchAxis axis) {
-    if (axis == PitchAxis.inverted) {
-        return -1.0f;
-    } else {
-        return 1.0f;
-    }
-}
-
 __gshared Session* session;
 
 extern (C) void web_start(uint width, uint height, float renderRadius) {
+    gatherWorlds();
     session = cast(Session*) calloc(1, Session.sizeof);
     *session = Session.init;
     session.start(width, height, renderRadius);
@@ -291,7 +233,7 @@ extern (C) void web_key_down(uint key, uint press) {
 }
 
 extern (C) void web_key_up(uint key) {
-    session.keyUp(cast(WebKey) key);
+    session.held.letGoBound(KEY_BINDINGS[], cast(WebKey) key);
 }
 
 extern (C) void web_button(uint pressed) {
@@ -306,5 +248,5 @@ extern (C) void web_motion(double dx, double dy) {
 }
 
 extern (C) void web_capture(uint state) {
-    session.capture(cast(Capture) state);
+    session.capture(cast(MouseCapture) state);
 }

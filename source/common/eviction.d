@@ -4,11 +4,12 @@ import core.stdc.math : coshf;
 import base.array : Array;
 import base.clock : nowMilliseconds;
 import base.flags : Bits;
+import base.maybe : Maybe, MaybeIndex;
 import base.numbers : higherOf;
-import common.graph : Graph, NO_SLOT, ParentList;
+import common.graph : Graph, ParentList;
 import common.neighbors : chunkNeighborSlot;
 import common.node : Chunk, ChunkSlot, ChunkState;
-import common.traversal : NOT_COLLECTED, NearbyNode, NearbyScratch;
+import common.traversal : NearbyNode, NearbyScratch;
 import common.worldgen.blueprint : Blueprint;
 import common.worldgen.horospheres : releaseIdleHorospheres;
 import common.worldgen.store : dropTile, forgetTile, isTileGone, isTilePinned, unpin;
@@ -60,17 +61,20 @@ struct Evictor {
             uint slot = cursor;
             cursor += 1;
             examined += 1;
-            if (examined % SLOTS_PER_CLOCK_CHECK == 0 && evicted - before >= owed && nowMilliseconds() >= deadline) {
-                limit = examined;
+            if (examined % SLOTS_PER_CLOCK_CHECK == 0 && evicted - before >= owed) {
+                double now = nowMilliseconds();
+                if (now >= deadline) {
+                    limit = examined;
+                }
             }
             if (graph.isLive(slot)) {
                 if (recent.has(slot)) {
                     recent.clear(slot);
                 } else if (near.contains(slot)) {
                     recent.set(slot);
-                    uint index = published.indexOf(slot);
-                    if (index != NOT_COLLECTED && graph.chunks.has(slot)) {
-                        dropped += graph.dropFarChunks(published.nodes.ptr[index], camera, dropThreshold);
+                    MaybeIndex!uint index = published.indexOf(slot);
+                    if (index.exists && graph.chunks.has(slot)) {
+                        dropped += graph.dropFarChunks(published.nodes.ptr[index.value], camera, dropThreshold);
                     }
                 } else if (graph.isEvictable(slot)) {
                     evictFrom(graph, slot, near, unloaded);
@@ -114,7 +118,9 @@ struct Evictor {
                 if (graph.isTileIdle(tile, tileCursor, near)) {
                     graph.dropTile(tile);
                     droppedTiles += 1;
-                    owed -= owed > 0;
+                    if (owed > 0) {
+                        owed -= 1;
+                    }
                     if (graph.isTileGone(tile)) {
                         graph.forgetTile(tile);
                         forgottenTiles += 1;
@@ -124,8 +130,11 @@ struct Evictor {
                 }
             }
             examined += 1;
-            if (examined % TILES_PER_CLOCK_CHECK == 0 && owed == 0 && nowMilliseconds() >= deadline) {
-                return;
+            if (examined % TILES_PER_CLOCK_CHECK == 0 && owed == 0) {
+                double now = nowMilliseconds();
+                if (now >= deadline) {
+                    return;
+                }
             }
         }
     }
@@ -158,8 +167,8 @@ struct Evictor {
 bool isTileIdle(ref const Graph graph, uint tile, uint listed, Near near) {
     const(Blueprint)* blueprint = &graph.structures.blueprint;
     if (blueprint.sweep - blueprint.liveUses.ptr[listed] > TILE_IDLE_SWEEPS && !graph.isTilePinned(tile)) {
-        uint face = graph.slotOf(blueprint.tiles.ptr[tile].face);
-        return face == NO_SLOT || !near.contains(face);
+        MaybeIndex!uint face = graph.slotOf(blueprint.tiles.ptr[tile].face);
+        return !face.exists || !near.contains(face.value);
     } else {
         return false;
     }
@@ -170,7 +179,7 @@ struct Near {
     const(NearbyScratch)* building;
 
     bool contains(uint slot) const {
-        return published.indexOf(slot) != NOT_COLLECTED || (building !is null && building.indexOf(slot) != NOT_COLLECTED);
+        return published.indexOf(slot).exists || (building !is null && building.indexOf(slot).exists);
     }
 }
 
@@ -198,12 +207,12 @@ bool areFaceNeighborsSettled(ref const Graph graph, ChunkSlot chunk) {
     return direction == DIRECTIONS.length;
 }
 
-bool isSettled(ref const Graph graph, ChunkSlot chunk) {
-    if (chunk.slot == NO_SLOT) {
-        return false;
-    } else {
-        ChunkState state = graph.chunks.at(chunk).state;
+bool isSettled(ref const Graph graph, Maybe!ChunkSlot chunk) {
+    if (chunk.exists) {
+        ChunkState state = graph.chunks.at(chunk.value).state;
         return state == ChunkState.populated || state == ChunkState.dropped;
+    } else {
+        return false;
     }
 }
 
@@ -229,7 +238,7 @@ bool isPinnedChunk(const(Chunk)* chunk) {
 
 struct Unloaded {
     uint slot;
-    uint block;
+    MaybeIndex!uint block;
 }
 
 void unloadNode(ref Graph graph, uint slot, ref Array!Unloaded unloaded) {

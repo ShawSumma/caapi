@@ -4,32 +4,48 @@ import core.stdc.math : asin, asinh, atan2, cos, cosh, sin, sinh, sqrt;
 import core.stdc.stdlib : free, malloc;
 import core.stdc.string : memcpy, strlen;
 import base.array : Array;
+import base.maybe : Maybe, MaybeIndex;
 import base.numbers : RADIANS_PER_DEGREE, clamped, higherOf;
 import base.parallel : Executor;
 import base.splitmix : SplitMix;
 import base.stdio : snprintf;
+import base.vector3 : Vec3;
 import client.game : Game;
 import client.plugins : registry;
-import client.tiles : TileCall, TileCalls, TileSpan, TileWork, edgeKey, faceKey, isTiledBy, segmentKey;
+import client.tiles : TileCall, TileCalls, TileSpan, TileWork, isTiledBy, visitTilesAt;
 import common.graph : Graph;
-import common.worldgen.blueprint : BlueprintBuilder, CellBox, Cover, PLACED_RECORD, PaintResult, Rhythm;
+import common.node : ChunkLayout;
+import common.view : GraphView;
+import common.worldgen.blueprint : BlueprintBuilder, CellBox, Cover, PaintOwner, PaintResult, Rhythm;
 import common.worldgen.generation : StructureWorld, Worldgen;
-import common.worldgen.horospheres : GravityPull, HorosphereKind, HorosphereRef, Horospheres, LOWEST_RISE_EDGES, NO_RISE, ROOT, Rise, columnSiteOf, ensureHorospheresAt, groundNodeOf, isPaintedBy, openHorosphere, riseAt, segmentSite, segmentsNear;
+import common.worldgen.horospheres : GravityPull, HorosphereId, HorosphereKind, Horospheres, LOWEST_RISE_EDGES, ROOT, Rise, ensureColumnSite, ensureRise, openHorosphere;
 import common.worldgen.plane : Plane;
 import common.worldgen.store : Grower, TileKey;
 import common.worldgen.strokes : Stroke, StrokeForm;
-import common.worldgen.structure : ClaimKey, ColumnSpot, GROUND_RING, PLACE_SLACK, RootedCorner, SiteFrame, anchorBits, atLevel, calmAt, claimKeyOf, edgeCells, edgeLength, edgeSitesOf, faceSite, forwarded, frameOf, groundRing, rootSite, siteHash, siteOf, siteOrigin, sitePlacement, turned;
-import geometry.honeycomb : Face;
+import common.worldgen.structure : ClaimKey, ColumnSpot, PLACE_SLACK, RootedCorner, SiteFrame, anchorBits, calmAt, edgeCells, edgeLength, ensureClaimKey, ensureSiteHash, ensureSiteOrigin, forwarded, frameOf, moveToLevel, rootSite, siteOf, sitePlacement, turnSite;
 import geometry.lorentz : Motion, Vec4;
-import plugins.api.api : Api, Box, Column, HorosphereForm, Look, Material, NO_KIND, Pen, RisingKind, Site, SitePart, Spot, Structure, Tile, Turn;
+import plugins.api.api : Api, Box, ColumnCell, HorosphereForm, KindId, KindTag, Look, Material, Pen, Repeat, RisingKind, Site, SitePart, Span, Spot, Structure, Tile, Turn;
 import plugins.api.api : ApiRhythm = Rhythm;
 
 enum size_t MESSAGE_CAPACITY = 1024;
+enum string UNBOUNDED_PAINT = "paints bounded heights: give the box a z range";
+enum string BAD_PEN_DRAW = "a pen draws a length of at least zero with radii above zero";
+enum string ONLY_WORLD_TILES_GROUND = "only the world's own structure tiles the ground, and only once";
+enum string ONLY_WORLD_TILES_EDGES = "only the world's own structure tiles the edges, and only once";
+enum string ONLY_WORLD_FLATTENS = "only the world's own structure flattens the ground";
+enum string ONLY_WORLD_TURNS_GRAVITY = "only the world's own structure turns gravity around";
+enum string ONLY_WORLD_SETS_FOG = "only the world's own structure sets the fog";
+enum string ONLY_WORLD_GIVES_KINDS = "only the world's own structure gives horospheres their kinds";
+enum string ONLY_WORLD_SETS_LOOK = "only the world's own structure sets how it looks";
+enum string ONLY_WORLD_OPENS = "only the world's own structure opens horospheres";
+enum string ONLY_WORLD_ROOTS = "only the world's own structure gives the root its kind, and only once";
+enum string NOT_AN_EDGE_CLAIM = "a site claims its vertex or face, not its edge";
+enum string UNKNOWN_KIND = "unknown kind of horosphere";
 enum double HALF_TURN = 3.141592653589793;
 enum double VERTICAL_TOLERANCE = 1e-9;
-enum size_t ACROSS = 0;
-enum size_t UP = 1;
-enum size_t AHEAD = 2;
+enum Vec3!double ACROSS = Vec3!double(1, 0, 0);
+enum Vec3!double UP = Vec3!double(0, 1, 0);
+enum Vec3!double AHEAD = Vec3!double(0, 0, 1);
 
 struct StructureProblem {
     char[MESSAGE_CAPACITY] text = 0;
@@ -82,40 +98,34 @@ struct PenFrame {
         return pen;
     }
 
-    double[3] up() const {
+    Vec3!double up() const {
         Vec4!double local = frame.inverse() * ground;
         double length = sqrt(local.c[0] * local.c[0] + local.c[1] * local.c[1] + local.c[2] * local.c[2]);
-        return [local.c[0] / length, local.c[1] / length, local.c[2] / length];
+        return Vec3!double(local.c[0] / length, local.c[1] / length, local.c[2] / length);
     }
 
     PenFrame moved(double distance) const {
-        return PenFrame((frame * Motion!double.shift([0, 0, distance])).orthonormalized(), ground, node);
+        return PenFrame((frame * Motion!double.shift(Vec3!double(0, 0, distance))).orthonormalized(), ground, node);
     }
 
-    PenFrame turned(double[3] from, double[3] toward, double degrees) const {
+    PenFrame turned(Vec3!double from, Vec3!double toward, double degrees) const {
         return PenFrame(frame * planeRotation(from, toward, degrees * RADIANS_PER_DEGREE), ground, node);
     }
 
     PenFrame lifted(double degrees) const {
-        double[3] rising = up();
-        double side = sqrt(rising[0] * rising[0] + rising[1] * rising[1]);
+        Vec3!double rising = up();
+        double side = sqrt(rising.x * rising.x + rising.y * rising.y);
         if (side < VERTICAL_TOLERANCE) {
             return this;
         } else {
-            double toUp = atan2(side, rising[AHEAD]);
+            double toUp = atan2(side, rising.z);
             double angle = clamped(degrees * RADIANS_PER_DEGREE, toUp - HALF_TURN, toUp);
-            return PenFrame(frame * planeRotation(axisOf(AHEAD), [rising[0] / side, rising[1] / side, 0], angle), ground, node);
+            return PenFrame(frame * planeRotation(AHEAD, Vec3!double(rising.x / side, rising.y / side, 0), angle), ground, node);
         }
     }
 }
 
-double[3] axisOf(size_t axis) {
-    double[3] unit = [0, 0, 0];
-    unit[axis] = 1;
-    return unit;
-}
-
-Motion!double planeRotation(double[3] from, double[3] toward, double angle) {
+Motion!double planeRotation(Vec3!double from, Vec3!double toward, double angle) {
     Motion!double rotation = Motion!double.identity();
     double turn = sin(angle);
     double shrink = cos(angle) - 1;
@@ -129,28 +139,56 @@ Motion!double planeRotation(double[3] from, double[3] toward, double angle) {
 
 Vec4!double unitNormal(Plane plane) {
     double stretch = cosh(plane.height);
-    return Vec4!double([plane.up[0] * stretch, plane.up[1] * stretch, plane.up[2] * stretch, -sinh(plane.height)]);
+    return Vec4!double([plane.up.x * stretch, plane.up.y * stretch, plane.up.z * stretch, -sinh(plane.height)]);
 }
 
-bool isWithin(Box area, Column column) {
-    foreach (axis; 0 .. 2) {
-        if (area.low[axis] < column.low || area.high[axis] > column.high) {
-            return false;
+Span columnOf(ubyte dimension) {
+    return Span(-cast(int) dimension, dimension - 1);
+}
+
+double cellLengthOf(ref const ChunkLayout layout) {
+    return edgeLength(layout).value / edgeCells(layout.dimension);
+}
+
+mixin template Refusing() {
+    const(char)* refusal;
+
+    void refuse(const(char)* message) {
+        if (refusal is null) {
+            refusal = message;
         }
     }
-    return true;
+
+    void takeRefusal() {
+        if (refusal !is null) {
+            fail(refusal);
+            refusal = null;
+        }
+    }
+}
+
+bool isWithin(Box area, Span column) {
+    return area.low.x >= column.low && area.high.x <= column.high && area.low.y >= column.low && area.high.y <= column.high;
 }
 
 bool isOrdered(Box area) {
-    return area.low[0] <= area.high[0] && area.low[1] <= area.high[1] && area.low[2] <= area.high[2];
+    return area.low.x <= area.high.x && area.low.y <= area.high.y && area.low.z <= area.high.z;
 }
 
-const(char)* boxRefusal(Box area, ApiRhythm rhythm, Column column) {
+Vec3!int cellOf(ColumnCell cell) {
+    return Vec3!int(cell.x, cell.y, cell.z);
+}
+
+CellBox cellBoxOf(Box area) {
+    return CellBox(cellOf(area.low), cellOf(area.high), area.extent);
+}
+
+const(char)* boxRefusal(Box area, ApiRhythm rhythm, Span column) {
     if (!isOrdered(area)) {
         return "a box runs from high to low";
     } else if (!area.isWithin(column)) {
         return "a box leaves the site's column";
-    } else if (rhythm.every < 0 || (rhythm.every > 0 && rhythm.span <= 0)) {
+    } else if (rhythm.repeat == Repeat.rhythmic && (rhythm.every <= 0 || rhythm.span <= 0)) {
         return "a rhythm needs a positive every and span";
     } else {
         return null;
@@ -158,7 +196,7 @@ const(char)* boxRefusal(Box area, ApiRhythm rhythm, Column column) {
 }
 
 Rhythm engineRhythm(ApiRhythm rhythm) {
-    return Rhythm(rhythm.every, rhythm.from, rhythm.span);
+    return Rhythm(rhythm.every, rhythm.from, rhythm.span, rhythm.repeat);
 }
 
 Array!ubyte copied(const(void)* data, size_t size) {
@@ -174,6 +212,38 @@ Structure worldNamed(const(char)* name) {
     return registry().find(name[0 .. strlen(name)]);
 }
 
+enum WorldStep : ubyte {
+    previous,
+    next,
+}
+
+uint steppedWorld(uint index, WorldStep direction) {
+    uint count = cast(uint) registry().allNames().length + 1;
+    uint step = count - 1;
+    if (direction == WorldStep.next) {
+        step = 1;
+    }
+    return (index + step) % count;
+}
+
+Worldgen worldgenAt(uint index) {
+    if (index == 0) {
+        return Worldgen.makeTerrain();
+    } else {
+        return Worldgen.fromStructure(StructureWorld.fromName(registry().allNames()[index - 1]));
+    }
+}
+
+KindTag ensureRisingTag(ref GraphView view, Site site, HorosphereId over) {
+    SiteFrame at = view.moveToLevel(frameOf(site), 0);
+    Rise rise = view.ensureRise(at.node, at.corner, over);
+    if (rise.kind.exists) {
+        return KindTag.of(view.horospheres.kinds.ptr[rise.kind.value].tag);
+    } else {
+        return KindTag.init;
+    }
+}
+
 struct StructureHost {
     BlueprintBuilder builder;
     Array!(Array!QueuedStructure) queue;
@@ -182,11 +252,12 @@ struct StructureHost {
     Executor executor;
     SplitMix random;
     Api api;
-    const(char)* refusal;
     StructureWorld name;
     uint key;
     uint nextKey;
     StructureProblem problem;
+
+    mixin Refusing;
 
     static StructureHost make(ref Graph graph) {
         StructureHost host;
@@ -223,19 +294,6 @@ struct StructureHost {
         }
     }
 
-    void refuse(const(char)* message) {
-        if (refusal is null) {
-            refusal = message;
-        }
-    }
-
-    void takeRefusal() {
-        if (refusal !is null) {
-            fail(refusal);
-            refusal = null;
-        }
-    }
-
     void grow(ref Graph graph, int through) {
         builder.graph = &graph;
         while (!problem.isPresent && nextKey < queue.length && cast(int) nextKey <= through) {
@@ -266,48 +324,20 @@ struct StructureHost {
     void cover(ref Graph graph, uint slot) {
         builder.graph = &graph;
         if (!problem.isPresent && hasCover()) {
-            if (isTiledBy(graph, calls, ROOT)) {
-                coverRing(graph, graph.view.groundRing(graph.view.groundNodeOf(slot, ROOT), Face.first), Face.first, ROOT);
+            void onTile(TileKey key, SiteFrame site, HorosphereId over, int segment, TileSpan span) {
+                coverTile(graph, key, site, over, segment, span);
             }
-            size_t count = graph.view.ensureHorospheresAt(slot).length;
-            foreach (index; 0 .. count) {
-                HorosphereRef near = graph.view.horospheresAt(slot)[index];
-                if (isTiledBy(graph, calls, near.horosphere) && graph.horospheres.isUpright(near.horosphere)) {
-                    coverSegments(graph, near);
-                } else if (isTiledBy(graph, calls, near.horosphere) && graph.view.isPaintedBy(slot, near)) {
-                    Face label = graph.horospheres.horosphere(near.horosphere).label;
-                    coverRing(graph, graph.view.groundRing(graph.view.groundNodeOf(slot, near.horosphere), label), label, near.horosphere);
-                }
-            }
-            if (calls.hasEdge) {
-                foreach (site; graph.view.edgeSitesOf(slot)) {
-                    coverTile(graph, graph.view.edgeKey(site), site, ROOT, 0, TileSpan.edge);
-                }
-            }
+            visitTilesAt!onTile(graph.view, calls, slot);
             runTiles(graph);
         }
     }
 
-    void coverTile(ref Graph graph, TileKey key, SiteFrame site, uint over, int segment, TileSpan span) {
+    void coverTile(ref Graph graph, TileKey key, SiteFrame site, HorosphereId over, int segment, TileSpan span) {
         const(uint)* known = graph.structures.tiledFaces.find(key);
         if (known !is null && !graph.structures.blueprint.tiles.ptr[*known].isDropped) {
             graph.structures.blueprint.useTile(*known);
         } else {
             tiles.addTask(graph, key, site.node, null, over, site, segment, span);
-        }
-    }
-
-    void coverRing(ref Graph graph, uint[GROUND_RING] ring, Face label, uint over) {
-        foreach (face; ring) {
-            coverTile(graph, graph.view.faceKey(face, label), faceSite(face, label), over, 0, TileSpan.ground);
-        }
-    }
-
-    void coverSegments(ref Graph graph, ref const HorosphereRef near) {
-        int[2] segments = graph.view.segmentsNear(near);
-        foreach (segment; segments[0] .. segments[1] + 1) {
-            SiteFrame site = graph.view.segmentSite(near.horosphere, segment);
-            coverTile(graph, graph.view.segmentKey(site), site, near.horosphere, segment, TileSpan.ground);
         }
     }
 
@@ -339,16 +369,20 @@ struct StructureHost {
         queue.ptr[queued.key].append(queued);
     }
 
+    ref GraphView hostView() {
+        return builder.graph.view;
+    }
+
     ubyte dimension() const {
         return builder.graph.layout.dimension;
     }
 
-    Column column() const {
-        return Column(-cast(int) dimension(), dimension() - 1);
+    Span column() const {
+        return columnOf(dimension());
     }
 
     double cellLength() const {
-        return edgeLength(builder.graph.layout).value / edgeCells(dimension());
+        return cellLengthOf(builder.graph.layout);
     }
 
     void paint(Site site, Material material, Box area, ApiRhythm rhythm, Cover cover) {
@@ -356,9 +390,9 @@ struct StructureHost {
         if (wrong !is null) {
             refuse(wrong);
         } else {
-            PaintResult result = builder.paint(frameOf(site), CellBox(area.low, area.high), engineRhythm(rhythm), material, cover);
+            PaintResult result = builder.paint(frameOf(site), cellBoxOf(area), engineRhythm(rhythm), material, cover);
             if (result == PaintResult.endless) {
-                refuse("a placed structure paints bounded heights: give the box a z range");
+                refuse(UNBOUNDED_PAINT);
             } else if (result == PaintResult.behind) {
                 refuse("paints too far behind its site: a placed structure stays near where it was placed");
             }
@@ -367,7 +401,7 @@ struct StructureHost {
 
     bool place(Site site, Structure structure, const(void)* data, size_t size) {
         SiteFrame frame = frameOf(site);
-        RootedCorner origin = builder.graph.view.siteOrigin(frame);
+        RootedCorner origin = builder.graph.view.ensureSiteOrigin(frame);
         if (cast(int) origin.depth + PLACE_SLACK >= cast(int) key) {
             enqueue(QueuedStructure(frame, Array!uint.init, copied(data, size), structure, higherOf(origin.depth, key)));
             return true;
@@ -376,31 +410,32 @@ struct StructureHost {
         }
     }
 
-    ClaimKey claimKey(Site site, SitePart part) {
-        return builder.graph.view.claimKeyOf(frameOf(site), part);
+    ClaimKey ensureClaimKeyAt(Site site, SitePart part) {
+        return builder.graph.view.ensureClaimKey(frameOf(site), part);
     }
 
     bool claim(Site site, SitePart part) {
         if (part == SitePart.edge) {
-            refuse("a site claims its vertex or face, not its edge");
+            refuse(NOT_AN_EDGE_CLAIM);
             return false;
         } else {
-            return builder.claim(claimKey(site, part));
+            return builder.claim(ensureClaimKeyAt(site, part));
         }
     }
 
-    bool isClaimed(Site site, SitePart part) {
+    bool probeClaimed(Site site, SitePart part) {
         if (part == SitePart.edge) {
-            refuse("a site claims its vertex or face, not its edge");
+            refuse(NOT_AN_EDGE_CLAIM);
             return false;
         } else {
-            return builder.blueprint.isClaimed(claimKey(site, part));
+            ClaimKey key = ensureClaimKeyAt(site, part);
+            return builder.blueprint.isClaimed(key);
         }
     }
 
     void tile(Tile tile, const(void)* data, size_t size) {
         if (builder.isGrowing || calls.hasRoot) {
-            refuse("only the world's own structure tiles the ground, and only once");
+            refuse(ONLY_WORLD_TILES_GROUND);
         } else {
             calls.root = TileCall(tile, copied(data, size));
         }
@@ -408,7 +443,7 @@ struct StructureHost {
 
     void tileEdges(Tile tile, const(void)* data, size_t size) {
         if (builder.isGrowing || calls.hasEdge) {
-            refuse("only the world's own structure tiles the edges, and only once");
+            refuse(ONLY_WORLD_TILES_EDGES);
         } else {
             calls.edge = TileCall(tile, copied(data, size));
         }
@@ -416,9 +451,9 @@ struct StructureHost {
 
     void flatten(Site site) {
         if (builder.isGrowing) {
-            refuse("only the world's own structure flattens the ground");
+            refuse(ONLY_WORLD_FLATTENS);
         } else {
-            SiteFrame at = builder.graph.view.atLevel(frameOf(site), 0);
+            SiteFrame at = builder.graph.view.moveToLevel(frameOf(site), 0);
             builder.graph.structures.blueprint.flats.append(at);
             builder.graph.reference(at.node);
             foreach (slot; 0 .. builder.graph.slotCount) {
@@ -431,7 +466,7 @@ struct StructureHost {
 
     void invertGravity() {
         if (builder.isGrowing) {
-            refuse("only the world's own structure turns gravity around");
+            refuse(ONLY_WORLD_TURNS_GRAVITY);
         } else {
             builder.graph.horospheres.pull = GravityPull.up;
         }
@@ -439,103 +474,105 @@ struct StructureHost {
 
     void fog(double units) {
         if (builder.isGrowing) {
-            refuse("only the world's own structure sets the fog");
+            refuse(ONLY_WORLD_SETS_FOG);
         } else if (!(units > 0)) {
             refuse("the fog closes in past a distance above zero");
         } else {
-            builder.graph.structures.blueprint.fog = cast(float) units;
+            builder.graph.structures.blueprint.fog = Maybe!float.of(cast(float) units);
         }
     }
 
-    uint horosphere(double odds, HorosphereForm form, uint tag, Tile tile, const(void)* data, size_t size) {
+    KindId horosphere(double odds, HorosphereForm form, uint tag, Tile tile, const(void)* data, size_t size) {
         Horospheres* horospheres = &builder.graph.horospheres;
         if (builder.isGrowing) {
-            refuse("only the world's own structure gives horospheres their kinds");
-            return 0;
+            refuse(ONLY_WORLD_GIVES_KINDS);
+            return KindId.init;
         } else if (!(odds >= 0) || horospheres.totalOdds() + odds > 1) {
             refuse("horosphere odds are chances per vertex, and all kinds together add up to at most 1");
-            return 0;
+            return KindId.init;
         } else if (horospheres.kinds.length == ubyte.max) {
             refuse("too many kinds of horosphere");
-            return 0;
+            return KindId.init;
         } else {
             horospheres.kinds.append(HorosphereKind(odds, form, tag));
             calls.kinds.append(TileCall(tile, copied(data, size)));
-            return cast(uint) horospheres.kinds.length;
+            return KindId.of(cast(uint) horospheres.kinds.length - 1);
         }
     }
 
-    uint sunken(double odds, uint under, uint tag, Tile tile, const(void)* data, size_t size) {
-        uint made = horosphere(odds, HorosphereForm.sunken, tag, tile, data, size);
+    KindId sunken(double odds, uint under, uint tag, Tile tile, const(void)* data, size_t size) {
+        KindId made = horosphere(odds, HorosphereForm.sunken, tag, tile, data, size);
         if (refusal is null) {
-            builder.graph.horospheres.kinds.ptr[made - 1].under = under;
+            builder.graph.horospheres.kinds.ptr[made.value].under = under;
         }
         return made;
     }
 
-    void look(uint kind, ref const Look chosen) {
+    void look(KindId kind, ref const Look chosen) {
         if (builder.isGrowing) {
-            refuse("only the world's own structure sets how it looks");
-        } else if (kind == NO_KIND) {
-            builder.graph.structures.blueprint.look = chosen;
+            refuse(ONLY_WORLD_SETS_LOOK);
         } else if (!isKnownKind(kind)) {
-            refuse("unknown kind of horosphere");
+            refuse(UNKNOWN_KIND);
         } else {
-            builder.graph.horospheres.kinds.ptr[kind - 1].look = chosen;
+            builder.graph.horospheres.kinds.ptr[kind.value].look = chosen;
+        }
+    }
+
+    void worldLook(ref const Look chosen) {
+        if (builder.isGrowing) {
+            refuse(ONLY_WORLD_SETS_LOOK);
+        } else {
+            builder.graph.structures.blueprint.look = chosen;
         }
     }
 
     void addRisingKinds(double odds) {
         foreach (ref kind; registry().risingKinds[0 .. registry().kindCount]) {
-            uint made = horosphere(odds * kind.share, kind.form, kind.tag, kind.tile, kind.data, kind.size);
+            KindId made = horosphere(odds * kind.share, kind.form, kind.tag, kind.tile, kind.data, kind.size);
             if (refusal is null) {
-                builder.graph.horospheres.kinds.ptr[made - 1].under = kind.under;
+                builder.graph.horospheres.kinds.ptr[made.value].under = kind.under;
                 look(made, kind.look);
             }
         }
     }
 
-    bool isKnownKind(uint kind) const {
-        return kind >= 1 && kind <= builder.graph.horospheres.kinds.length;
+    bool isKnownKind(KindId kind) const {
+        return kind.exists && kind.value < builder.graph.horospheres.kinds.length;
     }
 
-    void openHorosphereAt(Site site, uint kind, uint edges) {
+    void openHorosphereAt(Site site, KindId kind, uint edges) {
         if (builder.isGrowing) {
-            refuse("only the world's own structure opens horospheres");
+            refuse(ONLY_WORLD_OPENS);
         } else if (!isKnownKind(kind)) {
-            refuse("unknown kind of horosphere");
+            refuse(UNKNOWN_KIND);
         } else if (edges < LOWEST_RISE_EDGES || edges > ubyte.max) {
             refuse("a horosphere rises at least two edges");
-        } else if (!(*builder.graph).openHorosphere(frameOf(site), Rise(cast(ubyte) kind, cast(ubyte) edges))) {
-            refuse("a horosphere beside another one would cross it");
+        } else {
+            bool opened = (*builder.graph).openHorosphere(frameOf(site), Rise(MaybeIndex!ubyte.of(cast(ubyte) kind.value), cast(ubyte) edges));
+            if (!opened) {
+                refuse("a horosphere beside another one would cross it");
+            }
         }
     }
 
-    void rooted(uint kind) {
+    void rooted(KindId kind) {
         Horospheres* horospheres = &builder.graph.horospheres;
-        if (builder.isGrowing || horospheres.rootKind != NO_RISE) {
-            refuse("only the world's own structure gives the root its kind, and only once");
+        if (builder.isGrowing || horospheres.rootKind.exists) {
+            refuse(ONLY_WORLD_ROOTS);
         } else if (!isKnownKind(kind)) {
-            refuse("unknown kind of horosphere");
-        } else if (horospheres.isUprightKind(cast(ubyte) kind)) {
+            refuse(UNKNOWN_KIND);
+        } else if (horospheres.isUprightKind(cast(ubyte) kind.value)) {
             refuse("the root is a plane, so it cannot be an upright kind");
         } else {
-            horospheres.rootKind = cast(ubyte) kind;
+            horospheres.rootKind = MaybeIndex!ubyte.of(cast(ubyte) kind.value);
         }
     }
 
-    uint rising(Site site) {
-        Graph* graph = builder.graph;
-        SiteFrame at = graph.view.atLevel(frameOf(site), 0);
-        Rise rise = graph.view.riseAt(at.node, at.corner, ROOT);
-        if (rise.kind == NO_RISE) {
-            return NO_KIND;
-        } else {
-            return graph.horospheres.kinds.ptr[rise.kind - 1].tag;
-        }
+    KindTag ensureRisingTagAt(Site site) {
+        return builder.graph.view.ensureRisingTag(site, ROOT);
     }
 
-    PenFrame penAt(Site site) {
+    PenFrame ensurePen(Site site) {
         Graph* graph = builder.graph;
         SiteFrame frame = frameOf(site);
         return PenFrame(sitePlacement(frame, graph.layout).as!double(), unitNormal(graph.ensureState(frame.node).surface), frame.node);
@@ -545,12 +582,12 @@ struct StructureHost {
         if (builder.isGrowing) {
             refuse("only the world's own structure draws with a pen");
         } else if (!(cells >= 0) || !(fromRadius > 0) || !(toRadius > 0)) {
-            refuse("a pen draws a length of at least zero with radii above zero");
+            refuse(BAD_PEN_DRAW);
         } else {
             Graph* graph = builder.graph;
             double cell = cellLength();
             PenFrame frame = PenFrame.fromPen(pen);
-            graph.structures.addStroke(graph.view, PLACED_RECORD, frame.node, Stroke.make(frame.frame, cells * cell, cast(float)(fromRadius * cell), cast(float)(toRadius * cell), material, form));
+            graph.structures.addStroke(graph.view, PaintOwner.init, frame.node, Stroke.make(frame.frame, cells * cell, cast(float)(fromRadius * cell), cast(float)(toRadius * cell), material, form));
         }
     }
 
@@ -576,22 +613,22 @@ StructureHost* mainHost(const(Api)* api) {
 Api mainApi(StructureHost* host) {
     Api api;
     api.host = host;
-    api.failure = &mainFailure;
-    api.fail = &mainFail;
-    api.forward = &mainForward;
-    api.turned = &mainTurned;
-    api.column = &mainColumn;
-    api.edgeCells = &mainEdgeCells;
-    api.pick = &mainPick;
-    api.random = &mainRandom;
-    api.hash = &mainHash;
-    api.paint = &mainPaint;
-    api.fill = &mainFill;
+    api.failure = &apiFailure!mainHost;
+    api.fail = &apiFail!mainHost;
+    api.forward = &apiForward;
+    api.turn = &apiTurned!mainHost;
+    api.column = &apiColumn!mainHost;
+    api.edgeCells = &apiEdgeCells!mainHost;
+    api.pick = &apiPick!mainHost;
+    api.random = &apiRandom!mainHost;
+    api.probeHash = &apiHash!mainHost;
+    api.paint = &apiPaint!mainHost;
+    api.fill = &apiFill!mainHost;
     api.stop = &mainStop;
     api.entrance = &mainEntrance;
     api.place = &mainPlace;
     api.claim = &mainClaim;
-    api.isClaimed = &mainIsClaimed;
+    api.probeClaimed = &mainProbeClaimed;
     api.tile = &mainTile;
     api.tileEdges = &mainTileEdges;
     api.horosphere = &mainHorosphere;
@@ -602,73 +639,125 @@ Api mainApi(StructureHost* host) {
     api.rooted = &mainRooted;
     api.invertGravity = &mainInvertGravity;
     api.fog = &mainFog;
-    api.rising = &mainRising;
-    api.balance = &mainBalance;
-    api.pen = &mainPen;
-    api.penForward = &mainPenForward;
-    api.penTurn = &mainPenTurn;
-    api.penRoll = &mainPenRoll;
-    api.penLift = &mainPenLift;
-    api.penRise = &mainPenRise;
-    api.penHeight = &mainPenHeight;
-    api.limb = &mainLimb;
-    api.leaves = &mainLeaves;
-    api.build = &mainBuild;
+    api.probeRising = &apiRising!mainHost;
+    api.probeBalance = &mainBalance;
+    api.openPen = &apiPen!mainHost;
+    api.penForward = &apiPenForward!mainHost;
+    api.penTurn = &apiPenTurn;
+    api.penRoll = &apiPenRoll;
+    api.penLift = &apiPenLift;
+    api.penRise = &apiPenRise;
+    api.penHeight = &apiPenHeight!mainHost;
+    api.limb = &apiLimb!mainHost;
+    api.leaves = &apiLeaves!mainHost;
+    api.build = &apiBuild!mainHost;
     api.look = &mainLook;
+    api.worldLook = &mainWorldLook;
     api.risingKinds = &mainRisingKinds;
     api.landmark = &mainLandmark;
     return api;
 }
 
-const(char)* mainFailure(const(Api)* api) {
-    StructureHost* host = mainHost(api);
-    const(char)* refusal = host.refusal;
-    host.refusal = null;
+const(char)* apiFailure(alias hostOf)(const(Api)* api) {
+    const(char)* refusal = hostOf(api).refusal;
+    hostOf(api).refusal = null;
     return refusal;
 }
 
-void mainFail(const(Api)* api, const(char)* message) {
-    mainHost(api).refuse(message);
+void apiFail(alias hostOf)(const(Api)* api, const(char)* message) {
+    hostOf(api).refuse(message);
 }
 
-Site mainForward(const(Api)* api, Site site, int edges) {
+Site apiForward(const(Api)* api, Site site, int edges) {
     return siteOf(forwarded(frameOf(site), edges));
 }
 
-Site mainTurned(const(Api)* api, Site site, Turn turn) {
-    return siteOf(mainHost(api).builder.graph.view.turned(frameOf(site), turn));
+Site apiTurned(alias hostOf)(const(Api)* api, Site site, Turn turn) {
+    return siteOf(hostOf(api).hostView.turnSite(frameOf(site), turn));
 }
 
-Column mainColumn(const(Api)* api) {
-    return mainHost(api).column();
+ulong apiHash(alias hostOf)(const(Api)* api, Site site, SitePart part) {
+    return hostOf(api).hostView.ensureSiteHash(frameOf(site), part);
 }
 
-int mainEdgeCells(const(Api)* api) {
-    return edgeCells(mainHost(api).dimension());
+Span apiColumn(alias hostOf)(const(Api)* api) {
+    return hostOf(api).column();
 }
 
-uint mainPick(const(Api)* api, uint count) {
-    return cast(uint)(mainHost(api).random.next() % count);
+int apiEdgeCells(alias hostOf)(const(Api)* api) {
+    return edgeCells(hostOf(api).dimension());
 }
 
-double mainRandom(const(Api)* api) {
-    return mainHost(api).random.unit();
+uint apiPick(alias hostOf)(const(Api)* api, uint count) {
+    return cast(uint)(hostOf(api).random.next() % count);
 }
 
-ulong mainHash(const(Api)* api, Site site, SitePart part) {
-    return mainHost(api).builder.graph.view.siteHash(frameOf(site), part);
+double apiRandom(alias hostOf)(const(Api)* api) {
+    return hostOf(api).random.unit();
 }
 
-void mainPaint(const(Api)* api, Site site, Material material, Box area, ApiRhythm rhythm) {
-    mainHost(api).paint(site, material, area, rhythm, Cover.over);
+void apiPaint(alias hostOf)(const(Api)* api, Site site, Material material, Box area, ApiRhythm rhythm) {
+    hostOf(api).paint(site, material, area, rhythm, Cover.over);
 }
 
-void mainFill(const(Api)* api, Site site, Material material, Box area, ApiRhythm rhythm) {
-    mainHost(api).paint(site, material, area, rhythm, Cover.intoAir);
+void apiFill(alias hostOf)(const(Api)* api, Site site, Material material, Box area, ApiRhythm rhythm) {
+    hostOf(api).paint(site, material, area, rhythm, Cover.intoAir);
+}
+
+KindTag apiRising(alias hostOf)(const(Api)* api, Site site) {
+    return hostOf(api).ensureRisingTagAt(site);
+}
+
+Pen apiPen(alias hostOf)(const(Api)* api, Site site) {
+    return hostOf(api).ensurePen(site).toPen();
+}
+
+Pen apiPenForward(alias hostOf)(const(Api)* api, Pen pen, double cells) {
+    return PenFrame.fromPen(pen).moved(cells * hostOf(api).cellLength()).toPen();
+}
+
+Pen apiPenTurn(const(Api)* api, Pen pen, double yaw, double pitch) {
+    return PenFrame.fromPen(pen).turned(AHEAD, ACROSS, yaw).turned(AHEAD, UP, pitch).toPen();
+}
+
+Pen apiPenRoll(const(Api)* api, Pen pen, double degrees) {
+    return PenFrame.fromPen(pen).turned(ACROSS, UP, degrees).toPen();
+}
+
+Pen apiPenLift(const(Api)* api, Pen pen, double degrees) {
+    return PenFrame.fromPen(pen).lifted(degrees).toPen();
+}
+
+double apiPenRise(const(Api)* api, Pen pen) {
+    return asin(PenFrame.fromPen(pen).up().z) / RADIANS_PER_DEGREE;
+}
+
+double apiPenHeight(alias hostOf)(const(Api)* api, Pen pen) {
+    PenFrame frame = PenFrame.fromPen(pen);
+    return asinh(frame.ground.minkowski(frame.frame.m.column(3))) / hostOf(api).cellLength();
+}
+
+void apiLimb(alias hostOf)(const(Api)* api, Pen pen, Material material, double cells, double fromRadius, double toRadius) {
+    hostOf(api).draw(pen, cells, fromRadius, toRadius, material, StrokeForm.solid);
+}
+
+void apiLeaves(alias hostOf)(const(Api)* api, Pen pen, Material material, double radius) {
+    hostOf(api).draw(pen, 0, radius, radius, material, StrokeForm.leafy);
+}
+
+bool apiBuild(alias hostOf)(const(Api)* api, const(char)* world, Site site) {
+    Structure found = worldNamed(world);
+    if (found is null) {
+        hostOf(api).refuse("builds a world no plugin has");
+        return false;
+    } else {
+        found(api, site, null);
+        return true;
+    }
 }
 
 void mainStop(const(Api)* api, Site site, Spot spot) {
-    mainHost(api).builder.stop(mainHost(api).builder.graph.view.atLevel(frameOf(site), 0), ColumnSpot(spot.x, spot.y, spot.z));
+    mainHost(api).builder.stop(mainHost(api).builder.graph.view.moveToLevel(frameOf(site), 0), ColumnSpot(spot.x, spot.y, spot.z));
 }
 
 void mainEntrance(const(Api)* api, Site site, Spot spot) {
@@ -687,31 +776,31 @@ bool mainClaim(const(Api)* api, Site site, SitePart part) {
     return mainHost(api).claim(site, part);
 }
 
-bool mainIsClaimed(const(Api)* api, Site site, SitePart part) {
-    return mainHost(api).isClaimed(site, part);
+bool mainProbeClaimed(const(Api)* api, Site site, SitePart part) {
+    return mainHost(api).probeClaimed(site, part);
 }
 
 void mainTile(const(Api)* api, Tile tile, const(void)* data, size_t size) {
     mainHost(api).tile(tile, data, size);
 }
 
-uint mainHorosphere(const(Api)* api, double odds, HorosphereForm form, uint tag, Tile tile, const(void)* data, size_t size) {
+KindId mainHorosphere(const(Api)* api, double odds, HorosphereForm form, uint tag, Tile tile, const(void)* data, size_t size) {
     return mainHost(api).horosphere(odds, form, tag, tile, data, size);
 }
 
-uint mainSunken(const(Api)* api, double odds, uint under, uint tag, Tile tile, const(void)* data, size_t size) {
+KindId mainSunken(const(Api)* api, double odds, uint under, uint tag, Tile tile, const(void)* data, size_t size) {
     return mainHost(api).sunken(odds, under, tag, tile, data, size);
 }
 
-void mainOpenHorosphere(const(Api)* api, Site site, uint kind, uint edges) {
+void mainOpenHorosphere(const(Api)* api, Site site, KindId kind, uint edges) {
     mainHost(api).openHorosphereAt(site, kind, edges);
 }
 
 Site mainColumnSite(const(Api)* api, Site site) {
-    return siteOf((*mainHost(api).builder.graph).columnSiteOf(frameOf(site)));
+    return siteOf((*mainHost(api).builder.graph).ensureColumnSite(frameOf(site)));
 }
 
-void mainRooted(const(Api)* api, uint kind) {
+void mainRooted(const(Api)* api, KindId kind) {
     mainHost(api).rooted(kind);
 }
 
@@ -727,65 +816,17 @@ void mainFog(const(Api)* api, double units) {
     mainHost(api).fog(units);
 }
 
-uint mainRising(const(Api)* api, Site site) {
-    return mainHost(api).rising(site);
-}
-
 int mainBalance(const(Api)* api, Site site, int most) {
     mainHost(api).refuse("only a horosphere's tiles have a plane below to balance against");
     return 0;
 }
 
-Pen mainPen(const(Api)* api, Site site) {
-    return mainHost(api).penAt(site).toPen();
-}
-
-Pen mainPenForward(const(Api)* api, Pen pen, double cells) {
-    return PenFrame.fromPen(pen).moved(cells * mainHost(api).cellLength()).toPen();
-}
-
-Pen mainPenTurn(const(Api)* api, Pen pen, double yaw, double pitch) {
-    return PenFrame.fromPen(pen).turned(axisOf(AHEAD), axisOf(ACROSS), yaw).turned(axisOf(AHEAD), axisOf(UP), pitch).toPen();
-}
-
-Pen mainPenRoll(const(Api)* api, Pen pen, double degrees) {
-    return PenFrame.fromPen(pen).turned(axisOf(ACROSS), axisOf(UP), degrees).toPen();
-}
-
-Pen mainPenLift(const(Api)* api, Pen pen, double degrees) {
-    return PenFrame.fromPen(pen).lifted(degrees).toPen();
-}
-
-double mainPenRise(const(Api)* api, Pen pen) {
-    return asin(PenFrame.fromPen(pen).up()[AHEAD]) / RADIANS_PER_DEGREE;
-}
-
-double mainPenHeight(const(Api)* api, Pen pen) {
-    PenFrame frame = PenFrame.fromPen(pen);
-    return asinh(frame.ground.minkowski(frame.frame.m.column(3))) / mainHost(api).cellLength();
-}
-
-void mainLimb(const(Api)* api, Pen pen, Material material, double cells, double fromRadius, double toRadius) {
-    mainHost(api).draw(pen, cells, fromRadius, toRadius, material, StrokeForm.solid);
-}
-
-void mainLeaves(const(Api)* api, Pen pen, Material material, double radius) {
-    mainHost(api).draw(pen, 0, radius, radius, material, StrokeForm.leafy);
-}
-
-bool mainBuild(const(Api)* api, const(char)* world, Site site) {
-    Structure found = worldNamed(world);
-    if (found is null) {
-        mainHost(api).refuse("builds a world no plugin has");
-        return false;
-    } else {
-        found(api, site, null);
-        return true;
-    }
-}
-
-void mainLook(const(Api)* api, uint kind, const(Look)* look) {
+void mainLook(const(Api)* api, KindId kind, const(Look)* look) {
     mainHost(api).look(kind, *look);
+}
+
+void mainWorldLook(const(Api)* api, const(Look)* look) {
+    mainHost(api).worldLook(*look);
 }
 
 void mainRisingKinds(const(Api)* api, double odds) {
@@ -836,12 +877,17 @@ void releaseStructureHost(void* context) {
     free(host);
 }
 
-uint[2] tileCounts(ref const Graph graph) {
+struct TileCounts {
+    uint prepared;
+    uint fallback;
+}
+
+TileCounts tileCounts(ref const Graph graph) {
     if (graph.structures.grower.context is null) {
-        return [0, 0];
+        return TileCounts.init;
     } else {
         const(TileWork)* tiles = &(cast(const(StructureHost)*) graph.structures.grower.context).tiles;
-        return [tiles.preparedTiles, tiles.fallbackTiles];
+        return TileCounts(tiles.preparedTiles, tiles.fallbackTiles);
     }
 }
 

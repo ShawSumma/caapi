@@ -3,12 +3,13 @@ module common.node;
 import core.atomic : atomicLoad, cas;
 import core.stdc.math : coshf, floorf, logf, powf;
 import core.stdc.stdlib : free, malloc;
+import base.maybe : Maybe;
+import base.vector3 : Vec3;
 import common.graph : NodeId;
 import common.material : MATERIAL_COUNT, isSeeThrough;
 import geometry.honeycomb : CORNER_COUNT, Corner, NODE_RADIUS, cubeScale;
 import plugins.api.api : Material;
 
-enum int OUTSIDE_GRID = -1;
 enum float DENSITY_EXPONENT = -4.0f / 3.0f;
 enum uint FLAG_SHIFT = 56;
 enum ulong VOXEL_MASK = (1UL << FLAG_SHIFT) - 1;
@@ -65,20 +66,20 @@ struct ChunkLayout {
         return cubeToGrid(klein * kleinToCube);
     }
 
-    float[3] cellCenter(int[3] cell) const {
-        return [cellCenterAlong(cell[0]), cellCenterAlong(cell[1]), cellCenterAlong(cell[2])];
+    Vec3!float cellCenter(Vec3!int cell) const {
+        return Vec3!float(cellCenterAlong(cell.x), cellCenterAlong(cell.y), cellCenterAlong(cell.z));
     }
 
     float cellCenterAlong(int cell) const {
         return gridToCube(cell + 0.5f);
     }
 
-    int kleinToCell(float klein) const {
+    Maybe!int kleinToCell(float klein) const {
         float grid = floorf(kleinToGrid(klein));
         if (grid >= 0.0f && grid < cast(float) dimension) {
-            return cast(int) grid;
+            return Maybe!int.of(cast(int) grid);
         } else {
-            return OUTSIDE_GRID;
+            return Maybe!int.init;
         }
     }
 }
@@ -220,7 +221,8 @@ struct Chunk {
         ulong seen = atomicLoad(*cast(shared(ulong)*) &word);
         while (((seen >> STATE_SHIFT) & FIELD_MASK) == expected) {
             ulong changed = (seen & ~(FIELD_MASK << STATE_SHIFT)) | (cast(ulong) wanted << STATE_SHIFT);
-            if (cas(cast(shared(ulong)*) &word, seen, changed)) {
+            bool won = cas(cast(shared(ulong)*) &word, seen, changed);
+            if (won) {
                 return true;
             }
             seen = atomicLoad(*cast(shared(ulong)*) &word);
@@ -263,7 +265,8 @@ struct Chunk {
     bool claimQueued() {
         ulong seen = atomicLoad(*cast(shared(ulong)*) &word);
         while ((seen & QUEUED_BIT) == 0) {
-            if (cas(cast(shared(ulong)*) &word, seen, seen | QUEUED_BIT)) {
+            bool won = cas(cast(shared(ulong)*) &word, seen, seen | QUEUED_BIT);
+            if (won) {
                 return true;
             }
             seen = atomicLoad(*cast(shared(ulong)*) &word);

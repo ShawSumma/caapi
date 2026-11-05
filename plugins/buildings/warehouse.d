@@ -1,9 +1,9 @@
 module plugins.buildings.warehouse;
 
-import plugins.api.api : Material, Rhythm;
+import plugins.api.api : Material, Rhythm, Span;
 import plugins.buildings.building : Lots, Palette, Parts, STORY, Spec, banded, chimney, crown, enter, makeParts, pick, roof, shell, tiers, waterTower;
 
-enum int[2] STORIES = [2, 4];
+enum Span STORIES = Span(2, 4);
 enum Material ROOF = Material.basalt;
 enum Rhythm HIGH_ROWS = Rhythm(STORY, 2, 1);
 

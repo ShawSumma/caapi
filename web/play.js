@@ -1,3 +1,8 @@
+const CAPTURE_RELEASED = 0;
+const CAPTURE_CAPTURED = 1;
+const STROKE_FIRST = 0;
+const STROKE_REPEATED = 1;
+
 const play = async () => {
     const canvas = document.getElementById("game");
     const status = document.getElementById("status");
@@ -13,11 +18,19 @@ const play = async () => {
         game.attach(await WebAssembly.instantiate(module, game.imports));
         game.exports.web_start(canvas.width, canvas.height, renderRadiusFromAddress());
         const isCaptured = () => document.pointerLockElement === canvas;
-        document.addEventListener("pointerlockchange", () => game.exports.web_capture(Number(isCaptured())));
+        document.addEventListener("pointerlockchange", () => {
+            const captured = isCaptured();
+            if (captured) {
+                game.exports.web_capture(CAPTURE_CAPTURED);
+            } else {
+                game.exports.web_capture(CAPTURE_RELEASED);
+            }
+        });
         document.addEventListener("pointerlockerror", () => showStatus("the browser refused to capture the mouse; click the game again"));
         canvas.addEventListener("mousedown", (event) => {
             event.preventDefault();
-            if (isCaptured()) {
+            const captured = isCaptured();
+            if (captured) {
                 game.exports.web_button(event.button);
             } else {
                 canvas.requestPointerLock();
@@ -25,15 +38,21 @@ const play = async () => {
         });
         canvas.addEventListener("contextmenu", (event) => event.preventDefault());
         document.addEventListener("mousemove", (event) => {
-            if (isCaptured()) {
+            const captured = isCaptured();
+            if (captured) {
                 game.exports.web_motion(event.movementX, event.movementY);
             }
         });
         document.addEventListener("keydown", (event) => {
             const code = KEY_CODES[event.code];
-            if (code !== undefined && isCaptured()) {
+            const captured = isCaptured();
+            if (code !== undefined && captured) {
                 event.preventDefault();
-                game.exports.web_key_down(code, Number(event.repeat));
+                if (event.repeat) {
+                    game.exports.web_key_down(code, STROKE_REPEATED);
+                } else {
+                    game.exports.web_key_down(code, STROKE_FIRST);
+                }
             }
         });
         document.addEventListener("keyup", (event) => {
@@ -43,7 +62,8 @@ const play = async () => {
             }
         });
         window.addEventListener("resize", () => {
-            if (resizeCanvas(canvas)) {
+            const changed = resizeCanvas(canvas);
+            if (changed) {
                 game.makeTargets(canvas.width, canvas.height);
                 game.exports.web_resize(canvas.width, canvas.height);
             }

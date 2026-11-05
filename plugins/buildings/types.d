@@ -1,5 +1,6 @@
 module plugins.buildings.types;
 
+import plugins.api.api : Span;
 import plugins.buildings.building : Lots, Palette, Spec;
 import brownstone = plugins.buildings.brownstone;
 import civic = plugins.buildings.civic;
@@ -21,7 +22,7 @@ enum Type : ubyte {
     warehouse,
 }
 
-int[2] stories(Type type) {
+Span stories(Type type) {
     final switch (type) {
         case Type.brownstone:
             return brownstone.STORIES;

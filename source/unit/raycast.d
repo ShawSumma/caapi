@@ -1,14 +1,16 @@
 module unit.raycast;
 
+import base.maybe : Maybe;
+import base.vector3 : Vec3;
 import common.node : ChunkLayout, Voxels, cellIndex;
 import common.raycast.chunk : ChunkRayCastHit, castThroughChunk;
-import geometry.cube : AXIS_COUNT, Axis, Cell, Sign;
+import geometry.cube : AXIS_COUNT, Axis, Sign;
 import geometry.lorentz : Point, Vec4;
 import geometry.ray : Ray;
 import plugins.api.api : Material;
 
 enum ubyte DIMENSION = 4;
-immutable int[3] TARGET = [1, 2, 3];
+immutable Vec3!int TARGET = Vec3!int(1, 2, 3);
 enum float START_KLEIN = -0.2f;
 enum float TOLERANCE = 1e-4f;
 enum uint RAYS = 200;
@@ -18,38 +20,46 @@ enum ulong SEED = 0x2545F4914F6CDD1D;
 unittest {
     ChunkLayout layout = ChunkLayout.make(DIMENSION);
     Voxels voxels = Voxels.filled(Material.none);
-    voxels.toDense(DIMENSION)[cellIndex(DIMENSION, TARGET[0], TARGET[1], TARGET[2])] = Material.granite;
-    float[3] center = [layout.gridToKlein(TARGET[0] + 0.5f), layout.gridToKlein(TARGET[1] + 0.5f), layout.gridToKlein(TARGET[2] + 0.5f)];
-    Point!float from = Vec4!float([START_KLEIN, center[1], center[2], 1]).toPoint();
-    Point!float to = Vec4!float([center[0], center[1], center[2], 1]).toPoint();
+    voxels.toDense(DIMENSION)[cellIndex(DIMENSION, TARGET.x, TARGET.y, TARGET.z)] = Material.granite;
+    Vec3!float center = Vec3!float(layout.gridToKlein(TARGET.x + 0.5f), layout.gridToKlein(TARGET.y + 0.5f), layout.gridToKlein(TARGET.z + 0.5f));
+    Point!float from = Vec4!float([START_KLEIN, center.y, center.z, 1]).toPoint();
+    Point!float to = Vec4!float([center.x, center.y, center.z, 1]).toPoint();
     Ray ray = Ray(from, (to.v + from.v * from.minkowski(to.v)).toNormal());
-    ChunkRayCastHit hit = castThroughChunk(voxels, layout, ray, 1);
-    assert(hit.isHit() && hit.voxelCoords.c == [1, 2, 3] && hit.faceAxis == Axis.x && hit.faceSign == Sign.minus);
-    Vec4!float reached = ray.at(hit.tanhDistance);
-    float wall = layout.gridToKlein(TARGET[0]);
+    Maybe!ChunkRayCastHit hit = castThroughChunk(voxels, layout, ray, 1);
+    assert(hit.exists && hit.value.voxelCoords == TARGET.as!ubyte() && hit.value.faceAxis == Axis.x && hit.value.faceSign == Sign.minus);
+    Vec4!float reached = ray.at(hit.value.tanhDistance);
+    float wall = layout.gridToKlein(TARGET.x);
     assert(reached.c[0] / reached.c[3] - wall < TOLERANCE && wall - reached.c[0] / reached.c[3] < TOLERANCE);
-    assert(!castThroughChunk(voxels, layout, ray, hit.tanhDistance).isHit());
+    Maybe!ChunkRayCastHit stoppedShort = castThroughChunk(voxels, layout, ray, hit.value.tanhDistance);
+    assert(!stoppedShort.exists);
     voxels.release();
 }
 
-int[3] cellOn(ChunkLayout layout, Ray ray, float t) {
+Maybe!(Vec3!int) cellOn(ChunkLayout layout, Ray ray, float t) {
     Vec4!float at = ray.at(t);
-    int[3] cell;
+    Vec3!int cell;
     foreach (axis; 0 .. AXIS_COUNT) {
-        cell[axis] = layout.kleinToCell(at.c[axis] / at.c[3]);
+        Maybe!int along = layout.kleinToCell(at.c[axis] / at.c[3]);
+        if (!along.exists) {
+            return Maybe!(Vec3!int).init;
+        }
+        cell[axis] = along.value;
     }
-    return cell;
+    return Maybe!(Vec3!int).of(cell);
 }
 
-ChunkRayCastHit marched(ref const Voxels voxels, ChunkLayout layout, Ray ray, float limit) {
-    ChunkRayCastHit hit;
-    int[3] first = cellOn(layout, ray, 0);
+Maybe!ChunkRayCastHit marched(ref const Voxels voxels, ChunkLayout layout, Ray ray, float limit) {
+    Maybe!ChunkRayCastHit hit;
+    Maybe!(Vec3!int) first = cellOn(layout, ray, 0);
     uint step = 1;
-    while (step < MARCH_STEPS && !hit.isHit()) {
+    while (step < MARCH_STEPS && !hit.exists) {
         float t = limit * step / MARCH_STEPS;
-        int[3] cell = cellOn(layout, ray, t);
-        if (cell[0] >= 0 && cell[1] >= 0 && cell[2] >= 0 && cell != first && voxels.at(cellIndex(layout.dimension, cell[0], cell[1], cell[2])) != Material.none) {
-            hit = ChunkRayCastHit(t, Cell([cast(ubyte) cell[0], cast(ubyte) cell[1], cast(ubyte) cell[2]]));
+        Maybe!(Vec3!int) found = cellOn(layout, ray, t);
+        if (found.exists && found != first) {
+            Vec3!int cell = found.value;
+            if (voxels.at(cellIndex(layout.dimension, cell.x, cell.y, cell.z)) != Material.none) {
+                hit = Maybe!ChunkRayCastHit.of(ChunkRayCastHit(t, cell.as!ubyte()));
+            }
         }
         step += 1;
     }
@@ -77,22 +87,22 @@ unittest {
     }
     uint hits = 0;
     foreach (_; 0 .. RAYS) {
-        float[3] from;
-        float[3] to;
+        Vec3!float from;
+        Vec3!float to;
         foreach (axis; 0 .. AXIS_COUNT) {
             from[axis] = (shuffled(state) * 1.6f - 0.3f) * size;
             to[axis] = shuffled(state) * size;
         }
-        Point!float start = Vec4!float([from[0], from[1], from[2], 1]).toPoint();
-        Point!float aim = Vec4!float([to[0], to[1], to[2], 1]).toPoint();
+        Point!float start = Vec4!float([from.x, from.y, from.z, 1]).toPoint();
+        Point!float aim = Vec4!float([to.x, to.y, to.z, 1]).toPoint();
         Ray ray = Ray(start, (aim.v + start.v * start.minkowski(aim.v)).toNormal());
-        ChunkRayCastHit walked = castThroughChunk(voxels, layout, ray, 0.9f);
-        ChunkRayCastHit expected = marched(voxels, layout, ray, 0.9f);
-        assert(walked.isHit() == expected.isHit());
-        if (walked.isHit()) {
+        Maybe!ChunkRayCastHit walked = castThroughChunk(voxels, layout, ray, 0.9f);
+        Maybe!ChunkRayCastHit expected = marched(voxels, layout, ray, 0.9f);
+        assert(walked.exists == expected.exists);
+        if (walked.exists) {
             hits += 1;
-            assert(walked.voxelCoords == expected.voxelCoords);
-            assert(walked.tanhDistance <= expected.tanhDistance + 0.9f / MARCH_STEPS);
+            assert(walked.value.voxelCoords == expected.value.voxelCoords);
+            assert(walked.value.tanhDistance <= expected.value.tanhDistance + 0.9f / MARCH_STEPS);
         }
     }
     assert(hits > RAYS / 4);

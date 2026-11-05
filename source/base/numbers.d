@@ -10,10 +10,6 @@ bool isNan(float value) {
     return value != value;
 }
 
-bool isInfinite(float value) {
-    return value == float.infinity || value == -float.infinity;
-}
-
 T lowerOf(T)(T a, T b) {
     if (a < b) {
         return a;

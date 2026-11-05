@@ -10,40 +10,40 @@ import bindings.platform : VkExtent2D;
 import base.array : Array;
 import base.clock : FrameClock, MILLISECONDS_PER_SECOND, NANOSECONDS_PER_SECOND, PhaseTimes, nowSeconds, threadCpuMilliseconds;
 import base.crash : reportCrashes, reportHangAfter;
-import base.flags : Bits;
+import base.flags : Bits, Readiness;
 import base.hashmap : HashMap, HashSlot;
-import base.maybe : Maybe;
+import base.maybe : Maybe, MaybeIndex;
 import base.names : ENUM_NAMES, textFor;
 import base.numbers : higherOf, lowerOf;
 import base.parallel : ConcurrentQueue, QueueCell;
 import base.slab : RunPool, SLAB_SIZE, Slab;
-import base.units : Angle, AngularSpeed, Speed, Time;
-import client.arguments : ArgumentCursor, ExitStatus, HELP_OPTION, OUTPUT_OPTION, OptionSpec, StartupError, VERSION, VERSION_OPTION, WORLDGEN_OPTION, WorldgenArgument, closeReport, exitStatus, numberIn, openReport, parseOptions, sliceOf, usageOf;
+import base.units : Angle, Speed, Time;
+import client.arguments : ArgumentCursor, ExitStatus, HELP_OPTION, NOT_A_NUMBER, OUTPUT_OPTION, OptionSpec, REPORT_UNOPENED, StartupError, UNKNOWN_OPTION, VERSION_OPTION, VERSION_TEXT, WORLDGEN_OPTION, WorldgenArgument, closeReport, exitStatus, numberIn, openReport, parseOptions, sliceOf, usageOf;
 import client.config : ClientConfig, PitchAxis;
-import client.drive : DriveEventKind, DriveHost, DriveInput, DriveKey, LEFT_BUTTON, NamedDrive;
+import client.drive : DIRECTORY_MODE, DriveEventKind, DriveHost, DriveInput, DriveKey, LEFT_BUTTON, NamedDrive;
 import client.frames : RenderTimes;
-import client.game : ChunkSupply, FrameInput, Game, Key, MATERIAL_PALETTE, axisValue;
+import client.game : ChunkSupply, Command, CommandBinding, FrameInput, Game, Key, KeyBinding, KeyStroke, MAX_STEP_SECONDS, chooseMaterial, commandOf, frameInputOf, holdBound, letGoBound;
 import client.graphics.core : SurfaceSource;
 import client.graphics.renderer : CaptureMark, FrameTimes, Renderer;
 import client.graphics.uniforms : HALF_VERTICAL_FOV;
 import client.graphics.voxels.meshes : ChunkMeshes;
-import client.hud : Hud, worldNameOf;
+import client.hud : FrameMeter, Hud, MouseCapture, STATUS_CAPACITY, statusLine;
 import client.meshing : Mesher;
 import client.png : writePng;
 import client.sampler : Sampler;
 import client.script : NamedScript, Script, ScriptRecorder, StepHook, named;
 import client.streaming : Pacing, Streamer;
-import client.plugins : registry;
-import client.structures : StructureHost, StructureProblem, growthProblem, placeStructure, restartGame, tileCounts;
+import client.plugins : gatherWorlds, registry;
+import client.structures : StructureHost, StructureProblem, TileCounts, WorldStep, growthProblem, placeStructure, restartGame, steppedWorld, tileCounts, worldgenAt;
 import client.tasks : TaskQueues;
 import client.tiles : PlanOutputs, TileHost, TilePainter, TileWork;
 import client.world : LocalWorld, NearbyStage, NearbyStats, RENDER_RADIUS, StepPhases, fogVisibility;
 import common.character.controller : MovementMode;
-import common.graph : Graph, NO_SLOT, Node, childParentFaces;
+import common.graph : Graph, Node, childParentFaces;
 import common.neighbors : chunkNeighborSlot, needsMesh;
 import common.node : Chunk, ChunkSlot, ChunkState, cellCount;
 import common.settings : CHUNK_DIMENSION;
-import common.traversal : Collected, NOT_COLLECTED, NearbyNode, NearbyScratch;
+import common.traversal : Collected, NearbyNode, NearbyScratch;
 import common.view : GraphView;
 import common.worldgen.blueprint : Blueprint, Brush, LineRun, RunRef;
 import common.worldgen.building : Building;
@@ -66,7 +66,6 @@ enum uint SCREENSHOT_WIDTH = 640;
 enum uint SCREENSHOT_HEIGHT = 360;
 enum uint FILM_WIDTH = 1280;
 enum uint FILM_HEIGHT = 720;
-enum uint DIRECTORY_MODE = 0x1ED;
 enum size_t PATH_CAPACITY = 4096;
 enum double BENCH_FRAME_SECONDS = 1.0 / 60.0;
 enum uint BENCH_MOVE_FRAMES = 300;
@@ -79,9 +78,6 @@ enum uint STALE_MESHES_SHOWN = 8;
 enum double FRAME_DEADLINE_MS = 1000.0 / 60.0;
 enum uint SLOW_FRAMES_SHOWN = 6;
 enum uint BENCH_TIME_LIMIT_SECONDS = 300;
-enum double TITLE_INTERVAL_SECONDS = 1.0;
-enum double MAX_STEP_SECONDS = 0.1;
-enum size_t TEXT_CAPACITY = 256;
 enum size_t BYTES_PER_MEGABYTE = 1024 * 1024;
 enum string DEFAULT_CONFIG = "mined.cfg";
 enum string USAGE = "usage: mined [options] [view or film]\n" ~ usageOf(OPTIONS[]);
@@ -127,6 +123,7 @@ version (OSX) {
 
     enum string WINDOW_REQUIREMENT = "cannot open a window";
     enum int MACH_TASK_BASIC_INFO = 20;
+    enum CommandBinding!KeySym[] PLATFORM_COMMANDS = [];
 
     struct MachTaskBasicInfo {
         ulong virtualSize;
@@ -178,6 +175,10 @@ version (OSX) {
     import base.pages : pageSize;
 
     enum string WINDOW_REQUIREMENT = "cannot open a window: needs an X display with XInput 2.1";
+    enum CommandBinding!KeySym[] PLATFORM_COMMANDS = [CommandBinding!KeySym(XK_t, Command.throwBlock)];
+    enum string STATM_PATH = "/proc/self/statm";
+    enum string DELETE_WINDOW_ATOM = "WM_DELETE_WINDOW";
+    enum string XINPUT_EXTENSION = "XInputExtension";
     enum size_t BYTES_PER_KILOBYTE = 1024;
     enum uint KEYCODE_COUNT = 256;
     enum uint CURSOR_BITMAP_SIZE = 8;
@@ -188,7 +189,6 @@ version (OSX) {
     enum size_t XI_MASK_BYTES = (XI_RawMotion >> 3) + 1;
     enum uint POINTER_AXES = 2;
     enum uint BITS_PER_BYTE = 8;
-    enum int NO_DEVICE = -1;
 
     enum AxisMode : ubyte {
         relative,
@@ -218,7 +218,7 @@ version (OSX) {
     struct RawPointer {
         PointerAxis[POINTER_AXES] axes;
         int opcode;
-        int deviceId = NO_DEVICE;
+        Maybe!int deviceId;
     }
 
     bool isXInputVersionSufficient(int major, int minor) {
@@ -234,7 +234,7 @@ version (OSX) {
     }
 
     size_t residentBytes() {
-        FILE* statm = fopen("/proc/self/statm", "r");
+        FILE* statm = fopen(STATM_PATH, "r");
         size_t total = 0;
         size_t resident = 0;
         if (statm !is null) {
@@ -273,18 +273,7 @@ enum Profiling : ubyte {
     on,
 }
 
-enum KeyStroke : ubyte {
-    first,
-    repeated,
-}
-
-enum WorldStep : ubyte {
-    previous,
-    next,
-}
-
 enum SessionMark : ubyte {
-    captured,
     recording,
     driven,
     stopped,
@@ -332,7 +321,7 @@ struct Arguments {
                 pitchAxis = PitchAxis.inverted;
                 break;
             case Option.renderRadius:
-                renderRadius = positiveNumber(option, cursor.next());
+                parsePositive(renderRadius, option, cursor.next());
                 break;
             case Option.record:
                 recordPath = cursor.next();
@@ -353,7 +342,7 @@ struct Arguments {
                 profiling = Profiling.on;
                 break;
             case Option.flightSpeed:
-                flightSpeed = positiveNumber(option, cursor.next());
+                parsePositive(flightSpeed, option, cursor.next());
                 break;
             case Option.output:
                 reportPath = cursor.next();
@@ -371,7 +360,7 @@ struct Arguments {
 
     void applyPositional(const(char)* argument) {
         if (argument[0] == '-') {
-            error = StartupError(null, "unknown option", argument);
+            error = StartupError(null, UNKNOWN_OPTION, argument);
         } else if (viewName !is null) {
             error = StartupError(null, "only one view is rendered, unexpected", argument);
         } else {
@@ -400,16 +389,17 @@ struct Arguments {
     void parseSensitivity(const(char)* text) {
         sensitivity = numberIn(text);
         if (!sensitivity.exists) {
-            error = StartupError(null, "needs a number, got", text, OPTIONS[Option.sensitivity].name);
+            error = StartupError(null, NOT_A_NUMBER, text, OPTIONS[Option.sensitivity].name);
         }
     }
 
-    float positiveNumber(Option option, const(char)* text) {
+    void parsePositive(ref float into, Option option, const(char)* text) {
         Maybe!float number = numberIn(text);
-        if (!number.exists || !(number.value > 0)) {
+        if (number.exists && number.value > 0) {
+            into = number.value;
+        } else {
             error = StartupError(null, "needs a positive number, got", text, OPTIONS[option].name);
         }
-        return number.value;
     }
 
     StartupError onlyFor(Option option, Option tool) const {
@@ -451,23 +441,25 @@ struct Arguments {
     }
 }
 
-struct KeyBinding {
-    KeySym symbol;
-    Key key;
-}
-
-immutable KeyBinding[10] KEY_BINDINGS = [
-    KeyBinding(XK_w, Key.fwd),
-    KeyBinding(XK_s, Key.back),
-    KeyBinding(XK_a, Key.left),
-    KeyBinding(XK_d, Key.right),
-    KeyBinding(XK_space, Key.up),
-    KeyBinding(XK_Shift_L, Key.down),
-    KeyBinding(XK_Left, Key.yawLeft),
-    KeyBinding(XK_Right, Key.yawRight),
-    KeyBinding(XK_Up, Key.pitchUp),
-    KeyBinding(XK_Down, Key.pitchDown),
+immutable KeyBinding!KeySym[Key.max + 1] KEY_BINDINGS = [
+    KeyBinding!KeySym(XK_w, Key.fwd),
+    KeyBinding!KeySym(XK_s, Key.back),
+    KeyBinding!KeySym(XK_a, Key.left),
+    KeyBinding!KeySym(XK_d, Key.right),
+    KeyBinding!KeySym(XK_space, Key.up),
+    KeyBinding!KeySym(XK_Shift_L, Key.down),
+    KeyBinding!KeySym(XK_Left, Key.yawLeft),
+    KeyBinding!KeySym(XK_Right, Key.yawRight),
+    KeyBinding!KeySym(XK_Up, Key.pitchUp),
+    KeyBinding!KeySym(XK_Down, Key.pitchDown),
 ];
+
+immutable CommandBinding!KeySym[] COMMAND_BINDINGS = [
+    CommandBinding!KeySym(XK_v, Command.walkMode),
+    CommandBinding!KeySym(XK_n, Command.noclipMode),
+    CommandBinding!KeySym(XK_bracketleft, Command.previousWorld),
+    CommandBinding!KeySym(XK_bracketright, Command.nextWorld),
+] ~ PLATFORM_COMMANDS;
 
 immutable KeySym[DriveKey.max + 1] DRIVE_KEYSYMS = [
     DriveKey.w: XK_w,
@@ -524,14 +516,14 @@ struct Session {
     double mouseDy = 0;
     ClientConfig config;
     DriveHost drive;
-    float fps = 0;
-    float worstFrameMs = 0;
+    FrameMeter meter;
     uint worldIndex;
     Flags!Key held;
     Flags!SessionMark marks;
+    MouseCapture mouse;
 
     bool isCaptured() const {
-        return marks.has(SessionMark.captured);
+        return mouse == MouseCapture.captured;
     }
 
     bool isRecording() const {
@@ -568,11 +560,11 @@ struct Session {
     ExitStatus runDriven(Arguments arguments) {
         FILE* report = openReport(arguments.reportPath);
         if (report is null) {
-            StartupError(null, "cannot open the report file", arguments.reportPath).report(arguments.program);
+            StartupError(null, REPORT_UNOPENED, arguments.reportPath).report(arguments.program);
             return ExitStatus.failed;
         } else {
             marks.set(SessionMark.driven);
-            marks.set(SessionMark.captured);
+            mouse = MouseCapture.captured;
             drive.start(arguments.drive.name.ptr, arguments.drive.actions, report, config.mouseTurnPerCount.value);
             ExitStatus status = runWindow(arguments);
             drive.finish();
@@ -585,19 +577,23 @@ struct Session {
         }
     }
 
-    bool isSettled() {
-        return game.world.isWorldgenSettled() && renderer.meshBacklog() == 0;
+    Readiness worldReadiness() const {
+        if (game.world.isWorldgenSettled() && renderer.meshBacklog() == 0) {
+            return Readiness.ready;
+        } else {
+            return Readiness.pending;
+        }
     }
 
     DriveInput driveFrame() {
-        DriveInput input = drive.next(isSettled());
+        DriveInput input = drive.next(worldReadiness());
         foreach (event; input.events) {
             final switch (event.kind) {
                 case DriveEventKind.press:
                     handleKeyPress(DRIVE_KEYSYMS[event.key], KeyStroke.first);
                     break;
                 case DriveEventKind.release:
-                    releaseMovementKey(DRIVE_KEYSYMS[event.key]);
+                    held.letGoBound(KEY_BINDINGS[], DRIVE_KEYSYMS[event.key]);
                     break;
                 case DriveEventKind.click:
                     handleButton(driveButton(event.button));
@@ -635,6 +631,7 @@ struct Session {
             fprintf(drive.report, "drive: frames %s for the display\n", textFor(renderer.core.isPresentWaitable(), "wait", "cannot wait"));
         }
         game = Game.make(arguments.worldgen, config.reach);
+        game.world.graph.bindView();
         worldIndex = worldIndexOf(arguments.worldgen);
         game.world.renderRadius = arguments.renderRadius;
         ExitStatus status = placedStatus(game, arguments);
@@ -663,14 +660,14 @@ struct Session {
 
         void capturePointer() {
             window.capturePointer();
-            marks.set(SessionMark.captured);
+            mouse = MouseCapture.captured;
             marks.set(SessionMark.titleStale);
         }
 
         void releasePointer() {
             if (isCaptured) {
                 window.releasePointer();
-                marks.clear(SessionMark.captured);
+                mouse = MouseCapture.released;
                 marks.set(SessionMark.titleStale);
             }
             held = Flags!Key.init;
@@ -686,7 +683,7 @@ struct Session {
                         handleKeyPress(key.symbol, KeyStroke.repeated);
                         break;
                     case KeyAction.released:
-                        releaseMovementKey(key.symbol);
+                        held.letGoBound(KEY_BINDINGS[], key.symbol);
                         break;
                 }
             }
@@ -707,19 +704,17 @@ struct Session {
 
         void pollEvents() {
             window.poll(WindowEvents(&handleKey, &handleWindowButton, &handleMotion));
-            if (!window.isOpen()) {
+            bool open = window.isOpen();
+            bool focused = window.isFocused();
+            if (!open) {
                 marks.set(SessionMark.stopped);
-            } else if (isCaptured && !isDriven && !window.isFocused()) {
+            } else if (isCaptured && !isDriven && !focused) {
                 releasePointer();
             }
         }
 
         void storeTitle(const(char)* title) {
             window.setTitle(title);
-        }
-
-        bool isThrowKey(KeySym symbol, KeyStroke press) const {
-            return false;
         }
     } else {
         ExitStatus openWindow() {
@@ -730,7 +725,7 @@ struct Session {
                 screen = XDefaultScreen(display);
                 window = XCreateSimpleWindow(display, XRootWindow(display, screen), 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT, 0, XBlackPixel(display, screen), XBlackPixel(display, screen));
                 XSelectInput(display, window, INPUT_EVENT_MASK);
-                deleteAtom = XInternAtom(display, "WM_DELETE_WINDOW", False);
+                deleteAtom = XInternAtom(display, DELETE_WINDOW_ATOM, False);
                 XSetWMProtocols(display, window, &deleteAtom, 1);
                 XkbSetDetectableAutoRepeat(display, True, null);
                 char[CURSOR_BITMAP_SIZE] blank = 0;
@@ -757,7 +752,7 @@ struct Session {
         ExitStatus selectRawPointer() {
             int firstEvent;
             int firstError;
-            int found = XQueryExtension(display, "XInputExtension", &pointer.opcode, &firstEvent, &firstError);
+            int found = XQueryExtension(display, XINPUT_EXTENSION, &pointer.opcode, &firstEvent, &firstError);
             if (found == 0) {
                 return ExitStatus.failed;
             } else {
@@ -787,7 +782,7 @@ struct Session {
         void capturePointer() {
             int grab = XGrabPointer(display, window, True, POINTER_GRAB_MASK, GrabModeAsync, GrabModeAsync, window, invisibleCursor, CurrentTime);
             if (grab == GrabSuccess) {
-                marks.set(SessionMark.captured);
+                mouse = MouseCapture.captured;
                 marks.set(SessionMark.titleStale);
             }
         }
@@ -795,7 +790,7 @@ struct Session {
         void releasePointer() {
             if (isCaptured) {
                 XUngrabPointer(display, CurrentTime);
-                marks.clear(SessionMark.captured);
+                mouse = MouseCapture.released;
                 marks.set(SessionMark.titleStale);
             }
             held = Flags!Key.init;
@@ -803,7 +798,7 @@ struct Session {
 
         void loadPointerAxes(int deviceId) {
             pointer.axes = PointerAxis.init;
-            pointer.deviceId = deviceId;
+            pointer.deviceId = Maybe!int.of(deviceId);
             double[POINTER_AXES] screenExtent = [XDisplayWidth(display, screen), XDisplayHeight(display, screen)];
             int count = 0;
             XIDeviceInfo* devices = XIQueryDevice(display, deviceId, &count);
@@ -824,7 +819,7 @@ struct Session {
         }
 
         void handleRawMotion(const(XIRawEvent)* raw) {
-            if (raw.deviceid != pointer.deviceId) {
+            if (pointer.deviceId != Maybe!int.of(raw.deviceid)) {
                 loadPointerAxes(raw.deviceid);
             }
             double[POINTER_AXES] delta = [0, 0];
@@ -850,7 +845,7 @@ struct Session {
                     if (cookie.evtype == XI_RawMotion) {
                         handleRawMotion(cast(const(XIRawEvent)*) cookie.data);
                     } else if (cookie.evtype == XI_DeviceChanged) {
-                        pointer.deviceId = NO_DEVICE;
+                        pointer.deviceId = Maybe!int.init;
                     }
                     XFreeEventData(display, cookie);
                 }
@@ -868,7 +863,7 @@ struct Session {
                 keysDown.set(keycode);
             } else if (event.type == KeyRelease) {
                 keysDown.clear(event.xkey.keycode % KEYCODE_COUNT);
-                releaseMovementKey(XLookupKeysym(&event.xkey, 0));
+                held.letGoBound(KEY_BINDINGS[], XLookupKeysym(&event.xkey, 0));
             } else if (event.type == GenericEvent) {
                 handleGenericEvent(&event.xcookie);
             } else if (event.type == ButtonPress) {
@@ -898,10 +893,6 @@ struct Session {
         void storeTitle(const(char)* title) {
             XStoreName(display, window, title);
         }
-
-        bool isThrowKey(KeySym symbol, KeyStroke press) const {
-            return symbol == XK_t && press == KeyStroke.first;
-        }
     }
 
     void recordCall(const(char)* call) {
@@ -917,22 +908,6 @@ struct Session {
         marks.set(SessionMark.titleStale);
     }
 
-    void pressMovementKey(KeySym symbol) {
-        foreach (binding; KEY_BINDINGS) {
-            if (binding.symbol == symbol) {
-                held.set(binding.key);
-            }
-        }
-    }
-
-    void releaseMovementKey(KeySym symbol) {
-        foreach (binding; KEY_BINDINGS) {
-            if (binding.symbol == symbol) {
-                held.clear(binding.key);
-            }
-        }
-    }
-
     void handleKeyPress(KeySym symbol, KeyStroke press) {
         if (symbol == XK_Escape) {
             releasePointer();
@@ -942,28 +917,45 @@ struct Session {
     }
 
     void handleGameKey(KeySym symbol, KeyStroke press) {
-        if (symbol == XK_v && press == KeyStroke.first) {
-            game.toggleMode(MovementMode.walk);
-            recordModeChange();
-        } else if (symbol == XK_n && press == KeyStroke.first) {
-            game.toggleMode(MovementMode.noclip);
-            recordModeChange();
+        Maybe!Command command = COMMAND_BINDINGS.commandOf(symbol, press);
+        if (command.exists) {
+            run(command.value);
         } else if (symbol >= XK_1 && symbol <= XK_9) {
             selectMaterial(cast(uint)(symbol - XK_1));
-        } else if (symbol == XK_bracketleft && press == KeyStroke.first && !isRecording) {
-            switchWorld(WorldStep.previous);
-        } else if (symbol == XK_bracketright && press == KeyStroke.first && !isRecording) {
-            switchWorld(WorldStep.next);
-        } else if (isThrowKey(symbol, press)) {
-            game.throwBlock();
         } else {
-            pressMovementKey(symbol);
+            held.holdBound(KEY_BINDINGS[], symbol);
+        }
+    }
+
+    void run(Command command) {
+        final switch (command) {
+            case Command.walkMode:
+                game.toggleMode(MovementMode.walk);
+                recordModeChange();
+                break;
+            case Command.noclipMode:
+                game.toggleMode(MovementMode.noclip);
+                recordModeChange();
+                break;
+            case Command.previousWorld:
+                if (!isRecording) {
+                    switchWorld(WorldStep.previous);
+                }
+                break;
+            case Command.nextWorld:
+                if (!isRecording) {
+                    switchWorld(WorldStep.next);
+                }
+                break;
+            case Command.throwBlock:
+                game.throwBlock();
+                break;
         }
     }
 
     void selectMaterial(uint index) {
-        if (index < MATERIAL_PALETTE.length && index != game.materialIndex) {
-            game.materialIndex = index;
+        bool changed = game.chooseMaterial(index);
+        if (changed) {
             if (isRecording) {
                 recorder.recordMaterial(index + 1);
             }
@@ -973,7 +965,7 @@ struct Session {
 
     void handleButton(uint button) {
         if (!isCaptured && isDriven) {
-            marks.set(SessionMark.captured);
+            mouse = MouseCapture.captured;
             marks.set(SessionMark.titleStale);
         } else if (!isCaptured) {
             capturePointer();
@@ -987,27 +979,13 @@ struct Session {
     }
 
     void updateWindowTitle() {
-        char[TEXT_CAPACITY] title;
-        string mode = ENUM_NAMES!MovementMode[game.mode];
-        const(char)[] world = worldNameOf(game.world.graph.worldgen);
-        char[TEXT_CAPACITY] modes;
-        snprintf(modes.ptr, modes.length, "%.*s ([ ]) - %.*s (V)", cast(int) world.length, world.ptr, cast(int) mode.length, mode.ptr);
-        if (isCaptured) {
-            snprintf(title.ptr, title.length, "mined - %s - [%u] - Esc to release mouse - FPS %.0f, worst frame %.0fms", modes.ptr, game.materialIndex + 1, cast(double) fps, cast(double) worstFrameMs);
-        } else {
-            snprintf(title.ptr, title.length, "mined - %s - click to capture mouse - FPS %.0f, worst frame %.0fms", modes.ptr, cast(double) fps, cast(double) worstFrameMs);
-        }
+        char[STATUS_CAPACITY] title = statusLine(game, mouse, meter);
         storeTitle(title.ptr);
         marks.clear(SessionMark.titleStale);
     }
 
     void switchWorld(WorldStep direction) {
-        uint count = cast(uint) registry().allNames().length + 1;
-        uint step = count - 1;
-        if (direction == WorldStep.next) {
-            step = 1;
-        }
-        worldIndex = (worldIndex + step) % count;
+        worldIndex = steppedWorld(worldIndex, direction);
         StructureProblem problem = restartGame(game, worldgenAt(worldIndex));
         if (problem.isPresent) {
             fprintf(stderr, "%s\n", problem.text.ptr);
@@ -1016,19 +994,11 @@ struct Session {
         marks.set(SessionMark.titleStale);
     }
 
-    FrameInput buildFrameInput(Time dt) {
-        AngularSpeed yawRate = config.keyTurnRate * (axisValue(held, Key.yawRight) - axisValue(held, Key.yawLeft));
-        AngularSpeed pitchRate = config.keyTurnRate * (axisValue(held, Key.pitchDown) - axisValue(held, Key.pitchUp));
-        Angle yaw = yawRate * dt + config.mouseTurnPerCount * cast(float) mouseDx;
-        Angle pitch = pitchRate * dt + config.mouseTurnPerCount * cast(float) mouseDy * pitchSign(config.pitchAxis);
-        return FrameInput(yaw, pitch, held);
-    }
-
     void runLoop() {
         marks.set(SessionMark.titleStale);
-        double lastTitleTime = nowSeconds();
-        FrameClock clock = FrameClock.startingAt(lastTitleTime);
-        uint framesSinceTitle = 0;
+        double started = nowSeconds();
+        FrameClock clock = FrameClock.startingAt(started);
+        meter = FrameMeter.startingAt(started);
         while (isRunning) {
             renderer.waitForDisplay();
             double now = nowSeconds();
@@ -1041,7 +1011,7 @@ struct Session {
                 driven = driveFrame();
             }
             if (isRunning) {
-                FrameInput frame = buildFrameInput(dt);
+                FrameInput frame = frameInputOf(config, held, mouseDx, mouseDy, dt);
                 if (isRecording) {
                     recorder.recordFrame(frame, dt);
                 }
@@ -1065,13 +1035,8 @@ struct Session {
                         marks.set(SessionMark.stopped);
                     }
                 }
-                framesSinceTitle += 1;
-                if (now - lastTitleTime >= TITLE_INTERVAL_SECONDS) {
-                    fps = cast(float)(framesSinceTitle / (now - lastTitleTime));
-                    worstFrameMs = cast(float)(clock.worst * MILLISECONDS_PER_SECOND);
-                    clock.worst = 0;
-                    framesSinceTitle = 0;
-                    lastTitleTime = now;
+                bool refreshed = meter.tick(now, clock);
+                if (refreshed) {
                     marks.set(SessionMark.titleStale);
                 }
                 if (marks.has(SessionMark.titleStale)) {
@@ -1079,14 +1044,6 @@ struct Session {
                 }
             }
         }
-    }
-}
-
-Worldgen worldgenAt(uint index) {
-    if (index == 0) {
-        return Worldgen.makeTerrain();
-    } else {
-        return Worldgen.fromStructure(StructureWorld.fromName(registry().allNames()[index - 1]));
     }
 }
 
@@ -1103,14 +1060,6 @@ uint worldIndexOf(Worldgen worldgen) {
     }
 }
 
-float pitchSign(PitchAxis axis) {
-    if (axis == PitchAxis.inverted) {
-        return -1.0f;
-    } else {
-        return 1.0f;
-    }
-}
-
 void pauseUntilFrameEnd(double frameStart) {
     double remaining = BENCH_FRAME_SECONDS - (nowSeconds() - frameStart);
     if (remaining > 0) {
@@ -1119,34 +1068,49 @@ void pauseUntilFrameEnd(double frameStart) {
     }
 }
 
-ExitStatus renderScreenshot(Arguments arguments) {
+ExitStatus withOffscreen(alias work)(Arguments arguments, uint width, uint height) {
     FILE* report = openReport(arguments.reportPath);
     if (report is null) {
-        StartupError(null, "cannot open the report file", arguments.reportPath).report(arguments.program);
+        StartupError(null, REPORT_UNOPENED, arguments.reportPath).report(arguments.program);
         return ExitStatus.failed;
     } else {
-        ClientConfig config;
         Renderer* renderer = cast(Renderer*) malloc(Renderer.sizeof);
         *renderer = Renderer.init;
-        const(char)* problem = renderer.setupOffscreen(VkExtent2D(SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT), CHUNK_DIMENSION);
+        const(char)* problem = renderer.setupOffscreen(VkExtent2D(width, height), CHUNK_DIMENSION);
         ExitStatus status = ExitStatus.failed;
         if (problem !is null) {
             StartupError(null, problem, null).report(arguments.program);
         } else {
-            Game game = Game.make(arguments.worldgen, config.reach);
-            game.world.renderRadius = arguments.renderRadius;
-            game.supply = ChunkSupply.onDemand;
-            status = placedStatus(game, arguments);
-            if (status == ExitStatus.ok) {
-                status = captureScreenshot(arguments, report, *renderer, game);
-            }
+            status = work(report, *renderer);
             renderer.cleanup();
-            game.release();
         }
         free(renderer);
         closeReport(report);
         return status;
     }
+}
+
+ExitStatus withOnDemandGame(alias work)(Arguments arguments, uint width, uint height) {
+    ExitStatus onRenderer(FILE* report, ref Renderer renderer) {
+        ClientConfig config;
+        Game game = Game.make(arguments.worldgen, config.reach);
+        game.world.renderRadius = arguments.renderRadius;
+        game.supply = ChunkSupply.onDemand;
+        ExitStatus status = placedStatus(game, arguments);
+        if (status == ExitStatus.ok) {
+            status = work(report, renderer, game);
+        }
+        game.release();
+        return status;
+    }
+    return withOffscreen!onRenderer(arguments, width, height);
+}
+
+ExitStatus renderScreenshot(Arguments arguments) {
+    ExitStatus work(FILE* report, ref Renderer renderer, ref Game game) {
+        return captureScreenshot(arguments, report, renderer, game);
+    }
+    return withOnDemandGame!work(arguments, SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT);
 }
 
 ExitStatus captureScreenshot(Arguments arguments, FILE* report, ref Renderer renderer, ref Game game) {
@@ -1238,34 +1202,11 @@ void filmFrame(ref Script script, void* context) {
 }
 
 ExitStatus renderFilm(Arguments arguments) {
-    FILE* report = openReport(arguments.reportPath);
-    if (report is null) {
-        StartupError(null, "cannot open the report file", arguments.reportPath).report(arguments.program);
-        return ExitStatus.failed;
-    } else {
-        mkdir(arguments.filmPath, DIRECTORY_MODE);
-        ClientConfig config;
-        Renderer* renderer = cast(Renderer*) malloc(Renderer.sizeof);
-        *renderer = Renderer.init;
-        const(char)* problem = renderer.setupOffscreen(VkExtent2D(FILM_WIDTH, FILM_HEIGHT), CHUNK_DIMENSION);
-        ExitStatus status = ExitStatus.failed;
-        if (problem !is null) {
-            StartupError(null, problem, null).report(arguments.program);
-        } else {
-            Game game = Game.make(arguments.worldgen, config.reach);
-            game.world.renderRadius = arguments.renderRadius;
-            game.supply = ChunkSupply.onDemand;
-            status = placedStatus(game, arguments);
-            if (status == ExitStatus.ok) {
-                status = filmShots(arguments, report, *renderer, game);
-            }
-            renderer.cleanup();
-            game.release();
-        }
-        free(renderer);
-        closeReport(report);
-        return status;
+    mkdir(arguments.filmPath, DIRECTORY_MODE);
+    ExitStatus work(FILE* report, ref Renderer renderer, ref Game game) {
+        return filmShots(arguments, report, renderer, game);
     }
+    return withOnDemandGame!work(arguments, FILM_WIDTH, FILM_HEIGHT);
 }
 
 ExitStatus filmShots(Arguments arguments, FILE* report, ref Renderer renderer, ref Game game) {
@@ -1306,25 +1247,10 @@ struct RenderBreakdown {
 }
 
 ExitStatus benchLoad(Arguments arguments) {
-    FILE* report = openReport(arguments.reportPath);
-    if (report is null) {
-        StartupError(null, "cannot open the report file", arguments.reportPath).report(arguments.program);
-        return ExitStatus.failed;
-    } else {
-        Renderer* renderer = cast(Renderer*) malloc(Renderer.sizeof);
-        *renderer = Renderer.init;
-        const(char)* problem = renderer.setupOffscreen(VkExtent2D(SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT), CHUNK_DIMENSION);
-        ExitStatus status = ExitStatus.failed;
-        if (problem !is null) {
-            StartupError(null, problem, null).report(arguments.program);
-        } else {
-            status = benchLoadWith(arguments, report, *renderer);
-            renderer.cleanup();
-        }
-        free(renderer);
-        closeReport(report);
-        return status;
+    ExitStatus work(FILE* report, ref Renderer renderer) {
+        return benchLoadWith(arguments, report, renderer);
     }
+    return withOffscreen!work(arguments, SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT);
 }
 
 ExitStatus benchLoadWith(Arguments arguments, FILE* report, ref Renderer renderer) {
@@ -1381,14 +1307,22 @@ ExitStatus grownStatus(ref const Game game, Arguments arguments) {
     return exitStatus(!problem.isPresent);
 }
 
+uint reachedBy(Maybe!uint seen, uint lastFrame) {
+    if (seen.exists) {
+        return seen.value;
+    } else {
+        return lastFrame;
+    }
+}
+
 void measureLoad(FILE* report, ref Renderer renderer, ref Game game) {
     PhaseTimes step;
     PhaseTimes render;
     PhaseTimes frame;
     RenderBreakdown breakdown;
     uint frames = 0;
-    uint nearbyFrame = 0;
-    uint generatedFrame = 0;
+    Maybe!uint nearbyFrame;
+    Maybe!uint generatedFrame;
     game.world.phases = StepPhases.init;
     PhaseTimes stepCpu;
     double start = nowSeconds();
@@ -1405,11 +1339,11 @@ void measureLoad(FILE* report, ref Renderer renderer, ref Game game) {
         frame.add((rendered - frameStart) * MILLISECONDS_PER_SECOND);
         breakdown.add(renderer.frameTimes);
         frames += 1;
-        if (nearbyFrame == 0 && game.world.nearbyStage != NearbyStage.initial) {
-            nearbyFrame = frames;
+        if (!nearbyFrame.exists && game.world.nearbyStage != NearbyStage.initial) {
+            nearbyFrame = Maybe!uint.of(frames);
         }
-        if (generatedFrame == 0 && game.world.isWorldgenSettled()) {
-            generatedFrame = frames;
+        if (!generatedFrame.exists && game.world.isWorldgenSettled()) {
+            generatedFrame = Maybe!uint.of(frames);
         }
         if (frames % BENCH_PROGRESS_FRAMES == 0) {
             fprintf(report, "loading: frame %u at %.1fs, nearby %zu nodes, %u chunks in flight, %u meshes queued\n", frames, nowSeconds() - start, game.world.cachedNodes.length, game.world.streamer.inFlight, renderer.meshBacklog());
@@ -1425,7 +1359,7 @@ void measureLoad(FILE* report, ref Renderer renderer, ref Game game) {
         }
     }
     fprintf(report, "bench-load frames=%u wall=%.2fs nodes=%u dense_chunks=%u meshed=%u faces=%u\n", frames, elapsed, game.world.graph.slotCount, dense, renderer.meshes.meshedChunks, renderer.meshes.allocator.used());
-    fprintf(report, "nearby set complete at frame %u, worldgen settled at frame %u, meshing done at frame %u\n", nearbyFrame, generatedFrame, frames);
+    fprintf(report, "nearby set complete at frame %u, worldgen settled at frame %u, meshing done at frame %u\n", reachedBy(nearbyFrame, frames), reachedBy(generatedFrame, frames), frames);
     checkMeshes(report, renderer, game.world.graph);
     printMemory(report, game.world);
     printMemoryParts(report, game.world, renderer);
@@ -1473,8 +1407,8 @@ bool isSettledSolid(const(Chunk)* chunk) {
 
 bool isBesideDropped(ref const Graph graph, ChunkSlot chunk) {
     foreach (direction; DIRECTIONS) {
-        ChunkSlot neighbor = graph.chunkNeighborSlot(chunk, direction);
-        if (neighbor.slot != NO_SLOT && graph.chunks.at(neighbor).state == ChunkState.dropped) {
+        Maybe!ChunkSlot neighbor = graph.chunkNeighborSlot(chunk, direction);
+        if (neighbor.exists && graph.chunks.at(neighbor.value).state == ChunkState.dropped) {
             return true;
         }
     }
@@ -1488,7 +1422,7 @@ bool isResident(ChunkState state) {
 void measureFlight(FILE* report, ref Renderer renderer, ref Game game) {
     game.mode = MovementMode.noclip;
     foreach (leg; 0 .. BENCH_FLIGHT_LEGS) {
-        fprintf(report, "flight leg %u from depth %u:\n", leg + 1, game.world.graph.depthOf(game.world.graph.slotOf(game.characterState.position.node)));
+        fprintf(report, "flight leg %u from depth %u:\n", leg + 1, game.world.graph.depthOf(game.world.graph.slotOf(game.characterState.position.node).value));
         measureLeg(report, renderer, game);
         fflush(report);
     }
@@ -1527,7 +1461,7 @@ struct LoadedAround {
     Array!uint seen;
     uint generation;
     ulong[CENSUS_RADII.length] total;
-    uint[CENSUS_RADII.length] least = uint.max;
+    Maybe!uint[CENSUS_RADII.length] least;
     ulong[Shortfall.max + 1] missed;
     uint samples;
 
@@ -1542,7 +1476,7 @@ struct LoadedAround {
         float outer = coshf(CENSUS_RADII[$ - 1]);
         uint[CENSUS_RADII.length] loaded;
         queue.clear();
-        uint first = graph.slotOf(world.cameraPosition.node);
+        uint first = graph.slotOf(world.cameraPosition.node).value;
         queue.append(NearbyNode(Motion!float.identity(), first));
         seen.ptr[first] = generation;
         size_t head = 0;
@@ -1552,7 +1486,7 @@ struct LoadedAround {
             Shortfall waiting = Shortfall.unlisted;
             if (graph.structures.at(current.slot).isBuildingQueued) {
                 waiting = Shortfall.building;
-            } else if (world.nearby[world.published].indexOf(current.slot) != NOT_COLLECTED) {
+            } else if (world.nearby[world.published].indexOf(current.slot).exists) {
                 waiting = Shortfall.scanned;
                 if (world.streamer.isScanPending(current.slot)) {
                     waiting = Shortfall.unscanned;
@@ -1577,23 +1511,25 @@ struct LoadedAround {
             }
             foreach (index; 0 .. FACE_COUNT) {
                 Face face = cast(Face) index;
-                uint neighbor = graph.neighborSlot(current.slot, face);
+                MaybeIndex!uint neighbor = graph.neighborSlot(current.slot, face);
                 Motion!float transform = current.transform * face.mirror;
-                if (neighbor == NO_SLOT && bsf(childParentFaces(graph.nodeAt(current.slot).parentFaces, face)) == index) {
+                if (!neighbor.exists && bsf(childParentFaces(graph.nodeAt(current.slot).parentFaces, face)) == index) {
                     foreach (corner; 0 .. CORNER_COUNT) {
                         if (!(eye.coshDistance(transform * (cast(Corner) corner).cubeCenter) > outer)) {
                             missed[Shortfall.unmade] += 1;
                         }
                     }
-                } else if (neighbor != NO_SLOT && seen.ptr[neighbor] != generation && !(eye.coshDistance(transform * Point!float.origin()) > nodeReach)) {
-                    seen.ptr[neighbor] = generation;
-                    queue.append(NearbyNode(transform, neighbor));
+                } else if (neighbor.exists && seen.ptr[neighbor.value] != generation && !(eye.coshDistance(transform * Point!float.origin()) > nodeReach)) {
+                    seen.ptr[neighbor.value] = generation;
+                    queue.append(NearbyNode(transform, neighbor.value));
                 }
             }
         }
         foreach (radius; 0 .. CENSUS_RADII.length) {
             total[radius] += loaded[radius];
-            least[radius] = lowerOf(loaded[radius], least[radius]);
+            if (!least[radius].exists || loaded[radius] < least[radius].value) {
+                least[radius] = Maybe!uint.of(loaded[radius]);
+            }
         }
         samples += 1;
     }
@@ -1601,7 +1537,7 @@ struct LoadedAround {
     void print(FILE* report) const {
         fprintf(report, "  chunks loaded around the camera:");
         foreach (radius, distance; CENSUS_RADII) {
-            fprintf(report, " within %.0f avg %.0f least %u", cast(double) distance, cast(double) total[radius] / samples, least[radius]);
+            fprintf(report, " within %.0f avg %.0f least %u", cast(double) distance, cast(double) total[radius] / samples, least[radius].value);
         }
         fprintf(report, "\n  not loaded within %.0f avg:", cast(double) CENSUS_RADII[$ - 1]);
         foreach (kind, name; ENUM_NAMES!Shortfall) {
@@ -1696,8 +1632,8 @@ void printWorldStats(FILE* report, ref const LocalWorld world) {
     fprintf(report, "streamer %.2f/%.2fms (cpu %.2f) ", world.phases.streamer.averageMs(), world.phases.streamer.worstMs, world.phases.streamerCpu.averageMs());
     fprintf(report, "evict %.2f/%.2fms\n", world.phases.evict.averageMs(), world.phases.evict.worstMs);
     fprintf(report, "parallel jobs %u, main waited %.0fms for other threads to finish them\n", world.streamer.pool.runs, world.streamer.pool.waitedMs);
-    uint[2] tiles = tileCounts(world.graph);
-    fprintf(report, "tiles painted ahead on all threads %u, painted when needed %u\n", tiles[0], tiles[1]);
+    TileCounts tiles = tileCounts(world.graph);
+    fprintf(report, "tiles painted ahead on all threads %u, painted when needed %u\n", tiles.prepared, tiles.fallback);
     fprintf(report, "nearby %zu nodes, %u published, %u recoveries (%.0fms), %.0fms sliced\n", world.cachedNodes.length, world.nearbyStats.publishes, world.nearbyStats.recoveries, world.nearbyStats.recoveryMilliseconds, world.nearbyStats.slicedMilliseconds);
     fprintf(report, "nearby sets grown from the last %u, keeping %zu nodes as they were and expanding %zu again; %u moved to the camera\n", world.nearbyStats.grown, world.nearby[0].keptNodes + world.nearby[1].keptNodes, world.nearby[0].reexpandedNodes + world.nearby[1].reexpandedNodes, world.nearbyStats.rebases);
     fprintf(report, "nearby rebuilds narrowed after the camera outran them %u, abandoned for a fresh set at the camera %u, now reaching %.2f of %.2f\n", world.nearbyStats.narrowings, world.nearbyStats.abandons, cast(double)(world.loadRadius() - world.radiusCut), cast(double) world.loadRadius());
@@ -1889,7 +1825,7 @@ void printMemoryParts(FILE* report, ref const LocalWorld world, ref const Render
     foreach (ref const id, ref const list; structures.pending) {
         pendingBytes += bytesIn(list);
     }
-    fprintf(report, "  structures: touches %zu, pending touches %zu, tiled faces %zu, buildings %zu; strokes in tiles %zu, reach index %zu, in buildings %zu\n", megabytes(bytesIn(structures.touches)), megabytes(pendingBytes),megabytes(bytesIn(structures.tiledFaces)), megabytes(buildingBytes), megabytes(paintedStrokeBytes), megabytes(reachBytes), megabytes(builtStrokeBytes));
+    fprintf(report, "  structures: touches %zu, pending touches %zu, tiled faces %zu, buildings %zu; strokes in tiles %zu, reach index %zu, in buildings %zu\n", megabytes(bytesIn(structures.touches)), megabytes(pendingBytes), megabytes(bytesIn(structures.tiledFaces)), megabytes(buildingBytes), megabytes(paintedStrokeBytes), megabytes(reachBytes), megabytes(builtStrokeBytes));
     size_t runBytes = bytesIn(blueprint.runsOn);
     foreach (ref listed; blueprint.runsOn.slice()) {
         runBytes += bytesIn(listed);
@@ -1978,15 +1914,15 @@ void printShells(FILE* report, ref const LocalWorld world, ref const Renderer re
         }
     }
     shells[OUTSIDE_SHELLS].nodes = graph.liveCount - nearby.nodes.length;
-    uint cameraSlot = graph.slotOf(world.cameraPosition.node);
+    uint cameraSlot = graph.slotOf(world.cameraPosition.node).value;
     Point!float cameraEye = world.cameraPosition.local * Point!float.origin();
     foreach (ref tile; graph.structures.blueprint.tiles.slice()) {
         if (!tile.isDropped) {
-            uint slot = graph.slotOf(tile.face);
+            MaybeIndex!uint slot = graph.slotOf(tile.face);
             uint shell = OUTSIDE_SHELLS;
-            if (slot != NO_SLOT) {
-                shell = shellAt(cameraEye, graph.ownView.nodeToNode(slot, cameraSlot) * Point!float.origin());
-                if (nearby.indexOf(slot) == NOT_COLLECTED) {
+            if (slot.exists) {
+                shell = shellAt(cameraEye, graph.ownView.nodeToNode(slot.value, cameraSlot) * Point!float.origin());
+                if (!nearby.indexOf(slot.value).exists) {
                     shells[shell].unlistedTiles += 1;
                 }
             }
@@ -2027,6 +1963,7 @@ ExitStatus runWindowed(Arguments arguments) {
 
 extern (C) int main(int argc, char** argv) {
     reportCrashes();
+    gatherWorlds();
     Arguments arguments = Arguments.fromArgv(argc, argv);
     if (arguments.error.isPresent()) {
         arguments.error.report(argv[0]);
@@ -2035,7 +1972,7 @@ extern (C) int main(int argc, char** argv) {
         printf("%.*s", cast(int) USAGE.length, USAGE.ptr);
         return ExitStatus.ok;
     } else if (arguments.kind == RunKind.showVersion) {
-        printf("mined %s\n", VERSION.ptr);
+        printf("%s", VERSION_TEXT.ptr);
         return ExitStatus.ok;
     } else if (arguments.kind == RunKind.benchLoad) {
         return benchLoad(arguments);

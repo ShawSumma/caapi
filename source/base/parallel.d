@@ -2,7 +2,7 @@ module base.parallel;
 
 import core.atomic : atomicFetchAdd, atomicLoad, atomicOp, atomicStore, cas;
 import core.stdc.stdlib : calloc, free;
-import base.clock : nowMilliseconds;
+import base.clock : Deadline, nowMilliseconds;
 import base.numbers : higherOf, lowerOf;
 
 enum uint MAIN_WORKER = 0;
@@ -60,14 +60,15 @@ enum PoolLife : ubyte {
 struct ParallelJob {
     void function(void* context, size_t index, uint worker) run;
     void* context;
-    double deadline;
+    Deadline deadline;
     size_t count;
     size_t grain = 1;
     shared size_t claimed;
     shared Pace pace;
 
     void work(uint worker) {
-        while (atomicLoad(pace) == Pace.onTime) {
+        Pace current = atomicLoad(pace);
+        while (current == Pace.onTime) {
             size_t first = atomicFetchAdd(claimed, grain);
             if (first >= count) {
                 return;
@@ -76,14 +77,20 @@ struct ParallelJob {
             foreach (index; first .. end) {
                 run(context, index, worker);
             }
-            if (deadline != double.infinity && nowMilliseconds() >= deadline) {
-                atomicStore(pace, Pace.late);
+            if (deadline.isBounded) {
+                double now = nowMilliseconds();
+                if (deadline.hasPassed(now)) {
+                    atomicStore(pace, Pace.late);
+                }
             }
+            current = atomicLoad(pace);
         }
     }
 
     bool hasOpenWork() const {
-        return atomicLoad(claimed) < count && atomicLoad(pace) == Pace.onTime;
+        size_t taken = atomicLoad(claimed);
+        Pace current = atomicLoad(pace);
+        return taken < count && current == Pace.onTime;
     }
 
     void finish() {
@@ -141,47 +148,61 @@ struct WorkerPool {
 
     void signal() {
         atomicOp!"+="(epoch, 1);
-        if (atomicLoad(sleepers) > 0) {
+        uint sleeping = atomicLoad(sleepers);
+        if (sleeping > 0) {
             wake(epoch);
         }
     }
 
     void serve(uint worker) {
-        while (atomicLoad(life) == PoolLife.serving) {
+        PoolLife current = atomicLoad(life);
+        while (current == PoolLife.serving) {
             uint seen = atomicLoad(epoch);
-            if (!joinJob(worker) && !source.take(source.context, worker)) {
+            bool worked = joinJob(worker);
+            if (!worked) {
+                worked = source.take(source.context, worker);
+            }
+            if (!worked) {
                 atomicOp!"+="(sleepers, 1);
-                if (atomicLoad(epoch) == seen && atomicLoad(life) == PoolLife.serving) {
+                uint latest = atomicLoad(epoch);
+                PoolLife standing = atomicLoad(life);
+                if (latest == seen && standing == PoolLife.serving) {
                     waitWhile(epoch, seen);
                 }
                 atomicOp!"-="(sleepers, 1);
             }
+            current = atomicLoad(life);
         }
     }
 
     bool joinJob(uint worker) {
         atomicOp!"+="(active, 1);
         ParallelJob* open = cast(ParallelJob*) atomicLoad(job);
-        if (open !is null && !open.hasOpenWork()) {
-            open = null;
-        }
         if (open !is null) {
-            open.work(worker);
+            bool hasWork = open.hasOpenWork();
+            if (hasWork) {
+                open.work(worker);
+            } else {
+                open = null;
+            }
         }
-        if (atomicOp!"-="(active, 1) == 0 && atomicLoad(joiners) != 0) {
+        uint inside = atomicOp!"-="(active, 1);
+        uint waiting = atomicLoad(joiners);
+        if (inside == 0 && waiting != 0) {
             wake(active);
         }
         return open !is null;
     }
 
     void helpWithJob(uint worker) {
-        if (atomicLoad(job) != 0) {
+        size_t open = atomicLoad(job);
+        if (open != 0) {
             joinJob(worker);
         }
     }
 
     void run(ParallelJob* parallel) {
-        if (parallel.deadline == double.infinity) {
+        if (!parallel.deadline.isBounded) {
             parallel.grain = grainFor(parallel.count, participants());
         }
         atomicStore(job, cast(size_t) parallel);
@@ -281,7 +302,8 @@ struct ConcurrentQueue(T) {
             QueueCell!T* cell = &cells[position & mask];
             ptrdiff_t difference = cast(ptrdiff_t)(atomicLoad(cell.sequence) - position);
             if (difference == 0) {
-                if (cas(&head, position, position + 1)) {
+                bool won = cas(&head, position, position + 1);
+                if (won) {
                     cell.value = value;
                     atomicStore(cell.sequence, position + 1);
                     return true;
@@ -301,7 +323,8 @@ struct ConcurrentQueue(T) {
             QueueCell!T* cell = &cells[position & mask];
             ptrdiff_t difference = cast(ptrdiff_t)(atomicLoad(cell.sequence) - (position + 1));
             if (difference == 0) {
-                if (cas(&tail, position, position + 1)) {
+                bool won = cas(&tail, position, position + 1);
+                if (won) {
                     value = cell.value;
                     atomicStore(cell.sequence, position + mask + 1);
                     return true;

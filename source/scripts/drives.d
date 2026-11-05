@@ -1,6 +1,6 @@
 module scripts.drives;
 
-import client.drive : DriveAction, DriveKey, NamedDrive, Toggle, captureTo, framesOf, holdKey, logging, moveBy, releaseKey, summaryOf, tapKey, watching;
+import client.drive : CAPTURE_DIRECTORY, DriveAction, DriveKey, NamedDrive, Toggle, captureTo, framesOf, holdKey, logging, moveBy, releaseKey, summaryOf, tapKey, watching;
 
 enum uint LOAD_FRAMES = 300;
 enum uint STILL_FRAMES = 30;
@@ -24,19 +24,19 @@ immutable DriveAction[] TURN = [
     framesOf(LOAD_FRAMES),
     summaryOf("loading"),
     watching(Toggle.on),
-    captureTo("screenshots/drivestill1.png"),
+    captureTo(CAPTURE_DIRECTORY ~ "/drivestill1.png"),
     framesOf(STILL_FRAMES),
     summaryOf("standing still"),
     moveBy(TURN_COUNTS, 0, TURN_FRAMES),
     summaryOf("turning by mouse"),
-    captureTo("screenshots/driveturned1.png"),
+    captureTo(CAPTURE_DIRECTORY ~ "/driveturned1.png"),
     framesOf(1),
     tapKey(DriveKey.n),
     holdKey(DriveKey.w),
     framesOf(FLY_FRAMES),
     releaseKey(DriveKey.w),
     summaryOf("flying forward in noclip"),
-    captureTo("screenshots/driveflown1.png"),
+    captureTo(CAPTURE_DIRECTORY ~ "/driveflown1.png"),
     framesOf(1),
 ];
 

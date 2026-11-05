@@ -26,8 +26,7 @@ enum float WALL_HALF_WIDTH = 0.075f;
 enum float ROW_STEP = 0.0125f;
 enum float STEP_DEPTH = 0.075f;
 enum Material GROUND = Material.dirt;
-immutable uint[3] LAYER_SLOTS = [1, 4, 5];
-immutable Material[3] LAYER_MATERIALS = [Material.woodPlanks, Material.greyBrick, Material.whiteBrick];
+immutable BuildLayer[3] BUILD_LAYERS = [BuildLayer(1, Material.woodPlanks), BuildLayer(4, Material.greyBrick), BuildLayer(5, Material.whiteBrick)];
 enum double TURN_SECONDS = 0.96;
 enum double SETTLE_SECONDS = 0.48;
 enum double LANDING_SECONDS = 2;
@@ -37,6 +36,11 @@ immutable Material[2] STREET_MATERIALS = [Material.basalt, Material.whiteBrick];
 immutable Material[7] TOWER_MATERIALS = [Material.concrete, Material.whiteBrick, Material.greyBrick, Material.sandstone, Material.woodPlanks, Material.steel, Material.marble];
 immutable Material[4] BACKROOMS_FLOORS = [Material.carpet, Material.dampCarpet, Material.redCarpet, Material.concrete];
 immutable Material[3] BACKROOMS_CEILINGS = [Material.ceilingTile, Material.lightPanel, Material.concrete];
+
+struct BuildLayer {
+    uint slot;
+    Material material;
+}
 
 enum ClimbGoal : ubyte {
     timed,
@@ -111,18 +115,28 @@ float forward(ref Script world, double seconds, float minFraction) {
     return walked;
 }
 
-bool isOnStep(ref Script world, float standing) {
+bool probeOnStep(ref Script world, float standing) {
     Maybe!Material below = lookBelow(world);
-    return world.isOnGround() && world.altitude().value - standing > MIN_BLOCK_EDGE / 2 && isMaterial(below, LAYER_MATERIALS[0]);
+    return world.isOnGround() && world.altitude().value - standing > MIN_BLOCK_EDGE / 2 && isMaterial(below, BUILD_LAYERS[0].material);
+}
+
+bool probeReached(ref Script world, ClimbGoal goal, float standing) {
+    if (goal == ClimbGoal.ontoStep) {
+        return probeOnStep(world, standing);
+    } else {
+        return false;
+    }
 }
 
 void climbForward(ref Script world, double seconds, Time dt, ClimbGoal goal, float standing) {
     double deadline = world.time().value + seconds;
     world.hold(Key.fwd);
     world.step(dt);
-    while (!world.isFailed && world.time().value < deadline && !(goal == ClimbGoal.ontoStep && isOnStep(world, standing))) {
+    bool reached = probeReached(world, goal, standing);
+    while (!world.isFailed && world.time().value < deadline && !reached) {
         jumpIfBlocked(world);
         world.step(dt);
+        reached = probeReached(world, goal, standing);
     }
     world.release(Key.fwd, Key.up);
 }
@@ -135,8 +149,11 @@ void jumpIfBlocked(ref Script world) {
 }
 
 Motion motionFrom(ref Script world) {
-    float altitude = world.altitude().value;
-    return Motion(0, 0, SPEED, 0, altitude, altitude, 0, world.footing());
+    Motion motion;
+    motion.lowest = world.altitude().value;
+    motion.highest = motion.lowest;
+    motion.lastFooting = world.footing();
+    return motion;
 }
 
 void trackMotion(ref Script world, Motion* motion) {
@@ -179,7 +196,7 @@ void checkOnStep(ref Script world, float standing, const(char)* what) {
     world.check(rise > MIN_BLOCK_EDGE / 2, "%s: rose %.4f", what, rise);
     Maybe!Material below = lookBelow(world);
     string name = nameOf(below);
-    world.check(isMaterial(below, LAYER_MATERIALS[0]), "%s: standing on %.*s", what, cast(int) name.length, name.ptr);
+    world.check(isMaterial(below, BUILD_LAYERS[0].material), "%s: standing on %.*s", what, cast(int) name.length, name.ptr);
 }
 
 void checkStanding(ref Script world, const(char)* what) {
@@ -218,7 +235,8 @@ void buildLayer(ref Script world, Material below, Key key, uint steps) {
         world.look(degrees(0), degrees(STRAIGHT_DOWN_DEGREES));
         if (isMaterial(world.targetMaterial(), below)) {
             string name = ENUM_NAMES!Material[below];
-            world.check(world.placeBlock(), "placed a block on %.*s %u steps along the row", cast(int) name.length, name.ptr, step);
+            bool placed = world.placeBlock();
+            world.check(placed, "placed a block on %.*s %u steps along the row", cast(int) name.length, name.ptr, step);
         }
         world.look(degrees(0), degrees(-STRAIGHT_DOWN_DEGREES));
         if (step < steps) {
@@ -232,14 +250,14 @@ void buildRow(ref Script world, uint blocks, Key key, float length) {
     uint steps = cast(uint) ceil(length / ROW_STEP);
     Material below = GROUND;
     foreach (layer; 0 .. blocks) {
-        world.material(LAYER_SLOTS[layer]);
+        world.material(BUILD_LAYERS[layer].slot);
         buildLayer(world, below, key, steps);
-        below = LAYER_MATERIALS[layer];
+        below = BUILD_LAYERS[layer].material;
         if (layer + 1 < blocks) {
             fly(world, steps * ROW_STEP, opposite(key));
         }
     }
-    world.material(LAYER_SLOTS[0]);
+    world.material(BUILD_LAYERS[0].slot);
 }
 
 void hover(ref Script world, uint blocks) {

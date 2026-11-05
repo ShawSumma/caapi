@@ -3,8 +3,10 @@ module scripts.tests;
 import core.math : sqrt;
 import core.stdc.math : atan2, exp, fabs, sin;
 import base.maybe : Maybe;
+import base.names : textFor;
 import base.numbers : RADIANS_PER_DEGREE, higherOf, lowerOf;
 import base.units : AngularSpeed, Length, Time;
+import base.vector3 : Vec3, ZERO_VECTOR, magnitude, minus;
 import client.game : Key, RouteWaypoint, UnloadedCount;
 import client.hud : Growth;
 import client.script : NamedScript, ONE_SECOND, Script, StepHook, degrees;
@@ -108,14 +110,16 @@ void countHook(ref Script world, void* context) {
     HookCount* count = cast(HookCount*) context;
     count.steps += 1;
     world.wait(1);
-    if (!world.takeFailure()) {
+    bool refused = world.takeFailure();
+    if (!refused) {
         count.allowed += 1;
     }
 }
 
 void api(ref Script world) {
     world.material(10);
-    world.check(world.takeFailure(), "material slots past the palette are an error");
+    bool refused = world.takeFailure();
+    world.check(refused, "material slots past the palette are an error");
     world.check(fabs(world.timestep.value - DEFAULT_TIMESTEP.value) < TIMESTEP_TOLERANCE, "default timestep is 0.016 s");
     world.setTimestep(CHOSEN_TIMESTEP);
     world.plane(degrees(0));
@@ -126,11 +130,13 @@ void api(ref Script world) {
     world.check(fabs(world.time().value - 1 - CHOSEN_TIMESTEP.value / 2) < CLOCK_TOLERANCE, "one half step, clock reads %.4f s", world.time().value);
     if (!world.isFailed) {
         world.terrain();
-        world.check(world.takeFailure(), "worldgen cannot change after the first step");
+        refused = world.takeFailure();
+        world.check(refused, "worldgen cannot change after the first step");
     }
     if (!world.isFailed) {
         world.wait(1, Time(0));
-        world.check(world.takeFailure(), "a zero timestep is an error");
+        refused = world.takeFailure();
+        world.check(refused, "a zero timestep is an error");
     }
 
     HookCount count;
@@ -305,14 +311,15 @@ enum double FREE_SECONDS = 1;
 enum float MIN_FREE_FRACTION = 0.8f;
 
 bool isWall(Maybe!Material target) {
-    return walk.isMaterial(target, walk.LAYER_MATERIALS[0]) || walk.isMaterial(target, walk.LAYER_MATERIALS[1]);
+    return walk.isMaterial(target, walk.BUILD_LAYERS[0].material) || walk.isMaterial(target, walk.BUILD_LAYERS[1].material);
 }
 
 void clearAhead(ref Script world, double pitch, const(char)* what) {
     world.look(degrees(0), degrees(pitch));
     uint breaks = 0;
     while (!world.isFailed && isWall(world.targetMaterial()) && breaks < MAX_BREAKS) {
-        world.check(world.breakBlock(), "broke the %s block of the hole", what);
+        bool broke = world.breakBlock();
+        world.check(broke, "broke the %s block of the hole", what);
         breaks += 1;
     }
     string facing = walk.nameOf(world.targetMaterial());
@@ -374,11 +381,13 @@ void flatPlace(ref Script world) {
     world.plane(degrees(0));
     walk.spawn(world);
     world.look(degrees(0), degrees(walk.STRAIGHT_DOWN_DEGREES));
-    world.check(!world.placeBlock(), "placing a block where the player stands is refused");
+    bool placed = world.placeBlock();
+    world.check(!placed, "placing a block where the player stands is refused");
     world.wait(0.5);
     walk.checkStanding(world, "after the refused placement");
     world.look(degrees(0), degrees(AHEAD_DEGREES - walk.STRAIGHT_DOWN_DEGREES));
-    world.check(world.placeBlock(), "placing a block ahead succeeds");
+    placed = world.placeBlock();
+    world.check(placed, "placing a block ahead succeeds");
     world.wait(0.5);
     walk.checkStanding(world, "after placing ahead");
 }
@@ -396,8 +405,10 @@ void flatStair(ref Script world) {
     walk.trackMotion(world, &motion);
     double deadline = world.time().value + STEP_WALK_SECONDS;
     world.hold(Key.fwd);
-    while (!world.isFailed && world.time().value < deadline && !walk.isOnStep(world, standing)) {
+    bool onStep = walk.probeOnStep(world, standing);
+    while (!world.isFailed && world.time().value < deadline && !onStep) {
         world.step();
+        onStep = walk.probeOnStep(world, standing);
     }
     world.release(Key.fwd);
     world.wait(walk.SETTLE_SECONDS);
@@ -428,12 +439,15 @@ void flatStepover(ref Script world) {
     world.onStep(StepHook(&stepoverHook, &over));
     double deadline = world.time().value + STEP_WALK_SECONDS;
     world.hold(Key.fwd);
-    while (!world.isFailed && world.time().value < deadline && !walk.isOnStep(world, standing)) {
+    bool onStep = walk.probeOnStep(world, standing);
+    while (!world.isFailed && world.time().value < deadline && !onStep) {
         world.step();
+        onStep = walk.probeOnStep(world, standing);
     }
     world.release(Key.fwd);
     world.onStep(StepHook.init);
-    world.check(walk.isOnStep(world, standing), "walked onto the step");
+    onStep = walk.probeOnStep(world, standing);
+    world.check(onStep, "walked onto the step");
     world.check(over.motion.offGround == 0, "left the ground on %u steps walking up a one-block step", over.motion.offGround);
     world.check(over.fastest <= walk.SPEED * CLIMB_SPEED_TOLERANCE, "moved at %.4f stepping up, walking is %.4f", over.fastest, walk.SPEED);
 }
@@ -467,9 +481,9 @@ void flatTimestep(ref Script world) {
     world.mode(MovementMode.walk);
     world.step(DROP_STEP);
     walk.checkStanding(world, "after one 2.0 s step falling 0.30");
-    float short_ = walkFromRest(world, world.timestep);
-    float long_ = walkFromRest(world, LONG_STEP);
-    world.check(fabs(long_ - short_) <= WALK_TOLERANCE, "walked %.5f in %.1f s steps and %.5f in %.3f s steps", long_, LONG_STEP.value, short_, world.timestep.value);
+    float inShortSteps = walkFromRest(world, world.timestep);
+    float inLongSteps = walkFromRest(world, LONG_STEP);
+    world.check(fabs(inLongSteps - inShortSteps) <= WALK_TOLERANCE, "walked %.5f in %.1f s steps and %.5f in %.3f s steps", inLongSteps, LONG_STEP.value, inShortSteps, world.timestep.value);
     walk.checkStanding(world, "after walking in long steps");
     walk.buildStep(world);
     float standing = world.altitude().value;
@@ -550,7 +564,7 @@ void liveDrift(ref Script world) {
     world.press(DRIFT_CLIMB_SECONDS, Key.up);
     foreach (leg; 0 .. DRIFT_LEGS) {
         world.press(DRIFT_LEG_DISTANCE / walk.FLY_SPEED, Key.fwd);
-        float drift = world.frameDrift(DRIFT_RADIUS).value;
+        float drift = world.probeFrameDrift(DRIFT_RADIUS).value;
         world.check(drift < MOST_DRIFT, "nodes drawn %.3g from where they are after %u units flown", drift, leg + 1);
     }
 }
@@ -599,7 +613,7 @@ void liveFar(ref Script world) {
         float altitude = world.altitude().value;
         UnloadedCount unloaded = world.unloadedWithin(CLOSE);
         Probe probe = groundBelow(world);
-        world.check(fabs(altitude - start) < ALTITUDE_DRIFT && probe.below.exists, "after %.0f units: altitude %.3f from %.3f, %u fresh %u generating %u nodes missing, below found %d within %.2f", (leg + 1) * FAR_LEG_DISTANCE, altitude, start, unloaded.fresh, unloaded.generating, unloaded.missingNodes, cast(int) probe.below.exists, probe.depth);
+        world.check(fabs(altitude - start) < ALTITUDE_DRIFT && probe.below.exists, "after %.0f units: altitude %.3f from %.3f, %u fresh %u generating %u nodes missing, %s below within %.2f", (leg + 1) * FAR_LEG_DISTANCE, altitude, start, unloaded.fresh, unloaded.generating, unloaded.missingNodes, textFor(probe.below.exists, "something", "nothing"), probe.depth);
     }
 }
 
@@ -622,7 +636,7 @@ void liveFly(ref Script world) {
         float before = world.traveled().value;
         world.press(1, Key.fwd);
         float flown = world.traveled().value - before;
-        world.check(flown >= MIN_FLY_FRACTION * walk.FLY_SPEED, "flew %.3f in second %u, loaded %d at altitude %.3f", flown, second, cast(int) world.isLoaded(), world.altitude().value);
+        world.check(flown >= MIN_FLY_FRACTION * walk.FLY_SPEED, "flew %.3f in second %u, %s at altitude %.3f", flown, second, textFor(world.isLoaded(), "loaded", "not loaded"), world.altitude().value);
         checkClose(world, "flying", second);
     }
     world.mode(MovementMode.walk);
@@ -717,7 +731,7 @@ enum float MAX_RISE_SPEED = 0.1f;
 
 struct Pushing {
     Motion motion;
-    float slowest = float.infinity;
+    float slowest;
 }
 
 void pushingHook(ref Script world, void* context) {
@@ -735,7 +749,7 @@ void slopeWall(ref Script world) {
         walk.buildWall(world, SLOPE_WALL_BLOCKS);
         world.wait(2);
         world.check(world.isOnGround(), "heading %d: back on the ground after building", heading);
-        Pushing pushing = Pushing(walk.motionFrom(world));
+        Pushing pushing = Pushing(walk.motionFrom(world), world.horizontalSpeed().value);
         world.onStep(StepHook(&walk.observeHook, &pushing.motion));
         world.hold(Key.fwd);
         world.wait(SLOPE_APPROACH_SECONDS);
@@ -790,7 +804,7 @@ void structureBackrooms(ref Script world) {
     world.enterRoute();
     world.wait(walk.SETTLE_SECONDS);
     world.check(world.altitude().value < RISEN_BACKROOMS_ALTITUDE, "starting on the ground, %.3f up", world.altitude().value);
-    size_t reached = climb.follow(world, climb.EVERY_WAYPOINT);
+    size_t reached = climb.follow(world, Maybe!size_t.init);
     world.wait(walk.SETTLE_SECONDS);
     world.check(!world.routeWaypoint(reached + 1).exists, "stopped after %zu waypoints", reached);
     world.check(world.isOnGround(), "standing in the backrooms");
@@ -814,7 +828,7 @@ void structureChain(ref Script world) {
     world.check(world.isOnGround(), "standing on the first city outside the connector's lower door");
     float start = world.altitude().value;
     world.check(start > CHAIN_LOWER_ALTITUDE, "starting only %.3f above the ground, not on the first city", start);
-    size_t reached = climb.follow(world, climb.EVERY_WAYPOINT);
+    size_t reached = climb.follow(world, Maybe!size_t.init);
     world.wait(walk.SETTLE_SECONDS);
     world.check(!world.routeWaypoint(reached + 1).exists, "stopped after %zu waypoints", reached);
     world.check(world.isOnGround(), "standing in the city risen from the first");
@@ -839,7 +853,7 @@ void structureCity(ref Script world) {
     world.enterRoute();
     world.wait(walk.SETTLE_SECONDS);
     float ground = world.altitude().value;
-    size_t reached = climb.follow(world, climb.EVERY_WAYPOINT);
+    size_t reached = climb.follow(world, Maybe!size_t.init);
     world.wait(walk.SETTLE_SECONDS);
     world.check(reached == ENTRY_STOPS + ROUTE_STORIES * STOPS_PER_STORY, "reached %zu stops from the street up the stairs", reached);
     world.check(world.isOnGround(), "standing upstairs");
@@ -926,7 +940,7 @@ void risen(string name, float risenAltitude, Material landing, string what)(ref 
     world.wait(walk.SETTLE_SECONDS);
     world.check(world.isOnGround(), "standing at the start of the route");
     world.check(world.altitude().value < risenAltitude, "starting on the ground, %.3f up", world.altitude().value);
-    size_t reached = climb.follow(world, climb.EVERY_WAYPOINT);
+    size_t reached = climb.follow(world, Maybe!size_t.init);
     world.wait(walk.SETTLE_SECONDS);
     world.check(!world.routeWaypoint(reached + 1).exists, "stopped after %zu waypoints", reached);
     world.check(world.isOnGround(), "standing at the end of the route");
@@ -941,7 +955,7 @@ enum float TRIP_HOME_TOLERANCE = 0.1f;
 enum float MOST_PULL_PER_STEP = 0.15f;
 
 struct PullWatch {
-    float[3] last = [0, 0, 0];
+    Vec3!float last = ZERO_VECTOR;
     float largest = 0;
     float highest = 0;
     uint steps;
@@ -949,10 +963,9 @@ struct PullWatch {
 
 void pullWatchHook(ref Script world, void* context) {
     PullWatch* watch = cast(PullWatch*) context;
-    float[3] pull = world.game.characterState.pull;
+    Vec3!float pull = world.game.characterState.pull;
     if (watch.steps > 0) {
-        float[3] apart = [pull[0] - watch.last[0], pull[1] - watch.last[1], pull[2] - watch.last[2]];
-        watch.largest = higherOf(watch.largest, sqrt(apart[0] * apart[0] + apart[1] * apart[1] + apart[2] * apart[2]));
+        watch.largest = higherOf(watch.largest, pull.minus(watch.last).magnitude);
     }
     watch.last = pull;
     watch.highest = higherOf(watch.highest, world.altitude().value);
@@ -967,7 +980,7 @@ void roundTrip(string name)(ref Script world) {
     float start = world.altitude().value;
     PullWatch watch;
     world.onStep(StepHook(&pullWatchHook, &watch));
-    size_t reached = climb.follow(world, climb.EVERY_WAYPOINT);
+    size_t reached = climb.follow(world, Maybe!size_t.init);
     world.wait(walk.SETTLE_SECONDS);
     world.onStep(StepHook.init);
     world.check(!world.routeWaypoint(reached + 1).exists, "stopped after %zu waypoints", reached);
@@ -984,7 +997,7 @@ void structureRoad(ref Script world) {
     world.structure("road");
     world.enterRoute();
     world.wait(walk.SETTLE_SECONDS);
-    size_t reached = climb.follow(world, climb.EVERY_WAYPOINT);
+    size_t reached = climb.follow(world, Maybe!size_t.init);
     world.wait(walk.SETTLE_SECONDS);
     world.check(world.isOnGround(), "standing on the road after %zu waypoints", reached);
     world.check(!world.routeWaypoint(reached + 1).exists, "stopped after %zu waypoints", reached);
@@ -1040,11 +1053,11 @@ void structureTrail(ref Script world) {
     world.enterRoute();
     world.wait(walk.SETTLE_SECONDS);
     float start = world.traveled().value;
-    size_t reached = climb.follow(world, TRAIL_STOPS);
+    size_t reached = climb.follow(world, Maybe!size_t.of(TRAIL_STOPS));
     world.wait(walk.SETTLE_SECONDS);
     world.check(reached == TRAIL_STOPS, "walked %zu of %zu trail stops", reached, TRAIL_STOPS);
     world.check(stopCount(world) > built, "the trail did not grow past its first %zu stops as the world grew", built);
-    float back = world.routeWaypoint(1).value.horizontal.value;
+    float back = world.needWaypoint(1).horizontal.value;
     float walked = world.traveled().value - start;
     world.check(back < MAX_STRAIGHTNESS * walked, "the trail ran straight: %.3f back to its start after walking %.3f", back, walked);
     world.look(degrees(0), degrees(walk.STRAIGHT_DOWN_DEGREES));
@@ -1096,7 +1109,7 @@ void structureArborEndless(ref Script world) {
 void walkDownShaft(ref Script world) {
     world.check(world.isOnGround(), "standing at the top of the shaft's stair");
     float start = world.altitude().value;
-    size_t reached = climb.follow(world, climb.EVERY_WAYPOINT);
+    size_t reached = climb.follow(world, Maybe!size_t.init);
     world.wait(walk.SETTLE_SECONDS);
     double tilt = world.floorTilt().value / RADIANS_PER_DEGREE;
     world.check(!world.routeWaypoint(reached + 1).exists, "stopped after %zu waypoints", reached);

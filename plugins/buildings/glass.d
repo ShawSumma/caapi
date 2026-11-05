@@ -1,10 +1,10 @@
 module plugins.buildings.glass;
 
-import plugins.api.api : Box, Material, Rhythm;
-import plugins.buildings.building : ANTENNA, Bound, Lots, Palette, Part, PartJoin, Parts, STORY, Spec, Split, Tier, crown, enter, footprint, helipad, makeParts, masts, middle, narrowing, pick, roof, setbacks, shell, strips, tiers, walls;
+import plugins.api.api : Box, Material, Rhythm, Span;
+import plugins.buildings.building : ANTENNA, Bound, Lots, Palette, Part, PartJoin, Parts, STORY, Spec, Split, Tier, crown, enter, footprint, helipad, makeParts, masts, middle, narrowing, pick, roof, setbacks, shell, strips, tiers, walls, xSpan, ySpan;
 import plugins.turtle.turtle : boxOf;
 
-enum int[2] STORIES = [12, 38];
+enum Span STORIES = Span(12, 38);
 enum int SETBACKS = 1;
 enum Material ROOF = Material.concrete;
 enum Rhythm SPANDRELS = Rhythm(STORY, STORY - 1, 1);
@@ -30,7 +30,7 @@ void curtain(ref const Part part, Palette palette, Box box, Tier tier) {
 
 Tier penthouse(ref const Part part, Palette palette, Tier tier) {
     Box roofBox = footprint(part, tier.shrink, Split.above, tier.high, tier.high);
-    int inset = narrowing([roofBox.low[0], roofBox.high[0]], [roofBox.low[1], roofBox.high[1]], PENTHOUSE_SETBACK, LEAST_WIDTH);
+    int inset = narrowing(xSpan(roofBox), ySpan(roofBox), PENTHOUSE_SETBACK, LEAST_WIDTH);
     Tier cap = Tier(tier.high + 1, tier.high + STORY, tier.shrink + inset, Split.above);
     Part closed = part;
     closed.kinds = [Bound.lot, Bound.lot, Bound.lot, Bound.lot];
@@ -41,9 +41,9 @@ Tier penthouse(ref const Part part, Palette palette, Tier tier) {
 
 void antenna(ref const Part part, Palette palette, Tier tier) {
     Box roofBox = footprint(part, tier.shrink, Split.above, tier.high, tier.high);
-    int x = middle(roofBox.low[0], roofBox.high[0]);
-    int y = middle(roofBox.low[1], roofBox.high[1]);
-    part.tower.paint(palette.trim, boxOf([x, x], [y, y], [tier.high + 1, tier.high + ANTENNA]));
+    int x = middle(xSpan(roofBox));
+    int y = middle(ySpan(roofBox));
+    part.tower.paint(palette.trim, boxOf(Span(x, x), Span(y, y), Span(tier.high + 1, tier.high + ANTENNA)));
 }
 
 void build(ref const Lots lots, Spec spec) {

@@ -3,12 +3,13 @@ module unit.structure;
 import core.math : sqrt;
 import core.stdc.math : atanhf, coshf, fabsf, floorf;
 import base.units : Length;
+import base.vector3 : Vec3;
 import common.graph : Graph;
 import common.position : Position;
 import common.traversal : NearbyNode, NearbyScratch;
 import common.worldgen.blueprint : BlueprintBuilder, CellBox, Cover, EVERY_HEIGHT, LineSpec, PaintResult, canonicalBox;
 import common.worldgen.generation : StructureWorld, Worldgen;
-import common.worldgen.structure : CanonicalSite, ColumnChunk, ColumnSpot, GROUND_RING, LineTouch, NODE_EDGES, SiteFrame, altitude, canonicalOf, columnPoint, edgeCells, edgeLength, edgeSite, edgeSitesOf, forwarded, groundRing, groundSite, isLevelInRange, isOnTouch, lineSite, lineToNode, nodeToNode, rootSite, sideAxis, siteFace, siteHash, siteOrigin, siteToNode, atLevel, turned;
+import common.worldgen.structure : CanonicalSite, ClaimKey, ColumnChunk, ColumnSpot, GROUND_RING, LineTouch, NODE_EDGES, RootedCorner, SiteFrame, altitude, canonicalOf, columnPoint, edgeCells, edgeLength, edgeSite, edgeSitesOf, ensureGroundRing, ensureSiteFace, ensureSiteHash, ensureSiteOrigin, forwarded, groundSite, isLevelInRange, isOnTouch, lineSite, lineToNode, moveToLevel, nodeToNode, rootSite, sideAxis, siteToNode, turnSite;
 import geometry.honeycomb : CORNER_COUNT, Corner, FACE_COUNT, FACE_DISTANCE, Face, across, cornerToNode, cubeToNode, faces, isAdjacentTo, mirror;
 import geometry.lorentz : Motion, Point, Vec4;
 import plugins.api.api : Material, SitePart, Turn;
@@ -23,11 +24,11 @@ enum int RISE_EDGES = 3;
 enum uint DEEP_STEPS = 40;
 enum uint SIDE_STRIDE = 5;
 immutable Face[3] EDGE_WALK = [cast(Face) 3, cast(Face) 7, cast(Face) 1];
-immutable int[3][4] CELLS = [
-    [0, 0, 0],
-    [3, 1, 2],
-    [11, 5, 0],
-    [2, 11, 9],
+immutable Vec3!int[4] CELLS = [
+    Vec3!int(0, 0, 0),
+    Vec3!int(3, 1, 2),
+    Vec3!int(11, 5, 0),
+    Vec3!int(2, 11, 9),
 ];
 
 bool isOnLineInFrame(ref const LineSpec spec, Point!float corner, Point!float center, ref const typeof(Graph.layout) layout) {
@@ -68,25 +69,25 @@ SiteFrame[FACE_CORNERS] faceWalk(ref Graph graph, SiteFrame start) {
     SiteFrame[FACE_CORNERS] corners = void;
     corners[0] = start;
     foreach (index; 1 .. FACE_CORNERS) {
-        corners[index] = graph.view.turned(forwarded(corners[index - 1], 1), Turn.right);
+        corners[index] = graph.view.turnSite(forwarded(corners[index - 1], 1), Turn.right);
     }
     return corners;
 }
 
 SiteFrame[8] testSites(ref Graph graph) {
     SiteFrame ground = rootSite(graph.anchorSlot);
-    SiteFrame tower = graph.view.turned(ground, Turn.pitchUp);
-    SiteFrame bridge = graph.view.turned(forwarded(tower, 1), Turn.pitchDown);
+    SiteFrame tower = graph.view.turnSite(ground, Turn.pitchUp);
+    SiteFrame bridge = graph.view.turnSite(forwarded(tower, 1), Turn.pitchDown);
     SiteFrame corner = graph.faceWalk(ground)[2];
     return [
         tower,
         bridge,
-        graph.view.turned(bridge, Turn.right),
-        graph.view.turned(forwarded(bridge, 1), Turn.pitchDown),
+        graph.view.turnSite(bridge, Turn.right),
+        graph.view.turnSite(forwarded(bridge, 1), Turn.pitchDown),
         ground,
-        graph.view.turned(corner, Turn.rollLeft),
-        forwarded(graph.view.turned(forwarded(corner, 2), Turn.pitchUp), -1),
-        graph.view.turned(forwarded(graph.view.turned(corner, Turn.left), -2), Turn.pitchUp),
+        graph.view.turnSite(corner, Turn.rollLeft),
+        forwarded(graph.view.turnSite(forwarded(corner, 2), Turn.pitchUp), -1),
+        graph.view.turnSite(forwarded(graph.view.turnSite(corner, Turn.left), -2), Turn.pitchUp),
     ];
 }
 
@@ -96,11 +97,14 @@ unittest {
     SiteFrame[8] sites = graph.testSites();
     CellBox pillar = CellBox.make(-2, 1, -3, 0, -12, 30);
     foreach (site; sites[0 .. 4]) {
-        assert(builder.paint(site, pillar, EVERY_HEIGHT, Material.granite, Cover.over) == PaintResult.painted);
+        PaintResult result = builder.paint(site, pillar, EVERY_HEIGHT, Material.granite, Cover.over);
+        assert(result == PaintResult.painted);
     }
-    assert(builder.paint(sites[4], CellBox.make(-6, 5, 0, 1, int.min, int.max), EVERY_HEIGHT, Material.granite, Cover.over) == PaintResult.painted);
+    PaintResult endlessResult = builder.paint(sites[4], CellBox.alongLine(-6, 5, 0, 1), EVERY_HEIGHT, Material.granite, Cover.over);
+    assert(endlessResult == PaintResult.painted);
     foreach (site; sites[5 .. $]) {
-        assert(builder.paint(site, pillar, EVERY_HEIGHT, Material.granite, Cover.over) == PaintResult.painted);
+        PaintResult result = builder.paint(site, pillar, EVERY_HEIGHT, Material.granite, Cover.over);
+        assert(result == PaintResult.painted);
     }
     NearbyScratch scratch;
     NearbyNode[] nearby = scratch.collectAll(graph, Position(graph.idAt(graph.anchorSlot), Motion!float.identity()), RADIUS);
@@ -119,10 +123,10 @@ unittest {
                     LineTouch touch = graph.touchOf(node.slot, cast(uint) line);
                     ColumnChunk chunk = ColumnChunk.fromTouch(touch, spec, corner, DIMENSION);
                     foreach (cell; CELLS) {
-                        int[3] column = chunk.columnOf(cell);
-                        float[3] cellCenter = graph.layout.cellCenter(cell);
-                        Point!float actual = Point!float(corner.cubeToNode * Vec4!float([cellCenter[0], cellCenter[1], cellCenter[2], 1.0f]));
-                        Point!float expected = lineFromNode.inverse() * columnPoint(graph.layout, ColumnSpot(column[0] + 0.5f, column[1] + 0.5f, column[2] + 0.5f));
+                        Vec3!int column = chunk.columnOf(cell);
+                        Vec3!float cellCenter = graph.layout.cellCenter(cell);
+                        Point!float actual = Point!float(corner.cubeToNode * Vec4!float([cellCenter.x, cellCenter.y, cellCenter.z, 1.0f]));
+                        Point!float expected = lineFromNode.inverse() * columnPoint(graph.layout, ColumnSpot(column.x + 0.5f, column.y + 0.5f, column.z + 0.5f));
                         assert(isSamePoint(actual, expected));
                     }
                 }
@@ -139,10 +143,10 @@ bool isCanonicalMatch(ref Graph graph, SiteFrame site) {
     CanonicalSite canonical = graph.view.canonicalOf(site);
     SiteFrame line = lineSite(canonical.line);
     foreach (cell; CELLS) {
-        int[3] local = [cell[0] - 6, cell[1] - 6, cell[2] - 20];
+        Vec3!int local = Vec3!int(cell.x - 6, cell.y - 6, cell.z - 20);
         CellBox moved = canonicalBox(CellBox(local, local), canonical.transform, DIMENSION);
-        ColumnSpot fromSite = ColumnSpot(local[0] + 0.5f, local[1] + 0.5f, local[2] + 0.5f);
-        ColumnSpot fromLine = ColumnSpot(moved.low[0] + 0.5f, moved.low[1] + 0.5f, moved.low[2] + 0.5f);
+        ColumnSpot fromSite = ColumnSpot(local.x + 0.5f, local.y + 0.5f, local.z + 0.5f);
+        ColumnSpot fromLine = ColumnSpot(moved.low.x + 0.5f, moved.low.y + 0.5f, moved.low.z + 0.5f);
         if (!isSamePoint(graph.view.siteToNode(site, site.node) * columnPoint(graph.layout, fromSite), graph.view.siteToNode(line, site.node) * columnPoint(graph.layout, fromLine))) {
             return false;
         }
@@ -154,27 +158,29 @@ unittest {
     Graph graph = testGraph();
     SiteFrame[8] sites = graph.testSites();
     foreach (site; sites) {
-        assert(graph.isCanonicalMatch(site));
+        bool matches = graph.isCanonicalMatch(site);
+        assert(matches);
     }
     graph.release();
 }
 
 unittest {
     Graph graph = testGraph();
-    SiteFrame tower = graph.view.turned(rootSite(graph.anchorSlot), Turn.pitchUp);
-    SiteFrame down = graph.view.turned(graph.view.turned(forwarded(tower, RISE_EDGES), Turn.pitchUp), Turn.pitchUp);
-    SiteFrame top = graph.view.atLevel(forwarded(tower, RISE_EDGES), 0);
+    SiteFrame tower = graph.view.turnSite(rootSite(graph.anchorSlot), Turn.pitchUp);
+    SiteFrame down = graph.view.turnSite(graph.view.turnSite(forwarded(tower, RISE_EDGES), Turn.pitchUp), Turn.pitchUp);
+    SiteFrame top = graph.view.moveToLevel(forwarded(tower, RISE_EDGES), 0);
     SiteFrame ground = groundSite(top.node, top.corner, top.zSide());
-    SiteFrame quarter = graph.view.turned(ground, Turn.right);
+    SiteFrame quarter = graph.view.turnSite(ground, Turn.right);
     SiteFrame[5] sites = [
         down,
-        graph.view.turned(down, Turn.rollRight),
-        graph.view.turned(graph.view.turned(ground, Turn.pitchUp), Turn.rollRight),
-        graph.view.turned(graph.view.turned(quarter, Turn.pitchUp), Turn.rollRight),
-        forwarded(graph.view.turned(graph.view.turned(quarter, Turn.pitchUp), Turn.rollRight), RISE_EDGES),
+        graph.view.turnSite(down, Turn.rollRight),
+        graph.view.turnSite(graph.view.turnSite(ground, Turn.pitchUp), Turn.rollRight),
+        graph.view.turnSite(graph.view.turnSite(quarter, Turn.pitchUp), Turn.rollRight),
+        forwarded(graph.view.turnSite(graph.view.turnSite(quarter, Turn.pitchUp), Turn.rollRight), RISE_EDGES),
     ];
     foreach (site; sites) {
-        assert(graph.isCanonicalMatch(site));
+        bool matches = graph.isCanonicalMatch(site);
+        assert(matches);
     }
     graph.release();
 }
@@ -183,36 +189,49 @@ unittest {
     Graph graph = testGraph();
     SiteFrame start = rootSite(graph.anchorSlot);
     SiteFrame[FACE_CORNERS] corners = graph.faceWalk(start);
-    SiteFrame closed = graph.view.turned(forwarded(corners[FACE_CORNERS - 1], 1), Turn.right);
+    SiteFrame closed = graph.view.turnSite(forwarded(corners[FACE_CORNERS - 1], 1), Turn.right);
     Point!float origin = Point!float.origin();
     assert(isSamePoint(graph.view.siteToNode(closed, start.node) * origin, graph.view.siteToNode(start, start.node) * origin));
     assert(!isSamePoint(graph.view.siteToNode(corners[2], start.node) * origin, graph.view.siteToNode(start, start.node) * origin));
-    assert(graph.view.siteOrigin(closed).key == graph.view.siteOrigin(start).key);
-    assert(graph.view.siteOrigin(corners[2]).key != graph.view.siteOrigin(start).key);
-    auto block = graph.view.siteFace(start);
+    RootedCorner startOrigin = graph.view.ensureSiteOrigin(start);
+    RootedCorner closedOrigin = graph.view.ensureSiteOrigin(closed);
+    RootedCorner farOrigin = graph.view.ensureSiteOrigin(corners[2]);
+    assert(closedOrigin.key == startOrigin.key);
+    assert(farOrigin.key != startOrigin.key);
+    ClaimKey block = graph.view.ensureSiteFace(start);
     foreach (corner; corners) {
-        assert(graph.view.siteFace(corner) == block);
+        ClaimKey cornerBlock = graph.view.ensureSiteFace(corner);
+        assert(cornerBlock == block);
     }
-    SiteFrame beyond = graph.view.turned(corners[1], Turn.right);
-    assert(graph.view.siteFace(beyond) != block);
-    assert(graph.view.siteFace(graph.faceWalk(beyond)[3]) == graph.view.siteFace(beyond));
-    SiteFrame back = graph.view.turned(graph.view.turned(forwarded(start, 1), Turn.right), Turn.right);
-    ulong edge = graph.view.siteHash(start, SitePart.edge);
-    assert(graph.view.siteHash(back, SitePart.edge) == edge);
-    assert(graph.view.siteHash(graph.view.turned(start, Turn.rollLeft), SitePart.edge) == edge);
-    assert(graph.view.siteHash(corners[1], SitePart.edge) != edge);
-    assert(graph.view.siteHash(closed, SitePart.vertex) == graph.view.siteHash(start, SitePart.vertex));
-    assert(graph.view.siteHash(corners[3], SitePart.face) == graph.view.siteHash(start, SitePart.face));
-    assert(graph.view.siteHash(start, SitePart.face) != graph.view.siteHash(start, SitePart.vertex));
-    SiteFrame first = graph.view.turned(forwarded(graph.view.turned(corners[0], Turn.pitchUp), 1), Turn.pitchDown);
-    SiteFrame last = graph.view.turned(graph.view.turned(forwarded(graph.view.turned(corners[1], Turn.pitchUp), 1), Turn.pitchDown), Turn.right);
+    SiteFrame beyond = graph.view.turnSite(corners[1], Turn.right);
+    ClaimKey beyondBlock = graph.view.ensureSiteFace(beyond);
+    ClaimKey walkedBlock = graph.view.ensureSiteFace(graph.faceWalk(beyond)[3]);
+    assert(beyondBlock != block);
+    assert(walkedBlock == beyondBlock);
+    SiteFrame back = graph.view.turnSite(graph.view.turnSite(forwarded(start, 1), Turn.right), Turn.right);
+    ulong edge = graph.view.ensureSiteHash(start, SitePart.edge);
+    ulong backEdge = graph.view.ensureSiteHash(back, SitePart.edge);
+    ulong rolledEdge = graph.view.ensureSiteHash(graph.view.turnSite(start, Turn.rollLeft), SitePart.edge);
+    ulong nextEdge = graph.view.ensureSiteHash(corners[1], SitePart.edge);
+    ulong startVertex = graph.view.ensureSiteHash(start, SitePart.vertex);
+    ulong closedVertex = graph.view.ensureSiteHash(closed, SitePart.vertex);
+    ulong startFace = graph.view.ensureSiteHash(start, SitePart.face);
+    ulong laterFace = graph.view.ensureSiteHash(corners[3], SitePart.face);
+    assert(backEdge == edge);
+    assert(rolledEdge == edge);
+    assert(nextEdge != edge);
+    assert(closedVertex == startVertex);
+    assert(laterFace == startFace);
+    assert(startFace != startVertex);
+    SiteFrame first = graph.view.turnSite(forwarded(graph.view.turnSite(corners[0], Turn.pitchUp), 1), Turn.pitchDown);
+    SiteFrame last = graph.view.turnSite(graph.view.turnSite(forwarded(graph.view.turnSite(corners[1], Turn.pitchUp), 1), Turn.pitchDown), Turn.right);
     Point!float apex = columnPoint(graph.layout, ColumnSpot(-0.5f, 0.5f, edgeCells(DIMENSION) + 0.5f));
     Point!float mirroredApex = columnPoint(graph.layout, ColumnSpot(0.5f, 0.5f, edgeCells(DIMENSION) + 0.5f));
     assert(isSamePoint(graph.view.siteToNode(first, graph.anchorSlot) * apex, graph.view.siteToNode(last, graph.anchorSlot) * mirroredApex));
     foreach (turn; [Turn.left, Turn.pitchUp, Turn.rollRight]) {
         SiteFrame spun = start;
         foreach (_; 0 .. 4) {
-            spun = graph.view.turned(spun, turn);
+            spun = graph.view.turnSite(spun, turn);
         }
         assert(spun == start);
     }
@@ -238,7 +257,8 @@ unittest {
         uint corner = graph.ensureNeighborSlot(beside, turn);
         assert(isSamePoint(graph.view.nodeToNode(corner, deep) * Point!float.origin(), side.mirror * turn.mirror * Point!float.origin()));
         if (side.isAdjacentTo(turn)) {
-            assert(graph.ensureNeighborSlot(graph.ensureNeighborSlot(deep, turn), side) == corner);
+            uint otherWay = graph.ensureNeighborSlot(graph.ensureNeighborSlot(deep, turn), side);
+            assert(otherWay == corner);
         }
     }
     graph.release();
@@ -280,9 +300,10 @@ unittest {
 
 unittest {
     Graph graph = testGraph();
-    uint[GROUND_RING] ring = graph.view.groundRing(graph.anchorSlot, Face.first);
+    uint[GROUND_RING] ring = graph.view.ensureGroundRing(graph.anchorSlot, Face.first);
     foreach (index, slot; ring) {
-        assert(fabsf(altitude(*graph.ensureState(slot)) - FACE_DISTANCE) < TOLERANCE.value);
+        float height = altitude(*graph.ensureState(slot));
+        assert(fabsf(height - FACE_DISTANCE) < TOLERANCE.value);
         foreach (other; ring[index + 1 .. $]) {
             assert(other != slot);
         }
@@ -293,12 +314,15 @@ unittest {
 unittest {
     Graph graph = testGraph();
     BlueprintBuilder builder = BlueprintBuilder.make(graph);
-    SiteFrame tower = graph.view.turned(rootSite(graph.anchorSlot), Turn.pitchUp);
+    SiteFrame tower = graph.view.turnSite(rootSite(graph.anchorSlot), Turn.pitchUp);
     SiteFrame high = forwarded(tower, BEHIND_EDGES);
-    builder.growFrom(graph.view.siteOrigin(high).depth);
-    assert(builder.paint(tower, CellBox.make(0, 0, 0, 0, 0, 1), EVERY_HEIGHT, Material.granite, Cover.over) == PaintResult.behind);
-    assert(builder.paint(high, CellBox.make(0, 0, 0, 0, int.min, 1), EVERY_HEIGHT, Material.granite, Cover.over) == PaintResult.endless);
-    assert(builder.paint(high, CellBox.make(0, 0, 0, 0, 0, 1), EVERY_HEIGHT, Material.granite, Cover.over) == PaintResult.painted);
+    builder.growFrom(graph.view.ensureSiteOrigin(high).depth);
+    PaintResult behind = builder.paint(tower, CellBox.make(0, 0, 0, 0, 0, 1), EVERY_HEIGHT, Material.granite, Cover.over);
+    PaintResult endless = builder.paint(high, CellBox.alongLine(0, 0, 0, 0), EVERY_HEIGHT, Material.granite, Cover.over);
+    PaintResult painted = builder.paint(high, CellBox.make(0, 0, 0, 0, 0, 1), EVERY_HEIGHT, Material.granite, Cover.over);
+    assert(behind == PaintResult.behind);
+    assert(endless == PaintResult.endless);
+    assert(painted == PaintResult.painted);
     builder.release();
     graph.release();
 }

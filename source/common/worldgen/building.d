@@ -3,6 +3,7 @@ module common.worldgen.building;
 import core.stdc.stdlib : calloc, free, malloc;
 import base.array : Array;
 import base.numbers : higherOf, lowerOf;
+import base.vector3 : Vec3;
 import common.graph : Graph;
 import common.worldgen.blueprint : Brush, BrushRank, CellBox, Cover, LineSpec, Paint, Painted;
 import common.worldgen.strokes : Stroke, StrokeReach, StrokeRun;
@@ -20,8 +21,8 @@ struct NodeCells {
         return dimension * dimension * dimension;
     }
 
-    int cellIndex(int[3] cell) const {
-        return (cell[0] * dimension + cell[1]) * dimension + cell[2];
+    int cellIndex(Vec3!int cell) const {
+        return (cell.x * dimension + cell.y) * dimension + cell.z;
     }
 }
 
@@ -70,7 +71,7 @@ void collectStrokes(ref const Graph graph, uint slot, ref Array!Stroke into) {
     Array!BrushRank ranks;
     Array!uint order;
     foreach (index, reach; reaches) {
-        ranks.append(BrushRank(graph.structures.blueprint.tileRank(reach.record), reach.run));
+        ranks.append(BrushRank(graph.structures.blueprint.tileRank(reach.owner), reach.run));
         size_t at = order.length;
         order.append(cast(uint) index);
         while (at > 0 && ranks.ptr[index].isBefore(ranks.ptr[order.ptr[at - 1]])) {
@@ -81,7 +82,7 @@ void collectStrokes(ref const Graph graph, uint slot, ref Array!Stroke into) {
     }
     foreach (index; order.slice()) {
         StrokeReach reach = reaches[index];
-        const(Painted)* painted = &graph.structures.blueprint.paintedBy(reach.record);
+        const(Painted)* painted = &graph.structures.blueprint.paintedBy(reach.owner);
         StrokeRun run = painted.strokeRuns.ptr[reach.run];
         Vec4!float center = (reach.motion.inverse() * Vec4!double.origin()).as!float();
         foreach (stroke; painted.strokes.ptr[run.first .. run.first + run.count]) {
@@ -167,11 +168,11 @@ struct Building {
         }
         Paint* paints = cast(Paint*) malloc(cells.cellsPerChunk() * Paint.sizeof);
         chunkPaints[corner] = paints;
-        int[3][MAX_LINES_AT_CORNER] columns = void;
+        Vec3!int[MAX_LINES_AT_CORNER] columns = void;
         foreach (x; 0 .. cells.dimension) {
             foreach (y; 0 .. cells.dimension) {
                 foreach (z; 0 .. cells.dimension) {
-                    int[3] cell = [x, y, z];
+                    Vec3!int cell = Vec3!int(x, y, z);
                     foreach (chunk; 0 .. found.count) {
                         columns[chunk] = found.columns[chunk].columnOf(cell);
                     }
@@ -211,15 +212,15 @@ struct Building {
         strokes.release();
     }
 
-    Material materialAt(Corner corner, int[3] cell, Material existing) const {
+    Material materialAt(Corner corner, Vec3!int cell, Material existing) const {
         Paint paint = Paint.init;
         if (chunkPaints !is null && chunkPaints[corner] !is null) {
             paint = chunkPaints[corner][cells.cellIndex(cell)];
         }
-        if (paint.material == 0 || (paint.cover == Cover.intoAir && existing != Material.none)) {
+        if (!paint.material.exists || (paint.cover == Cover.intoAir && existing != Material.none)) {
             return existing;
         } else {
-            return materials.ptr[paint.material - 1];
+            return materials.ptr[paint.material.value];
         }
     }
 }
@@ -237,9 +238,9 @@ void sortByRank(BrushUse[] uses, const(BrushRank)[] ranks) {
 }
 
 CellBox boundsOf(ref const ColumnChunk column, ubyte dimension) {
-    int[3] first = column.columnOf([0, 0, 0]);
-    int[3] last = column.columnOf([dimension - 1, dimension - 1, dimension - 1]);
-    CellBox bounds = void;
+    Vec3!int first = column.columnOf(Vec3!int(0, 0, 0));
+    Vec3!int last = column.columnOf(Vec3!int(dimension - 1, dimension - 1, dimension - 1));
+    CellBox bounds;
     foreach (axis; 0 .. 3) {
         bounds.low[axis] = lowerOf(first[axis], last[axis]);
         bounds.high[axis] = higherOf(first[axis], last[axis]);

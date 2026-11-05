@@ -1,6 +1,6 @@
 module plugins.horospheres.horospheres;
 
-import plugins.api.api : Api, HorosphereForm, Look, Risen, Site, SitePart, Tint;
+import plugins.api.api : Api, Color, HorosphereForm, KindId, Look, Risen, Site, SitePart, Tint;
 import blocks = plugins.blocks.blocks;
 import plugins.connector.connector : Connection, Tag, connect;
 import layout = plugins.rooms.layout;
@@ -8,33 +8,32 @@ import plugins.horospheres.tree : Trunk, segment;
 import plugins.turtle.turtle : Turtle;
 
 struct Kinds {
-    uint wild;
-    uint city;
-    uint backrooms;
-    uint tree;
+    KindId wild;
+    KindId city;
+    KindId backrooms;
+    KindId tree;
 }
 
 immutable Look WILD_LOOK = Look("wild");
-immutable Look CITY_LOOK = Look("city", [0.74f, 0.79f, 0.86f], Tint.fog);
-immutable Look BACKROOMS_LOOK = Look("backrooms", [0.78f, 0.72f, 0.45f], Tint.fog);
+immutable Look CITY_LOOK = Look("city", Color(0.74f, 0.79f, 0.86f), Tint.fog);
+immutable Look BACKROOMS_LOOK = Look("backrooms", Color(0.78f, 0.72f, 0.45f), Tint.fog);
 
 Connection connectionOf(const(void)* data) {
     return *cast(const(Connection)*) data;
 }
 
-bool hasRisen(ref const Risen risen) {
-    return risen.edges > 0;
-}
-
 void wildTile(const(Api)* api, Site face, const(Risen)* risen, const(void)* data) {
-    if (hasRisen(*risen) && blocks.ownsFoot(Turtle(api, face), *risen)) {
-        connect(Turtle(api, risen.foot), *risen, Tag.wild, connectionOf(data));
+    if (risen.hasRisen) {
+        bool owner = blocks.probeOwnsFoot(Turtle(api, face), *risen);
+        if (owner) {
+            connect(Turtle(api, risen.foot), *risen, Tag.wild, connectionOf(data));
+        }
     }
 }
 
 void cityTile(const(Api)* api, Site face, const(Risen)* risen, const(void)* data) {
     blocks.Root root;
-    if (hasRisen(*risen)) {
+    if (risen.hasRisen) {
         root = blocks.risenRootAt(Turtle(api, risen.foot), *risen, connectionOf(data));
     }
     blocks.tileAt(Turtle(api, face), root);
@@ -43,12 +42,15 @@ void cityTile(const(Api)* api, Site face, const(Risen)* risen, const(void)* data
 void backroomsTile(const(Api)* api, Site face, const(Risen)* risen, const(void)* data) {
     Turtle at = Turtle(api, face);
     layout.Root root;
-    if (hasRisen(*risen)) {
-        root = layout.Root(Turtle(api, risen.foot).hash(SitePart.vertex), layout.Shaft.open);
+    if (risen.hasRisen) {
+        root = layout.Root(Turtle(api, risen.foot).probeHash(SitePart.vertex), layout.Shaft.open);
     }
     layout.tileAt(at, root);
-    if (hasRisen(*risen) && blocks.ownsFoot(at, *risen)) {
-        connect(Turtle(api, risen.foot), *risen, Tag.backrooms, connectionOf(data));
+    if (risen.hasRisen) {
+        bool owner = blocks.probeOwnsFoot(at, *risen);
+        if (owner) {
+            connect(Turtle(api, risen.foot), *risen, Tag.backrooms, connectionOf(data));
+        }
     }
 }
 

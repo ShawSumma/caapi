@@ -3,16 +3,15 @@ module base.allocator;
 import core.bitop : bsr;
 import base.array : Array;
 import base.hashmap : HashMap;
+import base.maybe : Maybe, MaybeIndex;
 
-enum uint NO_RANGE = uint.max;
-enum uint NO_OFFSET = uint.max;
 enum uint SIZE_CLASSES = 32;
 
 struct FreeRange {
     uint offset;
     uint count;
-    uint previous;
-    uint next;
+    MaybeIndex!uint previous;
+    MaybeIndex!uint next;
 }
 
 struct Offset {
@@ -28,35 +27,35 @@ struct RangeAllocator {
     Array!uint spare;
     HashMap!(Offset, uint) starts;
     HashMap!(Offset, uint) ends;
-    uint[SIZE_CLASSES] heads = NO_RANGE;
+    MaybeIndex!uint[SIZE_CLASSES] heads;
     uint capacity;
     uint available;
 
-    uint allocate(uint count) {
+    Maybe!uint allocate(uint count) {
         uint size = sizeClass(count);
-        uint found = NO_RANGE;
+        MaybeIndex!uint found;
         uint larger = size + 1;
-        while (larger < SIZE_CLASSES && heads[larger] == NO_RANGE) {
+        while (larger < SIZE_CLASSES && !heads[larger].exists) {
             larger += 1;
         }
         if (larger < SIZE_CLASSES) {
             found = heads[larger];
         } else {
             found = heads[size];
-            while (found != NO_RANGE && ranges.ptr[found].count < count) {
-                found = ranges.ptr[found].next;
+            while (found.exists && ranges.ptr[found.value].count < count) {
+                found = ranges.ptr[found.value].next;
             }
         }
-        if (found == NO_RANGE) {
-            return NO_OFFSET;
+        if (!found.exists) {
+            return Maybe!uint.init;
         } else {
-            FreeRange range = ranges.ptr[found];
-            unlink(found);
+            FreeRange range = ranges.ptr[found.value];
+            unlink(found.value);
             if (range.count > count) {
                 link(range.offset + count, range.count - count);
             }
             available -= count;
-            return range.offset;
+            return Maybe!uint.of(range.offset);
         }
     }
 
@@ -89,24 +88,24 @@ struct RangeAllocator {
             ranges.append(FreeRange.init);
         }
         uint size = sizeClass(count);
-        ranges.ptr[index] = FreeRange(offset, count, NO_RANGE, heads[size]);
-        if (heads[size] != NO_RANGE) {
-            ranges.ptr[heads[size]].previous = index;
+        ranges.ptr[index] = FreeRange(offset, count, MaybeIndex!uint.init, heads[size]);
+        if (heads[size].exists) {
+            ranges.ptr[heads[size].value].previous = MaybeIndex!uint.of(index);
         }
-        heads[size] = index;
+        heads[size] = MaybeIndex!uint.of(index);
         starts.insert(Offset(offset), index);
         ends.insert(Offset(offset + count), index);
     }
 
     void unlink(uint index) {
         FreeRange range = ranges.ptr[index];
-        if (range.previous == NO_RANGE) {
+        if (!range.previous.exists) {
             heads[sizeClass(range.count)] = range.next;
         } else {
-            ranges.ptr[range.previous].next = range.next;
+            ranges.ptr[range.previous.value].next = range.next;
         }
-        if (range.next != NO_RANGE) {
-            ranges.ptr[range.next].previous = range.previous;
+        if (range.next.exists) {
+            ranges.ptr[range.next.value].previous = range.previous;
         }
         starts.remove(Offset(range.offset));
         ends.remove(Offset(range.offset + range.count));
@@ -127,7 +126,7 @@ struct RangeAllocator {
         spare.release();
         starts.release();
         ends.release();
-        heads = NO_RANGE;
+        heads = MaybeIndex!uint.init;
         capacity = 0;
         available = 0;
     }

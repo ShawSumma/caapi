@@ -9,6 +9,10 @@ import client.plugins : registry;
 import common.worldgen.generation : PlaneWorld, STRUCTURE_NAME_CAPACITY, StructureWorld, Worldgen, WorldgenKind, degreesToRadians;
 
 enum string VERSION = "0.0.1";
+enum string VERSION_TEXT = "mined " ~ VERSION ~ "\n";
+enum string UNKNOWN_OPTION = "unknown option";
+enum string NOT_A_NUMBER = "needs a number, got";
+enum string REPORT_UNOPENED = "cannot open the report file";
 
 enum OptionSpec WORLDGEN_OPTION = OptionSpec("--worldgen", "terrain | plane <tilt in degrees> | structure <world>", "the world to use");
 enum OptionSpec OUTPUT_OPTION = OptionSpec("--out", "<file>", "where a tool writes its report (default stdout)");

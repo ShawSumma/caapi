@@ -1,5 +1,6 @@
 module scripts.climb;
 
+import base.maybe : Maybe;
 import client.game : Key, RouteWaypoint;
 import client.script : Script, StepHook, degrees;
 import scripts.walk : BLOCKED_SPEED, Motion, SETTLE_SECONDS, checkSpeedLimit, lookBelow, nameOf, trackMotion;
@@ -7,14 +8,14 @@ import scripts.walk : BLOCKED_SPEED, Motion, SETTLE_SECONDS, checkSpeedLimit, lo
 enum float REACHED_DISTANCE = 0.02f;
 enum float REACHED_RISE = 0.02f;
 enum uint MAX_STEPS_PER_WAYPOINT = 400;
-enum size_t EVERY_WAYPOINT = size_t.max;
 
-size_t follow(ref Script world, size_t last) {
+size_t follow(ref Script world, Maybe!size_t last) {
     size_t index = 1;
     uint steps = 0;
     world.hold(Key.fwd);
-    while (!world.isFailed && index <= last && world.routeWaypoint(index).exists) {
-        RouteWaypoint waypoint = world.routeWaypoint(index).value;
+    Maybe!RouteWaypoint next = world.routeWaypoint(index);
+    while (!world.isFailed && (!last.exists || index <= last.value) && next.exists) {
+        RouteWaypoint waypoint = next.value;
         float rise = waypoint.rise.value;
         if (world.isOnGround() && waypoint.horizontal.value < REACHED_DISTANCE && rise < REACHED_RISE && -rise < REACHED_RISE) {
             index += 1;
@@ -33,6 +34,7 @@ size_t follow(ref Script world, size_t last) {
             }
             steps += 1;
         }
+        next = world.routeWaypoint(index);
     }
     world.release(Key.fwd, Key.up);
     return index - 1;
@@ -45,7 +47,7 @@ void route(ref Script world, float minClimb) {
     float start = world.altitude().value;
     Motion motion;
     trackMotion(world, &motion);
-    size_t reached = follow(world, EVERY_WAYPOINT);
+    size_t reached = follow(world, Maybe!size_t.init);
     world.wait(SETTLE_SECONDS);
     world.onStep(StepHook.init);
     world.check(world.isOnGround(), "standing after %zu waypoints", reached);

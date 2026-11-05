@@ -2,6 +2,7 @@ module base.slab;
 
 import core.bitop : bsf, bsr;
 import base.array : Array;
+import base.flags : WORD_MASK, WORD_SHIFT;
 import base.numbers : lowerOf;
 import base.pages : giveBack, mapPages, pageSize, unmapPages;
 
@@ -10,8 +11,6 @@ enum uint SLAB_SIZE = 2 ^^ SLAB_SHIFT;
 enum uint SLAB_MASK = SLAB_SIZE - 1;
 enum uint RUN_CLASSES = SLAB_SHIFT + 1;
 enum size_t TRIMMED_BLOCKS_PER_CALL = 4;
-enum uint WORD_SHIFT = 6;
-enum uint WORD_MASK = (1u << WORD_SHIFT) - 1;
 enum size_t NOTED_PAGES_PER_DISCARD = 512;
 
 enum DiscardPass : ubyte {

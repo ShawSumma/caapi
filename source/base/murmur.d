@@ -8,6 +8,11 @@ enum ulong MURMUR_H1_OFFSET = 0x52dce729;
 enum ulong MURMUR_H2_OFFSET = 0x38495ab5;
 enum size_t MURMUR_BLOCK_BYTES = 16;
 
+struct Hash128 {
+    ulong first;
+    ulong second;
+}
+
 ulong rotateLeft(ulong value, uint amount) {
     return (value << amount) | (value >> (64 - amount));
 }
@@ -42,7 +47,7 @@ ulong mixK2(ulong value) {
     return k * MURMUR_C1;
 }
 
-ulong[2] murmurHash3(const(ubyte)[] data) {
+Hash128 murmurHash3(const(ubyte)[] data) {
     ulong h1 = 0;
     ulong h2 = 0;
     size_t blockCount = data.length / MURMUR_BLOCK_BYTES;
@@ -75,6 +80,5 @@ ulong[2] murmurHash3(const(ubyte)[] data) {
     h2 = finalMix(h2);
     h1 += h2;
     h2 += h1;
-    ulong[2] result = [h1, h2];
-    return result;
+    return Hash128(h1, h2);
 }

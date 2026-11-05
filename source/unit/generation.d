@@ -9,12 +9,8 @@ import geometry.honeycomb : FACE_COUNT, Face;
 
 enum ubyte DIMENSION = 12;
 
-bool isSameVector(float[3] a, float[3] b) {
-    return a[0] == b[0] && a[1] == b[1] && a[2] == b[2];
-}
-
 bool isSamePlane(Plane a, Plane b) {
-    return isSameVector(a.up, b.up) && a.height == b.height;
+    return a.up == b.up && a.height == b.height;
 }
 
 bool isSameState(NodeState a, NodeState b) {
@@ -37,7 +33,7 @@ unittest {
         foreach (side; 0 .. FACE_COUNT) {
             foreach (outer; 0 .. FACE_COUNT) {
                 uint far = view.ensureNeighborSlot(view.ensureNeighborSlot(slot, cast(Face) side), cast(Face) outer);
-                worked.append(view.stateAt(far));
+                worked.append(view.ensureState(far));
                 ids.append(view.idAt(far));
             }
         }
@@ -48,7 +44,8 @@ unittest {
         foreach (side; 0 .. FACE_COUNT) {
             foreach (outer; 0 .. FACE_COUNT) {
                 uint far = graph.ensureNeighborSlot(graph.ensureNeighborSlot(slot, cast(Face) side), cast(Face) outer);
-                assert(graph.idAt(far) == ids.ptr[index] && isSameState(*graph.ensureState(far), worked.ptr[index]));
+                const(NodeState)* state = graph.ensureState(far);
+                assert(graph.idAt(far) == ids.ptr[index] && isSameState(*state, worked.ptr[index]));
                 index += 1;
             }
         }

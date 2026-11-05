@@ -1,6 +1,6 @@
 module plugins.trail.plugin;
 
-import plugins.api.api : Api, Look, Material, NO_KIND, Registry, Site, SitePart, entryOf;
+import plugins.api.api : Api, Look, Material, Registry, Site, SitePart, Span, entryOf;
 import box = plugins.box.box;
 import plugins.turtle.turtle : Turtle, boxOf;
 
@@ -10,12 +10,29 @@ enum int HALF_WIDTH = 2;
 enum uint HUT_EVERY = 3;
 enum float ROUTE_LANE = 0.5f;
 enum uint TURNS = 3;
-enum int ENDLESS = -1;
 enum int LANDMARK_SEGMENTS = 12;
+
+enum Extent : ubyte {
+    endless,
+    counted,
+}
+
+struct Length {
+    int left;
+    Extent extent;
+
+    bool isDone() const {
+        return extent == Extent.counted && left == 0;
+    }
+
+    Length next() const {
+        return Length(left - 1, extent);
+    }
+}
 
 void pave(Turtle segment) {
     int length = segment.edgeCells();
-    segment.paint(Material.gravel, boxOf([-HALF_WIDTH, HALF_WIDTH - 1], [-1, -1], [-HALF_WIDTH, length + HALF_WIDTH - 1]));
+    segment.paint(Material.gravel, boxOf(Span(-HALF_WIDTH, HALF_WIDTH - 1), Span(-1, -1), Span(-HALF_WIDTH, length + HALF_WIDTH - 1)));
     segment.stop(ROUTE_LANE, 0, length / 2.0f);
 }
 
@@ -25,8 +42,12 @@ void hut(const(Api)* api, Site site, const(void)* data) {
 
 void addHut(Turtle tip) {
     Turtle yard = tip.right().forward(1);
-    if (!yard.isClaimed(SitePart.vertex) && yard.left().place(&hut, null, 0)) {
-        yard.claim(SitePart.vertex);
+    bool claimed = yard.probeClaimed(SitePart.vertex);
+    if (!claimed) {
+        bool placed = yard.left().place(&hut, null, 0);
+        if (placed) {
+            yard.claim(SitePart.vertex);
+        }
     }
 }
 
@@ -40,44 +61,50 @@ Turtle turnedTo(Turtle tip, uint turn) {
     }
 }
 
-bool extend(Turtle segment, int left) {
+bool extend(Turtle segment, Length length) {
     Turtle ahead = segment.forward(1);
-    if (!ahead.isClaimed(SitePart.vertex) && segment.place(&stretch, &left, int.sizeof)) {
-        ahead.claim(SitePart.vertex);
-        return true;
-    } else {
-        return false;
+    bool placed = false;
+    bool claimed = ahead.probeClaimed(SitePart.vertex);
+    if (!claimed) {
+        placed = segment.place(&stretch, &length, Length.sizeof);
     }
+    if (placed) {
+        ahead.claim(SitePart.vertex);
+    }
+    return placed;
 }
 
 void stretch(const(Api)* api, Site site, const(void)* data) {
-    int left = *cast(const(int)*) data;
+    Length length = *cast(const(Length)*) data;
     Turtle segment = Turtle(api, site);
     segment.claim(SitePart.vertex);
     segment.forward(1).claim(SitePart.vertex);
     pave(segment);
     Turtle tip = segment.forward(1);
-    if (segment.hash(SitePart.edge) % HUT_EVERY == 0) {
+    ulong edge = segment.probeHash(SitePart.edge);
+    if (edge % HUT_EVERY == 0) {
         addHut(tip);
     }
-    if (left != 0) {
+    if (!length.isDone) {
         uint first = segment.pick(TURNS);
         uint tried = 0;
-        while (tried < TURNS && !extend(turnedTo(tip, (first + tried) % TURNS), left - 1)) {
+        bool extended = false;
+        while (tried < TURNS && !extended) {
+            extended = extend(turnedTo(tip, (first + tried) % TURNS), length.next);
             tried += 1;
         }
     }
 }
 
 void landmark(const(Api)* api, Site site, const(void)* data) {
-    int left = LANDMARK_SEGMENTS;
-    stretch(api, site, &left);
+    Length length = Length(LANDMARK_SEGMENTS, Extent.counted);
+    stretch(api, site, &length);
 }
 
 void world(const(Api)* api, Site site, const(void)* data) {
-    int left = ENDLESS;
-    api.look(api, NO_KIND, &LOOK);
-    stretch(api, site, &left);
+    Length length = Length(0, Extent.endless);
+    api.worldLook(api, &LOOK);
+    stretch(api, site, &length);
 }
 
 pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {

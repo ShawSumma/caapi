@@ -4,7 +4,8 @@ import core.bitop : bsf;
 import base.array : Array;
 import base.flags : Readiness;
 import base.hashmap : FIBONACCI_MULTIPLIER, HashMap;
-import base.murmur : murmurHash3;
+import base.maybe : Maybe, MaybeIndex;
+import base.murmur : Hash128, murmurHash3;
 import base.parallel : Executor;
 import base.slab : FreeIndices, Slab;
 import common.chunks : ChunkStore;
@@ -17,33 +18,26 @@ import common.worldgen.building : Building, BuildingPlan;
 import common.worldgen.generation : NodeState, Worldgen;
 import common.worldgen.horospheres : Fill, Horospheres;
 import common.worldgen.store : NodeMark, StructureStore, unpin;
-import common.worldgen.structure : PAINT_REACH, anchorSlotOf, finalizeStructure;
+import common.worldgen.structure : PAINT_REACH, ensureAnchorSlot, finalizeStructure;
 import geometry.honeycomb : BEYOND_TOLERANCE, FACE_COUNT, Face, adjacentFaces, faceBit, mirror, normal;
 import geometry.lorentz : Point;
 
 enum size_t NODE_ID_BYTES = 16;
 
 struct NodeId {
-    ulong[2] value;
-
-    bool opEquals(const NodeId other) const {
-        return value[0] == other.value[0] && value[1] == other.value[1];
-    }
+    Hash128 value;
 
     size_t toHash() const {
-        return cast(size_t)(value[0] + value[1] * FIBONACCI_MULTIPLIER);
+        return cast(size_t)(value.first + value.second * FIBONACCI_MULTIPLIER);
     }
 
     ulong spice() const {
-        return value[0] ^ value[1];
+        return value.first ^ value.second;
     }
 }
 
-enum NodeId ROOT_NODE = NodeId([1, 1]);
-enum NodeId NO_NODE = NodeId.init;
-enum uint NO_SLOT = uint.max;
+enum NodeId ROOT_NODE = NodeId(Hash128(1, 1));
 enum uint MAX_PARENTS = 3;
-enum uint NO_FACE = FACE_COUNT;
 enum ushort ALL_FACES = (1u << FACE_COUNT) - 1;
 enum uint DISCARDS_PER_FRAME = 256;
 
@@ -53,15 +47,21 @@ enum NodeContent : ubyte {
     holding,
 }
 
+enum SlotUse : ubyte {
+    free,
+    live,
+}
+
 struct Node {
     NodeId id;
-    uint[FACE_COUNT] neighbors;
+    MaybeIndex!uint[FACE_COUNT] neighbors;
     uint depth;
     ushort parentFaces;
     ushort liveChildren;
     ushort references;
     NodeContent content;
     Readiness state;
+    SlotUse use;
 
     bool hasState() const {
         return state == Readiness.ready;
@@ -89,19 +89,19 @@ ushort childParentFaces(ushort parentFaces, Face face) {
 
 NodeId childId(NodeId firstParent, Face face) {
     ubyte[NODE_ID_BYTES + 1] hashInput;
-    hashInput[0 .. NODE_ID_BYTES] = (cast(const(ubyte)*) firstParent.value.ptr)[0 .. NODE_ID_BYTES];
+    hashInput[0 .. NODE_ID_BYTES] = (cast(const(ubyte)*) &firstParent.value)[0 .. NODE_ID_BYTES];
     hashInput[NODE_ID_BYTES] = face;
     return NodeId(murmurHash3(hashInput[]));
 }
 
-uint farthestFaceBeyond(Point!float point, ushort allowed) {
-    uint farthest = NO_FACE;
+Maybe!Face farthestFaceBeyond(Point!float point, ushort allowed) {
+    Maybe!Face farthest;
     float most = BEYOND_TOLERANCE * point.v.c[3];
     foreach (index; 0 .. FACE_COUNT) {
         float beyond = normal(cast(Face) index).minkowski(point.v);
         if ((allowed & (1u << index)) != 0 && beyond > most) {
             most = beyond;
-            farthest = index;
+            farthest = Maybe!Face.of(cast(Face) index);
         }
     }
     return farthest;
@@ -126,6 +126,7 @@ struct Graph {
 
     static Graph make(ubyte dimension, Worldgen chosen) {
         Graph graph;
+        graph.bindView();
         graph.layout = ChunkLayout.make(dimension);
         graph.worldgen = chosen;
         graph.horospheres.rootFill = Fill.terrain;
@@ -136,16 +137,20 @@ struct Graph {
         uint root = graph.addNode(ROOT_NODE, 0, 0);
         graph.anchorSlot = root;
         if (chosen.hasStructure()) {
-            graph.anchorSlot = graph.anchorSlotOf();
+            graph.anchorSlot = graph.ensureAnchorSlot();
         }
         graph.reference(root);
         graph.reference(graph.anchorSlot);
         return graph;
     }
 
-    ref GraphView view() return {
+    void bindView() {
         ownView.graph = &this;
         ownView.owner = &this;
+    }
+
+    ref GraphView view() return {
+        assert(ownView.owner is &this);
         return ownView;
     }
 
@@ -154,15 +159,15 @@ struct Graph {
     }
 
     bool isLive(uint slot) const {
-        return nodeAt(slot).id != NO_NODE;
+        return nodeAt(slot).use == SlotUse.live;
     }
 
-    uint slotOf(NodeId id) const {
+    MaybeIndex!uint slotOf(NodeId id) const {
         const(uint)* found = slots.find(id);
         if (found is null) {
-            return NO_SLOT;
+            return MaybeIndex!uint.init;
         } else {
-            return *found;
+            return MaybeIndex!uint.of(*found);
         }
     }
 
@@ -174,16 +179,16 @@ struct Graph {
         return nodeAt(slot).depth;
     }
 
-    uint neighborSlot(uint slot, Face face) const {
+    MaybeIndex!uint neighborSlot(uint slot, Face face) const {
         return nodeAt(slot).neighbors[face];
     }
 
-    NodeId neighbor(NodeId node, Face face) const {
-        uint found = neighborSlot(slotOf(node), face);
-        if (found == NO_SLOT) {
-            return NO_NODE;
+    Maybe!NodeId neighbor(NodeId node, Face face) const {
+        MaybeIndex!uint found = neighborSlot(slotOf(node).value, face);
+        if (found.exists) {
+            return Maybe!NodeId.of(idAt(found.value));
         } else {
-            return idAt(found);
+            return Maybe!NodeId.init;
         }
     }
 
@@ -198,7 +203,7 @@ struct Graph {
         while (remaining != 0) {
             uint face = bsf(remaining);
             remaining &= remaining - 1;
-            list.links[list.count] = ParentEntry(node.neighbors[face], cast(Face) face);
+            list.links[list.count] = ParentEntry(node.neighbors[face].value, cast(Face) face);
             list.count += 1;
         }
         return list;
@@ -219,9 +224,9 @@ struct Graph {
         Node* added = nodeAt(slot);
         *added = Node.init;
         added.id = id;
-        added.neighbors[] = NO_SLOT;
         added.depth = depth;
         added.parentFaces = parentFaces;
+        added.use = SlotUse.live;
         liveCount += 1;
         madeNodes += 1;
         slots.insert(id, slot);
@@ -232,7 +237,7 @@ struct Graph {
         ParentList list = parents(slot);
         foreach (link; list.links[0 .. list.count]) {
             Node* parent = nodeAt(link.slot);
-            parent.neighbors[link.side] = NO_SLOT;
+            parent.neighbors[link.side] = MaybeIndex!uint.init;
             parent.liveChildren -= 1;
         }
         slots.remove(idAt(slot));
@@ -259,11 +264,11 @@ struct Graph {
     }
 
     uint ensureNeighborSlot(uint slot, Face face) {
-        uint existing = neighborSlot(slot, face);
-        if (existing == NO_SLOT) {
-            return addChild(slot, face);
+        MaybeIndex!uint existing = neighborSlot(slot, face);
+        if (existing.exists) {
+            return existing.value;
         } else {
-            return existing;
+            return addChild(slot, face);
         }
     }
 
@@ -276,18 +281,18 @@ struct Graph {
             remaining &= remaining - 1;
             uint parent = slot;
             if (through != face) {
-                parent = ensureNeighborSlot(neighborSlot(slot, through), face);
+                parent = ensureNeighborSlot(neighborSlot(slot, through).value, face);
             }
             list.links[list.count] = ParentEntry(parent, through);
             list.count += 1;
         }
         NodeId id = childId(idAt(list.links[0].slot), list.links[0].side);
-        assert(slotOf(id) == NO_SLOT);
+        assert(!slotOf(id).exists);
         uint child = addNode(id, depthOf(slot) + 1, parentFaces);
         foreach (link; list.links[0 .. list.count]) {
-            nodeAt(link.slot).neighbors[link.side] = child;
+            nodeAt(link.slot).neighbors[link.side] = MaybeIndex!uint.of(child);
             nodeAt(link.slot).liveChildren += 1;
-            nodeAt(child).neighbors[link.side] = link.slot;
+            nodeAt(child).neighbors[link.side] = MaybeIndex!uint.of(link.slot);
         }
         return child;
     }
@@ -301,12 +306,12 @@ struct Graph {
     }
 
     Position normalized(Position start) const {
-        uint slot = slotOf(start.node);
+        uint slot = slotOf(start.node).value;
         Point!float point = start.local * Point!float.origin();
-        uint face = farthestFaceBeyond(point, linkedFaces(slot));
-        while (face != NO_FACE) {
-            slot = neighborSlot(slot, cast(Face) face);
-            start.local = mirror(cast(Face) face) * start.local;
+        Maybe!Face face = farthestFaceBeyond(point, linkedFaces(slot));
+        while (face.exists) {
+            slot = neighborSlot(slot, face.value).value;
+            start.local = mirror(face.value) * start.local;
             point = start.local * Point!float.origin();
             face = farthestFaceBeyond(point, linkedFaces(slot));
         }
@@ -316,7 +321,7 @@ struct Graph {
     ushort linkedFaces(uint slot) const {
         ushort linked = 0;
         foreach (index; 0 .. FACE_COUNT) {
-            if (nodeAt(slot).neighbors[index] != NO_SLOT) {
+            if (nodeAt(slot).neighbors[index].exists) {
                 linked |= faceBit(cast(Face) index);
             }
         }
@@ -390,10 +395,10 @@ struct Graph {
     }
 
     void growBefore(uint depth) {
-        int through = cast(int) depth + PAINT_REACH;
-        if (structures.grower.grow !is null && through > structures.grownThrough) {
-            structures.grownThrough = through;
-            structures.grower.grow(structures.grower.context, this, through);
+        uint through = depth + PAINT_REACH;
+        if (structures.grower.grow !is null && through >= structures.grownBelow) {
+            structures.grownBelow = through + 1;
+            structures.grower.grow(structures.grower.context, this, cast(int) through);
         }
     }
 

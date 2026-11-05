@@ -36,10 +36,16 @@ version (WebAssembly) {
     size_t executablePath(ref char[PATH_CAPACITY] resolved) {
         char[PATH_CAPACITY] path = 0;
         uint size = cast(uint) path.length;
-        if (_NSGetExecutablePath(path.ptr, &size) != 0 || realpath(path.ptr, resolved.ptr) is null) {
+        int status = _NSGetExecutablePath(path.ptr, &size);
+        if (status != 0) {
             return 0;
         } else {
-            return strlen(resolved.ptr);
+            const(char)* found = realpath(path.ptr, resolved.ptr);
+            if (found is null) {
+                return 0;
+            } else {
+                return strlen(resolved.ptr);
+            }
         }
     }
 } else {
@@ -216,10 +222,12 @@ void addLandmark(const(Registry)* registry, const(char)* name, Structure landmar
 __gshared Worlds gathered;
 __gshared Readiness gatheredState;
 
+void gatherWorlds() {
+    gathered.gather();
+    gatheredState = Readiness.ready;
+}
+
 ref const(Worlds) registry() {
-    if (gatheredState == Readiness.pending) {
-        gathered.gather();
-        gatheredState = Readiness.ready;
-    }
+    assert(gatheredState == Readiness.ready);
     return gathered;
 }

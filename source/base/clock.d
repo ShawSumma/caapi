@@ -1,5 +1,6 @@
 module base.clock;
 
+import base.maybe : Maybe;
 import base.numbers : higherOf, lowerOf;
 
 enum double NANOSECONDS_PER_SECOND = 1e9;
@@ -49,6 +50,22 @@ version (WebAssembly) {
         timespec used;
         clock_gettime(CLOCK_THREAD_CPUTIME_ID, &used);
         return used.tv_sec * MILLISECONDS_PER_SECOND + used.tv_nsec / NANOSECONDS_PER_MILLISECOND;
+    }
+}
+
+struct Deadline {
+    Maybe!double milliseconds;
+
+    static Deadline at(double chosen) {
+        return Deadline(Maybe!double.of(chosen));
+    }
+
+    bool isBounded() const {
+        return milliseconds.exists;
+    }
+
+    bool hasPassed(double now) const {
+        return isBounded && now >= milliseconds.value;
     }
 }
 

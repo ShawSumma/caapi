@@ -1,6 +1,7 @@
 module common.worldgen.plane;
 
 import core.stdc.math : asinh, exp, fabs, fabsf, log, log1p, sqrt, sqrtf, tanh;
+import base.vector3 : Vec3;
 import common.character.chart : applied, gridJacobian;
 import common.node : ChunkLayout;
 import geometry.honeycomb : Corner, FACE_COUNT, FACE_DISTANCE, Face, cubeToNode, direction, mirror, nodeToCorner;
@@ -11,7 +12,7 @@ enum float SNAP_TOLERANCE = 0.05f;
 enum float SNAP_ALIGNMENT = 0.99f;
 
 struct Plane {
-    float[3] up;
+    Vec3!float up;
     float height;
 
     static Plane ofFace(Face face) {
@@ -19,12 +20,11 @@ struct Plane {
     }
 
     static Plane fromNormal(Vec4!float normal) {
-        double[3] spatial = [normal.c[0], normal.c[1], normal.c[2]];
-        return Plane(unit(spatial), cast(float) asinh(-normal.c[3]));
+        return Plane(unit(normal.spatial().as!double()), cast(float) asinh(-normal.c[3]));
     }
 
     Plane opUnary(string op)() const if (op == "-") {
-        return Plane([-up[0], -up[1], -up[2]], -height);
+        return Plane(Vec3!float(-up.x, -up.y, -up.z), -height);
     }
 
     Plane reflectAcross(Face face) const {
@@ -36,8 +36,8 @@ struct Plane {
         if (fabsf(fabsf(height) - FACE_DISTANCE) < SNAP_TOLERANCE) {
             foreach (index; 0 .. FACE_COUNT) {
                 Face face = cast(Face) index;
-                float[3] outward = face.direction;
-                float along = up[0] * outward[0] + up[1] * outward[1] + up[2] * outward[2];
+                Vec3!float outward = face.direction;
+                float along = up.x * outward.x + up.y * outward.y + up.z * outward.z;
                 if (height < 0 && along > SNAP_ALIGNMENT) {
                     snapped = Plane.ofFace(face);
                 } else if (height > 0 && along < -SNAP_ALIGNMENT) {
@@ -63,7 +63,7 @@ struct Plane {
     }
 
     Vec4!double scaledNormal() const {
-        return Vec4!double([up[0], up[1], up[2], -tanh(height)]);
+        return Vec4!double([up.x, up.y, up.z, -tanh(height)]);
     }
 
     PlaneMeasure measure() const {
@@ -75,30 +75,29 @@ struct Plane {
         return measure().distanceTo(point);
     }
 
-    float distanceToChunk(Corner chunk, float[3] coord) const {
+    float distanceToChunk(Corner chunk, Vec3!float coord) const {
         return distanceTo(chunkPoint(chunk, coord));
     }
 
-    float[3] upAt(Motion!float local) const {
+    Vec3!float upAt(Motion!float local) const {
         Vec4!double away = local.inverse().as!double() * scaledNormal();
-        double[3] spatial = away.spatial();
-        return unit(spatial);
+        return unit(away.spatial());
     }
 
-    float[3] gridUpAt(Corner chunk, ref const ChunkLayout layout, float[3] grid) const {
-        Point!float point = (chunk.cubeToNode * Vec4!float([layout.gridToCube(grid[0]), layout.gridToCube(grid[1]), layout.gridToCube(grid[2]), 1.0f])).toPoint();
+    Vec3!float gridUpAt(Corner chunk, ref const ChunkLayout layout, Vec3!float grid) const {
+        Point!float point = (chunk.cubeToNode * Vec4!float([layout.gridToCube(grid.x), layout.gridToCube(grid.y), layout.gridToCube(grid.z), 1.0f])).toPoint();
         Motion!float local = Motion!float.shiftTo(point);
-        float[3] up = applied(gridJacobian(layout, chunk.nodeToCorner * local), upAt(local));
-        float length = sqrtf(up[0] * up[0] + up[1] * up[1] + up[2] * up[2]);
-        return [up[0] / length, up[1] / length, up[2] / length];
+        Vec3!float up = applied(gridJacobian(layout, chunk.nodeToCorner * local), upAt(local));
+        float length = sqrtf(up.x * up.x + up.y * up.y + up.z * up.z);
+        return Vec3!float(up.x / length, up.y / length, up.z / length);
     }
 
-    int risingNeighbor(Corner chunk, ref const ChunkLayout layout, int[3] cell) const {
-        float[3] up = gridUpAt(chunk, layout, [cell[0] + 0.5f, cell[1] + 0.5f, cell[2] + 0.5f]);
+    int risingNeighbor(Corner chunk, ref const ChunkLayout layout, Vec3!int cell) const {
+        Vec3!float up = gridUpAt(chunk, layout, Vec3!float(cell.x + 0.5f, cell.y + 0.5f, cell.z + 0.5f));
         int rising = 0;
-        float steepest = -float.infinity;
+        float steepest = 0;
         foreach (axis; 0 .. 3) {
-            if (fabsf(up[axis]) > steepest) {
+            if (axis == 0 || fabsf(up[axis]) > steepest) {
                 steepest = fabsf(up[axis]);
                 rising = cast(int)(2 * axis);
                 if (up[axis] > 0) {
@@ -134,12 +133,12 @@ struct PlaneMeasure {
     }
 }
 
-Point!float chunkPoint(Corner chunk, float[3] coord) {
+Point!float chunkPoint(Corner chunk, Vec3!float coord) {
     return cubePoint(chunk.cubeToNode, coord);
 }
 
-Point!float cubePoint(Mat4!float cubeToNode, float[3] coord) {
-    return (cubeToNode * Vec4!float([coord[0], coord[1], coord[2], 1.0f])).toPoint();
+Point!float cubePoint(Mat4!float cubeToNode, Vec3!float coord) {
+    return (cubeToNode * Vec4!float([coord.x, coord.y, coord.z, 1.0f])).toPoint();
 }
 
 double logCosh(double x) {
@@ -147,7 +146,7 @@ double logCosh(double x) {
     return size + log1p(exp(-2 * size)) - log(2.0);
 }
 
-float[3] unit(double[3] v) {
-    double length = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-    return [cast(float)(v[0] / length), cast(float)(v[1] / length), cast(float)(v[2] / length)];
+Vec3!float unit(Vec3!double v) {
+    double length = sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+    return Vec3!float(cast(float)(v.x / length), cast(float)(v.y / length), cast(float)(v.z / length));
 }

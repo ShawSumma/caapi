@@ -1,16 +1,14 @@
 module plugins.turtle.turtle;
 
 import core.stdc.math : atan2, cos, sin;
-import plugins.api.api : Api, Box, Column, Material, Pen, Rhythm, Risen, Site, SitePart, Spot, Structure, Turn;
+import plugins.api.api : Api, Box, ColumnCell, Extent, KindTag, Material, Pen, Repeat, Rhythm, Risen, Site, SitePart, Span, Spot, Structure, Turn;
 
 enum double PI = 3.14159265358979323846;
 enum int TURN_TREADS = 24;
 enum int STAIR_HEADROOM = 4;
 enum int TREAD_THICKNESS = 2;
 enum uint MOST_ROWS = 48;
-enum Rhythm EVERY_HEIGHT = Rhythm(0, 0, 0);
-enum int ENDLESS_LOW = int.min;
-enum int ENDLESS_HIGH = int.max;
+enum Rhythm EVERY_HEIGHT = Rhythm(0, 0, 0, Repeat.always);
 enum uint PERCENT = 100;
 enum uint FACE_CORNERS = 5;
 enum ulong MIX = 0x2545F4914F6CDD1D;
@@ -24,8 +22,22 @@ double roll(ulong hash, ulong salt) {
     return (mixed(hash, salt) % PERCENT) / cast(double) PERCENT;
 }
 
-Box boxOf(int[2] x, int[2] y, int[2] z) {
-    return Box([x[0], y[0], z[0]], [x[1], y[1], z[1]]);
+struct Cell {
+    int x;
+    int y;
+}
+
+struct Offset {
+    float x;
+    float y;
+}
+
+Box boxOf(Span x, Span y, Span z) {
+    return Box(ColumnCell(x.low, y.low, z.low), ColumnCell(x.high, y.high, z.high));
+}
+
+Box alongLine(Span x, Span y) {
+    return Box(ColumnCell(x.low, y.low, 0), ColumnCell(x.high, y.high, 0), Extent.endless);
 }
 
 int floorDiv(int value, int divisor) {
@@ -73,22 +85,22 @@ T clamped(T)(T value, T low, T high) {
 }
 
 struct Tread {
-    int[2] x;
-    int[2] y;
+    Span x;
+    Span y;
 }
 
-int[2] negated(int[2] span) {
-    return [-span[1] - 1, -span[0] - 1];
+Span negated(Span span) {
+    return Span(-span.high - 1, -span.low - 1);
 }
 
 Tread treadAround(int inner, int width, int sides, int index) {
     int at = floorMod(index, 4 * (sides + 1));
     int step = at % (sides + 1);
     int depth = 2 * inner / sides;
-    int[2] ring = [inner, inner + width - 1];
+    Span ring = Span(inner, inner + width - 1);
     Tread tread = Tread(ring, ring);
     if (step > 0) {
-        tread.x = [inner - step * depth, inner - (step - 1) * depth - 1];
+        tread.x = Span(inner - step * depth, inner - (step - 1) * depth - 1);
     }
     foreach (_; 0 .. at / (sides + 1)) {
         tread = Tread(negated(tread.y), tread.x);
@@ -96,13 +108,13 @@ Tread treadAround(int inner, int width, int sides, int index) {
     return tread;
 }
 
-float middle(int[2] span) {
-    return (span[0] + span[1] + 1) / 2.0f;
+float middle(Span span) {
+    return (span.low + span.high + 1) / 2.0f;
 }
 
 struct Row {
     int y;
-    int[2] x;
+    Span x;
 }
 
 struct Rows {
@@ -110,10 +122,10 @@ struct Rows {
     uint count;
 
     void add(int x, int y) {
-        if (count > 0 && items[count - 1].y == y && items[count - 1].x[1] == x - 1) {
-            items[count - 1].x[1] = x;
+        if (count > 0 && items[count - 1].y == y && items[count - 1].x.high == x - 1) {
+            items[count - 1].x.high = x;
         } else {
-            items[count] = Row(y, [x, x]);
+            items[count] = Row(y, Span(x, x));
             count += 1;
         }
     }
@@ -130,7 +142,7 @@ bool isInRing(int x, int y, double inner, double outer) {
     return squared >= inner * inner && squared < outer * outer;
 }
 
-Rows ringRows(Column column, double inner, double outer) {
+Rows ringRows(Span column, double inner, double outer) {
     Rows rows;
     foreach (y; column.low .. column.high + 1) {
         foreach (x; column.low .. column.high + 1) {
@@ -142,7 +154,7 @@ Rows ringRows(Column column, double inner, double outer) {
     return rows;
 }
 
-Rows[TURN_TREADS] wedgeRows(Column column, double inner, double outer) {
+Rows[TURN_TREADS] wedgeRows(Span column, double inner, double outer) {
     Rows[TURN_TREADS] wedges;
     foreach (y; column.low .. column.high + 1) {
         foreach (x; column.low .. column.high + 1) {
@@ -154,8 +166,8 @@ Rows[TURN_TREADS] wedgeRows(Column column, double inner, double outer) {
     return wedges;
 }
 
-int[2] treadSpan(int tread) {
-    return [higherOf(0, tread - TREAD_THICKNESS + 1), tread];
+Span treadSpan(int tread) {
+    return Span(higherOf(0, tread - TREAD_THICKNESS + 1), tread);
 }
 
 enum Along : ubyte {
@@ -163,18 +175,18 @@ enum Along : ubyte {
     y,
 }
 
-Box line(Along along, int[2] span, int[2] z) {
+Box line(Along along, Span span, Span z) {
     if (along == Along.x) {
-        return boxOf(span, [0, 0], z);
+        return boxOf(span, Span(0, 0), z);
     } else {
-        return boxOf([0, 0], span, z);
+        return boxOf(Span(0, 0), span, z);
     }
 }
 
 void grass(Turtle face) {
     foreach (corner; cornersOf(face)) {
-        int far = corner.column().high;
-        upright(corner).paint(Material.grass, boxOf([0, far], [0, far], [-1, -1]));
+        Span whole = Span(0, corner.column().high);
+        upright(corner).paint(Material.grass, boxOf(whole, whole, Span(-1, -1)));
     }
 }
 
@@ -190,9 +202,9 @@ uint wedgeAt(int cellX, int cellY) {
     return lowerOf(cast(uint)(turns * TURN_TREADS), TURN_TREADS - 1);
 }
 
-float[2] onWedge(int tread, double radius) {
+Offset onWedge(int tread, double radius) {
     double angle = (floorMod(tread, TURN_TREADS) + 0.5) * 2 * PI / TURN_TREADS;
-    return [cast(float)(radius * cos(angle)), cast(float)(radius * sin(angle))];
+    return Offset(cast(float)(radius * cos(angle)), cast(float)(radius * sin(angle)));
 }
 
 Turtle upright(Turtle site) {
@@ -217,35 +229,35 @@ struct Turtle {
         return Turtle(api, api.forward(api, site, edges));
     }
 
-    Turtle turned(Turn turn) const {
-        return Turtle(api, api.turned(api, site, turn));
+    Turtle turn(Turn how) const {
+        return Turtle(api, api.turn(api, site, how));
     }
 
     Turtle left() const {
-        return turned(Turn.left);
+        return turn(Turn.left);
     }
 
     Turtle right() const {
-        return turned(Turn.right);
+        return turn(Turn.right);
     }
 
     Turtle pitchUp() const {
-        return turned(Turn.pitchUp);
+        return turn(Turn.pitchUp);
     }
 
     Turtle pitchDown() const {
-        return turned(Turn.pitchDown);
+        return turn(Turn.pitchDown);
     }
 
     Turtle rollLeft() const {
-        return turned(Turn.rollLeft);
+        return turn(Turn.rollLeft);
     }
 
     Turtle rollRight() const {
-        return turned(Turn.rollRight);
+        return turn(Turn.rollRight);
     }
 
-    Column column() const {
+    Span column() const {
         return api.column(api);
     }
 
@@ -261,16 +273,20 @@ struct Turtle {
         return api.pick(api, count);
     }
 
-    bool chance(uint percent) const {
+    int pickBetween(int low, int high) const {
+        return low + cast(int) pick(high - low + 1);
+    }
+
+    bool rollChance(uint percent) const {
         return api.pick(api, PERCENT) < percent;
     }
 
-    double random() const {
+    double rollUnit() const {
         return api.random(api);
     }
 
-    ulong hash(SitePart part) const {
-        return api.hash(api, site, part);
+    ulong probeHash(SitePart part) const {
+        return api.probeHash(api, site, part);
     }
 
     void paint(Material material, Box area, Rhythm rhythm = EVERY_HEIGHT) const {
@@ -281,15 +297,15 @@ struct Turtle {
         api.fill(api, site, material, area, rhythm);
     }
 
-    void paintRows(Material material, ref const Rows rows, int[2] z, Rhythm rhythm = EVERY_HEIGHT) const {
+    void paintRows(Material material, ref const Rows rows, Span z, Rhythm rhythm = EVERY_HEIGHT) const {
         foreach (row; rows.slice()) {
-            paint(material, boxOf(row.x, [row.y, row.y], z), rhythm);
+            paint(material, boxOf(row.x, Span(row.y, row.y), z), rhythm);
         }
     }
 
-    void fillRows(Material material, ref const Rows rows, int[2] z, Rhythm rhythm = EVERY_HEIGHT) const {
+    void fillRows(Material material, ref const Rows rows, Span z, Rhythm rhythm = EVERY_HEIGHT) const {
         foreach (row; rows.slice()) {
-            fill(material, boxOf(row.x, [row.y, row.y], z), rhythm);
+            fill(material, boxOf(row.x, Span(row.y, row.y), z), rhythm);
         }
     }
 
@@ -297,7 +313,7 @@ struct Turtle {
         int low = higherOf(0, tread + 1);
         int high = lowerOf(edgeCells() - 1, tread + STAIR_HEADROOM);
         if (low <= high) {
-            paintRows(Material.none, room, [low, high]);
+            paintRows(Material.none, room, Span(low, high));
         }
     }
 
@@ -321,24 +337,24 @@ struct Turtle {
         return api.claim(api, site, part);
     }
 
-    bool isClaimed(SitePart part) const {
-        return api.isClaimed(api, site, part);
+    bool probeClaimed(SitePart part) const {
+        return api.probeClaimed(api, site, part);
     }
 
-    int balance(int most) const {
-        return api.balance(api, site, most);
+    int probeBalance(int most) const {
+        return api.probeBalance(api, site, most);
     }
 
-    uint rising() const {
-        return api.rising(api, site);
+    KindTag probeRising() const {
+        return api.probeRising(api, site);
     }
 
     bool build(const(char)* world) const {
         return api.build(api, world, site);
     }
 
-    Drawing pen() const {
-        return Drawing(api, api.pen(api, site));
+    Drawing openPen() const {
+        return Drawing(api, api.openPen(api, site));
     }
 }
 
@@ -379,11 +395,11 @@ struct Drawing {
         api.leaves(api, pen, material, radius);
     }
 
-    double random() const {
+    double rollUnit() const {
         return api.random(api);
     }
 
-    double between(double low, double high) const {
-        return low + (high - low) * random();
+    double pickBetween(double low, double high) const {
+        return low + (high - low) * rollUnit();
     }
 }

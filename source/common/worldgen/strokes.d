@@ -3,10 +3,12 @@ module common.worldgen.strokes;
 import core.stdc.math : acoshf, atanhf, cosh, coshf, sinh, sqrtf, tanh;
 import base.array : Array;
 import base.hashmap : HashMap;
+import base.maybe : Maybe;
 import base.numbers : higherOf;
-import common.graph : ALL_FACES, NO_FACE, NodeId, farthestFaceBeyond;
+import common.graph : ALL_FACES, NodeId, farthestFaceBeyond;
 import common.traversal : MIRRORED_ORIGINS;
 import common.view : GraphView;
+import common.worldgen.blueprint : PaintOwner;
 import geometry.honeycomb : FACE_COUNT, Face, NODE_RADIUS, mirror;
 import geometry.lorentz : Motion, Point, Vec4;
 import plugins.api.api : Material;
@@ -125,7 +127,7 @@ struct StrokeRun {
 
 struct StrokeReach {
     Motion!double motion;
-    uint record;
+    PaintOwner owner;
     uint run;
 }
 
@@ -145,10 +147,10 @@ struct Strokes {
         }
     }
 
-    void add(ref GraphView view, uint record, uint run, uint node, Stroke stroke, ref Array!NodeId reached) {
+    void add(ref GraphView view, PaintOwner owner, uint run, uint node, Stroke stroke, ref Array!NodeId reached) {
         visits.clear();
         seen.clear();
-        visits.append(view.containing(node, stroke.middle()));
+        visits.append(view.ensureContaining(node, stroke.middle()));
         seen.append(view.idAt(visits.ptr[0].slot));
         float within = coshf(NODE_RADIUS + stroke.reach());
         size_t next = 0;
@@ -157,7 +159,7 @@ struct Strokes {
             next += 1;
             Stroke moved = stroke.moved(visit.motion);
             if (moved.nearest(Vec4!float.origin()).coshDistance <= within) {
-                note(view.idAt(visit.slot), StrokeReach(visit.motion, record, run), reached);
+                note(view.idAt(visit.slot), StrokeReach(visit.motion, owner, run), reached);
                 foreach (index; 0 .. FACE_COUNT) {
                     Face side = cast(Face) index;
                     if (moved.nearest(MIRRORED_ORIGINS[index]).coshDistance <= within + FRAME_SLACK) {
@@ -181,8 +183,8 @@ struct Strokes {
     }
 
     void note(NodeId id, StrokeReach reach, ref Array!NodeId reached) {
-        Array!StrokeReach* list = &listOf(id);
-        if (!hasRecord(list.slice(), reach.record)) {
+        Array!StrokeReach* list = &ensureList(id);
+        if (!hasOwner(list.slice(), reach.owner)) {
             reached.append(id);
         }
         if (!hasRun(list.slice(), reach)) {
@@ -190,7 +192,7 @@ struct Strokes {
         }
     }
 
-    ref Array!StrokeReach listOf(NodeId id) {
+    ref Array!StrokeReach ensureList(NodeId id) {
         const(uint)* found = lists.find(id);
         if (found !is null) {
             return reaches.ptr[*found];
@@ -206,14 +208,14 @@ struct Strokes {
         }
     }
 
-    void remove(NodeId id, uint record) {
+    void remove(NodeId id, PaintOwner owner) {
         const(uint)* found = lists.find(id);
         if (found !is null) {
             uint index = *found;
             Array!StrokeReach* list = &reaches.ptr[index];
             size_t kept = 0;
             foreach (reach; list.slice()) {
-                if (reach.record != record) {
+                if (reach.owner != owner) {
                     list.ptr[kept] = reach;
                     kept += 1;
                 }
@@ -239,9 +241,9 @@ struct Strokes {
     }
 }
 
-bool hasRecord(const(StrokeReach)[] list, uint record) {
+bool hasOwner(const(StrokeReach)[] list, PaintOwner owner) {
     foreach (ref existing; list) {
-        if (existing.record == record) {
+        if (existing.owner == owner) {
             return true;
         }
     }
@@ -250,18 +252,18 @@ bool hasRecord(const(StrokeReach)[] list, uint record) {
 
 bool hasRun(const(StrokeReach)[] list, ref const StrokeReach reach) {
     foreach (ref existing; list) {
-        if (existing.record == reach.record && existing.run == reach.run) {
+        if (existing.owner == reach.owner && existing.run == reach.run) {
             return true;
         }
     }
     return false;
 }
 
-StrokeVisit containing(ref GraphView view, uint node, Vec4!double point) {
+StrokeVisit ensureContaining(ref GraphView view, uint node, Vec4!double point) {
     StrokeVisit visit = StrokeVisit(node, Motion!double.identity());
-    uint face = farthestFaceBeyond(Point!float(point.as!float()), ALL_FACES);
-    while (face != NO_FACE) {
-        visit = StrokeVisit(view.ensureNeighborSlot(visit.slot, cast(Face) face), (cast(Face) face).mirror.as!double() * visit.motion);
+    Maybe!Face face = farthestFaceBeyond(Point!float(point.as!float()), ALL_FACES);
+    while (face.exists) {
+        visit = StrokeVisit(view.ensureNeighborSlot(visit.slot, face.value), face.value.mirror.as!double() * visit.motion);
         face = farthestFaceBeyond(Point!float((visit.motion * point).as!float()), ALL_FACES);
     }
     return visit;

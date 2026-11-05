@@ -7,14 +7,14 @@ enum Readiness : ubyte {
     ready,
 }
 
-enum uint BITS_WORD_SHIFT = 6;
-enum uint BITS_WORD_MASK = (1u << BITS_WORD_SHIFT) - 1;
+enum uint WORD_SHIFT = 6;
+enum uint WORD_MASK = (1u << WORD_SHIFT) - 1;
 
 struct Bits {
     Array!ulong words;
 
     void cover(size_t count) {
-        size_t wanted = (count + BITS_WORD_MASK) >> BITS_WORD_SHIFT;
+        size_t wanted = (count + WORD_MASK) >> WORD_SHIFT;
         if (words.length < wanted) {
             words.resize(wanted);
         }
@@ -25,19 +25,19 @@ struct Bits {
     }
 
     size_t count() const {
-        return words.length << BITS_WORD_SHIFT;
+        return words.length << WORD_SHIFT;
     }
 
     bool has(size_t index) const {
-        return (words.ptr[index >> BITS_WORD_SHIFT] & (1UL << (index & BITS_WORD_MASK))) != 0;
+        return (words.ptr[index >> WORD_SHIFT] & (1UL << (index & WORD_MASK))) != 0;
     }
 
     void set(size_t index) {
-        words.ptr[index >> BITS_WORD_SHIFT] |= 1UL << (index & BITS_WORD_MASK);
+        words.ptr[index >> WORD_SHIFT] |= 1UL << (index & WORD_MASK);
     }
 
     void clear(size_t index) {
-        words.ptr[index >> BITS_WORD_SHIFT] &= ~(1UL << (index & BITS_WORD_MASK));
+        words.ptr[index >> WORD_SHIFT] &= ~(1UL << (index & WORD_MASK));
     }
 
     void release() {

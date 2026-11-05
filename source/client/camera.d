@@ -4,6 +4,7 @@ import core.math : cos, sin, sqrt;
 import core.stdc.math : asinf, fabsf;
 import base.numbers : PI, clamped;
 import base.units : Angle, Length;
+import base.vector3 : Vec3, cross, dot;
 import common.position : Position;
 import geometry.lorentz : Mat4, Motion;
 
@@ -12,7 +13,7 @@ enum float OPPOSITE_DOT_LIMIT = -0.999999f;
 enum float PERPENDICULAR_AXIS_LIMIT = 0.9f;
 enum float MIN_QUATERNION_LENGTH = 1e-10f;
 
-immutable float[3] CAMERA_FORWARD = [0, 0, -1];
+immutable Vec3!float CAMERA_FORWARD = Vec3!float(0, 0, -1);
 
 struct Quaternion {
     float w = 1;
@@ -24,28 +25,27 @@ struct Quaternion {
         return Quaternion(1, 0, 0, 0);
     }
 
-    static Quaternion fromAxisAngle(float[3] axis, float angle) {
-        float length = sqrt(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]);
+    static Quaternion fromAxisAngle(Vec3!float axis, float angle) {
+        float length = sqrt(axis.dot(axis));
         if (length < MIN_QUATERNION_LENGTH) {
             return identity();
         } else {
             float halfAngle = angle * 0.5f;
             float scale = sin(halfAngle) / length;
-            return Quaternion(cos(halfAngle), axis[0] * scale, axis[1] * scale, axis[2] * scale);
+            return Quaternion(cos(halfAngle), axis.x * scale, axis.y * scale, axis.z * scale);
         }
     }
 
-    static Quaternion fromVectors(float[3] from, float[3] to) {
-        float dot = from[0] * to[0] + from[1] * to[1] + from[2] * to[2];
-        if (dot < OPPOSITE_DOT_LIMIT) {
-            float[3] perpendicular = perpendicularAxis(from);
-            float[3] axis = unitOrZero([from[1] * perpendicular[2] - from[2] * perpendicular[1], from[2] * perpendicular[0] - from[0] * perpendicular[2], from[0] * perpendicular[1] - from[1] * perpendicular[0]]);
-            return Quaternion(0, axis[0], axis[1], axis[2]);
+    static Quaternion fromVectors(Vec3!float from, Vec3!float to) {
+        float along = from.dot(to);
+        if (along < OPPOSITE_DOT_LIMIT) {
+            Vec3!float axis = unitOrZero(from.cross(perpendicularAxis(from)));
+            return Quaternion(0, axis.x, axis.y, axis.z);
         } else {
-            float[3] cross = [from[1] * to[2] - from[2] * to[1], from[2] * to[0] - from[0] * to[2], from[0] * to[1] - from[1] * to[0]];
-            float w = 1.0f + dot;
-            float inverseNorm = 1.0f / sqrt(w * w + cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]);
-            return Quaternion(w * inverseNorm, cross[0] * inverseNorm, cross[1] * inverseNorm, cross[2] * inverseNorm);
+            Vec3!float across = from.cross(to);
+            float w = 1.0f + along;
+            float inverseNorm = 1.0f / sqrt(w * w + across.dot(across));
+            return Quaternion(w * inverseNorm, across.x * inverseNorm, across.y * inverseNorm, across.z * inverseNorm);
         }
     }
 
@@ -53,10 +53,9 @@ struct Quaternion {
         return Quaternion(w * rhs.w - x * rhs.x - y * rhs.y - z * rhs.z, w * rhs.x + x * rhs.w + y * rhs.z - z * rhs.y, w * rhs.y - x * rhs.z + y * rhs.w + z * rhs.x, w * rhs.z + x * rhs.y - y * rhs.x + z * rhs.w);
     }
 
-    float[3] rotate(float[3] v) const {
-        Quaternion rotated = this * Quaternion(0, v[0], v[1], v[2]) * Quaternion(w, -x, -y, -z);
-        float[3] result = [rotated.x, rotated.y, rotated.z];
-        return result;
+    Vec3!float rotate(Vec3!float v) const {
+        Quaternion rotated = this * Quaternion(0, v.x, v.y, v.z) * Quaternion(w, -x, -y, -z);
+        return Vec3!float(rotated.x, rotated.y, rotated.z);
     }
 
     Quaternion normalized() const {
@@ -89,21 +88,18 @@ struct Quaternion {
     }
 }
 
-float[3] perpendicularAxis(float[3] from) {
-    if (fabsf(from[0]) < PERPENDICULAR_AXIS_LIMIT) {
-        float[3] xAxis = [1.0f, 0.0f, 0.0f];
-        return xAxis;
+Vec3!float perpendicularAxis(Vec3!float from) {
+    if (fabsf(from.x) < PERPENDICULAR_AXIS_LIMIT) {
+        return Vec3!float(1.0f, 0.0f, 0.0f);
     } else {
-        float[3] yAxis = [0.0f, 1.0f, 0.0f];
-        return yAxis;
+        return Vec3!float(0.0f, 1.0f, 0.0f);
     }
 }
 
-float[3] unitOrZero(float[3] axis) {
-    float length = sqrt(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]);
+Vec3!float unitOrZero(Vec3!float axis) {
+    float length = sqrt(axis.dot(axis));
     if (length > 0) {
-        float[3] unit = [axis[0] / length, axis[1] / length, axis[2] / length];
-        return unit;
+        return Vec3!float(axis.x / length, axis.y / length, axis.z / length);
     } else {
         return axis;
     }
@@ -113,35 +109,34 @@ struct Camera {
     Position position;
     Motion!float eye;
     Quaternion heading;
-    float[3] viewUp = [0, 1, 0];
+    Vec3!float viewUp = Vec3!float(0, 1, 0);
     Length eyeOffset;
     Angle pitch;
 
     static Camera make(Length eyeOffset) {
-        return Camera(Position.origin(), Motion!float.identity(), Quaternion.identity(), [0, 1, 0], eyeOffset, Angle(0));
+        return Camera(Position.origin(), Motion!float.identity(), Quaternion.identity(), Vec3!float(0, 1, 0), eyeOffset, Angle(0));
     }
 
     Quaternion orientation() const {
-        return heading * Quaternion.fromAxisAngle([1, 0, 0], pitch.value);
+        return heading * Quaternion.fromAxisAngle(Vec3!float(1, 0, 0), pitch.value);
     }
 
     Position orientedPosition() const {
         return Position(position.node, position.local * eye * orientation.toMotion());
     }
 
-    float[3] forward() const {
+    Vec3!float forward() const {
         return orientation.rotate(CAMERA_FORWARD);
     }
 
     Angle elevation() const {
-        float[3] ahead = forward();
-        return Angle(asinf(clamped(ahead[0] * viewUp[0] + ahead[1] * viewUp[1] + ahead[2] * viewUp[2], -1.0f, 1.0f)));
+        return Angle(asinf(clamped(forward().dot(viewUp), -1.0f, 1.0f)));
     }
 
-    void follow(Position bodyPosition, Motion!float eyeFromBody, float[3] visibleUp) {
+    void follow(Position bodyPosition, Motion!float eyeFromBody, Vec3!float visibleUp) {
         position = bodyPosition;
         eye = eyeFromBody;
-        heading = (Quaternion.fromVectors(heading.rotate([0, 1, 0]), visibleUp) * heading).normalized();
+        heading = (Quaternion.fromVectors(heading.rotate(Vec3!float(0, 1, 0)), visibleUp) * heading).normalized();
         viewUp = visibleUp;
     }
 

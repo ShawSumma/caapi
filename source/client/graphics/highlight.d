@@ -1,15 +1,22 @@
 module client.graphics.highlight;
 
+import base.vector3 : Vec3;
 import bindings.platform : VK_PIPELINE_BIND_POINT_GRAPHICS, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_SHADER_STAGE_VERTEX_BIT, VkCommandBuffer, VkDescriptorSet, VkDescriptorSetLayout, VkDevice, VkPipeline, VkPipelineLayout, VkPushConstantRange, VkRenderPass, VkShaderModule, vkCmdBindDescriptorSets, vkCmdBindPipeline, vkCmdDraw, vkCmdPushConstants, vkDestroyPipeline, vkDestroyPipelineLayout, vkDestroyShaderModule;
 import client.graphics.pipeline : Blend, Culling, Depth, PipelineSettings, createGraphicsPipeline, createPipelineLayout, createShader;
 
 enum string HIGHLIGHT_VERT_SPV = import("highlight.vert.spv");
 enum string HIGHLIGHT_FRAG_SPV = import("highlight.frag.spv");
 enum uint MODEL_FLOATS = 16;
-enum uint CORNER_FLOATS = 4;
-enum uint HIGHLIGHT_PUSH_FLOATS = MODEL_FLOATS + 2 * CORNER_FLOATS;
-enum uint HIGHLIGHT_PUSH_BYTES = HIGHLIGHT_PUSH_FLOATS * float.sizeof;
+enum uint HIGHLIGHT_PUSH_BYTES = HighlightPush.sizeof;
 enum uint CUBE_EDGE_VERTICES = 24;
+
+struct HighlightPush {
+    float[MODEL_FLOATS] model;
+    Vec3!float low;
+    float lowPadding;
+    Vec3!float high;
+    float highPadding;
+}
 
 struct HighlightPipeline {
     VkPipelineLayout pipelineLayout;
@@ -41,14 +48,11 @@ struct HighlightPipeline {
         vkDestroyShaderModule(device, fragmentShader, null);
     }
 
-    void draw(VkCommandBuffer commands, VkDescriptorSet commonSet, float[16] model, float[3] low, float[3] high) {
-        float[HIGHLIGHT_PUSH_FLOATS] constants = 0;
-        constants[0 .. MODEL_FLOATS] = model[];
-        constants[MODEL_FLOATS .. MODEL_FLOATS + 3] = low[];
-        constants[MODEL_FLOATS + CORNER_FLOATS .. MODEL_FLOATS + CORNER_FLOATS + 3] = high[];
+    void draw(VkCommandBuffer commands, VkDescriptorSet commonSet, float[MODEL_FLOATS] model, Vec3!float low, Vec3!float high) {
+        HighlightPush constants = HighlightPush(model, low, 0, high, 0);
         vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
         vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &commonSet, 0, null);
-        vkCmdPushConstants(commands, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, HIGHLIGHT_PUSH_BYTES, constants.ptr);
+        vkCmdPushConstants(commands, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, HIGHLIGHT_PUSH_BYTES, &constants);
         vkCmdDraw(commands, CUBE_EDGE_VERTICES, 1, 0, 0);
     }
 

@@ -2,15 +2,16 @@ module common.character.sweep;
 
 import core.math : sqrt;
 import core.stdc.math : ceilf;
-import base.numbers : higherOf, isNan;
-import base.vector3 : ZERO_VECTOR, cross, dot, magnitude, minus, plus, scaled;
+import base.maybe : Maybe;
+import base.numbers : higherOf;
+import base.vector3 : Vec3, ZERO_VECTOR, cross, dot, magnitude, minus, plus, scaled;
 import common.character.features : Edge, Features, Quad, unit;
 
 enum double MIN_DISPLACEMENT_SQUARED = 1e-16;
 enum float MIN_CREASE_SINE = 1e-3f;
 
 struct Capsule {
-    float[3] axis;
+    Vec3!float axis;
     float radius;
     float halfHeight;
     float skin;
@@ -40,7 +41,7 @@ struct Capsule {
         }
     }
 
-    float[3] sectionCenter(float[3] center, uint sectionIndex, uint count) const {
+    Vec3!float sectionCenter(Vec3!float center, uint sectionIndex, uint count) const {
         return center.plus(axis.scaled(sectionOffset(sectionIndex, count)));
     }
 }
@@ -51,32 +52,28 @@ enum SectionRank : ubyte {
 }
 
 struct Contact {
-    float[3] normal = [0, 0, 0];
-    float stop = float.nan;
+    Vec3!float normal = Vec3!float(0, 0, 0);
+    float stop = 0;
     float gap = 0;
     SectionRank rank;
+}
 
-    bool isHit() const {
-        return !isNan(stop);
-    }
-
-    bool isImprovedBy(float candidate) const {
-        return isNan(stop) || candidate < stop;
-    }
+bool isImprovedBy(Maybe!Contact best, float candidate) {
+    return !best.exists || candidate < best.value.stop;
 }
 
 struct ContactPlane {
-    float[3] normal;
+    Vec3!float normal;
     float separation;
 }
 
-bool isSameDirection(float[3] a, float[3] b) {
+bool isSameDirection(Vec3!float a, Vec3!float b) {
     return a.dot(b) > 0 && a.cross(b).magnitude < MIN_CREASE_SINE;
 }
 
 struct Section {
     const(ContactPlane)[] clipped;
-    float[3] center;
+    Vec3!float center;
     float radius;
     float stopRadius;
     SectionRank rank;
@@ -89,7 +86,7 @@ struct Section {
         }
     }
 
-    Contact accepted(Contact best, Contact candidate) const {
+    Maybe!Contact accepted(Maybe!Contact best, Contact candidate) const {
         size_t index = 0;
         while (index < clipped.length && !isSameDirection(clipped[index].normal, candidate.normal)) {
             index += 1;
@@ -97,71 +94,71 @@ struct Section {
         if (index < clipped.length) {
             return best;
         } else {
-            return candidate;
+            return Maybe!Contact.of(candidate);
         }
     }
 
-    Contact quadContact(ref const Quad quad, float[3] direction, float distance, Contact best) const {
+    Maybe!Contact quadContact(ref const Quad quad, Vec3!float direction, float distance, Maybe!Contact best) const {
         float separation = quad.separation(center);
         float rate = quad.normal.dot(direction);
-        float stop = contactTime(separation * separation, separation * rate, rate * rate, stopRadius);
-        if (rate >= 0 || !isTouchWithin(stop, distance) || !best.isImprovedBy(stop)) {
+        Maybe!float stop = contactTime(separation * separation, separation * rate, rate * rate, stopRadius);
+        if (rate >= 0 || !isTouchWithin(stop, distance) || !best.isImprovedBy(stop.value)) {
             return best;
         } else {
-            float[3] at = center.plus(direction.scaled(stop));
+            Vec3!float at = center.plus(direction.scaled(stop.value));
             if (quad.isAbove(at.minus(quad.normal.scaled(quad.separation(at))))) {
-                return accepted(best, Contact(quad.normal, stop, gapAt(separation, stop), rank));
+                return accepted(best, Contact(quad.normal, stop.value, gapAt(separation, stop.value), rank));
             } else {
                 return best;
             }
         }
     }
 
-    Contact edgeContact(ref const Edge edge, float[3] direction, float distance, Contact best) const {
-        float[3] along = edge.end.minus(edge.start);
+    Maybe!Contact edgeContact(ref const Edge edge, Vec3!float direction, float distance, Maybe!Contact best) const {
+        Vec3!float along = edge.end.minus(edge.start);
         float length = along.magnitude;
-        float[3] line = along.scaled(1.0f / length);
-        float[3] offset = center.minus(edge.start);
-        float[3] offsetAcross = offset.minus(line.scaled(offset.dot(line)));
-        float[3] rateAcross = direction.minus(line.scaled(direction.dot(line)));
-        float stop = contactTime(offsetAcross.dot(offsetAcross), offsetAcross.dot(rateAcross), rateAcross.dot(rateAcross), stopRadius);
-        if (!isTouchWithin(stop, distance) || !best.isImprovedBy(stop)) {
+        Vec3!float line = along.scaled(1.0f / length);
+        Vec3!float offset = center.minus(edge.start);
+        Vec3!float offsetAcross = offset.minus(line.scaled(offset.dot(line)));
+        Vec3!float rateAcross = direction.minus(line.scaled(direction.dot(line)));
+        Maybe!float stop = contactTime(offsetAcross.dot(offsetAcross), offsetAcross.dot(rateAcross), rateAcross.dot(rateAcross), stopRadius);
+        if (!isTouchWithin(stop, distance) || !best.isImprovedBy(stop.value)) {
             return best;
         } else {
-            float[3] reached = center.plus(direction.scaled(stop)).minus(edge.start);
+            Vec3!float reached = center.plus(direction.scaled(stop.value)).minus(edge.start);
             float position = reached.dot(line);
             if (position >= 0 && position <= length) {
-                return accepted(best, Contact(unit(reached.minus(line.scaled(position))), stop, gapAt(offsetAcross.magnitude, stop), rank));
+                return accepted(best, Contact(unit(reached.minus(line.scaled(position))), stop.value, gapAt(offsetAcross.magnitude, stop.value), rank));
             } else {
                 return best;
             }
         }
     }
 
-    Contact cornerContact(float[3] corner, float[3] direction, float distance, Contact best) const {
-        float[3] offset = center.minus(corner);
-        float stop = contactTime(offset.dot(offset), offset.dot(direction), direction.dot(direction), stopRadius);
-        if (!isTouchWithin(stop, distance) || !best.isImprovedBy(stop)) {
+    Maybe!Contact cornerContact(Vec3!float corner, Vec3!float direction, float distance, Maybe!Contact best) const {
+        Vec3!float offset = center.minus(corner);
+        Maybe!float stop = contactTime(offset.dot(offset), offset.dot(direction), direction.dot(direction), stopRadius);
+        if (!isTouchWithin(stop, distance) || !best.isImprovedBy(stop.value)) {
             return best;
         } else {
-            return accepted(best, Contact(unit(center.plus(direction.scaled(stop)).minus(corner)), stop, gapAt(offset.magnitude, stop), rank));
+            return accepted(best, Contact(unit(center.plus(direction.scaled(stop.value)).minus(corner)), stop.value, gapAt(offset.magnitude, stop.value), rank));
         }
     }
 }
 
 struct Sweep {
-    float[3] displacement;
-    Contact contact;
+    Vec3!float displacement;
+    Maybe!Contact contact;
 
-    static Sweep fromCapsule(ref const Features features, Capsule capsule, float[3] start, float[3] displacement, const(ContactPlane)[] clipped) {
+    static Sweep fromCapsule(ref const Features features, Capsule capsule, Vec3!float start, Vec3!float displacement, const(ContactPlane)[] clipped) {
         float displacementSquared = displacement.dot(displacement);
         if (displacementSquared < MIN_DISPLACEMENT_SQUARED) {
             return Sweep(ZERO_VECTOR);
         } else {
             float distance = sqrt(displacementSquared);
-            Contact contact = features.capsuleContact(capsule, start, displacement.scaled(1.0f / distance), distance, clipped);
-            if (contact.isHit()) {
-                return Sweep(displacement.scaled(contact.stop / distance), contact);
+            Maybe!Contact contact = features.capsuleContact(capsule, start, displacement.scaled(1.0f / distance), distance, clipped);
+            if (contact.exists) {
+                return Sweep(displacement.scaled(contact.value.stop / distance), contact);
             } else {
                 return Sweep(displacement);
             }
@@ -169,29 +166,29 @@ struct Sweep {
     }
 }
 
-bool isTouchWithin(float stop, float distance) {
-    return !isNan(stop) && !(stop > distance);
+bool isTouchWithin(Maybe!float stop, float distance) {
+    return stop.exists && !(stop.value > distance);
 }
 
-float contactTime(float separationSquared, float approach, float directionSquared, float stopRadius) {
+Maybe!float contactTime(float separationSquared, float approach, float directionSquared, float stopRadius) {
     float constantTerm = separationSquared - stopRadius * stopRadius;
     float discriminant = approach * approach - directionSquared * constantTerm;
     if (approach >= 0.0f) {
-        return float.nan;
+        return Maybe!float.init;
     } else if (constantTerm <= 0.0f && separationSquared - approach * approach / directionSquared < separationSquared) {
-        return 0.0f;
+        return Maybe!float.of(0.0f);
     } else if (constantTerm <= 0.0f) {
-        return float.nan;
+        return Maybe!float.init;
     } else if (discriminant > 0.0f) {
-        return constantTerm / (-approach + sqrt(discriminant));
+        return Maybe!float.of(constantTerm / (-approach + sqrt(discriminant)));
     } else {
-        return float.nan;
+        return Maybe!float.init;
     }
 }
 
-Contact capsuleContact(ref const Features features, Capsule capsule, float[3] start, float[3] direction, float distance, const(ContactPlane)[] clipped) {
+Maybe!Contact capsuleContact(ref const Features features, Capsule capsule, Vec3!float start, Vec3!float direction, float distance, const(ContactPlane)[] clipped) {
     uint count = capsule.sectionCount();
-    Contact best;
+    Maybe!Contact best;
     foreach (index; 0 .. count) {
         SectionRank rank = SectionRank.upper;
         if (index == 0) {
@@ -211,7 +208,7 @@ Contact capsuleContact(ref const Features features, Capsule capsule, float[3] st
     return best;
 }
 
-float[3][] sectionCenters(Capsule capsule, float[3] center, float[3][] storage) {
+Vec3!float[] sectionCenters(Capsule capsule, Vec3!float center, Vec3!float[] storage) {
     uint count = capsule.sectionCount();
     foreach (index; 0 .. count) {
         storage[index] = capsule.sectionCenter(center, index, count);

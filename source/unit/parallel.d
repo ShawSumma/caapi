@@ -2,6 +2,7 @@ module unit.parallel;
 
 import core.atomic : atomicLoad, atomicOp;
 import core.stdc.stdlib : calloc, free;
+import base.clock : Deadline;
 import base.parallel : ConcurrentQueue, ParallelJob, TaskSource, WorkerPool;
 
 enum uint WORKERS = 3;
@@ -24,14 +25,14 @@ unittest {
     WorkerPool* pool = WorkerPool.make(WORKERS, TaskSource(&takeNothing, null));
     Counts* counts = cast(Counts*) calloc(1, Counts.sizeof);
     foreach (round; 0 .. ROUNDS) {
-        ParallelJob job = ParallelJob(&countItem, counts, double.infinity, ITEMS);
+        ParallelJob job = ParallelJob(&countItem, counts, Deadline.init, ITEMS);
         pool.run(&job);
         assert(job.count == ITEMS);
     }
     foreach (index; 0 .. ITEMS) {
         assert(atomicLoad(counts.seen[index]) == ROUNDS);
     }
-    ParallelJob late = ParallelJob(&countItem, counts, 0, ITEMS);
+    ParallelJob late = ParallelJob(&countItem, counts, Deadline.at(0), ITEMS);
     pool.run(&late);
     assert(late.count >= 1 && late.count < ITEMS);
     foreach (index; 0 .. ITEMS) {
@@ -49,15 +50,21 @@ unittest {
 unittest {
     ConcurrentQueue!uint queue = ConcurrentQueue!uint.make(4);
     foreach (value; 0 .. 4) {
-        assert(queue.push(value));
+        bool pushed = queue.push(value);
+        assert(pushed);
     }
-    assert(!queue.push(4));
+    bool overfull = queue.push(4);
+    assert(!overfull);
     uint popped;
-    assert(queue.pop(popped) && popped == 0);
-    assert(queue.push(4));
+    bool took = queue.pop(popped);
+    assert(took && popped == 0);
+    bool refilled = queue.push(4);
+    assert(refilled);
     foreach (expected; 1 .. 5) {
-        assert(queue.pop(popped) && popped == expected);
+        took = queue.pop(popped);
+        assert(took && popped == expected);
     }
-    assert(!queue.pop(popped));
+    took = queue.pop(popped);
+    assert(!took);
     queue.release();
 }

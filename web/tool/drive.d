@@ -2,19 +2,29 @@ module drive;
 
 import core.stdc.stdio : fprintf, printf, snprintf, stderr;
 import core.stdc.stdlib : strtoul;
-import core.stdc.string : memcpy, strstr;
+import core.stdc.string : memcpy, strlen, strstr;
 import core.sys.posix.arpa.inet : htons, inet_addr;
 import core.sys.posix.netinet.in_ : AF_INET, IPPROTO_TCP, sockaddr_in;
 import core.sys.posix.sys.socket : SOCK_STREAM, connect, recv, send, sockaddr, socket;
 import core.sys.posix.time : nanosleep, timespec;
 import core.sys.posix.unistd : close, getcwd;
 import base.array : Array;
+import base.maybe : Maybe;
 import base64 : decodeInto;
 import files : Outcome, PATH_CAPACITY, writeFile;
 
 enum ushort MARIONETTE_PORT = 2828;
 enum string LOOPBACK = "127.0.0.1";
 enum string GAME_PAGE = "mined.html";
+enum string CHECK_PAGE = "obj/web/check.html";
+enum string PLAY_COMMAND = "play";
+enum string CHECK_COMMAND = "check";
+enum string HELP_OPTION = "--help";
+immutable string[6] CHECK_MODES = ["run", "actions", "tour", "flight", "world", "bench"];
+enum string MODE_QUERY = "?mode=%s";
+enum string VALUE_QUERY = "&%s";
+enum string USAGE = "usage: drive <command>\n  " ~ PLAY_COMMAND ~ "  drive " ~ GAME_PAGE ~ " with real input\n  " ~ CHECK_COMMAND ~ " <mode> [name=value ...]  report a run of " ~ CHECK_PAGE ~ "\n    modes: run actions tour flight world bench\n    values: width height frames worlds shots index pitch\n  " ~ HELP_OPTION ~ "  show this text\nFirefox must be running with --marionette.\n";
+enum int USAGE_STATUS = 2;
 enum uint CONNECT_ATTEMPTS = 120;
 enum uint CONNECT_PAUSE_MILLISECONDS = 500;
 enum uint LOAD_MILLISECONDS = 6000;
@@ -70,7 +80,7 @@ void pause(uint milliseconds) {
 struct Marionette {
     Array!char pending;
     Array!char reply;
-    int connection = -1;
+    int connection;
     uint nextId = 1;
 
     Outcome connectTo(ref sockaddr_in address) {
@@ -122,25 +132,25 @@ struct Marionette {
         return colon;
     }
 
-    size_t frameEnd() const {
+    Maybe!size_t frameEnd() const {
         size_t colon = colonInPending();
         if (colon == pending.length) {
-            return 0;
+            return Maybe!size_t.init;
         } else {
             char[LENGTH_DIGITS] digits = 0;
             memcpy(digits.ptr, pending.ptr, colon);
             size_t length = strtoul(digits.ptr, null, RADIX);
             if (pending.length >= colon + 1 + length) {
-                return colon + 1 + length;
+                return Maybe!size_t.of(colon + 1 + length);
             } else {
-                return 0;
+                return Maybe!size_t.init;
             }
         }
     }
 
     Outcome receive() {
-        size_t end = frameEnd();
-        while (end == 0) {
+        Maybe!size_t end = frameEnd();
+        while (!end.exists) {
             char[RECEIVE_BYTES] chunk;
             ptrdiff_t got = recv(connection, chunk.ptr, chunk.length, 0);
             if (got <= 0) {
@@ -151,11 +161,11 @@ struct Marionette {
         }
         size_t colon = colonInPending();
         reply.clear();
-        reply.appendAll(pending.ptr[colon + 1 .. end]);
+        reply.appendAll(pending.ptr[colon + 1 .. end.value]);
         reply.append('\0');
-        size_t left = pending.length - end;
+        size_t left = pending.length - end.value;
         foreach (index; 0 .. left) {
-            pending.ptr[index] = pending.ptr[end + index];
+            pending.ptr[index] = pending.ptr[end.value + index];
         }
         pending.length = left;
         return Outcome.done;
@@ -327,15 +337,33 @@ void playThrough(ref Marionette browser) {
     browser.shot("play-resized");
 }
 
-extern (C) int main(int count, char** arguments) {
-    const(char)* page = GAME_PAGE;
-    const(char)* query = "";
-    if (count > 1) {
-        page = arguments[1];
+enum Task : ubyte {
+    play,
+    check,
+}
+
+const(char)[] sliceOf(const(char)* text) {
+    return text[0 .. strlen(text)];
+}
+
+bool isCheckMode(const(char)[] name) {
+    size_t index = 0;
+    while (index < CHECK_MODES.length && CHECK_MODES[index] != name) {
+        index += 1;
     }
-    if (count > 2) {
-        query = arguments[2];
+    return index < CHECK_MODES.length;
+}
+
+char[PARAMETERS_CAPACITY] checkQuery(const(char*)[] arguments) {
+    char[PARAMETERS_CAPACITY] query = 0;
+    int written = snprintf(query.ptr, query.length, MODE_QUERY.ptr, arguments[0]);
+    foreach (argument; arguments[1 .. $]) {
+        written += snprintf(query.ptr + written, query.length - written, VALUE_QUERY.ptr, argument);
     }
+    return query;
+}
+
+Outcome driveTo(const(char)* page, const(char)* query, Task task) {
     Marionette browser;
     Outcome started = browser.start();
     if (started == Outcome.failed) {
@@ -343,20 +371,35 @@ extern (C) int main(int count, char** arguments) {
         return Outcome.failed;
     } else {
         Outcome navigated = browser.navigate(page, query);
-        if (navigated == Outcome.failed) {
-            browser.quit();
-            return Outcome.failed;
-        } else {
-            if (count > 1) {
-                browser.call(SET_WINDOW_RECT, SHEET_WINDOW);
-                browser.report("result", RESULT_SCRIPT);
-                browser.shot("check");
-            } else {
-                playThrough(browser);
+        if (navigated == Outcome.done) {
+            final switch (task) {
+                case Task.play:
+                    playThrough(browser);
+                    break;
+                case Task.check:
+                    browser.call(SET_WINDOW_RECT, SHEET_WINDOW);
+                    browser.report("result", RESULT_SCRIPT);
+                    browser.shot("check");
+                    break;
             }
-            browser.quit();
             printf("driven to the end\n");
-            return Outcome.done;
         }
+        browser.quit();
+        return navigated;
+    }
+}
+
+extern (C) int main(int count, char** arguments) {
+    if (count == 2 && sliceOf(arguments[1]) == HELP_OPTION) {
+        printf("%.*s", cast(int) USAGE.length, USAGE.ptr);
+        return Outcome.done;
+    } else if (count == 2 && sliceOf(arguments[1]) == PLAY_COMMAND) {
+        return driveTo(GAME_PAGE, "", Task.play);
+    } else if (count >= 3 && sliceOf(arguments[1]) == CHECK_COMMAND && isCheckMode(sliceOf(arguments[2]))) {
+        char[PARAMETERS_CAPACITY] query = checkQuery(arguments[2 .. count]);
+        return driveTo(CHECK_PAGE, query.ptr, Task.check);
+    } else {
+        fprintf(stderr, "%.*s", cast(int) USAGE.length, USAGE.ptr);
+        return USAGE_STATUS;
     }
 }

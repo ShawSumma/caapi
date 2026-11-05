@@ -3,18 +3,17 @@ module common.worldgen.store;
 import core.stdc.string : memcpy;
 import base.array : Array;
 import base.hashmap : HashMap;
+import base.maybe : MaybeIndex;
 import base.parallel : Executor;
 import base.slab : Run, RunPool, Slab;
-import common.graph : Graph, NO_SLOT, NodeId;
+import common.graph : Graph, NodeId;
 import common.view : GraphView;
-import common.worldgen.blueprint : Blueprint, LineEdge, Painted, TileRecord;
+import common.worldgen.blueprint : Blueprint, LineEdge, PaintOwner, Painted, TileRecord;
 import common.worldgen.building : Building;
-import common.worldgen.horospheres : ROOT;
+import common.worldgen.horospheres : HorosphereId, ROOT;
 import common.worldgen.strokes : Stroke, Strokes;
 import common.worldgen.structure : LineTouch;
 import plugins.api.flags : Flags;
-
-enum uint NO_BUILDING = 0;
 
 struct Grower {
     void function(void* context, ref Graph graph, int through) grow;
@@ -51,7 +50,7 @@ enum Standing : ubyte {
 
 struct NodeStructure {
     Run touches;
-    uint building;
+    MaybeIndex!uint building;
     Flags!NodeMark marks;
 
     bool isFinished() const {
@@ -103,7 +102,7 @@ struct StructureStore {
     Strokes strokes;
     Grower grower;
     uint buildingCount;
-    int grownThrough = -1;
+    uint grownBelow;
 
     void ensureSlots(uint count) {
         nodes.ensure(count);
@@ -163,16 +162,16 @@ struct StructureStore {
     }
 
     const(Building)* buildingAt(uint slot) const {
-        uint building = at(slot).building;
-        if (building == NO_BUILDING) {
-            return null;
+        MaybeIndex!uint building = at(slot).building;
+        if (building.exists) {
+            return buildings.at(building.value);
         } else {
-            return buildings.at(building - 1);
+            return null;
         }
     }
 
     void storeBuilding(uint slot, Building building) {
-        assert(at(slot).building == NO_BUILDING);
+        assert(!at(slot).building.exists);
         uint index = buildingCount;
         if (freeBuildings.length > 0) {
             freeBuildings.length -= 1;
@@ -182,15 +181,15 @@ struct StructureStore {
             buildings.ensure(buildingCount);
         }
         *buildings.at(index) = building;
-        at(slot).building = index + 1;
+        at(slot).building = MaybeIndex!uint.of(index);
     }
 
     void releaseBuilding(uint slot) {
-        uint building = at(slot).building;
-        if (building != NO_BUILDING) {
-            buildings.at(building - 1).release();
-            freeBuildings.append(building - 1);
-            at(slot).building = NO_BUILDING;
+        MaybeIndex!uint building = at(slot).building;
+        if (building.exists) {
+            buildings.at(building.value).release();
+            freeBuildings.append(building.value);
+            at(slot).building = MaybeIndex!uint.init;
         }
     }
 
@@ -203,9 +202,9 @@ struct StructureStore {
         at(slot) = NodeStructure.init;
     }
 
-    void addStroke(ref GraphView view, uint record, uint node, Stroke stroke) {
-        uint run = blueprint.addStroke(record, view.idAt(node), stroke);
-        strokes.add(view, record, run, node, stroke, blueprint.paintedBy(record).reached);
+    void addStroke(ref GraphView view, PaintOwner owner, uint node, Stroke stroke) {
+        uint run = blueprint.addStroke(owner, view.idAt(node), stroke);
+        strokes.add(view, owner, run, node, stroke, blueprint.paintedBy(owner).reached);
     }
 
     void release() {
@@ -265,22 +264,22 @@ bool isTilePinned(ref const Graph graph, uint tile) {
 }
 
 bool isPinning(ref const Graph graph, NodeId id) {
-    uint slot = graph.slotOf(id);
-    return slot != NO_SLOT && graph.structures.at(slot).isPinning;
+    MaybeIndex!uint slot = graph.slotOf(id);
+    return slot.exists && graph.structures.at(slot.value).isPinning;
 }
 
 void dropTile(ref Graph graph, uint tile) {
     StructureStore* structures = &graph.structures;
     foreach (id; structures.blueprint.tiles.ptr[tile].painted.reached.slice()) {
-        structures.strokes.remove(id, tile);
-        uint slot = graph.slotOf(id);
-        if (slot != NO_SLOT && !structures.at(slot).isFinished) {
-            structures.at(slot).marks.clear(NodeMark.covered);
+        structures.strokes.remove(id, PaintOwner.ofTile(tile));
+        MaybeIndex!uint slot = graph.slotOf(id);
+        if (slot.exists && !structures.at(slot.value).isFinished) {
+            structures.at(slot.value).marks.clear(NodeMark.covered);
         }
     }
-    uint horosphere = structures.blueprint.tiles.ptr[tile].horosphere;
+    HorosphereId horosphere = structures.blueprint.tiles.ptr[tile].horosphere;
     if (horosphere != ROOT) {
-        graph.horospheres.horospheres.ptr[horosphere - 1].tiles -= 1;
+        graph.horospheres.horospheres.ptr[horosphere.index].tiles -= 1;
     }
     structures.blueprint.dropTile(tile);
 }
@@ -288,7 +287,7 @@ void dropTile(ref Graph graph, uint tile) {
 bool isTileGone(ref const Graph graph, uint tile) {
     foreach (ref used; graph.structures.blueprint.tiles.ptr[tile].edges.slice()) {
         foreach (node; used.nodes) {
-            if (graph.slotOf(node) != NO_SLOT) {
+            if (graph.slotOf(node).exists) {
                 return false;
             }
         }
@@ -302,7 +301,8 @@ void forgetTile(ref Graph graph, uint tile) {
     TileRecord* record = &blueprint.tiles.ptr[tile];
     structures.tiledFaces.remove(TileKey(record.face, record.feature));
     foreach (ref used; record.edges.slice()) {
-        if (blueprint.releaseEdge(used.edge)) {
+        bool unused = blueprint.releaseEdge(used.edge);
+        if (unused) {
             foreach (node; used.nodes) {
                 structures.removePending(node, used.edge);
             }

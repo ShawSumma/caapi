@@ -1,6 +1,6 @@
 module plugins.planet.plugin;
 
-import plugins.api.api : Api, NO_KIND, Registry, Site, entryOf;
+import plugins.api.api : Api, Registry, Site, Spot, entryOf;
 import plugins.connector.connector : Connection;
 import plugins.horospheres.horospheres : Kinds, WILD_LOOK, addKinds;
 import plugins.turtle.turtle : Turtle;
@@ -10,7 +10,7 @@ enum double TREE_ODDS = 0.002;
 enum int TREE_EDGES = 1;
 enum uint TREE_RISE = 2;
 enum int LANDMARK_RINGS = 3;
-immutable float[3] SPAWN = [-14, 12, 0];
+immutable Spot SPAWN = Spot(-14, 12, 0);
 immutable Connection CONNECTION = Connection.rolled();
 
 struct LandmarkSites {
@@ -38,7 +38,8 @@ void landmarks(const(Api)* api, Turtle at) {
     LandmarkSites sites = LandmarkSites([ahead.forward(1), behind.forward(1), aside, beyond]);
     foreach (index; 0 .. LANDMARK_RINGS * cast(uint) sites.arms.length) {
         Turtle site = sites.take();
-        if (!api.landmark(api, index, site.site)) {
+        bool placed = api.landmark(api, index, site.site);
+        if (!placed) {
             return;
         }
         api.flatten(api, site.site);
@@ -51,10 +52,10 @@ void world(const(Api)* api, Site site, const(void)* data) {
     Kinds kinds = addKinds(api, RISE_ODDS, TREE_ODDS, &CONNECTION);
     api.rooted(api, kinds.wild);
     api.risingKinds(api, RISE_ODDS);
-    api.look(api, NO_KIND, &WILD_LOOK);
+    api.worldLook(api, &WILD_LOOK);
     Turtle tree = at.right().forward(TREE_EDGES);
     api.openHorosphere(api, tree.site, kinds.tree, TREE_RISE);
-    tree.entrance(SPAWN[0], SPAWN[1], SPAWN[2]);
+    tree.entrance(SPAWN.x, SPAWN.y, SPAWN.z);
     landmarks(api, at);
 }
 

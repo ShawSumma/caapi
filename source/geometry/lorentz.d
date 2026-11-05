@@ -3,6 +3,7 @@ module geometry.lorentz;
 import core.math : sqrt;
 import core.stdc.math : acosh, cosh, sinh;
 import base.numbers : higherOf;
+import base.vector3 : Vec3;
 
 struct Vec4(T) {
     T[4] c = [0, 0, 0, 0];
@@ -27,8 +28,8 @@ struct Vec4(T) {
         return Normal!T(this * (1 / sqrt(minkowski(this))));
     }
 
-    T[3] spatial() const {
-        return [c[0], c[1], c[2]];
+    Vec3!T spatial() const {
+        return Vec3!T(c[0], c[1], c[2]);
     }
 
     Vec4 opBinary(string op)(Vec4 rhs) const if (op == "+" || op == "-") {
@@ -196,12 +197,12 @@ struct Motion(T) {
         return result;
     }
 
-    static Motion shift(T[3] v) {
-        T length = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    static Motion shift(Vec3!T v) {
+        T length = sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
         if (length == 0) {
             return identity();
         } else {
-            T[3] u = [v[0] / length, v[1] / length, v[2] / length];
+            Vec3!T u = Vec3!T(v.x / length, v.y / length, v.z / length);
             T coshLength = cast(T) cosh(length);
             T sinhLength = cast(T) sinh(length);
             Motion result = identity();
@@ -222,14 +223,14 @@ struct Motion(T) {
     }
 
     static Motion shiftTo(Point!T target) {
-        T[3] spatial = target.v.spatial();
-        T length = sqrt(spatial[0] * spatial[0] + spatial[1] * spatial[1] + spatial[2] * spatial[2]);
+        Vec3!T spatial = target.v.spatial();
+        T length = sqrt(spatial.x * spatial.x + spatial.y * spatial.y + spatial.z * spatial.z);
         if (length == 0) {
             return identity();
         } else {
             T distance = target.distance(Point!T.origin());
             T scale = distance / length;
-            return shift([spatial[0] * scale, spatial[1] * scale, spatial[2] * scale]);
+            return shift(Vec3!T(spatial.x * scale, spatial.y * scale, spatial.z * scale));
         }
     }
 

@@ -1,7 +1,7 @@
 module plugins.palace.plugin;
 
-import plugins.api.api : Api, Look, Material, NO_KIND, Registry, Risen, Site, SitePart, Turn, entryOf;
-import plugins.turtle.turtle : Along, Turtle, boxOf, cornersOf, grass, line, roll, upright;
+import plugins.api.api : Api, Look, Material, Registry, Risen, Site, SitePart, Span, Turn, entryOf;
+import plugins.turtle.turtle : Along, Turtle, boxOf, cornersOf, grass, line, middle, roll, upright;
 
 immutable Look LOOK = Look("palace");
 
@@ -14,11 +14,11 @@ enum int DOOR_TOP = 3;
 enum int LANDING = 4;
 enum int TREADS = 10;
 enum int TREAD_DEPTH = 2;
-enum int[2] STAIR_Y = [1, 6];
-enum int[2] DOOR_X = [2, 3];
-enum int[2] WINDOW_Z = [2, 7];
+enum Span STAIR_Y = Span(1, 6);
+enum Span DOOR_X = Span(2, 3);
+enum Span WINDOW_Z = Span(2, 7);
 enum int WINDOW_EVERY = 4;
-enum int[2] LAMP_Z = [6, 8];
+enum Span LAMP_Z = Span(6, 8);
 enum int LAMP = 6;
 enum int BASIN = 8;
 enum int JET_TOP = -6;
@@ -28,32 +28,35 @@ enum Material STONE = Material.limestone;
 enum Material FLOOR_STONE = Material.marble;
 enum Material TREAD = Material.whiteBrick;
 
-struct Footprint {
-    ulong[MOST_FACES] hashes;
-    Turtle[MOST_FACES] faces;
+struct FaceHashes {
+    ulong[MOST_FACES] items;
     uint count;
 
     bool contains(ulong hash) const {
         uint index = 0;
-        while (index < count && hashes[index] != hash) {
+        while (index < count && items[index] != hash) {
             index += 1;
         }
         return index < count;
     }
-
-    void add(Turtle face) {
-        ulong hash = face.hash(SitePart.face);
-        if (!contains(hash)) {
-            hashes[count] = hash;
-            faces[count] = face;
-            count += 1;
-        }
-    }
 }
 
-struct Lawn {
-    ulong[MOST_FACES] hashes;
-    uint count;
+struct Footprint {
+    FaceHashes hashes;
+    Turtle[MOST_FACES] faces;
+
+    void add(Turtle face) {
+        ulong hash = face.probeHash(SitePart.face);
+        if (!hashes.contains(hash)) {
+            hashes.items[hashes.count] = hash;
+            faces[hashes.count] = face;
+            hashes.count += 1;
+        }
+    }
+
+    const(Turtle)[] slice() const return {
+        return faces[0 .. hashes.count];
+    }
 }
 
 Footprint footprintOf(Turtle root) {
@@ -67,33 +70,36 @@ Footprint footprintOf(Turtle root) {
     return footprint;
 }
 
-bool isExterior(ref const Footprint footprint, Turtle across) {
-    return !footprint.contains(across.hash(SitePart.face));
+bool probeExterior(ref const Footprint footprint, Turtle across) {
+    ulong face = across.probeHash(SitePart.face);
+    return !footprint.hashes.contains(face);
 }
 
 void outerWall(Turtle tower, Along direction) {
     int far = tower.column().high;
-    tower.paint(STONE, line(direction, [0, far], [FLOOR - 1, ROOF]));
+    tower.paint(STONE, line(direction, Span(0, far), Span(FLOOR - 1, ROOF)));
     for (int along = 2; along < far; along += WINDOW_EVERY) {
-        tower.paint(Material.glass, line(direction, [along, along + 1], WINDOW_Z));
+        tower.paint(Material.glass, line(direction, Span(along, along + 1), WINDOW_Z));
     }
 }
 
 void hall(Turtle corner, ref const Footprint footprint) {
     Turtle tower = upright(corner);
     int far = tower.column().high;
-    int[2] whole = [0, far];
-    tower.paint(Material.none, boxOf(whole, whole, [FLOOR + 1, CEILING - 1]));
-    tower.paint(FLOOR_STONE, boxOf(whole, whole, [FLOOR - 1, FLOOR]));
-    tower.paint(Material.plaster, boxOf(whole, whole, [CEILING, CEILING]));
-    tower.paint(STONE, boxOf(whole, whole, [ROOF, ROOF]));
-    tower.paint(FLOOR_STONE, boxOf([0, 1], [0, 1], [FLOOR, CEILING]));
-    tower.paint(Material.steel, boxOf([LAMP, LAMP], [LAMP, LAMP], [LAMP_Z[1] + 1, CEILING - 1]));
-    tower.paint(Material.lightPanel, boxOf([LAMP, LAMP], [LAMP, LAMP], LAMP_Z));
-    if (isExterior(footprint, corner.left())) {
+    Span whole = Span(0, far);
+    tower.paint(Material.none, boxOf(whole, whole, Span(FLOOR + 1, CEILING - 1)));
+    tower.paint(FLOOR_STONE, boxOf(whole, whole, Span(FLOOR - 1, FLOOR)));
+    tower.paint(Material.plaster, boxOf(whole, whole, Span(CEILING, CEILING)));
+    tower.paint(STONE, boxOf(whole, whole, Span(ROOF, ROOF)));
+    tower.paint(FLOOR_STONE, boxOf(Span(0, 1), Span(0, 1), Span(FLOOR, CEILING)));
+    tower.paint(Material.steel, boxOf(Span(LAMP, LAMP), Span(LAMP, LAMP), Span(LAMP_Z.high + 1, CEILING - 1)));
+    tower.paint(Material.lightPanel, boxOf(Span(LAMP, LAMP), Span(LAMP, LAMP), LAMP_Z));
+    bool outerX = probeExterior(footprint, corner.left());
+    if (outerX) {
         outerWall(tower, Along.x);
     }
-    if (isExterior(footprint, corner.right())) {
+    bool outerY = probeExterior(footprint, corner.right());
+    if (outerY) {
         outerWall(tower, Along.y);
     }
 }
@@ -101,10 +107,10 @@ void hall(Turtle corner, ref const Footprint footprint) {
 void centrePiece(Turtle corner) {
     Turtle tower = upright(corner);
     int far = tower.column().high;
-    tower.paint(Material.redCarpet, boxOf([2, BASIN - 1], [2, BASIN - 1], [FLOOR, FLOOR]));
-    tower.paint(FLOOR_STONE, boxOf([BASIN, far], [BASIN, far], [FLOOR + 1, FLOOR + 1]));
-    tower.paint(Material.water, boxOf([BASIN + 1, far], [BASIN + 1, far], [FLOOR + 1, FLOOR + 1]));
-    tower.paint(Material.water, boxOf([far, far], [far, far], [FLOOR + 2, JET_TOP]));
+    tower.paint(Material.redCarpet, boxOf(Span(2, BASIN - 1), Span(2, BASIN - 1), Span(FLOOR, FLOOR)));
+    tower.paint(FLOOR_STONE, boxOf(Span(BASIN, far), Span(BASIN, far), Span(FLOOR + 1, FLOOR + 1)));
+    tower.paint(Material.water, boxOf(Span(BASIN + 1, far), Span(BASIN + 1, far), Span(FLOOR + 1, FLOOR + 1)));
+    tower.paint(Material.water, boxOf(Span(far, far), Span(far, far), Span(FLOOR + 2, JET_TOP)));
 }
 
 struct Run {
@@ -130,27 +136,27 @@ int alongIn(ref const Run run, int cell) {
 }
 
 void grandStair(ref const Run run) {
-    run.near.paint(Material.none, boxOf(DOOR_X, [0, 0], [GROUND, GROUND + DOOR_TOP]));
-    run.near.paint(TREAD, boxOf([0, LANDING - 1], STAIR_Y, [FLOOR, GROUND - 1]));
+    run.near.paint(Material.none, boxOf(DOOR_X, Span(0, 0), Span(GROUND, GROUND + DOOR_TOP)));
+    run.near.paint(TREAD, boxOf(Span(0, LANDING - 1), STAIR_Y, Span(FLOOR, GROUND - 1)));
     foreach (step; 1 .. TREADS) {
         foreach (offset; 0 .. TREAD_DEPTH) {
             int cell = LANDING + (step - 1) * TREAD_DEPTH + offset;
             int along = alongIn(run, cell);
-            frameAt(run, cell).paint(TREAD, boxOf([along, along], STAIR_Y, [FLOOR, GROUND - step - 1]));
+            frameAt(run, cell).paint(TREAD, boxOf(Span(along, along), STAIR_Y, Span(FLOOR, GROUND - step - 1)));
         }
     }
 }
 
 void stairRoute(ref const Run run) {
-    float lane = (STAIR_Y[0] + STAIR_Y[1] + 1) / 2.0f;
+    float lane = middle(STAIR_Y);
     int floorCell = LANDING + (TREADS - 1) * TREAD_DEPTH;
-    run.far.stop(alongIn(run, floorCell) + 0.5f, STAIR_Y[1] + 3.5f, FLOOR + 1);
+    run.far.stop(alongIn(run, floorCell) + 0.5f, STAIR_Y.high + 3.5f, FLOOR + 1);
     run.far.stop(alongIn(run, floorCell) + 0.5f, lane, FLOOR + 1);
     foreach_reverse (step; 1 .. TREADS) {
         int cell = LANDING + (step - 1) * TREAD_DEPTH + 1;
         frameAt(run, cell).stop(alongIn(run, cell), lane, GROUND - step);
     }
-    float door = (DOOR_X[0] + DOOR_X[1] + 1) / 2.0f;
+    float door = middle(DOOR_X);
     run.near.stop(door, lane, GROUND);
     run.near.stop(door, 0.5f, GROUND);
     run.near.stop(door, -2.5f, GROUND);
@@ -158,13 +164,9 @@ void stairRoute(ref const Run run) {
 
 void lawn(const(Api)* api, Site site, const(Risen)* risen, const(void)* data) {
     Turtle face = Turtle(api, site);
-    const(Lawn)* lawn = cast(const(Lawn)*) data;
-    ulong hash = face.hash(SitePart.face);
-    uint index = 0;
-    while (index < lawn.count && lawn.hashes[index] != hash) {
-        index += 1;
-    }
-    if (index == lawn.count) {
+    const(FaceHashes)* built = cast(const(FaceHashes)*) data;
+    ulong hash = face.probeHash(SitePart.face);
+    if (!built.contains(hash)) {
         grass(face);
     }
 }
@@ -178,24 +180,29 @@ Halls halls(Turtle root) {
     Footprint footprint = footprintOf(root);
     Run entranceRun;
     uint stairs = 0;
-    foreach (face; footprint.faces[0 .. footprint.count]) {
+    foreach (face; footprint.slice()) {
         foreach (corner; cornersOf(face)) {
             hall(corner, footprint);
-            if (face.hash(SitePart.face) == footprint.hashes[0]) {
+            ulong hash = face.probeHash(SitePart.face);
+            if (hash == footprint.hashes.items[0]) {
                 centrePiece(corner);
             }
         }
     }
-    foreach (face; footprint.faces[0 .. footprint.count]) {
+    foreach (face; footprint.slice()) {
         foreach (corner; cornersOf(face)) {
-            if (isExterior(footprint, corner.left()) && (stairs == 0 || roll(corner.hash(SitePart.edge), STAIR_SALT) < STAIR_ODDS)) {
-                Run run = Run(upright(corner), upright(corner.forward(1)));
-                grandStair(run);
-                if (stairs == 0) {
-                    stairRoute(run);
-                    entranceRun = run;
+            bool exterior = probeExterior(footprint, corner.left());
+            if (exterior) {
+                double rolled = roll(corner.probeHash(SitePart.edge), STAIR_SALT);
+                if (stairs == 0 || rolled < STAIR_ODDS) {
+                    Run run = Run(upright(corner), upright(corner.forward(1)));
+                    grandStair(run);
+                    if (stairs == 0) {
+                        stairRoute(run);
+                        entranceRun = run;
+                    }
+                    stairs += 1;
                 }
-                stairs += 1;
             }
         }
     }
@@ -208,10 +215,9 @@ void landmark(const(Api)* api, Site site, const(void)* data) {
 
 void world(const(Api)* api, Site site, const(void)* data) {
     Halls built = halls(Turtle(api, site));
-    Lawn lawnData = Lawn(built.footprint.hashes, built.footprint.count);
-    built.entranceRun.near.turned(Turn.rollLeft).entrance(0, -(DOOR_X[0] + DOOR_X[1] + 1) / 2.0f, GROUND);
-    api.tile(api, &lawn, &lawnData, Lawn.sizeof);
-    api.look(api, NO_KIND, &LOOK);
+    built.entranceRun.near.turn(Turn.rollLeft).entrance(0, -middle(DOOR_X), GROUND);
+    api.tile(api, &lawn, &built.footprint.hashes, FaceHashes.sizeof);
+    api.worldLook(api, &LOOK);
 }
 
 pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {

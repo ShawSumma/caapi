@@ -4,10 +4,11 @@ import core.math : sqrt;
 import core.stdc.math : atan2, fabs, round;
 import core.stdc.stdio : FILE, fprintf;
 import base.clock : MILLISECONDS_PER_SECOND, PhaseTimes;
-import base.maybe : Maybe;
+import base.maybe : Maybe, MaybeIndex;
 import base.numbers : higherOf, lowerOf;
+import base.vector3 : Vec3;
 import client.images : ImageDifference;
-import common.graph : Graph, NO_SLOT;
+import common.graph : Graph;
 import common.position : Position;
 import geometry.honeycomb : FACE_COUNT, Face, mirror;
 import geometry.lorentz : Motion, Point;
@@ -31,7 +32,7 @@ struct RenderTimes {
 
 struct FrameRecord {
     uint frame;
-    Maybe!double intervalMs = Maybe!double(0, false);
+    Maybe!double intervalMs;
     double dtMs = 0;
     double stepMs = 0;
     RenderTimes render;
@@ -41,7 +42,13 @@ struct FrameRecord {
     Maybe!ImageDifference image;
 
     void print(FILE* report) const {
-        fprintf(report, "frame %u: interval %.2fms dt %.2fms step %.2fms render %.2fms (fence %.2f update %.2f present %.2f, gpu %.2f) input %+.0f %+.0f", frame, intervalMs.value, dtMs, stepMs, render.totalMs, render.fenceMs, render.updateMs, render.presentMs, render.gpuMs, dx, dy);
+        fprintf(report, "frame %u:", frame);
+        if (intervalMs.exists) {
+            fprintf(report, " interval %.2fms", intervalMs.value);
+        } else {
+            fprintf(report, " first frame");
+        }
+        fprintf(report, " dt %.2fms step %.2fms render %.2fms (fence %.2f update %.2f present %.2f, gpu %.2f) input %+.0f %+.0f", dtMs, stepMs, render.totalMs, render.fenceMs, render.updateMs, render.presentMs, render.gpuMs, dx, dy);
         if (step.exists) {
             fprintf(report, " turned %.5f moved %.5f", step.value.turned, step.value.moved);
         } else {
@@ -54,9 +61,14 @@ struct FrameRecord {
     }
 }
 
+struct MouseCounts {
+    double dx = 0;
+    double dy = 0;
+}
+
 struct MouseMotion {
-    double[2] total = 0;
-    double[2] sent = 0;
+    MouseCounts total;
+    MouseCounts sent;
     uint steps;
     uint done;
 
@@ -64,14 +76,11 @@ struct MouseMotion {
         return done < steps;
     }
 
-    double[2] next() {
+    MouseCounts next() {
         done += 1;
-        double[2] share;
-        foreach (axis; 0 .. 2) {
-            double target = round(total[axis] * done / steps);
-            share[axis] = target - sent[axis];
-            sent[axis] = target;
-        }
+        MouseCounts target = MouseCounts(round(total.dx * done / steps), round(total.dy * done / steps));
+        MouseCounts share = MouseCounts(target.dx - sent.dx, target.dy - sent.dy);
+        sent = target;
         return share;
     }
 }
@@ -95,7 +104,7 @@ struct FrameSummary {
     double worstIntervalMs = 0;
     double stepErrorTotalMs = 0;
     double worstStepErrorMs = 0;
-    double slowestSpeed = double.infinity;
+    double slowestSpeed = 0;
     double fastestSpeed = 0;
     double speedTotal = 0;
 
@@ -126,6 +135,9 @@ struct FrameSummary {
             worstStepErrorMs = higherOf(error, worstStepErrorMs);
             if (record.step.exists && record.step.value.moved > MOVING_DISTANCE && interval > 0) {
                 double speed = record.step.value.moved / (interval / MILLISECONDS_PER_SECOND);
+                if (moving == 0) {
+                    slowestSpeed = speed;
+                }
                 moving += 1;
                 speedTotal += speed;
                 slowestSpeed = lowerOf(speed, slowestSpeed);
@@ -159,15 +171,15 @@ struct FrameSummary {
 }
 
 Maybe!CameraStep cameraStep(ref const Graph graph, Position before, Position after) {
-    uint from = graph.slotOf(before.node);
-    uint to = graph.slotOf(after.node);
-    if (from == NO_SLOT || to == NO_SLOT) {
+    MaybeIndex!uint from = graph.slotOf(before.node);
+    MaybeIndex!uint to = graph.slotOf(after.node);
+    if (!from.exists || !to.exists) {
         return Maybe!CameraStep.init;
     } else if (from == to) {
         return Maybe!CameraStep.of(stepBetween(before.local.as!double(), after.local.as!double()));
     } else {
         foreach (face; 0 .. FACE_COUNT) {
-            if (graph.neighborSlot(to, cast(Face) face) == from) {
+            if (graph.neighborSlot(to.value, cast(Face) face) == from) {
                 return Maybe!CameraStep.of(stepBetween((cast(Face) face).mirror.as!double() * before.local.as!double(), after.local.as!double()));
             }
         }
@@ -180,7 +192,7 @@ CameraStep stepBetween(Motion!double before, Motion!double after) {
     Point!double reached = step * Point!double.origin();
     Motion!double turn = Motion!double.shiftTo(reached).inverse() * step;
     double cosine = (turn.m.c[0][0] + turn.m.c[1][1] + turn.m.c[2][2] - 1) / 2;
-    double[3] axis = [turn.m.c[1][2] - turn.m.c[2][1], turn.m.c[2][0] - turn.m.c[0][2], turn.m.c[0][1] - turn.m.c[1][0]];
-    double sine = sqrt(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]) / 2;
+    Vec3!double axis = Vec3!double(turn.m.c[1][2] - turn.m.c[2][1], turn.m.c[2][0] - turn.m.c[0][2], turn.m.c[0][1] - turn.m.c[1][0]);
+    double sine = sqrt(axis.x * axis.x + axis.y * axis.y + axis.z * axis.z) / 2;
     return CameraStep(atan2(sine, cosine), reached.distance(Point!double.origin()));
 }

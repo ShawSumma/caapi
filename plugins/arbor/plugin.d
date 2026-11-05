@@ -1,11 +1,11 @@
 module plugins.arbor.plugin;
 
-import plugins.api.api : Api, HorosphereForm, Look, Material, NO_KIND, Registry, Risen, RisingKind, Site, Tint, entryOf;
+import plugins.api.api : Api, Color, HorosphereForm, KindId, Look, Material, Registry, Risen, RisingKind, Site, Span, Spot, Tint, entryOf;
 import plugins.connector.connector : Tag;
 import plugins.horospheres.tree : TRUNK_RADIUS, Trunk, segment;
-import plugins.turtle.turtle : Rows, STAIR_HEADROOM, TREAD_THICKNESS, TURN_TREADS, Turtle, boxOf, floorMod, lawn, onWedge, ringRows, treadSpan, wedgeRows;
+import plugins.turtle.turtle : Offset, Rows, STAIR_HEADROOM, TREAD_THICKNESS, TURN_TREADS, Turtle, boxOf, floorMod, lawn, onWedge, ringRows, treadSpan, wedgeRows;
 
-immutable Look LOOK = Look("arbor", [0.72f, 0.84f, 0.74f], Tint.fog);
+immutable Look LOOK = Look("arbor", Color(0.72f, 0.84f, 0.74f), Tint.fog);
 
 enum double TREAD_IN = TRUNK_RADIUS - 1;
 enum double ROOM_IN = TRUNK_RADIUS + 1.5;
@@ -23,7 +23,7 @@ enum double ROOT_SHARE = 0.1;
 enum Material STEP = Material.spruceWood;
 enum Material DECK = Material.woodPlanks;
 enum Material POST = Material.spruceWood;
-immutable float[3] SPAWN = [6, 0, 0];
+immutable Spot SPAWN = Spot(6, 0, 0);
 
 void climb(Turtle tower, int bottom, int ground) {
     Rows[TURN_TREADS] treads = wedgeRows(tower.column(), TREAD_IN, TREAD_OUT);
@@ -47,13 +47,13 @@ void climb(Turtle tower, int bottom, int ground) {
 void deck(Turtle tower) {
     Rows floor = ringRows(tower.column(), TREAD_IN, DECK_OUT);
     Rows rail = ringRows(tower.column(), RAIL_IN, DECK_OUT);
-    tower.fillRows(DECK, floor, [0, 0]);
-    tower.fillRows(POST, rail, [1, 1]);
+    tower.fillRows(DECK, floor, Span(0, 0));
+    tower.fillRows(POST, rail, Span(1, 1));
     foreach (tread; 0 .. TURN_TREADS / LANTERN_EVERY) {
-        float[2] at = onWedge(tread * LANTERN_EVERY, RAIL_IN);
-        int x = cast(int) at[0];
-        int y = cast(int) at[1];
-        tower.fill(Material.lightPanel, boxOf([x, x], [y, y], [2, LANTERN_HEIGHT]));
+        Offset at = onWedge(tread * LANTERN_EVERY, RAIL_IN);
+        int x = cast(int) at.x;
+        int y = cast(int) at.y;
+        tower.fill(Material.lightPanel, boxOf(Span(x, x), Span(y, y), Span(2, LANTERN_HEIGHT)));
     }
 }
 
@@ -70,16 +70,16 @@ void tile(const(Api)* api, Site base, const(Risen)* risen, const(void)* data) {
 }
 
 void plant(const(Api)* api, Site at) {
-    uint kind = api.horosphere(api, 0, HorosphereForm.upright, Tag.tree, &tile, null, 0);
+    KindId kind = api.horosphere(api, 0, HorosphereForm.upright, Tag.tree, &tile, null, 0);
     api.openHorosphere(api, at, kind, TREE_EDGES);
 }
 
 void route(Turtle tower) {
-    float[2] foot = onWedge(0, TREAD_OUT + 2);
-    tower.stop(foot[0], foot[1], 0);
+    Offset foot = onWedge(0, TREAD_OUT + 2);
+    tower.stop(foot.x, foot.y, 0);
     foreach (tread; 0 .. ROUTE_TURNS * TURN_TREADS) {
-        float[2] at = onWedge(tread, ROUTE_RADIUS);
-        tower.stop(at[0], at[1], tread + 1);
+        Offset at = onWedge(tread, ROUTE_RADIUS);
+        tower.stop(at.x, at.y, tread + 1);
     }
 }
 
@@ -90,10 +90,10 @@ void landmark(const(Api)* api, Site at, const(void)* data) {
 void world(const(Api)* api, Site at, const(void)* data) {
     plant(api, at);
     api.tile(api, &lawn, null, 0);
-    api.look(api, NO_KIND, &LOOK);
+    api.worldLook(api, &LOOK);
     Turtle tower = Turtle(api, at).columnSite();
     route(tower);
-    tower.entrance(SPAWN[0], SPAWN[1], SPAWN[2]);
+    tower.entrance(SPAWN.x, SPAWN.y, SPAWN.z);
 }
 
 pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {

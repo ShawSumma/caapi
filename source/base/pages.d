@@ -22,7 +22,6 @@ version (WebAssembly) {
     void giveBack(void* base, size_t from, size_t to) {
     }
 } else {
-    import core.atomic : MemoryOrder, atomicLoad, atomicStore;
     import core.sys.posix.sys.mman : MAP_ANON, MAP_PRIVATE, PROT_READ, PROT_WRITE, mmap, munmap;
     import core.sys.posix.unistd : _SC_PAGESIZE, sysconf;
 
@@ -42,15 +41,8 @@ version (WebAssembly) {
         munmap(memory, size);
     }
 
-    shared size_t pageBytes;
-
     size_t pageSize() {
-        size_t known = atomicLoad!(MemoryOrder.raw)(pageBytes);
-        if (known == 0) {
-            known = sysconf(_SC_PAGESIZE);
-            atomicStore!(MemoryOrder.raw)(pageBytes, known);
-        }
-        return known;
+        return sysconf(_SC_PAGESIZE);
     }
 
     void giveBack(void* base, size_t from, size_t to) {

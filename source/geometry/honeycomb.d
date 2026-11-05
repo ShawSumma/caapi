@@ -2,6 +2,7 @@ module geometry.honeycomb;
 
 import core.math : sqrt;
 import base.numbers : acoshAtCompileTime, asinhAtCompileTime, higherOf;
+import base.vector3 : Vec3;
 import geometry.cube : AxisMap;
 import geometry.lorentz : Mat4, Motion, Normal, Point, Vec4;
 
@@ -18,7 +19,6 @@ enum Corner : ubyte {
     last = CORNER_COUNT - 1,
 }
 
-enum ubyte NO_CORNER = ubyte.max;
 enum double ORTHOGONAL_TOLERANCE = 1e-12;
 enum double GOLDEN = 1.6180339887498948482;
 enum float BEYOND_TOLERANCE = 1e-6f;
@@ -26,8 +26,8 @@ enum float BEYOND_TOLERANCE = 1e-6f;
 struct Honeycomb {
     Normal!float[FACE_COUNT] normals;
     Motion!float[FACE_COUNT] mirrors;
-    float[3][FACE_COUNT] directions;
-    float[3][FACE_COUNT] references;
+    Vec3!float[FACE_COUNT] directions;
+    Vec3!float[FACE_COUNT] references;
     Face[FACE_COUNT] opposites;
     ushort[FACE_COUNT] adjacent;
     Face[3][CORNER_COUNT] cornerFaces;
@@ -48,11 +48,9 @@ struct Honeycomb {
         foreach (face; 0 .. FACE_COUNT) {
             h.normals[face] = normals[face].as!float();
             h.mirrors[face] = Motion!double.reflection(normals[face]).as!float();
-            double[3] spatial = normals[face].v.spatial();
-            double length = sqrt(spatial[0] * spatial[0] + spatial[1] * spatial[1] + spatial[2] * spatial[2]);
-            foreach (axis; 0 .. 3) {
-                h.directions[face][axis] = cast(float)(spatial[axis] / length);
-            }
+            Vec3!double spatial = normals[face].v.spatial();
+            double length = sqrt(spatial.x * spatial.x + spatial.y * spatial.y + spatial.z * spatial.z);
+            h.directions[face] = Vec3!float(cast(float)(spatial.x / length), cast(float)(spatial.y / length), cast(float)(spatial.z / length));
             h.sinhFaceDistance = cast(float)(normals[face].v.c[3]);
             foreach (other; 0 .. FACE_COUNT) {
                 double product = normals[face].minkowski(normals[other].v);
@@ -100,8 +98,7 @@ struct Honeycomb {
         double farthest = 1;
         double farthestFromGrid = 1;
         foreach (cubeCorner; 0 .. 8) {
-            double[3] at = [(cubeCorner & 1) * toCube, ((cubeCorner >> 1) & 1) * toCube, ((cubeCorner >> 2) & 1) * toCube];
-            Point!double point = (frames[0] * Vec4!double([at[0], at[1], at[2], 1])).toPoint();
+            Point!double point = (frames[0] * Vec4!double([(cubeCorner & 1) * toCube, ((cubeCorner >> 1) & 1) * toCube, ((cubeCorner >> 2) & 1) * toCube, 1])).toPoint();
             farthest = higherOf(farthest, center.coshDistance(point));
             farthestFromGrid = higherOf(farthestFromGrid, gridCenter.coshDistance(point));
         }
@@ -161,10 +158,10 @@ Normal!double[FACE_COUNT] faceNormals() {
         if ((signs & 2) != 0) {
             second = -GOLDEN;
         }
-        double[3] direction = [0, 0, 0];
+        Vec3!double direction = Vec3!double(0, 0, 0);
         direction[(placement + 1) % 3] = first / length;
         direction[(placement + 2) % 3] = second / length;
-        normals[face] = Normal!double(Vec4!double([a * direction[0], a * direction[1], a * direction[2], b]));
+        normals[face] = Normal!double(Vec4!double([a * direction.x, a * direction.y, a * direction.z, b]));
     }
     return normals;
 }
@@ -188,12 +185,12 @@ Motion!double cornerFrame(Normal!double a, Normal!double b, Normal!double c) {
     return Motion!double.fromFrame([-a, -b, -c], corner);
 }
 
-float[3] referenceIn(float[3] direction, Point!double corner) {
-    double[3] point = corner.v.spatial();
-    double along = point[0] * direction[0] + point[1] * direction[1] + point[2] * direction[2];
-    double[3] reference = [point[0] - along * direction[0], point[1] - along * direction[1], point[2] - along * direction[2]];
-    double length = sqrt(reference[0] * reference[0] + reference[1] * reference[1] + reference[2] * reference[2]);
-    return [cast(float)(reference[0] / length), cast(float)(reference[1] / length), cast(float)(reference[2] / length)];
+Vec3!float referenceIn(Vec3!float direction, Point!double corner) {
+    Vec3!double point = corner.v.spatial();
+    double along = point.x * direction.x + point.y * direction.y + point.z * direction.z;
+    Vec3!double reference = Vec3!double(point.x - along * direction.x, point.y - along * direction.y, point.z - along * direction.z);
+    double length = sqrt(reference.x * reference.x + reference.y * reference.y + reference.z * reference.z);
+    return Vec3!float(cast(float)(reference.x / length), cast(float)(reference.y / length), cast(float)(reference.z / length));
 }
 
 bool isSameFaceSet(Face[3] a, Face[3] b) {
@@ -237,11 +234,11 @@ Face opposite(Face face) {
     return HONEYCOMB.opposites[face];
 }
 
-float[3] direction(Face face) {
+Vec3!float direction(Face face) {
     return HONEYCOMB.directions[face];
 }
 
-float[3] reference(Face face) {
+Vec3!float reference(Face face) {
     return HONEYCOMB.references[face];
 }
 

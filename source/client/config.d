@@ -12,6 +12,14 @@ enum PitchAxis : ubyte {
     inverted,
 }
 
+float pitchSign(PitchAxis axis) {
+    if (axis == PitchAxis.inverted) {
+        return -1.0f;
+    } else {
+        return 1.0f;
+    }
+}
+
 struct ClientConfig {
     Angle mouseTurnPerCount = Angle(0.001f);
     AngularSpeed keyTurnRate = AngularSpeed(1.5f);
@@ -25,8 +33,10 @@ struct ClientConfig {
             return config;
         } else {
             char[CONFIG_LINE_CAPACITY] line;
-            while (fgets(line.ptr, cast(int) line.length, file) !is null) {
+            const(char)* read = fgets(line.ptr, cast(int) line.length, file);
+            while (read !is null) {
                 config.apply(ConfigEntry.fromLine(line[0 .. strlen(line.ptr)]));
+                read = fgets(line.ptr, cast(int) line.length, file);
             }
             fclose(file);
             return config;

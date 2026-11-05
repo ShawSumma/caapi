@@ -8,7 +8,19 @@ dependency "mined:api" version="*"
 
 dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 libs "dl" "m" "pthread"
-preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :planet" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :road" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :city" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :backrooms" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :tower" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :crown" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :trail" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :fixtures" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :babel" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :library" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :palace" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :arbor" "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :lattice"
+preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :planet"
+preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :road"
+preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :city"
+preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :backrooms"
+preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :tower"
+preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :crown"
+preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :trail"
+preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :fixtures"
+preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :babel"
+preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :library"
+preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :palace"
+preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :arbor"
+preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :lattice"
 
 configuration "application" {
 	targetName "mined"
@@ -20,7 +32,20 @@ configuration "application" {
 	dflags "-P-I/opt/homebrew/include" platform="osx"
 	libs "vulkan" "objc" platform="osx"
 	lflags "-L/opt/homebrew/lib" "-framework" "AppKit" "-framework" "QuartzCore" platform="osx"
-	preBuildCommands "mkdir -p source/shaders/spv" "glslc -I source/shaders source/shaders/voxels.vert -o source/shaders/spv/voxels.vert.spv" "glslc -I source/shaders source/shaders/voxels.frag -o source/shaders/spv/voxels.frag.spv" "glslc -I source/shaders source/shaders/fullscreen.vert -o source/shaders/spv/fullscreen.vert.spv" "glslc -I source/shaders source/shaders/fog.frag -o source/shaders/spv/fog.frag.spv" "glslc -I source/shaders source/shaders/highlight.vert -o source/shaders/spv/highlight.vert.spv" "glslc -I source/shaders source/shaders/highlight.frag -o source/shaders/spv/highlight.frag.spv" "glslc -I source/shaders source/shaders/cull.comp -o source/shaders/spv/cull.comp.spv" "glslc -I source/shaders source/shaders/crosshair.vert -o source/shaders/spv/crosshair.vert.spv" "glslc -I source/shaders source/shaders/crosshair.frag -o source/shaders/spv/crosshair.frag.spv" "glslc -I source/shaders source/shaders/hud.vert -o source/shaders/spv/hud.vert.spv" "glslc -I source/shaders source/shaders/hud.frag -o source/shaders/spv/hud.frag.spv" "glslc -I source/shaders source/shaders/marker.vert -o source/shaders/spv/marker.vert.spv" "glslc -I source/shaders source/shaders/marker.frag -o source/shaders/spv/marker.frag.spv"
+	preBuildCommands "mkdir -p source/shaders/spv"
+	preBuildCommands "glslc -I source/shaders source/shaders/voxels.vert -o source/shaders/spv/voxels.vert.spv"
+	preBuildCommands "glslc -I source/shaders source/shaders/voxels.frag -o source/shaders/spv/voxels.frag.spv"
+	preBuildCommands "glslc -I source/shaders source/shaders/fullscreen.vert -o source/shaders/spv/fullscreen.vert.spv"
+	preBuildCommands "glslc -I source/shaders source/shaders/fog.frag -o source/shaders/spv/fog.frag.spv"
+	preBuildCommands "glslc -I source/shaders source/shaders/highlight.vert -o source/shaders/spv/highlight.vert.spv"
+	preBuildCommands "glslc -I source/shaders source/shaders/highlight.frag -o source/shaders/spv/highlight.frag.spv"
+	preBuildCommands "glslc -I source/shaders source/shaders/cull.comp -o source/shaders/spv/cull.comp.spv"
+	preBuildCommands "glslc -I source/shaders source/shaders/crosshair.vert -o source/shaders/spv/crosshair.vert.spv"
+	preBuildCommands "glslc -I source/shaders source/shaders/crosshair.frag -o source/shaders/spv/crosshair.frag.spv"
+	preBuildCommands "glslc -I source/shaders source/shaders/hud.vert -o source/shaders/spv/hud.vert.spv"
+	preBuildCommands "glslc -I source/shaders source/shaders/hud.frag -o source/shaders/spv/hud.frag.spv"
+	preBuildCommands "glslc -I source/shaders source/shaders/marker.vert -o source/shaders/spv/marker.vert.spv"
+	preBuildCommands "glslc -I source/shaders source/shaders/marker.frag -o source/shaders/spv/marker.frag.spv"
 }
 
 configuration "headless" {
@@ -39,6 +64,13 @@ configuration "unittest" {
 
 subPackage {
 	name "web"
+	targetType "none"
+	dependency "mined:webpack" version="*"
+	preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE --arch=wasm32-unknown-wasi :wasm"
+}
+
+subPackage {
+	name "wasm"
 	targetType "executable"
 	targetName "mined"
 	targetPath "obj/web"

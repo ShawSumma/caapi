@@ -1,9 +1,9 @@
 module plugins.buildings.rowhouse;
 
-import plugins.api.api : Box, Material;
+import plugins.api.api : Box, Material, Span;
 import plugins.buildings.building : Lots, Palette, Part, Parts, Spec, Split, Tier, chimney, crown, enter, footprint, isEmpty, makeParts, pick, punched, roof, shell, tiers;
 
-enum int[2] STORIES = [2, 3];
+enum Span STORIES = Span(2, 3);
 enum Material ROOF = Material.woodPlanks;
 enum int PIER_SPACING = 2;
 
@@ -38,7 +38,8 @@ void build(ref const Lots lots, Spec spec) {
         hipRoof(part, spec.palette, part.top);
     }
     enter(parts, spec);
-    if (pick(parts, 3) < 2) {
+    uint choice = pick(parts, 3);
+    if (choice < 2) {
         crown(parts, spec.palette, &chimney);
     }
 }

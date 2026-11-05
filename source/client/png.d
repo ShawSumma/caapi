@@ -236,7 +236,8 @@ PngImage decodePng(const(ubyte)[] bytes) {
         size_t rowBytes = 1 + cast(size_t) image.width * RGB_BYTES;
         size_t rawBytes = rowBytes * image.height;
         ubyte* raw = cast(ubyte*) malloc(rawBytes + 1);
-        if (inflateStored(deflated[0 .. deflatedBytes.value], raw[0 .. rawBytes])) {
+        bool inflated = inflateStored(deflated[0 .. deflatedBytes.value], raw[0 .. rawBytes]);
+        if (inflated) {
             image.rgb = unfiltered(raw, rowBytes, image.height);
         }
         free(raw);

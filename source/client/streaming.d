@@ -4,8 +4,9 @@ import core.atomic : atomicLoad;
 import core.stdc.math : acoshf, coshf;
 import core.stdc.stdlib : calloc, free;
 import base.array : Array;
-import base.clock : nowMilliseconds;
+import base.clock : Deadline, nowMilliseconds;
 import base.flags : Readiness;
+import base.maybe : Maybe;
 import base.numbers : lowerOf;
 import base.parallel : ConcurrentQueue, Executor, MAIN_WORKER, ParallelJob, TaskSource, WorkerPool;
 import base.units : Length;
@@ -16,20 +17,19 @@ import common.eviction : KEEP_RADIUS, Unloaded;
 import common.graph : Graph;
 import common.node : ChunkSlot, ChunkState, Occupancy;
 import common.position : Position;
-import common.traversal : NO_DEADLINE, NearbyNode;
+import common.traversal : NearbyNode;
 import common.view : GraphView;
-import common.worldgen.generation : ChunkParams, GeneratedVoxels;
+import common.worldgen.generation : ChunkParams, ChunkStructure, GeneratedVoxels;
 import common.worldgen.store : NodeMark, NodeStructure;
 import geometry.honeycomb : CORNER_COUNT, CUBE_RADIUS, Corner, cubeCenter;
 import geometry.lorentz : Motion, Point;
 
 enum size_t LOOKAHEAD_PER_CANDIDATE = 8;
-enum double RESCAN = 0;
 version (WebAssembly) {
-    enum uint MAX_SCAN_NODES_PER_FRAME = uint.max;
+    enum Maybe!uint MOST_SCANNED_PER_FRAME = Maybe!uint.init;
     enum size_t SCAN_WINDOW = 256;
 } else {
-    enum uint MAX_SCAN_NODES_PER_FRAME = 4096;
+    enum Maybe!uint MOST_SCANNED_PER_FRAME = Maybe!uint.of(4096);
     enum size_t SCAN_WINDOW = 4096;
 }
 enum uint IN_FLIGHT_PER_WORKER = 256;
@@ -62,10 +62,40 @@ enum Pacing : ubyte {
     unbudgeted,
 }
 
+enum Rescan : ubyte {
+    onceTraveled,
+    never,
+}
+
+struct NextScan {
+    double travel = 0;
+    Rescan rescan;
+}
+
+enum NextScan RESCAN_NOW = NextScan.init;
+
 struct ScanOutcome {
-    float nearestOutOfRange;
-    float nearestDropped;
+    Maybe!float nearestOutOfRange;
+    Maybe!float nearestDropped;
     ScanEnd end;
+}
+
+Maybe!float marginPast(Maybe!float coshNearest, float reach) {
+    if (coshNearest.exists) {
+        return Maybe!float.of(acoshf(coshNearest.value) - reach);
+    } else {
+        return Maybe!float.init;
+    }
+}
+
+Maybe!float nearerOf(Maybe!float a, Maybe!float b) {
+    if (!a.exists) {
+        return b;
+    } else if (!b.exists) {
+        return a;
+    } else {
+        return Maybe!float.of(lowerOf(a.value, b.value));
+    }
 }
 
 struct ScanRange {
@@ -79,16 +109,13 @@ struct ScanRange {
         return ScanRange(camera, range, coshf(range), keepRange, coshf(keepRange));
     }
 
-    double margin(ScanOutcome outcome) const {
-        float fresh = float.infinity;
-        if (outcome.nearestOutOfRange != float.infinity) {
-            fresh = acoshf(outcome.nearestOutOfRange) - range;
+    NextScan nextAfter(double travel, ScanOutcome outcome) const {
+        Maybe!float margin = nearerOf(marginPast(outcome.nearestOutOfRange, range), marginPast(outcome.nearestDropped, keepRange));
+        if (margin.exists) {
+            return NextScan(travel + margin.value, Rescan.onceTraveled);
+        } else {
+            return NextScan(0, Rescan.never);
         }
-        float dropped = float.infinity;
-        if (outcome.nearestDropped != float.infinity) {
-            dropped = acoshf(outcome.nearestDropped) - keepRange;
-        }
-        return lowerOf(fresh, dropped);
     }
 }
 
@@ -117,7 +144,8 @@ void computeParams(void* context, size_t index, uint worker) {
     ChunkSlot chunk = job.chunks[index].chunk;
     PlannedParams* made = &job.made[index];
     made.state = Readiness.pending;
-    if (view.chunkStructureAt(chunk.slot).isKnown) {
+    ChunkStructure structure = view.ensureChunkStructure(chunk.slot);
+    if (structure.isKnown) {
         made.params = ChunkParams.make(*view, chunk.slot, chunk.corner);
         if (view.isBlocked) {
             view.forget();
@@ -137,12 +165,12 @@ void computeParams(void* context, size_t index, uint worker) {
 struct ScanFacts {
     uint freshInRange;
     uint droppedInRange;
-    float nearestOutOfRange;
-    float nearestDropped;
+    Maybe!float nearestOutOfRange;
+    Maybe!float nearestDropped;
 }
 
 ScanFacts scanFacts(ref const Graph graph, NearbyNode nearbyNode, ScanRange range) {
-    ScanFacts found = ScanFacts(0, 0, float.infinity, float.infinity);
+    ScanFacts found;
     foreach (index; 0 .. CORNER_COUNT) {
         Corner corner = cast(Corner) index;
         ChunkState state = graph.chunks.at(ChunkSlot(nearbyNode.slot, corner)).state;
@@ -150,15 +178,15 @@ ScanFacts scanFacts(ref const Graph graph, NearbyNode nearbyNode, ScanRange rang
             float product = range.camera.coshDistance(nearbyNode.transform * corner.cubeCenter);
             if (!(product > range.threshold)) {
                 found.freshInRange |= 1u << index;
-            } else if (product < found.nearestOutOfRange) {
-                found.nearestOutOfRange = product;
+            } else {
+                found.nearestOutOfRange = nearerOf(found.nearestOutOfRange, Maybe!float.of(product));
             }
         } else if (state == ChunkState.dropped) {
             float product = range.camera.coshDistance(nearbyNode.transform * corner.cubeCenter);
             if (!(product > range.keepThreshold)) {
                 found.droppedInRange |= 1u << index;
-            } else if (product < found.nearestDropped) {
-                found.nearestDropped = product;
+            } else {
+                found.nearestDropped = nearerOf(found.nearestDropped, Maybe!float.of(product));
             }
         }
     }
@@ -218,7 +246,7 @@ struct Streamer {
     Array!PlannedChunk planned;
     Array!PlannedParams made;
     Array!ScanFacts facts;
-    Array!double rescanAt;
+    Array!NextScan rescanAt;
     Array!uint waiting;
     Array!uint nearCamera;
     RequiredChunks around;
@@ -259,7 +287,7 @@ struct Streamer {
             made.resize(planned.length);
             graph.threadViews.begin(graph, pool.participants());
             ParamsJob context = ParamsJob(&graph, planned.ptr, made.ptr);
-            ParallelJob job = ParallelJob(&computeParams, &context, double.infinity, planned.length);
+            ParallelJob job = ParallelJob(&computeParams, &context, Deadline.init,planned.length);
             pool.run(&job);
             graph.threadViews.finish(graph);
             foreach (index, plan; planned.slice()) {
@@ -295,7 +323,11 @@ struct Streamer {
     }
 
     void runTasksUntil(double deadline) {
-        while (nowMilliseconds() < deadline && takeTask(queues, MAIN_WORKER)) {
+        bool took = true;
+        double now = nowMilliseconds();
+        while (took && now < deadline) {
+            took = takeTask(queues, MAIN_WORKER);
+            now = nowMilliseconds();
         }
     }
 
@@ -313,15 +345,18 @@ struct Streamer {
             ChunkState state = graph.chunks.at(chunk).state;
             if (state == ChunkState.dropped) {
                 plan(graph, chunk, GenKind.restoring, Urgency.urgent);
-            } else if (state == ChunkState.fresh && isBuildingReady(graph, chunk.slot)) {
-                plan(graph, chunk, GenKind.fresh, Urgency.urgent);
             } else if (state == ChunkState.fresh) {
-                scheduleBuilding(graph, chunk.slot, Urgency.urgent);
+                bool ready = probeBuildingReady(graph, chunk.slot);
+                if (ready) {
+                    plan(graph, chunk, GenKind.fresh, Urgency.urgent);
+                } else {
+                    scheduleBuilding(graph, chunk.slot, Urgency.urgent);
+                }
             }
         }
     }
 
-    void drive(ref Graph graph, const(NearbyNode)[] nearby, Position focus, Motion!float cameraLocal, float distance, uint nearbyVersion, Pacing pacing, double deadline) {
+    void drive(ref Graph graph, const(NearbyNode)[] nearby, Position focus, Motion!float cameraLocal, float distance, uint nearbyVersion, Pacing pacing, Deadline deadline) {
         if (rescanAt.length < graph.slotCount) {
             rescanAt.resize(graph.slotCount);
         }
@@ -341,17 +376,22 @@ struct Streamer {
         }
         requestAround(graph, focus);
         version (WebAssembly) {
-            while (scanAndPlan(graph, nearby, range, pacing, deadline) > 0 && nowMilliseconds() < deadline) {
+            size_t plans = scanAndPlan(graph, nearby, range, pacing, deadline);
+            double now = nowMilliseconds();
+            while (plans > 0 && !deadline.hasPassed(now)) {
+                plans = scanAndPlan(graph, nearby, range, pacing, deadline);
+                now = nowMilliseconds();
             }
         } else {
             scanAndPlan(graph, nearby, range, pacing, deadline);
         }
     }
 
-    size_t scanAndPlan(ref Graph graph, const(NearbyNode)[] nearby, ScanRange range, Pacing pacing, double deadline) {
-        uint budget = requestBudget(pacing);
+    size_t scanAndPlan(ref Graph graph, const(NearbyNode)[] nearby, ScanRange range, Pacing pacing, Deadline deadline) {
+        Maybe!uint budget = requestBudget(pacing);
         rescanBuilt(graph, nearby, range, budget);
-        if (scanNearCamera(graph, nearby, range, budget, deadline) == ScanProgress.through) {
+        ScanProgress progress = scanNearCamera(graph, nearby, range, budget, deadline);
+        if (progress == ScanProgress.through) {
             scanCursor = cast(uint) scan(graph, nearby, range, budget, deadline);
         }
         size_t plans = planned.length;
@@ -360,10 +400,11 @@ struct Streamer {
         return plans;
     }
 
-    void rescanBuilt(ref Graph graph, const(NearbyNode)[] nearby, ScanRange range, uint budget) {
+    void rescanBuilt(ref Graph graph, const(NearbyNode)[] nearby, ScanRange range, Maybe!uint budget) {
         size_t kept = 0;
         foreach (index; waiting.slice()) {
-            if (!finishWaiting(graph, nearby[index], range, budget)) {
+            bool finished = finishWaiting(graph, nearby[index], range, budget);
+            if (!finished) {
                 waiting.ptr[kept] = index;
                 kept += 1;
             }
@@ -371,13 +412,13 @@ struct Streamer {
         waiting.length = kept;
     }
 
-    bool finishWaiting(ref Graph graph, NearbyNode nearbyNode, ScanRange range, uint budget) {
+    bool finishWaiting(ref Graph graph, NearbyNode nearbyNode, ScanRange range, Maybe!uint budget) {
         if (graph.structures.at(nearbyNode.slot).isBuildingQueued) {
             return false;
         } else {
             ScanOutcome outcome = scanNode(graph, nearbyNode.slot, scanFacts(graph, nearbyNode, range), budget, Urgency.normal);
             if (outcome.end == ScanEnd.finished) {
-                rescanAt.ptr[nearbyNode.slot] = travel + range.margin(outcome);
+                rescanAt.ptr[nearbyNode.slot] = range.nextAfter(travel, outcome);
                 return true;
             } else {
                 return false;
@@ -385,18 +426,18 @@ struct Streamer {
         }
     }
 
-    uint requestBudget(Pacing pacing) const {
+    Maybe!uint requestBudget(Pacing pacing) const {
         if (pacing == Pacing.unbudgeted) {
-            return uint.max;
+            return Maybe!uint.init;
         } else if (inFlight < workerCount * IN_FLIGHT_PER_WORKER) {
-            return workerCount * IN_FLIGHT_PER_WORKER - inFlight;
+            return Maybe!uint.of(workerCount * IN_FLIGHT_PER_WORKER - inFlight);
         } else {
-            return 0;
+            return Maybe!uint.of(0);
         }
     }
 
     bool isScanPending(uint slot) const {
-        return slot < rescanAt.length && rescanAt.ptr[slot] <= travel;
+        return slot < rescanAt.length && rescanAt.ptr[slot].rescan == Rescan.onceTraveled && rescanAt.ptr[slot].travel <= travel;
     }
 
     void collectUnstructured(ref const Graph graph, const(NearbyNode)[] nearby, ref Array!uint into, size_t limit) const {
@@ -421,10 +462,11 @@ struct Streamer {
         }
     }
 
-    size_t scan(ref Graph graph, const(NearbyNode)[] nearby, ScanRange range, uint budget, double deadline) {
+    size_t scan(ref Graph graph, const(NearbyNode)[] nearby, ScanRange range, Maybe!uint budget, Deadline deadline) {
         uint scanned = 0;
         size_t index = scanCursor;
-        if (nowMilliseconds() >= deadline) {
+        double start = nowMilliseconds();
+        if (deadline.hasPassed(start)) {
             return index;
         }
         while (index < nearby.length) {
@@ -432,16 +474,18 @@ struct Streamer {
             size_t end = lowerOf(first + SCAN_WINDOW, nearby.length);
             facts.resize(end - first);
             ScanJob context = ScanJob(&graph, &this, nearby.ptr + first, facts.ptr, range);
-            ParallelJob job = ParallelJob(&gatherScanFacts, &context, double.infinity, end - first);
+            ParallelJob job = ParallelJob(&gatherScanFacts, &context, Deadline.init,end - first);
             pool.run(&job);
             while (index < end) {
                 if (isScanPending(nearby[index].slot)) {
                     scanned += 1;
-                    if (scanAt(graph, nearby, index, facts.ptr[index - first], range, budget, Urgency.normal) == ScanEnd.interrupted) {
+                    ScanEnd stopped = scanAt(graph, nearby, index, facts.ptr[index - first], range, budget, Urgency.normal);
+                    if (stopped == ScanEnd.interrupted) {
                         return index;
                     }
                     index += 1;
-                    if (scanned >= MAX_SCAN_NODES_PER_FRAME || nowMilliseconds() >= deadline) {
+                    double now = nowMilliseconds();
+                    if ((MOST_SCANNED_PER_FRAME.exists && scanned >= MOST_SCANNED_PER_FRAME.value) || deadline.hasPassed(now)) {
                         return index;
                     }
                 } else {
@@ -452,14 +496,14 @@ struct Streamer {
         return index;
     }
 
-    ScanEnd scanAt(ref Graph graph, const(NearbyNode)[] nearby, size_t index, ScanFacts found, ScanRange range, uint budget, Urgency urgency) {
+    ScanEnd scanAt(ref Graph graph, const(NearbyNode)[] nearby, size_t index, ScanFacts found, ScanRange range, Maybe!uint budget, Urgency urgency) {
         uint slot = nearby[index].slot;
         ScanOutcome outcome = scanNode(graph, slot, found, budget, urgency);
         if (outcome.end == ScanEnd.waitingOnBuilding) {
-            rescanAt.ptr[slot] = RESCAN;
+            rescanAt.ptr[slot] = RESCAN_NOW;
             waiting.append(cast(uint) index);
         } else if (outcome.end == ScanEnd.finished) {
-            rescanAt.ptr[slot] = travel + range.margin(outcome);
+            rescanAt.ptr[slot] = range.nextAfter(travel, outcome);
         }
         return outcome.end;
     }
@@ -469,7 +513,7 @@ struct Streamer {
         foreach (band; 0 .. NEAR_BANDS) {
             context.thresholds[band] = coshf(NEAR_BAND_RADII[band]);
         }
-        ParallelJob job = ParallelJob(&sortIntoBand, &context, double.infinity, nearby.length);
+        ParallelJob job = ParallelJob(&sortIntoBand, &context, Deadline.init,nearby.length);
         pool.run(&job);
         nearCamera.clear();
         foreach (band; 0 .. NEAR_BANDS) {
@@ -485,24 +529,27 @@ struct Streamer {
         nearTravel = travel;
     }
 
-    ScanProgress scanNearCamera(ref Graph graph, const(NearbyNode)[] nearby, ScanRange range, uint budget, double deadline) {
-        if (nowMilliseconds() >= deadline) {
+    ScanProgress scanNearCamera(ref Graph graph, const(NearbyNode)[] nearby, ScanRange range, Maybe!uint budget, Deadline deadline) {
+        double start = nowMilliseconds();
+        if (deadline.hasPassed(start)) {
             return ScanProgress.stopped;
         }
         while (nearHead < nearCamera.length) {
             uint index = nearCamera.ptr[nearHead];
             if (isScanPending(nearby[index].slot)) {
                 Urgency urgency = Urgency.normal;
-                uint allowed = budget;
+                Maybe!uint allowed = budget;
                 if (nearHead < nearUrgent) {
                     urgency = Urgency.urgent;
-                    allowed = uint.max;
+                    allowed = Maybe!uint.init;
                 }
-                if (scanAt(graph, nearby, index, scanFacts(graph, nearby[index], range), range, allowed, urgency) == ScanEnd.interrupted) {
+                ScanEnd scanned = scanAt(graph, nearby, index, scanFacts(graph, nearby[index], range), range, allowed, urgency);
+                if (scanned == ScanEnd.interrupted) {
                     return ScanProgress.stopped;
                 }
                 nearHead += 1;
-                if (nowMilliseconds() >= deadline) {
+                double now = nowMilliseconds();
+                if (deadline.hasPassed(now)) {
                     return ScanProgress.stopped;
                 }
             } else {
@@ -512,23 +559,26 @@ struct Streamer {
         return ScanProgress.through;
     }
 
-    ScanOutcome scanNode(ref Graph graph, uint slot, ScanFacts found, uint budget, Urgency urgency) {
+    ScanOutcome scanNode(ref Graph graph, uint slot, ScanFacts found, Maybe!uint budget, Urgency urgency) {
         ScanOutcome outcome = ScanOutcome(found.nearestOutOfRange, found.nearestDropped, ScanEnd.finished);
         uint wanted = found.freshInRange | found.droppedInRange;
         foreach (index; 0 .. CORNER_COUNT) {
             uint bit = 1u << index;
             if ((wanted & bit) != 0) {
                 ChunkSlot chunk = ChunkSlot(slot, cast(Corner) index);
-                if (requests.length + planned.length >= budget) {
+                if (budget.exists && requests.length + planned.length >= budget.value) {
                     outcome.end = ScanEnd.interrupted;
                     return outcome;
                 } else if ((found.droppedInRange & bit) != 0) {
                     plan(graph, chunk, GenKind.restoring, urgency);
-                } else if (isBuildingReady(graph, slot)) {
-                    plan(graph, chunk, GenKind.fresh, urgency);
                 } else {
-                    scheduleBuilding(graph, slot, urgency);
-                    outcome.end = ScanEnd.waitingOnBuilding;
+                    bool ready = probeBuildingReady(graph, slot);
+                    if (ready) {
+                        plan(graph, chunk, GenKind.fresh, urgency);
+                    } else {
+                        scheduleBuilding(graph, slot, urgency);
+                        outcome.end = ScanEnd.waitingOnBuilding;
+                    }
                 }
             }
         }
@@ -586,9 +636,8 @@ struct Streamer {
         size_t pushed = 0;
         while (pushed < slots.length && pushed < room) {
             uint slot = slots.ptr[pushed];
-            if (!queue.push(BuildingRequest(graph.planBuilding(slot), slot))) {
-                assert(false);
-            }
+            bool accepted = queue.push(BuildingRequest(graph.planBuilding(slot), slot));
+            assert(accepted);
             pushed += 1;
         }
         foreach (index; pushed .. slots.length) {
@@ -601,7 +650,7 @@ struct Streamer {
     void forget(const(Unloaded)[] unloaded) {
         foreach (entry; unloaded) {
             if (entry.slot < rescanAt.length) {
-                rescanAt.ptr[entry.slot] = RESCAN;
+                rescanAt.ptr[entry.slot] = RESCAN_NOW;
             }
         }
     }
@@ -614,24 +663,33 @@ struct Streamer {
         while (!isIdle()) {
             submitRequests(graph);
             uint seen = atomicLoad(queues.completed);
-            if (integrate(graph, NO_DEADLINE) == 0) {
+            uint integrated = integrate(graph, Deadline.init);
+            if (integrated == 0) {
                 queues.await(seen);
             }
         }
     }
 
-    uint integrate(ref Graph graph, double deadline) {
+    uint integrate(ref Graph graph, Deadline deadline) {
         uint integrated = 0;
         BuildingResult built;
-        while (queues.built.pop(built)) {
+        bool popped = queues.built.pop(built);
+        while (popped) {
             integrateBuilding(graph, built);
             integrated += 1;
+            popped = queues.built.pop(built);
         }
         GenResult result;
-        while (nowMilliseconds() < deadline && integrator.arrivals.length < INTEGRATION_BATCH && queues.generated.pop(result)) {
-            inFlight -= 1;
-            integrated += 1;
-            integrator.arrivals.append(result);
+        popped = true;
+        double now = nowMilliseconds();
+        while (popped && !deadline.hasPassed(now) && integrator.arrivals.length < INTEGRATION_BATCH) {
+            popped = queues.generated.pop(result);
+            if (popped) {
+                inFlight -= 1;
+                integrated += 1;
+                integrator.arrivals.append(result);
+            }
+            now = nowMilliseconds();
         }
         integrator.run(graph, executor());
         return integrated;
@@ -647,7 +705,7 @@ struct Streamer {
             graph.structures.storeBuilding(built.slot, built.building);
         }
         if (built.slot < rescanAt.length) {
-            rescanAt.ptr[built.slot] = RESCAN;
+            rescanAt.ptr[built.slot] = RESCAN_NOW;
         }
     }
 
@@ -679,6 +737,7 @@ struct Streamer {
     }
 }
 
-bool isBuildingReady(ref Graph graph, uint slot) {
-    return !graph.ensureStructureAt(slot) || graph.structures.buildingAt(slot) !is null;
+bool probeBuildingReady(ref Graph graph, uint slot) {
+    bool needsBuilding = graph.ensureStructureAt(slot);
+    return !needsBuilding || graph.structures.buildingAt(slot) !is null;
 }

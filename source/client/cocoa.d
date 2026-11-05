@@ -2,6 +2,7 @@ module client.cocoa;
 
 version (OSX):
 
+import base.maybe : Maybe;
 import bindings.platform : CAMetalLayer;
 
 alias id = void*;
@@ -25,7 +26,6 @@ enum KeySym XK_Up = 0xff52;
 enum KeySym XK_Right = 0xff53;
 enum KeySym XK_Down = 0xff54;
 enum KeySym XK_Shift_L = 0xffe1;
-enum KeySym NO_KEY = 0;
 enum uint Button1 = 1;
 enum uint Button3 = 3;
 
@@ -109,15 +109,15 @@ R send(R = id, Args...)(id receiver, const(char)* selector, Args args) {
     return (cast(Method) &objc_msgSend)(receiver, sel_registerName(selector), args);
 }
 
-KeySym keySymOf(ushort code) {
+Maybe!KeySym keySymOf(ushort code) {
     uint index = 0;
     while (index < KEY_CODES.length && KEY_CODES[index].code != code) {
         index += 1;
     }
     if (index < KEY_CODES.length) {
-        return KEY_CODES[index].symbol;
+        return Maybe!KeySym.of(KEY_CODES[index].symbol);
     } else {
-        return NO_KEY;
+        return Maybe!KeySym.init;
     }
 }
 
@@ -200,7 +200,8 @@ struct CocoaWindow {
         id past = send(objc_getClass("NSDate"), "distantPast");
         id event = send(application, "nextEventMatchingMask:untilDate:inMode:dequeue:", NS_EVENT_MASK_ANY, past, NSDefaultRunLoopMode, true);
         while (event !is null) {
-            if (!handle(event, events)) {
+            bool handled = handle(event, events);
+            if (!handled) {
                 send!void(application, "sendEvent:", event);
             }
             event = send(application, "nextEventMatchingMask:untilDate:inMode:dequeue:", NS_EVENT_MASK_ANY, past, NSDefaultRunLoopMode, true);
@@ -211,43 +212,62 @@ struct CocoaWindow {
 
     bool handle(id event, WindowEvents events) {
         ulong type = send!ulong(event, "type");
-        if (type == NS_EVENT_KEY_DOWN || type == NS_EVENT_KEY_UP) {
-            KeySym symbol = keySymOf(send!ushort(event, "keyCode"));
-            if (symbol != NO_KEY) {
-                KeyAction action = KeyAction.released;
-                if (type == NS_EVENT_KEY_DOWN && send!bool(event, "isARepeat")) {
+        bool isKey = type == NS_EVENT_KEY_DOWN || type == NS_EVENT_KEY_UP;
+        if (isKey) {
+            passKey(event, type, events);
+        } else {
+            observe(event, type, events);
+        }
+        return isKey;
+    }
+
+    void passKey(id event, ulong type, WindowEvents events) {
+        Maybe!KeySym symbol = keySymOf(send!ushort(event, "keyCode"));
+        if (symbol.exists) {
+            KeyAction action = KeyAction.released;
+            if (type == NS_EVENT_KEY_DOWN) {
+                bool repeat = send!bool(event, "isARepeat");
+                if (repeat) {
                     action = KeyAction.repeated;
-                } else if (type == NS_EVENT_KEY_DOWN) {
+                } else {
                     action = KeyAction.pressed;
                 }
-                events.onKey(KeyEvent(symbol, action));
             }
-            return true;
-        } else if (type == NS_EVENT_FLAGS_CHANGED) {
-            if (send!ushort(event, "keyCode") == LEFT_SHIFT_KEYCODE) {
+            events.onKey(KeyEvent(symbol.value, action));
+        }
+    }
+
+    void observe(id event, ulong type, WindowEvents events) {
+        if (type == NS_EVENT_FLAGS_CHANGED) {
+            ushort code = send!ushort(event, "keyCode");
+            if (code == LEFT_SHIFT_KEYCODE) {
+                ulong modifiers = send!ulong(event, "modifierFlags");
                 KeyAction action = KeyAction.released;
-                if ((send!ulong(event, "modifierFlags") & LEFT_SHIFT_DEVICE_MASK) != 0) {
+                if ((modifiers & LEFT_SHIFT_DEVICE_MASK) != 0) {
                     action = KeyAction.pressed;
                 }
                 events.onKey(KeyEvent(XK_Shift_L, action));
             }
-            return false;
-        } else if (type == NS_EVENT_LEFT_MOUSE_DOWN && isInContent(event)) {
-            events.onButton(Button1);
-            return false;
-        } else if (type == NS_EVENT_RIGHT_MOUSE_DOWN && isInContent(event)) {
-            events.onButton(Button3);
-            return false;
+        } else if (type == NS_EVENT_LEFT_MOUSE_DOWN) {
+            passButton(event, Button1, events);
+        } else if (type == NS_EVENT_RIGHT_MOUSE_DOWN) {
+            passButton(event, Button3, events);
         } else if (type == NS_EVENT_MOUSE_MOVED || type == NS_EVENT_LEFT_MOUSE_DRAGGED || type == NS_EVENT_RIGHT_MOUSE_DRAGGED || type == NS_EVENT_OTHER_MOUSE_DRAGGED) {
             events.onMotion(send!double(event, "deltaX"), send!double(event, "deltaY"));
-            return false;
-        } else {
-            return false;
+        }
+    }
+
+    void passButton(id event, uint button, WindowEvents events) {
+        bool inContent = isInContent(event);
+        if (inContent) {
+            events.onButton(button);
         }
     }
 
     bool isInContent(id event) {
-        return send(event, "window") is window && send(view, "hitTest:", send!CGPoint(event, "locationInWindow")) is view;
+        id owner = send(event, "window");
+        id hit = send(view, "hitTest:", send!CGPoint(event, "locationInWindow"));
+        return owner is window && hit is view;
     }
 
     void close() {

@@ -1,6 +1,7 @@
 module plugins.blocks.blocks;
 
-import plugins.api.api : Api, Material, NO_KIND, Rhythm, Risen, Site, SitePart;
+import plugins.api.api : Api, Material, MaybeIndex, Rhythm, Risen, Site, SitePart, Span;
+import plugins.api.flags : Flags;
 import plugins.buildings.building : Bound, Join, Lot, Lots, Palette, STORY, Side, Spec;
 import plugins.buildings.types : Type, palettes, stories;
 import types = plugins.buildings.types;
@@ -21,21 +22,29 @@ enum uint POND_PERCENT = 50;
 enum uint FOUNTAIN_PERCENT = 60;
 enum uint ALLEY_PERCENT = 20;
 enum uint MAX_INSET = 1;
-enum int[2] ROAD = [-2, 1];
-enum int[2] SIDEWALK = [2, 3];
-enum int[2] FAR_SIDEWALK = [-4, -3];
+enum Span ROAD = Span(-2, 1);
+enum Span SIDEWALK = Span(2, 3);
+enum Span FAR_SIDEWALK = Span(-4, -3);
 enum int FRONT = 4;
 enum int CROSSING = 1;
 enum int TREE_SPACING = 8;
-enum int CURB = SIDEWALK[0];
+enum int CURB = SIDEWALK.low;
 enum int PARKING_SPACING = 3;
 enum int CROWN_ROOM = 10;
 enum int ROUTE_STORIES = 2;
 enum int ROUTE_BUILDING_STORIES = 4;
+immutable Bound[4] RUN_BOUNDS = [Side.xLow: Bound.joined, Side.yLow: Bound.joined, Side.xHigh: Bound.lot, Side.yHigh: Bound.lot];
+immutable Bound[4] ISLAND_BOUNDS = [Side.xLow: Bound.street, Side.yLow: Bound.street, Side.xHigh: Bound.joined, Side.yHigh: Bound.joined];
 
 enum LotShape : ubyte {
     corner,
     run,
+}
+
+enum LotMark : ubyte {
+    streetBefore,
+    streetAfter,
+    first,
 }
 
 struct Kind {
@@ -64,14 +73,14 @@ struct Root {
     Connection connection;
 
     bool isRisen() const {
-        return risen.edges > 0;
+        return risen.hasRisen;
     }
 }
 
 struct Area {
     Turtle tower;
-    int[2] x;
-    int[2] y;
+    Span x;
+    Span y;
 }
 
 Turtle[AROUND] quartersOf(Turtle corner) {
@@ -84,131 +93,162 @@ Turtle[AROUND] quartersOf(Turtle corner) {
     return quarters;
 }
 
-bool isOwner(ref const Turtle[AROUND] quarters) {
-    ulong mine = quarters[0].hash(SitePart.face);
-    uint index = 1;
-    while (index < AROUND && quarters[index].hash(SitePart.face) < mine) {
-        index += 1;
+bool probeOwner(ref const Turtle[AROUND] quarters) {
+    ulong mine = quarters[0].probeHash(SitePart.face);
+    foreach (quarter; quarters[1 .. $]) {
+        ulong theirs = quarter.probeHash(SitePart.face);
+        if (!(theirs < mine)) {
+            return false;
+        }
     }
-    return index == AROUND;
+    return true;
 }
 
-bool isFoot(Turtle corner, ref const Risen risen) {
-    return corner.hash(SitePart.vertex) == Turtle(corner.api, risen.foot).hash(SitePart.vertex);
+bool probeFoot(Turtle corner, ref const Risen risen) {
+    ulong own = corner.probeHash(SitePart.vertex);
+    ulong foot = Turtle(corner.api, risen.foot).probeHash(SitePart.vertex);
+    return own == foot;
 }
 
-bool ownsFoot(Turtle face, ref const Risen risen) {
+bool probeOwnsFoot(Turtle face, ref const Risen risen) {
     foreach (corner; cornersOf(face)) {
         Turtle[AROUND] quarters = quartersOf(corner);
-        if (isFoot(corner, risen) && isOwner(quarters)) {
-            return true;
+        bool foot = probeFoot(corner, risen);
+        if (foot) {
+            bool owner = probeOwner(quarters);
+            if (owner) {
+                return true;
+            }
         }
     }
     return false;
 }
 
-bool isRisingFrom(Turtle corner) {
-    return corner.rising() != NO_KIND;
+bool probeRootVertex(Turtle site, ref const Root root) {
+    ulong own = site.probeHash(SitePart.vertex);
+    return own == root.vertex;
 }
 
-bool isRootVertex(Turtle site, ref const Root root) {
-    return site.hash(SitePart.vertex) == root.vertex;
-}
-
-bool isIsland(Turtle face, ref const Root root) {
-    if (roll(face.hash(SitePart.face), ISLAND_SALT) >= ISLAND) {
+bool probeIsland(Turtle face, ref const Root root) {
+    double rolled = roll(face.probeHash(SitePart.face), ISLAND_SALT);
+    if (rolled >= ISLAND) {
         return false;
     } else {
-        uint index = 0;
-        Turtle[FACE_CORNERS] corners = cornersOf(face);
-        while (index < FACE_CORNERS && !isRootVertex(corners[index], root)) {
-            index += 1;
+        foreach (corner; cornersOf(face)) {
+            bool rooted = probeRootVertex(corner, root);
+            if (rooted) {
+                return false;
+            }
         }
-        return index == FACE_CORNERS;
+        return true;
     }
 }
 
-bool isPlannedStreet(Turtle edge, ref const Root root) {
-    if (isRootVertex(edge, root) || isRootVertex(edge.forward(1), root)) {
-        return true;
-    } else if (isIsland(edge, root) || isIsland(edge.left(), root)) {
-        return true;
-    } else {
-        return roll(edge.hash(SitePart.edge), DROPPED_SALT) >= DROPPED_STREET;
+bool probePlannedStreet(Turtle edge, ref const Root root) {
+    bool planned = probeRootVertex(edge, root);
+    if (!planned) {
+        planned = probeRootVertex(edge.forward(1), root);
     }
+    if (!planned) {
+        planned = probeIsland(edge, root);
+    }
+    if (!planned) {
+        planned = probeIsland(edge.left(), root);
+    }
+    if (!planned) {
+        double rolled = roll(edge.probeHash(SitePart.edge), DROPPED_SALT);
+        planned = rolled >= DROPPED_STREET;
+    }
+    return planned;
 }
 
-bool isKeptForAccess(Turtle edge, ref const Root root) {
-    ulong mine = edge.hash(SitePart.edge);
-    uint index = 1;
+bool probeKeptForAccess(Turtle edge, ref const Root root) {
+    ulong mine = edge.probeHash(SitePart.edge);
     Turtle turtle = edge.right();
-    while (index < AROUND && !isPlannedStreet(turtle, root) && turtle.hash(SitePart.edge) < mine) {
-        index += 1;
+    foreach (index; 1 .. AROUND) {
+        bool planned = probePlannedStreet(turtle, root);
+        if (planned) {
+            return false;
+        }
+        ulong theirs = turtle.probeHash(SitePart.edge);
+        if (!(theirs < mine)) {
+            return false;
+        }
         turtle = turtle.right();
     }
-    return index == AROUND;
+    return true;
 }
 
-bool isStreet(Turtle edge, ref const Root root) {
-    if (isPlannedStreet(edge, root)) {
-        return true;
-    } else {
-        return isKeptForAccess(edge, root) || isKeptForAccess(edge.forward(1).right().right(), root);
+bool probeStreet(Turtle edge, ref const Root root) {
+    bool paved = probePlannedStreet(edge, root);
+    if (!paved) {
+        paved = probeKeptForAccess(edge, root);
     }
+    if (!paved) {
+        paved = probeKeptForAccess(edge.forward(1).right().right(), root);
+    }
+    return paved;
 }
 
-bool hasTrees(Turtle edge) {
-    return roll(edge.hash(SitePart.edge), TREES_SALT) < STREET_TREES;
-}
-
-int between(Turtle site, int low, int high) {
-    return low + cast(int) site.pick(high - low + 1);
+bool probeTrees(Turtle edge) {
+    double rolled = roll(edge.probeHash(SitePart.edge), TREES_SALT);
+    return rolled < STREET_TREES;
 }
 
 int crossingGap(Turtle corner, ref const Root root) {
-    if (isStreet(corner, root)) {
+    bool paved = probeStreet(corner, root);
+    if (paved) {
         return CROSSING + 1;
     } else {
         return 0;
     }
 }
 
-void sidewalk(Turtle edge, int[2] x, int startGap, int endGap) {
-    edge.paint(Material.concrete, boxOf(x, [-1, 0], [startGap, edge.edgeCells() - 1 - endGap]));
+void sidewalk(Turtle edge, Span x, int startGap, int endGap) {
+    edge.paint(Material.concrete, boxOf(x, Span(-1, 0), Span(startGap, edge.edgeCells() - 1 - endGap)));
 }
 
 void streetTrees(Turtle edge) {
     int last = edge.edgeCells() - 1;
-    int[2] planted = [CROSSING + 4, last - CROSSING - 4];
+    Span planted = Span(CROSSING + 4, last - CROSSING - 4);
     Rhythm trunk = Rhythm(TREE_SPACING, 6, 1);
-    edge.paint(Material.oakLeaves, boxOf([CURB - 1, CURB + 1], [5, 6], planted), Rhythm(TREE_SPACING, 4, 5));
-    edge.paint(Material.oakLeaves, boxOf([CURB - 1, CURB + 1], [7, 7], planted), Rhythm(TREE_SPACING, 5, 3));
-    edge.paint(Material.oakLeaves, boxOf([CURB, CURB], [8, 8], planted), trunk);
-    edge.paint(Material.oakWood, boxOf([CURB, CURB], [1, 5], planted), trunk);
+    edge.paint(Material.oakLeaves, boxOf(Span(CURB - 1, CURB + 1), Span(5, 6), planted), Rhythm(TREE_SPACING, 4, 5));
+    edge.paint(Material.oakLeaves, boxOf(Span(CURB - 1, CURB + 1), Span(7, 7), planted), Rhythm(TREE_SPACING, 5, 3));
+    edge.paint(Material.oakLeaves, boxOf(Span(CURB, CURB), Span(8, 8), planted), trunk);
+    edge.paint(Material.oakWood, boxOf(Span(CURB, CURB), Span(1, 5), planted), trunk);
 }
 
 void street(Turtle edge, ref const Root root) {
     Turtle finish = edge.forward(1);
     int last = edge.edgeCells() - 1;
-    edge.paint(Material.basalt, boxOf(ROAD, [-1, -1], [0, last]));
+    edge.paint(Material.basalt, boxOf(ROAD, Span(-1, -1), Span(0, last)));
     sidewalk(edge, SIDEWALK, crossingGap(edge.right(), root), crossingGap(finish.right(), root));
     sidewalk(edge, FAR_SIDEWALK, crossingGap(edge.left(), root), crossingGap(finish.left(), root));
-    if (isStreet(edge.right(), root) || isStreet(edge.left(), root)) {
-        edge.paint(Material.whiteBrick, boxOf(ROAD, [-1, -1], [CROSSING + 1, CROSSING + 2]));
+    bool crossedAtStart = probeStreet(edge.right(), root);
+    if (!crossedAtStart) {
+        crossedAtStart = probeStreet(edge.left(), root);
     }
-    if (isStreet(finish.right(), root) || isStreet(finish.left(), root)) {
-        edge.paint(Material.whiteBrick, boxOf(ROAD, [-1, -1], [last - CROSSING - 2, last - CROSSING - 1]));
+    if (crossedAtStart) {
+        edge.paint(Material.whiteBrick, boxOf(ROAD, Span(-1, -1), Span(CROSSING + 1, CROSSING + 2)));
     }
-    if (hasTrees(edge)) {
+    bool crossedAtEnd = probeStreet(finish.right(), root);
+    if (!crossedAtEnd) {
+        crossedAtEnd = probeStreet(finish.left(), root);
+    }
+    if (crossedAtEnd) {
+        edge.paint(Material.whiteBrick, boxOf(ROAD, Span(-1, -1), Span(last - CROSSING - 2, last - CROSSING - 1)));
+    }
+    bool trees = probeTrees(edge);
+    if (trees) {
         streetTrees(edge);
     }
 }
 
 void tree(Turtle tower, int x, int y) {
-    tower.paint(Material.oakLeaves, boxOf([x - 2, x + 2], [y - 1, y + 1], [5, 7]));
-    tower.paint(Material.oakLeaves, boxOf([x - 1, x + 1], [y - 2, y + 2], [5, 7]));
-    tower.paint(Material.oakLeaves, boxOf([x - 1, x + 1], [y - 1, y + 1], [8, 9]));
-    tower.paint(Material.oakWood, boxOf([x, x], [y, y], [1, 7]));
+    tower.paint(Material.oakLeaves, boxOf(Span(x - 2, x + 2), Span(y - 1, y + 1), Span(5, 7)));
+    tower.paint(Material.oakLeaves, boxOf(Span(x - 1, x + 1), Span(y - 2, y + 2), Span(5, 7)));
+    tower.paint(Material.oakLeaves, boxOf(Span(x - 1, x + 1), Span(y - 1, y + 1), Span(8, 9)));
+    tower.paint(Material.oakWood, boxOf(Span(x, x), Span(y, y), Span(1, 7)));
 }
 
 Area groundOf(ref const Lot lot) {
@@ -222,22 +262,22 @@ Area groundOf(ref const Lot lot) {
     if (lot.bounds[Side.yLow] == Bound.street) {
         yLow = FRONT;
     }
-    return Area(tower, [xLow, far], [yLow, far]);
+    return Area(tower, Span(xLow, far), Span(yLow, far));
 }
 
 void pave(ref const Lots lots, Material material) {
     foreach (ref lot; lots.slice()) {
         Area area = groundOf(lot);
-        area.tower.paint(material, boxOf(area.x, area.y, [-1, 0]));
+        area.tower.paint(material, boxOf(area.x, area.y, Span(-1, 0)));
     }
 }
 
 bool isRoomy(Area area) {
-    return area.x[1] - area.x[0] >= 4 && area.y[1] - area.y[0] >= 4;
+    return area.x.high - area.x.low >= 4 && area.y.high - area.y.low >= 4;
 }
 
-int centre(int[2] span) {
-    return floorDiv(span[0] + span[1] + 1, 2);
+int centre(Span span) {
+    return floorDiv(span.low + span.high + 1, 2);
 }
 
 void plant(ref const Lots lots) {
@@ -250,10 +290,10 @@ void plant(ref const Lots lots) {
 }
 
 void fountain(Turtle tower, int x, int y) {
-    tower.paint(Material.marble, boxOf([x - 2, x + 2], [y - 2, y + 2], [1, 1]));
-    tower.paint(Material.water, boxOf([x - 1, x + 1], [y - 1, y + 1], [1, 1]));
-    tower.paint(Material.marble, boxOf([x, x], [y, y], [1, 2]));
-    tower.paint(Material.water, boxOf([x, x], [y, y], [3, 3]));
+    tower.paint(Material.marble, boxOf(Span(x - 2, x + 2), Span(y - 2, y + 2), Span(1, 1)));
+    tower.paint(Material.water, boxOf(Span(x - 1, x + 1), Span(y - 1, y + 1), Span(1, 1)));
+    tower.paint(Material.marble, boxOf(Span(x, x), Span(y, y), Span(1, 2)));
+    tower.paint(Material.water, boxOf(Span(x, x), Span(y, y), Span(3, 3)));
 }
 
 void fountains(ref const Lots lots) {
@@ -269,10 +309,10 @@ void ponds(ref const Lots lots) {
     foreach (ref lot; lots.slice()) {
         Area area = groundOf(lot);
         if (isRoomy(area)) {
-            int[2] x = [area.x[0] + 1, area.x[1] - 1];
-            int[2] y = [area.y[0] + 1, area.y[1] - 1];
-            area.tower.paint(Material.water, boxOf(x, y, [-1, 0]));
-            area.tower.paint(Material.sand, boxOf(x, y, [-2, -2]));
+            Span x = Span(area.x.low + 1, area.x.high - 1);
+            Span y = Span(area.y.low + 1, area.y.high - 1);
+            area.tower.paint(Material.water, boxOf(x, y, Span(-1, 0)));
+            area.tower.paint(Material.sand, boxOf(x, y, Span(-2, -2)));
         }
     }
 }
@@ -280,9 +320,9 @@ void ponds(ref const Lots lots) {
 void parking(ref const Lots lots) {
     foreach (ref lot; lots.slice()) {
         Area area = groundOf(lot);
-        area.tower.paint(Material.basalt, boxOf(area.x, area.y, [0, 0]));
-        for (int x = area.x[0] + 1; x <= area.x[1]; x += PARKING_SPACING) {
-            area.tower.paint(Material.whiteBrick, boxOf([x, x], [area.y[0] + 1, area.y[0] + 3], [0, 0]));
+        area.tower.paint(Material.basalt, boxOf(area.x, area.y, Span(0, 0)));
+        for (int x = area.x.low + 1; x <= area.x.high; x += PARKING_SPACING) {
+            area.tower.paint(Material.whiteBrick, boxOf(Span(x, x), Span(area.y.low + 1, area.y.low + 3), Span(0, 0)));
         }
     }
 }
@@ -294,24 +334,28 @@ struct Chosen {
 
 Chosen chosenFor(Turtle site, ref const Kind kind, immutable(Type)[] choices) {
     Type type = choices[site.pick(cast(uint) choices.length)];
-    int[2] range = stories(type);
-    int most = lowerOf(range[1], kind.most);
-    int count = between(site, range[0], most);
+    Span range = stories(type);
+    int most = lowerOf(range.high, kind.most);
+    int count = site.pickBetween(range.low, most);
     int gap = 0;
-    if (kind.shape == LotShape.run && site.chance(ALLEY_PERCENT)) {
-        gap = 1;
+    if (kind.shape == LotShape.run) {
+        bool alley = site.rollChance(ALLEY_PERCENT);
+        if (alley) {
+            gap = 1;
+        }
     }
     int front = FRONT;
     if (kind.shape == LotShape.run) {
         front = FRONT + cast(int) site.pick(MAX_INSET + 1);
     }
     immutable(Palette)[] options = palettes(type);
-    return Chosen(type, Spec(count, options[site.pick(cast(uint) options.length)], front, gap, 0));
+    Spec spec = {stories: count, palette: options[site.pick(cast(uint) options.length)], front: front, gap: gap};
+    return Chosen(type, spec);
 }
 
 int fit(Turtle site, int stories) {
     int room = CROWN_ROOM + 1;
-    int fitting = floorDiv(site.balance(stories * STORY + room) - room, STORY);
+    int fitting = floorDiv(site.probeBalance(stories * STORY + room) - room, STORY);
     return lowerOf(stories, fitting);
 }
 
@@ -328,14 +372,22 @@ void build(ref const Lots lots, Chosen chosen) {
     types.build(chosen.type, lots, chosen.spec);
 }
 
-bool isPlaza(Turtle corner, ref const Root root) {
-    return (isRootVertex(corner, root) && root.isRisen()) || isRisingFrom(corner);
+bool probePlaza(Turtle corner, ref const Root root) {
+    bool plaza = probeRootVertex(corner, root) && root.isRisen();
+    if (!plaza) {
+        plaza = corner.probeRising().exists;
+    }
+    return plaza;
 }
 
-bool isRoute(Turtle corner, ref const Lots lots, ref const Root root) {
-    foreach (ref lot; lots.slice()) {
-        if (isRootVertex(corner, root) && lot.site.hash(SitePart.face) == root.face) {
-            return true;
+bool probeRoute(Turtle corner, ref const Lots lots, ref const Root root) {
+    bool rooted = probeRootVertex(corner, root);
+    if (rooted) {
+        foreach (ref lot; lots.slice()) {
+            ulong face = lot.site.probeHash(SitePart.face);
+            if (face == root.face) {
+                return true;
+            }
         }
     }
     return false;
@@ -343,50 +395,70 @@ bool isRoute(Turtle corner, ref const Lots lots, ref const Root root) {
 
 void lotAt(Turtle corner, ref const Lots lots, ref const Root root) {
     Turtle site = lots.items[0].site;
-    if (isPlaza(corner, root)) {
+    bool plaza = probePlaza(corner, root);
+    if (plaza) {
         pave(lots, Material.granite);
         plant(lots);
-    } else if (isRoute(corner, lots, root)) {
-        build(lots, Chosen(Type.tenement, Spec(ROUTE_BUILDING_STORIES, palettes(Type.tenement)[0], FRONT, 0, ROUTE_STORIES)));
-    } else if (site.chance(PARK_PERCENT)) {
-        pave(lots, Material.grass);
-        if (site.chance(POND_PERCENT)) {
-            ponds(lots);
-        } else {
-            plant(lots);
-        }
-    } else if (site.chance(PLAZA_PERCENT)) {
-        pave(lots, Material.granite);
-        if (site.chance(FOUNTAIN_PERCENT)) {
-            fountains(lots);
-        } else {
-            plant(lots);
-        }
-    } else if (site.chance(PARKING_PERCENT)) {
-        parking(lots);
     } else {
-        Kind kind = KINDS[lots.count - 1];
-        Chosen chosen = fitted(chosenFor(site, kind, kind.types), site, root);
-        if (chosen.spec.stories >= 1) {
-            build(lots, chosen);
+        bool route = probeRoute(corner, lots, root);
+        if (route) {
+            Spec spec = {stories: ROUTE_BUILDING_STORIES, palette: palettes(Type.tenement)[0], front: FRONT, routeStories: ROUTE_STORIES};
+            build(lots, Chosen(Type.tenement, spec));
         } else {
-            pave(lots, Material.granite);
-            plant(lots);
+            rolledLot(site, lots, root);
         }
     }
 }
 
-Lot lotOf(Turtle quarter, bool isStreetBefore, bool isStreetAfter, bool isFirst) {
+void rolledLot(Turtle site, ref const Lots lots, ref const Root root) {
+    bool park = site.rollChance(PARK_PERCENT);
+    if (park) {
+        pave(lots, Material.grass);
+        bool pond = site.rollChance(POND_PERCENT);
+        if (pond) {
+            ponds(lots);
+        } else {
+            plant(lots);
+        }
+    } else {
+        bool plaza = site.rollChance(PLAZA_PERCENT);
+        if (plaza) {
+            pave(lots, Material.granite);
+            bool fountain = site.rollChance(FOUNTAIN_PERCENT);
+            if (fountain) {
+                fountains(lots);
+            } else {
+                plant(lots);
+            }
+        } else {
+            bool parked = site.rollChance(PARKING_PERCENT);
+            if (parked) {
+                parking(lots);
+            } else {
+                Kind kind = KINDS[lots.count - 1];
+                Chosen chosen = fitted(chosenFor(site, kind, kind.types), site, root);
+                if (chosen.spec.stories >= 1) {
+                    build(lots, chosen);
+                } else {
+                    pave(lots, Material.granite);
+                    plant(lots);
+                }
+            }
+        }
+    }
+}
+
+Lot lotOf(Turtle quarter, Flags!LotMark marks) {
     Lot lot;
     lot.site = quarter;
-    lot.bounds = [Bound.joined, Bound.joined, Bound.lot, Bound.lot];
-    if (isStreetAfter) {
+    lot.bounds = RUN_BOUNDS;
+    if (marks.has(LotMark.streetAfter)) {
         lot.bounds[Side.xLow] = Bound.street;
     }
-    if (isStreetBefore) {
+    if (marks.has(LotMark.streetBefore)) {
         lot.bounds[Side.yLow] = Bound.street;
     }
-    if (isFirst && isStreetBefore) {
+    if (marks.has(LotMark.first) && marks.has(LotMark.streetBefore)) {
         lot.front = Side.yLow;
     }
     return lot;
@@ -396,28 +468,40 @@ void join(ref Lots run) {
     foreach (index; 0 .. run.count) {
         if (run.items[index].bounds[Side.xLow] == Bound.joined) {
             uint next = cast(uint)((index + 1) % run.count);
-            run.items[index].joins[Side.xLow] = Join(next, Side.yLow);
-            run.items[next].joins[Side.yLow] = Join(cast(uint) index, Side.xLow);
+            run.items[index].joins[Side.xLow] = Join(MaybeIndex!Lot.of(next), Side.yLow);
+            run.items[next].joins[Side.yLow] = Join(MaybeIndex!Lot.of(cast(uint) index), Side.xLow);
         }
     }
 }
 
 void lotsAt(ref const Turtle[AROUND] quarters, ref const Root root) {
-    if (isRootVertex(quarters[0], root) && root.isRisen()) {
+    bool foot = probeRootVertex(quarters[0], root);
+    if (foot && root.isRisen()) {
         connect(quarters[0], root.risen, Tag.city, root.connection);
     }
     uint start = 0;
-    while (start < AROUND && !isStreet(quarters[start], root)) {
-        start += 1;
+    bool paved = false;
+    while (start < AROUND && !paved) {
+        paved = probeStreet(quarters[start], root);
+        if (!paved) {
+            start += 1;
+        }
     }
     Lots run;
     foreach (step; 0 .. AROUND) {
         uint index = (start + step) % AROUND;
         uint after = (index + 1) % AROUND;
-        if (!isIsland(quarters[index], root)) {
-            run.add(lotOf(quarters[index], isStreet(quarters[index], root), isStreet(quarters[after], root), run.count == 0));
+        bool isolated = probeIsland(quarters[index], root);
+        bool streetAfter = probeStreet(quarters[after], root);
+        if (!isolated) {
+            bool streetBefore = probeStreet(quarters[index], root);
+            Flags!LotMark marks;
+            marks.put(LotMark.streetBefore, streetBefore);
+            marks.put(LotMark.streetAfter, streetAfter);
+            marks.put(LotMark.first, run.count == 0);
+            run.add(lotOf(quarters[index], marks));
         }
-        if (isStreet(quarters[after], root) || step == AROUND - 1) {
+        if (streetAfter || step == AROUND - 1) {
             if (run.count > 0) {
                 join(run);
                 lotAt(quarters[0], run, root);
@@ -432,7 +516,7 @@ void island(ref const Turtle[FACE_CORNERS] corners, ref const Root root) {
     foreach (corner; corners) {
         Lot lot;
         lot.site = corner;
-        lot.bounds = [Bound.street, Bound.street, Bound.joined, Bound.joined];
+        lot.bounds = ISLAND_BOUNDS;
         parts.add(lot);
     }
     parts.items[0].front = Side.yLow;
@@ -446,11 +530,11 @@ void island(ref const Turtle[FACE_CORNERS] corners, ref const Root root) {
 }
 
 Root rootAt(Turtle site) {
-    return Root(site.hash(SitePart.vertex), site.hash(SitePart.face));
+    return Root(site.probeHash(SitePart.vertex), site.probeHash(SitePart.face));
 }
 
 Root risenRootAt(Turtle foot, ref const Risen risen, Connection how) {
-    return Root(foot.hash(SitePart.vertex), foot.hash(SitePart.face), risen, how);
+    return Root(foot.probeHash(SitePart.vertex), foot.probeHash(SitePart.face), risen, how);
 }
 
 void tile(const(Api)* api, Site site, const(Risen)* risen, const(void)* data) {
@@ -459,19 +543,25 @@ void tile(const(Api)* api, Site site, const(Risen)* risen, const(void)* data) {
 
 void tileAt(Turtle face, ref const Root root) {
     Turtle[FACE_CORNERS] corners = cornersOf(face);
-    ulong mine = face.hash(SitePart.face);
+    ulong mine = face.probeHash(SitePart.face);
     foreach (edge; corners) {
-        if (isStreet(edge, root) && mine > edge.left().hash(SitePart.face)) {
-            street(edge, root);
+        bool paved = probeStreet(edge, root);
+        if (paved) {
+            ulong beside = edge.left().probeHash(SitePart.face);
+            if (mine > beside) {
+                street(edge, root);
+            }
         }
     }
     foreach (corner; corners) {
         Turtle[AROUND] quarters = quartersOf(corner);
-        if (isOwner(quarters)) {
+        bool owner = probeOwner(quarters);
+        if (owner) {
             lotsAt(quarters, root);
         }
     }
-    if (isIsland(face, root)) {
+    bool isolated = probeIsland(face, root);
+    if (isolated) {
         island(corners, root);
     }
 }

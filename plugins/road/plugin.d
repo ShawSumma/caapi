@@ -1,8 +1,8 @@
 module plugins.road.plugin;
 
 import core.stdc.math : fabs, floor, sqrt;
-import plugins.api.api : Api, Column, Look, Material, NO_KIND, Registry, Rhythm, Site, entryOf;
-import plugins.turtle.turtle : ENDLESS_HIGH, ENDLESS_LOW, Turtle, boxOf, higherOf;
+import plugins.api.api : Api, Look, Material, Registry, Rhythm, Site, Span, entryOf;
+import plugins.turtle.turtle : Turtle, alongLine, boxOf, higherOf;
 
 immutable Look LOOK = Look("road");
 
@@ -72,36 +72,36 @@ ArchRows archRows(int edge, int below) {
 
 void arches(Turtle road, int below) {
     int edge = road.edgeCells();
-    int[2] width = [-INNER_HALF_WIDTH, INNER_HALF_WIDTH - 1];
+    Span width = Span(-INNER_HALF_WIDTH, INNER_HALF_WIDTH - 1);
     ArchRows found = archRows(edge, below);
     foreach (row; found.rows[0 .. found.count]) {
         Rhythm rhythm = Rhythm(edge, row.from, row.span);
-        road.fill(MASONRY, boxOf(width, [row.soffit, -1], [ENDLESS_LOW, ENDLESS_HIGH]), rhythm);
-        road.fill(RING, boxOf(width, [row.soffit, row.ring], [ENDLESS_LOW, ENDLESS_HIGH]), rhythm);
+        road.fill(MASONRY, alongLine(width, Span(row.soffit, -1)), rhythm);
+        road.fill(RING, alongLine(width, Span(row.soffit, row.ring)), rhythm);
     }
 }
 
 void pier(const(Api)* api, Site at, const(void)* data) {
     Turtle site = Turtle(api, at);
     int depth = PIER_EDGES * site.edgeCells();
-    site.pitchDown().fill(MASONRY, boxOf([-INNER_HALF_WIDTH, INNER_HALF_WIDTH - 1], [-PIER_HALF_WIDTH, PIER_HALF_WIDTH - 1], [0, depth - 1]));
-    if (!site.forward(1).place(&pier, null, 0)) {
+    site.pitchDown().fill(MASONRY, boxOf(Span(-INNER_HALF_WIDTH, INNER_HALF_WIDTH - 1), Span(-PIER_HALF_WIDTH, PIER_HALF_WIDTH - 1), Span(0, depth - 1)));
+    bool placed = site.forward(1).place(&pier, null, 0);
+    if (!placed) {
         site.fail("the next pier is behind the road's piers");
     }
 }
 
 void world(const(Api)* api, Site at, const(void)* data) {
     Turtle road = Turtle(api, at);
-    Column column = road.column();
-    int[2] width = [-HALF_WIDTH, HALF_WIDTH - 1];
-    int[2] lanes = [-INNER_HALF_WIDTH, INNER_HALF_WIDTH - 1];
-    int[2] along = [ENDLESS_LOW, ENDLESS_HIGH];
-    road.paint(Material.none, boxOf(width, [DECK, column.high], along));
-    road.paint(DECK_MATERIAL, boxOf(width, [0, DECK - 1], along));
-    road.paint(SURFACE, boxOf(lanes, [DECK - 1, DECK - 1], along));
-    road.paint(STRIPE, boxOf([-1, 0], [DECK - 1, DECK - 1], along), DASHES);
-    road.paint(PARAPET_MATERIAL, boxOf([-HALF_WIDTH, -HALF_WIDTH], [DECK - 1, DECK + PARAPET - 1], along));
-    road.paint(PARAPET_MATERIAL, boxOf([HALF_WIDTH - 1, HALF_WIDTH - 1], [DECK - 1, DECK + PARAPET - 1], along));
+    Span column = road.column();
+    Span width = Span(-HALF_WIDTH, HALF_WIDTH - 1);
+    Span lanes = Span(-INNER_HALF_WIDTH, INNER_HALF_WIDTH - 1);
+    road.paint(Material.none, alongLine(width, Span(DECK, column.high)));
+    road.paint(DECK_MATERIAL, alongLine(width, Span(0, DECK - 1)));
+    road.paint(SURFACE, alongLine(lanes, Span(DECK - 1, DECK - 1)));
+    road.paint(STRIPE, alongLine(Span(-1, 0), Span(DECK - 1, DECK - 1)), DASHES);
+    road.paint(PARAPET_MATERIAL, alongLine(Span(-HALF_WIDTH, -HALF_WIDTH), Span(DECK - 1, DECK + PARAPET - 1)));
+    road.paint(PARAPET_MATERIAL, alongLine(Span(HALF_WIDTH - 1, HALF_WIDTH - 1), Span(DECK - 1, DECK + PARAPET - 1)));
     arches(road, column.low);
     road.place(&pier, null, 0);
     road.left().left().forward(1).place(&pier, null, 0);
@@ -111,7 +111,7 @@ void world(const(Api)* api, Site at, const(void)* data) {
 }
 
 void lookedWorld(const(Api)* api, Site at, const(void)* data) {
-    api.look(api, NO_KIND, &LOOK);
+    api.worldLook(api, &LOOK);
     world(api, at, data);
 }
 

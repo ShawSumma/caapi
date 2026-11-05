@@ -1,6 +1,6 @@
 module plugins.tower.plugin;
 
-import plugins.api.api : Api, Look, NO_KIND, Registry, Site, entryOf;
+import plugins.api.api : Api, Look, Registry, Site, entryOf;
 import box = plugins.box.box;
 import plugins.turtle.turtle : Turtle;
 
@@ -18,7 +18,7 @@ void landmark(const(Api)* api, Site site, const(void)* data) {
 
 void world(const(Api)* api, Site site, const(void)* data) {
     landmark(api, site, data);
-    api.look(api, NO_KIND, &LOOK);
+    api.worldLook(api, &LOOK);
     Turtle(api, site).pitchUp().entrance(-box.HALF_WIDTH, 0, 1);
 }
 

@@ -1,5 +1,6 @@
 module scripts.views;
 
+import base.maybe : Maybe;
 import base.units : Length;
 import client.game : Key, RouteWaypoint;
 import client.script : NamedScript, Script, degrees;
@@ -64,8 +65,8 @@ immutable NamedScript[] VIEWS = [
     NamedScript("palaceinside", &rising!("palace", 1.3f, 0, 25)),
     NamedScript("palace", &looking!("palace", 0, -10)),
     NamedScript("palacestair", &towardWaypoint!("palace", 6, -15)),
-    NamedScript("risencity", &routeEnd!("risencity", climb.EVERY_WAYPOINT, -20)),
-    NamedScript("risencross", &routeEnd!("risencity", 24, -70)),
+    NamedScript("risencity", &routeEnd!("risencity", Maybe!size_t.init, -20)),
+    NamedScript("risencross", &routeEnd!("risencity", Maybe!size_t.of(24), -70)),
     NamedScript("risen", &behindRoute!("risencity")),
     NamedScript("risenwild", &behindRoute!("risenwild")),
     NamedScript("risings", &risings!(3.0f)),
@@ -84,7 +85,7 @@ immutable NamedScript[] VIEWS = [
     NamedScript("treebase", &lookingHere!(-10)),
     NamedScript("trees", &trees),
     NamedScript("treetop", &treetop),
-    NamedScript("wild", &routeEnd!("risenwild", climb.EVERY_WAYPOINT, -10)),
+    NamedScript("wild", &routeEnd!("risenwild", Maybe!size_t.init, -10)),
     NamedScript("zenith", &zenith),
 ];
 
@@ -136,18 +137,18 @@ void towardWaypoint(string name, size_t number, double pitch)(ref Script view) {
     view.structure(name);
     view.enterRoute();
     view.wait(SETTLE_SECONDS);
-    view.look(view.routeWaypoint(number).value.yaw, degrees(pitch));
+    view.look(view.needWaypoint(number).yaw, degrees(pitch));
     view.step();
 }
 
-void followRoute(ref Script view, size_t last) {
+void followRoute(ref Script view, Maybe!size_t last) {
     view.enterRoute();
     view.wait(SETTLE_SECONDS);
     climb.follow(view, last);
     view.wait(SETTLE_SECONDS);
 }
 
-void routeEnd(string name, size_t last, double pitch)(ref Script view) {
+void routeEnd(string name, Maybe!size_t last, double pitch)(ref Script view) {
     view.structure(name);
     followRoute(view, last);
     view.look(degrees(0), degrees(pitch));
@@ -156,8 +157,8 @@ void routeEnd(string name, size_t last, double pitch)(ref Script view) {
 
 void alongRoute(string name, size_t last, double pitch)(ref Script view) {
     view.structure(name);
-    followRoute(view, last);
-    view.look(view.routeWaypoint(last + 1).value.yaw, degrees(pitch));
+    followRoute(view, Maybe!size_t.of(last));
+    view.look(view.needWaypoint(last + 1).yaw, degrees(pitch));
     view.step();
 }
 
@@ -208,12 +209,14 @@ size_t landmarkStop(ref Script view, uint wanted) {
     size_t stop = 1;
     uint found = 0;
     view.enterRoute(stop);
-    while (found < wanted && view.routeWaypoint(stop + 1).exists) {
-        if (view.routeWaypoint(stop + 1).value.horizontal.value > LANDMARK_APART) {
+    Maybe!RouteWaypoint next = view.routeWaypoint(stop + 1);
+    while (found < wanted && next.exists) {
+        if (next.value.horizontal.value > LANDMARK_APART) {
             found += 1;
         }
         stop += 1;
         view.enterRoute(stop);
+        next = view.routeWaypoint(stop + 1);
     }
     return stop;
 }
@@ -239,14 +242,14 @@ void overview(ref Script view) {
 void arch(ref Script view) {
     view.structure("crown");
     view.enterRoute();
-    climb.follow(view, 45);
-    view.look(view.routeWaypoint(50).value.yaw, degrees(-15));
+    climb.follow(view, Maybe!size_t.of(45));
+    view.look(view.needWaypoint(50).yaw, degrees(-15));
     view.step();
 }
 
 void backroomsDeep(ref Script view) {
     view.structure("risenbackrooms");
-    followRoute(view, climb.EVERY_WAYPOINT);
+    followRoute(view, Maybe!size_t.init);
     view.look(degrees(40), degrees(0));
     view.press(5, Key.fwd);
     view.press(1, Key.back);
@@ -256,7 +259,7 @@ void backroomsDeep(ref Script view) {
 
 void backrooms(ref Script view) {
     view.structure("risenbackrooms");
-    followRoute(view, climb.EVERY_WAYPOINT);
+    followRoute(view, Maybe!size_t.init);
     view.press(1.5, Key.fwd);
     view.look(degrees(180), degrees(0));
     view.step();
@@ -264,7 +267,7 @@ void backrooms(ref Script view) {
 
 void backroomsTop(ref Script view) {
     view.structure("risenbackrooms");
-    followRoute(view, climb.EVERY_WAYPOINT);
+    followRoute(view, Maybe!size_t.init);
     view.mode(MovementMode.noclip);
     noclip(view, 0.55f, Key.up);
     view.look(degrees(120), degrees(0));
@@ -377,7 +380,7 @@ void roadAerial(ref Script view) {
     view.terrain();
     view.mode(MovementMode.noclip);
     view.enterRoute();
-    view.look(view.routeWaypoint(5).value.yaw, degrees(0));
+    view.look(view.needWaypoint(5).yaw, degrees(0));
     noclip(view, vertex * edge, Key.fwd);
     noclip(view, 0.6f, Key.left);
     noclip(view, 0.8f, Key.down);
@@ -390,7 +393,7 @@ void road(ref Script view) {
     view.mode(MovementMode.noclip);
     view.enterRoute();
     noclip(view, 0.3f, Key.up);
-    view.look(view.routeWaypoint(5).value.yaw, degrees(25));
+    view.look(view.needWaypoint(5).yaw, degrees(25));
     view.step();
 }
 

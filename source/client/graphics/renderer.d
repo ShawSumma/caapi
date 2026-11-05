@@ -3,7 +3,7 @@ module client.graphics.renderer;
 import core.stdc.string : memcpy;
 import bindings.platform : VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_HOST_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_ERROR_OUT_OF_DATE_KHR, VK_FORMAT_B8G8R8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, VK_STRUCTURE_TYPE_PRESENT_ID_KHR, VkPresentIdKHR, VkImage, VkImageLayout, VkImageMemoryBarrier, VkImageSubresourceRange, VK_PIPELINE_BIND_POINT_GRAPHICS, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_QUERY_RESULT_64_BIT, VK_QUERY_TYPE_TIMESTAMP, VK_SHADER_STAGE_VERTEX_BIT, VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, VK_STRUCTURE_TYPE_MEMORY_BARRIER, VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, VK_STRUCTURE_TYPE_SUBMIT_INFO, VK_SUBOPTIMAL_KHR, VK_SUBPASS_CONTENTS_INLINE, VK_SUCCESS, VkBufferImageCopy, VkClearValue, VkCommandBuffer, VkCommandBufferBeginInfo, VkDescriptorSet, VkDevice, VkDeviceSize, VkDrawIndirectCommand, VkExtent2D, VkExtent3D, VkImageSubresourceLayers, VkMemoryBarrier, VkPhysicalDevice, VkPhysicalDeviceProperties, VkPipelineStageFlags, VkPresentInfoKHR, VkQueryPool, VkQueryPoolCreateInfo, VkRect2D, VkRenderPassBeginInfo, VkResult, VkSubmitInfo, VkViewport, vkAcquireNextImageKHR, vkBeginCommandBuffer, vkCmdBeginRenderPass, vkCmdBindDescriptorSets, vkCmdBindPipeline, vkCmdCopyImageToBuffer, vkCmdDrawIndirect, vkCmdEndRenderPass, vkCmdNextSubpass, vkCmdPipelineBarrier, vkCmdPushConstants, vkCmdResetQueryPool, vkCmdSetScissor, vkCmdSetViewport, vkCmdWriteTimestamp, vkCreateQueryPool, vkDestroyQueryPool, vkDeviceWaitIdle, vkEndCommandBuffer, vkGetPhysicalDeviceProperties, vkGetQueryPoolResults, vkQueuePresentKHR, vkQueueSubmit, vkResetCommandBuffer, vkResetFences, vkWaitForFences;
 import base.array : Array;
-import base.clock : NANOSECONDS_PER_MILLISECOND, nowMilliseconds;
+import base.clock : Deadline, NANOSECONDS_PER_MILLISECOND, nowMilliseconds;
 import base.maybe : Maybe;
 import base.numbers : lowerOf;
 import base.parallel : ParallelJob;
@@ -15,7 +15,7 @@ import client.graphics.highlight : HighlightPipeline;
 import client.graphics.overlay : HudPipeline, MarkerPipeline;
 import client.hud : HudVertex, Marker;
 import client.graphics.pipeline : GpuBuffer, QUEUE_FAMILY_IGNORED, VULKAN_TRUE, expectSuccess;
-import client.graphics.uniforms : COLOR_CHANNELS, CommonUniforms, HighlightTarget, commonUniforms, findHighlightTarget, glowingMaterials, srgbToLinear;
+import client.graphics.uniforms : CommonUniforms, HighlightTarget, LinearColor, commonUniforms, findHighlightTarget, glowingMaterials, linearOf;
 import client.graphics.voxels.cull : CullPipeline;
 import client.graphics.voxels.meshes : ChunkMeshes, Replaced;
 import client.graphics.voxels.surface : FACES_BINDING, LayoutPush, SurfacePipeline, TRANSFORMS_BINDING;
@@ -30,7 +30,6 @@ enum float CLEAR_DEPTH = 0.0f;
 enum ulong NO_TIMEOUT = ulong.max;
 enum double MESH_BUDGET_MILLISECONDS = 2.0;
 enum uint PIXEL_BYTES = 4;
-enum uint NO_EPOCH = uint.max;
 enum uint OFFSCREEN_IMAGE = 0;
 enum uint TIMESTAMP_COUNT = 3;
 enum uint FRAME_START_STAMP = 0;
@@ -125,9 +124,9 @@ struct Renderer {
     Array!ubyte captured;
     VkExtent2D capturedExtent;
     VkExtent2D copiedExtent;
-    float[4] fogLinear = [0, 0, 0, 1];
+    LinearColor fogLinear = LinearColor(0, 0, 0, 1);
     ChunkLayout layout;
-    uint worldEpoch = NO_EPOCH;
+    Maybe!uint worldEpoch;
     ubyte dimension;
     uint backlog;
     ulong presentCount;
@@ -218,9 +217,7 @@ struct Renderer {
 
     void renderFrame(ref LocalWorld world) {
         layout = world.graph.layout;
-        foreach (channel; 0 .. COLOR_CHANNELS) {
-            fogLinear[channel] = srgbToLinear(world.fogColor[channel]);
-        }
+        fogLinear = linearOf(world.fogColor);
         double waitStart = nowMilliseconds();
         expectSuccess(vkWaitForFences(core.device, 1, &swapchain.inFlightFence, VULKAN_TRUE, NO_TIMEOUT));
         double updateStart = nowMilliseconds();
@@ -258,9 +255,9 @@ struct Renderer {
     }
 
     void updateChunks(ref LocalWorld world) {
-        if (world.epoch != worldEpoch) {
+        if (!worldEpoch.exists || world.epoch != worldEpoch.value) {
             meshes.forgetWorld();
-            worldEpoch = world.epoch;
+            worldEpoch = Maybe!uint.of(world.epoch);
         }
         meshes.beginFrame();
         meshes.forget(world.unloaded.slice());
@@ -275,7 +272,7 @@ struct Renderer {
     void meshChanged(ref LocalWorld world) {
         if (world.graph.chunks.hasChanges()) {
             meshes.batch.prepare(world.graph, world.streamer.workerCount + 1, meshes.dimension);
-            ParallelJob job = ParallelJob(&meshJob, &meshes.batch, nowMilliseconds() + MESH_BUDGET_MILLISECONDS, world.graph.chunks.pending().length);
+            ParallelJob job = ParallelJob(&meshJob, &meshes.batch, Deadline.at(nowMilliseconds() + MESH_BUDGET_MILLISECONDS), world.graph.chunks.pending().length);
             world.streamer.runParallel(&job);
             foreach (_; 0 .. job.count) {
                 world.graph.chunks.takeChanged();
@@ -297,7 +294,7 @@ struct Renderer {
         cull.record(commands, meshes.drawableCount);
         timer.markCullEnd(commands);
         VkClearValue[3] clears;
-        clears[0].color.float32 = fogLinear;
+        clears[0].color.float32 = [fogLinear.red, fogLinear.green, fogLinear.blue, fogLinear.alpha];
         clears[1].depthStencil.depth = CLEAR_DEPTH;
         VkRenderPassBeginInfo passInfo;
         passInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;

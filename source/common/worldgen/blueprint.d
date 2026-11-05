@@ -2,18 +2,19 @@ module common.worldgen.blueprint;
 
 import base.array : Array;
 import base.hashmap : FIBONACCI_MULTIPLIER, HashMap, Present;
-import base.maybe : Maybe;
+import base.maybe : Maybe, MaybeIndex;
 import base.numbers : higherOf, lowerOf;
 import base.splitmix : SplitMix;
+import base.vector3 : Vec3;
 import common.graph : Graph, NodeId;
 import common.material : MATERIAL_COUNT;
+import common.view : GraphView;
+import common.worldgen.horospheres : HorosphereId;
 import common.worldgen.strokes : Stroke, StrokeRun;
-import common.worldgen.structure : AxisOrder, CanonicalSite, ClaimKey, EDGE_NODES, ColumnSpot, LineTransform, PAINT_REACH, SiteFrame, SlotTouch, addPendingTouch, aroundEdge, canonicalOf, edgeCells, isEndless, seedTouch, walkedTouch;
+import common.worldgen.structure : AxisOrder, CanonicalSite, ClaimKey, ColumnSpot, EDGE_NODES, LineTransform, PAINT_REACH, SiteFrame, SlotTouch, addPendingTouch, canonicalOf, edgeCells, ensureAroundEdge, isEndless, seedTouch, walkTouch;
 import geometry.honeycomb : Corner, FACE_COUNT, Face;
-import plugins.api.api : Look, Material;
+import plugins.api.api : Extent, Look, Material, Repeat, Span;
 
-enum uint PLACED_RECORD = uint.max;
-enum uint KEPT_USERS = uint.max;
 enum ulong PLACED_RANK = 0;
 enum ulong TILE_RANK_BIT = 1;
 
@@ -23,24 +24,45 @@ enum Cover : ubyte {
 }
 
 struct Paint {
-    ubyte material;
+    MaybeIndex!ubyte material;
     Cover cover;
 }
 
+struct PaintOwner {
+    MaybeIndex!uint tile;
+
+    static PaintOwner ofTile(uint index) {
+        return PaintOwner(MaybeIndex!uint.of(index));
+    }
+}
+
 struct CellBox {
-    int[3] low;
-    int[3] high;
+    Vec3!int low;
+    Vec3!int high;
+    Extent extent;
 
     static CellBox make(int xLow, int xHigh, int yLow, int yHigh, int zLow, int zHigh) {
-        return CellBox([xLow, yLow, zLow], [xHigh, yHigh, zHigh]);
+        return CellBox(Vec3!int(xLow, yLow, zLow), Vec3!int(xHigh, yHigh, zHigh));
     }
 
-    bool contains(int[3] cell) const {
-        return cell[0] >= low[0] && cell[0] <= high[0] && cell[1] >= low[1] && cell[1] <= high[1] && cell[2] >= low[2] && cell[2] <= high[2];
+    static CellBox alongLine(int xLow, int xHigh, int yLow, int yHigh) {
+        return CellBox(Vec3!int(xLow, yLow, 0), Vec3!int(xHigh, yHigh, 0), Extent.endless);
+    }
+
+    bool isEndless() const {
+        return extent == Extent.endless;
+    }
+
+    bool contains(Vec3!int cell) const {
+        return cell.x >= low.x && cell.x <= high.x && cell.y >= low.y && cell.y <= high.y && (isEndless || (cell.z >= low.z && cell.z <= high.z));
     }
 
     bool overlaps(ref const CellBox other) const {
-        return low[0] <= other.high[0] && other.low[0] <= high[0] && low[1] <= other.high[1] && other.low[1] <= high[1] && low[2] <= other.high[2] && other.low[2] <= high[2];
+        return low.x <= other.high.x && other.low.x <= high.x && low.y <= other.high.y && other.low.y <= high.y && (isEndless || other.isEndless || (low.z <= other.high.z && other.low.z <= high.z));
+    }
+
+    bool reachesEdge(int level, ubyte dimension) const {
+        return isEndless || (edgeOf(low.z, dimension) <= level && edgeOf(high.z, dimension) >= level);
     }
 }
 
@@ -48,21 +70,23 @@ struct Rhythm {
     int period;
     int phase;
     int span;
+    Repeat repeat;
 
     bool includes(int height) const {
-        if (period == 0) {
-            return true;
-        } else {
-            int offset = (height - phase) % period;
-            if (offset < 0) {
-                offset += period;
-            }
-            return offset < span;
+        final switch (repeat) {
+            case Repeat.always:
+                return true;
+            case Repeat.rhythmic:
+                int offset = (height - phase) % period;
+                if (offset < 0) {
+                    offset += period;
+                }
+                return offset < span;
         }
     }
 }
 
-enum Rhythm EVERY_HEIGHT = Rhythm(0, 0, 0);
+enum Rhythm EVERY_HEIGHT = Rhythm(0, 0, 0, Repeat.always);
 
 struct BrushRank {
     ulong tile;
@@ -79,18 +103,18 @@ struct Brush {
     uint order;
     Paint paint;
 
-    bool covers(int[3] column) const {
-        return box.contains(column) && rhythm.includes(column[2]);
+    bool covers(Vec3!int column) const {
+        return box.contains(column) && rhythm.includes(column.z);
     }
 }
 
 struct LineSpec {
-    int lowest;
-    int highest;
-    uint node;
+    LevelRange edges;
+    MaybeIndex!uint node;
     Corner lower;
     Face xSide;
     Face ySide;
+    Extent extent;
 }
 
 struct LineKey {
@@ -141,10 +165,15 @@ struct Painted {
 }
 
 struct RunRef {
-    uint record;
+    PaintOwner owner;
     uint run;
     int lowEdge;
     int highEdge;
+    Extent extent;
+
+    bool reachesEdge(int level) const {
+        return extent == Extent.endless || (lowEdge <= level && highEdge >= level);
+    }
 }
 
 enum TileState : ubyte {
@@ -162,7 +191,7 @@ struct TileRecord {
     Painted painted;
     Array!TileEdge edges;
     NodeId face;
-    uint horosphere;
+    HorosphereId horosphere;
     uint listIndex;
     ubyte feature;
     TileState state;
@@ -175,6 +204,13 @@ struct TileRecord {
 struct EdgeRecord {
     NodeId[EDGE_NODES] nodes;
     uint users;
+    LineLife life;
+}
+
+struct EdgeUses {
+    uint kept;
+    uint used;
+    uint unused;
 }
 
 struct LineState {
@@ -192,21 +228,45 @@ struct SiteLine {
     LevelRange touched;
 }
 
+enum Coverage : ubyte {
+    empty,
+    covered,
+}
+
 struct LevelRange {
-    int low = int.max;
-    int high = int.min;
+    int low;
+    int high;
+    Coverage coverage;
 
     bool contains(int first, int last) const {
-        return first >= low && last <= high;
+        return coverage == Coverage.covered && first >= low && last <= high;
     }
 
     void include(int first, int last) {
-        if (first <= high + 1L && last >= low - 1L) {
+        if (coverage == Coverage.covered && first <= high + 1L && last >= low - 1L) {
             low = lowerOf(low, first);
             high = higherOf(high, last);
         } else {
             low = first;
             high = last;
+            coverage = Coverage.covered;
+        }
+    }
+
+    void widen(int first, int last) {
+        if (coverage == Coverage.covered) {
+            low = lowerOf(low, first);
+            high = higherOf(high, last);
+        } else {
+            low = first;
+            high = last;
+            coverage = Coverage.covered;
+        }
+    }
+
+    void widen(ref const LevelRange other) {
+        if (other.coverage == Coverage.covered) {
+            widen(other.low, other.high);
         }
     }
 }
@@ -227,10 +287,6 @@ enum BuilderPhase : ubyte {
     growing,
 }
 
-bool isUnbounded(int lowEdge, int highEdge) {
-    return lowEdge == int.min || highEdge == int.max;
-}
-
 struct Blueprint {
     Array!LineSpec lines;
     Array!LineState lineStates;
@@ -246,13 +302,13 @@ struct Blueprint {
     Array!RouteStop route;
     Array!SiteFrame flats;
     Array!Material materials;
-    ubyte[MATERIAL_COUNT] paints;
+    MaybeIndex!ubyte[MATERIAL_COUNT] paints;
     HashMap!(LineKey, uint) lineIndex;
     HashMap!(LineEdge, EdgeRecord) touchedEdges;
     HashMap!(ClaimKey, Present) claims;
     Maybe!RouteStop entrance;
     Look look;
-    float fog = float.infinity;
+    Maybe!float fog;
     uint sweep;
     uint madeLive;
     uint brushCount;
@@ -266,7 +322,7 @@ struct Blueprint {
         return blueprint;
     }
 
-    uint lineOf(LineSpec spec, NodeId node) {
+    uint ensureLine(LineSpec spec, NodeId node) {
         LineKey key = LineKey(node, spec.lower, spec.xSide, spec.ySide);
         const(uint)* found = lineIndex.find(key);
         if (found !is null) {
@@ -311,39 +367,35 @@ struct Blueprint {
     }
 
     void touchEdge(LineEdge edge, NodeId[EDGE_NODES] nodes) {
-        touchedEdges.insert(edge, EdgeRecord(nodes, 0));
+        touchedEdges.insert(edge, EdgeRecord(nodes));
         lineStates.ptr[edge.line].edges += 1;
     }
 
     NodeId[EDGE_NODES] useEdge(LineEdge edge) {
         EdgeRecord* found = touchedEdges.find(edge);
-        if (found.users != KEPT_USERS) {
-            found.users += 1;
-        }
+        found.users += 1;
         return found.nodes;
     }
 
     void keepEdge(LineEdge edge) {
-        touchedEdges.find(edge).users = KEPT_USERS;
+        touchedEdges.find(edge).life = LineLife.kept;
     }
 
     bool releaseEdge(LineEdge edge) {
         EdgeRecord* found = touchedEdges.find(edge);
-        if (found.users != KEPT_USERS) {
-            found.users -= 1;
-        }
-        return found.users == 0;
+        found.users -= 1;
+        return found.life == LineLife.loose && found.users == 0;
     }
 
-    uint[3] edgeUses() const {
-        uint[3] uses;
+    EdgeUses edgeUses() const {
+        EdgeUses uses;
         foreach (ref const edge, ref const record; touchedEdges) {
-            if (record.users == KEPT_USERS) {
-                uses[0] += 1;
+            if (record.life == LineLife.kept) {
+                uses.kept += 1;
             } else if (record.users > 0) {
-                uses[1] += 1;
+                uses.used += 1;
             } else {
-                uses[2] += 1;
+                uses.unused += 1;
             }
         }
         return uses;
@@ -363,8 +415,12 @@ struct Blueprint {
         forgetLineIfUnused(edge.line);
     }
 
-    uint addTile(NodeId face, ubyte feature, uint horosphere) {
-        TileRecord made = TileRecord(Painted.init, Array!TileEdge.init, face, horosphere, 0, feature, TileState.live);
+    uint addTile(NodeId face, ubyte feature, HorosphereId horosphere) {
+        TileRecord made;
+        made.face = face;
+        made.horosphere = horosphere;
+        made.feature = feature;
+        made.state = TileState.live;
         uint tile = cast(uint) tiles.length;
         if (freeTiles.length > 0) {
             freeTiles.length -= 1;
@@ -426,11 +482,11 @@ struct Blueprint {
         list.length -= 1;
     }
 
-    ref inout(Painted) paintedBy(uint record) inout return {
-        if (record == PLACED_RECORD) {
-            return placed;
+    ref inout(Painted) paintedBy(PaintOwner owner) inout return {
+        if (owner.tile.exists) {
+            return tiles.ptr[owner.tile.value].painted;
         } else {
-            return tiles.ptr[record].painted;
+            return placed;
         }
     }
 
@@ -440,8 +496,8 @@ struct Blueprint {
         return first;
     }
 
-    uint addStroke(uint record, NodeId node, Stroke stroke) {
-        Painted* painted = &paintedBy(record);
+    uint addStroke(PaintOwner owner, NodeId node, Stroke stroke) {
+        Painted* painted = &paintedBy(owner);
         if (painted.strokeRuns.length == 0 || painted.strokeRuns.ptr[painted.strokeRuns.length - 1].node != node) {
             painted.strokeRuns.append(StrokeRun(node, cast(uint) painted.strokes.length, 0));
         }
@@ -450,23 +506,26 @@ struct Blueprint {
         return cast(uint)(painted.strokeRuns.length - 1);
     }
 
-    void addBrush(uint record, uint line, Brush brush) {
-        Painted* painted = &paintedBy(record);
-        int lowEdge = edgeOf(brush.box.low[2], dimension);
-        int highEdge = edgeOf(brush.box.high[2], dimension);
+    void addBrush(PaintOwner owner, uint line, Brush brush) {
+        Painted* painted = &paintedBy(owner);
+        int lowEdge = edgeOf(brush.box.low.z, dimension);
+        int highEdge = edgeOf(brush.box.high.z, dimension);
         uint run = cast(uint) painted.runs.length - 1;
         if (painted.runs.length == 0 || painted.runs.ptr[run].line != line) {
             painted.runs.append(LineRun(line, cast(uint) painted.brushes.length, 0));
             run = cast(uint) painted.runs.length - 1;
-            runsOn.ptr[line].append(RunRef(record, run, lowEdge, highEdge));
+            runsOn.ptr[line].append(RunRef(owner, run, lowEdge, highEdge, brush.box.extent));
         } else {
             Array!RunRef* listed = &runsOn.ptr[line];
             size_t at = listed.length - 1;
-            while (listed.ptr[at].record != record || listed.ptr[at].run != run) {
+            while (listed.ptr[at].owner != owner || listed.ptr[at].run != run) {
                 at -= 1;
             }
             listed.ptr[at].lowEdge = lowerOf(listed.ptr[at].lowEdge, lowEdge);
             listed.ptr[at].highEdge = higherOf(listed.ptr[at].highEdge, highEdge);
+            if (brush.box.isEndless) {
+                listed.ptr[at].extent = Extent.endless;
+            }
         }
         painted.runs.ptr[run].count += 1;
         painted.brushes.append(brush);
@@ -477,7 +536,7 @@ struct Blueprint {
         foreach (index, run; record.painted.runs.slice()) {
             Array!RunRef* listed = &runsOn.ptr[run.line];
             size_t at = 0;
-            while (listed.ptr[at].record != tile || listed.ptr[at].run != index) {
+            while (listed.ptr[at].owner != PaintOwner.ofTile(tile) || listed.ptr[at].run != index) {
                 at += 1;
             }
             listed.length -= 1;
@@ -491,12 +550,12 @@ struct Blueprint {
 
     void collectBrushes(uint line, int level, ref Array!Brush into, ref Array!BrushRank ranks) const {
         foreach (listed; runsOn.ptr[line].slice()) {
-            if (listed.lowEdge <= level && listed.highEdge >= level) {
-                const(Painted)* painted = &paintedBy(listed.record);
+            if (listed.reachesEdge(level)) {
+                const(Painted)* painted = &paintedBy(listed.owner);
                 LineRun run = painted.runs.ptr[listed.run];
-                ulong tile = tileRank(listed.record);
+                ulong tile = tileRank(listed.owner);
                 foreach (brush; painted.brushes.ptr[run.first .. run.first + run.count]) {
-                    if (edgeOf(brush.box.low[2], dimension) <= level && edgeOf(brush.box.high[2], dimension) >= level) {
+                    if (brush.box.reachesEdge(level, dimension)) {
                         into.append(brush);
                         ranks.append(BrushRank(tile, brush.order));
                     }
@@ -505,12 +564,12 @@ struct Blueprint {
         }
     }
 
-    ulong tileRank(uint record) const {
-        if (record == PLACED_RECORD) {
-            return PLACED_RANK;
-        } else {
-            const(TileRecord)* tile = &tiles.ptr[record];
+    ulong tileRank(PaintOwner owner) const {
+        if (owner.tile.exists) {
+            const(TileRecord)* tile = &tiles.ptr[owner.tile.value];
             return SplitMix(tile.face.spice() ^ (tile.feature * FIBONACCI_MULTIPLIER)).next() | TILE_RANK_BIT;
+        } else {
+            return PLACED_RANK;
         }
     }
 
@@ -522,10 +581,10 @@ struct Blueprint {
         return total;
     }
 
-    ubyte paintOf(Material material) {
-        if (paints[material] == 0) {
+    MaybeIndex!ubyte ensurePaint(Material material) {
+        if (!paints[material].exists) {
+            paints[material] = MaybeIndex!ubyte.of(cast(ubyte) materials.length);
             materials.append(material);
-            paints[material] = cast(ubyte) materials.length;
         }
         return paints[material];
     }
@@ -600,76 +659,66 @@ struct BlueprintBuilder {
         return cast(int) graph.depthOf(slot) >= paintLimit;
     }
 
-    SiteLine* lineOf(SiteFrame site) {
+    SiteLine* ensureLine(SiteFrame site) {
         uint index = 0;
         while (index < known.length && known.ptr[index].site != site) {
             index += 1;
         }
         if (index == known.length) {
             CanonicalSite canonical = graph.view.canonicalOf(site);
-            known.append(SiteLine(site, canonical.transform, blueprint.lineOf(canonical.line, graph.idAt(canonical.line.node))));
+            known.append(SiteLine(site, canonical.transform, blueprint.ensureLine(canonical.line, graph.idAt(canonical.line.node.value))));
         }
         return &known.ptr[index];
     }
 
     PaintResult paint(SiteFrame site, CellBox box, Rhythm rhythm, Material material, Cover cover) {
-        SiteLine* found = lineOf(site);
+        SiteLine* found = ensureLine(site);
         ubyte dimension = graph.layout.dimension;
         CellBox canonical = canonicalBox(box, found.transform, dimension);
-        int lowEdge = edgeOf(canonical.low[2], dimension);
-        int highEdge = edgeOf(canonical.high[2], dimension);
-        if (isGrowing && isUnbounded(lowEdge, highEdge)) {
+        int lowEdge = edgeOf(canonical.low.z, dimension);
+        int highEdge = edgeOf(canonical.high.z, dimension);
+        if (isGrowing && canonical.isEndless) {
             return PaintResult.endless;
-        } else if (isGrowing && !isAhead(*found, lowEdge, highEdge)) {
-            return PaintResult.behind;
         } else {
-            record(*found, lowEdge, highEdge);
-            blueprint.keepLine(found.line);
-            blueprint.addBrush(PLACED_RECORD, found.line, Brush(canonical, canonicalRhythm(rhythm, found.transform, dimension), blueprint.takeOrders(1), Paint(blueprint.paintOf(material), cover)));
-            return PaintResult.painted;
-        }
-    }
-
-    bool isAhead(ref SiteLine found, int lowEdge, int highEdge) {
-        if (found.open.contains(lowEdge, highEdge)) {
-            return true;
-        } else if (areEdgesOpen(found, lowEdge, highEdge)) {
-            found.open.include(lowEdge, highEdge);
-            return true;
-        } else {
-            return false;
-        }
-    }
-
-    bool areEdgesOpen(ref SiteLine found, int lowEdge, int highEdge) {
-        LineSpec spec = blueprint.lines.ptr[found.line];
-        SlotTouch edge = seedTouch(spec, found.line);
-        int level = lowEdge;
-        while (level <= highEdge) {
-            edge = graph.view.walkedTouch(edge, spec, level);
-            foreach (around; graph.view.aroundEdge(edge, spec)) {
-                if (!isOpen(around.slot)) {
-                    return false;
+            bool ahead = true;
+            if (isGrowing) {
+                bool isClosed(uint slot) {
+                    return !isOpen(slot);
                 }
+                ahead = probeLineAhead!isClosed(graph.view, *found, blueprint.lines.ptr[found.line], lowEdge, highEdge);
             }
-            level += 1;
+            if (!ahead) {
+                return PaintResult.behind;
+            } else {
+                if (canonical.isEndless) {
+                    recordEndless(found.line);
+                } else {
+                    record(*found, lowEdge, highEdge);
+                }
+                blueprint.keepLine(found.line);
+                blueprint.addBrush(PaintOwner.init, found.line, Brush(canonical, canonicalRhythm(rhythm, found.transform, dimension), blueprint.takeOrders(1), Paint(blueprint.ensurePaint(material), cover)));
+                return PaintResult.painted;
+            }
         }
-        return true;
+    }
+
+    void recordEndless(uint line) {
+        LineSpec spec = blueprint.lines.ptr[line];
+        if (!spec.isEndless()) {
+            SlotTouch seed = seedTouch(spec, line);
+            (*graph).addPendingTouch(seed.slot, seed.touch);
+        }
+        blueprint.lines.ptr[line].extent = Extent.endless;
     }
 
     void record(ref SiteLine found, int lowEdge, int highEdge) {
         uint line = found.line;
         LineSpec spec = blueprint.lines.ptr[line];
-        if (isUnbounded(lowEdge, highEdge) && !spec.isEndless()) {
-            SlotTouch seed = seedTouch(spec, line);
-            (*graph).addPendingTouch(seed.slot, seed.touch);
-        } else if (!isUnbounded(lowEdge, highEdge) && !spec.isEndless() && !found.touched.contains(lowEdge, highEdge)) {
+        if (!spec.isEndless() && !found.touched.contains(lowEdge, highEdge)) {
             touchEdges(line, spec, lowEdge, highEdge);
             found.touched.include(lowEdge, highEdge);
         }
-        LineSpec* stored = &blueprint.lines.ptr[line];
-        stored.lowest = lowerOf(spec.lowest, lowEdge);
-        stored.highest = higherOf(spec.highest, highEdge);
+        blueprint.lines.ptr[line].edges.widen(lowEdge, highEdge);
     }
 
     void touchEdges(uint line, ref const LineSpec spec, int lowEdge, int highEdge) {
@@ -677,9 +726,9 @@ struct BlueprintBuilder {
         foreach (level; lowEdge .. highEdge + 1) {
             LineEdge key = LineEdge(line, level);
             if (!blueprint.isEdgeTouched(key)) {
-                edge = graph.view.walkedTouch(edge, spec, level);
+                edge = graph.view.walkTouch(edge, spec, level);
                 NodeId[EDGE_NODES] nodes = void;
-                foreach (index, around; graph.view.aroundEdge(edge, spec)) {
+                foreach (index, around; graph.view.ensureAroundEdge(edge, spec)) {
                     nodes[index] = graph.idAt(around.slot);
                     (*graph).addPendingTouch(around.slot, around.touch);
                 }
@@ -702,12 +751,11 @@ struct BlueprintBuilder {
     }
 
     bool claim(ClaimKey key) {
-        if (blueprint.claim(key)) {
+        bool claimed = blueprint.claim(key);
+        if (claimed) {
             graph.reference(key.slot);
-            return true;
-        } else {
-            return false;
         }
+        return claimed;
     }
 
     void release() {
@@ -715,55 +763,57 @@ struct BlueprintBuilder {
     }
 }
 
+bool probeLineAhead(alias isClosed)(ref GraphView view, ref SiteLine found, LineSpec spec, int lowEdge, int highEdge) {
+    if (found.open.contains(lowEdge, highEdge)) {
+        return true;
+    } else {
+        SlotTouch edge = seedTouch(spec, found.line);
+        int level = lowEdge;
+        while (level <= highEdge) {
+            edge = view.walkTouch(edge, spec, level);
+            foreach (around; view.ensureAroundEdge(edge, spec)) {
+                if (isClosed(around.slot)) {
+                    return false;
+                }
+            }
+            level += 1;
+        }
+        found.open.include(lowEdge, highEdge);
+        return true;
+    }
+}
+
 CellBox canonicalBox(CellBox local, LineTransform transform, ubyte dimension) {
-    int[2] x = signedRange(local.low[0], local.high[0], transform.xSign);
-    int[2] y = signedRange(local.low[1], local.high[1], transform.ySign);
-    int[2] z = heightRange(local.low[2], local.high[2], transform, dimension);
+    Span x = signedRange(local.low.x, local.high.x, transform.xSign);
+    Span y = signedRange(local.low.y, local.high.y, transform.ySign);
+    Span z = heightRange(local.low.z, local.high.z, transform, dimension);
     if (transform.order == AxisOrder.swapped) {
-        return CellBox.make(y[0], y[1], x[0], x[1], z[0], z[1]);
+        return CellBox(Vec3!int(y.low, x.low, z.low), Vec3!int(y.high, x.high, z.high), local.extent);
     } else {
-        return CellBox.make(x[0], x[1], y[0], y[1], z[0], z[1]);
+        return CellBox(Vec3!int(x.low, y.low, z.low), Vec3!int(x.high, y.high, z.high), local.extent);
     }
 }
 
-int[2] signedRange(int low, int high, int sign) {
+Span signedRange(int low, int high, int sign) {
     if (sign > 0) {
-        return [low, high];
+        return Span(low, high);
     } else {
-        return [-1 - high, -1 - low];
+        return Span(-1 - high, -1 - low);
     }
 }
 
-int[2] heightRange(int low, int high, LineTransform transform, ubyte dimension) {
+Span heightRange(int low, int high, LineTransform transform, ubyte dimension) {
     int offset = transform.offsetLevels * edgeCells(dimension);
     if (transform.zSign > 0) {
-        return [movedHeight(low, offset), movedHeight(high, offset)];
+        return Span(low + offset, high + offset);
     } else {
-        return [mirroredHeight(high, offset), mirroredHeight(low, offset)];
-    }
-}
-
-int movedHeight(int height, int offset) {
-    if (height == int.min || height == int.max) {
-        return height;
-    } else {
-        return height + offset;
-    }
-}
-
-int mirroredHeight(int height, int offset) {
-    if (height == int.min) {
-        return int.max;
-    } else if (height == int.max) {
-        return int.min;
-    } else {
-        return offset - 1 - height;
+        return Span(offset - 1 - high, offset - 1 - low);
     }
 }
 
 Rhythm canonicalRhythm(Rhythm local, LineTransform transform, ubyte dimension) {
     int offset = transform.offsetLevels * edgeCells(dimension);
-    if (local.period == 0) {
+    if (local.repeat == Repeat.always) {
         return local;
     } else if (transform.zSign > 0) {
         return Rhythm(local.period, local.phase + offset, local.span);
@@ -773,11 +823,7 @@ Rhythm canonicalRhythm(Rhythm local, LineTransform transform, ubyte dimension) {
 }
 
 int edgeOf(int height, ubyte dimension) {
-    if (height == int.min || height == int.max) {
-        return height;
-    } else {
-        return floorDivision(height, edgeCells(dimension));
-    }
+    return floorDivision(height, edgeCells(dimension));
 }
 
 int floorDivision(int value, int divisor) {

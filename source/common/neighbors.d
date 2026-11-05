@@ -1,7 +1,9 @@
 module common.neighbors;
 
 import base.array : Array;
-import common.graph : Graph, NO_SLOT;
+import base.maybe : Maybe, MaybeIndex;
+import base.vector3 : Vec3;
+import common.graph : Graph, NodeId;
 import common.material : isShownAgainst;
 import common.node : Chunk, ChunkId, ChunkSlot, ChunkState, Occupancy, cellIndex;
 import geometry.cube : AXIS_COUNT, Axis, AxisMap, DIRECTIONS, Direction, Sign, beyondBoundary, boundaryOf;
@@ -9,8 +11,8 @@ import geometry.honeycomb : Corner, across, axisMaps, faces;
 import plugins.api.api : Material;
 
 struct CellHop {
-    ChunkSlot chunk;
-    int[3] cell;
+    Maybe!ChunkSlot chunk;
+    Vec3!int cell;
     ChunkState state;
 
     bool isPopulated() const {
@@ -18,19 +20,29 @@ struct CellHop {
     }
 }
 
-ChunkId chunkNeighborId(ref const Graph graph, ChunkId chunk, Direction direction) {
+Maybe!ChunkId chunkNeighborId(ref const Graph graph, ChunkId chunk, Direction direction) {
     if (direction.sign == Sign.plus) {
-        return ChunkId(chunk.node, chunk.corner.across[direction.axis]);
+        return Maybe!ChunkId.of(ChunkId(chunk.node, chunk.corner.across[direction.axis]));
     } else {
-        return ChunkId(graph.neighbor(chunk.node, chunk.corner.faces[direction.axis]), chunk.corner);
+        Maybe!NodeId neighbor = graph.neighbor(chunk.node, chunk.corner.faces[direction.axis]);
+        if (neighbor.exists) {
+            return Maybe!ChunkId.of(ChunkId(neighbor.value, chunk.corner));
+        } else {
+            return Maybe!ChunkId.init;
+        }
     }
 }
 
-ChunkSlot chunkNeighborSlot(ref const Graph graph, ChunkSlot chunk, Direction direction) {
+Maybe!ChunkSlot chunkNeighborSlot(ref const Graph graph, ChunkSlot chunk, Direction direction) {
     if (direction.sign == Sign.plus) {
-        return ChunkSlot(chunk.slot, chunk.corner.across[direction.axis]);
+        return Maybe!ChunkSlot.of(ChunkSlot(chunk.slot, chunk.corner.across[direction.axis]));
     } else {
-        return ChunkSlot(graph.neighborSlot(chunk.slot, chunk.corner.faces[direction.axis]), chunk.corner);
+        MaybeIndex!uint neighbor = graph.neighborSlot(chunk.slot, chunk.corner.faces[direction.axis]);
+        if (neighbor.exists) {
+            return Maybe!ChunkSlot.of(ChunkSlot(neighbor.value, chunk.corner));
+        } else {
+            return Maybe!ChunkSlot.init;
+        }
     }
 }
 
@@ -42,13 +54,13 @@ AxisMap neighborAxisMap(Corner corner, Direction direction) {
     }
 }
 
-int[3] acrossBorder(ubyte dimension, Corner corner, int[3] cell, Direction direction) {
-    int[3] moved = cell;
+Vec3!int acrossBorder(ubyte dimension, Corner corner, Vec3!int cell, Direction direction) {
+    Vec3!int moved = cell;
     moved[direction.axis] = boundaryOf(dimension, direction.sign);
     return neighborAxisMap(corner, direction).apply(moved);
 }
 
-Direction borderCrossed(int[3] cell, size_t axis) {
+Direction borderCrossed(Vec3!int cell, size_t axis) {
     if (cell[axis] < 0) {
         return Direction(cast(Axis) axis, Sign.minus);
     } else {
@@ -60,26 +72,26 @@ bool isOutside(ubyte dimension, int coordinate) {
     return coordinate < 0 || coordinate >= dimension;
 }
 
-bool isInside(ubyte dimension, int[3] cell) {
-    return !isOutside(dimension, cell[0]) && !isOutside(dimension, cell[1]) && !isOutside(dimension, cell[2]);
+bool isInside(ubyte dimension, Vec3!int cell) {
+    return !isOutside(dimension, cell.x) && !isOutside(dimension, cell.y) && !isOutside(dimension, cell.z);
 }
 
-size_t indexIn(ubyte dimension, int[3] cell) {
-    return cellIndex(dimension, cell[0], cell[1], cell[2]);
+size_t indexIn(ubyte dimension, Vec3!int cell) {
+    return cellIndex(dimension, cell.x, cell.y, cell.z);
 }
 
-CellHop hopCell(ref const Graph graph, ChunkSlot chunk, int[3] cell, size_t axis) {
+CellHop hopCell(ref const Graph graph, ChunkSlot chunk, Vec3!int cell, size_t axis) {
     ubyte dimension = graph.layout.dimension;
     Direction direction = borderCrossed(cell, axis);
-    ChunkSlot neighbor = graph.chunkNeighborSlot(chunk, direction);
-    if (neighbor.slot == NO_SLOT) {
-        return CellHop(neighbor, cell, ChunkState.fresh);
+    Maybe!ChunkSlot neighbor = graph.chunkNeighborSlot(chunk, direction);
+    if (neighbor.exists) {
+        return CellHop(neighbor, acrossBorder(dimension, chunk.corner, cell, direction), graph.chunks.at(neighbor.value).state);
     } else {
-        return CellHop(neighbor, acrossBorder(dimension, chunk.corner, cell, direction), graph.chunks.at(neighbor).state);
+        return CellHop(neighbor, cell, ChunkState.fresh);
     }
 }
 
-Material materialNear(ref const Graph graph, ChunkSlot chunk, int[3] cell) {
+Material materialNear(ref const Graph graph, ChunkSlot chunk, Vec3!int cell) {
     ubyte dimension = graph.layout.dimension;
     if (isInside(dimension, cell)) {
         return graph.chunks.at(chunk).voxels.at(indexIn(dimension, cell));
@@ -90,18 +102,18 @@ Material materialNear(ref const Graph graph, ChunkSlot chunk, int[3] cell) {
         }
         CellHop hop = graph.hopCell(chunk, cell, axis);
         if (hop.isPopulated) {
-            return graph.chunks.at(hop.chunk).voxels.at(indexIn(dimension, hop.cell));
+            return graph.chunks.at(hop.chunk.value).voxels.at(indexIn(dimension, hop.cell));
         } else {
             return Material.none;
         }
     }
 }
 
-bool isOccupiedAcross(ref const Graph graph, ChunkSlot chunk, int[3] cell, size_t axis) {
+bool isOccupiedAcross(ref const Graph graph, ChunkSlot chunk, Vec3!int cell, size_t axis) {
     return isOutside(graph.layout.dimension, cell[axis]) && graph.isHopOccupied(graph.hopCell(chunk, cell, axis));
 }
 
-bool isCellOccupied(ref const Graph graph, ChunkSlot chunk, int[3] cell) {
+bool isCellOccupied(ref const Graph graph, ChunkSlot chunk, Vec3!int cell) {
     ubyte dimension = graph.layout.dimension;
     if (isInside(dimension, cell)) {
         return graph.chunks.at(chunk).voxels.at(indexIn(dimension, cell)) != Material.none;
@@ -116,9 +128,9 @@ bool isCellOccupied(ref const Graph graph, ChunkSlot chunk, int[3] cell) {
 
 bool isHopOccupied(ref const Graph graph, CellHop hop) {
     if (hop.isPopulated) {
-        return graph.isCellOccupied(hop.chunk, hop.cell);
+        return graph.isCellOccupied(hop.chunk.value, hop.cell);
     } else {
-        return hop.chunk.slot == NO_SLOT || isAssumedOccupied(graph.chunks.at(hop.chunk).predicted);
+        return !hop.chunk.exists || isAssumedOccupied(graph.chunks.at(hop.chunk.value).predicted);
     }
 }
 
@@ -150,11 +162,11 @@ bool needsMesh(ref const Graph graph, ChunkSlot chunk) {
 }
 
 bool showsAgainst(ref const Graph graph, ChunkSlot chunk, Direction direction, Material fill) {
-    ChunkSlot neighbor = graph.chunkNeighborSlot(chunk, direction);
-    if (neighbor.slot == NO_SLOT || graph.chunks.at(neighbor).state != ChunkState.populated) {
+    Maybe!ChunkSlot neighbor = graph.chunkNeighborSlot(chunk, direction);
+    if (!neighbor.exists || graph.chunks.at(neighbor.value).state != ChunkState.populated) {
         return false;
-    } else if (graph.chunks.at(neighbor).voxels.isUniform()) {
-        return isShownAgainst(graph.chunks.at(neighbor).voxels.fill, fill);
+    } else if (graph.chunks.at(neighbor.value).voxels.isUniform()) {
+        return isShownAgainst(graph.chunks.at(neighbor.value).voxels.fill, fill);
     } else {
         return true;
     }
@@ -162,8 +174,8 @@ bool showsAgainst(ref const Graph graph, ChunkSlot chunk, Direction direction, M
 
 bool isBorderingVoid(ref const Graph graph, ChunkSlot chunk) {
     foreach (direction; DIRECTIONS) {
-        ChunkSlot neighbor = graph.chunkNeighborSlot(chunk, direction);
-        if (neighbor.slot != NO_SLOT && graph.chunks.at(neighbor).state == ChunkState.populated && graph.showsVoidAcross(chunk, direction, graph.chunks.at(neighbor))) {
+        Maybe!ChunkSlot neighbor = graph.chunkNeighborSlot(chunk, direction);
+        if (neighbor.exists && graph.chunks.at(neighbor.value).state == ChunkState.populated && graph.showsVoidAcross(chunk, direction, graph.chunks.at(neighbor.value))) {
             return true;
         }
     }
@@ -177,7 +189,7 @@ bool showsVoidAcross(ref const Graph graph, ChunkSlot chunk, Direction direction
         ubyte dimension = graph.layout.dimension;
         size_t u = (direction.axis + 1) % AXIS_COUNT;
         size_t v = (direction.axis + 2) % AXIS_COUNT;
-        int[3] cell;
+        Vec3!int cell;
         cell[direction.axis] = beyondBoundary(dimension, direction.sign);
         foreach (j; 0 .. dimension) {
             foreach (i; 0 .. dimension) {
@@ -192,7 +204,7 @@ bool showsVoidAcross(ref const Graph graph, ChunkSlot chunk, Direction direction
     }
 }
 
-void touchHolders(ref const Graph graph, ChunkSlot chunk, int[3] cell, ref Array!ChunkSlot holders) {
+void touchHolders(ref const Graph graph, ChunkSlot chunk, Vec3!int cell, ref Array!ChunkSlot holders) {
     ubyte dimension = graph.layout.dimension;
     if (isInside(dimension, cell)) {
         holders.append(chunk);
@@ -201,16 +213,16 @@ void touchHolders(ref const Graph graph, ChunkSlot chunk, int[3] cell, ref Array
             if (isOutside(dimension, cell[axis])) {
                 CellHop hop = graph.hopCell(chunk, cell, axis);
                 if (hop.isPopulated) {
-                    graph.touchHolders(hop.chunk, hop.cell, holders);
+                    graph.touchHolders(hop.chunk.value, hop.cell, holders);
                 }
             }
         }
     }
 }
 
-void touchChunksReading(ref const Graph graph, ChunkSlot chunk, int[3] cell, ref Array!ChunkSlot holders) {
+void touchChunksReading(ref const Graph graph, ChunkSlot chunk, Vec3!int cell, ref Array!ChunkSlot holders) {
     ubyte dimension = graph.layout.dimension;
-    int[AXIS_COUNT] outward;
+    Vec3!int outward;
     uint borderAxes = 0;
     foreach (axis; 0 .. AXIS_COUNT) {
         if (cell[axis] == 0) {
@@ -223,7 +235,7 @@ void touchChunksReading(ref const Graph graph, ChunkSlot chunk, int[3] cell, ref
     }
     foreach (subset; 1 .. 2 ^^ AXIS_COUNT) {
         if ((subset & borderAxes) == subset) {
-            int[3] pushed = cell;
+            Vec3!int pushed = cell;
             foreach (axis; 0 .. AXIS_COUNT) {
                 if ((subset & (1u << axis)) != 0) {
                     pushed[axis] = outward[axis];
@@ -237,7 +249,7 @@ void touchChunksReading(ref const Graph graph, ChunkSlot chunk, int[3] cell, ref
 void touchChunksAround(ref const Graph graph, ChunkSlot chunk, ref Array!ChunkSlot holders) {
     int last = graph.layout.dimension - 1;
     foreach (corner; 0 .. 2 ^^ AXIS_COUNT) {
-        int[3] cell;
+        Vec3!int cell;
         foreach (axis; 0 .. AXIS_COUNT) {
             if ((corner & (1u << axis)) != 0) {
                 cell[axis] = last;

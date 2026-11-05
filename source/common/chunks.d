@@ -1,17 +1,16 @@
 module common.chunks;
 
 import base.array : Array;
+import base.maybe : MaybeIndex;
 import base.slab : FreeIndices, Slab;
 import common.node : Chunk, ChunkSlot;
 import geometry.honeycomb : CORNER_COUNT;
-
-enum uint NO_BLOCK = 0;
 
 immutable Chunk FRESH_CHUNK = Chunk.init;
 
 struct ChunkStore {
     Slab!Chunk records;
-    Slab!uint blocks;
+    Slab!(MaybeIndex!uint) blocks;
     FreeIndices freeBlocks;
     Array!ChunkSlot changed;
     Array!ChunkSlot restores;
@@ -22,52 +21,51 @@ struct ChunkStore {
         blocks.ensure(count);
     }
 
-    uint blockOf(uint slot) const {
+    MaybeIndex!uint blockOf(uint slot) const {
         return *blocks.at(slot);
     }
 
     bool has(uint slot) const {
-        return blockOf(slot) != NO_BLOCK;
+        return blockOf(slot).exists;
     }
 
     const(Chunk)* at(ChunkSlot chunk) const {
-        uint block = blockOf(chunk.slot);
-        if (block == NO_BLOCK) {
-            return &FRESH_CHUNK;
+        MaybeIndex!uint block = blockOf(chunk.slot);
+        if (block.exists) {
+            return records.at(indexOf(block.value, chunk));
         } else {
-            return records.at(indexOf(block, chunk));
+            return &FRESH_CHUNK;
         }
     }
 
     Chunk* existing(ChunkSlot chunk) {
-        assert(has(chunk.slot));
-        return records.at(indexOf(blockOf(chunk.slot), chunk));
+        return records.at(indexOf(blockOf(chunk.slot).value, chunk));
     }
 
     Chunk* writable(ChunkSlot chunk) {
-        uint* block = blocks.at(chunk.slot);
-        if (*block == NO_BLOCK) {
+        MaybeIndex!uint* block = blocks.at(chunk.slot);
+        if (!block.exists) {
             if (!freeBlocks.isEmpty()) {
-                *block = freeBlocks.takeLowest() + 1;
+                *block = MaybeIndex!uint.of(freeBlocks.takeLowest());
             } else {
+                *block = MaybeIndex!uint.of(blockCount);
                 blockCount += 1;
                 records.ensure(cast(size_t) blockCount * CORNER_COUNT);
-                *block = blockCount;
             }
         }
-        return records.at(indexOf(*block, chunk));
+        return records.at(indexOf(block.value, chunk));
     }
 
     void releaseBlock(uint slot) {
-        uint* block = blocks.at(slot);
-        uint index = *block - 1;
+        MaybeIndex!uint* block = blocks.at(slot);
+        uint index = block.value;
         foreach (corner; 0 .. CORNER_COUNT) {
             Chunk* chunk = records.at(cast(size_t) index * CORNER_COUNT + corner);
             chunk.releaseVoxels();
             *chunk = Chunk.init;
         }
         freeBlocks.add(index);
-        *block = NO_BLOCK;
+        *block = MaybeIndex!uint.init;
         while (blockCount > 0 && freeBlocks.contains(blockCount - 1)) {
             freeBlocks.drop(blockCount - 1);
             blockCount -= 1;
@@ -121,5 +119,5 @@ struct ChunkStore {
 }
 
 size_t indexOf(uint block, ChunkSlot chunk) {
-    return cast(size_t)(block - 1) * CORNER_COUNT + chunk.corner;
+    return cast(size_t) block * CORNER_COUNT + chunk.corner;
 }

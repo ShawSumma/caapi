@@ -1,6 +1,7 @@
 module unit.climate;
 
 import base.maybe : Maybe;
+import base.vector3 : Vec3;
 import common.worldgen.climate : BROAD_RELIEF, Climate, CubeClimate, HEAT, NodeClimate, SOIL_DEPTH, boundOf, groundAt, uniformRock;
 import plugins.api.api : Material;
 
@@ -17,7 +18,7 @@ unittest {
     assert(cube.corners[7].relief == around[0].climate().relief);
     foreach (sample; 0 .. SAMPLES) {
         float t = cast(float) sample / SAMPLES;
-        Climate inside = cube.at([t, 1 - t, t * t]);
+        Climate inside = cube.at(Vec3!float(t, 1 - t, t * t));
         assert(inside.relief >= cube.lowest.relief - TOLERANCE && inside.relief <= cube.highest.relief + TOLERANCE);
         Maybe!Material rock = uniformRock(SOIL_DEPTH + t * 4, SOIL_DEPTH + t * 4, inside, inside);
         assert(rock.exists && rock.value == groundAt(SOIL_DEPTH + t * 4, SOIL_DEPTH, inside));

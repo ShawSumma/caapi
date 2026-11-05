@@ -9,6 +9,7 @@ import core.sys.posix.sys.time : itimerval, setitimer, timeval;
 import base.array : Array;
 import base.flags : Bits;
 import base.hashmap : FIBONACCI_MULTIPLIER, HashMap;
+import base.maybe : Maybe;
 import base.numbers : lowerOf;
 
 enum uint SAMPLE_FRAMES = 48;
@@ -70,7 +71,8 @@ __gshared pthread_t mainThread;
 shared uint sampleCount;
 
 extern (C) void recordWorkerSample(int signal) {
-    if (pthread_equal(pthread_self(), mainThread) == 0) {
+    int onMain = pthread_equal(pthread_self(), mainThread);
+    if (onMain == 0) {
         record(SampledThread.worker);
     }
 }
@@ -80,7 +82,8 @@ extern (C) void recordMainSample(int signal) {
 }
 
 extern (C) void recordAnySample(int signal) {
-    if (pthread_equal(pthread_self(), mainThread) != 0) {
+    int onMain = pthread_equal(pthread_self(), mainThread);
+    if (onMain != 0) {
         record(SampledThread.main);
     } else {
         record(SampledThread.worker);
@@ -199,7 +202,7 @@ struct Sampler {
             } else {
                 workerSamples += 1;
             }
-            uint callee = uint.max;
+            Maybe!uint callee;
             foreach (depth; SIGNAL_FRAMES .. sample.depth) {
                 uint current = functionOf(sample.frames[depth], byAddress, byStart, functions);
                 FunctionCounts* counts = &functions.ptr[current];
@@ -212,8 +215,8 @@ struct Sampler {
                     if (lastSeen != index + 1) {
                         counts.totalMain += 1;
                     }
-                    if (callee != uint.max && callee != current) {
-                        countCall(CallKey(callee, current), index, callIndex, calls);
+                    if (callee.exists && callee.value != current) {
+                        countCall(CallKey(callee.value, current), index, callIndex, calls);
                     }
                 } else {
                     if (depth == SIGNAL_FRAMES) {
@@ -223,7 +226,7 @@ struct Sampler {
                         counts.totalWorker += 1;
                     }
                 }
-                callee = current;
+                callee = Maybe!uint.of(current);
             }
         }
         fprintf(output, "profile %s: main %u samples of %ldus of its cpu, workers %u samples of %dus of process cpu (%u dropped)\n", title, mainSamples, MAIN_SAMPLE_NANOSECONDS / NANOSECONDS_PER_MICROSECOND, workerSamples, SAMPLE_MICROSECONDS, taken - count);
@@ -257,7 +260,8 @@ uint functionOf(void* frame, ref HashMap!(AddressKey, uint) byAddress, ref HashM
         Dl_info info;
         AddressKey start = address;
         const(char)* symbol = null;
-        if (dladdr(frame, &info) != 0 && info.dli_saddr !is null) {
+        int found = dladdr(frame, &info);
+        if (found != 0 && info.dli_saddr !is null) {
             start = AddressKey(cast(size_t) info.dli_saddr);
             symbol = info.dli_sname;
         }
@@ -333,46 +337,57 @@ void countCall(CallKey key, uint sample, ref HashMap!(CallKey, uint) callIndex, 
     }
 }
 
+Maybe!size_t heaviest(alias countOf, T)(const(T)[] items, ref const Bits listed) {
+    Maybe!size_t best;
+    foreach (index, ref item; items) {
+        uint count = countOf(item);
+        if (!listed.has(index) && count > 0 && (!best.exists || count > countOf(items[best.value]))) {
+            best = Maybe!size_t.of(index);
+        }
+    }
+    return best;
+}
+
 void listCallers(FILE* output, ref Array!FunctionCounts functions, ref Array!CallCounts calls, uint samples) {
     fprintf(output, "  main callers of the heaviest functions (total%%):\n");
+    uint unsharedTotal(ref const FunctionCounts counts) {
+        if (100.0 * counts.totalMain / samples < SHARED_FRAME_PERCENT) {
+            return counts.totalMain;
+        } else {
+            return 0;
+        }
+    }
     Bits listed;
     listed.cover(functions.length);
     uint count = 0;
-    while (samples > 0 && count < LISTED_CALLEES) {
-        size_t best = functions.length;
-        foreach (index, ref counts; functions.slice()) {
-            if (!listed.has(index) && 100.0 * counts.totalMain / samples < SHARED_FRAME_PERCENT && counts.totalMain > 0 && (best == functions.length || counts.totalMain > functions.ptr[best].totalMain)) {
-                best = index;
-            }
-        }
-        if (best == functions.length) {
-            break;
-        }
-        listed.set(best);
-        fprintf(output, "    %5.1f  %s\n", 100.0 * functions.ptr[best].totalMain / samples, functions.ptr[best].name.ptr);
-        listCallersOf(output, functions, calls, cast(uint) best, samples);
+    Maybe!size_t best = heaviest!unsharedTotal(functions.slice(), listed);
+    while (count < LISTED_CALLEES && best.exists) {
+        listed.set(best.value);
+        fprintf(output, "    %5.1f  %s\n", 100.0 * functions.ptr[best.value].totalMain / samples, functions.ptr[best.value].name.ptr);
+        listCallersOf(output, functions, calls, cast(uint) best.value, samples);
         count += 1;
+        best = heaviest!unsharedTotal(functions.slice(), listed);
     }
     listed.release();
 }
 
 void listCallersOf(FILE* output, ref Array!FunctionCounts functions, ref Array!CallCounts calls, uint callee, uint samples) {
+    uint callsFromHere(ref const CallCounts counts) {
+        if (counts.key.callee == callee) {
+            return counts.main;
+        } else {
+            return 0;
+        }
+    }
     Bits listed;
     listed.cover(calls.length);
     uint count = 0;
-    while (count < LISTED_CALLERS) {
-        size_t best = calls.length;
-        foreach (index, ref counts; calls.slice()) {
-            if (!listed.has(index) && counts.key.callee == callee && (best == calls.length || counts.main > calls.ptr[best].main)) {
-                best = index;
-            }
-        }
-        if (best == calls.length) {
-            break;
-        }
-        listed.set(best);
-        fprintf(output, "           %5.1f  from %s\n", 100.0 * calls.ptr[best].main / samples, functions.ptr[calls.ptr[best].key.caller].name.ptr);
+    Maybe!size_t best = heaviest!callsFromHere(calls.slice(), listed);
+    while (count < LISTED_CALLERS && best.exists) {
+        listed.set(best.value);
+        fprintf(output, "           %5.1f  from %s\n", 100.0 * calls.ptr[best.value].main / samples, functions.ptr[calls.ptr[best.value].key.caller].name.ptr);
         count += 1;
+        best = heaviest!callsFromHere(calls.slice(), listed);
     }
     listed.release();
 }
@@ -407,23 +422,19 @@ uint countIn(ref const FunctionCounts counts, Column column) {
 
 void listTop(FILE* output, const(char)* heading, ref Array!FunctionCounts functions, uint samples, Column rank, Column self, Column total) {
     fprintf(output, "  %s (total%% self%%):\n", heading);
+    uint rankOf(ref const FunctionCounts counts) {
+        return countIn(counts, rank);
+    }
     Bits listed;
     listed.cover(functions.length);
     uint count = 0;
-    while (samples > 0 && count < LISTED_FUNCTIONS) {
-        size_t best = functions.length;
-        foreach (index, ref counts; functions.slice()) {
-            if (!listed.has(index) && countIn(counts, rank) > 0 && (best == functions.length || countIn(counts, rank) > countIn(functions.ptr[best], rank))) {
-                best = index;
-            }
-        }
-        if (best == functions.length) {
-            break;
-        }
-        listed.set(best);
-        FunctionCounts* counts = &functions.ptr[best];
+    Maybe!size_t best = heaviest!rankOf(functions.slice(), listed);
+    while (count < LISTED_FUNCTIONS && best.exists) {
+        listed.set(best.value);
+        FunctionCounts* counts = &functions.ptr[best.value];
         fprintf(output, "    %5.1f %5.1f  %s\n", 100.0 * countIn(*counts, total) / samples, 100.0 * countIn(*counts, self) / samples, counts.name.ptr);
         count += 1;
+        best = heaviest!rankOf(functions.slice(), listed);
     }
     listed.release();
 }

@@ -3,19 +3,20 @@ module common.worldgen.structure;
 import core.stdc.math : atanhf, floorf;
 import base.array : Array;
 import base.hashmap : FIBONACCI_MULTIPLIER;
-import base.maybe : Maybe;
+import base.maybe : Maybe, MaybeIndex;
 import base.numbers : clamped, higherOf, lowerOf;
 import base.splitmix : SplitMix;
 import base.units : Length;
-import common.graph : Graph, NO_SLOT, NodeId, ParentEntry, ParentList, ROOT_NODE;
+import base.vector3 : Vec3;
+import common.graph : Graph, NodeId, ParentEntry, ParentList, ROOT_NODE;
 import common.node : ChunkLayout;
 import common.view : GraphView;
-import common.worldgen.blueprint : CellBox, LineSpec, canonicalBox, floorDivision;
+import common.worldgen.blueprint : CellBox, LevelRange, LineSpec, canonicalBox, floorDivision;
 import common.worldgen.generation : NodeState;
 import common.worldgen.store : NodeMark, pin;
 import geometry.honeycomb : CORNER_COUNT, Corner, FACE_COUNT, Face, across, cornerToNode, faceBit, faces, isAdjacentTo, mirror;
 import geometry.lorentz : Mat4, Motion, Point, Vec4;
-import plugins.api.api : Site, SitePart, Turn;
+import plugins.api.api : Extent, Site, SitePart, Turn;
 
 enum int PAINT_REACH = 6;
 enum uint GROUND_RING = 11;
@@ -130,7 +131,7 @@ struct RootedCorner {
 }
 
 bool isEndless(ref const LineSpec spec) {
-    return spec.lowest == int.min || spec.highest == int.max;
+    return spec.extent == Extent.endless;
 }
 
 bool isTouchInRange(ref const LineTouch touch, ref const LineSpec spec) {
@@ -138,7 +139,7 @@ bool isTouchInRange(ref const LineTouch touch, ref const LineSpec spec) {
 }
 
 bool isLevelInRange(ref const LineSpec spec, int level) {
-    return level >= spec.lowest && level <= spec.highest;
+    return spec.isEndless() || spec.edges.contains(level, level);
 }
 
 bool isOnTouch(ref const LineTouch touch, ref const LineSpec spec, Corner corner) {
@@ -226,30 +227,36 @@ void addPendingTouch(ref Graph graph, uint slot, LineTouch touch) {
 }
 
 void addPendingTouch(ref Graph graph, NodeId id, LineTouch touch) {
-    assert(graph.slotOf(id) == NO_SLOT || !graph.isFinished(graph.slotOf(id)));
+    assert(!graph.slotOf(id).exists || !graph.isFinished(graph.slotOf(id).value));
     graph.structures.addPending(id, touch);
 }
 
 SlotTouch seedTouch(ref const LineSpec spec, uint line) {
-    return SlotTouch(LineTouch(0, line, spec.lower, 1, 1), spec.node);
+    return SlotTouch(LineTouch(0, line, spec.lower, 1, 1), spec.node.value);
 }
 
-SlotTouch walkedTouch(ref GraphView view, SlotTouch from, ref const LineSpec spec, int edge) {
+LineTouch crossedOnLine(LineTouch touch, ref const LineSpec spec, Face side) {
+    Maybe!LineTouch crossing = crossed(touch, spec, side);
+    assert(crossing.exists);
+    return crossing.value;
+}
+
+SlotTouch walkTouch(ref GraphView view, SlotTouch from, ref const LineSpec spec, int edge) {
     SlotTouch current = from;
     while (current.touch.level != edge) {
         Face side = crossingSide(current.touch.lower, spec);
         if (edge > current.touch.level) {
             side = crossingSide(upperOf(current.touch.lower, spec), spec);
         }
-        current = SlotTouch(crossed(current.touch, spec, side).value, view.ensureNeighborSlot(current.slot, side));
+        current = SlotTouch(crossedOnLine(current.touch, spec, side), view.ensureNeighborSlot(current.slot, side));
     }
     return current;
 }
 
-SlotTouch[EDGE_NODES] aroundEdge(ref GraphView view, SlotTouch edge, ref const LineSpec spec) {
-    SlotTouch x = SlotTouch(crossed(edge.touch, spec, spec.xSide).value, view.ensureNeighborSlot(edge.slot, spec.xSide));
-    SlotTouch y = SlotTouch(crossed(edge.touch, spec, spec.ySide).value, view.ensureNeighborSlot(edge.slot, spec.ySide));
-    SlotTouch both = SlotTouch(crossed(y.touch, spec, spec.xSide).value, view.ensureNeighborSlot(y.slot, spec.xSide));
+SlotTouch[EDGE_NODES] ensureAroundEdge(ref GraphView view, SlotTouch edge, ref const LineSpec spec) {
+    SlotTouch x = SlotTouch(crossedOnLine(edge.touch, spec, spec.xSide), view.ensureNeighborSlot(edge.slot, spec.xSide));
+    SlotTouch y = SlotTouch(crossedOnLine(edge.touch, spec, spec.ySide), view.ensureNeighborSlot(edge.slot, spec.ySide));
+    SlotTouch both = SlotTouch(crossedOnLine(y.touch, spec, spec.xSide), view.ensureNeighborSlot(y.slot, spec.xSide));
     return [edge, x, y, both];
 }
 
@@ -270,19 +277,19 @@ SiteFrame forwarded(SiteFrame site, int edges) {
     return SiteFrame(site.level - edges, site.node, site.corner, site.xSide, site.ySide, site.xSign, site.ySign, site.zSign);
 }
 
-SiteFrame atLevel(ref GraphView view, SiteFrame site, int level) {
+SiteFrame moveToLevel(ref GraphView view, SiteFrame site, int level) {
     int rise = 1;
     if (level < site.level) {
         rise = -1;
     }
     SiteFrame result = site;
     while (result.level != level) {
-        result = view.stepped(result, rise);
+        result = view.stepSite(result, rise);
     }
     return result;
 }
 
-SiteFrame stepped(ref GraphView view, SiteFrame site, int rise) {
+SiteFrame stepSite(ref GraphView view, SiteFrame site, int rise) {
     if (site.zSign * rise > 0) {
         return SiteFrame(site.level + rise, site.node, site.nextCorner(), site.xSide, site.ySide, site.xSign, site.ySign, cast(byte) -site.zSign);
     } else {
@@ -291,8 +298,8 @@ SiteFrame stepped(ref GraphView view, SiteFrame site, int rise) {
     }
 }
 
-SiteFrame turned(ref GraphView view, SiteFrame site, Turn turn) {
-    SiteFrame at = view.atLevel(site, 0);
+SiteFrame turnSite(ref GraphView view, SiteFrame site, Turn turn) {
+    SiteFrame at = view.moveToLevel(site, 0);
     Axis x = at.x();
     Axis y = at.y();
     Axis z = at.z();
@@ -376,13 +383,13 @@ SiteFrame[NODE_EDGES] edgeSitesOf(ref const GraphView view, uint node) {
     return sites;
 }
 
-RootedCorner siteOrigin(ref GraphView view, SiteFrame site) {
-    SiteFrame origin = view.atLevel(site, 0);
+RootedCorner ensureSiteOrigin(ref GraphView view, SiteFrame site) {
+    SiteFrame origin = view.moveToLevel(site, 0);
     return view.rootedCorner(origin.node, origin.corner);
 }
 
-ClaimKey siteFace(ref GraphView view, SiteFrame site) {
-    SiteFrame at = view.atLevel(site, 0);
+ClaimKey ensureSiteFace(ref GraphView view, SiteFrame site) {
+    SiteFrame at = view.moveToLevel(site, 0);
     uint node = at.node;
     if (at.xSign < 0) {
         node = view.ensureNeighborSlot(node, at.xSide);
@@ -397,25 +404,25 @@ ClaimKey siteFace(ref GraphView view, SiteFrame site) {
     return ClaimKey(node, at.ySide, SitePart.face);
 }
 
-ClaimKey claimKeyOf(ref GraphView view, SiteFrame site, SitePart part) {
+ClaimKey ensureClaimKey(ref GraphView view, SiteFrame site, SitePart part) {
     assert(part != SitePart.edge);
     if (part == SitePart.vertex) {
-        return view.siteOrigin(site).key;
+        return view.ensureSiteOrigin(site).key;
     } else {
-        return view.siteFace(site);
+        return view.ensureSiteFace(site);
     }
 }
 
-ulong siteHash(ref GraphView view, SiteFrame site, SitePart part) {
+ulong ensureSiteHash(ref GraphView view, SiteFrame site, SitePart part) {
     ulong seed = void;
     final switch (part) {
         case SitePart.vertex:
         case SitePart.face:
-            ClaimKey key = view.claimKeyOf(site, part);
+            ClaimKey key = view.ensureClaimKey(site, part);
             seed = mixedSeed(view.idAt(key.slot).spice(), key.feature, part);
             break;
         case SitePart.edge:
-            seed = view.edgeSeed(site);
+            seed = view.ensureEdgeSeed(site);
             break;
     }
     return SplitMix(seed).next();
@@ -425,18 +432,18 @@ ulong mixedSeed(ulong spice, uint feature, SitePart part) {
     return spice ^ ((cast(ulong) feature * (SitePart.max + 1) + part + 1) * FIBONACCI_MULTIPLIER);
 }
 
-ulong edgeSeed(ref GraphView view, SiteFrame site) {
+ulong ensureEdgeSeed(ref GraphView view, SiteFrame site) {
     CanonicalSite canonical = view.canonicalOf(site);
     ubyte dimension = view.layout.dimension;
     int cells = edgeCells(dimension);
     CellBox edge = canonicalBox(CellBox.make(0, 0, 0, 0, 0, cells - 1), canonical.transform, dimension);
-    ulong level = cast(uint) floorDivision(edge.low[2], cells);
+    ulong level = cast(uint) floorDivision(edge.low.z, cells);
     LineSpec line = canonical.line;
     uint feature = (line.lower * FACE_COUNT + line.xSide) * FACE_COUNT + line.ySide;
-    return mixedSeed(view.idAt(line.node).spice() ^ (level * LEVEL_MULTIPLIER), feature, SitePart.edge);
+    return mixedSeed(view.idAt(line.node.value).spice() ^ (level * LEVEL_MULTIPLIER), feature, SitePart.edge);
 }
 
-uint[GROUND_RING] groundRing(ref GraphView view, uint sky, Face label) {
+uint[GROUND_RING] ensureGroundRing(ref GraphView view, uint sky, Face label) {
     uint[GROUND_RING] ring = void;
     uint count = 0;
     ring[count] = sky;
@@ -510,7 +517,7 @@ CanonicalSite canonicalOf(ref const GraphView view, SiteFrame site) {
         zSign = cast(byte) -entry.zSign;
         cornerLevel = 1;
     }
-    LineSpec line = LineSpec(int.max, int.min, entry.node, lower, first, second);
+    LineSpec line = LineSpec(LevelRange.init, MaybeIndex!uint.of(entry.node), lower, first, second);
     return CanonicalSite(line, LineTransform(cornerLevel - zSign * entry.level, entry.xSign, entry.ySign, zSign, order));
 }
 
@@ -533,8 +540,8 @@ struct ColumnChunk {
         }
     }
 
-    int[3] columnOf(int[3] cell) const {
-        return [signedIndex(cell[xAxis], xSign), signedIndex(cell[yAxis], ySign), bottom + signedIndex(cell[zAxis], zSign)];
+    Vec3!int columnOf(Vec3!int cell) const {
+        return Vec3!int(signedIndex(cell[xAxis], xSign), signedIndex(cell[yAxis], ySign), bottom + signedIndex(cell[zAxis], zSign));
     }
 }
 
@@ -579,13 +586,11 @@ Point!float columnPoint(ref const ChunkLayout layout, ColumnSpot spot) {
         level = segment + 1;
     }
     Point!float inCornerFrame = Vec4!float([signedKlein(layout, spot.x), signedKlein(layout, spot.y), rise, 1.0f]).toPoint();
-    float[3] lift = [0, 0, level * edgeLength(layout).value];
-    return Motion!float.shift(lift) * inCornerFrame;
+    return Motion!float.shift(Vec3!float(0, 0, level * edgeLength(layout).value)) * inCornerFrame;
 }
 
 Point!float spawnBefore(ref const ChunkLayout layout, ColumnSpot door) {
-    float[3] away = [-SPAWN_DISTANCE.value, 0, 0];
-    return Motion!float.shiftTo(columnPoint(layout, door)) * Motion!float.shift(away) * Point!float.origin();
+    return Motion!float.shiftTo(columnPoint(layout, door)) * Motion!float.shift(Vec3!float(-SPAWN_DISTANCE.value, 0, 0)) * Point!float.origin();
 }
 
 Motion!float sitePlacement(ref const SiteFrame site, ref const ChunkLayout layout) {
@@ -594,12 +599,11 @@ Motion!float sitePlacement(ref const SiteFrame site, ref const ChunkLayout layou
     axes.c[1][sideAxis(site.corner, site.ySide)] = site.ySign;
     axes.c[2][sideAxis(site.corner, site.zSide())] = site.zSign;
     axes.c[3][3] = 1;
-    float[3] toOrigin = [0, 0, -site.level * edgeLength(layout).value];
-    return site.corner.cornerToNode * Motion!float(axes) * Motion!float.shift(toOrigin);
+    return site.corner.cornerToNode * Motion!float(axes) * Motion!float.shift(Vec3!float(0, 0, -site.level * edgeLength(layout).value));
 }
 
 SiteFrame lineSite(ref const LineSpec spec) {
-    return SiteFrame(0, spec.node, spec.lower, spec.xSide, spec.ySide, 1, 1, 1);
+    return SiteFrame(0, spec.node.value, spec.lower, spec.xSide, spec.ySide, 1, 1, 1);
 }
 
 Motion!float siteToNode(ref const GraphView view, ref const SiteFrame site, uint slot) {
@@ -699,8 +703,8 @@ Face firstSideAmong(ushort faces) {
     return cast(Face) index;
 }
 
-uint anchorSlotOf(ref Graph graph) {
-    uint sky = graph.ensureNeighborSlot(graph.slotOf(ROOT_NODE), Face.first);
+uint ensureAnchorSlot(ref Graph graph) {
+    uint sky = graph.ensureNeighborSlot(graph.slotOf(ROOT_NODE).value, Face.first);
     return graph.ensureNeighborSlot(sky, firstSideAmong(ringFaces(Face.first)));
 }
 
