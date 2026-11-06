@@ -9,6 +9,7 @@ import base.units : Length, LocalBlock;
 import base.vector3 : Vec3, cross, dot, magnitude, minus, plus, scaled;
 import common.character.chart : Matrix3, chunkPointInNode, gridJacobian, inverted;
 import common.graph : Graph;
+import common.material : MaterialSet, has;
 import common.neighbors : chunkNeighborSlot, indexIn, isInside, materialNear;
 import common.node : Chunk, ChunkLayout, ChunkSlot, ChunkState;
 import common.position : Position;
@@ -157,6 +158,7 @@ struct Features {
     Array!Quad quads;
     Array!Edge edges;
     Array!(Vec3!float) corners;
+    MaterialSet solid;
     uint unloaded;
 
     bool isLoaded() const {
@@ -169,16 +171,17 @@ struct Features {
         corners.release();
     }
 
-    void collect(ref const Graph graph, Position body, Length reach) {
+    void collect(ref const Graph graph, Position body, Length reach, MaterialSet chosen) {
         quads.clear();
         edges.clear();
         corners.clear();
         unloaded = 0;
+        solid = chosen;
         visitCells(graph, body, reach, this);
     }
 
     void visitChunk(ref const Graph graph, LocalFrame frame, ChunkSlot slot, CellRange range) {
-        ChunkCellsNear cells = ChunkCellsNear(&graph, slot, graph.chunks.at(slot));
+        ChunkCellsNear cells = ChunkCellsNear(&graph, slot, graph.chunks.at(slot), solid);
         if (cells.chunk.state != ChunkState.populated || !graph.areNeighborsPopulated(slot, range)) {
             unloaded += 1;
         } else {
@@ -234,6 +237,32 @@ struct CellOverlap {
         Vec3!int cell = coords.as!int();
         if (slot == target && range.contains(cell) && overlaps == 0 && isTouchingAny(frame.cell(graph.layout, slot.corner, cell), centers, radius)) {
             overlaps += 1;
+        }
+    }
+}
+
+struct MaterialOverlap {
+    Vec3!float[] centers;
+    MaterialSet materials;
+    float radius;
+    uint overlaps;
+
+    void visitMissingNode(uint, Face) {
+    }
+
+    void visitChunk(ref const Graph graph, LocalFrame frame, ChunkSlot slot, CellRange range) {
+        const(Chunk)* chunk = graph.chunks.at(slot);
+        if (overlaps == 0 && chunk.state == ChunkState.populated && !(chunk.voxels.isUniform() && !materials.has(chunk.voxels.fill))) {
+            foreach (x; range.low.x .. range.high.x + 1) {
+                foreach (y; range.low.y .. range.high.y + 1) {
+                    foreach (z; range.low.z .. range.high.z + 1) {
+                        Vec3!int cell = Vec3!int(x, y, z);
+                        if (materials.has(chunk.voxels.at(indexIn(graph.layout.dimension, cell))) && isTouchingAny(frame.cell(graph.layout, slot.corner, cell), centers, radius)) {
+                            overlaps += 1;
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -375,14 +404,15 @@ struct ChunkCellsNear {
     const(Graph)* graph;
     ChunkSlot slot;
     const(Chunk)* chunk;
+    MaterialSet solid;
 
     bool isSolid(Vec3!int cell, Vec3!int offset) const {
         Vec3!int at = Vec3!int(cell.x + offset.x, cell.y + offset.y, cell.z + offset.z);
         ubyte dimension = graph.layout.dimension;
         if (isInside(dimension, at)) {
-            return chunk.voxels.at(indexIn(dimension, at)) != Material.none;
+            return solid.has(chunk.voxels.at(indexIn(dimension, at)));
         } else {
-            return (*graph).materialNear(slot, at) != Material.none;
+            return solid.has((*graph).materialNear(slot, at));
         }
     }
 

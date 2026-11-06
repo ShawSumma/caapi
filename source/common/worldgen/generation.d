@@ -6,7 +6,10 @@ import core.stdc.string : memcpy;
 import base.array : Array;
 import base.flags : Readiness;
 import base.maybe : Maybe;
-import base.numbers : RADIANS_PER_DEGREE, clamped, higherOf;
+import base.numbers : RADIANS_PER_DEGREE, clamped, higherOf, lowerOf;
+import base.murmur : murmurHash3;
+import common.biology.wild : WildGenes, inheritedGenes;
+import common.material : oreFor;
 import base.splitmix : SplitMix;
 import base.vector3 : Vec3;
 import common.graph : Graph, MAX_PARENTS, NodeId, ParentList;
@@ -53,6 +56,12 @@ enum uint CHUNK_ROLL_SHIFT = 32;
 enum float RISER_MARGIN = 1.2f;
 enum float CLEAR_MARGIN = 1e-3f;
 enum uint BASE_GROUND = 0;
+enum ulong VEIN_SALT = 0x5EA1_0E5D_7A11_C0DE;
+enum float VEIN_ODDS = 0.08f;
+enum int VEIN_RADIUS = 2;
+enum float VEIN_FILL = 0.7f;
+enum ulong PLANT_SALT = 0x91A7_5EED;
+enum float PLANT_DENSITY = 0.02f;
 
 struct PlaneWorld {
     float tiltRadians;
@@ -192,6 +201,7 @@ struct NodeState {
     Plane surface;
     Plane reference;
     NodeClimate climate;
+    WildGenes wild;
 
     static NodeState fromParents(ref GraphView view, uint slot) {
         NodeState state = NodeState.uncalmed(view, slot);
@@ -202,17 +212,22 @@ struct NodeState {
     static NodeState uncalmed(ref GraphView view, uint slot) {
         ParentList parents = view.parents(slot);
         if (parents.count == 0) {
-            return NodeState(Plane.ofFace(Face.first), Plane.ofFace(firstSideAmong(ringFaces(Face.first))), NodeClimate.init);
+            const(char)[] name = view.worldgen.structureName();
+            return NodeState(Plane.ofFace(Face.first), Plane.ofFace(firstSideAmong(ringFaces(Face.first))), NodeClimate.init, WildGenes.ofRoot(murmurHash3(cast(const(ubyte)[]) name).first));
         } else {
             NodeClimate[MAX_PARENTS] climates;
+            WildGenes[MAX_PARENTS] wilds;
             foreach (index, link; parents.links[0 .. parents.count]) {
-                climates[index] = view.ensureState(link.slot).climate;
+                NodeState parent = view.ensureState(link.slot);
+                climates[index] = parent.climate;
+                wilds[index] = parent.wild;
             }
             NodeState first = view.ensureState(parents.links[0].slot);
             Face side = parents.links[0].side;
             Plane surface = first.surface.reflectAcross(side).snappedToFaces();
             Plane reference = first.reference.reflectAcross(side).snappedToFaces();
-            return NodeState(surface, reference, NodeClimate.fromParents(climates[0 .. parents.count], view.idAt(slot).spice()));
+            ulong spice = view.idAt(slot).spice();
+            return NodeState(surface, reference, NodeClimate.fromParents(climates[0 .. parents.count], spice), inheritedGenes(wilds[0 .. parents.count], spice));
         }
     }
 }
@@ -409,7 +424,9 @@ struct ChunkParams {
                     break;
                 case Fill.terrain:
                     generator.generateTerrain(index);
+                    generator.generateVeins();
                     generator.generateTrees(index);
+                    generator.generatePlants(index);
                     break;
             }
         }
@@ -523,6 +540,33 @@ struct TerrainGenerator {
                         }
                     }
                     yield.now();
+                }
+            }
+        }
+    }
+
+    void generateVeins() {
+        if (materials != Materials.deferred && !voxels.isFilledWith(Material.none)) {
+            SplitMix veins = SplitMix(params.nodeSpice ^ (cast(ulong) params.chunk << CHUNK_ROLL_SHIFT) ^ VEIN_SALT);
+            if (veins.roll() < VEIN_ODDS) {
+                ubyte dimension = params.dimension;
+                Vec3!int center = Vec3!int(cast(int)(veins.next() % dimension), cast(int)(veins.next() % dimension), cast(int)(veins.next() % dimension));
+                Material rock = voxels.at(cellIndex(dimension, center.x, center.y, center.z));
+                Material ore = oreFor(rock);
+                if (ore != Material.none) {
+                    foreach (x; higherOf(center.x - VEIN_RADIUS, 0) .. lowerOf(center.x + VEIN_RADIUS + 1, cast(int) dimension)) {
+                        foreach (y; higherOf(center.y - VEIN_RADIUS, 0) .. lowerOf(center.y + VEIN_RADIUS + 1, cast(int) dimension)) {
+                            foreach (z; higherOf(center.z - VEIN_RADIUS, 0) .. lowerOf(center.z + VEIN_RADIUS + 1, cast(int) dimension)) {
+                                size_t index = cellIndex(dimension, x, y, z);
+                                int dx = x - center.x;
+                                int dy = y - center.y;
+                                int dz = z - center.z;
+                                if (dx * dx + dy * dy + dz * dz <= VEIN_RADIUS * VEIN_RADIUS && voxels.at(index) == rock && SplitMix(params.nodeSpice ^ VEIN_SALT ^ (cast(ulong) params.chunk << CHUNK_ROLL_SHIFT) ^ index).roll() < VEIN_FILL) {
+                                    voxels.toDense(dimension)[index] = ore;
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -676,6 +720,28 @@ struct TerrainGenerator {
                 int z = cast(int)(1 + (rng.next() % interior));
                 ulong roll = rng.next();
                 placeTree(ground, Vec3!int(x, y, z), treeKind(mean.warmth(), mean.wetness, roll));
+            }
+        }
+    }
+
+    void generatePlants(uint ground) {
+        ubyte dimension = params.dimension;
+        if (!voxels.isUniform() && dimension > MIN_TREE_DIMENSION) {
+            Climate mean = params.climate.mean();
+            Material plant = plantFor(mean.warmth(), mean.wetness);
+            uint interior = dimension - 2;
+            uint candidateCount = cast(uint)(cast(float)(interior * interior * interior) * PLANT_DENSITY);
+            SplitMix plants = SplitMix(params.nodeSpice ^ (cast(ulong) params.chunk << CHUNK_ROLL_SHIFT) ^ PLANT_SALT);
+            prepareCells();
+            foreach (_; 0 .. candidateCount) {
+                Vec3!int base = Vec3!int(cast(int)(1 + plants.next() % interior), cast(int)(1 + plants.next() % interior), cast(int)(1 + plants.next() % interior));
+                if (voxels.at(cellIndex(dimension, base.x, base.y, base.z)) == Material.none && params.flats.reliefShareAt(cubePoint(toNode, centerOf(base.x, base.y, base.z))) > 0) {
+                    Vec3!int up = CELL_STEPS[params.ground(ground).surface.risingNeighbor(params.chunk, params.layout, base)];
+                    Material below = voxels.at(cellIndex(dimension, base.x - up.x, base.y - up.y, base.z - up.z));
+                    if (voxels.at(cellIndex(dimension, base.x + up.x, base.y + up.y, base.z + up.z)) == Material.none && isGroundForPlant(plant, below)) {
+                        voxels.toDense(dimension)[cellIndex(dimension, base.x, base.y, base.z)] = plant;
+                    }
+                }
             }
         }
     }
@@ -910,6 +976,28 @@ int chebyshevLength(int i, int j) {
 
 bool isGroundMaterial(Material material) {
     return material == Material.dirt || material == Material.grass || material == Material.mudGrass || material == Material.lushGrass || material == Material.tanGrass || material == Material.coarseGrass;
+}
+
+Material plantFor(float warmth, float wetness) {
+    if (isDesert(warmth, wetness)) {
+        return Material.thornbush;
+    } else if (warmth < SNOW_WARMTH) {
+        return Material.moss;
+    } else if (wetness > WET) {
+        return Material.fern;
+    } else {
+        return Material.flower;
+    }
+}
+
+bool isGroundForPlant(Material plant, Material material) {
+    if (plant == Material.thornbush) {
+        return material == Material.sand || material == Material.redSand || isGroundMaterial(material);
+    } else if (plant == Material.moss) {
+        return isGroundMaterial(material) || material == Material.snow || material == Material.gravel;
+    } else {
+        return isGroundMaterial(material);
+    }
 }
 
 bool isGroundFor(TreeKind kind, Material material) {

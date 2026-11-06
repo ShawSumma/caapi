@@ -8,11 +8,13 @@ import base.parallel : ParallelJob;
 import base.vector3 : Vec3;
 import client.graphics.frustum : FRUSTUM_PLANE_COUNT;
 import client.graphics.matrices : MATRIX_FLOATS, determinant, flatten, matrixMultiply;
-import client.graphics.uniforms : CommonUniforms, GLOW_WORDS, HighlightTarget, LinearColor, commonUniforms, findHighlightTarget, glowingMaterials, linearOf;
+import client.graphics.uniforms : CommonUniforms, HighlightTarget, LinearColor, commonUniforms, findHighlightTarget, perceivedFog, unseenMaterials;
+import common.material : GLOWING, MaterialSet;
 import client.graphics.voxels.drawlist : CubeFrame, DrawList, DrawableRecord, ListedNode, cubeFrameTable;
 import client.graphics.voxels.textures : TEXTURE_LAYERS, TEXTURE_MIPS, TEXTURE_SIZE, makeTexturePixels;
 import client.hud : HudVertex, Marker;
 import client.meshing : Quad, meshJob;
+import client.text : ATLAS_HEIGHT, ATLAS_WIDTH, GlyphAtlas;
 import client.world : LocalWorld;
 import common.node : ChunkLayout;
 import common.traversal : NearbyScratch;
@@ -35,7 +37,8 @@ struct ShaderHeader {
     string text;
 }
 
-immutable ShaderHeader[6] SHADER_HEADERS = [
+immutable ShaderHeader[7] SHADER_HEADERS = [
+    ShaderHeader("warp.h", import("warp.h")),
     ShaderHeader("target.h", import("target.h")),
     ShaderHeader("common.h", import("common.h")),
     ShaderHeader("draw.h", import("draw.h")),
@@ -116,10 +119,11 @@ extern (C) nothrow @nogc {
     void web_gl_grow_faces(uint capacity);
     void web_gl_upload_faces(uint offset, uint count, const(Quad)* faces);
     void web_gl_begin(const(CommonUniforms)* uniforms, uint bytes, float red, float green, float blue);
-    void web_gl_voxels(const(VisibleChunk)* chunks, uint count, uint dimension, float cellRatio, const(uint)* glowing, uint framedMaterial);
+    void web_gl_voxels(const(VisibleChunk)* chunks, uint count, uint dimension, float cellRatio, const(uint)* glowing, const(uint)* unseen, uint framedMaterial);
     void web_gl_highlight(const(float)* model, const(Vec3!float)* low, const(Vec3!float)* high);
     void web_gl_marker(const(float)* model, float half, uint color);
     void web_gl_finish(float widthOverHeight, const(HudVertex)* hud, uint hudVertices);
+    void web_gl_atlas(const(ubyte)* pixels, uint width, uint height);
 }
 
 Vec4!float transformed(ref const float[MATRIX_FLOATS] matrix, Vec4!float point) {
@@ -211,6 +215,7 @@ struct WebRenderer {
     uint width;
     uint height;
     Maybe!uint worldEpoch;
+    Maybe!uint uploadedAtlas;
     uint backlog;
 
     void setup(ubyte chunkDimension, uint pixelsWide, uint pixelsHigh) {
@@ -260,15 +265,19 @@ struct WebRenderer {
         backlog = cast(uint) world.graph.chunks.pending().length;
     }
 
-    void render(ref LocalWorld world, const(HudVertex)[] hudVertices, const(Marker)[] markers) {
-        fogLinear = linearOf(world.fogColor);
+    void render(ref LocalWorld world, const(HudVertex)[] hudVertices, const(Marker)[] markers, ref const GlyphAtlas atlas) {
+        if (uploadedAtlas != Maybe!uint.of(atlas.revision)) {
+            web_gl_atlas(atlas.pixels.ptr, ATLAS_WIDTH, ATLAS_HEIGHT);
+            uploadedAtlas = Maybe!uint.of(atlas.revision);
+        }
+        fogLinear = perceivedFog(world);
         CommonUniforms uniforms = commonUniforms(world, fogLinear, aspect());
         updateChunks(world);
         meshes.collectVisible(uniforms, visible);
         web_gl_begin(&uniforms, CommonUniforms.sizeof, fogLinear.red, fogLinear.green, fogLinear.blue);
-        uint[GLOW_WORDS] glowing = glowingMaterials();
+        MaterialSet unseen = unseenMaterials(world);
         ChunkLayout layout = world.graph.layout;
-        web_gl_voxels(visible.ptr, cast(uint) visible.length, layout.dimension, layout.cellRatio, glowing.ptr, Material.glass);
+        web_gl_voxels(visible.ptr, cast(uint) visible.length, layout.dimension, layout.cellRatio, GLOWING.words.ptr, unseen.words.ptr, Material.glass);
         Maybe!HighlightTarget target = world.findHighlightTarget();
         if (target.exists) {
             web_gl_highlight(target.value.model.ptr, &target.value.low, &target.value.high);

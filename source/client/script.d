@@ -8,7 +8,8 @@ import base.numbers : RADIANS_PER_DEGREE, clamped;
 import base.units : Angle, AngularSpeed, Length, Speed, Time;
 import base.vector3 : dot, magnitude, rejectAlong;
 import client.arguments : ExitStatus, StructureName, exitStatus;
-import client.game : ChunkSupply, FrameInput, Game, KEY_COUNT, Key, MATERIAL_PALETTE, RouteWaypoint, ThrownMotion, UnloadedCount;
+import client.game : ChunkSupply, FrameInput, Game, KEY_COUNT, Key, Preset, RouteWaypoint, ThrownMotion, UnloadedCount;
+import common.inventory : HOTBAR_SLOTS;
 import client.structures : StructureProblem, growthProblem, restartGame;
 import common.character.controller : Footing, MovementMode;
 import common.worldgen.generation : PlaneWorld, Worldgen, WorldgenKind;
@@ -290,15 +291,35 @@ struct Script {
         game.mode = chosen;
     }
 
+    Preset preset() const {
+        return game.preset;
+    }
+
+    void perceive(Preset chosen) {
+        game.perceive(chosen);
+    }
+
+    void dose() {
+        game.doseNext();
+    }
+
+    void use() {
+        game.use();
+    }
+
+    bool eat() {
+        return game.eat();
+    }
+
     uint material() const {
-        return game.materialIndex + 1;
+        return game.inventory.selected + 1;
     }
 
     void material(uint slot) {
-        if (slot < 1 || slot > MATERIAL_PALETTE.length) {
-            fail("material slot must be 1..%d", cast(int) MATERIAL_PALETTE.length);
+        if (slot < 1 || slot > HOTBAR_SLOTS) {
+            fail("material slot must be 1..%d", cast(int) HOTBAR_SLOTS);
         } else {
-            game.materialIndex = slot - 1;
+            game.inventory.selected = slot - 1;
         }
     }
 
@@ -462,6 +483,12 @@ struct ScriptRecorder {
         flush();
         string name = ENUM_NAMES!MovementMode[mode];
         fprintf(file, "    world.mode(MovementMode.%.*s);\n", cast(int) name.length, name.ptr);
+    }
+
+    void recordPreset(Preset preset) {
+        flush();
+        string name = ENUM_NAMES!Preset[preset];
+        fprintf(file, "    world.perceive(Preset.%.*s);\n", cast(int) name.length, name.ptr);
     }
 
     void recordMaterial(uint slot) {

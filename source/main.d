@@ -22,7 +22,7 @@ import client.arguments : ArgumentCursor, ExitStatus, HELP_OPTION, NOT_A_NUMBER,
 import client.config : ClientConfig, PitchAxis;
 import client.drive : DIRECTORY_MODE, DriveEventKind, DriveHost, DriveInput, DriveKey, LEFT_BUTTON, NamedDrive;
 import client.frames : RenderTimes;
-import client.game : ChunkSupply, Command, CommandBinding, FrameInput, Game, Key, KeyBinding, KeyStroke, MAX_STEP_SECONDS, chooseMaterial, commandOf, frameInputOf, holdBound, letGoBound;
+import client.game : ChunkSupply, Command, CommandBinding, FrameInput, Game, Key, KeyBinding, KeyStroke, MAX_STEP_SECONDS, commandOf, frameInputOf, holdBound, letGoBound;
 import client.graphics.core : SurfaceSource;
 import client.graphics.renderer : CaptureMark, FrameTimes, Renderer;
 import client.graphics.uniforms : HALF_VERTICAL_FOV;
@@ -31,6 +31,7 @@ import client.hud : FrameMeter, Hud, MouseCapture, STATUS_CAPACITY, statusLine;
 import client.meshing : Mesher;
 import client.png : writePng;
 import client.sampler : Sampler;
+import client.save : SaveData, Writer, applyEdits, applyState, readFile, readGame, writeFile, writeGame;
 import client.script : NamedScript, Script, ScriptRecorder, StepHook, named;
 import client.streaming : Pacing, Streamer;
 import client.plugins : gatherWorlds, registry;
@@ -96,6 +97,7 @@ enum Option : ubyte {
     profile,
     flightSpeed,
     output,
+    save,
     help,
     showVersion,
 }
@@ -114,12 +116,13 @@ immutable OptionSpec[Option.max + 1] OPTIONS = [
     Option.profile: OptionSpec("--profile", "", "sample the threads during the benchmark"),
     Option.flightSpeed: OptionSpec("--flight-speed", "<units/s>", "how fast the benchmark flies"),
     Option.output: OUTPUT_OPTION,
+    Option.save: OptionSpec("--save", "<file>", "load this save if it exists, and write it on quit"),
     Option.help: HELP_OPTION,
     Option.showVersion: VERSION_OPTION,
 ];
 
 version (OSX) {
-    import client.cocoa : Button1, Button3, CocoaWindow, KeyAction, KeyEvent, KeySym, WindowEvents, XK_1, XK_9, XK_bracketleft, XK_bracketright, XK_Escape, XK_Down, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_n, XK_s, XK_space, XK_v, XK_w;
+    import client.cocoa : Button1, Button3, CocoaWindow, KeyAction, KeyEvent, KeySym, WindowEvents, XK_1, XK_9, XK_bracketleft, XK_bracketright, XK_Escape, XK_Down, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_e, XK_f, XK_n, XK_o, XK_p, XK_s, XK_space, XK_v, XK_w;
 
     enum string WINDOW_REQUIREMENT = "cannot open a window";
     enum int MACH_TASK_BASIC_INFO = 20;
@@ -171,7 +174,7 @@ version (OSX) {
     }
 } else {
     import core.sys.posix.sys.resource : RUSAGE_SELF, getrusage, rusage;
-    import bindings.platform : Atom, Button1, Button3, ButtonPress, ClientMessage, CurrentTime, Cursor, Display, False, FocusOut, GenericEvent, GrabModeAsync, GrabSuccess, KeyPress, KeyRelease, KeySym, Pixmap, Success, True, UnmapNotify, Window, XBlackPixel, XCloseDisplay, XColor, XCreateBitmapFromData, XCreatePixmapCursor, XCreateSimpleWindow, XDefaultScreen, XDestroyWindow, XDisplayHeight, XDisplayWidth, XEvent, XFlush, XFreeCursor, XFreeEventData, XFreePixmap, XGenericEventCookie, XGetEventData, XGrabPointer, XIAllMasterDevices, XIDeviceInfo, XIEventMask, XIFreeDeviceInfo, XIModeAbsolute, XIQueryDevice, XIQueryVersion, XIRawEvent, XISelectEvents, XIValuatorClass, XIValuatorClassInfo, XI_DeviceChanged, XI_RawMotion, XInternAtom, XK_1, XK_9, XK_bracketleft, XK_bracketright, XK_Escape, XK_Down, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_n, XK_s, XK_space, XK_t, XK_v, XK_w, XLookupKeysym, XMapWindow, XNextEvent, XOpenDisplay, XPending, XQueryExtension, XRootWindow, XSelectInput, XSetWMProtocols, XStoreName, XUngrabPointer, XkbSetDetectableAutoRepeat, BUTTON_PRESS_EVENTS, FOCUS_EVENTS, KEY_PRESS_EVENTS, KEY_RELEASE_EVENTS, STRUCTURE_EVENTS, mallinfo2;
+    import bindings.platform : Atom, Button1, Button3, ButtonPress, ClientMessage, CurrentTime, Cursor, Display, False, FocusOut, GenericEvent, GrabModeAsync, GrabSuccess, KeyPress, KeyRelease, KeySym, Pixmap, Success, True, UnmapNotify, Window, XBlackPixel, XCloseDisplay, XColor, XCreateBitmapFromData, XCreatePixmapCursor, XCreateSimpleWindow, XDefaultScreen, XDestroyWindow, XDisplayHeight, XDisplayWidth, XEvent, XFlush, XFreeCursor, XFreeEventData, XFreePixmap, XGenericEventCookie, XGetEventData, XGrabPointer, XIAllMasterDevices, XIDeviceInfo, XIEventMask, XIFreeDeviceInfo, XIModeAbsolute, XIQueryDevice, XIQueryVersion, XIRawEvent, XISelectEvents, XIValuatorClass, XIValuatorClassInfo, XI_DeviceChanged, XI_RawMotion, XInternAtom, XK_1, XK_9, XK_bracketleft, XK_bracketright, XK_Escape, XK_Down, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_e, XK_f, XK_n, XK_o, XK_p, XK_s, XK_space, XK_t, XK_v, XK_w, XLookupKeysym, XMapWindow, XNextEvent, XOpenDisplay, XPending, XQueryExtension, XRootWindow, XSelectInput, XSetWMProtocols, XStoreName, XUngrabPointer, XkbSetDetectableAutoRepeat, BUTTON_PRESS_EVENTS, FOCUS_EVENTS, KEY_PRESS_EVENTS, KEY_RELEASE_EVENTS, STRUCTURE_EVENTS, mallinfo2;
     import base.pages : pageSize;
 
     enum string WINDOW_REQUIREMENT = "cannot open a window: needs an X display with XInput 2.1";
@@ -273,6 +276,11 @@ enum Profiling : ubyte {
     on,
 }
 
+enum Saved : ubyte {
+    absent,
+    present,
+}
+
 enum SessionMark : ubyte {
     recording,
     driven,
@@ -288,6 +296,7 @@ struct Arguments {
     const(char)* screenshotPath;
     const(char)* filmPath;
     const(char)* reportPath;
+    const(char)* savePath;
     const(char)* viewName;
     const(NamedScript)* view;
     const(NamedFilm)* film;
@@ -346,6 +355,9 @@ struct Arguments {
                 break;
             case Option.output:
                 reportPath = cursor.next();
+                break;
+            case Option.save:
+                savePath = cursor.next();
                 break;
             case Option.help:
                 kind = RunKind.help;
@@ -435,6 +447,8 @@ struct Arguments {
             return StartupError(null, "nothing was asked to render this view or film", viewName);
         } else if (!isTool() && reportPath !is null) {
             return StartupError(null, "is only for a tool, not for playing", null, OPTIONS[Option.output].name);
+        } else if (isTool() && savePath !is null) {
+            return StartupError(null, "is only for playing, not for a tool", null, OPTIONS[Option.save].name);
         } else {
             return StartupError.init;
         }
@@ -459,6 +473,10 @@ immutable CommandBinding!KeySym[] COMMAND_BINDINGS = [
     CommandBinding!KeySym(XK_n, Command.noclipMode),
     CommandBinding!KeySym(XK_bracketleft, Command.previousWorld),
     CommandBinding!KeySym(XK_bracketright, Command.nextWorld),
+    CommandBinding!KeySym(XK_p, Command.nextPreset),
+    CommandBinding!KeySym(XK_o, Command.dose),
+    CommandBinding!KeySym(XK_e, Command.use),
+    CommandBinding!KeySym(XK_f, Command.eat),
 ] ~ PLATFORM_COMMANDS;
 
 immutable KeySym[DriveKey.max + 1] DRIVE_KEYSYMS = [
@@ -631,14 +649,47 @@ struct Session {
             fprintf(drive.report, "drive: frames %s for the display\n", textFor(renderer.core.isPresentWaitable(), "wait", "cannot wait"));
         }
         game = Game.make(arguments.worldgen, config.reach);
+        game.comfort = config.comfort;
         game.world.graph.bindView();
         worldIndex = worldIndexOf(arguments.worldgen);
         game.world.renderRadius = arguments.renderRadius;
-        ExitStatus status = placedStatus(game, arguments);
+        SaveData saved;
+        Saved loaded = Saved.absent;
+        ExitStatus status = ExitStatus.ok;
+        if (arguments.savePath !is null) {
+            Maybe!(Array!ubyte) bytes = readFile(arguments.savePath);
+            if (bytes.exists) {
+                const(char)* problem = readGame(bytes.value.slice(), game, saved);
+                bytes.value.release();
+                if (problem !is null) {
+                    StartupError(null, problem, arguments.savePath).report(arguments.program);
+                    status = ExitStatus.failed;
+                } else {
+                    applyEdits(game, saved);
+                    loaded = Saved.present;
+                }
+            }
+        }
         if (status == ExitStatus.ok) {
+            status = placedStatus(game, arguments);
+        }
+        if (status == ExitStatus.ok) {
+            if (loaded == Saved.present) {
+                applyState(game, saved);
+            }
             runLoop();
             status = grownStatus(game, arguments);
+            if (arguments.savePath !is null) {
+                Writer writer;
+                writeGame(game, writer);
+                if (!writeFile(arguments.savePath, writer.bytes.slice())) {
+                    StartupError(null, "cannot write the save", arguments.savePath).report(arguments.program);
+                    status = ExitStatus.failed;
+                }
+                writer.bytes.release();
+            }
         }
+        saved.release();
         hud.release();
         game.release();
         return status;
@@ -950,11 +1001,30 @@ struct Session {
             case Command.throwBlock:
                 game.throwBlock();
                 break;
+            case Command.nextPreset:
+                game.nextPreset();
+                if (isRecording) {
+                    recorder.recordPreset(game.preset);
+                }
+                marks.set(SessionMark.titleStale);
+                break;
+            case Command.dose:
+                game.doseNext();
+                recordCall("dose");
+                break;
+            case Command.use:
+                game.use();
+                recordCall("use");
+                break;
+            case Command.eat:
+                game.eat();
+                recordCall("eat");
+                break;
         }
     }
 
     void selectMaterial(uint index) {
-        bool changed = game.chooseMaterial(index);
+        bool changed = game.inventory.select(index);
         if (changed) {
             if (isRecording) {
                 recorder.recordMaterial(index + 1);
@@ -1026,6 +1096,7 @@ struct Session {
                 hud.build(game, renderer.swapchain.extent.width, renderer.swapchain.extent.height);
                 renderer.hudVertices = hud.vertices.slice();
                 renderer.markers = hud.markers.slice();
+                renderer.atlas = &hud.atlas;
                 renderer.render(game.world);
                 if (isDriven) {
                     FrameTimes times = renderer.frameTimes;
@@ -1165,6 +1236,7 @@ struct SettledFrame {
         hud.build(*game, width, height);
         renderer.hudVertices = hud.vertices.slice();
         renderer.markers = hud.markers.slice();
+        renderer.atlas = &hud.atlas;
         frames = 0;
         do {
             renderer.render(game.world);

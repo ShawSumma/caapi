@@ -13,6 +13,7 @@ import common.eviction : Evictor, Unloaded;
 import common.graph : Graph;
 import common.neighbors : chunkNeighborId, neighborAxisMap, touchChunksReading;
 import common.node : Chunk, ChunkId, ChunkSlot, ChunkState, cellIndex;
+import common.perception : ViewEffects;
 import common.position : Position;
 import common.raycast.graph : GraphCastHit, rayCast;
 import common.traversal : NearbyNode, NearbyScratch;
@@ -93,6 +94,7 @@ struct LocalWorld {
     Point!float trackedCamera;
     Vec3!float sunward = Vec3!float(0, 1, 0);
     Color fogColor = SKY_SRGB;
+    ViewEffects view;
     uint trackedVersion;
     NearbyNode[] cachedNodes;
     Array!Unloaded unloaded;
@@ -413,7 +415,12 @@ struct LocalWorld {
 
     Maybe!GraphCastHit castCenterRay() const {
         Ray ray = Ray(Point!float.origin(), Vec4!float([CAMERA_FORWARD.x, CAMERA_FORWARD.y, CAMERA_FORWARD.z, 0]).toNormal());
-        return graph.rayCast(cameraPosition, ray, tanhReach);
+        return graph.rayCast(cameraPosition, ray, tanhReach, view.visible);
+    }
+
+    bool isEmptyAt(Placement placement) const {
+        const(Chunk)* chunk = graph.chunks.at(ChunkSlot(graph.slotOf(placement.chunk.node).value, placement.chunk.corner));
+        return chunk.state == ChunkState.populated && chunk.voxels.at(cellIndex(graph.layout.dimension, placement.coords.x, placement.coords.y, placement.coords.z)) == Material.none;
     }
 
     Maybe!Material targetMaterial() const {
@@ -469,6 +476,7 @@ struct LocalWorld {
             return false;
         } else {
             Chunk* chunk = graph.chunks.existing(slot);
+            graph.edits.record(chunkId, cast(uint) cellIndex(dimension, coords.x, coords.y, coords.z), material);
             if (chunk.hasDeferredMaterials) {
                 graph.resolveMaterials(slot);
             }

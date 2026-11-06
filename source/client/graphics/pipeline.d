@@ -7,9 +7,7 @@ import bindings.platform : VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_FACTOR_
 enum uint COLOR_WRITE_RED = 0x1;
 enum uint COLOR_WRITE_RGB = 0x7;
 enum uint COLOR_WRITE_RGBA = 0xf;
-enum uint GEOMETRY_SUBPASS = 0;
-enum uint GEOMETRY_COLOR_ATTACHMENTS = 2;
-enum uint OVERLAY_COLOR_ATTACHMENTS = 1;
+enum uint MOST_COLOR_ATTACHMENTS = 2;
 enum ulong WHOLE_SIZE = ulong.max;
 enum uint QUEUE_FAMILY_IGNORED = uint.max;
 enum uint SUBPASS_EXTERNAL = uint.max;
@@ -123,6 +121,12 @@ enum Culling : ubyte {
     backFaces,
 }
 
+enum Outputs : ubyte {
+    color,
+    colorAndGlow,
+    colorAndHistory,
+}
+
 struct PipelineSettings {
     VkPipelineLayout layout;
     VkRenderPass renderPass;
@@ -133,6 +137,7 @@ struct PipelineSettings {
     Blend blend;
     Depth depth;
     Culling culling;
+    Outputs outputs;
 
     VkCullModeFlags cullMode() const {
         if (culling == Culling.backFaces) {
@@ -153,10 +158,18 @@ struct PipelineSettings {
     }
 
     uint colorAttachmentCount() const {
-        if (subpass == GEOMETRY_SUBPASS) {
-            return GEOMETRY_COLOR_ATTACHMENTS;
+        if (outputs == Outputs.color) {
+            return 1;
         } else {
-            return OVERLAY_COLOR_ATTACHMENTS;
+            return MOST_COLOR_ATTACHMENTS;
+        }
+    }
+
+    VkPipelineColorBlendAttachmentState secondAttachment() const {
+        if (outputs == Outputs.colorAndHistory) {
+            return opaqueAttachment();
+        } else {
+            return glowAttachment();
         }
     }
 }
@@ -234,9 +247,9 @@ VkPipeline createGraphicsPipeline(VkDevice device, PipelineSettings settings) {
         depthStencil.depthWriteEnable = VULKAN_TRUE;
     }
     depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER;
-    VkPipelineColorBlendAttachmentState[GEOMETRY_COLOR_ATTACHMENTS] blendAttachments = [
+    VkPipelineColorBlendAttachmentState[MOST_COLOR_ATTACHMENTS] blendAttachments = [
         settings.blendAttachment(),
-        glowAttachment(),
+        settings.secondAttachment(),
     ];
     VkPipelineColorBlendStateCreateInfo colorBlend;
     colorBlend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;

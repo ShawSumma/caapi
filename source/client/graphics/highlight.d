@@ -2,7 +2,7 @@ module client.graphics.highlight;
 
 import base.vector3 : Vec3;
 import bindings.platform : VK_PIPELINE_BIND_POINT_GRAPHICS, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_SHADER_STAGE_VERTEX_BIT, VkCommandBuffer, VkDescriptorSet, VkDescriptorSetLayout, VkDevice, VkPipeline, VkPipelineLayout, VkPushConstantRange, VkRenderPass, VkShaderModule, vkCmdBindDescriptorSets, vkCmdBindPipeline, vkCmdDraw, vkCmdPushConstants, vkDestroyPipeline, vkDestroyPipelineLayout, vkDestroyShaderModule;
-import client.graphics.pipeline : Blend, Culling, Depth, PipelineSettings, createGraphicsPipeline, createPipelineLayout, createShader;
+import client.graphics.pipeline : Blend, Culling, Depth, Outputs, PipelineSettings, createGraphicsPipeline, createPipelineLayout, createShader;
 
 enum string HIGHLIGHT_VERT_SPV = import("highlight.vert.spv");
 enum string HIGHLIGHT_FRAG_SPV = import("highlight.frag.spv");
@@ -42,6 +42,7 @@ struct HighlightPipeline {
             Blend.opaque,
             Depth.tested,
             Culling.none,
+            Outputs.colorAndGlow,
         );
         pipeline = createGraphicsPipeline(device, settings);
         vkDestroyShaderModule(device, vertexShader, null);

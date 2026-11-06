@@ -1,25 +1,29 @@
 module client.graphics.uniforms;
 
-import core.stdc.math : powf, sinhf;
+import core.stdc.math : expf, powf, sinhf, tanf;
 import base.maybe : Maybe, MaybeIndex;
-import base.numbers : RADIANS_PER_DEGREE;
-import base.units : Angle;
-import base.vector3 : Vec3;
+import base.numbers : RADIANS_PER_DEGREE, lowerOf;
+import base.units : Angle, Time;
+import base.vector3 : Vec3, scaled;
+import client.camera : CAMERA_FORWARD;
 import client.graphics.frustum : FRUSTUM_PLANE_COUNT, Frustum, kleinDepthScale;
 import client.graphics.matrices : MATRIX_FLOATS, determinant, flatten, matrixMultiply;
 import client.world : FOG_SHARPNESS, LocalWorld, fogReach;
-import common.material : MATERIAL_COUNT, isGlowing;
+import common.color : ColorTurn, Seen, seenOf, spectrumOf, turned;
+import common.material : BITS_PER_WORD, ByteColor, HIDDEN, MATERIAL_COLORS, MATERIAL_COUNT, MATERIAL_WORDS, MaterialSet, without;
 import common.node : ChunkLayout;
+import common.perception : BAND_COUNT;
 import common.raycast.graph : GraphCastHit;
 import geometry.cube : Cell;
 import geometry.honeycomb : CUBE_RADIUS, cubeToNode;
 import geometry.lorentz : Motion, Normal, Point, Vec4;
-import plugins.api.api : Color, Material;
+import plugins.api.api : Color;
 
 enum Angle HALF_VERTICAL_FOV = Angle(cast(float)(45 * RADIANS_PER_DEGREE));
 enum float NEAR_PLANE = 1.0e-4f;
-enum uint BITS_PER_WORD = 32;
-enum uint GLOW_WORDS = (MATERIAL_COUNT + BITS_PER_WORD - 1) / BITS_PER_WORD;
+enum uint TINT_SLOTS = MATERIAL_WORDS * BITS_PER_WORD;
+enum float MOST_TINT = 16;
+enum float CHANNEL_MOST = 255;
 
 enum float SRGB_LINEAR_LIMIT = 0.04045f;
 enum float SRGB_LINEAR_SLOPE = 12.92f;
@@ -34,6 +38,7 @@ struct LinearColor {
 }
 
 struct CommonUniforms {
+    LinearColor[TINT_SLOTS] materialTints;
     float[MATRIX_FLOATS] projection;
     float[MATRIX_FLOATS] cameraInverse;
     Normal!float[FRUSTUM_PLANE_COUNT] frustumPlanes;
@@ -46,6 +51,13 @@ struct CommonUniforms {
     float fogSharpness;
     float viewParity;
     float cullSinhRadius;
+    float warpStrength;
+    float warpSeconds;
+}
+
+struct PostSettings {
+    float[BAND_COUNT] bandGains;
+    float afterimage;
 }
 
 struct HighlightTarget {
@@ -54,23 +66,14 @@ struct HighlightTarget {
     Vec3!float high;
 }
 
-uint[GLOW_WORDS] glowingMaterials() {
-    uint[GLOW_WORDS] words = 0;
-    foreach (index; 0 .. MATERIAL_COUNT) {
-        if (isGlowing(cast(Material) index)) {
-            words[index / BITS_PER_WORD] |= 1u << (index % BITS_PER_WORD);
-        }
-    }
-    return words;
-}
-
 CommonUniforms commonUniforms(ref const LocalWorld world, LinearColor fogLinear, float widthOverHeight) {
-    Frustum frustum = Frustum.fromVerticalHalf(HALF_VERTICAL_FOV, widthOverHeight);
-    Motion!float camera = world.cameraInNearbyFrame();
+    Frustum frustum = Frustum.fromVerticalTangent(tanf(HALF_VERTICAL_FOV.value) * world.view.fieldTangentScale.value, widthOverHeight);
+    Motion!float camera = world.cameraInNearbyFrame() * Motion!float.shift(CAMERA_FORWARD.scaled(-world.view.eyeBack.value));
     float[MATRIX_FLOATS] cameraInverse = flatten(camera.inverse().m);
     float[MATRIX_FLOATS] projection = frustum.projection(NEAR_PLANE);
     Vec3!float sunward = world.sunward;
     return CommonUniforms(
+        materialTints(world.view.colorTurn),
         projection,
         cameraInverse,
         frustum.planes(),
@@ -79,11 +82,24 @@ CommonUniforms commonUniforms(ref const LocalWorld world, LinearColor fogLinear,
         camera * Point!float.origin(),
         frustum,
         kleinDepthScale(NEAR_PLANE),
-        fogReach(world.viewRadius()),
+        fogReach(world.viewRadius()) * world.view.fogShare.value,
         FOG_SHARPNESS,
         parityOf(determinant(matrixMultiply(projection, cameraInverse))),
         sinhf(CUBE_RADIUS),
+        world.view.warpStrength.value,
+        world.view.warpSeconds.value,
     );
+}
+
+PostSettings postSettings(ref const LocalWorld world, Time frame) {
+    PostSettings settings;
+    foreach (band; 0 .. BAND_COUNT) {
+        settings.bandGains[band] = world.view.bandGains[band].value;
+    }
+    if (world.view.afterimageTime.value > 0) {
+        settings.afterimage = expf(-frame.value / world.view.afterimageTime.value);
+    }
+    return settings;
 }
 
 Maybe!HighlightTarget findHighlightTarget(ref const LocalWorld world) {
@@ -115,6 +131,35 @@ float parityOf(float value) {
 
 LinearColor linearOf(Color color) {
     return LinearColor(srgbToLinear(color.red), srgbToLinear(color.green), srgbToLinear(color.blue), 1);
+}
+
+MaterialSet unseenMaterials(ref const LocalWorld world) {
+    return HIDDEN.without(world.view.visible);
+}
+
+LinearColor perceivedFog(ref const LocalWorld world) {
+    LinearColor plain = linearOf(world.fogColor);
+    Seen seen = seenOf(turned(spectrumOf([plain.red, plain.green, plain.blue]), world.view.colorTurn));
+    return LinearColor(seen[0], seen[1], seen[2], 1);
+}
+
+LinearColor[TINT_SLOTS] materialTints(ColorTurn turn) {
+    LinearColor[TINT_SLOTS] tints = LinearColor(1, 1, 1, 1);
+    foreach (index; 1 .. MATERIAL_COUNT) {
+        ByteColor written = MATERIAL_COLORS[index];
+        Seen plain = [srgbToLinear(written.red / CHANNEL_MOST), srgbToLinear(written.green / CHANNEL_MOST), srgbToLinear(written.blue / CHANNEL_MOST)];
+        Seen seen = seenOf(turned(spectrumOf(plain), turn));
+        tints[index] = LinearColor(tintOf(seen[0], plain[0]), tintOf(seen[1], plain[1]), tintOf(seen[2], plain[2]), 1);
+    }
+    return tints;
+}
+
+float tintOf(float seen, float plain) {
+    if (plain > 0) {
+        return lowerOf(seen / plain, MOST_TINT);
+    } else {
+        return 1;
+    }
 }
 
 float srgbToLinear(float encoded) {

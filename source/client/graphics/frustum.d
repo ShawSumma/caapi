@@ -1,8 +1,6 @@
 module client.graphics.frustum;
 
 import core.math : sqrt;
-import core.stdc.math : tanf;
-import base.units : Angle;
 import geometry.lorentz : Normal, Vec4;
 
 enum uint FRUSTUM_PLANE_COUNT = 5;
@@ -11,8 +9,7 @@ struct Frustum {
     float tanHalfWidth;
     float tanHalfHeight;
 
-    static Frustum fromVerticalHalf(Angle halfVertical, float aspectRatio) {
-        float tanHalfHeight = tanf(halfVertical.value);
+    static Frustum fromVerticalTangent(float tanHalfHeight, float aspectRatio) {
         return Frustum(aspectRatio * tanHalfHeight, tanHalfHeight);
     }
 

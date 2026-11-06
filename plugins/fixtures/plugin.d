@@ -143,6 +143,7 @@ pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
     registry.add(registry, "spiralcity", &styled!(Style.spiral));
     registry.add(registry, "driftcity", &styled!(Style.drift));
     registry.add(registry, "lanterncity", &styled!(Style.lantern));
+    registry.add(registry, "hiddenstair", &styled!(Style.hidden));
     registry.add(registry, "risenwild", &risenWild);
     registry.add(registry, "risenbackrooms", &risenBackrooms);
     registry.add(registry, "stacked", &stacked);

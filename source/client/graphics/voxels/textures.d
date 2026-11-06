@@ -99,6 +99,22 @@ immutable float[Material.max + 1] GRAIN = [
     Material.sunlight: 0,
     Material.plaster: 0.025f,
     Material.wetConcrete: 0.07f,
+    Material.mistStone: 0.06f,
+    Material.mistLight: 0,
+    Material.emberStone: 0.1f,
+    Material.emberLight: 0,
+    Material.tideStone: 0.08f,
+    Material.tideLight: 0,
+    Material.beacon: 0,
+    Material.ironOre: 0.25f,
+    Material.copperOre: 0.25f,
+    Material.sulfur: 0.2f,
+    Material.fern: 0.15f,
+    Material.flower: 0.15f,
+    Material.thornbush: 0.15f,
+    Material.moss: 0.12f,
+    Material.collector: 0.04f,
+    Material.bench: 0.08f,
 ];
 
 float latticeAt(ulong salt, uint u, uint v) {

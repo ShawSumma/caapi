@@ -7,7 +7,7 @@ import base.maybe : Maybe, MaybeIndex;
 import base.splitmix : SplitMix;
 import base.vector3 : Vec3;
 import common.graph : Graph;
-import common.material : isShownAgainst;
+import common.material : isOccluding, isShownAgainst;
 import common.neighbors : acrossBorder, chunkNeighborSlot, indexIn, isCellOccupied, isOutside;
 import common.node : Chunk, ChunkSlot, ChunkState, cellIndex;
 import geometry.cube : AXIS_COUNT, DIRECTIONS, beyondBoundary, boundaryOf;
@@ -81,7 +81,7 @@ struct ChunkCells {
         if (outside > 1) {
             return (*graph).isCellOccupied(chunk, voxel);
         } else {
-            return padded[paddedIndex(dimension, voxel)] != Material.none;
+            return isOccluding(padded[paddedIndex(dimension, voxel)]);
         }
     }
 

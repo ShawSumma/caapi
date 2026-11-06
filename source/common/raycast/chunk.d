@@ -4,10 +4,10 @@ import core.stdc.math : fabsf;
 import base.maybe : Maybe;
 import base.numbers : lowerOf;
 import base.vector3 : Vec3;
+import common.material : MaterialSet, has;
 import common.node : ChunkLayout, Voxels, cellIndex;
 import geometry.cube : AXIS_COUNT, Axis, Cell, Sign;
 import geometry.ray : Ray;
-import plugins.api.api : Material;
 
 enum float PARALLEL_TOLERANCE = 1e-6f;
 
@@ -18,11 +18,11 @@ struct ChunkRayCastHit {
     Sign faceSign;
 }
 
-Maybe!ChunkRayCastHit castThroughChunk(const Voxels voxels, ChunkLayout layout, Ray ray, float limit) {
-    if (voxels.isFilledWith(Material.none)) {
+Maybe!ChunkRayCastHit castThroughChunk(const Voxels voxels, ChunkLayout layout, Ray ray, float limit, MaterialSet hits) {
+    if (voxels.isUniform() && !hits.has(voxels.fill)) {
         return Maybe!ChunkRayCastHit.init;
     } else {
-        GridWalk walk = GridWalk(ray, layout);
+        GridWalk walk = GridWalk(ray, layout, hits);
         return walk.run(voxels, limit);
     }
 }
@@ -32,11 +32,13 @@ struct GridWalk {
     float[4] heading;
     ChunkLayout layout;
     Vec3!int steps;
+    MaterialSet hits;
 
-    this(Ray ray, ChunkLayout chosen) {
+    this(Ray ray, ChunkLayout chosen, MaterialSet hitting) {
         start = ray.start.v.c;
         heading = ray.heading.v.c;
         layout = chosen;
+        hits = hitting;
         foreach (axis; 0 .. AXIS_COUNT) {
             float along = heading[axis] * start[3];
             float drift = start[axis] * heading[3];
@@ -177,7 +179,7 @@ struct GridWalk {
     }
 
     bool isFilled(ref const Voxels voxels, Vec3!int cell) const {
-        return voxels.at(cellIndex(layout.dimension, cell.x, cell.y, cell.z)) != Material.none;
+        return hits.has(voxels.at(cellIndex(layout.dimension, cell.x, cell.y, cell.z)));
     }
 
     Maybe!ChunkRayCastHit hitAt(float t, Vec3!int cell, size_t axis) const {

@@ -2,6 +2,7 @@ module unit.raycast;
 
 import base.maybe : Maybe;
 import base.vector3 : Vec3;
+import common.material : PLAIN_SOLID, including;
 import common.node : ChunkLayout, Voxels, cellIndex;
 import common.raycast.chunk : ChunkRayCastHit, castThroughChunk;
 import geometry.cube : AXIS_COUNT, Axis, Sign;
@@ -25,13 +26,16 @@ unittest {
     Point!float from = Vec4!float([START_KLEIN, center.y, center.z, 1]).toPoint();
     Point!float to = Vec4!float([center.x, center.y, center.z, 1]).toPoint();
     Ray ray = Ray(from, (to.v + from.v * from.minkowski(to.v)).toNormal());
-    Maybe!ChunkRayCastHit hit = castThroughChunk(voxels, layout, ray, 1);
+    Maybe!ChunkRayCastHit hit = castThroughChunk(voxels, layout, ray, 1, PLAIN_SOLID);
     assert(hit.exists && hit.value.voxelCoords == TARGET.as!ubyte() && hit.value.faceAxis == Axis.x && hit.value.faceSign == Sign.minus);
     Vec4!float reached = ray.at(hit.value.tanhDistance);
     float wall = layout.gridToKlein(TARGET.x);
     assert(reached.c[0] / reached.c[3] - wall < TOLERANCE && wall - reached.c[0] / reached.c[3] < TOLERANCE);
-    Maybe!ChunkRayCastHit stoppedShort = castThroughChunk(voxels, layout, ray, hit.value.tanhDistance);
+    Maybe!ChunkRayCastHit stoppedShort = castThroughChunk(voxels, layout, ray, hit.value.tanhDistance, PLAIN_SOLID);
     assert(!stoppedShort.exists);
+    voxels.toDense(DIMENSION)[cellIndex(DIMENSION, TARGET.x, TARGET.y, TARGET.z)] = Material.mistStone;
+    assert(!castThroughChunk(voxels, layout, ray, 1, PLAIN_SOLID).exists);
+    assert(castThroughChunk(voxels, layout, ray, 1, PLAIN_SOLID.including(Material.mistStone)).exists);
     voxels.release();
 }
 
@@ -96,7 +100,7 @@ unittest {
         Point!float start = Vec4!float([from.x, from.y, from.z, 1]).toPoint();
         Point!float aim = Vec4!float([to.x, to.y, to.z, 1]).toPoint();
         Ray ray = Ray(start, (aim.v + start.v * start.minkowski(aim.v)).toNormal());
-        Maybe!ChunkRayCastHit walked = castThroughChunk(voxels, layout, ray, 0.9f);
+        Maybe!ChunkRayCastHit walked = castThroughChunk(voxels, layout, ray, 0.9f, PLAIN_SOLID);
         Maybe!ChunkRayCastHit expected = marched(voxels, layout, ray, 0.9f);
         assert(walked.exists == expected.exists);
         if (walked.exists) {

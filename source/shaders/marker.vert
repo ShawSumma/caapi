@@ -3,6 +3,7 @@
 #include "target.h"
 #include "common.h"
 #include "clip.h"
+#include "warp.h"
 
 const float SRGB_POWER = 2.2;
 
@@ -42,5 +43,5 @@ PUSH_END
 
 void main() {
     shade = pow(written_color(), vec3(SRGB_POWER));
-    place_clip(projection * camera_inverse * model * vec4(CORNERS[TRIANGLES[VERTEX_INDEX]] * half_side, 1.0));
+    place_clip(projection * warped(camera_inverse * model * vec4(CORNERS[TRIANGLES[VERTEX_INDEX]] * half_side, 1.0)));
 }

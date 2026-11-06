@@ -4,7 +4,7 @@ import base.array : Array;
 import base.maybe : Maybe, MaybeIndex;
 import base.vector3 : Vec3;
 import common.graph : Graph, NodeId;
-import common.material : isShownAgainst;
+import common.material : isOccluding, isSeeThrough, isShownAgainst;
 import common.node : Chunk, ChunkId, ChunkSlot, ChunkState, Occupancy, cellIndex;
 import geometry.cube : AXIS_COUNT, Axis, AxisMap, DIRECTIONS, Direction, Sign, beyondBoundary, boundaryOf;
 import geometry.honeycomb : Corner, across, axisMaps, faces;
@@ -116,7 +116,7 @@ bool isOccupiedAcross(ref const Graph graph, ChunkSlot chunk, Vec3!int cell, siz
 bool isCellOccupied(ref const Graph graph, ChunkSlot chunk, Vec3!int cell) {
     ubyte dimension = graph.layout.dimension;
     if (isInside(dimension, cell)) {
-        return graph.chunks.at(chunk).voxels.at(indexIn(dimension, cell)) != Material.none;
+        return isOccluding(graph.chunks.at(chunk).voxels.at(indexIn(dimension, cell)));
     } else {
         uint axis = 0;
         while (axis < AXIS_COUNT && !graph.isOccupiedAcross(chunk, cell, axis)) {
@@ -184,7 +184,7 @@ bool isBorderingVoid(ref const Graph graph, ChunkSlot chunk) {
 
 bool showsVoidAcross(ref const Graph graph, ChunkSlot chunk, Direction direction, const(Chunk)* other) {
     if (other.voxels.isUniform()) {
-        return other.voxels.isFilledWith(Material.none);
+        return isSeeThrough(other.voxels.fill);
     } else {
         ubyte dimension = graph.layout.dimension;
         size_t u = (direction.axis + 1) % AXIS_COUNT;
@@ -195,7 +195,7 @@ bool showsVoidAcross(ref const Graph graph, ChunkSlot chunk, Direction direction
             foreach (i; 0 .. dimension) {
                 cell[u] = i;
                 cell[v] = j;
-                if (other.voxels.at(indexIn(dimension, acrossBorder(dimension, chunk.corner, cell, direction))) == Material.none) {
+                if (isSeeThrough(other.voxels.at(indexIn(dimension, acrossBorder(dimension, chunk.corner, cell, direction))))) {
                     return true;
                 }
             }

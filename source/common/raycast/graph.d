@@ -4,6 +4,7 @@ import core.stdc.math : atanhf, coshf;
 import base.maybe : Maybe;
 import base.numbers : lowerOf;
 import common.graph : Graph;
+import common.material : MaterialSet;
 import common.node : Chunk, ChunkId, ChunkSlot, ChunkState;
 import common.position : Position;
 import common.raycast.chunk : ChunkRayCastHit, castThroughChunk;
@@ -22,7 +23,7 @@ struct GraphCastHit {
     Sign faceSign;
 }
 
-Maybe!GraphCastHit rayCast(ref const Graph graph, Position position, Ray ray, float tanhDistance) {
+Maybe!GraphCastHit rayCast(ref const Graph graph, Position position, Ray ray, float tanhDistance, MaterialSet hits) {
     Maybe!GraphCastHit hit;
     Ray nodeRay = ray.movedBy(position.local);
     float reach = atanhf(lowerOf(tanhDistance, MAX_TANH_DISTANCE));
@@ -37,7 +38,7 @@ Maybe!GraphCastHit rayCast(ref const Graph graph, Position position, Ray ray, fl
             Corner corner = cast(Corner) index;
             const(Chunk)* chunk = graph.chunks.at(ChunkSlot(visit.slot, corner));
             if (chunk.state == ChunkState.populated && !(localRay.start.coshDistance(corner.cubeCenter) > chunkThreshold)) {
-                Maybe!ChunkRayCastHit chunkHit = castThroughChunk(chunk.voxels, graph.layout, localRay.movedBy(corner.nodeToCorner), best);
+                Maybe!ChunkRayCastHit chunkHit = castThroughChunk(chunk.voxels, graph.layout, localRay.movedBy(corner.nodeToCorner), best, hits);
                 if (chunkHit.exists) {
                     ChunkRayCastHit found = chunkHit.value;
                     best = found.tanhDistance;

@@ -3,19 +3,23 @@ module client.graphics.renderer;
 import core.stdc.string : memcpy;
 import bindings.platform : VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_HOST_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_ERROR_OUT_OF_DATE_KHR, VK_FORMAT_B8G8R8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, VK_STRUCTURE_TYPE_PRESENT_ID_KHR, VkPresentIdKHR, VkImage, VkImageLayout, VkImageMemoryBarrier, VkImageSubresourceRange, VK_PIPELINE_BIND_POINT_GRAPHICS, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_QUERY_RESULT_64_BIT, VK_QUERY_TYPE_TIMESTAMP, VK_SHADER_STAGE_VERTEX_BIT, VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, VK_STRUCTURE_TYPE_MEMORY_BARRIER, VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, VK_STRUCTURE_TYPE_SUBMIT_INFO, VK_SUBOPTIMAL_KHR, VK_SUBPASS_CONTENTS_INLINE, VK_SUCCESS, VkBufferImageCopy, VkClearValue, VkCommandBuffer, VkCommandBufferBeginInfo, VkDescriptorSet, VkDevice, VkDeviceSize, VkDrawIndirectCommand, VkExtent2D, VkExtent3D, VkImageSubresourceLayers, VkMemoryBarrier, VkPhysicalDevice, VkPhysicalDeviceProperties, VkPipelineStageFlags, VkPresentInfoKHR, VkQueryPool, VkQueryPoolCreateInfo, VkRect2D, VkRenderPassBeginInfo, VkResult, VkSubmitInfo, VkViewport, vkAcquireNextImageKHR, vkBeginCommandBuffer, vkCmdBeginRenderPass, vkCmdBindDescriptorSets, vkCmdBindPipeline, vkCmdCopyImageToBuffer, vkCmdDrawIndirect, vkCmdEndRenderPass, vkCmdNextSubpass, vkCmdPipelineBarrier, vkCmdPushConstants, vkCmdResetQueryPool, vkCmdSetScissor, vkCmdSetViewport, vkCmdWriteTimestamp, vkCreateQueryPool, vkDestroyQueryPool, vkDeviceWaitIdle, vkEndCommandBuffer, vkGetPhysicalDeviceProperties, vkGetQueryPoolResults, vkQueuePresentKHR, vkQueueSubmit, vkResetCommandBuffer, vkResetFences, vkWaitForFences;
 import base.array : Array;
-import base.clock : Deadline, NANOSECONDS_PER_MILLISECOND, nowMilliseconds;
+import base.clock : Deadline, MILLISECONDS_PER_SECOND, NANOSECONDS_PER_MILLISECOND, nowMilliseconds;
 import base.maybe : Maybe;
 import base.numbers : lowerOf;
 import base.parallel : ParallelJob;
+import base.units : Time;
 import client.graphics.base : SwapchainState;
 import client.graphics.core : SurfaceSource, VulkanCore;
 import client.graphics.crosshair : CrosshairPipeline;
 import client.graphics.fog : FogPipeline;
 import client.graphics.highlight : HighlightPipeline;
 import client.graphics.overlay : HudPipeline, MarkerPipeline;
+import client.graphics.post : PostChain;
 import client.hud : HudVertex, Marker;
+import client.text : GlyphAtlas;
 import client.graphics.pipeline : GpuBuffer, QUEUE_FAMILY_IGNORED, VULKAN_TRUE, expectSuccess;
-import client.graphics.uniforms : CommonUniforms, HighlightTarget, LinearColor, commonUniforms, findHighlightTarget, glowingMaterials, linearOf;
+import client.graphics.uniforms : CommonUniforms, HighlightTarget, LinearColor, PostSettings, commonUniforms, findHighlightTarget, perceivedFog, postSettings, unseenMaterials;
+import common.material : GLOWING, MaterialSet;
 import client.graphics.voxels.cull : CullPipeline;
 import client.graphics.voxels.meshes : ChunkMeshes, Replaced;
 import client.graphics.voxels.surface : FACES_BINDING, LayoutPush, SurfacePipeline, TRANSFORMS_BINDING;
@@ -118,6 +122,7 @@ struct Renderer {
     MarkerPipeline marker;
     const(HudVertex)[] hudVertices;
     const(Marker)[] markers;
+    const(GlyphAtlas)* atlas;
     GpuTimer timer;
     FrameTimes frameTimes;
     GpuBuffer readback;
@@ -126,6 +131,9 @@ struct Renderer {
     VkExtent2D copiedExtent;
     LinearColor fogLinear = LinearColor(0, 0, 0, 1);
     ChunkLayout layout;
+    MaterialSet unseen;
+    PostChain post;
+    Maybe!double previousFrame;
     Maybe!uint worldEpoch;
     ubyte dimension;
     uint backlog;
@@ -189,8 +197,9 @@ struct Renderer {
         bindMeshBuffers();
         fog.setup(core.device, swapchain.renderPass, voxels.commonLayout);
         highlight.setup(core.device, swapchain.renderPass, voxels.commonLayout);
-        crosshair.setup(core.device, swapchain.renderPass);
-        hud.setup(core.physicalDevice, core.device, swapchain.renderPass);
+        post.setup(core.physicalDevice, core.device, swapchain);
+        crosshair.setup(core.device, post.compositePass);
+        hud.setup(core.physicalDevice, core.device, post.compositePass);
         marker.setup(core.device, swapchain.renderPass, voxels.commonLayout);
         timer.setup(core.physicalDevice, core.device);
     }
@@ -217,7 +226,8 @@ struct Renderer {
 
     void renderFrame(ref LocalWorld world) {
         layout = world.graph.layout;
-        fogLinear = linearOf(world.fogColor);
+        unseen = unseenMaterials(world);
+        fogLinear = perceivedFog(world);
         double waitStart = nowMilliseconds();
         expectSuccess(vkWaitForFences(core.device, 1, &swapchain.inFlightFence, VULKAN_TRUE, NO_TIMEOUT));
         double updateStart = nowMilliseconds();
@@ -232,9 +242,10 @@ struct Renderer {
         updateChunks(world);
         frameTimes.chunkUpdateMs = nowMilliseconds() - updateStart;
         Maybe!HighlightTarget target = findHighlightTarget(world);
+        PostSettings settings = postSettings(world, frameTime(updateStart));
         if (swapchain.isOffscreen) {
             expectSuccess(vkResetFences(core.device, 1, &swapchain.inFlightFence));
-            recordCommands(OFFSCREEN_IMAGE, target);
+            recordCommands(OFFSCREEN_IMAGE, target, settings);
             submit(SubmitKind.offscreen);
         } else {
             double presentStart = nowMilliseconds();
@@ -246,12 +257,21 @@ struct Renderer {
                 expectAcquired(acquired);
                 expectSuccess(vkResetFences(core.device, 1, &swapchain.inFlightFence));
                 frameTimes.acquireMs = nowMilliseconds() - presentStart;
-                recordCommands(imageIndex, target);
+                recordCommands(imageIndex, target, settings);
                 submit(SubmitKind.presenting);
                 present(imageIndex);
             }
             frameTimes.presentMs = nowMilliseconds() - presentStart;
         }
+    }
+
+    Time frameTime(double now) {
+        Time elapsed = Time(0);
+        if (previousFrame.exists) {
+            elapsed = Time(cast(float)((now - previousFrame.value) / MILLISECONDS_PER_SECOND));
+        }
+        previousFrame = Maybe!double.of(now);
+        return elapsed;
     }
 
     void updateChunks(ref LocalWorld world) {
@@ -283,7 +303,7 @@ struct Renderer {
         backlog = cast(uint) world.graph.chunks.pending().length;
     }
 
-    void recordCommands(uint imageIndex, Maybe!HighlightTarget target) {
+    void recordCommands(uint imageIndex, Maybe!HighlightTarget target, PostSettings settings) {
         VkCommandBuffer commands = swapchain.commandBuffer;
         vkResetCommandBuffer(commands, 0);
         VkCommandBufferBeginInfo beginInfo;
@@ -293,13 +313,16 @@ struct Renderer {
         meshes.recordUploads(commands);
         cull.record(commands, meshes.drawableCount);
         timer.markCullEnd(commands);
+        if (atlas !is null) {
+            hud.recordAtlasUpload(commands, *atlas);
+        }
         VkClearValue[3] clears;
         clears[0].color.float32 = [fogLinear.red, fogLinear.green, fogLinear.blue, fogLinear.alpha];
         clears[1].depthStencil.depth = CLEAR_DEPTH;
         VkRenderPassBeginInfo passInfo;
         passInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
         passInfo.renderPass = swapchain.renderPass;
-        passInfo.framebuffer = swapchain.framebuffers[imageIndex];
+        passInfo.framebuffer = swapchain.sceneFramebuffer;
         passInfo.renderArea.extent = swapchain.extent;
         passInfo.clearValueCount = clears.length;
         passInfo.pClearValues = clears.ptr;
@@ -315,7 +338,7 @@ struct Renderer {
             voxels.staticSet,
         ];
         vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, voxels.pipelineLayout, 0, sets.length, sets.ptr, 0, null);
-        LayoutPush layoutPush = LayoutPush(layout.dimension, layout.cellRatio, glowingMaterials(), Material.glass);
+        LayoutPush layoutPush = LayoutPush(layout.dimension, layout.cellRatio, GLOWING.words, unseen.words, Material.glass);
         vkCmdPushConstants(commands, voxels.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, LayoutPush.sizeof, &layoutPush);
         uint drawn = 0;
         while (drawn < meshes.drawableCount) {
@@ -329,9 +352,14 @@ struct Renderer {
         marker.draw(commands, voxels.commonSet, markers);
         vkCmdNextSubpass(commands, VK_SUBPASS_CONTENTS_INLINE);
         fog.draw(commands, voxels.commonSet);
+        vkCmdEndRenderPass(commands);
+        post.recordReduce(commands);
+        post.beginComposite(commands, imageIndex, swapchain.extent, settings);
+        vkCmdNextSubpass(commands, VK_SUBPASS_CONTENTS_INLINE);
         crosshair.draw(commands, cast(float) swapchain.extent.width / cast(float) swapchain.extent.height);
         hud.draw(commands);
         vkCmdEndRenderPass(commands);
+        post.advance();
         if (swapchain.isOffscreen) {
             recordReadback(commands, swapchain.offscreenImage);
         } else if (captureMarks.has(CaptureMark.wanted) && swapchain.isReadable) {
@@ -424,6 +452,7 @@ struct Renderer {
 
     void recreateSwapchain() {
         swapchain.recreate(core.device);
+        post.rebuild(core.physicalDevice, core.device, swapchain);
         presentCount = 0;
         captureMarks.clear(CaptureMark.copying);
         if (!swapchain.isMinimized()) {
@@ -438,6 +467,7 @@ struct Renderer {
         marker.cleanup(core.device);
         hud.cleanup(core.device);
         crosshair.cleanup(core.device);
+        post.cleanup(core.device);
         highlight.cleanup(core.device);
         fog.cleanup(core.device);
         cull.cleanup(core.device);

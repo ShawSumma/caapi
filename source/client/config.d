@@ -2,8 +2,9 @@ module client.config;
 
 import core.stdc.stdlib : strtof;
 import core.stdc.string : strlen;
+import base.numbers : clamped;
 import base.stdio : FILE, fclose, fgets, fopen;
-import base.units : Angle, AngularSpeed, Length;
+import base.units : Angle, AngularSpeed, Length, Ratio;
 
 enum size_t CONFIG_LINE_CAPACITY = 256;
 
@@ -24,6 +25,7 @@ struct ClientConfig {
     Angle mouseTurnPerCount = Angle(0.001f);
     AngularSpeed keyTurnRate = AngularSpeed(1.5f);
     Length reach = Length(0.5f);
+    Ratio comfort = Ratio(1);
     PitchAxis pitchAxis;
 
     static ClientConfig fromFile(const(char)* path) {
@@ -50,6 +52,8 @@ struct ClientConfig {
             keyTurnRate = AngularSpeed(strtof(entry.value.ptr, null));
         } else if (entry.key == "reach") {
             reach = Length(strtof(entry.value.ptr, null));
+        } else if (entry.key == "comfort") {
+            comfort = Ratio(clamped(strtof(entry.value.ptr, null), 0.0f, 1.0f));
         } else if (entry.key == "invert_y") {
             pitchAxis = PitchAxis.normal;
             if (entry.value == "1" || entry.value == "true" || entry.value == "yes" || entry.value == "on") {

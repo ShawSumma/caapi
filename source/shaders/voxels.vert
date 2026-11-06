@@ -5,6 +5,7 @@
 #include "draw.h"
 #include "face.h"
 #include "clip.h"
+#include "warp.h"
 
 const uint VERTICES_PER_FACE = 6u;
 const uint FIRST_SOLID_MATERIAL = 1u;
@@ -16,6 +17,7 @@ const float SHADE_AWAY = 0.5;
 STAGE_LINK(0) out vec3 texcoords;
 STAGE_LINK(1) out float brightness;
 STAGE_LINK(2) flat out float glowing;
+STAGE_LINK(3) flat out vec3 tint;
 
 #if defined(GL_ES)
     const uint FACE_ROW_SHIFT = 12u;
@@ -54,8 +56,11 @@ PUSH_BEGIN
     PUSHED uint dimension;
     PUSHED float cell_ratio;
     PUSHED uint glowing_materials[3];
+    PUSHED uint unseen_materials[3];
     PUSHED uint framed_material;
 PUSH_END
+
+const vec4 UNSEEN_CLIP = vec4(2.0, 2.0, 2.0, 1.0);
 
 uvec2 face_corner(uint vertex_index, bool is_reversed, bool is_flipped) {
     uint step_index = vertex_index;
@@ -113,6 +118,7 @@ void main() {
         on_layer = (on_layer + vec2(window % WINDOWS_PER_SIDE, window / WINDOWS_PER_SIDE)) / float(WINDOWS_PER_SIDE);
     }
     texcoords = vec3(on_layer, float(material - FIRST_SOLID_MATERIAL));
+    tint = material_tints[material].rgb;
     uvec3 grid = face_position(face);
     grid[(axis + 1u) % 3u] += corner.x;
     grid[(axis + 2u) % 3u] += corner.y;
@@ -124,5 +130,9 @@ void main() {
     float shade = mix(SHADE_AWAY, SHADE_FACING_SUN, 0.5 + 0.5 * facing_sun(point, draw.transform[(axis + 1u) % 3u], draw.transform[(axis + 2u) % 3u]));
     brightness = face_occlusion(face, corner) * shade;
     glowing = float((glowing_materials[material / BITS_PER_WORD] >> (material % BITS_PER_WORD)) & 1u);
-    place_clip(projection * camera_inverse * point);
+    if (((unseen_materials[material / BITS_PER_WORD] >> (material % BITS_PER_WORD)) & 1u) != 0u) {
+        place_clip(UNSEEN_CLIP);
+    } else {
+        place_clip(projection * warped(camera_inverse * point));
+    }
 }

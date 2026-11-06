@@ -2,14 +2,18 @@ module scripts.views;
 
 import base.maybe : Maybe;
 import base.units : Length;
-import client.game : Key, RouteWaypoint;
+import client.game : Key, Preset, RouteWaypoint;
 import client.script : NamedScript, Script, degrees;
+import client.game : Seed;
+import common.biology.wild : WildGenes;
+import plugins.api.api : Material;
 import common.character.controller : MovementMode;
 import climb = scripts.climb;
 import walk = scripts.walk;
 import scripts.walk : FLY_SPEED, NOCLIP_SPEED, SETTLE_SECONDS, STRAIGHT_DOWN_DEGREES;
 
 enum float LANDMARK_APART = 1.5f;
+enum double DOSED_SECONDS = 8;
 
 immutable NamedScript[] VIEWS = [
     NamedScript("arborcrown", &rising!("arbor", 0.9f, 1.6f, 30)),
@@ -45,6 +49,8 @@ immutable NamedScript[] VIEWS = [
     NamedScript("far", &far),
     NamedScript("flight", &flight),
     NamedScript("hamlet", &rising!("hamlet", 0, 0.5f, 20)),
+    NamedScript("hiddenstair", &stairFromAside!(Preset.plain)),
+    NamedScript("hiddenstairmist", &stairFromAside!(Preset.mist)),
     NamedScript("interior", &towardWaypoint!("tower", 6, -10)),
     NamedScript("landscape", &landscape),
     NamedScript("latticebelow", &rising!("lattice", 0, 0.6f, 50)),
@@ -55,6 +61,8 @@ immutable NamedScript[] VIEWS = [
     NamedScript("librarywell", &libraryWell),
     NamedScript("libraryturn", &looking!("library", 100, -10)),
     NamedScript("overview", &overview),
+    NamedScript("plantscan", &plantScan),
+    NamedScript("bench", &benchView),
     NamedScript("around0", &around!(0)),
     NamedScript("around90", &around!(90)),
     NamedScript("around180", &around!(180)),
@@ -80,6 +88,14 @@ immutable NamedScript[] VIEWS = [
     NamedScript("slope", &slope),
     NamedScript("stairs", &towardWaypoint!("tower", 3, -20)),
     NamedScript("terrain", &lookingHere!(10)),
+    NamedScript("terrainbehind", &perceiving!(Preset.behind, 10)),
+    NamedScript("terraindosed", &dosed),
+    NamedScript("terrainnarrow", &perceiving!(Preset.narrow, 10)),
+    NamedScript("terrainsharp", &perceiving!(Preset.sharp, 10)),
+    NamedScript("terrainsoft", &perceiving!(Preset.soft, 10)),
+    NamedScript("terrainswaying", &perceiving!(Preset.swaying, 10)),
+    NamedScript("terrainturned", &perceiving!(Preset.turned, 10)),
+    NamedScript("terrainwide", &perceiving!(Preset.wide, 10)),
     NamedScript("tower", &tower),
     NamedScript("trail", &trail),
     NamedScript("treebase", &lookingHere!(-10)),
@@ -102,6 +118,42 @@ void looking(string name, double yaw, double pitch)(ref Script view) {
 void lookingHere(double pitch)(ref Script view) {
     view.look(degrees(0), degrees(pitch));
     view.step();
+}
+
+void benchView(ref Script view) {
+    view.plane(degrees(0));
+    view.step();
+    view.game.keepSeed(Seed(WildGenes([0x1234_5678_9ABC_DEF0, 0x0FED_CBA9_8765_4321, 0x1357_9BDF_2468_ACE0, 0xA5A5_5A5A_F0F0_0F0F]), Material.flower));
+    view.game.keepSeed(Seed(WildGenes([0x1111_2222_3333_4444, 0x5555_6666_7777_8888, 0x9999_AAAA_BBBB_CCCC, 0xDDDD_EEEE_FFFF_0000]), Material.fern));
+    view.material(7);
+    view.look(degrees(0), degrees(30));
+    view.placeBlock();
+    view.use();
+    view.step();
+}
+
+void plantScan(ref Script view) {
+    view.plane(degrees(0));
+    view.step();
+    view.game.inventory.hotbar[0] = Material.flower;
+    view.game.inventory.counts[Material.flower] = 1;
+    view.material(1);
+    view.look(degrees(0), degrees(30));
+    view.placeBlock();
+    view.use();
+    view.step();
+}
+
+void dosed(ref Script view) {
+    view.dose();
+    view.wait(DOSED_SECONDS);
+    view.look(degrees(0), degrees(10));
+    view.step();
+}
+
+void perceiving(Preset preset, double pitch)(ref Script view) {
+    view.perceive(preset);
+    lookingHere!(pitch)(view);
 }
 
 void rising(string name, float ahead, float rise, double pitch)(ref Script view) {
@@ -190,6 +242,17 @@ void behindRoute(string name)(ref Script view) {
 
 void connectorFromAside(string name)(ref Script view) {
     view.structure(name);
+    view.enterRoute();
+    view.mode(MovementMode.noclip);
+    noclip(view, 0.5f, Key.up);
+    noclip(view, 1.1f, Key.back);
+    view.look(degrees(0), degrees(-15));
+    view.step();
+}
+
+void stairFromAside(Preset preset)(ref Script view) {
+    view.structure("hiddenstair");
+    view.perceive(preset);
     view.enterRoute();
     view.mode(MovementMode.noclip);
     noclip(view, 0.5f, Key.up);

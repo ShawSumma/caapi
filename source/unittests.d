@@ -34,6 +34,17 @@ import unitFrames = unit.frames;
 import unitMeshing = unit.meshing;
 import unitArrivals = unit.arrivals;
 import unitHud = unit.hud;
+import unitFont = unit.font;
+import unitColor = unit.color;
+import unitMolecule = unit.molecule;
+import unitPocket = unit.pocket;
+import unitOccupancy = unit.occupancy;
+import unitKinetics = unit.kinetics;
+import unitSignaling = unit.signaling;
+import unitMetabolism = unit.metabolism;
+import unitGenome = unit.genome;
+import unitInventory = unit.inventory;
+import unitBreeding = unit.breeding;
 
 enum uint TEST_TIME_LIMIT_SECONDS = 300;
 

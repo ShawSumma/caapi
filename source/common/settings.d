@@ -2,10 +2,12 @@ module common.settings;
 
 import core.stdc.math : sqrtf;
 import base.units : Acceleration, AngularSpeed, Blocks, Length, Rate, Ratio, Speed;
+import common.material : MaterialSet, PLAIN_SOLID;
 
 enum ubyte CHUNK_DIMENSION = 12;
 
 struct CharacterConfig {
+    MaterialSet solid = PLAIN_SOLID;
     Speed noclipSpeed = Speed(0.6f);
     Speed flySpeed = Speed(0.4f);
     Speed walkSpeed = Speed(0.225f);

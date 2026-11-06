@@ -109,7 +109,7 @@ struct CharacterState {
             if (input.mode == MovementMode.noclip) {
                 offset = noclipStep(character, input, dt);
             } else {
-                features.collect(graph, position, regionReach(character));
+                features.collect(graph, position, regionReach(character), character.solid);
                 if (features.isLoaded) {
                     Mover mover = Mover.make(character, features, up, stepRiseAhead(character, graph, input));
                     Vec3!float pivoted = mover.slide(ZERO_VECTOR, pivot, ZERO_VECTOR, SlideKind.move, PlaneSet.init).position;

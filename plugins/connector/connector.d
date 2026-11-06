@@ -56,6 +56,7 @@ enum Style : ubyte {
     spiral,
     drift,
     lantern,
+    hidden,
 }
 
 enum Routing : ubyte {
@@ -88,6 +89,7 @@ struct StyleOdds {
     ubyte spiral;
     ubyte drift;
     ubyte lantern;
+    ubyte hidden;
 
     ubyte percentOf(Style style) const {
         final switch (style) {
@@ -99,11 +101,13 @@ struct StyleOdds {
                 return drift;
             case Style.lantern:
                 return lantern;
+            case Style.hidden:
+                return hidden;
         }
     }
 
     uint total() const {
-        return tower + spiral + drift + lantern;
+        return tower + spiral + drift + lantern + hidden;
     }
 }
 
@@ -177,6 +181,7 @@ immutable Palette[4] PALETTES = [
 
 immutable Palette DRIFT_PALETTE = Palette(Material.sunlight, Material.limestone, Material.marble);
 immutable Palette LANTERN_PALETTE = Palette(Material.glass, Material.steel, Material.marble);
+immutable Palette HIDDEN_PALETTE = Palette(Material.mistStone, Material.mistLight, Material.mistStone);
 
 struct Layout {
     int base;
@@ -419,6 +424,8 @@ void connect(Turtle site, ref const Risen risen, uint upperTag, Connection how) 
         palette = DRIFT_PALETTE;
     } else if (style == Style.lantern) {
         palette = LANTERN_PALETTE;
+    } else if (style == Style.hidden) {
+        palette = HIDDEN_PALETTE;
     }
     Turtle tower = site.pitchUp().rollRight().forward(risen.edges).pitchUp().pitchUp().rollRight();
     int plane = risen.edges * site.edgeCells();
@@ -438,12 +445,18 @@ void connect(Turtle site, ref const Risen risen, uint upperTag, Connection how) 
         case Style.lantern:
             lantern(tower, palette, layout);
             break;
+        case Style.hidden:
+            openFloors(tower, palette, layout);
+            flipGallery(tower, palette.wall, layout);
+            break;
     }
     helix(tower, palette.floor, layout);
     if (style == Style.spiral) {
         core(tower, palette.wall, palette.trim, layout);
     } else if (style == Style.drift) {
         core(tower, Material.sunlight, Material.sunlight, layout);
+    } else if (style == Style.hidden) {
+        core(tower, palette.trim, palette.trim, layout);
     }
     doorway(tower, layout.base, Span(layout.base + 1, layout.base + DOOR_TOP));
     doorway(upperDoorFrame(tower, layout), layout.base + layout.top, Span(layout.base + layout.top - DOOR_TOP, layout.base + layout.top - 1));

@@ -1,6 +1,6 @@
 module plugins.api.api;
 
-enum string ENTRY = "mined_plugin_8";
+enum string ENTRY = "mined_plugin_14";
 
 version (WebAssembly) {
     enum string entryOf(string unit) = ENTRY ~ "_" ~ unit;
@@ -74,6 +74,22 @@ enum Material : ubyte {
     sunlight,
     plaster,
     wetConcrete,
+    mistStone,
+    mistLight,
+    emberStone,
+    emberLight,
+    tideStone,
+    tideLight,
+    beacon,
+    ironOre,
+    copperOre,
+    sulfur,
+    fern,
+    flower,
+    thornbush,
+    moss,
+    collector,
+    bench,
 }
 
 enum Turn : ubyte {

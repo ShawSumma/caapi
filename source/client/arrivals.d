@@ -8,7 +8,8 @@ import base.parallel : Executor, ParallelJob;
 import client.tasks : GenKind, GenResult;
 import common.graph : Graph;
 import common.neighbors : chunkNeighborSlot, isBorderingVoid, isPredictionContradicted, needsMesh, touchChunksAround;
-import common.node : Chunk, ChunkSlot, ChunkState, Materials;
+import common.edits : ChunkEdits, applyEdits;
+import common.node : Chunk, ChunkId, ChunkSlot, ChunkState, Materials;
 import common.worldgen.generation : ChunkParams, GeneratedVoxels, MaterialPass;
 import geometry.cube : DIRECTIONS;
 
@@ -17,12 +18,14 @@ struct IntegrationOutput {
     Array!ChunkSlot holders;
     Array!ChunkSlot changed;
     Array!ChunkSlot exposed;
+    Array!ChunkSlot editedDeferred;
 
     void clear() {
         restored.clear();
         holders.clear();
         changed.clear();
         exposed.clear();
+        editedDeferred.clear();
     }
 
     void release() {
@@ -30,6 +33,7 @@ struct IntegrationOutput {
         holders.release();
         changed.release();
         exposed.release();
+        editedDeferred.release();
     }
 }
 
@@ -72,6 +76,11 @@ struct Integrator {
             foreach (exposed; outputs[worker].exposed.slice()) {
                 graph.resolveIfExposed(exposed);
             }
+            foreach (edited; outputs[worker].editedDeferred.slice()) {
+                if (graph.chunks.at(edited).hasDeferredMaterials) {
+                    graph.resolveMaterials(edited);
+                }
+            }
             outputs[worker].clear();
         }
         arrivals.clear();
@@ -101,7 +110,18 @@ void storeArrival(void* context, size_t item, uint worker) {
     Chunk* chunk = job.graph.chunks.existing(arrival.chunk);
     chunk.voxels = arrival.generated.voxels;
     chunk.materials = arrival.generated.materials;
+    const(ChunkEdits)* edits = (*job.graph).editsAt(arrival.chunk);
+    if (edits !is null) {
+        applyEdits(*edits, chunk, job.graph.layout.dimension);
+        if (chunk.hasDeferredMaterials) {
+            job.outputs[worker].editedDeferred.append(arrival.chunk);
+        }
+    }
     chunk.state = ChunkState.populated;
+}
+
+const(ChunkEdits)* editsAt(ref const Graph graph, ChunkSlot chunk) {
+    return graph.edits.editsOf(ChunkId(graph.idAt(chunk.slot), chunk.corner));
 }
 
 void settleArrival(void* context, size_t item, uint worker) {
@@ -183,6 +203,10 @@ void resolveMaterials(ref Graph graph, ChunkSlot chunk) {
     target.releaseVoxels();
     target.voxels = generated.voxels;
     target.materials = Materials.resolved;
+    const(ChunkEdits)* edits = graph.editsAt(chunk);
+    if (edits !is null) {
+        applyEdits(*edits, target, graph.layout.dimension);
+    }
     graph.markChanged(chunk);
     foreach (direction; DIRECTIONS) {
         Maybe!ChunkSlot neighbor = graph.chunkNeighborSlot(chunk, direction);

@@ -9,6 +9,7 @@ import base.murmur : Hash128, murmurHash3;
 import base.parallel : Executor;
 import base.slab : FreeIndices, Slab;
 import common.chunks : ChunkStore;
+import common.edits : EditStore;
 import common.neighbors : needsMesh;
 import common.node : ChunkLayout, ChunkSlot;
 import common.position : Position;
@@ -113,6 +114,7 @@ struct Graph {
     HashMap!(NodeId, uint) slots;
     FreeIndices freeSlots;
     ChunkStore chunks;
+    EditStore edits;
     StructureStore structures;
     Horospheres horospheres;
     GraphView ownView;
@@ -428,6 +430,7 @@ struct Graph {
     void release() {
         structures.release();
         chunks.release();
+        edits.release();
         horospheres.release();
         nodes.release();
         states.release();

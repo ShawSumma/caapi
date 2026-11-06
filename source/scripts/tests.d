@@ -7,10 +7,30 @@ import base.names : textFor;
 import base.numbers : RADIANS_PER_DEGREE, higherOf, lowerOf;
 import base.units : AngularSpeed, Length, Time;
 import base.vector3 : Vec3, ZERO_VECTOR, magnitude, minus;
-import client.game : Key, RouteWaypoint, UnloadedCount;
+import client.game : Key, Preset, RouteWaypoint, UnloadedCount;
+import client.config : ClientConfig;
+import client.game : BeaconSighting, ChunkSupply, Game;
+import client.save : SaveData, Writer, applyEdits, applyState, readGame, writeGame;
+import client.structures : StructureProblem, placeStructure;
+import client.world : Placement;
+import common.position : Position;
+import common.worldgen.generation : Worldgen;
+import geometry.lorentz : Point;
+import base.maybe : MaybeIndex;
+import common.graph : Graph, NodeId;
+import common.node : ChunkSlot, ChunkState, cellIndex;
 import client.hud : Growth;
 import client.script : NamedScript, ONE_SECOND, Script, StepHook, degrees;
 import common.character.controller : MovementMode;
+import common.biology.air : AirMix, GAS_COUNT, airOf;
+import common.biology.kinetics : Body;
+import common.biology.molecule : fragmentCount;
+import client.game : COLLECTION_RATE, GROWN_SECONDS, PLANT_DOSE, Seed;
+import common.biology.breeding : expressionIn;
+import common.biology.wild : WILD_GENES, WildGenes;
+import common.material : has;
+import common.perception : effectiveFor;
+import common.settings : CharacterConfig;
 import plugins.api.api : Material;
 import climb = scripts.climb;
 import walk = scripts.walk;
@@ -24,6 +44,7 @@ immutable NamedScript[] TESTS = [
     NamedScript("flat/corner", &flatCorner),
     NamedScript("flat/curve", &flatCurve),
     NamedScript("flat/hole", &flatHole),
+    NamedScript("flat/items", &flatItems),
     NamedScript("flat/jump", &flatJump),
     NamedScript("flat/place", &flatPlace),
     NamedScript("flat/stair", &flatStair),
@@ -31,9 +52,22 @@ immutable NamedScript[] TESTS = [
     NamedScript("flat/timestep", &flatTimestep),
     NamedScript("flat/walk", &flatWalk),
     NamedScript("flat/wall", &flatWall),
+    NamedScript("beacon/home", &beaconHome),
+    NamedScript("biology/dosed-climb", &biologyDosedClimb),
+    NamedScript("biology/sober", &biologySober),
+    NamedScript("gene/breed-splice", &geneBreedSplice),
+    NamedScript("gene/grow", &geneGrow),
+    NamedScript("hidden/climb", &hiddenClimb),
+    NamedScript("hidden/reveal-inside", &hiddenRevealInside),
+    NamedScript("hidden/unrevealed", &hiddenUnrevealed),
     NamedScript("live/drift", &liveDrift),
+    NamedScript("live/edit-kept", &liveEditKept),
     NamedScript("live/far", &liveFar),
     NamedScript("live/fly", &liveFly),
+    NamedScript("save/round-trip", &saveRoundTrip),
+    NamedScript("perception/body", &perceptionBody),
+    NamedScript("plant/collector", &plantCollector),
+    NamedScript("plant/scan-eat", &plantScanEat),
     NamedScript("slope/across", &slopeAcross),
     NamedScript("slope/downhill", &slopeDownhill),
     NamedScript("slope/hopping", &slopeHopping),
@@ -377,6 +411,23 @@ void flatJump(ref Script world) {
 
 enum double AHEAD_DEGREES = 30;
 
+void flatItems(ref Script world) {
+    world.plane(degrees(0));
+    walk.spawn(world);
+    world.look(degrees(0), degrees(AHEAD_DEGREES));
+    Maybe!Material ground = world.targetMaterial();
+    uint before = world.game.inventory.counts[ground.value];
+    bool broke = world.breakBlock();
+    world.check(broke && world.game.inventory.counts[ground.value] == before + 1, "breaking %u to %u of the ground block", before, world.game.inventory.counts[ground.value]);
+    Material held = world.game.inventory.held();
+    uint stock = world.game.inventory.counts[held];
+    bool placed = world.placeBlock();
+    world.check(placed && world.game.inventory.counts[held] == stock - 1, "placing left %u of %u held blocks", world.game.inventory.counts[held], stock);
+    world.breakBlock();
+    world.game.inventory.counts[held] = 0;
+    world.check(!world.placeBlock(), "placed a block with none held");
+}
+
 void flatPlace(ref Script world) {
     world.plane(degrees(0));
     walk.spawn(world);
@@ -569,6 +620,221 @@ void liveDrift(ref Script world) {
     }
 }
 
+enum uint BENCH_SLOT = 7;
+enum float EXPRESSED_TOLERANCE = 1e-4f;
+
+void geneBreedSplice(ref Script world) {
+    world.plane(degrees(0));
+    walk.spawn(world);
+    WildGenes first = WildGenes([11, 12, 13, 14]);
+    WildGenes second = WildGenes([21, 22, 23, 24]);
+    world.game.keepSeed(Seed(first, Material.flower));
+    world.game.keepSeed(Seed(second, Material.flower));
+    world.material(BENCH_SLOT);
+    world.look(degrees(0), degrees(AHEAD_DEGREES));
+    world.check(world.placeBlock() && walk.isMaterial(world.targetMaterial(), Material.bench), "could not place the bench");
+    world.use();
+    world.check(world.game.seeds.length == 3, "crossing at the bench left %zu seeds", world.game.seeds.length);
+    if (!world.isFailed) {
+        WildGenes child = world.game.seeds.ptr[2].genes;
+        uint inherited = 0;
+        foreach (index; 0 .. WILD_GENES) {
+            if (child.seeds[index] == first.seeds[index] || child.seeds[index] == second.seeds[index]) {
+                inherited += 1;
+            }
+        }
+        world.check(inherited >= WILD_GENES - 1, "the crossed seed inherited only %u of %u genes", inherited, WILD_GENES);
+        uint genes = world.game.organism.genome.count;
+        world.check(world.eat() && world.game.organism.genome.count == genes + 1 && world.game.seeds.length == 2, "splicing at the bench left %u genes and %zu seeds", world.game.organism.genome.count, world.game.seeds.length);
+    }
+}
+
+void geneGrow(ref Script world) {
+    world.plane(degrees(0));
+    walk.spawn(world);
+    world.game.keepSeed(Seed(WildGenes([31, 32, 33, 34]), Material.flower));
+    world.game.inventory.hotbar[0] = Material.flower;
+    world.game.inventory.counts[Material.flower] = 1;
+    world.material(1);
+    world.look(degrees(0), degrees(AHEAD_DEGREES));
+    world.check(world.placeBlock() && world.game.seeds.length == 0, "planting did not use the seed");
+    world.check(!world.eat(), "ate a plant that had not grown");
+    world.wait(GROWN_SECONDS.value + 1);
+    uint slot = world.game.world.graph.slotOf(world.game.characterState.position.node).value;
+    float expression = expressionIn(Material.flower, world.game.world.graph.stateAt(slot).climate.climate());
+    world.check(world.eat() && world.game.organism.body.count == 1, "could not eat the grown plant");
+    if (!world.isFailed) {
+        float eaten = world.game.organism.body.species[0].gut.value;
+        world.check(fabs(eaten - PLANT_DOSE.value * expression) < EXPRESSED_TOLERANCE, "ate %.4f of a plant the climate expresses at %.4f", eaten, expression);
+    }
+}
+
+enum uint COLLECTOR_SLOT = 8;
+enum double COLLECTING_SECONDS = 30;
+enum float COLLECTED_TOLERANCE = 1e-3f;
+
+void plantCollector(ref Script world) {
+    world.plane(degrees(0));
+    walk.spawn(world);
+    world.material(COLLECTOR_SLOT);
+    world.look(degrees(0), degrees(AHEAD_DEGREES));
+    world.check(world.placeBlock(), "could not place the collector");
+    world.wait(COLLECTING_SECONDS);
+    world.use();
+    const(Body)* body = &world.game.organism.body;
+    world.check(body.count == GAS_COUNT, "breathing the collected air dosed %u gases", body.count);
+    if (!world.isFailed) {
+        uint slot = world.game.world.graph.slotOf(world.game.characterState.position.node).value;
+        AirMix air = airOf(world.game.world.graph.stateAt(slot).climate.climate());
+        float expected = air.fractions[0].value * COLLECTION_RATE.value * cast(float) COLLECTING_SECONDS;
+        float held = body.species[0].lung.value + body.species[0].blood.value;
+        world.check(fabs(held - expected) < COLLECTED_TOLERANCE + expected * 0.05f, "collected %.4f of the first gas over %.0f s, the air predicts %.4f", held, COLLECTING_SECONDS, expected);
+        world.use();
+        float again = body.species[0].lung.value + body.species[0].blood.value;
+        world.check(fabs(again - held) < COLLECTED_TOLERANCE, "collecting again at once added %.4f", again - held);
+    }
+}
+
+void plantScanEat(ref Script world) {
+    world.plane(degrees(0));
+    walk.spawn(world);
+    world.game.inventory.hotbar[0] = Material.flower;
+    world.game.inventory.counts[Material.flower] = 1;
+    world.material(1);
+    world.look(degrees(0), degrees(AHEAD_DEGREES));
+    world.check(world.placeBlock(), "could not place the flower");
+    world.check(walk.isMaterial(world.targetMaterial(), Material.flower), "the flower is not ahead after placing it");
+    world.use();
+    world.check(world.game.isScanShown && fragmentCount(world.game.scan.value.product) > 0, "scanning the flower showed no product");
+    world.check(world.eat() && world.game.organism.body.count == 1, "eating the flower dosed %u molecules", world.game.organism.body.count);
+    world.check(!walk.isMaterial(world.targetMaterial(), Material.flower), "the eaten flower is still there");
+}
+
+enum uint BEACON_SLOT = 9;
+enum float BEACON_AWAY = 6.0f;
+enum float BEACON_DISTANCE_TOLERANCE = 0.3f;
+enum double BEHIND_DEGREES = 150;
+
+void beaconHome(ref Script world) {
+    world.plane(degrees(0));
+    walk.spawn(world);
+    world.material(BEACON_SLOT);
+    world.look(degrees(0), degrees(AHEAD_DEGREES));
+    world.check(world.placeBlock() && world.game.beacons.length == 1, "placed no beacon");
+    if (!world.isFailed) {
+        world.look(degrees(0), degrees(-AHEAD_DEGREES));
+        float near = world.game.sightingOf(world.game.beacons.ptr[0]).distance.value;
+        world.mode(MovementMode.noclip);
+        world.press(BEACON_AWAY / walk.NOCLIP_SPEED, Key.back);
+        world.step();
+        BeaconSighting far = world.game.sightingOf(world.game.beacons.ptr[0]);
+        double toward = world.game.yawToward(far.direction).value / RADIANS_PER_DEGREE;
+        world.check(fabs(far.distance.value - near - BEACON_AWAY) < BEACON_DISTANCE_TOLERANCE, "backed %.1f away from a beacon %.3f off, and it reads %.3f", BEACON_AWAY, near, far.distance.value);
+        world.check(fabs(toward) < 180 - BEHIND_DEGREES, "backing away, the beacon needle points %.1f degrees off ahead", toward);
+        world.press(BEACON_AWAY / walk.NOCLIP_SPEED, Key.fwd);
+        world.mode(MovementMode.walk);
+        world.wait(walk.LANDING_SECONDS);
+        world.look(degrees(0), degrees(AHEAD_DEGREES));
+        world.check(world.breakBlock() && world.game.beacons.length == 0, "breaking the beacon left %zu beacons", world.game.beacons.length);
+    }
+}
+
+enum float SAVE_WALK = 0.5f;
+enum float SAVE_PLACE_TOLERANCE = 1e-3f;
+
+void saveRoundTrip(ref Script world) {
+    world.plane(degrees(0));
+    walk.spawn(world);
+    world.mode(MovementMode.noclip);
+    world.press(SAVE_WALK / walk.NOCLIP_SPEED, Key.fwd);
+    world.mode(MovementMode.walk);
+    world.wait(walk.LANDING_SECONDS);
+    world.look(degrees(0), degrees(AHEAD_DEGREES));
+    world.check(world.placeBlock(), "placed a block to save");
+    world.dose();
+    world.wait(1);
+    Writer writer;
+    writeGame(*world.game, writer);
+    ClientConfig config;
+    Game copy = Game.make(world.game.world.graph.worldgen, config.reach);
+    copy.supply = ChunkSupply.onDemand;
+    SaveData data;
+    const(char)* problem = readGame(writer.bytes.slice(), copy, data);
+    world.check(problem is null, "the save did not read back: it %s", problem);
+    if (problem is null) {
+        applyEdits(copy, data);
+        StructureProblem placed = copy.placeStructure();
+        world.check(!placed.isPresent, "the copy's world did not start");
+        applyState(copy, data);
+        world.check(copy.world.graph.edits.cellCount == world.game.world.graph.edits.cellCount, "kept %zu of %zu edited cells", copy.world.graph.edits.cellCount, world.game.world.graph.edits.cellCount);
+        world.check(copy.inventory == world.game.inventory, "the inventory changed through the save");
+        world.check(copy.organism.body.count == world.game.organism.body.count && copy.organism.body.species[0].blood == world.game.organism.body.species[0].blood, "the body changed through the save");
+        Position here = world.game.characterState.position;
+        Position there = copy.characterState.position;
+        float apart = (here.local * Point!float.origin()).distance(there.local * Point!float.origin());
+        world.check(here.node == there.node && apart < SAVE_PLACE_TOLERANCE, "the body came back %.5f away from where it was saved", apart);
+    }
+    Game other = Game.make(Worldgen.makeTerrain(), config.reach);
+    SaveData refused;
+    world.check(readGame(writer.bytes.slice(), other, refused) !is null, "a save from a flat world loaded into the terrain world");
+    refused.release();
+    other.release();
+    data.release();
+    copy.release();
+    writer.bytes.release();
+}
+
+enum float EDIT_AWAY = 12.0f;
+enum float EDIT_RISE = 0.5f;
+enum double EDIT_LOAD_SECONDS = 3;
+enum double EDIT_AHEAD_DEGREES = 30;
+enum double MOST_EVICTION_SECONDS = 30;
+
+void travel(ref Script world, Key along) {
+    world.press(EDIT_RISE / walk.NOCLIP_SPEED, Key.up);
+    world.press(EDIT_AWAY / walk.NOCLIP_SPEED, along);
+    world.press(EDIT_RISE / walk.NOCLIP_SPEED, Key.down);
+    world.wait(EDIT_LOAD_SECONDS);
+}
+
+Maybe!Material storedAt(ref Script world, Placement placement) {
+    const(Graph)* graph = &world.game.world.graph;
+    MaybeIndex!uint slot = graph.slotOf(placement.chunk.node);
+    if (slot.exists && graph.chunks.at(ChunkSlot(slot.value, placement.chunk.corner)).state == ChunkState.populated) {
+        return Maybe!Material.of(graph.chunks.at(ChunkSlot(slot.value, placement.chunk.corner)).voxels.at(cellIndex(graph.layout.dimension, placement.coords.x, placement.coords.y, placement.coords.z)));
+    } else {
+        return Maybe!Material.init;
+    }
+}
+
+void liveEditKept(ref Script world) {
+    world.plane(degrees(0));
+    walk.spawn(world);
+    world.live();
+    world.mode(MovementMode.noclip);
+    travel(world, Key.fwd);
+    world.look(degrees(0), degrees(EDIT_AHEAD_DEGREES));
+    Maybe!Placement target = world.game.world.placementTarget();
+    world.check(target.exists && world.placeBlock(), "could not place the block to keep");
+    if (!world.isFailed) {
+        NodeId edited = target.value.chunk.node;
+        Maybe!Material placed = world.targetMaterial();
+        world.look(degrees(0), degrees(-EDIT_AHEAD_DEGREES));
+        travel(world, Key.back);
+        double waited = 0;
+        while (!world.isFailed && world.game.world.graph.slotOf(edited).exists && waited < MOST_EVICTION_SECONDS) {
+            world.wait(ONSET_STEP_SECONDS);
+            waited += ONSET_STEP_SECONDS;
+        }
+        world.check(!world.game.world.graph.slotOf(edited).exists, "the edited node is still loaded %.0f s after going %.0f back toward the root, so nothing was evicted", MOST_EVICTION_SECONDS, EDIT_AWAY);
+        travel(world, Key.fwd);
+        Maybe!Material back = storedAt(world, target.value);
+        string before = walk.nameOf(placed);
+        string after = walk.nameOf(back);
+        world.check(placed.exists && back.exists && back.value == placed.value, "placed %.*s, the edited cell holds %.*s after the node was evicted and reloaded", cast(int) before.length, before.ptr, cast(int) after.length, after.ptr);
+    }
+}
+
 enum double FAR_CLIMB_SECONDS = 2;
 enum uint FAR_LEGS = 8;
 enum float FAR_LEG_DISTANCE = 4.0f;
@@ -649,6 +915,106 @@ void liveFly(ref Script world) {
         world.check(world.traveled().value - before >= MIN_FLY_FRACTION * walk.NOCLIP_SPEED, "noclip moved %.3f in second %u", world.traveled().value - before, second);
         checkClose(world, "noclip", second);
     }
+}
+
+enum double MOST_ONSET_SECONDS = 30;
+enum double ONSET_STEP_SECONDS = 0.5;
+enum double SOBER_SECONDS = 20;
+enum float SOBER_SIGNAL = 1e-4f;
+
+void biologyDosedClimb(ref Script world) {
+    world.structure("hiddenstair");
+    world.enterRoute();
+    world.wait(walk.SETTLE_SECONDS);
+    world.dose();
+    double waited = 0;
+    while (!world.isFailed && !world.game.reveal.revealed.has(Material.mistStone) && waited < MOST_ONSET_SECONDS) {
+        world.wait(ONSET_STEP_SECONDS);
+        waited += ONSET_STEP_SECONDS;
+    }
+    world.check(world.game.reveal.revealed.has(Material.mistStone), "the swallowed dose did not reveal the mist stair within %.0f s, the mist signal is %.3f", MOST_ONSET_SECONDS, world.game.organism.signaling.signalOf(0).value);
+    size_t reached = climb.follow(world, Maybe!size_t.init);
+    world.wait(walk.SETTLE_SECONDS);
+    world.check(!world.routeWaypoint(reached + 1).exists && world.altitude().value > HIDDEN_RISE, "climbed the dosed stair to %.3f after %zu waypoints", world.altitude().value, reached);
+}
+
+void biologySober(ref Script world) {
+    world.plane(degrees(0));
+    walk.spawn(world);
+    world.wait(SOBER_SECONDS);
+    foreach (signal; 0 .. 3) {
+        float level = world.game.organism.signaling.signalOf(signal).value;
+        world.check(level <= SOBER_SIGNAL && level >= -SOBER_SIGNAL, "an undosed body drifted to signal %u at %.6f", signal, level);
+    }
+}
+
+enum float HIDDEN_RISE = 1.5f;
+enum size_t INSIDE_STOP = 6;
+enum float SINK_INTO_TREAD = 0.03f;
+
+void hiddenClimb(ref Script world) {
+    world.structure("hiddenstair");
+    world.perceive(Preset.mist);
+    world.enterRoute();
+    world.wait(walk.SETTLE_SECONDS);
+    world.check(world.isOnGround(), "standing at the foot of the revealed stair");
+    size_t reached = climb.follow(world, Maybe!size_t.init);
+    world.wait(walk.SETTLE_SECONDS);
+    world.check(!world.routeWaypoint(reached + 1).exists, "stopped after %zu waypoints on the revealed stair", reached);
+    world.check(world.isOnGround() && world.altitude().value > HIDDEN_RISE, "climbed the revealed stair only to %.3f", world.altitude().value);
+}
+
+void hiddenUnrevealed(ref Script world) {
+    world.structure("hiddenstair");
+    world.enterRoute();
+    world.wait(walk.SETTLE_SECONDS);
+    climb.follow(world, Maybe!size_t.init);
+    bool stuck = world.takeFailure();
+    world.check(stuck, "walked the whole route of a stair that is not revealed");
+    world.check(world.altitude().value < HIDDEN_RISE, "rose to %.3f on a stair that is not revealed", world.altitude().value);
+}
+
+void hiddenRevealInside(ref Script world) {
+    world.structure("hiddenstair");
+    world.perceive(Preset.mist);
+    world.enterRoute(INSIDE_STOP);
+    world.wait(walk.SETTLE_SECONDS);
+    world.check(world.isOnGround(), "standing on a revealed tread");
+    world.perceive(Preset.plain);
+    world.mode(MovementMode.noclip);
+    world.press(SINK_INTO_TREAD / walk.NOCLIP_SPEED, Key.down);
+    world.perceive(Preset.mist);
+    world.check(!world.game.reveal.touchable.has(Material.mistStone), "the stair became solid around a body standing inside it");
+    world.mode(MovementMode.walk);
+    world.wait(walk.LANDING_SECONDS);
+    world.check(world.isOnGround(), "did not land after falling out of the stair");
+    world.check(world.game.reveal.touchable.has(Material.mistStone), "the stair stayed passable after the body left it");
+}
+
+enum Preset FELT_PRESET = Preset.heavy;
+enum double FELT_WALK_SECONDS = 3;
+enum float MOST_WALKED_FRACTION = 1.001f;
+
+void perceptionBody(ref Script world) {
+    world.plane(degrees(0));
+    walk.spawn(world);
+    world.perceive(FELT_PRESET);
+    CharacterConfig felt = world.game.character.effectiveFor(world.game.perception);
+    world.check(felt.walkSpeed.value < walk.SPEED && felt.jumpHeight.value < IDEAL_RISE, "the preset should slow walking and lower the jump, but walks at %.4f and jumps %.4f", felt.walkSpeed.value, felt.jumpHeight.value);
+    float standing = world.altitude().value;
+    Jump jump = Jump(standing, 0);
+    world.onStep(StepHook(&jumpHook, &jump));
+    world.press(0.1, Key.up);
+    world.wait(1.5);
+    world.onStep(StepHook.init);
+    float rise = jump.apex - standing;
+    world.check(rise >= MIN_RISE_FRACTION * felt.jumpHeight.value && rise <= MAX_RISE_FRACTION * felt.jumpHeight.value, "a standing jump while heavy rose %.5f, the felt jump height is %.5f", rise, felt.jumpHeight.value);
+    walk.checkStanding(world, "after the heavy jump");
+    float start = world.traveled().value;
+    world.press(FELT_WALK_SECONDS, Key.fwd);
+    float walked = world.traveled().value - start;
+    float free = felt.walkSpeed.value * FELT_WALK_SECONDS;
+    world.check(walked >= MIN_WALKED_FRACTION * free && walked <= MOST_WALKED_FRACTION * free, "walked %.4f in %.1f s while heavy, the felt walk speed allows %.4f", walked, FELT_WALK_SECONDS, free);
 }
 
 enum double TILT_DEGREES = 25;

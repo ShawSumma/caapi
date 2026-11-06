@@ -5,7 +5,7 @@ import base.clock : FrameClock, nowMilliseconds, nowSeconds;
 import base.maybe : Maybe;
 import base.units : Time;
 import client.config : ClientConfig;
-import client.game : Command, CommandBinding, Game, Key, KeyBinding, KeyStroke, MAX_STEP_SECONDS, chooseMaterial, commandOf, frameInputOf, holdBound, letGoBound;
+import client.game : Command, CommandBinding, Game, Key, KeyBinding, KeyStroke, MAX_STEP_SECONDS, commandOf, frameInputOf, holdBound, letGoBound;
 import client.hud : FrameMeter, Hud, MouseCapture, STATUS_CAPACITY, statusLine;
 import client.plugins : gatherWorlds;
 import client.structures : StructureProblem, WorldStep, growthProblem, placeStructure, restartGame, steppedWorld, worldgenAt;
@@ -38,6 +38,10 @@ enum WebKey : uint {
     bracketRight,
     digit1,
     digit9 = digit1 + 8,
+    p,
+    o,
+    e,
+    f,
 }
 
 enum SessionMark : ubyte {
@@ -64,6 +68,10 @@ immutable CommandBinding!WebKey[Command.max + 1] COMMAND_BINDINGS = [
     CommandBinding!WebKey(WebKey.bracketLeft, Command.previousWorld),
     CommandBinding!WebKey(WebKey.bracketRight, Command.nextWorld),
     CommandBinding!WebKey(WebKey.t, Command.throwBlock),
+    CommandBinding!WebKey(WebKey.p, Command.nextPreset),
+    CommandBinding!WebKey(WebKey.o, Command.dose),
+    CommandBinding!WebKey(WebKey.e, Command.use),
+    CommandBinding!WebKey(WebKey.f, Command.eat),
 ];
 
 extern (C) nothrow @nogc {
@@ -96,6 +104,7 @@ struct Session {
     void start(uint width, uint height, float renderRadius) {
         renderer.setup(CHUNK_DIMENSION, width, height);
         game = Game.make(Worldgen.makeTerrain(), config.reach);
+        game.comfort = config.comfort;
         game.world.graph.bindView();
         game.world.renderRadius = renderRadius;
         report(game.placeStructure());
@@ -121,7 +130,7 @@ struct Session {
         mouseDy = 0;
         hud.buildMarkers(game);
         hud.build(game, renderer.width, renderer.height);
-        renderer.render(game.world, hud.vertices.slice(), hud.markers.slice());
+        renderer.render(game.world, hud.vertices.slice(), hud.markers.slice(), hud.atlas);
         double deadline = frameStart + FRAME_WORK_MILLISECONDS;
         double least = nowMilliseconds() + LEAST_TASK_MILLISECONDS;
         if (least > deadline) {
@@ -176,11 +185,24 @@ struct Session {
             case Command.throwBlock:
                 game.throwBlock();
                 break;
+            case Command.nextPreset:
+                game.nextPreset();
+                marks.set(SessionMark.titleStale);
+                break;
+            case Command.dose:
+                game.doseNext();
+                break;
+            case Command.use:
+                game.use();
+                break;
+            case Command.eat:
+                game.eat();
+                break;
         }
     }
 
     void selectMaterial(uint index) {
-        bool changed = game.chooseMaterial(index);
+        bool changed = game.inventory.select(index);
         if (changed) {
             marks.set(SessionMark.titleStale);
         }

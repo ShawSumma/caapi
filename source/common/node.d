@@ -23,6 +23,10 @@ enum ulong EDITED_BIT = 1UL << (FLAG_SHIFT + 6);
 struct ChunkId {
     NodeId node;
     Corner corner;
+
+    size_t toHash() const {
+        return node.toHash() + corner;
+    }
 }
 
 struct ChunkSlot {

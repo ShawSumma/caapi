@@ -5,14 +5,23 @@ import base.array : Array;
 import base.clock : nowSeconds;
 import base.crash : reportCrashes, reportHangAfter;
 import base.maybe : Maybe;
+import base.names : ENUM_NAMES;
+import base.units : Ratio, Time;
 import client.arguments : ArgumentCursor, ExitStatus, HELP_OPTION, NOT_A_NUMBER, OUTPUT_OPTION, OptionSpec, REPORT_UNOPENED, StartupError, UNKNOWN_OPTION, VERSION_OPTION, VERSION_TEXT, WORLDGEN_OPTION, WorldgenArgument, closeReport, exitStatus, numberIn, openReport, optionNamed, parseOptions, sliceOf, usageOf;
 import client.config : ClientConfig;
 import client.game : ChunkSupply, Game;
 import client.plugins : gatherWorlds, registry;
 import client.script : NamedScript, Script;
 import client.structures : StructureProblem, placeStructure;
+import common.biology.kinetics : Route;
+import common.biology.occupancy : occupanciesOf;
+import common.biology.organism : Organism, STARTER_DOSES, starterGenome;
+import common.biology.pocket : Binding;
+import common.biology.wild : WildGenes, differingGenes;
+import common.graph : Graph, ROOT_NODE;
 import common.settings : CHUNK_DIMENSION;
-import common.worldgen.generation : Worldgen, WorldgenKind;
+import common.worldgen.generation : PlaneWorld, Worldgen, WorldgenKind;
+import geometry.honeycomb : FACE_COUNT, Face;
 import scripts.films : FILMS;
 import scripts.tests : TESTS;
 import scripts.views : VIEWS;
@@ -24,6 +33,13 @@ enum float DEFAULT_NEARBY_RADIUS = 4.5f;
 enum uint DEFAULT_NEARBY_ITERATIONS = 50;
 enum int DEFAULT_SLICE_HEIGHT = 1;
 enum uint TEST_HANG_SECONDS = 120;
+enum float LEAST_TABLE_CONCENTRATION = 0.001f;
+enum float MOST_TABLE_CONCENTRATION = 10;
+enum float TABLE_CONCENTRATION_STEP = 10;
+enum uint TABLE_ROWS = 31;
+enum Time TABLE_ROW_SECONDS = Time(2);
+enum uint CENSUS_DEPTH = 40;
+enum size_t CENSUS_WIDTH = 2000;
 enum string USAGE = "usage: mined-headless [options] <command> [name prefix ...]\noptions:\n" ~ usageOf(OPTIONS[]) ~ "commands:\n" ~ usageOf(COMMANDS[]);
 
 enum Option : ubyte {
@@ -63,6 +79,8 @@ enum Command : ubyte {
     benchDrive,
     benchNearby,
     benchHashMap,
+    biologyTables,
+    wildCensus,
 }
 
 immutable OptionSpec[Command.max + 1] COMMANDS = [
@@ -82,6 +100,8 @@ immutable OptionSpec[Command.max + 1] COMMANDS = [
     Command.benchDrive: OptionSpec("bench-drive", "", "benchmark driving through the world"),
     Command.benchNearby: OptionSpec("bench-nearby", "", "benchmark the nearby traversal"),
     Command.benchHashMap: OptionSpec("bench-hashmap", "", "benchmark the hash map"),
+    Command.biologyTables: OptionSpec("biology-tables", "", "print dose-response and time-course tables for the starter body and doses"),
+    Command.wildCensus: OptionSpec("wild-census", "", "print how far wild genomes drift from the root's with depth"),
 ];
 
 enum RunKind : ubyte {
@@ -335,8 +355,87 @@ ExitStatus runCommand(ref const HeadlessArguments arguments, FILE* output) {
         case Command.benchHashMap:
             benchHashMap(output);
             break;
+        case Command.biologyTables:
+            printBiologyTables(output);
+            break;
+        case Command.wildCensus:
+            printWildCensus(output);
+            break;
     }
     return status;
+}
+
+void printWildCensus(FILE* output) {
+    Graph graph = Graph.make(CHUNK_DIMENSION, Worldgen.fromPlane(PlaneWorld(0)));
+    graph.bindView();
+    uint root = graph.slotOf(ROOT_NODE).value;
+    WildGenes rootGenes = graph.ensureState(root).wild;
+    Array!uint frontier;
+    Array!uint next;
+    frontier.append(root);
+    fprintf(output, "depth nodes mean_genes_differing_from_root\n");
+    foreach (depth; 1 .. CENSUS_DEPTH + 1) {
+        next.clear();
+        foreach (slot; frontier.slice()) {
+            foreach (face; 0 .. FACE_COUNT) {
+                if (next.length < CENSUS_WIDTH && !graph.isParentFace(slot, cast(Face) face)) {
+                    uint child = graph.ensureNeighborSlot(slot, cast(Face) face);
+                    if (graph.depthOf(child) == depth) {
+                        next.append(child);
+                    }
+                }
+            }
+        }
+        float differing = 0;
+        foreach (slot; next.slice()) {
+            differing += differingGenes(graph.ensureState(slot).wild, rootGenes);
+        }
+        fprintf(output, "%5u %5zu %.3f\n", cast(uint) depth, next.length, cast(double)(differing / next.length));
+        Array!uint swapped = frontier;
+        frontier = next;
+        next = swapped;
+    }
+    frontier.release();
+    next.release();
+    graph.release();
+}
+
+void printBiologyTables(FILE* output) {
+    Organism organism = Organism.make(starterGenome());
+    foreach (index, ref given; STARTER_DOSES) {
+        fprintf(output, "dose %zu, %s\n  concentration:", index + 1, ENUM_NAMES!Route[given.route].ptr);
+        foreach (receptor; organism.receptors.slice()) {
+            fprintf(output, " %c%c", cast(char)('A' + receptor.firstHalf), cast(char)('A' + receptor.secondHalf));
+        }
+        fprintf(output, "\n");
+        float concentration = LEAST_TABLE_CONCENTRATION;
+        while (concentration <= MOST_TABLE_CONCENTRATION) {
+            fprintf(output, "  %10.4f:", cast(double) concentration);
+            foreach (ref receptor; organism.receptors.slice()) {
+                Binding binding = organism.cache.bindingOf(receptor.pocket, given.molecule);
+                Ratio[1] concentrations = [Ratio(concentration)];
+                Ratio[1] affinities = [binding.affinity];
+                Ratio[1] occupied;
+                occupanciesOf(concentrations[], affinities[], occupied[]);
+                fprintf(output, " %.2f", cast(double) occupied[0].value);
+            }
+            fprintf(output, "\n");
+            concentration *= TABLE_CONCENTRATION_STEP;
+        }
+        Organism dosed = Organism.make(starterGenome());
+        dosed.dose(given);
+        fprintf(output, "  seconds: blood, then signals\n");
+        foreach (row; 0 .. TABLE_ROWS) {
+            fprintf(output, "  %7.1f: %.4f", cast(double)(row * TABLE_ROW_SECONDS.value), cast(double) dosed.body.bloodOf(given.molecule).value);
+            foreach (signal; dosed.signaling.signals()) {
+                fprintf(output, " %+.3f", cast(double) signal.value);
+            }
+            fprintf(output, "\n");
+            dosed.advance(TABLE_ROW_SECONDS);
+        }
+        dosed.release();
+    }
+    organism.release();
 }
 
 ExitStatus runWithOutput(ref const HeadlessArguments arguments, const(char)* program) {

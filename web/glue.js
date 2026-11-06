@@ -1,5 +1,5 @@
-const KEY_CODES = {KeyW: 0, KeyA: 1, KeyS: 2, KeyD: 3, Space: 4, ShiftLeft: 5, ArrowLeft: 6, ArrowRight: 7, ArrowUp: 8, ArrowDown: 9, KeyV: 10, KeyN: 11, KeyT: 12, BracketLeft: 13, BracketRight: 14, Digit1: 15, Digit2: 16, Digit3: 17, Digit4: 18, Digit5: 19, Digit6: 20, Digit7: 21, Digit8: 22, Digit9: 23};
-const PROGRAM_UNIFORMS = [["face_texture", "textures", "current_draw.transform", "current_draw.reversed", "dimension", "cell_ratio", "glowing_materials", "framed_material"], ["model", "low", "high"], ["model", "half_side", "marker_color"], ["depth_input", "glow_input"], ["width_over_height"], [], ["image"]];
+const KEY_CODES = {KeyW: 0, KeyA: 1, KeyS: 2, KeyD: 3, Space: 4, ShiftLeft: 5, ArrowLeft: 6, ArrowRight: 7, ArrowUp: 8, ArrowDown: 9, KeyV: 10, KeyN: 11, KeyT: 12, BracketLeft: 13, BracketRight: 14, Digit1: 15, Digit2: 16, Digit3: 17, Digit4: 18, Digit5: 19, Digit6: 20, Digit7: 21, Digit8: 22, Digit9: 23, KeyP: 24, KeyO: 25, KeyE: 26, KeyF: 27};
+const PROGRAM_UNIFORMS = [["face_texture", "textures", "current_draw.transform", "current_draw.reversed", "dimension", "cell_ratio", "glowing_materials", "unseen_materials", "framed_material"], ["model", "low", "high"], ["model", "half_side", "marker_color"], ["depth_input", "glow_input"], ["width_over_height"], ["glyph_atlas"], ["image"]];
 const PROGRAM_VOXELS = 0;
 const PROGRAM_HIGHLIGHT = 1;
 const PROGRAM_MARKER = 2;
@@ -11,13 +11,14 @@ const DEFAULT_RENDER_RADIUS = 5;
 const MOST_RENDER_RADIUS = 6;
 const FACE_TEXTURE_WIDTH = 4096;
 const WORDS_PER_FACE = 2;
-const COMMON_BUFFER_BYTES = 512;
+const COMMON_BUFFER_BYTES = 2048;
 const COMMON_BINDING = 0;
 const UNIT_FACES = 0;
 const UNIT_TEXTURES = 1;
 const UNIT_DEPTH = 2;
 const UNIT_GLOW = 3;
 const UNIT_IMAGE = 4;
+const UNIT_ATLAS = 5;
 const CHUNK_RECORD_WORDS = 20;
 const MATRIX_WORDS = 16;
 const CUBE_EDGE_VERTICES = 24;
@@ -26,8 +27,9 @@ const CROSSHAIR_VERTICES = 18;
 const FULLSCREEN_VERTICES = 3;
 const HUD_VERTEX_BYTES = 16;
 const HUD_COLOR_OFFSET = 8;
+const HUD_TEXEL_OFFSET = 12;
 const TEXEL_BYTES = 4;
-const GLOW_WORDS = 3;
+const MATERIAL_WORDS = 3;
 const CIOVEC_WORDS = 2;
 const WASI_ERRNO_SUCCESS = 0;
 const WASI_ERRNO_BADF = 8;
@@ -100,7 +102,10 @@ const gameOn = (canvas, gl, showStatus, showFailure) => {
     gl.vertexAttribPointer(0, 2, gl.FLOAT, false, HUD_VERTEX_BYTES, 0);
     gl.enableVertexAttribArray(1);
     gl.vertexAttribPointer(1, 4, gl.UNSIGNED_BYTE, true, HUD_VERTEX_BYTES, HUD_COLOR_OFFSET);
+    gl.enableVertexAttribArray(2);
+    gl.vertexAttribPointer(2, 2, gl.UNSIGNED_SHORT, false, HUD_VERTEX_BYTES, HUD_TEXEL_OFFSET);
     gl.bindVertexArray(emptyVertices);
+    let atlasTexture = null;
 
     const commonBuffer = gl.createBuffer();
     gl.bindBuffer(gl.UNIFORM_BUFFER, commonBuffer);
@@ -176,6 +181,9 @@ const gameOn = (canvas, gl, showStatus, showFailure) => {
         const present = programs[PROGRAM_PRESENT];
         gl.useProgram(present.made);
         gl.uniform1i(present.uniforms.image, UNIT_IMAGE);
+        const hud = programs[PROGRAM_HUD];
+        gl.useProgram(hud.made);
+        gl.uniform1i(hud.uniforms.glyph_atlas, UNIT_ATLAS);
         gl.activeTexture(gl.TEXTURE0 + UNIT_TEXTURES);
         gl.bindTexture(gl.TEXTURE_2D_ARRAY, gl.createTexture());
         gl.texStorage3D(gl.TEXTURE_2D_ARRAY, mips, gl.SRGB8_ALPHA8, size, size, layers);
@@ -241,7 +249,7 @@ const gameOn = (canvas, gl, showStatus, showFailure) => {
         gl.bindVertexArray(emptyVertices);
     };
 
-    const web_gl_voxels = (chunks, count, dimension, cellRatio, glowing, framedMaterial) => {
+    const web_gl_voxels = (chunks, count, dimension, cellRatio, glowing, unseen, framedMaterial) => {
         refreshViews();
         const voxels = programs[PROGRAM_VOXELS];
         const uniforms = voxels.uniforms;
@@ -252,7 +260,8 @@ const gameOn = (canvas, gl, showStatus, showFailure) => {
         gl.bindTexture(gl.TEXTURE_2D, faceTexture);
         gl.uniform1ui(uniforms.dimension, dimension);
         gl.uniform1f(uniforms.cell_ratio, cellRatio);
-        gl.uniform1uiv(uniforms.glowing_materials, words, glowing >>> 2, GLOW_WORDS);
+        gl.uniform1uiv(uniforms.glowing_materials, words, glowing >>> 2, MATERIAL_WORDS);
+        gl.uniform1uiv(uniforms.unseen_materials, words, unseen >>> 2, MATERIAL_WORDS);
         gl.uniform1ui(uniforms.framed_material, framedMaterial);
         gl.enable(gl.CULL_FACE);
         gl.cullFace(gl.BACK);
@@ -328,6 +337,21 @@ const gameOn = (canvas, gl, showStatus, showFailure) => {
         gl.drawArrays(gl.TRIANGLES, 0, FULLSCREEN_VERTICES);
     };
 
+    const web_gl_atlas = (pixels, width, height) => {
+        refreshViews();
+        gl.activeTexture(gl.TEXTURE0 + UNIT_ATLAS);
+        if (atlasTexture === null) {
+            atlasTexture = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, atlasTexture);
+            gl.texStorage2D(gl.TEXTURE_2D, 1, gl.R8, width, height);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        }
+        gl.bindTexture(gl.TEXTURE_2D, atlasTexture);
+        gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RED, gl.UNSIGNED_BYTE, bytes, pixels);
+    };
+
     const web_now = () => performance.now();
     const web_status = (text) => showStatus(cString(text));
     const web_fail = (text) => showFailure(cString(text));
@@ -348,7 +372,7 @@ const gameOn = (canvas, gl, showStatus, showFailure) => {
     const fd_close = (descriptor) => WASI_ERRNO_BADF;
     const fd_seek = (descriptor, offset, whence, position) => WASI_ERRNO_BADF;
 
-    const imports = {env: {web_now, web_status, web_fail, web_gl_program, web_gl_setup, web_gl_grow_faces, web_gl_upload_faces, web_gl_begin, web_gl_voxels, web_gl_highlight, web_gl_marker, web_gl_finish}, wasi_snapshot_preview1: {fd_write, fd_close, fd_seek}};
+    const imports = {env: {web_now, web_status, web_fail, web_gl_program, web_gl_setup, web_gl_grow_faces, web_gl_upload_faces, web_gl_begin, web_gl_voxels, web_gl_highlight, web_gl_marker, web_gl_finish, web_gl_atlas}, wasi_snapshot_preview1: {fd_write, fd_close, fd_seek}};
     const game = {gl, imports, makeTargets, exports: null};
     game.attach = (instance) => {
         memory = instance.exports.memory;

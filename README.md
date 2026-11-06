@@ -32,8 +32,12 @@ The plugins are built into `lib/` next to the executable before the engine itsel
 - Mouse or arrow keys to look, WASD to move.
 - Space jumps when walking; when flying or in noclip, Space rises and Shift sinks.
 - V toggles walking and N toggles noclip; turning either off leaves you flying.
-- Left click breaks a block, right click places one, 1 to 9 choose the material.
+- Left click breaks a block and keeps it, right click places one of the chosen kind, 1 to 9 choose from the hotbar at the bottom. Slot 9 holds beacons: the compass grows a cyan needle toward each placed beacon and shows the distance to the nearest.
+- `--save <file>` loads that save if it exists and writes it on quit (not in the web page).
+- E uses what you aim at: on a plant it scans the plant's product (its fragments, and how strongly it binds each of your receptors); on a collector (slot 8) it breathes in the air gathered since it was placed or last used. F eats the plant you aim at, once it has grown. Breaking a plant keeps its seed; placing a plant plants your newest seed of that kind. Aiming at a bench (slot 7) shows your genes and seeds: E there crosses your two newest seeds, F splices the newest seed's enzyme gene into you.
 - `[` and `]` step through the terrain and every world the plugins register.
+- O takes the next of three test doses (swallowed, inhaled, injected); a panel shows the body's signals and bound receptors while anything is in the body.
+- P steps through test perception presets: heavy and light change walking, gravity and jumps; wide and narrow change the field of view and fog; behind draws from a camera pulled back behind you; swaying warps the view; turned rotates colors; mist reveals hidden mist blocks, such as the stair in the `hiddenstair` world.
 
 Settings are read from `mined.cfg` in the working directory (or `--config <file>`), one `key = value` per line: `mouse_sensitivity` (radians per mouse count), `turn_speed` (radians per second for the arrow keys), `reach` (in units of the space's curvature radius) and `invert_y`.
 

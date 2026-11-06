@@ -21,6 +21,9 @@ Always pass `--compiler=ldc2`. The plugins are built first by `preGenerateComman
 - Film scripts, run without rendering: `dub run -q -b release --compiler=ldc2 -c headless -- films`
 - A dropped tile repaints identically, worth running on city, backrooms, library, lattice and planet: `dub run -q -b release --compiler=ldc2 -c headless -- --worldgen structure city check-repaint`
 - Evicted structure state regenerates identically, worth running on lattice: `dub run -q -b release --compiler=ldc2 -c headless -- --worldgen structure lattice check-forget`
+- Dose-response and time-course tables of the starter body, for tuning biology: `dub run -q -b release --compiler=ldc2 -c headless -- biology-tables`
+- How far wild genomes drift from the root's with depth: `dub run -q -b release --compiler=ldc2 -c headless -- wild-census`
+- Material counts around the terrain spawn (ores and plants show here): `dub run -q -b release --compiler=ldc2 -c headless -- material-census`
 - Hash of the terrain world, which must not change across a refactor: `dub run -q -b release --compiler=ldc2 -c headless -- world-digest`
 - Render a view (`scripts/views.d`) offscreen to a PNG in an existing directory, which Read can then show: `dub run -q -b release --compiler=ldc2 -- --screenshot screenshots/name.png city`
 - Build the web page, `mined.html`, which needs lld and wasi-libc: `dub build -q -b release --compiler=ldc2 :web`
@@ -92,6 +95,12 @@ Euclidean instincts break here. Most of these rules exist because the obvious ap
 - `source/common/neighbors.d`: cell and chunk adjacency across borders
 - `source/common/traversal.d`: `NearbyScratch`: time-sliced BFS of nodes around the camera, with frame rebasing
 - `source/common/eviction.d`: incremental unload of nodes, chunks and tiles
+- `source/common/edits.d`: `EditStore`: player edits and block records keyed by `ChunkId`, re-applied when a chunk regenerates
+- `source/common/inventory.d`: block counts and hotbar
+- `source/common/perception.d`: perception channels, the body config and view effects they give, reveal of hidden families
+- `source/common/material.d`: material colors, hidden families, `MaterialSet`
+- `source/common/color.d`: five-channel color and its turns about the gray axis
+- `source/common/biology/`: molecules, pockets and binding, kinetics, occupancy, signaling, metabolism, genome; `organism.d` ties them into a body on a fixed tick, with the starter genome and doses; `wild.d` holds the per-node gene seeds plants expand into products; `air.d` derives the gas mix from climate; `breeding.d` crosses seeds and scales expression by climate
 - `source/common/raycast/`: ray casts
 - `source/common/character/`: capsule controller; `features.d` collects, `sweep.d` moves, `controller.d` decides
 - `source/common/worldgen/generation.d`: generation of voxels
@@ -112,6 +121,10 @@ Euclidean instincts break here. Most of these rules exist because the obvious ap
 - `source/client/tasks.d`: generate on workers
 - `source/client/arrivals.d`: integrate on main
 - `source/client/meshing.d`: voxels to packed faces
+- `source/client/hud.d`: HUD shapes and text, status line
+- `source/client/font.d`: TrueType reading and glyph rasterizing
+- `source/client/text.d`: glyph atlas
+- `source/client/save.d`: save files: edits, records, body and beacon anchors as face paths, inventory, biology; native only
 - `source/client/plugins.d`: plugin registry
 - `source/client/structures.d`: host side of the plugin API, main-thread implementation
 - `source/client/tiles.d`: host side of the plugin API, tile (worker) implementation
@@ -125,6 +138,7 @@ Euclidean instincts break here. Most of these rules exist because the obvious ap
 - `source/client/graphics/voxels/textures.d`: no Vulkan, shared with `web/`
 - `source/client/graphics/voxels/drawlist.d`: no Vulkan, drawable bookkeeping shared with `web/`
 - `source/shaders/`: GLSL for both renderers; compiled to `shaders/spv` by glslc in `preBuildCommands` and embedded with `import()`, or expanded to GLSL ES at compile time by `web/renderer.d`
+- `source/fonts/`: IBM Plex Mono and its license, embedded with `import()`
 - `source/bindings/platform.c`: read with ImportC for Vulkan and X11
 - `source/bindings/kernel.c`: read with ImportC for futex
 - `source/scripts/tests.d`: behavior tests
@@ -166,7 +180,7 @@ Dependencies run base, geometry, common, client, scripts, with `plugins.api` usa
 
 ### Data flow
 
-Nearby traversal finds nodes around the camera, and `Streamer` scans them for chunks in range. `ChunkParams.make` snapshots what generation needs, using a `GraphView` so workers can run it, and a worker runs `generateVoxels`. `Integrator` stores results in two parallel passes (store, then settle against neighbors), queues meshing, and may restore dropped neighbors. Chunk life: `fresh`, `generating`, `populated`, and `dropped` (voxels released, regenerable). Edited chunks are pinned and never dropped. A chunk proven uniform stores just its material; a chunk proven buried may defer materials (a dirt stand-in) until it borders air (`resolveIfExposed`).
+Nearby traversal finds nodes around the camera, and `Streamer` scans them for chunks in range. `ChunkParams.make` snapshots what generation needs, using a `GraphView` so workers can run it, and a worker runs `generateVoxels`. `Integrator` stores results in two parallel passes (store, then settle against neighbors), queues meshing, and may restore dropped neighbors. Chunk life: `fresh`, `generating`, `populated`, and `dropped` (voxels released, regenerable). Edits live in `graph.edits`, keyed by `ChunkId`, and `storeArrival` and `resolveMaterials` re-apply them, so edited chunks drop, evict and regenerate like any other. A chunk proven uniform stores just its material; a chunk proven buried may defer materials (a dirt stand-in) until it borders air (`resolveIfExposed`).
 
 ### Threading: Graph and GraphView
 
@@ -195,7 +209,9 @@ Worldgen is a pure function of the node. `NodeId` is `hash(firstParent, face)`, 
 
 One source serves Vulkan and WebGL2: `target.h` hides the differences behind macros and `GL_ES` selects the branch, `clip.h` and `depth.h` hold the clip and reverse-Z differences. `cull.comp` is native only and `present.frag` is web only. A new header goes in `SHADER_HEADERS` in `web/renderer.d`.
 
-Layouts are duplicated by hand between D and GLSL and must change together: `CommonUniforms` and `common.h`, `LayoutPush` and the `voxels.vert` push constants, `meshing.d` `Quad` and `face.h`, `ChunkLayout` spacing and `voxels.vert`, the push blocks and the uniform calls in `web/glue.js`. `voxels.vert` hardcodes `glowing_materials[3]`, which matches `GLOW_WORDS` only up to 96 materials. `.spv` files are generated.
+Layouts are duplicated by hand between D and GLSL and must change together: `CommonUniforms` and `common.h`, `LayoutPush` and the `voxels.vert` push constants, `meshing.d` `Quad` and `face.h`, `HudVertex` and `hud.vert` (plus the attribute pointers in `web/glue.js`), `ChunkLayout` spacing and `voxels.vert`, the push blocks and the uniform calls in `web/glue.js`. `voxels.vert` hardcodes `glowing_materials[3]` and `unseen_materials[3]`, `common.h` hardcodes `material_tints[96]`, and `glue.js` hardcodes `MATERIAL_WORDS = 3` and `COMMON_BUFFER_BYTES`; all match `MATERIAL_WORDS` (`common/material.d`) only up to 96 materials. `.spv` files are generated.
+
+The drawn camera can sit behind `world.cameraPosition` (perception's eye offset), so streaming, picking and the body use `cameraPosition`, and only `commonUniforms` moves the camera. Hidden materials are always meshed; `voxels.vert` collapses the faces of materials not in `world.view.visible`.
 
 ## Style rules
 
@@ -203,6 +219,7 @@ Inferred from the code. They are consistent across the tree, so follow them even
 
 Language and memory:
 
+- No third-party code where writing it in the project makes sense.
 - betterC: no GC, classes, exceptions, associative arrays or druntime. `extern (C) int main`. Use `Array`, `HashMap`, `Slab`, `RunPool` and `Bits` from `base/`. Ownership is explicit: `release()` frees, and scratch buffers are reused across frames.
 - Errors are values: `Maybe!T`, `ExitStatus`, `StartupError`, `StructureProblem`, or a null `const(char)*` message. Asserts stay on in release builds (`--enable-asserts`, bounds checks on), so use them for invariants that really hold.
 - No comments anywhere, in D, GLSL or C. Types and names carry the meaning; that is why `UNITS.md` exists.

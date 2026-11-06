@@ -4,6 +4,7 @@
 #include "target.h"
 
 BOUND(0, 0) uniform Common {
+    vec4 material_tints[96];
     mat4 projection;
     mat4 camera_inverse;
     vec4 frustum_planes[5];
@@ -16,6 +17,8 @@ BOUND(0, 0) uniform Common {
     float fog_sharpness;
     float view_parity;
     float cull_sinh_radius;
+    float warp_strength;
+    float warp_seconds;
 };
 
 #endif

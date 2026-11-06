@@ -189,7 +189,7 @@ uint dropFarChunks(ref Graph graph, NearbyNode node, Point!float camera, float t
         Corner corner = cast(Corner) index;
         ChunkSlot chunk = ChunkSlot(node.slot, corner);
         const(Chunk)* current = graph.chunks.at(chunk);
-        if (current.state == ChunkState.populated && !current.voxels.isUniform() && !current.isEdited && !current.isQueued && camera.coshDistance(node.transform * corner.cubeCenter) > threshold && graph.areFaceNeighborsSettled(chunk)) {
+        if (current.state == ChunkState.populated && !current.voxels.isUniform() && !current.isQueued && camera.coshDistance(node.transform * corner.cubeCenter) > threshold && graph.areFaceNeighborsSettled(chunk)) {
             Chunk* target = graph.chunks.existing(chunk);
             target.releaseVoxels();
             target.state = ChunkState.dropped;
@@ -233,7 +233,7 @@ bool hasPinnedChunk(ref const Graph graph, uint slot) {
 }
 
 bool isPinnedChunk(const(Chunk)* chunk) {
-    return chunk.state == ChunkState.generating || chunk.isEdited;
+    return chunk.state == ChunkState.generating;
 }
 
 struct Unloaded {
@@ -247,7 +247,7 @@ void unloadNode(ref Graph graph, uint slot, ref Array!Unloaded unloaded) {
         uint released = 0;
         foreach (corner; 0 .. CORNER_COUNT) {
             Chunk* chunk = graph.chunks.existing(ChunkSlot(slot, cast(Corner) corner));
-            if ((chunk.state == ChunkState.populated || chunk.state == ChunkState.dropped) && !chunk.isEdited) {
+            if (chunk.state == ChunkState.populated || chunk.state == ChunkState.dropped) {
                 chunk.releaseVoxels();
                 *chunk = Chunk.init;
                 released += 1;
