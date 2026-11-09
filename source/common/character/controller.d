@@ -6,7 +6,7 @@ import base.numbers : clamped, higherOf;
 import base.units : Length, Ratio, Speed, Time;
 import base.vector3 : Vec3, ZERO_VECTOR, cappedTo, cross, dot, magnitude, minus, negated, plus, projectedOntoPlane, rejectAlong, scaled;
 import common.character.features : BlockProbe, Features, visitCells;
-import common.character.sweep : Capsule, Contact, ContactPlane, MIN_CREASE_SINE, SectionRank, Sweep, isSameDirection;
+import common.character.sweep : Capsule, Contact, ContactPlane, LEAST_CREASE_SINE, SectionRank, Sweep, isSameDirection;
 import common.graph : Graph;
 import common.position : Position;
 import common.settings : CharacterConfig;
@@ -14,9 +14,9 @@ import common.worldgen.horospheres : Gravity, gravityAt, isGravityKnown;
 import geometry.lorentz : Motion;
 import plugins.api.flags : Flags;
 
-enum uint MAX_CONTACT_PLANES = 5;
-enum uint MAX_SLIDE_PLANES = MAX_CONTACT_PLANES + 1;
-enum float MAX_INPUT_LENGTH = 1.0f;
+enum uint MOST_CONTACT_PLANES = 5;
+enum uint MOST_SLIDE_PLANES = MOST_CONTACT_PLANES + 1;
+enum float MOST_INPUT_LENGTH = 1.0f;
 
 enum MovementMode : ubyte {
     walk,
@@ -159,13 +159,13 @@ struct CharacterState {
     }
 
     Vec3!float noclipStep(ref const CharacterConfig character, CharacterInput input, Time dt) {
-        velocity = input.movement.cappedTo(MAX_INPUT_LENGTH).scaled(character.noclipSpeed.value);
+        velocity = input.movement.cappedTo(MOST_INPUT_LENGTH).scaled(character.noclipSpeed.value);
         footing = Footing.airborne;
         return velocity.scaled(dt.value);
     }
 
     Vec3!float flyStep(ref const Mover mover, Vec3!float at, CharacterInput input, Time dt) {
-        Vec3!float flyVelocity = input.movement.cappedTo(MAX_INPUT_LENGTH).scaled(mover.character.flySpeed.value);
+        Vec3!float flyVelocity = input.movement.cappedTo(MOST_INPUT_LENGTH).scaled(mover.character.flySpeed.value);
         Slide moved = mover.slide(at, flyVelocity.scaled(dt.value), flyVelocity, SlideKind.move, PlaneSet.init);
         velocity = moved.velocity;
         footing = Footing.airborne;
@@ -173,7 +173,7 @@ struct CharacterState {
     }
 
     Vec3!float walkStep(ref const Mover mover, Vec3!float at, CharacterInput input, Time dt) {
-        Vec3!float wish = input.movement.cappedTo(MAX_INPUT_LENGTH).rejectAlong(mover.up);
+        Vec3!float wish = input.movement.cappedTo(MOST_INPUT_LENGTH).rejectAlong(mover.up);
         if (isOnGround && input.jump == Jump.pressed) {
             velocity = alongGround(velocity, groundNormal).plus(mover.up.scaled(mover.character.jumpSpeed.value));
             footing = Footing.airborne;
@@ -320,7 +320,7 @@ struct Mover {
     }
 
     Slide slide(Vec3!float start, Vec3!float displacement, Vec3!float velocity, SlideKind kind, PlaneSet planes) const {
-        return slideFrom(Slide(start, velocity), planes, clipToPlanes(planes.slice(), displacement, SkinRule.restore), kind, MAX_CONTACT_PLANES);
+        return slideFrom(Slide(start, velocity), planes, clipToPlanes(planes.slice(), displacement, SkinRule.restore), kind, MOST_CONTACT_PLANES);
     }
 
     Slide slideFrom(Slide current, PlaneSet planes, Vec3!float remaining, SlideKind kind, uint contactsLeft) const {
@@ -369,7 +369,7 @@ struct Mover {
 }
 
 struct PlaneSet {
-    ContactPlane[MAX_SLIDE_PLANES] planes;
+    ContactPlane[MOST_SLIDE_PLANES] planes;
     uint count;
 
     const(ContactPlane)[] slice() const {
@@ -388,7 +388,7 @@ struct PlaneSet {
         size_t index = mergeIndex(plane);
         if (index < count) {
             planes[index] = ContactPlane(plane.normal, higherOf(planes[index].separation, plane.separation));
-        } else if (count < MAX_SLIDE_PLANES) {
+        } else if (count < MOST_SLIDE_PLANES) {
             planes[count] = plane;
             count += 1;
         }
@@ -456,7 +456,7 @@ Vec3!float creaseCandidate(const(ContactPlane)[] planes, Vec3!float v, SkinRule 
 }
 
 bool isCreaseClip(const(ContactPlane)[] planes, Vec3!float v, SkinRule skin, size_t i, size_t j) {
-    return j > i && creaseSine(planes, i, j) >= MIN_CREASE_SINE && isSatisfyingPlanes(planes, creaseCandidate(planes, v, skin, i, j), skin, i, j);
+    return j > i && creaseSine(planes, i, j) >= LEAST_CREASE_SINE && isSatisfyingPlanes(planes, creaseCandidate(planes, v, skin, i, j), skin, i, j);
 }
 
 Maybe!(Vec3!float) clipToCrease(const(ContactPlane)[] planes, Vec3!float v, SkinRule skin) {

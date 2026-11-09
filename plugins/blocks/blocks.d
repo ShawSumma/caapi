@@ -1,26 +1,19 @@
 module plugins.blocks.blocks;
 
 import plugins.api.api : Api, Material, MaybeIndex, Rhythm, Risen, Site, SitePart, Span;
+import plugins.api.binding : List, bound, settingsOf;
+import plugins.api.content : Content;
 import plugins.api.flags : Flags;
-import plugins.buildings.building : Bound, Join, Lot, Lots, Palette, STORY, Side, Spec;
-import plugins.buildings.types : Type, palettes, stories;
+import plugins.buildings.building : Bound, Join, Lot, Lots, Palette, STORY, Side, Spec, Traits;
+import plugins.buildings.types : resolveBuildings;
 import types = plugins.buildings.types;
-import plugins.connector.connector : Connection, Tag, connect;
+import plugins.connector.connector : Connection, connect, resolveConnector;
 import plugins.turtle.turtle : FACE_CORNERS, Turtle, boxOf, cornersOf, floorDiv, lowerOf, roll, upright;
 
 enum ulong ISLAND_SALT = 0x51ED270B;
 enum ulong DROPPED_SALT = 0x2C1B3C6D;
 enum ulong TREES_SALT = 0x297A2D39;
 enum uint AROUND = 4;
-enum double DROPPED_STREET = 0.5;
-enum double ISLAND = 0.05;
-enum double STREET_TREES = 0.5;
-enum uint PARK_PERCENT = 6;
-enum uint PLAZA_PERCENT = 5;
-enum uint PARKING_PERCENT = 3;
-enum uint POND_PERCENT = 50;
-enum uint FOUNTAIN_PERCENT = 60;
-enum uint ALLEY_PERCENT = 20;
 enum uint MAX_INSET = 1;
 enum Span ROAD = Span(-2, 1);
 enum Span SIDEWALK = Span(2, 3);
@@ -33,6 +26,8 @@ enum int PARKING_SPACING = 3;
 enum int CROWN_ROOM = 10;
 enum int ROUTE_STORIES = 2;
 enum int ROUTE_BUILDING_STORIES = 4;
+enum size_t MOST_TYPES = 16;
+enum size_t MOST_LOT_RULES = 8;
 immutable Bound[4] RUN_BOUNDS = [Side.xLow: Bound.joined, Side.yLow: Bound.joined, Side.xHigh: Bound.lot, Side.yHigh: Bound.lot];
 immutable Bound[4] ISLAND_BOUNDS = [Side.xLow: Bound.street, Side.yLow: Bound.street, Side.xHigh: Bound.joined, Side.yHigh: Bound.joined];
 
@@ -47,30 +42,81 @@ enum LotMark : ubyte {
     first,
 }
 
-struct Kind {
+struct LotRule {
+    uint lots;
     LotShape shape;
-    immutable(Type)[] types;
-    int most;
+    int mostStories;
+    List!(Traits, MOST_TYPES) types;
 }
 
-immutable Type[8] CORNER_TYPES = [Type.tenement, Type.tenement, Type.rowhouse, Type.rowhouse, Type.deco, Type.glass, Type.modern, Type.civic];
-immutable Type[8] SLAB_TYPES = [Type.brownstone, Type.brownstone, Type.rowhouse, Type.tenement, Type.warehouse, Type.deco, Type.glass, Type.modern];
-immutable Type[7] WIDE_TYPES = [Type.deco, Type.glass, Type.glass, Type.tenement, Type.modern, Type.warehouse, Type.civic];
-immutable Type[5] AROUND_TYPES = [Type.deco, Type.glass, Type.tenement, Type.modern, Type.civic];
-immutable Type[4] ISLAND_TYPES = [Type.deco, Type.glass, Type.modern, Type.civic];
+struct Zoning {
+    List!(LotRule, MOST_LOT_RULES) rules;
+    LotRule island;
+    Traits route;
+}
 
-immutable Kind[4] KINDS = [
-    Kind(LotShape.corner, CORNER_TYPES[], 22),
-    Kind(LotShape.run, SLAB_TYPES[], 30),
-    Kind(LotShape.run, WIDE_TYPES[], 38),
-    Kind(LotShape.run, AROUND_TYPES[], 38),
-];
+__gshared Zoning zoning;
+
+struct Tuning {
+    double droppedStreet;
+    double island;
+    double streetTrees;
+    uint parkPercent;
+    uint plazaPercent;
+    uint parkingPercent;
+    uint pondPercent;
+    uint fountainPercent;
+    uint alleyPercent;
+}
+
+__gshared Tuning tuning;
+
+MaybeIndex!LotRule ruleFor(uint lots) {
+    uint index = 0;
+    while (index < zoning.rules.count && zoning.rules.items[index].lots != lots) {
+        index += 1;
+    }
+    if (index < zoning.rules.count) {
+        return MaybeIndex!LotRule.of(index);
+    } else {
+        return MaybeIndex!LotRule.init;
+    }
+}
+
+struct Materials {
+    Material road;
+    Material sidewalk;
+    Material marking;
+    Material leaves;
+    Material trunk;
+    Material basin;
+    Material water;
+    Material pondBed;
+    Material lot;
+    Material plaza;
+    Material park;
+}
+
+__gshared Materials materials;
+
+void resolveBlocks(const(Content)* content) {
+    resolveBuildings(content);
+    resolveConnector(content);
+    materials = content.bound!Materials("blocks:materials");
+    zoning = content.bound!Zoning("blocks:zoning");
+    resolveStreets(content);
+}
+
+void resolveStreets(const(Content)* content) {
+    tuning = content.settingsOf!Tuning("blocks");
+}
 
 struct Root {
     ulong vertex;
     ulong face;
     Risen risen;
     Connection connection;
+    uint tag;
 
     bool isRisen() const {
         return risen.hasRisen;
@@ -131,7 +177,7 @@ bool probeRootVertex(Turtle site, ref const Root root) {
 
 bool probeIsland(Turtle face, ref const Root root) {
     double rolled = roll(face.probeHash(SitePart.face), ISLAND_SALT);
-    if (rolled >= ISLAND) {
+    if (rolled >= tuning.island) {
         return false;
     } else {
         foreach (corner; cornersOf(face)) {
@@ -157,7 +203,7 @@ bool probePlannedStreet(Turtle edge, ref const Root root) {
     }
     if (!planned) {
         double rolled = roll(edge.probeHash(SitePart.edge), DROPPED_SALT);
-        planned = rolled >= DROPPED_STREET;
+        planned = rolled >= tuning.droppedStreet;
     }
     return planned;
 }
@@ -192,7 +238,7 @@ bool probeStreet(Turtle edge, ref const Root root) {
 
 bool probeTrees(Turtle edge) {
     double rolled = roll(edge.probeHash(SitePart.edge), TREES_SALT);
-    return rolled < STREET_TREES;
+    return rolled < tuning.streetTrees;
 }
 
 int crossingGap(Turtle corner, ref const Root root) {
@@ -205,23 +251,23 @@ int crossingGap(Turtle corner, ref const Root root) {
 }
 
 void sidewalk(Turtle edge, Span x, int startGap, int endGap) {
-    edge.paint(Material.concrete, boxOf(x, Span(-1, 0), Span(startGap, edge.edgeCells() - 1 - endGap)));
+    edge.paint(materials.sidewalk, boxOf(x, Span(-1, 0), Span(startGap, edge.edgeCells() - 1 - endGap)));
 }
 
 void streetTrees(Turtle edge) {
     int last = edge.edgeCells() - 1;
     Span planted = Span(CROSSING + 4, last - CROSSING - 4);
     Rhythm trunk = Rhythm(TREE_SPACING, 6, 1);
-    edge.paint(Material.oakLeaves, boxOf(Span(CURB - 1, CURB + 1), Span(5, 6), planted), Rhythm(TREE_SPACING, 4, 5));
-    edge.paint(Material.oakLeaves, boxOf(Span(CURB - 1, CURB + 1), Span(7, 7), planted), Rhythm(TREE_SPACING, 5, 3));
-    edge.paint(Material.oakLeaves, boxOf(Span(CURB, CURB), Span(8, 8), planted), trunk);
-    edge.paint(Material.oakWood, boxOf(Span(CURB, CURB), Span(1, 5), planted), trunk);
+    edge.paint(materials.leaves, boxOf(Span(CURB - 1, CURB + 1), Span(5, 6), planted), Rhythm(TREE_SPACING, 4, 5));
+    edge.paint(materials.leaves, boxOf(Span(CURB - 1, CURB + 1), Span(7, 7), planted), Rhythm(TREE_SPACING, 5, 3));
+    edge.paint(materials.leaves, boxOf(Span(CURB, CURB), Span(8, 8), planted), trunk);
+    edge.paint(materials.trunk, boxOf(Span(CURB, CURB), Span(1, 5), planted), trunk);
 }
 
 void street(Turtle edge, ref const Root root) {
     Turtle finish = edge.forward(1);
     int last = edge.edgeCells() - 1;
-    edge.paint(Material.basalt, boxOf(ROAD, Span(-1, -1), Span(0, last)));
+    edge.paint(materials.road, boxOf(ROAD, Span(-1, -1), Span(0, last)));
     sidewalk(edge, SIDEWALK, crossingGap(edge.right(), root), crossingGap(finish.right(), root));
     sidewalk(edge, FAR_SIDEWALK, crossingGap(edge.left(), root), crossingGap(finish.left(), root));
     bool crossedAtStart = probeStreet(edge.right(), root);
@@ -229,14 +275,14 @@ void street(Turtle edge, ref const Root root) {
         crossedAtStart = probeStreet(edge.left(), root);
     }
     if (crossedAtStart) {
-        edge.paint(Material.whiteBrick, boxOf(ROAD, Span(-1, -1), Span(CROSSING + 1, CROSSING + 2)));
+        edge.paint(materials.marking, boxOf(ROAD, Span(-1, -1), Span(CROSSING + 1, CROSSING + 2)));
     }
     bool crossedAtEnd = probeStreet(finish.right(), root);
     if (!crossedAtEnd) {
         crossedAtEnd = probeStreet(finish.left(), root);
     }
     if (crossedAtEnd) {
-        edge.paint(Material.whiteBrick, boxOf(ROAD, Span(-1, -1), Span(last - CROSSING - 2, last - CROSSING - 1)));
+        edge.paint(materials.marking, boxOf(ROAD, Span(-1, -1), Span(last - CROSSING - 2, last - CROSSING - 1)));
     }
     bool trees = probeTrees(edge);
     if (trees) {
@@ -245,10 +291,10 @@ void street(Turtle edge, ref const Root root) {
 }
 
 void tree(Turtle tower, int x, int y) {
-    tower.paint(Material.oakLeaves, boxOf(Span(x - 2, x + 2), Span(y - 1, y + 1), Span(5, 7)));
-    tower.paint(Material.oakLeaves, boxOf(Span(x - 1, x + 1), Span(y - 2, y + 2), Span(5, 7)));
-    tower.paint(Material.oakLeaves, boxOf(Span(x - 1, x + 1), Span(y - 1, y + 1), Span(8, 9)));
-    tower.paint(Material.oakWood, boxOf(Span(x, x), Span(y, y), Span(1, 7)));
+    tower.paint(materials.leaves, boxOf(Span(x - 2, x + 2), Span(y - 1, y + 1), Span(5, 7)));
+    tower.paint(materials.leaves, boxOf(Span(x - 1, x + 1), Span(y - 2, y + 2), Span(5, 7)));
+    tower.paint(materials.leaves, boxOf(Span(x - 1, x + 1), Span(y - 1, y + 1), Span(8, 9)));
+    tower.paint(materials.trunk, boxOf(Span(x, x), Span(y, y), Span(1, 7)));
 }
 
 Area groundOf(ref const Lot lot) {
@@ -290,10 +336,10 @@ void plant(ref const Lots lots) {
 }
 
 void fountain(Turtle tower, int x, int y) {
-    tower.paint(Material.marble, boxOf(Span(x - 2, x + 2), Span(y - 2, y + 2), Span(1, 1)));
-    tower.paint(Material.water, boxOf(Span(x - 1, x + 1), Span(y - 1, y + 1), Span(1, 1)));
-    tower.paint(Material.marble, boxOf(Span(x, x), Span(y, y), Span(1, 2)));
-    tower.paint(Material.water, boxOf(Span(x, x), Span(y, y), Span(3, 3)));
+    tower.paint(materials.basin, boxOf(Span(x - 2, x + 2), Span(y - 2, y + 2), Span(1, 1)));
+    tower.paint(materials.water, boxOf(Span(x - 1, x + 1), Span(y - 1, y + 1), Span(1, 1)));
+    tower.paint(materials.basin, boxOf(Span(x, x), Span(y, y), Span(1, 2)));
+    tower.paint(materials.water, boxOf(Span(x, x), Span(y, y), Span(3, 3)));
 }
 
 void fountains(ref const Lots lots) {
@@ -311,8 +357,8 @@ void ponds(ref const Lots lots) {
         if (isRoomy(area)) {
             Span x = Span(area.x.low + 1, area.x.high - 1);
             Span y = Span(area.y.low + 1, area.y.high - 1);
-            area.tower.paint(Material.water, boxOf(x, y, Span(-1, 0)));
-            area.tower.paint(Material.sand, boxOf(x, y, Span(-2, -2)));
+            area.tower.paint(materials.water, boxOf(x, y, Span(-1, 0)));
+            area.tower.paint(materials.pondBed, boxOf(x, y, Span(-2, -2)));
         }
     }
 }
@@ -320,37 +366,37 @@ void ponds(ref const Lots lots) {
 void parking(ref const Lots lots) {
     foreach (ref lot; lots.slice()) {
         Area area = groundOf(lot);
-        area.tower.paint(Material.basalt, boxOf(area.x, area.y, Span(0, 0)));
+        area.tower.paint(materials.road, boxOf(area.x, area.y, Span(0, 0)));
         for (int x = area.x.low + 1; x <= area.x.high; x += PARKING_SPACING) {
-            area.tower.paint(Material.whiteBrick, boxOf(Span(x, x), Span(area.y.low + 1, area.y.low + 3), Span(0, 0)));
+            area.tower.paint(materials.marking, boxOf(Span(x, x), Span(area.y.low + 1, area.y.low + 3), Span(0, 0)));
         }
     }
 }
 
 struct Chosen {
-    Type type;
+    const(Traits)* traits;
     Spec spec;
 }
 
-Chosen chosenFor(Turtle site, ref const Kind kind, immutable(Type)[] choices) {
-    Type type = choices[site.pick(cast(uint) choices.length)];
-    Span range = stories(type);
-    int most = lowerOf(range.high, kind.most);
+Chosen chosenFor(Turtle site, ref const LotRule rule) {
+    const(Traits)* traits = &rule.types.items[site.pick(rule.types.count)];
+    Span range = traits.stories;
+    int most = lowerOf(range.high, rule.mostStories);
     int count = site.pickBetween(range.low, most);
     int gap = 0;
-    if (kind.shape == LotShape.run) {
-        bool alley = site.rollChance(ALLEY_PERCENT);
+    if (rule.shape == LotShape.run) {
+        bool alley = site.rollChance(tuning.alleyPercent);
         if (alley) {
             gap = 1;
         }
     }
     int front = FRONT;
-    if (kind.shape == LotShape.run) {
+    if (rule.shape == LotShape.run) {
         front = FRONT + cast(int) site.pick(MAX_INSET + 1);
     }
-    immutable(Palette)[] options = palettes(type);
+    const(Palette)[] options = traits.palettes.slice();
     Spec spec = {stories: count, palette: options[site.pick(cast(uint) options.length)], front: front, gap: gap};
-    return Chosen(type, spec);
+    return Chosen(traits, spec);
 }
 
 int fit(Turtle site, int stories) {
@@ -368,8 +414,8 @@ Chosen fitted(Chosen chosen, Turtle site, ref const Root root) {
 }
 
 void build(ref const Lots lots, Chosen chosen) {
-    pave(lots, Material.concrete);
-    types.build(chosen.type, lots, chosen.spec);
+    pave(lots, materials.lot);
+    types.build(*chosen.traits, lots, chosen.spec);
 }
 
 bool probePlaza(Turtle corner, ref const Root root) {
@@ -397,13 +443,13 @@ void lotAt(Turtle corner, ref const Lots lots, ref const Root root) {
     Turtle site = lots.items[0].site;
     bool plaza = probePlaza(corner, root);
     if (plaza) {
-        pave(lots, Material.granite);
+        pave(lots, materials.plaza);
         plant(lots);
     } else {
         bool route = probeRoute(corner, lots, root);
         if (route) {
-            Spec spec = {stories: ROUTE_BUILDING_STORIES, palette: palettes(Type.tenement)[0], front: FRONT, routeStories: ROUTE_STORIES};
-            build(lots, Chosen(Type.tenement, spec));
+            Spec spec = {stories: ROUTE_BUILDING_STORIES, palette: zoning.route.palettes.items[0], front: FRONT, routeStories: ROUTE_STORIES};
+            build(lots, Chosen(&zoning.route, spec));
         } else {
             rolledLot(site, lots, root);
         }
@@ -411,36 +457,39 @@ void lotAt(Turtle corner, ref const Lots lots, ref const Root root) {
 }
 
 void rolledLot(Turtle site, ref const Lots lots, ref const Root root) {
-    bool park = site.rollChance(PARK_PERCENT);
+    bool park = site.rollChance(tuning.parkPercent);
     if (park) {
-        pave(lots, Material.grass);
-        bool pond = site.rollChance(POND_PERCENT);
+        pave(lots, materials.park);
+        bool pond = site.rollChance(tuning.pondPercent);
         if (pond) {
             ponds(lots);
         } else {
             plant(lots);
         }
     } else {
-        bool plaza = site.rollChance(PLAZA_PERCENT);
+        bool plaza = site.rollChance(tuning.plazaPercent);
         if (plaza) {
-            pave(lots, Material.granite);
-            bool fountain = site.rollChance(FOUNTAIN_PERCENT);
+            pave(lots, materials.plaza);
+            bool fountain = site.rollChance(tuning.fountainPercent);
             if (fountain) {
                 fountains(lots);
             } else {
                 plant(lots);
             }
         } else {
-            bool parked = site.rollChance(PARKING_PERCENT);
+            bool parked = site.rollChance(tuning.parkingPercent);
+            MaybeIndex!LotRule rule = ruleFor(cast(uint) lots.count);
             if (parked) {
                 parking(lots);
+            } else if (!rule.exists) {
+                pave(lots, materials.plaza);
+                plant(lots);
             } else {
-                Kind kind = KINDS[lots.count - 1];
-                Chosen chosen = fitted(chosenFor(site, kind, kind.types), site, root);
+                Chosen chosen = fitted(chosenFor(site, zoning.rules.items[rule.value]), site, root);
                 if (chosen.spec.stories >= 1) {
                     build(lots, chosen);
                 } else {
-                    pave(lots, Material.granite);
+                    pave(lots, materials.plaza);
                     plant(lots);
                 }
             }
@@ -477,7 +526,7 @@ void join(ref Lots run) {
 void lotsAt(ref const Turtle[AROUND] quarters, ref const Root root) {
     bool foot = probeRootVertex(quarters[0], root);
     if (foot && root.isRisen()) {
-        connect(quarters[0], root.risen, Tag.city, root.connection);
+        connect(quarters[0], root.risen, root.tag, root.connection);
     }
     uint start = 0;
     bool paved = false;
@@ -520,11 +569,11 @@ void island(ref const Turtle[FACE_CORNERS] corners, ref const Root root) {
         parts.add(lot);
     }
     parts.items[0].front = Side.yLow;
-    Chosen chosen = fitted(chosenFor(corners[0], KINDS[KINDS.length - 1], ISLAND_TYPES[]), corners[0], root);
+    Chosen chosen = fitted(chosenFor(corners[0], zoning.island), corners[0], root);
     if (chosen.spec.stories >= 1) {
         build(parts, chosen);
     } else {
-        pave(parts, Material.granite);
+        pave(parts, materials.plaza);
         plant(parts);
     }
 }
@@ -533,8 +582,8 @@ Root rootAt(Turtle site) {
     return Root(site.probeHash(SitePart.vertex), site.probeHash(SitePart.face));
 }
 
-Root risenRootAt(Turtle foot, ref const Risen risen, Connection how) {
-    return Root(foot.probeHash(SitePart.vertex), foot.probeHash(SitePart.face), risen, how);
+Root risenRootAt(Turtle foot, ref const Risen risen, uint tag, Connection how) {
+    return Root(foot.probeHash(SitePart.vertex), foot.probeHash(SitePart.face), risen, how, tag);
 }
 
 void tile(const(Api)* api, Site site, const(Risen)* risen, const(void)* data) {

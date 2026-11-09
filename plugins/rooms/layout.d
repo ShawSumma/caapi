@@ -1,14 +1,15 @@
 module plugins.rooms.layout;
 
 import plugins.api.api : Api, Risen, Site, SitePart;
+import plugins.api.binding : bound, settingsOf;
+import plugins.api.content : Content;
 import blocks = plugins.blocks.blocks;
 import plugins.buildings.building : SIDES, Side;
-import plugins.connector.connector : BACKROOMS_GROUND, Routing;
-import plugins.rooms.levels : Biome, HallLayout, LAYERS, Level;
+import plugins.connector.connector : Routing;
+import plugins.rooms.levels : Biome, HallLayout, Level, MOST_LEVELS, Rooms, Tuning, rooms, tuning;
 import plugins.rooms.rooms : Axis, Doors, Floor, Frame, Halls, MAZE_CELLS, MaybeLayer, Owns, Plan, Quarter, QuarterKind, SEPARATION, Stair, WallForm, frameOf, origin, paintFloor, stairs;
 import plugins.turtle.turtle : FACE_CORNERS, Turtle, cornersOf, higherOf, mixed, roll, upright;
 
-enum int TOP_FLOOR = BACKROOMS_GROUND - 1;
 enum int DOOR_LOW = 3;
 enum int DOOR_HIGH = 8;
 enum ulong SLOT_SALT = 0x2F4A7C15;
@@ -22,9 +23,6 @@ enum ulong BIOME_SALT = 0x3C6EF372;
 enum ulong HALL_SALT = 0x7F4A7C15;
 enum ulong SOLID_SALT = 0x1B873593;
 enum ulong PLAN_SALT = 0x5BD1E995;
-enum double GRID_DROPPED = 0.12;
-enum double SECOND_PASSAGE_ODDS = 0.5;
-enum size_t FLOOR_COUNT = LAYERS.length;
 
 enum Shaft : ubyte {
     none,
@@ -54,19 +52,24 @@ struct Line {
     ulong beyond;
 }
 
-Floor[FLOOR_COUNT] floorsOf() {
-    Floor[FLOOR_COUNT] floors;
-    int base = TOP_FLOOR;
-    foreach (index; 0 .. FLOOR_COUNT) {
+__gshared Floor[MOST_LEVELS] floors;
+
+void resolveRooms(const(Content)* content) {
+    blocks.resolveStreets(content);
+    rooms = content.bound!Rooms("rooms:materials");
+    tuning = content.settingsOf!Tuning("rooms");
+    int base = rooms.ground.level - 1;
+    foreach (index; 0 .. rooms.levels.count) {
         if (index > 0) {
-            base = base - LAYERS[index].room - SEPARATION - 2;
+            base = base - rooms.levels.items[index].room - SEPARATION - 2;
         }
-        floors[index] = Floor(cast(uint) index, base);
+        floors[index] = Floor(index, base);
     }
-    return floors;
 }
 
-immutable Floor[FLOOR_COUNT] FLOORS = floorsOf();
+uint floorCount() {
+    return rooms.levels.count;
+}
 
 bool probeHall(Turtle turtle, ref const Root root, ref const Level level, size_t index) {
     if (level.halls == HallLayout.none) {
@@ -83,7 +86,7 @@ bool probeHall(Turtle turtle, ref const Root root, ref const Level level, size_t
         }
         if (!rooted) {
             double rolled = roll(turtle.probeHash(SitePart.edge), HALL_SALT + index);
-            rooted = rolled >= GRID_DROPPED;
+            rooted = rolled >= tuning.gridDropped;
         }
         return rooted;
     }
@@ -97,7 +100,7 @@ Doors lineDoors(ulong hash, size_t index, ref const Level level, Passage passage
     if (level.isMaze()) {
         int first = cast(int)(mixed(hash, SLOT_SALT + index) % MAZE_CELLS);
         Doors slots = Doors.one(first);
-        if (roll(hash, SECOND_SALT + index) < SECOND_PASSAGE_ODDS) {
+        if (roll(hash, SECOND_SALT + index) < tuning.secondPassageOdds) {
             slots.at[1] = cast(int)((first + 1 + mixed(hash, OFFSET_SALT + index) % (MAZE_CELLS - 1)) % MAZE_CELLS);
             slots.count = 2;
         }
@@ -134,27 +137,27 @@ bool probeForcedStair(Turtle corner, ref const Root root) {
     }
 }
 
-Stair stairOf(Turtle corner, ref const Root root, ref const Halls[FLOOR_COUNT] halls, ref const Quarter q) {
+Stair stairOf(Turtle corner, ref const Root root, ref const Halls[MOST_LEVELS] halls, ref const Quarter q) {
     ulong hash = corner.probeHash(SitePart.vertex) ^ corner.probeHash(SitePart.face);
-    uint upper = cast(uint)(mixed(hash, STAIR_SALT) % (FLOOR_COUNT - 1));
+    uint upper = cast(uint)(mixed(hash, STAIR_SALT) % (floorCount() - 1));
     bool forced = probeForcedStair(corner, root);
     if (forced) {
         upper = root.forced.upper.value;
     }
-    if (q.isLobby() || (!forced && roll(hash, STAIR_ODDS_SALT) >= FLOORS[upper].level.stairs)) {
+    if (q.isLobby() || (!forced && roll(hash, STAIR_ODDS_SALT) >= floors[upper].level.stairs)) {
         return Stair.init;
     } else {
         uint lower = upper + 1;
-        int x = origin(halls[upper], Axis.x, FLOORS[upper].level);
-        int otherX = origin(halls[lower], Axis.x, FLOORS[lower].level);
-        int y = origin(halls[upper], Axis.y, FLOORS[upper].level);
-        int otherY = origin(halls[lower], Axis.y, FLOORS[lower].level);
+        int x = origin(halls[upper], Axis.x, floors[upper].level);
+        int otherX = origin(halls[lower], Axis.x, floors[lower].level);
+        int y = origin(halls[upper], Axis.y, floors[upper].level);
+        int otherY = origin(halls[lower], Axis.y, floors[lower].level);
         return Stair(MaybeLayer.of(upper), lower, higherOf(x, otherX), higherOf(y, otherY));
     }
 }
 
 Plan planOf(Turtle corner, ref const Quarter q, ref const Stair stair, ref const Floor floor, size_t index, Halls halls) {
-    immutable(Level)* level = &floor.level();
+    const(Level)* level = &floor.level();
     double chance = roll(corner.probeHash(SitePart.vertex) ^ corner.probeHash(SitePart.face), PLAN_SALT + index);
     ulong face = corner.probeHash(SitePart.face);
     if (level.isMaze()) {
@@ -174,7 +177,7 @@ Plan planOf(Turtle corner, ref const Quarter q, ref const Stair stair, ref const
     }
 }
 
-void quarter(Turtle corner, ref const Root root, ref const(Biome)*[FLOOR_COUNT] biomes) {
+void quarter(Turtle corner, ref const Root root, ref const(Biome)*[MOST_LEVELS] biomes) {
     ulong vertex = corner.probeHash(SitePart.vertex);
     ulong face = corner.probeHash(SitePart.face);
     QuarterKind kind = QuarterKind.plain;
@@ -193,23 +196,23 @@ void quarter(Turtle corner, ref const Root root, ref const(Biome)*[FLOOR_COUNT] 
     Owns owns;
     owns.put(Side.xHigh, vertex > corner.forward(1).probeHash(SitePart.vertex));
     owns.put(Side.yHigh, vertex > corner.right().forward(1).probeHash(SitePart.vertex));
-    Halls[FLOOR_COUNT] halls;
-    foreach (index; 0 .. FLOOR_COUNT) {
-        bool hallX = probeHall(corner.right(), root, FLOORS[index].level, index + 1);
-        bool hallY = probeHall(corner, root, FLOORS[index].level, index + 1);
+    Halls[MOST_LEVELS] halls;
+    foreach (index; 0 .. floorCount()) {
+        bool hallX = probeHall(corner.right(), root, floors[index].level, index + 1);
+        bool hallY = probeHall(corner, root, floors[index].level, index + 1);
         halls[index].put(Axis.x, hallX);
         halls[index].put(Axis.y, hallY);
     }
     Line[4] lines = linesOf(corner);
     Stair stair = stairOf(corner, root, halls, q);
     bool forced = probeForcedStair(corner, root);
-    if (stair.isPresent() && !forced && (isSolid(face, FLOORS[stair.upper.value].level, stair.upper.value + 1) || isSolid(face, FLOORS[stair.lower].level, stair.lower + 1))) {
+    if (stair.isPresent() && !forced && (isSolid(face, floors[stair.upper.value].level, stair.upper.value + 1) || isSolid(face, floors[stair.lower].level, stair.lower + 1))) {
         stair = Stair.init;
     }
-    Frame[FLOOR_COUNT] frames;
-    foreach_reverse (index; 0 .. FLOOR_COUNT) {
-        Floor floor = FLOORS[index];
-        immutable(Level)* level = &floor.level();
+    Frame[MOST_LEVELS] frames;
+    foreach_reverse (index; 0 .. floorCount()) {
+        Floor floor = floors[index];
+        const(Level)* level = &floor.level();
         Doors[4] doors;
         foreach (side; SIDES) {
             Passage passage = Passage.open;
@@ -241,10 +244,10 @@ void tileAt(Turtle face, ref const Root root) {
     foreach (corner; corners) {
         strongest = higherOf(corner.left().probeHash(SitePart.face), strongest);
     }
-    const(Biome)*[FLOOR_COUNT] biomes;
-    foreach (index; 0 .. FLOOR_COUNT) {
-        immutable(Level)* level = &FLOORS[index].level();
-        biomes[index] = &level.biomes[mixed(strongest, BIOME_SALT + index + 1) % level.biomes.length];
+    const(Biome)*[MOST_LEVELS] biomes;
+    foreach (index; 0 .. floorCount()) {
+        const(Level)* level = &floors[index].level();
+        biomes[index] = &level.biomes.items[mixed(strongest, BIOME_SALT + index + 1) % level.biomes.count];
     }
     foreach (corner; corners) {
         quarter(corner, root, biomes);

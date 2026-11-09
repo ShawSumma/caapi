@@ -1,0 +1,9 @@
+look arbor:look { red: 0.72, green: 0.84, blue: 0.74, tint: fog }
+
+arbor-materials arbor:materials {
+    step -> base:spruce-wood
+    deck -> base:wood-planks
+    post -> base:spruce-wood
+    lantern -> base:light-panel
+    lawn -> base:grass
+}

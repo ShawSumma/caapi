@@ -1,0 +1,9 @@
+kind chemistry {
+    targets: 1..2 -> receptor-half
+    skips: "brake" | "trigger"
+}
+
+extend material {
+    thrives: "mild" | "cold" | "wet" | "arid" = "mild"
+    makes: optional -> chemistry
+}

@@ -1,5 +1,18 @@
-const KEY_CODES = {KeyW: 0, KeyA: 1, KeyS: 2, KeyD: 3, Space: 4, ShiftLeft: 5, ArrowLeft: 6, ArrowRight: 7, ArrowUp: 8, ArrowDown: 9, KeyV: 10, KeyN: 11, KeyT: 12, BracketLeft: 13, BracketRight: 14, Digit1: 15, Digit2: 16, Digit3: 17, Digit4: 18, Digit5: 19, Digit6: 20, Digit7: 21, Digit8: 22, Digit9: 23, KeyP: 24, KeyO: 25, KeyE: 26, KeyF: 27};
-const PROGRAM_UNIFORMS = [["face_texture", "textures", "current_draw.transform", "current_draw.reversed", "dimension", "cell_ratio", "glowing_materials", "unseen_materials", "framed_material"], ["model", "low", "high"], ["model", "half_side", "marker_color"], ["depth_input", "glow_input"], ["width_over_height"], ["glyph_atlas"], ["image"]];
+const KEY_NAMES = {Space: "space", ShiftLeft: "Shift_L", ArrowLeft: "Left", ArrowRight: "Right", ArrowUp: "Up", ArrowDown: "Down", Minus: "minus", Equal: "equal", BracketLeft: "bracketleft", BracketRight: "bracketright", Backslash: "backslash", Semicolon: "semicolon", Quote: "apostrophe", Comma: "comma", Period: "period", Slash: "slash", Backquote: "grave", Escape: "Escape", Tab: "Tab", Enter: "Return", Backspace: "BackSpace"};
+const BUTTON_NUMBERS = [1, 2, 3];
+const STORAGE_PREFIX = "caapi:";
+const STORAGE_CHUNK = 8192;
+
+const keyNameOf = (code) => {
+    if (code.startsWith("Key")) {
+        return code.slice(3).toLowerCase();
+    } else if (code.startsWith("Digit")) {
+        return code.slice(5);
+    } else {
+        return KEY_NAMES[code];
+    }
+};
+const PROGRAM_UNIFORMS = [["face_texture", "textures", "current_draw.transform", "current_draw.reversed", "dimension", "cell_ratio", "glowing_materials", "unseen_materials", "framed_materials"], ["model", "low", "high"], ["model", "half_side", "marker_color"], ["depth_input", "glow_input"], ["width_over_height"], ["glyph_atlas"], ["image"]];
 const PROGRAM_VOXELS = 0;
 const PROGRAM_HIGHLIGHT = 1;
 const PROGRAM_MARKER = 2;
@@ -11,7 +24,7 @@ const DEFAULT_RENDER_RADIUS = 5;
 const MOST_RENDER_RADIUS = 6;
 const FACE_TEXTURE_WIDTH = 4096;
 const WORDS_PER_FACE = 2;
-const COMMON_BUFFER_BYTES = 2048;
+const COMMON_BUFFER_BYTES = 4608;
 const COMMON_BINDING = 0;
 const UNIT_FACES = 0;
 const UNIT_TEXTURES = 1;
@@ -29,7 +42,7 @@ const HUD_VERTEX_BYTES = 16;
 const HUD_COLOR_OFFSET = 8;
 const HUD_TEXEL_OFFSET = 12;
 const TEXEL_BYTES = 4;
-const MATERIAL_WORDS = 3;
+const MATERIAL_WORDS = 8;
 const CIOVEC_WORDS = 2;
 const WASI_ERRNO_SUCCESS = 0;
 const WASI_ERRNO_BADF = 8;
@@ -249,7 +262,7 @@ const gameOn = (canvas, gl, showStatus, showFailure) => {
         gl.bindVertexArray(emptyVertices);
     };
 
-    const web_gl_voxels = (chunks, count, dimension, cellRatio, glowing, unseen, framedMaterial) => {
+    const web_gl_voxels = (chunks, count, dimension, cellRatio, glowing, unseen, framed) => {
         refreshViews();
         const voxels = programs[PROGRAM_VOXELS];
         const uniforms = voxels.uniforms;
@@ -262,7 +275,7 @@ const gameOn = (canvas, gl, showStatus, showFailure) => {
         gl.uniform1f(uniforms.cell_ratio, cellRatio);
         gl.uniform1uiv(uniforms.glowing_materials, words, glowing >>> 2, MATERIAL_WORDS);
         gl.uniform1uiv(uniforms.unseen_materials, words, unseen >>> 2, MATERIAL_WORDS);
-        gl.uniform1ui(uniforms.framed_material, framedMaterial);
+        gl.uniform1uiv(uniforms.framed_materials, words, framed >>> 2, MATERIAL_WORDS);
         gl.enable(gl.CULL_FACE);
         gl.cullFace(gl.BACK);
         gl.frontFace(gl.CW);
@@ -355,6 +368,56 @@ const gameOn = (canvas, gl, showStatus, showFailure) => {
     const web_now = () => performance.now();
     const web_status = (text) => showStatus(cString(text));
     const web_fail = (text) => showFailure(cString(text));
+    const web_free_pointer = () => {
+        if (document.pointerLockElement !== null) {
+            document.exitPointerLock();
+        }
+    };
+
+    const stored = (key, keyLength) => {
+        try {
+            return localStorage.getItem(STORAGE_PREFIX + textAt(key, keyLength));
+        } catch (error) {
+            return null;
+        }
+    };
+
+    const web_store_size = (key, keyLength) => {
+        const text = stored(key, keyLength);
+        if (text === null) {
+            return 0;
+        } else {
+            return atob(text).length;
+        }
+    };
+
+    const web_store_read = (key, keyLength, into, capacity) => {
+        const text = stored(key, keyLength);
+        if (text === null) {
+            return 0;
+        } else {
+            const binary = atob(text);
+            const length = Math.min(binary.length, capacity);
+            refreshViews();
+            for (let index = 0; index < length; index += 1) {
+                bytes[into + index] = binary.charCodeAt(index);
+            }
+            return length;
+        }
+    };
+
+    const web_store_write = (key, keyLength, from, length) => {
+        refreshViews();
+        const parts = [];
+        for (let start = 0; start < length; start += STORAGE_CHUNK) {
+            parts.push(String.fromCharCode.apply(null, bytes.subarray(from + start, from + Math.min(length, start + STORAGE_CHUNK))));
+        }
+        try {
+            localStorage.setItem(STORAGE_PREFIX + textAt(key, keyLength), btoa(parts.join("")));
+        } catch (error) {
+            console.error("could not save: " + error);
+        }
+    };
 
     const fd_write = (descriptor, vectors, vectorCount, written) => {
         refreshViews();
@@ -372,8 +435,16 @@ const gameOn = (canvas, gl, showStatus, showFailure) => {
     const fd_close = (descriptor) => WASI_ERRNO_BADF;
     const fd_seek = (descriptor, offset, whence, position) => WASI_ERRNO_BADF;
 
-    const imports = {env: {web_now, web_status, web_fail, web_gl_program, web_gl_setup, web_gl_grow_faces, web_gl_upload_faces, web_gl_begin, web_gl_voxels, web_gl_highlight, web_gl_marker, web_gl_finish, web_gl_atlas}, wasi_snapshot_preview1: {fd_write, fd_close, fd_seek}};
+    const imports = {env: {web_now, web_status, web_fail, web_free_pointer, web_store_size, web_store_read, web_store_write, web_gl_program, web_gl_setup, web_gl_grow_faces, web_gl_upload_faces, web_gl_begin, web_gl_voxels, web_gl_highlight, web_gl_marker, web_gl_finish, web_gl_atlas}, wasi_snapshot_preview1: {fd_write, fd_close, fd_seek}};
     const game = {gl, imports, makeTargets, exports: null};
+    game.name = (text) => {
+        refreshViews();
+        const at = game.exports.web_name_buffer();
+        for (let index = 0; index < text.length; index += 1) {
+            bytes[at + index] = text.charCodeAt(index);
+        }
+        return text.length;
+    };
     game.attach = (instance) => {
         memory = instance.exports.memory;
         game.exports = instance.exports;
@@ -385,7 +456,7 @@ const gameOn = (canvas, gl, showStatus, showFailure) => {
 const createGame = (canvas, showStatus, showFailure, contextOptions) => {
     const gl = canvas.getContext("webgl2", contextOptions);
     if (gl === null) {
-        showFailure("this browser or machine has no WebGL2, which mined needs to draw");
+        showFailure("this browser or machine has no WebGL2, which caapi needs to draw");
         return null;
     } else {
         return gameOn(canvas, gl, showStatus, showFailure);
@@ -408,6 +479,14 @@ const renderRadiusFromAddress = () => {
         return Math.min(asked, MOST_RENDER_RADIUS);
     } else {
         return DEFAULT_RENDER_RADIUS;
+    }
+};
+
+const creativeFromAddress = () => {
+    if (new URLSearchParams(location.search).has("creative")) {
+        return 1;
+    } else {
+        return 0;
     }
 };
 

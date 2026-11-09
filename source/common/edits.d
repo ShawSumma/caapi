@@ -16,6 +16,7 @@ enum RecordKind : ubyte {
     beacon,
     collector,
     planted,
+    placedLiving,
 }
 
 struct BlockRecord {

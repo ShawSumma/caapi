@@ -12,6 +12,7 @@ import base.slab : Run, RunPool, Slab;
 import base.splitmix : unitOf;
 import base.vector3 : Vec3, cross, dot, magnitude, negated, plus, scaled;
 import common.graph : Graph, NodeId, ParentEntry, ParentList;
+import common.look : Look;
 import common.position : Position;
 import common.traversal : MIRRORED_ORIGINS, isListed;
 import common.view : GraphView, SlotCorner;
@@ -22,10 +23,10 @@ import common.worldgen.plane : Plane, PlaneMeasure, logCosh;
 import common.worldgen.structure : ClaimKey, ColumnSpot, GROUND_RING, SiteFrame, columnPoint, edgeCells, edgeLength, ensureGroundRing, ensureSiteHash, ensureSiteOrigin, forwarded, groundSite, moveToLevel, parentOnCorner, pathBetween, rootedCorner, sideAxis, sitePlacement, turnSite;
 import geometry.honeycomb : CORNER_COUNT, CUBE_RADIUS, Corner, FACE_COUNT, FACE_DISTANCE, Face, NODE_RADIUS, across, cornerToNode, cubeScale, faces, mirror, nodeToCorner;
 import geometry.lorentz : Motion, Point, Vec4;
-import plugins.api.api : HorosphereForm, KindTag, Look, SitePart, Span, Turn;
+import plugins.api.api : HorosphereForm, KindTag, SitePart, Span, Turn;
 
 enum HorosphereId ROOT = HorosphereId.init;
-enum uint MAX_GROUNDS = 4;
+enum uint MOST_GROUNDS = 4;
 enum uint MOST_NEAR_RINGS = GROUND_RING * GROUND_RING;
 enum float RISE_REACH = 7.0f;
 enum float GROUND_REACH = 4.5f;
@@ -212,7 +213,7 @@ struct Ground {
 }
 
 struct Grounds {
-    Ground[MAX_GROUNDS] items;
+    Ground[MOST_GROUNDS] items;
     uint count;
 
     uint farthestRisen() const {
@@ -540,12 +541,8 @@ void discoverHorospheres(ref GraphView view, uint slot, ref Array!HorosphereRef 
     }
 }
 
-uint ensureGroundNode(ref GraphView view, uint slot, HorosphereId horosphere) {
-    uint current = slot;
-    Vec4!double center = Vec4!double.origin();
-    Plane carried = view.ensurePlaneIn(horosphere, current);
-    float altitude = fabsf(carried.distanceTo(Point!float.origin()));
-    while (altitude > DESCENT_ALTITUDE) {
+Maybe!Face descentFace(Plane carried, float altitude) {
+    if (altitude > DESCENT_ALTITUDE) {
         Maybe!Face lowest;
         float lowestAltitude = 0;
         PlaneMeasure measured = carried.measure();
@@ -566,13 +563,28 @@ uint ensureGroundNode(ref GraphView view, uint slot, HorosphereId horosphere) {
                 }
             }
         }
-        if (!lowest.exists || !(lowestAltitude < altitude - DESCENT_TOLERANCE)) {
-            break;
+        if (lowest.exists && lowestAltitude < altitude - DESCENT_TOLERANCE) {
+            return lowest;
+        } else {
+            return Maybe!Face.init;
         }
-        current = view.ensureNeighborSlot(current, lowest.value);
-        center = mirror(lowest.value).as!double() * center;
+    } else {
+        return Maybe!Face.init;
+    }
+}
+
+uint ensureGroundNode(ref GraphView view, uint slot, HorosphereId horosphere) {
+    uint current = slot;
+    Vec4!double center = Vec4!double.origin();
+    Plane carried = view.ensurePlaneIn(horosphere, current);
+    float altitude = fabsf(carried.distanceTo(Point!float.origin()));
+    Maybe!Face lower = descentFace(carried, altitude);
+    while (lower.exists) {
+        current = view.ensureNeighborSlot(current, lower.value);
+        center = mirror(lower.value).as!double() * center;
         carried = view.ensurePlaneIn(horosphere, current);
         altitude = fabsf(carried.distanceTo(Point!float.origin()));
+        lower = descentFace(carried, altitude);
     }
     Vec4!double normal = carried.scaledNormal.as!double();
     normal = normal * (1.0 / sqrt(normal.minkowski(normal)));
@@ -701,18 +713,10 @@ Rise ensureChosenRise(ref GraphView view, uint face, Corner corner, HorosphereId
         Rise rise = view.horospheres.rolled(mine);
         SiteFrame[GROUND_EDGES] neighbors = view.ensureNeighbors(site);
         uint edge = 0;
-        bool outranked = !rise.kind.exists;
-        while (!outranked && edge < GROUND_EDGES) {
-            outranked = view.probeOutranked(neighbors[edge], mine);
-            if (!outranked) {
-                edge += 1;
-            }
+        while (rise.kind.exists && edge < GROUND_EDGES && !view.probeOutranked(neighbors[edge], mine)) {
+            edge += 1;
         }
-        bool clear = false;
-        if (edge == GROUND_EDGES) {
-            clear = view.probeRiseClear(face, corner, horosphere, rise);
-        }
-        if (clear) {
+        if (edge == GROUND_EDGES && view.probeRiseClear(face, corner, horosphere, rise)) {
             return rise;
         } else {
             return Rise.init;
@@ -951,7 +955,7 @@ Grounds groundsOf(ref const Horospheres horospheres, Plane surface, const(Horosp
     foreach (found; near) {
         if (!horospheres.isUpright(found.horosphere) && found.plane.distanceTo(Point!float.origin()) <= GROUND_REACH) {
             Ground ground = Ground(found.plane, horospheres.fillOf(found.horosphere), found.horosphere);
-            if (grounds.count < MAX_GROUNDS) {
+            if (grounds.count < MOST_GROUNDS) {
                 grounds.items[grounds.count] = ground;
                 grounds.count += 1;
             } else {
@@ -1061,13 +1065,13 @@ Gravity gravityAt(ref const Graph graph, Position position) {
     Grounds grounds = graph.groundsIn(slot);
     float sign = graph.horospheres.gravitySign();
     Point!float point = position.local * Point!float.origin();
-    float[MAX_GROUNDS] weights = [1, 0, 0, 0];
+    float[MOST_GROUNDS] weights = [1, 0, 0, 0];
     Gravity field = Gravity(grounds.items[0].surface.upAt(position.local).scaled(sign), 1.0f);
     if (grounds.count > 1) {
         float relief = graph.loadedClimateAt(slot, point).relief;
-        float[MAX_GROUNDS] heights = void;
-        float[MAX_GROUNDS] shares = void;
-        Vec3!float[MAX_GROUNDS] ups = void;
+        float[MOST_GROUNDS] heights = void;
+        float[MOST_GROUNDS] shares = void;
+        Vec3!float[MOST_GROUNDS] ups = void;
         foreach (index, ground; grounds.items[0 .. grounds.count]) {
             float altitude = ground.surface.distanceTo(point);
             heights[index] = sign * heightAbove(relief, altitude, ground.fill);
@@ -1082,7 +1086,7 @@ Gravity gravityAt(ref const Graph graph, Position position) {
     return graph.bentAlongColumns(field, grounds, weights, position, point);
 }
 
-Gravity bentAlongColumns(ref const Graph graph, Gravity field, ref const Grounds grounds, ref const float[MAX_GROUNDS] weights, Position position, Point!float point) {
+Gravity bentAlongColumns(ref const Graph graph, Gravity field, ref const Grounds grounds, ref const float[MOST_GROUNDS] weights, Position position, Point!float point) {
     Vec3!float pull = field.up.scaled(field.strength);
     Readiness bent = Readiness.pending;
     foreach (ref near; graph.horospheres.horospheresAt(graph.slotOf(position.node).value)) {
@@ -1107,14 +1111,14 @@ Gravity bentAlongColumns(ref const Graph graph, Gravity field, ref const Grounds
     }
 }
 
-float[MAX_GROUNDS] groundWeights(const(float)[] heights, const(float)[] shares) {
+float[MOST_GROUNDS] groundWeights(const(float)[] heights, const(float)[] shares) {
     Maybe!float lowest;
     foreach (index, height; heights) {
         if (shares[index] > 0 && (!lowest.exists || height < lowest.value)) {
             lowest = Maybe!float.of(height);
         }
     }
-    float[MAX_GROUNDS] weights = 0;
+    float[MOST_GROUNDS] weights = 0;
     float total = 0;
     foreach (index, height; heights) {
         if (shares[index] > 0) {
@@ -1155,7 +1159,7 @@ Gravity gravityOfPull(Vec3!float pull, Vec3!float idleUp, float strength) {
 }
 
 Gravity blendedGravity(const(float)[] heights, const(float)[] shares, const(Vec3!float)[] ups) {
-    float[MAX_GROUNDS] weights = groundWeights(heights, shares);
+    float[MOST_GROUNDS] weights = groundWeights(heights, shares);
     return weightedGravity(weights[0 .. heights.length], ups);
 }
 
@@ -1278,13 +1282,8 @@ Position ensureCellOnLine(ref GraphView view, SiteFrame line, int cell) {
 
 int ensureGroundAlong(ref GraphView view, SiteFrame line, HorosphereId horosphere, int span) {
     int cell = -span;
-    bool grounded = false;
-    while (cell < span && !grounded) {
-        float height = view.ensureHorosphereHeight(horosphere, view.ensureCellOnLine(line, cell));
-        grounded = !(height < 0);
-        if (!grounded) {
-            cell += 1;
-        }
+    while (cell < span && view.ensureHorosphereHeight(horosphere, view.ensureCellOnLine(line, cell)) < 0) {
+        cell += 1;
     }
     return cell;
 }
@@ -1299,29 +1298,16 @@ bool probeRisenNearer(ref GraphView view, SiteFrame line, HorosphereId horospher
 int ensureBalanceAlong(ref GraphView view, SiteFrame line, HorosphereId horosphere, int most) {
     int nearer = 0;
     int farther = 1;
-    bool closer = farther < most;
-    if (closer) {
-        closer = view.probeRisenNearer(line, horosphere, farther);
-    }
-    while (closer) {
+    while (farther < most && view.probeRisenNearer(line, horosphere, farther)) {
         nearer = farther;
         farther = lowerOf(farther * 2, most);
-        closer = farther < most;
-        if (closer) {
-            closer = view.probeRisenNearer(line, horosphere, farther);
-        }
     }
-    bool nearerAtMost = false;
-    if (farther == most) {
-        nearerAtMost = view.probeRisenNearer(line, horosphere, most);
-    }
-    if (nearerAtMost) {
+    if (farther == most && view.probeRisenNearer(line, horosphere, most)) {
         return most;
     } else {
         while (farther - nearer > 1) {
             int middle = (nearer + farther) / 2;
-            bool middleNearer = view.probeRisenNearer(line, horosphere, middle);
-            if (middleNearer) {
+            if (view.probeRisenNearer(line, horosphere, middle)) {
                 nearer = middle;
             } else {
                 farther = middle;

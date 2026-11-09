@@ -10,8 +10,10 @@ const LOOK_DOWN_COUNTS = 500;
 const ACTION_FRAMES = 150;
 const FLIGHT_SHOTS = 12;
 const FLIGHT_FRAMES_PER_SHOT = 400;
-const LEFT_BUTTON = 0;
-const RIGHT_BUTTON = 2;
+const LEFT_BUTTON = 1;
+const RIGHT_BUTTON = 3;
+const CREATIVE = 1;
+const MINING_FRAMES = 60;
 const BYTES_PER_MEGABYTE = 1048576;
 const QUIET_FRAMES = 60;
 const QUIET_FRAME_MILLISECONDS = 3;
@@ -42,7 +44,8 @@ const check = () => {
     canvas.width = checkWidth;
     canvas.height = checkHeight;
     let lastStatus = "";
-    const module = new WebAssembly.Module(wasmFromBase64(MINED_WASM));
+    localStorage.clear();
+    const module = new WebAssembly.Module(wasmFromBase64(CAAPI_WASM));
     const game = createGame(canvas, (text) => {
         lastStatus = text;
     }, failures.show, {antialias: false, alpha: false, depth: false, stencil: false, preserveDrawingBuffer: true});
@@ -81,9 +84,16 @@ const check = () => {
     }
     game.attach(new WebAssembly.Instance(module, game.imports));
     const started = performance.now();
-    game.exports.web_start(checkWidth, checkHeight, renderRadiusFromAddress());
+    game.exports.web_start(checkWidth, checkHeight, renderRadiusFromAddress(), CREATIVE);
     note("started in " + Math.round(performance.now() - started) + "ms");
     game.exports.web_capture(1);
+
+    const keyDown = (code) => game.exports.web_key_down(game.name(keyNameOf(code)), 0);
+    const keyUp = (code) => game.exports.web_key_up(game.name(keyNameOf(code)));
+    const click = (button) => {
+        game.exports.web_button(button, 0, 0);
+        game.exports.web_button_up(button);
+    };
 
     const memoryMegabytes = () => Math.round(game.exports.memory.buffer.byteLength / BYTES_PER_MEGABYTE);
 
@@ -112,9 +122,9 @@ const check = () => {
     };
 
     const pressed = (key, frames, label, context, cell) => {
-        game.exports.web_key_down(KEY_CODES[key], 0);
+        keyDown(key);
         runFrames(frames);
-        game.exports.web_key_up(KEY_CODES[key]);
+        keyUp(key);
         drawCell(context, cell, label);
     };
 
@@ -125,14 +135,15 @@ const check = () => {
         const context = makeSheet(worlds);
         for (let world = 0; world < worlds; world += 1) {
             runFrames(TOUR_WORLD_FRAMES);
-            game.exports.web_key_down(KEY_CODES.KeyW, 0);
+            keyDown("KeyW");
             runFrames(TOUR_WORLD_FRAMES / 2);
-            game.exports.web_key_up(KEY_CODES.KeyW);
-            game.exports.web_button(LEFT_BUTTON);
-            game.exports.web_button(RIGHT_BUTTON);
+            keyUp("KeyW");
+            click(LEFT_BUTTON);
+            click(RIGHT_BUTTON);
             runFrames(2);
             drawCell(context, world, world + " " + worldName());
-            game.exports.web_key_down(KEY_CODES.BracketRight, 0);
+            keyDown("BracketRight");
+            keyUp("BracketRight");
             game.exports.web_frame();
         }
         note("toured " + worlds + " worlds, memory " + memoryMegabytes() + "MB, gl error " + game.gl.getError());
@@ -142,8 +153,8 @@ const check = () => {
         const shots = parseInt(parameters.get("shots")) || FLIGHT_SHOTS;
         const context = makeSheet(shots);
         runFrames(SETTLE_FRAMES);
-        game.exports.web_key_down(KEY_CODES.KeyN, 0);
-        game.exports.web_key_down(KEY_CODES.KeyW, 0);
+        keyDown("KeyN");
+        keyDown("KeyW");
         for (let shot = 0; shot < shots; shot += 1) {
             runFrames(FLIGHT_FRAMES_PER_SHOT);
             drawCell(context, shot, "flew " + (shot + 1) * FLIGHT_FRAMES_PER_SHOT + " frames");
@@ -152,34 +163,41 @@ const check = () => {
     };
 
     const actions = () => {
-        const context = makeSheet(12);
+        const context = makeSheet(13);
         runFrames(SETTLE_FRAMES);
         drawCell(context, 0, "start");
         game.exports.web_motion(0, LOOK_DOWN_COUNTS);
         runFrames(30);
         drawCell(context, 1, "look down");
-        game.exports.web_button(LEFT_BUTTON);
+        game.exports.web_button(LEFT_BUTTON, 0, 0);
+        runFrames(MINING_FRAMES);
+        game.exports.web_button_up(LEFT_BUTTON);
         runFrames(ACTION_FRAMES);
-        drawCell(context, 2, "broke a block");
-        game.exports.web_key_down(KEY_CODES.Digit7, 0);
-        game.exports.web_button(RIGHT_BUTTON);
+        drawCell(context, 2, "mined a block");
+        click(RIGHT_BUTTON);
         runFrames(ACTION_FRAMES);
-        drawCell(context, 3, "placed marble");
+        drawCell(context, 3, "placed one back");
+        pressed("KeyE", 30, "inventory (E)", context, 12);
+        keyDown("KeyE");
+        keyUp("KeyE");
         game.exports.web_motion(0, -LOOK_DOWN_COUNTS);
         runFrames(30);
         pressed("KeyW", ACTION_FRAMES, "walked forward", context, 4);
         pressed("Space", 30, "jumped", context, 5);
         pressed("KeyT", 60, "threw a block", context, 6);
-        game.exports.web_key_down(KEY_CODES.KeyV, 0);
+        keyDown("KeyV");
+        keyUp("KeyV");
         pressed("Space", ACTION_FRAMES, "flew up (V)", context, 7);
         pressed("ShiftLeft", ACTION_FRAMES / 2, "sank (Shift)", context, 8);
-        game.exports.web_key_down(KEY_CODES.KeyN, 0);
+        keyDown("KeyN");
+        keyUp("KeyN");
         pressed("KeyW", ACTION_FRAMES, "noclip (N)", context, 9);
         pressed("ArrowLeft", ACTION_FRAMES / 2, "turned (arrow)", context, 10);
-        game.exports.web_key_down(KEY_CODES.Space, 0);
+        keyDown("Space");
         runFrames(2 * ACTION_FRAMES);
-        game.exports.web_key_up(KEY_CODES.Space);
-        game.exports.web_key_down(KEY_CODES.KeyV, 0);
+        keyUp("Space");
+        keyDown("KeyV");
+        keyUp("KeyV");
         pressed("KeyS", ACTION_FRAMES, "walk mode, back", context, 11);
         note("status: " + lastStatus);
         note("gl error " + game.gl.getError());
@@ -207,7 +225,8 @@ const check = () => {
         const index = parseInt(parameters.get("index"));
         const frames = parseInt(parameters.get("frames")) || CHECK_FRAMES;
         for (let step = 0; step < index; step += 1) {
-            game.exports.web_key_down(KEY_CODES.BracketRight, 0);
+            keyDown("BracketRight");
+            keyUp("BracketRight");
             game.exports.web_frame();
         }
         game.exports.web_motion(0, parseFloat(parameters.get("pitch")) || 0);
@@ -266,7 +285,8 @@ const check = () => {
         note("extensions: " + game.gl.getSupportedExtensions().join(" "));
         const worldSteps = parseInt(parameters.get("index")) || 0;
         for (let step = 0; step < worldSteps; step += 1) {
-            game.exports.web_key_down(KEY_CODES.BracketRight, 0);
+            keyDown("BracketRight");
+            keyUp("BracketRight");
             game.exports.web_frame();
         }
         game.exports.web_frame();
@@ -290,8 +310,9 @@ const check = () => {
         }
         report("still", still);
         const flying = newSamples();
-        game.exports.web_key_down(KEY_CODES.KeyN, 0);
-        game.exports.web_key_down(KEY_CODES.KeyW, 0);
+        keyDown("KeyN");
+        keyUp("KeyN");
+        keyDown("KeyW");
         for (let frame = 0; frame < BENCH_FLIGHT_FRAMES; frame += 1) {
             timedFrame(flying);
         }

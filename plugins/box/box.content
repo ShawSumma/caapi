@@ -1,0 +1,10 @@
+box-palettes box:palettes {
+    palettes -> [box:concrete box:brick box:sandstone box:grey]
+    timber -> box:timber
+}
+
+box-palette box:concrete { wall -> base:concrete, floor -> base:concrete, trim -> base:steel }
+box-palette box:brick { wall -> base:white-brick, floor -> base:grey-brick, trim -> base:steel }
+box-palette box:sandstone { wall -> base:sandstone, floor -> base:wood-planks, trim -> base:steel }
+box-palette box:grey { wall -> base:grey-brick, floor -> base:concrete, trim -> base:marble }
+box-palette box:timber { wall -> base:oak-wood, floor -> base:wood-planks, trim -> base:spruce-wood }

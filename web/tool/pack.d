@@ -5,15 +5,15 @@ import base.array : Array;
 import base64 : encodeInto;
 import files : Outcome, readFile, writeFile;
 
-enum string WASM_FILE = "obj/web/mined.wasm";
+enum string WASM_FILE = "obj/web/caapi.wasm";
 enum string CHECK_PAGE = "obj/web/check.html";
-enum string GAME_PAGE = "mined.html";
+enum string GAME_PAGE = "caapi.html";
 enum string SHELL_FILE = "web/shell.html";
 enum string GLUE_FILE = "web/glue.js";
 enum string PLAY_FILE = "web/play.js";
 enum string CHECK_FILE = "web/check.js";
 enum string SCRIPTS_MARK = "__SCRIPTS__";
-enum string WASM_START = "const MINED_WASM = \"";
+enum string WASM_START = "const CAAPI_WASM = \"";
 enum string WASM_END = "\";\n";
 
 size_t markIn(const(ubyte)[] shell) {

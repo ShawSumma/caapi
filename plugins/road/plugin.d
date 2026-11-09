@@ -1,10 +1,12 @@
 module plugins.road.plugin;
 
 import core.stdc.math : fabs, floor, sqrt;
-import plugins.api.api : Api, Look, Material, Registry, Rhythm, Site, Span, entryOf;
+import plugins.api.api : Api, Material, Registry, Rhythm, Site, Span, entryOf;
+import plugins.api.binding : bound;
+import plugins.api.content : Content, FIRST_VERSION, Manifest, ON_BASE;
 import plugins.turtle.turtle : Turtle, alongLine, boxOf, higherOf;
 
-immutable Look LOOK = Look("road");
+enum string LOOK = "base:sky";
 
 enum int HALF_WIDTH = 6;
 enum int DECK = 2;
@@ -18,12 +20,21 @@ enum float ROUTE_STOP_CELLS = 12;
 enum int ROUTE_STOPS = 5;
 enum float ROUTE_LANE = 0;
 enum size_t MOST_EDGE_CELLS = 64;
-enum Material SURFACE = Material.basalt;
-enum Material STRIPE = Material.whiteBrick;
-enum Material DECK_MATERIAL = Material.greyBrick;
-enum Material PARAPET_MATERIAL = Material.concrete;
-enum Material MASONRY = Material.greyBrick;
-enum Material RING = Material.limestone;
+
+struct Materials {
+    Material surface;
+    Material stripe;
+    Material deck;
+    Material parapet;
+    Material masonry;
+    Material ring;
+}
+
+__gshared Materials materials;
+
+void resolve(const(Content)* content) {
+    materials = content.bound!Materials("road:materials");
+}
 
 struct ArchRow {
     int from;
@@ -76,15 +87,15 @@ void arches(Turtle road, int below) {
     ArchRows found = archRows(edge, below);
     foreach (row; found.rows[0 .. found.count]) {
         Rhythm rhythm = Rhythm(edge, row.from, row.span);
-        road.fill(MASONRY, alongLine(width, Span(row.soffit, -1)), rhythm);
-        road.fill(RING, alongLine(width, Span(row.soffit, row.ring)), rhythm);
+        road.fill(materials.masonry, alongLine(width, Span(row.soffit, -1)), rhythm);
+        road.fill(materials.ring, alongLine(width, Span(row.soffit, row.ring)), rhythm);
     }
 }
 
 void pier(const(Api)* api, Site at, const(void)* data) {
     Turtle site = Turtle(api, at);
     int depth = PIER_EDGES * site.edgeCells();
-    site.pitchDown().fill(MASONRY, boxOf(Span(-INNER_HALF_WIDTH, INNER_HALF_WIDTH - 1), Span(-PIER_HALF_WIDTH, PIER_HALF_WIDTH - 1), Span(0, depth - 1)));
+    site.pitchDown().fill(materials.masonry, boxOf(Span(-INNER_HALF_WIDTH, INNER_HALF_WIDTH - 1), Span(-PIER_HALF_WIDTH, PIER_HALF_WIDTH - 1), Span(0, depth - 1)));
     bool placed = site.forward(1).place(&pier, null, 0);
     if (!placed) {
         site.fail("the next pier is behind the road's piers");
@@ -97,11 +108,11 @@ void world(const(Api)* api, Site at, const(void)* data) {
     Span width = Span(-HALF_WIDTH, HALF_WIDTH - 1);
     Span lanes = Span(-INNER_HALF_WIDTH, INNER_HALF_WIDTH - 1);
     road.paint(Material.none, alongLine(width, Span(DECK, column.high)));
-    road.paint(DECK_MATERIAL, alongLine(width, Span(0, DECK - 1)));
-    road.paint(SURFACE, alongLine(lanes, Span(DECK - 1, DECK - 1)));
-    road.paint(STRIPE, alongLine(Span(-1, 0), Span(DECK - 1, DECK - 1)), DASHES);
-    road.paint(PARAPET_MATERIAL, alongLine(Span(-HALF_WIDTH, -HALF_WIDTH), Span(DECK - 1, DECK + PARAPET - 1)));
-    road.paint(PARAPET_MATERIAL, alongLine(Span(HALF_WIDTH - 1, HALF_WIDTH - 1), Span(DECK - 1, DECK + PARAPET - 1)));
+    road.paint(materials.deck, alongLine(width, Span(0, DECK - 1)));
+    road.paint(materials.surface, alongLine(lanes, Span(DECK - 1, DECK - 1)));
+    road.paint(materials.stripe, alongLine(Span(-1, 0), Span(DECK - 1, DECK - 1)), DASHES);
+    road.paint(materials.parapet, alongLine(Span(-HALF_WIDTH, -HALF_WIDTH), Span(DECK - 1, DECK + PARAPET - 1)));
+    road.paint(materials.parapet, alongLine(Span(HALF_WIDTH - 1, HALF_WIDTH - 1), Span(DECK - 1, DECK + PARAPET - 1)));
     arches(road, column.low);
     road.place(&pier, null, 0);
     road.left().left().forward(1).place(&pier, null, 0);
@@ -111,10 +122,13 @@ void world(const(Api)* api, Site at, const(void)* data) {
 }
 
 void lookedWorld(const(Api)* api, Site at, const(void)* data) {
-    api.worldLook(api, &LOOK);
+    api.worldLook(api, LOOK);
     world(api, at, data);
 }
 
+immutable Manifest MANIFEST = Manifest("road", FIRST_VERSION, ON_BASE[], null, &resolve, null, null, import("plugins/road/road.decl"), import("plugins/road/road.content"));
+
 pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
+    registry.declare(registry, &MANIFEST);
     registry.add(registry, "road", &lookedWorld);
 }

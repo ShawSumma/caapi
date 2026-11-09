@@ -1,0 +1,12 @@
+palace-materials palace:materials {
+    stone -> base:limestone
+    floor -> base:marble
+    tread -> base:white-brick
+    window -> base:glass
+    ceiling -> base:plaster
+    rod -> base:steel
+    lamp -> base:light-panel
+    carpet -> base:red-carpet
+    water -> base:water
+    lawn -> base:grass
+}

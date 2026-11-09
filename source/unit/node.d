@@ -6,6 +6,7 @@ import base.vector3 : Vec3;
 import common.node : ChunkLayout, Voxels, cellCount, cellIndex;
 import geometry.honeycomb : CORNER_COUNT;
 import plugins.api.api : Material;
+import unit.named : blockNamed;
 
 enum ubyte LAYOUT_DIMENSION = 12;
 enum ubyte VOXEL_DIMENSION = 4;
@@ -58,15 +59,15 @@ unittest {
 }
 
 unittest {
-    Voxels stone = Voxels.filled(Material.granite);
-    assert(stone.isUniform() && stone.isOpaqueFill() && stone.at(5) == Material.granite);
+    Voxels stone = Voxels.filled(blockNamed("base:granite"));
+    assert(stone.isUniform() && stone.isOpaqueFill() && stone.at(5) == blockNamed("base:granite"));
     Material[] cells = stone.toDense(VOXEL_DIMENSION);
-    assert(!stone.isUniform() && cells.length == cellCount(VOXEL_DIMENSION) && stone.at(5) == Material.granite);
+    assert(!stone.isUniform() && cells.length == cellCount(VOXEL_DIMENSION) && stone.at(5) == blockNamed("base:granite"));
     stone.compress(VOXEL_DIMENSION);
-    assert(stone.isFilledWith(Material.granite));
-    stone.toDense(VOXEL_DIMENSION)[cellIndex(VOXEL_DIMENSION, 1, 2, 3)] = Material.glass;
+    assert(stone.isFilledWith(blockNamed("base:granite")));
+    stone.toDense(VOXEL_DIMENSION)[cellIndex(VOXEL_DIMENSION, 1, 2, 3)] = blockNamed("base:glass");
     stone.compress(VOXEL_DIMENSION);
-    assert(!stone.isUniform() && stone.at(cellIndex(VOXEL_DIMENSION, 1, 2, 3)) == Material.glass);
+    assert(!stone.isUniform() && stone.at(cellIndex(VOXEL_DIMENSION, 1, 2, 3)) == blockNamed("base:glass"));
     stone.release();
-    assert(!Voxels.filled(Material.none).isOpaqueFill() && !Voxels.filled(Material.glass).isOpaqueFill());
+    assert(!Voxels.filled(Material.none).isOpaqueFill() && !Voxels.filled(blockNamed("base:glass")).isOpaqueFill());
 }

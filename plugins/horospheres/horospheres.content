@@ -1,0 +1,7 @@
+look horospheres:city { red: 0.74, green: 0.79, blue: 0.86, tint: fog }
+look horospheres:backrooms { red: 0.78, green: 0.72, blue: 0.45, tint: fog }
+
+horospheres-tree horospheres:tree {
+    bark -> base:oak-wood
+    leaves -> base:oak-leaves
+}

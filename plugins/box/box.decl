@@ -1,0 +1,10 @@
+kind box-palette {
+    wall: one -> material
+    floor: one -> material
+    trim: one -> material
+}
+
+kind box-palettes {
+    palettes: some -> box-palette
+    timber: one -> box-palette
+}

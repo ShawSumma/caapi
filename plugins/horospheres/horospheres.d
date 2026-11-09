@@ -1,11 +1,23 @@
 module plugins.horospheres.horospheres;
 
-import plugins.api.api : Api, Color, HorosphereForm, KindId, Look, Risen, Site, SitePart, Tint;
+import plugins.api.api : Api, HorosphereForm, KindId, Risen, Site, SitePart, tagNamed;
+import plugins.api.content : Content;
 import blocks = plugins.blocks.blocks;
-import plugins.connector.connector : Connection, Tag, connect;
+import plugins.connector.connector : Connection, connect;
 import layout = plugins.rooms.layout;
-import plugins.horospheres.tree : Trunk, segment;
+import plugins.horospheres.tree : Trunk, resolveTree, segment;
 import plugins.turtle.turtle : Turtle;
+
+void resolveHorospheres(const(Content)* content) {
+    blocks.resolveBlocks(content);
+    layout.resolveRooms(content);
+    resolveTree(content);
+}
+
+enum uint WILD_TAG = tagNamed("horospheres:wild");
+enum uint CITY_TAG = tagNamed("horospheres:city");
+enum uint BACKROOMS_TAG = tagNamed("horospheres:backrooms");
+enum uint TREE_TAG = tagNamed("horospheres:tree");
 
 struct Kinds {
     KindId wild;
@@ -14,9 +26,9 @@ struct Kinds {
     KindId tree;
 }
 
-immutable Look WILD_LOOK = Look("wild");
-immutable Look CITY_LOOK = Look("city", Color(0.74f, 0.79f, 0.86f), Tint.fog);
-immutable Look BACKROOMS_LOOK = Look("backrooms", Color(0.78f, 0.72f, 0.45f), Tint.fog);
+enum string WILD_LOOK = "base:sky";
+enum string CITY_LOOK = "horospheres:city";
+enum string BACKROOMS_LOOK = "horospheres:backrooms";
 
 Connection connectionOf(const(void)* data) {
     return *cast(const(Connection)*) data;
@@ -26,7 +38,7 @@ void wildTile(const(Api)* api, Site face, const(Risen)* risen, const(void)* data
     if (risen.hasRisen) {
         bool owner = blocks.probeOwnsFoot(Turtle(api, face), *risen);
         if (owner) {
-            connect(Turtle(api, risen.foot), *risen, Tag.wild, connectionOf(data));
+            connect(Turtle(api, risen.foot), *risen, WILD_TAG, connectionOf(data));
         }
     }
 }
@@ -34,7 +46,7 @@ void wildTile(const(Api)* api, Site face, const(Risen)* risen, const(void)* data
 void cityTile(const(Api)* api, Site face, const(Risen)* risen, const(void)* data) {
     blocks.Root root;
     if (risen.hasRisen) {
-        root = blocks.risenRootAt(Turtle(api, risen.foot), *risen, connectionOf(data));
+        root = blocks.risenRootAt(Turtle(api, risen.foot), *risen, CITY_TAG, connectionOf(data));
     }
     blocks.tileAt(Turtle(api, face), root);
 }
@@ -49,7 +61,7 @@ void backroomsTile(const(Api)* api, Site face, const(Risen)* risen, const(void)*
     if (risen.hasRisen) {
         bool owner = blocks.probeOwnsFoot(at, *risen);
         if (owner) {
-            connect(Turtle(api, risen.foot), *risen, Tag.backrooms, connectionOf(data));
+            connect(Turtle(api, risen.foot), *risen, BACKROOMS_TAG, connectionOf(data));
         }
     }
 }
@@ -60,12 +72,12 @@ void treeTile(const(Api)* api, Site base, const(Risen)* risen, const(void)* data
 
 Kinds addKinds(const(Api)* api, double odds, double treeOdds, const(Connection)* how) {
     Kinds kinds;
-    kinds.wild = api.horosphere(api, odds, HorosphereForm.terrain, Tag.wild, &wildTile, how, Connection.sizeof);
-    kinds.city = api.horosphere(api, odds, HorosphereForm.solid, Tag.city, &cityTile, how, Connection.sizeof);
-    kinds.backrooms = api.horosphere(api, odds, HorosphereForm.solid, Tag.backrooms, &backroomsTile, how, Connection.sizeof);
-    kinds.tree = api.horosphere(api, treeOdds, HorosphereForm.upright, Tag.tree, &treeTile, how, Connection.sizeof);
-    api.look(api, kinds.wild, &WILD_LOOK);
-    api.look(api, kinds.city, &CITY_LOOK);
-    api.look(api, kinds.backrooms, &BACKROOMS_LOOK);
+    kinds.wild = api.horosphere(api, odds, HorosphereForm.terrain, WILD_TAG, &wildTile, how, Connection.sizeof);
+    kinds.city = api.horosphere(api, odds, HorosphereForm.solid, CITY_TAG, &cityTile, how, Connection.sizeof);
+    kinds.backrooms = api.horosphere(api, odds, HorosphereForm.solid, BACKROOMS_TAG, &backroomsTile, how, Connection.sizeof);
+    kinds.tree = api.horosphere(api, treeOdds, HorosphereForm.upright, TREE_TAG, &treeTile, how, Connection.sizeof);
+    api.look(api, kinds.wild, WILD_LOOK);
+    api.look(api, kinds.city, CITY_LOOK);
+    api.look(api, kinds.backrooms, BACKROOMS_LOOK);
     return kinds;
 }

@@ -183,15 +183,15 @@ Box line(Along along, Span span, Span z) {
     }
 }
 
-void grass(Turtle face) {
+void grass(Turtle face, Material material) {
     foreach (corner; cornersOf(face)) {
         Span whole = Span(0, corner.column().high);
-        upright(corner).paint(Material.grass, boxOf(whole, whole, Span(-1, -1)));
+        upright(corner).paint(material, boxOf(whole, whole, Span(-1, -1)));
     }
 }
 
 void lawn(const(Api)* api, Site face, const(Risen)* risen, const(void)* data) {
-    grass(Turtle(api, face));
+    grass(Turtle(api, face), *cast(const(Material)*) data);
 }
 
 uint wedgeAt(int cellX, int cellY) {

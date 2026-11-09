@@ -2,13 +2,14 @@ module scripts.walk;
 
 import core.stdc.math : ceil;
 import base.maybe : Maybe;
-import base.names : ENUM_NAMES;
 import base.numbers : higherOf, lowerOf;
 import base.units : Time;
 import client.game : Key;
 import client.script : Script, StepHook, degrees;
 import common.character.controller : Footing, MovementMode;
+import common.items : materialNames;
 import plugins.api.api : Material;
+import scripts.claims : Measure, Topic, claim;
 
 enum float SPEED = 0.225f;
 enum float SPEED_TOLERANCE = 0.0025f;
@@ -25,21 +26,21 @@ enum float WALL_DISTANCE = 0.15f;
 enum float WALL_HALF_WIDTH = 0.075f;
 enum float ROW_STEP = 0.0125f;
 enum float STEP_DEPTH = 0.075f;
-enum Material GROUND = Material.dirt;
-immutable BuildLayer[3] BUILD_LAYERS = [BuildLayer(1, Material.woodPlanks), BuildLayer(4, Material.greyBrick), BuildLayer(5, Material.whiteBrick)];
+enum string GROUND = "base:dirt";
+immutable BuildLayer[3] BUILD_LAYERS = [BuildLayer(1, "base:wood-planks"), BuildLayer(4, "base:grey-brick"), BuildLayer(5, "base:white-brick")];
 enum double TURN_SECONDS = 0.96;
 enum double SETTLE_SECONDS = 0.48;
 enum double LANDING_SECONDS = 2;
-enum float MIN_BLOCK_EDGE = 0.035f;
-enum float MAX_BLOCK_EDGE = 0.077f;
-immutable Material[2] STREET_MATERIALS = [Material.basalt, Material.whiteBrick];
-immutable Material[7] TOWER_MATERIALS = [Material.concrete, Material.whiteBrick, Material.greyBrick, Material.sandstone, Material.woodPlanks, Material.steel, Material.marble];
-immutable Material[4] BACKROOMS_FLOORS = [Material.carpet, Material.dampCarpet, Material.redCarpet, Material.concrete];
-immutable Material[3] BACKROOMS_CEILINGS = [Material.ceilingTile, Material.lightPanel, Material.concrete];
+enum float LEAST_BLOCK_EDGE = 0.035f;
+enum float MOST_BLOCK_EDGE = 0.077f;
+immutable string[2] STREET_MATERIALS = ["base:basalt", "base:white-brick"];
+immutable string[7] TOWER_MATERIALS = ["base:concrete", "base:white-brick", "base:grey-brick", "base:sandstone", "base:wood-planks", "base:steel", "base:marble"];
+immutable string[4] BACKROOMS_FLOORS = ["base:carpet", "base:damp-carpet", "base:red-carpet", "base:concrete"];
+immutable string[3] BACKROOMS_CEILINGS = ["base:ceiling-tile", "base:light-panel", "base:concrete"];
 
 struct BuildLayer {
     uint slot;
-    Material material;
+    string material;
 }
 
 enum ClimbGoal : ubyte {
@@ -63,25 +64,24 @@ struct Across {
     float climbed = 0;
 }
 
-string nameOf(Maybe!Material target) {
+const(char)[] nameOf(Maybe!Material target) {
     if (target.exists) {
-        return ENUM_NAMES!Material[target.value];
+        return materialNames.ptr[target.value.id];
     } else {
         return "nothing";
     }
 }
 
-bool isMaterial(Maybe!Material target, Material material) {
-    return target.exists && target.value == material;
+bool isMaterial(Maybe!Material target, const(char)[] name) {
+    return target.exists && materialNames.ptr[target.value.id] == name;
 }
 
-bool isOneOf(Maybe!Material target, const(Material)[] materials) {
-    foreach (material; materials) {
-        if (isMaterial(target, material)) {
-            return true;
-        }
+bool isOneOf(Maybe!Material target, const(string)[] names) {
+    size_t index = 0;
+    while (index < names.length && !isMaterial(target, names[index])) {
+        index += 1;
     }
-    return false;
+    return index < names.length;
 }
 
 Maybe!Material lookBelow(ref Script world) {
@@ -107,17 +107,17 @@ void onSlope(ref Script world, double tilt, double heading) {
 
 float forward(ref Script world, double seconds, float minFraction) {
     float start = world.traveled().value;
-    world.press(seconds, Key.fwd);
+    world.press(seconds, Key.forward);
     float walked = world.traveled().value - start;
     float free = SPEED * seconds;
-    string facing = nameOf(world.targetMaterial());
+    const(char)[] facing = nameOf(world.targetMaterial());
     world.check(walked >= minFraction * free, "walked %.4f of an unobstructed %.4f, facing %.*s", walked, free, cast(int) facing.length, facing.ptr);
     return walked;
 }
 
 bool probeOnStep(ref Script world, float standing) {
     Maybe!Material below = lookBelow(world);
-    return world.isOnGround() && world.altitude().value - standing > MIN_BLOCK_EDGE / 2 && isMaterial(below, BUILD_LAYERS[0].material);
+    return world.isOnGround() && world.altitude().value - standing > LEAST_BLOCK_EDGE / 2 && isMaterial(below, BUILD_LAYERS[0].material);
 }
 
 bool probeReached(ref Script world, ClimbGoal goal, float standing) {
@@ -130,7 +130,7 @@ bool probeReached(ref Script world, ClimbGoal goal, float standing) {
 
 void climbForward(ref Script world, double seconds, Time dt, ClimbGoal goal, float standing) {
     double deadline = world.time().value + seconds;
-    world.hold(Key.fwd);
+    world.hold(Key.forward);
     world.step(dt);
     bool reached = probeReached(world, goal, standing);
     while (!world.isFailed && world.time().value < deadline && !reached) {
@@ -138,7 +138,7 @@ void climbForward(ref Script world, double seconds, Time dt, ClimbGoal goal, flo
         world.step(dt);
         reached = probeReached(world, goal, standing);
     }
-    world.release(Key.fwd, Key.up);
+    world.release(Key.forward, Key.up);
 }
 
 void jumpIfBlocked(ref Script world) {
@@ -187,15 +187,15 @@ void observe(ref Script world, ref Motion motion) {
 }
 
 void checkSpeedLimit(ref Script world, ref const Motion motion) {
-    world.check(motion.excess <= SPEED_TOLERANCE, "walking sped up %.4f past the walk speed or the landing speed at t=%.2f", motion.excess, motion.excessAt);
+    world.claim(Topic.movement, "On the ground the body never moves faster than its walk speed, or than the speed it landed with.", motion.excess <= SPEED_TOLERANCE, Measure.of("largest excess", motion.excess), Measure.of("at second", motion.excessAt));
 }
 
 void checkOnStep(ref Script world, float standing, const(char)* what) {
     world.check(world.isOnGround(), "%s: on ground", what);
     float rise = world.altitude().value - standing;
-    world.check(rise > MIN_BLOCK_EDGE / 2, "%s: rose %.4f", what, rise);
+    world.check(rise > LEAST_BLOCK_EDGE / 2, "%s: rose %.4f", what, rise);
     Maybe!Material below = lookBelow(world);
-    string name = nameOf(below);
+    const(char)[] name = nameOf(below);
     world.check(isMaterial(below, BUILD_LAYERS[0].material), "%s: standing on %.*s", what, cast(int) name.length, name.ptr);
 }
 
@@ -218,10 +218,10 @@ void strafe(ref Script world, float distance) {
 }
 
 Key opposite(Key key) {
-    if (key == Key.fwd) {
+    if (key == Key.forward) {
         return Key.back;
     } else if (key == Key.back) {
-        return Key.fwd;
+        return Key.forward;
     } else if (key == Key.left) {
         return Key.right;
     } else {
@@ -229,14 +229,13 @@ Key opposite(Key key) {
     }
 }
 
-void buildLayer(ref Script world, Material below, Key key, uint steps) {
+void buildLayer(ref Script world, string below, Key key, uint steps) {
     uint step = 0;
     while (step <= steps && !world.isFailed) {
         world.look(degrees(0), degrees(STRAIGHT_DOWN_DEGREES));
         if (isMaterial(world.targetMaterial(), below)) {
-            string name = ENUM_NAMES!Material[below];
             bool placed = world.placeBlock();
-            world.check(placed, "placed a block on %.*s %u steps along the row", cast(int) name.length, name.ptr, step);
+            world.check(placed, "placed a block on %.*s %u steps along the row", cast(int) below.length, below.ptr, step);
         }
         world.look(degrees(0), degrees(-STRAIGHT_DOWN_DEGREES));
         if (step < steps) {
@@ -248,7 +247,7 @@ void buildLayer(ref Script world, Material below, Key key, uint steps) {
 
 void buildRow(ref Script world, uint blocks, Key key, float length) {
     uint steps = cast(uint) ceil(length / ROW_STEP);
-    Material below = GROUND;
+    string below = GROUND;
     foreach (layer; 0 .. blocks) {
         world.material(BUILD_LAYERS[layer].slot);
         buildLayer(world, below, key, steps);
@@ -273,7 +272,7 @@ void land(ref Script world) {
 
 void buildWall(ref Script world, uint blocks) {
     hover(world, blocks);
-    fly(world, WALL_DISTANCE, Key.fwd);
+    fly(world, WALL_DISTANCE, Key.forward);
     strafe(world, -WALL_HALF_WIDTH);
     buildRow(world, blocks, Key.right, 2 * WALL_HALF_WIDTH);
     strafe(world, -WALL_HALF_WIDTH);
@@ -283,7 +282,7 @@ void buildWall(ref Script world, uint blocks) {
 
 void buildStep(ref Script world) {
     hover(world, 1);
-    fly(world, WALL_DISTANCE, Key.fwd);
+    fly(world, WALL_DISTANCE, Key.forward);
     strafe(world, -WALL_HALF_WIDTH);
     Key key = Key.right;
     uint rows = cast(uint) ceil(STEP_DEPTH / ROW_STEP);
@@ -291,7 +290,7 @@ void buildStep(ref Script world) {
         buildRow(world, 1, key, 2 * WALL_HALF_WIDTH);
         key = opposite(key);
         if (row < rows) {
-            fly(world, ROW_STEP, Key.fwd);
+            fly(world, ROW_STEP, Key.forward);
         }
     }
     if (key == Key.right) {
@@ -305,7 +304,7 @@ void buildStep(ref Script world) {
 
 void buildCorner(ref Script world, uint blocks) {
     hover(world, blocks);
-    fly(world, WALL_DISTANCE, Key.fwd);
+    fly(world, WALL_DISTANCE, Key.forward);
     strafe(world, -WALL_HALF_WIDTH);
     buildRow(world, blocks, Key.right, 2 * WALL_HALF_WIDTH);
     buildRow(world, blocks, Key.back, WALL_DISTANCE);
@@ -322,7 +321,7 @@ Across acrossSlope(ref Script world, double tilt, double heading, double seconds
     climbForward(world, seconds, world.timestep, ClimbGoal.timed, 0);
     float walked = world.traveled().value - before;
     float free = SPEED * seconds;
-    string facing = nameOf(world.targetMaterial());
+    const(char)[] facing = nameOf(world.targetMaterial());
     world.check(walked >= minFraction * free, "walked %.4f of an unobstructed %.4f, facing %.*s", walked, free, cast(int) facing.length, facing.ptr);
     world.wait(LANDING_SECONDS);
     world.onStep(StepHook.init);

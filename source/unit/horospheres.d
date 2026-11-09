@@ -11,12 +11,13 @@ import common.view : GraphView;
 import common.worldgen.blueprint : BlueprintBuilder, CellBox, Cover, EVERY_HEIGHT, PaintResult;
 import common.worldgen.building : Building;
 import common.worldgen.generation : ChunkParams, GeneratedVoxels, StructureWorld, Worldgen;
-import common.worldgen.horospheres : CLEARANCE_EDGES, ChunkPoint, EdgeLine, FLAT_EDGE, GROUND_EDGES, Gravity, Grounds, Horosphere, HorosphereId, HorosphereKind, HorosphereRef, Horospheres, LOWEST_RISE_EDGES, MAX_GROUNDS, ROOT, Rise, RiseLine, RiseMeasure, blendedGravity, chunkPointOf, columnDistanceOf, edgeOf, ensureClimate, ensureGravityAt, ensureGroundNode, ensureHorosphereOver, ensureHorospheresAt, ensureMeasure, ensurePlaneIn, ensureRising, ensureSegmentSite, ensureSegmentsNear, groundsOf, isApart, isOnFootLine, isRayApart, loadedClimateAt, openHorosphere, probeClearOfAncestors, refIn, riseLineOver, risenPlaneOver;
+import common.worldgen.horospheres : CLEARANCE_EDGES, ChunkPoint, EdgeLine, FLAT_EDGE, GROUND_EDGES, Gravity, Grounds, Horosphere, HorosphereId, HorosphereKind, HorosphereRef, Horospheres, LOWEST_RISE_EDGES, MOST_GROUNDS, ROOT, Rise, RiseLine, RiseMeasure, blendedGravity, chunkPointOf, columnDistanceOf, edgeOf, ensureClimate, ensureGravityAt, ensureGroundNode, ensureHorosphereOver, ensureHorospheresAt, ensureMeasure, ensurePlaneIn, ensureRising, ensureSegmentSite, ensureSegmentsNear, groundsOf, isApart, isOnFootLine, isRayApart, loadedClimateAt, openHorosphere, probeClearOfAncestors, refIn, riseLineOver, risenPlaneOver;
 import common.worldgen.plane : Plane;
 import common.worldgen.structure : ColumnSpot, GROUND_RING, SiteFrame, columnPoint, edgeCells, ensureGroundRing, forwarded, moveToLevel, rootSite, sitePlacement, siteToNode, turnSite;
 import geometry.honeycomb : CORNER_COUNT, Corner, FACE_DISTANCE, Face, NODE_RADIUS, opposite;
 import geometry.lorentz : Motion, Point, Vec4;
 import plugins.api.api : HorosphereForm, Material, Span, Turn;
+import unit.named : blockNamed;
 import unit.structure : isCanonicalMatch, isSamePoint;
 
 enum ubyte DIMENSION = 12;
@@ -193,7 +194,7 @@ unittest {
     }
     BlueprintBuilder builder = BlueprintBuilder.make(graph);
     foreach (cell; PAINTED_CELLS) {
-        PaintResult result = builder.paint(risenTower, CellBox.make(cell.x, cell.x, cell.y, cell.y, cell.z, cell.z), EVERY_HEIGHT, Material.granite, Cover.over);
+        PaintResult result = builder.paint(risenTower, CellBox.make(cell.x, cell.x, cell.y, cell.y, cell.z, cell.z), EVERY_HEIGHT, blockNamed("base:granite"), Cover.over);
         assert(result == PaintResult.painted);
     }
     foreach (cell; PAINTED_CELLS) {
@@ -205,7 +206,7 @@ unittest {
             voxel[axis] = cast(int) floorf(graph.layout.cubeToGrid(inChunk.coords[axis]));
         }
         const(Building)* building = graph.ensureBuildingAt(graph.slotOf(at.node).value);
-        assert(building.materialAt(inChunk.corner, voxel, Material.none) == Material.granite);
+        assert(building.materialAt(inChunk.corner, voxel, Material.none) == blockNamed("base:granite"));
     }
     builder.release();
     Plane over = risenPlaneOver(root.corner, Face.first, LOWEST_RISE_EDGES, graph.view.edgeOf());
@@ -237,7 +238,7 @@ unittest {
         near[index] = HorosphereRef(Plane(Vec3!float(0, 1, 0), height), EdgeLine.init, HorosphereId.ofIndex(index));
     }
     Grounds grounds = groundsOf(horospheres, Plane.ofFace(Face.first), near[]);
-    assert(grounds.count == MAX_GROUNDS);
+    assert(grounds.count == MOST_GROUNDS);
     assert(grounds.items[1].surface.height == GROUND_HEIGHTS[0]);
     foreach (ground; grounds.items[1 .. grounds.count]) {
         assert(ground.surface.height < FARTHEST_GROUND);

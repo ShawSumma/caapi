@@ -6,9 +6,9 @@ import core.stdc.stdlib : free, malloc;
 import base.maybe : Maybe;
 import base.vector3 : Vec3;
 import common.graph : NodeId;
-import common.material : MATERIAL_COUNT, isSeeThrough;
+import common.material : isSeeThrough;
 import geometry.honeycomb : CORNER_COUNT, Corner, NODE_RADIUS, cubeScale;
-import plugins.api.api : Material;
+import plugins.api.api : MOST_MATERIALS, Material;
 
 enum float DENSITY_EXPONENT = -4.0f / 3.0f;
 enum uint FLAG_SHIFT = 56;
@@ -100,29 +100,29 @@ struct Voxels {
     size_t bits;
 
     static Voxels filled(Material material) {
-        return Voxels(material);
+        return Voxels(material.id);
     }
 
     bool isUniform() const {
-        return bits < MATERIAL_COUNT;
+        return bits < MOST_MATERIALS;
     }
 
     bool isFilledWith(Material material) const {
-        return bits == material;
+        return bits == material.id;
     }
 
     bool isOpaqueFill() const {
-        return isUniform() && !isSeeThrough(cast(Material) bits);
+        return isUniform() && !isSeeThrough(Material(cast(ubyte) bits));
     }
 
     Material fill() const {
         assert(isUniform());
-        return cast(Material) bits;
+        return Material(cast(ubyte) bits);
     }
 
     Material at(size_t index) const {
         if (isUniform()) {
-            return cast(Material) bits;
+            return Material(cast(ubyte) bits);
         } else {
             return (cast(const(Material)*) bits)[index];
         }
@@ -137,7 +137,7 @@ struct Voxels {
         size_t count = cellCount(dimension);
         if (isUniform()) {
             Material* memory = cast(Material*) malloc(count);
-            memory[0 .. count] = cast(Material) bits;
+            memory[0 .. count] = Material(cast(ubyte) bits);
             bits = cast(size_t) memory;
         }
         return (cast(Material*) bits)[0 .. count];
@@ -153,7 +153,7 @@ struct Voxels {
             if (index == all.length) {
                 Material first = all[0];
                 release();
-                bits = first;
+                bits = first.id;
             }
         }
     }
@@ -161,7 +161,7 @@ struct Voxels {
     void release() {
         if (!isUniform()) {
             free(cast(void*) bits);
-            bits = Material.none;
+            bits = Material.none.id;
         }
     }
 }

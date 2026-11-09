@@ -5,6 +5,7 @@ import base.numbers : higherOf, lowerOf;
 import base.splitmix : SplitMix;
 import base.vector3 : Vec3;
 import common.view : GraphView;
+import common.worldgen.palette : laidBy, palette;
 import geometry.honeycomb : Corner, Face, faces;
 import plugins.api.api : Material;
 
@@ -13,11 +14,7 @@ enum float MOUNTAIN_HEIGHT = 2.5f;
 enum float LAPSE_RATE = 0.3f;
 enum float COVER_DEPTH = 0.06f;
 enum float SOIL_DEPTH = 0.4f;
-enum float SNOW_WARMTH = -0.45f;
 enum float WATER_LEVEL = -0.6f;
-enum float BEACH_HEIGHT = 0.08f;
-enum float DEEP_WATER = 0.5f;
-enum float ROCKY_RELIEF = 2.2f;
 enum float WARMTH_CLASS_LIMIT = 0.35f;
 
 struct Process {
@@ -34,13 +31,6 @@ immutable Process STRATA = Process(0.8f, 0.25f, 0x3C6EF372);
 immutable Process RUGGEDNESS = Process(0.9f, 0.2f, 0x1F83D9AB);
 immutable float[3] ROCK_BAND_DEPTHS = [1.2f, 2.6f, 4.5f];
 immutable float[2] WETNESS_CLASS_LIMITS = [-0.2f, 0.3f];
-
-immutable Material[2][3][4] ROCKS = [
-    [[Material.sandstone, Material.redSandstone], [Material.shale, Material.shale], [Material.limestone, Material.limestone]],
-    [[Material.slate, Material.slate], [Material.dolomite, Material.marble], [Material.marble, Material.marble]],
-    [[Material.granite, Material.granite], [Material.diorite, Material.diorite], [Material.andesite, Material.andesite]],
-    [[Material.gabbro, Material.olivine], [Material.basalt, Material.basalt], [Material.gabbro, Material.gabbro]],
-];
 
 float boundOf(Process process) {
     return process.spread / (1 - process.keep);
@@ -179,83 +169,19 @@ struct CubeClimate {
 Material groundAt(float depth, float riser, Climate climate) {
     float warmth = climate.warmth();
     if (depth < higherOf(COVER_DEPTH, lowerOf(riser, SOIL_DEPTH))) {
-        return coverOf(warmth, climate.wetness, climate.relief);
+        return palette.cover.slice().laidBy(warmth, climate.wetness, climate.relief);
     } else if (depth < SOIL_DEPTH) {
-        return soilOf(warmth, climate.wetness, climate.relief);
+        return palette.soil.slice().laidBy(warmth, climate.wetness, climate.relief);
     } else {
-        return ROCKS[rockBand(depth + climate.strata)][wetnessClass(climate.wetness)][warmthClass(warmth)];
+        return palette.rocks[rockBand(depth + climate.strata)][wetnessClass(climate.wetness)][warmthClass(warmth)];
     }
 }
 
 Material openAt(float altitude, Climate climate) {
     if (altitude >= WATER_LEVEL) {
         return Material.none;
-    } else if (climate.warmth() < SNOW_WARMTH) {
-        return Material.ice;
     } else {
-        return Material.water;
-    }
-}
-
-bool isDesert(float warmth, float wetness) {
-    return warmth > 0.45f && wetness < -0.35f;
-}
-
-bool isRedDesert(float warmth, float wetness) {
-    return isDesert(warmth, wetness) && wetness < -0.65f;
-}
-
-bool isShore(float relief) {
-    return relief < WATER_LEVEL + BEACH_HEIGHT;
-}
-
-Material coverOf(float warmth, float wetness, float relief) {
-    if (warmth < SNOW_WARMTH) {
-        return Material.snow;
-    } else if (relief > ROCKY_RELIEF) {
-        return Material.andesite;
-    } else if (relief < WATER_LEVEL - DEEP_WATER) {
-        return Material.gravel;
-    } else if (isShore(relief)) {
-        return Material.sand;
-    } else if (warmth < -0.15f && wetness < -0.2f) {
-        return Material.gravel;
-    } else if (warmth < -0.15f) {
-        return Material.coarseGrass;
-    } else if (isRedDesert(warmth, wetness)) {
-        return Material.redSand;
-    } else if (isDesert(warmth, wetness)) {
-        return Material.sand;
-    } else if (wetness > 0.75f && warmth > 0.1f) {
-        return Material.mud;
-    } else if (wetness > 0.45f && warmth > 0.1f) {
-        return Material.lushGrass;
-    } else if (wetness > 0.45f) {
-        return Material.mudGrass;
-    } else if (warmth > 0.25f && wetness < -0.05f) {
-        return Material.tanGrass;
-    } else {
-        return Material.grass;
-    }
-}
-
-Material soilOf(float warmth, float wetness, float relief) {
-    if (relief > ROCKY_RELIEF) {
-        return Material.andesite;
-    } else if (isShore(relief)) {
-        return Material.sand;
-    } else if (isRedDesert(warmth, wetness)) {
-        return Material.redSand;
-    } else if (isDesert(warmth, wetness)) {
-        return Material.sand;
-    } else if (wetness > 0.5f) {
-        return Material.clay;
-    } else if (wetness > 0.2f) {
-        return Material.clayLoam;
-    } else if (wetness > -0.1f) {
-        return Material.dirt;
-    } else {
-        return Material.sandyLoam;
+        return palette.fluids.slice().laidBy(climate.warmth(), climate.wetness, climate.relief);
     }
 }
 
@@ -287,7 +213,7 @@ Maybe!Material uniformRock(float shallowest, float deepest, Climate lowest, Clim
     float coldest = lowest.heat - LAPSE_RATE * highest.relief;
     float warmest = highest.heat - LAPSE_RATE * lowest.relief;
     if (shallowest >= SOIL_DEPTH && rockBand(shallowest + lowest.strata) == rockBand(deepest + highest.strata) && wetnessClass(lowest.wetness) == wetnessClass(highest.wetness) && warmthClass(coldest) == warmthClass(warmest)) {
-        return Maybe!Material.of(ROCKS[rockBand(shallowest + lowest.strata)][wetnessClass(lowest.wetness)][warmthClass(coldest)]);
+        return Maybe!Material.of(palette.rocks[rockBand(shallowest + lowest.strata)][wetnessClass(lowest.wetness)][warmthClass(coldest)]);
     } else {
         return Maybe!Material.init;
     }

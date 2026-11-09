@@ -1,0 +1,63 @@
+blocks-materials blocks:materials {
+    road -> base:basalt
+    sidewalk -> base:concrete
+    marking -> base:white-brick
+    leaves -> base:oak-leaves
+    trunk -> base:oak-wood
+    basin -> base:marble
+    water -> base:water
+    pond-bed -> base:sand
+    lot -> base:concrete
+    plaza -> base:granite
+    park -> base:grass
+}
+
+connector-ground blocks:ground {
+    tag: "horospheres:city"
+    level: 1
+}
+
+connector-materials connector:materials {
+    grounds -> blocks:ground
+}
+
+blocks-zoning blocks:zoning {
+    rules -> [blocks:corner blocks:slab blocks:wide blocks:around]
+    island -> blocks:island
+    route -> buildings:tenement
+}
+
+blocks-lot blocks:corner {
+    lots: 1
+    shape: corner
+    most-stories: 22
+    types -> [buildings:tenement buildings:tenement buildings:rowhouse buildings:rowhouse buildings:deco buildings:glass buildings:modern buildings:civic]
+}
+
+blocks-lot blocks:slab {
+    lots: 2
+    shape: run
+    most-stories: 30
+    types -> [buildings:brownstone buildings:brownstone buildings:rowhouse buildings:tenement buildings:warehouse buildings:deco buildings:glass buildings:modern]
+}
+
+blocks-lot blocks:wide {
+    lots: 3
+    shape: run
+    most-stories: 38
+    types -> [buildings:deco buildings:glass buildings:glass buildings:tenement buildings:modern buildings:warehouse buildings:civic]
+}
+
+blocks-lot blocks:around {
+    lots: 4
+    shape: run
+    most-stories: 38
+    types -> [buildings:deco buildings:glass buildings:tenement buildings:modern buildings:civic]
+}
+
+blocks-lot blocks:island {
+    lots: 5
+    shape: run
+    most-stories: 38
+    types -> [buildings:deco buildings:glass buildings:modern buildings:civic]
+}

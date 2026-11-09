@@ -1,0 +1,23 @@
+kind receptor-half {
+    cells: text
+    expression: number 0.. = 1
+}
+
+kind enzyme {
+    operation: "cleave" | "attach" | "oxidize" | "conjugate"
+    wants: text
+    expression: number 0.. = 1
+}
+
+kind starter-dose {
+    half: one -> receptor-half
+    skips: "brake" | "trigger"
+    route: "ingested" | "inhaled" | "injected"
+    amount: number 0..
+}
+
+kind starter-body {
+    halves: some -> receptor-half
+    enzymes: many -> enzyme
+    doses: many -> starter-dose
+}

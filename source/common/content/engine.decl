@@ -1,0 +1,10 @@
+kind channel {}
+
+kind mod open {}
+
+kind look {
+    red: number 0..1 = 0
+    green: number 0..1 = 0
+    blue: number 0..1 = 0
+    tint: "sky" | "fog" = "sky"
+}

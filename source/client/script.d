@@ -1,17 +1,20 @@
 module client.script;
 
-import core.stdc.math : acosf, floor, fabsf;
+import core.stdc.math : acosf, fabsf, floor;
 import core.stdc.stdio : FILE, fclose, fopen, fprintf, snprintf;
-import base.maybe : Maybe;
+import base.maybe : Maybe, MaybeIndex;
 import base.names : ENUM_NAMES;
 import base.numbers : RADIANS_PER_DEGREE, clamped;
 import base.units : Angle, AngularSpeed, Length, Speed, Time;
 import base.vector3 : dot, magnitude, rejectAlong;
 import client.arguments : ExitStatus, StructureName, exitStatus;
-import client.game : ChunkSupply, FrameInput, Game, KEY_COUNT, Key, Preset, RouteWaypoint, ThrownMotion, UnloadedCount;
-import common.inventory : HOTBAR_SLOTS;
+import client.game : ChunkSupply, EAT_TIME, FrameInput, Game, KEY_COUNT, Key, RouteWaypoint, Screen, ThrownMotion, UnloadedCount;
 import client.structures : StructureProblem, growthProblem, restartGame;
 import common.character.controller : Footing, MovementMode;
+import common.crafting : Insight, Station, Synthesis, Upgrade, insights, recipes, stations, syntheses, upgrades;
+import common.inventory : HOTBAR_SLOTS, Inventory, Stack;
+import common.items : Item, itemNamed, itemOf;
+import common.perception : presetNamed, presets;
 import common.worldgen.generation : PlaneWorld, Worldgen, WorldgenKind;
 import plugins.api.api : Material;
 import plugins.api.flags : Flags;
@@ -19,6 +22,66 @@ import plugins.api.flags : Flags;
 enum Time DEFAULT_TIMESTEP = Time(0.016f);
 enum Time ONE_SECOND = Time(1.0f);
 enum size_t FAILURE_CAPACITY = 1024;
+enum uint STOCKED_COUNT = 999;
+
+immutable string[9] STOCKED_HOTBAR = [
+    "base:wood-planks",
+    "base:oak-wood",
+    "base:oak-leaves",
+    "base:grey-brick",
+    "base:white-brick",
+    "base:sandstone",
+    "base:bench",
+    "base:collector",
+    "base:beacon",
+];
+
+Material materialNamed(const(char)[] name) {
+    return named(name).block;
+}
+
+Item named(const(char)[] name) {
+    Maybe!Item found = itemNamed(name);
+    assert(found.exists);
+    return found.value;
+}
+
+uint indexNamed(T)(const(T)[] rows, const(char)[] name) {
+    uint index = 0;
+    while (index < rows.length && rows[index].name != name) {
+        index += 1;
+    }
+    assert(index < rows.length);
+    return index;
+}
+
+uint recipeNamed(const(char)[] name) {
+    return indexNamed(recipes(), name);
+}
+
+Synthesis synthesisNamed(const(char)[] name) {
+    return Synthesis(cast(ubyte) indexNamed(syntheses(), name));
+}
+
+Upgrade upgradeNamed(const(char)[] name) {
+    return Upgrade(cast(ubyte) indexNamed(upgrades(), name));
+}
+
+Insight insightNamed(const(char)[] name) {
+    return Insight(cast(ubyte) indexNamed(insights(), name));
+}
+
+Station stationNamed(const(char)[] name) {
+    return Station(cast(ubyte) indexNamed(stations(), name));
+}
+
+Inventory stockedInventory() {
+    Inventory inventory;
+    foreach (slot, material; STOCKED_HOTBAR) {
+        inventory.slots[slot] = Stack(named(material), STOCKED_COUNT);
+    }
+    return inventory;
+}
 
 alias ScriptBody = void function(ref Script script);
 
@@ -63,6 +126,7 @@ struct Script {
     HookState hookState;
 
     static Script make(Game* game, FILE* report) {
+        game.inventory = stockedInventory();
         return Script(game, report);
     }
 
@@ -291,24 +355,47 @@ struct Script {
         game.mode = chosen;
     }
 
-    Preset preset() const {
-        return game.preset;
+    const(char)[] preset() const {
+        return presets.ptr[game.preset].name;
     }
 
-    void perceive(Preset chosen) {
-        game.perceive(chosen);
+    void perceive(const(char)[] name) {
+        MaybeIndex!uint chosen = presetNamed(name);
+        if (!chosen.exists) {
+            fail("no mod defines the perception preset '%.*s'", cast(int) name.length, name.ptr);
+        } else {
+            game.perceive(chosen.value);
+        }
     }
 
     void dose() {
         game.doseNext();
     }
 
-    void use() {
-        game.use();
+    bool interact() {
+        return game.interact();
+    }
+
+    bool cross() {
+        return game.crossChosen();
+    }
+
+    bool splice() {
+        return game.spliceChosen();
+    }
+
+    void open(Screen screen) {
+        game.screen = screen;
     }
 
     bool eat() {
-        return game.eat();
+        uint slot = game.inventory.selected;
+        uint before = game.inventory.slots[slot].count;
+        hold(Key.eat);
+        wait(EAT_TIME.value + timestep.value);
+        release(Key.eat);
+        step();
+        return game.inventory.slots[slot].count < before;
     }
 
     uint material() const {
@@ -485,10 +572,10 @@ struct ScriptRecorder {
         fprintf(file, "    world.mode(MovementMode.%.*s);\n", cast(int) name.length, name.ptr);
     }
 
-    void recordPreset(Preset preset) {
+    void recordPreset(uint preset) {
         flush();
-        string name = ENUM_NAMES!Preset[preset];
-        fprintf(file, "    world.perceive(Preset.%.*s);\n", cast(int) name.length, name.ptr);
+        const(char)[] name = presets.ptr[preset].name;
+        fprintf(file, "    world.perceive(\"%.*s\");\n", cast(int) name.length, name.ptr);
     }
 
     void recordMaterial(uint slot) {

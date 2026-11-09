@@ -1,9 +1,11 @@
 module plugins.buildings.building;
 
 import plugins.api.api : Box, Material, MaybeIndex, Rhythm, Span;
+import plugins.api.binding : List;
 import plugins.turtle.turtle : Along, Turtle, boxOf, floorDiv, higherOf, lowerOf, upright;
 
 enum int STORY = 4;
+enum size_t MOST_PALETTES = 16;
 enum size_t MOST_PARTS = 5;
 enum size_t MOST_TIERS = 8;
 enum size_t MOST_BOXES = 32;
@@ -63,6 +65,42 @@ struct Palette {
     Material band;
     Material roof;
 }
+
+enum Form : ubyte {
+    brownstone,
+    civic,
+    deco,
+    glass,
+    modern,
+    rowhouse,
+    tenement,
+    warehouse,
+}
+
+struct Traits {
+    Form form;
+    int leastStories;
+    int mostStories;
+    Material roof;
+    List!(Palette, MOST_PALETTES) palettes;
+
+    Span stories() const {
+        return Span(leastStories, mostStories);
+    }
+}
+
+struct Materials {
+    Material window;
+    Material pad;
+    Material marking;
+    Material tankLeg;
+    Material tank;
+    Material lawn;
+    Material leaves;
+    Material trunk;
+}
+
+__gshared Materials materials;
 
 struct Spec {
     int stories;
@@ -475,7 +513,7 @@ void roof(ref const Part part, Palette palette, Material material, Tier tier) {
 
 void punched(ref const Part part, Palette palette, Box box, Tier tier, int spacing) {
     foreach (face; walls(part, box, tier).slice()) {
-        part.tower.paint(Material.glass, face, WINDOW_ROWS);
+        part.tower.paint(materials.window, face, WINDOW_ROWS);
         foreach (pier; strips(face, spacing).slice()) {
             part.tower.paint(palette.wall, pier);
         }
@@ -488,7 +526,7 @@ void masonry(ref const Part part, Palette palette, Box box, Tier tier) {
 
 void banded(ref const Part part, Box box, Tier tier, Rhythm rows) {
     foreach (face; walls(part, box, tier).slice()) {
-        part.tower.paint(Material.glass, face, rows);
+        part.tower.paint(materials.window, face, rows);
     }
 }
 
@@ -498,7 +536,7 @@ void storefront(ref const Part part) {
         if (part.kinds[side] == Bound.street) {
             Box face = faceOf(box, side);
             Span run = along(face, side);
-            part.tower.paint(Material.glass, withAlong(face, side, Span(run.low + 1, run.high - 1)));
+            part.tower.paint(materials.window, withAlong(face, side, Span(run.low + 1, run.high - 1)));
         }
     }
 }
@@ -541,10 +579,10 @@ void helipad(ref const Part part, Palette palette, Tier tier) {
         int x = middle(xSpan(roofBox));
         int y = middle(ySpan(roofBox));
         int z = tier.high + 1;
-        part.tower.paint(Material.concrete, boxOf(Span(x - 2, x + 2), Span(y - 2, y + 2), Span(z, z)));
-        part.tower.paint(Material.whiteBrick, boxOf(Span(x - 1, x - 1), Span(y - 1, y + 1), Span(z, z)));
-        part.tower.paint(Material.whiteBrick, boxOf(Span(x + 1, x + 1), Span(y - 1, y + 1), Span(z, z)));
-        part.tower.paint(Material.whiteBrick, boxOf(Span(x, x), Span(y, y), Span(z, z)));
+        part.tower.paint(materials.pad, boxOf(Span(x - 2, x + 2), Span(y - 2, y + 2), Span(z, z)));
+        part.tower.paint(materials.marking, boxOf(Span(x - 1, x - 1), Span(y - 1, y + 1), Span(z, z)));
+        part.tower.paint(materials.marking, boxOf(Span(x + 1, x + 1), Span(y - 1, y + 1), Span(z, z)));
+        part.tower.paint(materials.marking, boxOf(Span(x, x), Span(y, y), Span(z, z)));
     }
 }
 
@@ -561,9 +599,9 @@ void waterTower(ref const Part part, Palette palette, Tier tier) {
     Box roofBox = footprint(part, tier.shrink, Split.above, tier.high, tier.high);
     int x = roofBox.high.x - 2;
     int y = roofBox.high.y - 2;
-    part.tower.paint(Material.steel, boxOf(Span(x, x), Span(y, y), Span(tier.high + 1, tier.high + 1)));
-    part.tower.paint(Material.steel, boxOf(Span(x + 1, x + 1), Span(y + 1, y + 1), Span(tier.high + 1, tier.high + 1)));
-    part.tower.paint(Material.woodPlanks, boxOf(Span(x, x + 1), Span(y, y + 1), Span(tier.high + 2, tier.high + 4)));
+    part.tower.paint(materials.tankLeg, boxOf(Span(x, x), Span(y, y), Span(tier.high + 1, tier.high + 1)));
+    part.tower.paint(materials.tankLeg, boxOf(Span(x + 1, x + 1), Span(y + 1, y + 1), Span(tier.high + 1, tier.high + 1)));
+    part.tower.paint(materials.tank, boxOf(Span(x, x + 1), Span(y, y + 1), Span(tier.high + 2, tier.high + 4)));
 }
 
 struct Core {

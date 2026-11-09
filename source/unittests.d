@@ -1,6 +1,10 @@
 module unittests;
 
 import base.crash : reportCrashes, reportHangAfter;
+import common.content.load : loadContent;
+import common.content.mods : ModOrder, orderMods;
+import plugins.api.content : Manifest;
+static import base = plugins.base.plugin;
 import unitHashmap = unit.hashmap;
 import unitAllocator = unit.allocator;
 import unitSlab = unit.slab;
@@ -43,8 +47,17 @@ import unitKinetics = unit.kinetics;
 import unitSignaling = unit.signaling;
 import unitMetabolism = unit.metabolism;
 import unitGenome = unit.genome;
+import unitOrganism = unit.organism;
 import unitInventory = unit.inventory;
+import unitCrafting = unit.crafting;
+import unitContent = unit.content;
+import unitData = unit.data;
+import unitBinding = unit.binding;
+import unitMods = unit.mods;
+import unitSettings = unit.settings;
+import unitBindings = unit.bindings;
 import unitBreeding = unit.breeding;
+import unitChemistry = unit.chemistry;
 
 enum uint TEST_TIME_LIMIT_SECONDS = 300;
 
@@ -53,6 +66,9 @@ alias TESTED_MODULES = __traits(allMembers, unittests);
 extern (C) int main() {
     reportCrashes();
     reportHangAfter(TEST_TIME_LIMIT_SECONDS);
+    Manifest[1] mods = [base.MANIFEST];
+    ModOrder order = orderMods(mods[]);
+    loadContent(mods[], order, null);
     static foreach (member; TESTED_MODULES) {
         static if (member != "object" && __traits(compiles, __traits(getUnitTests, __traits(getMember, unittests, member)))) {
             static foreach (test; __traits(getUnitTests, __traits(getMember, unittests, member))) {

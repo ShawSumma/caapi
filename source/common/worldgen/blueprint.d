@@ -7,13 +7,13 @@ import base.numbers : higherOf, lowerOf;
 import base.splitmix : SplitMix;
 import base.vector3 : Vec3;
 import common.graph : Graph, NodeId;
-import common.material : MATERIAL_COUNT;
+import common.look : Look;
 import common.view : GraphView;
 import common.worldgen.horospheres : HorosphereId;
 import common.worldgen.strokes : Stroke, StrokeRun;
 import common.worldgen.structure : AxisOrder, CanonicalSite, ClaimKey, ColumnSpot, EDGE_NODES, LineTransform, PAINT_REACH, SiteFrame, SlotTouch, addPendingTouch, canonicalOf, edgeCells, ensureAroundEdge, isEndless, seedTouch, walkTouch;
 import geometry.honeycomb : Corner, FACE_COUNT, Face;
-import plugins.api.api : Extent, Look, Material, Repeat, Span;
+import plugins.api.api : Extent, MOST_MATERIALS, Material, Repeat, Span;
 
 enum ulong PLACED_RANK = 0;
 enum ulong TILE_RANK_BIT = 1;
@@ -302,7 +302,7 @@ struct Blueprint {
     Array!RouteStop route;
     Array!SiteFrame flats;
     Array!Material materials;
-    MaybeIndex!ubyte[MATERIAL_COUNT] paints;
+    MaybeIndex!ubyte[MOST_MATERIALS] paints;
     HashMap!(LineKey, uint) lineIndex;
     HashMap!(LineEdge, EdgeRecord) touchedEdges;
     HashMap!(ClaimKey, Present) claims;
@@ -582,11 +582,11 @@ struct Blueprint {
     }
 
     MaybeIndex!ubyte ensurePaint(Material material) {
-        if (!paints[material].exists) {
-            paints[material] = MaybeIndex!ubyte.of(cast(ubyte) materials.length);
+        if (!paints[material.id].exists) {
+            paints[material.id] = MaybeIndex!ubyte.of(cast(ubyte) materials.length);
             materials.append(material);
         }
-        return paints[material];
+        return paints[material.id];
     }
 
     bool isClaimed(ClaimKey key) const {

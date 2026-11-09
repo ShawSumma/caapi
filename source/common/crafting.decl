@@ -1,0 +1,58 @@
+type item = material | ware
+
+kind ware {
+    red: integer 0..255 = 0
+    green: integer 0..255 = 0
+    blue: integer 0..255 = 0
+}
+
+kind station {
+    placed-as: optional -> material
+}
+
+kind group {
+    label: text?
+    member: many -> item
+}
+
+kind upgrade {
+    title: text
+    effect: "nothing" | "mining" | "assay" = "nothing"
+    mining-tier: integer 0.. = 0
+}
+
+kind insight {
+    title: text
+    notice: text
+    noticed-working: optional -> station
+    noticed-breaking: optional -> item | group
+}
+
+kind recipe {
+    seconds: number 0.. = 1
+    at: optional -> station
+    produces: one -> item | upgrade {
+        yield: integer 1.. = 1
+    }
+    consumes: 1..2 -> item | group {
+        count: integer 1.. = 1
+    }
+    learned-by: optional -> insight
+}
+
+kind synthesis {
+    title: text
+    operation: "extract" | "press" | "oxidize" | "conjugate" | "cleave" | "attach"
+    fragment: "polar" | "charged" | "bulky"?
+    seconds: number 0.. = 1
+    at: optional -> station
+    reagent: optional -> ware
+}
+
+kind dose-route {
+    title: text
+    route: "ingested" | "inhaled" | "injected"
+    needs-device: optional -> ware {
+        uses: integer 0.. = 0
+    }
+}

@@ -55,9 +55,9 @@ STAGE_LINK(3) flat out vec3 tint;
 PUSH_BEGIN
     PUSHED uint dimension;
     PUSHED float cell_ratio;
-    PUSHED uint glowing_materials[3];
-    PUSHED uint unseen_materials[3];
-    PUSHED uint framed_material;
+    PUSHED uint glowing_materials[8];
+    PUSHED uint unseen_materials[8];
+    PUSHED uint framed_materials[8];
 PUSH_END
 
 const vec4 UNSEEN_CLIP = vec4(2.0, 2.0, 2.0, 1.0);
@@ -113,7 +113,7 @@ void main() {
     uvec2 corner = face_corner(vertex_index % VERTICES_PER_FACE, ((code & REVERSED_BIT) != 0u) != (draw.reversed.x != 0.0), (code & FLIPPED_BIT) != 0u);
     uint material = face_material(face);
     vec2 on_layer = vec2(corner);
-    if (material != framed_material) {
+    if (((framed_materials[material / BITS_PER_WORD] >> (material % BITS_PER_WORD)) & 1u) == 0u) {
         uint window = face_window(face);
         on_layer = (on_layer + vec2(window % WINDOWS_PER_SIDE, window / WINDOWS_PER_SIDE)) / float(WINDOWS_PER_SIDE);
     }

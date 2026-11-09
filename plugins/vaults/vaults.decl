@@ -1,0 +1,13 @@
+kind vaults-palette {
+    floor: one -> material
+    inlay: one -> material
+    wall: one -> material
+    vault: one -> material
+    rib: one -> material
+    accent: one -> material
+}
+
+kind vaults-materials {
+    lamp: one -> material
+    palettes: some -> vaults-palette
+}

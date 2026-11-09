@@ -1,0 +1,3 @@
+trail-materials trail:materials {
+    path -> base:gravel
+}

@@ -1,0 +1,8 @@
+road-materials road:materials {
+    surface -> base:basalt
+    stripe -> base:white-brick
+    deck -> base:grey-brick
+    parapet -> base:concrete
+    masonry -> base:grey-brick
+    ring -> base:limestone
+}

@@ -1,0 +1,12 @@
+kind palace-materials {
+    stone: one -> material
+    floor: one -> material
+    tread: one -> material
+    window: one -> material
+    ceiling: one -> material
+    rod: one -> material
+    lamp: one -> material
+    carpet: one -> material
+    water: one -> material
+    lawn: one -> material
+}

@@ -1,14 +1,21 @@
-name "mined"
+name "caapi"
 description "Hyperbolic voxel engine"
 license "MIT"
 targetType "executable"
 sourcePaths "source"
 importPaths "source"
-stringImportPaths "source/fonts"
-dependency "mined:api" version="*"
+stringImportPaths "source/fonts" "source/common"
+dependency "caapi:api" version="*"
 
 dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 libs "dl" "m" "pthread"
+preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :base"
+preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :box-mod"
+preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :buildings-mod"
+preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :connector-mod"
+preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :blocks-mod"
+preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :rooms-mod"
+preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :horospheres-mod"
 preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :planet"
 preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :road"
 preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :city"
@@ -22,9 +29,11 @@ preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$D
 preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :palace"
 preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :arbor"
 preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :lattice"
+preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :caves"
+preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :vaults"
 
 configuration "application" {
-	targetName "mined"
+	targetName "caapi"
 	mainSourceFile "source/main.d"
 	excludedSourceFiles "source/headless.d" "source/worldcheck.d" "source/unittests.d" "source/unit/*"
 	stringImportPaths "source/shaders/spv"
@@ -52,37 +61,39 @@ configuration "application" {
 }
 
 configuration "headless" {
-	targetName "mined-headless"
+	targetName "caapi-headless"
 	mainSourceFile "source/headless.d"
 	excludedSourceFiles "source/main.d" "source/unittests.d" "source/unit/*" "source/bindings/platform.c" "source/client/cocoa.d" "source/client/graphics/*" "source/client/graphics/voxels/*"
 	lflags "--export-dynamic" platform="linux"
 }
 
 configuration "unittest" {
-	targetName "mined-unittest"
+	targetName "caapi-unittest"
 	mainSourceFile "source/unittests.d"
 	excludedSourceFiles "source/main.d" "source/headless.d" "source/worldcheck.d" "source/bindings/platform.c" "source/client/cocoa.d" "source/client/graphics/*" "source/client/graphics/voxels/*" "source/client/script.d" "source/client/drive.d" "source/client/structures.d" "source/client/tiles.d" "source/scripts/*"
+	sourceFiles "plugins/base/plugin.d"
+	stringImportPaths "."
 	lflags "--export-dynamic" platform="linux"
 }
 
 subPackage {
 	name "web"
 	targetType "none"
-	dependency "mined:webpack" version="*"
+	dependency "caapi:webpack" version="*"
 	preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE --arch=wasm32-unknown-wasi :wasm"
 }
 
 subPackage {
 	name "wasm"
 	targetType "executable"
-	targetName "mined"
+	targetName "caapi"
 	targetPath "obj/web"
 	sourcePaths "web"
 	excludedSourceFiles "web/tool/*"
 	importPaths "." "source"
-	stringImportPaths "source/shaders" "source/fonts"
+	stringImportPaths "source/shaders" "source/fonts" "source/common" "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on" "-i" "--fvisibility=hidden" "--mattr=+bulk-memory,+nontrapping-fptoint,+sign-ext,+mutable-globals,+simd128"
-	lflags "--no-entry" "--stack-first" "-z" "stack-size=33554432" "--max-memory=4294901760" "--allow-undefined-file=web/imports.syms" "--export=_initialize" "--export=web_start" "--export=web_frame" "--export=web_resize" "--export=web_key_down" "--export=web_key_up" "--export=web_button" "--export=web_motion" "--export=web_capture" "/usr/lib/wasm32-wasi/crt1-reactor.o" "-L/usr/lib/wasm32-wasi" "-lc" "-lm"
+	lflags "--no-entry" "--stack-first" "-z" "stack-size=33554432" "--max-memory=4294901760" "--allow-undefined-file=web/imports.syms" "--export=_initialize" "--export=web_start" "--export=web_frame" "--export=web_resize" "--export=web_key_down" "--export=web_key_up" "--export=web_button" "--export=web_button_up" "--export=web_motion" "--export=web_pointer" "--export=web_capture" "--export=web_name_buffer" "--export=web_takes_keys" "--export=web_wants_lock" "--export=web_save" "--export=web_blur" "/usr/lib/wasm32-wasi/crt1-reactor.o" "-L/usr/lib/wasm32-wasi" "-lc" "-lm"
 	extraDependencyFiles "web/glue.js" "web/play.js" "web/check.js" "web/shell.html" "web/imports.syms" "web/tool/pack.d" "web/tool/base64.d" "web/tool/files.d"
 	postBuildCommands "$DUB run -q --root=$PACKAGE_DIR --compiler=$DC :webpack"
 }
@@ -123,56 +134,151 @@ subPackage {
 	targetType "sourceLibrary"
 	sourcePaths "plugins/turtle"
 	importPaths "."
-	dependency "mined:api" version="*"
+	dependency "caapi:api" version="*"
 }
 
 subPackage {
 	name "box"
 	targetType "sourceLibrary"
 	sourcePaths "plugins/box"
+	excludedSourceFiles "plugins/box/plugin.d"
 	importPaths "."
-	dependency "mined:turtle" version="*"
+	dependency "caapi:turtle" version="*"
 }
 
 subPackage {
 	name "buildings"
 	targetType "sourceLibrary"
 	sourcePaths "plugins/buildings"
+	excludedSourceFiles "plugins/buildings/plugin.d"
 	importPaths "."
-	dependency "mined:turtle" version="*"
+	dependency "caapi:turtle" version="*"
 }
 
 subPackage {
 	name "connector"
 	targetType "sourceLibrary"
 	sourcePaths "plugins/connector"
+	excludedSourceFiles "plugins/connector/plugin.d"
 	importPaths "."
-	dependency "mined:turtle" version="*"
+	dependency "caapi:turtle" version="*"
 }
 
 subPackage {
 	name "blocks"
 	targetType "sourceLibrary"
 	sourcePaths "plugins/blocks"
+	excludedSourceFiles "plugins/blocks/plugin.d"
 	importPaths "."
-	dependency "mined:buildings" version="*"
-	dependency "mined:connector" version="*"
+	dependency "caapi:buildings" version="*"
+	dependency "caapi:connector" version="*"
 }
 
 subPackage {
 	name "rooms"
 	targetType "sourceLibrary"
 	sourcePaths "plugins/rooms"
+	excludedSourceFiles "plugins/rooms/plugin.d"
 	importPaths "."
-	dependency "mined:blocks" version="*"
+	dependency "caapi:blocks" version="*"
 }
 
 subPackage {
 	name "horospheres"
 	targetType "sourceLibrary"
 	sourcePaths "plugins/horospheres"
+	excludedSourceFiles "plugins/horospheres/plugin.d"
 	importPaths "."
-	dependency "mined:rooms" version="*"
+	dependency "caapi:rooms" version="*"
+}
+
+subPackage {
+	name "box-mod"
+	targetType "dynamicLibrary"
+	targetName "caapi_box"
+	targetPath "lib"
+	sourcePaths
+	sourceFiles "plugins/box/plugin.d"
+	importPaths "."
+	stringImportPaths "."
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	dependency "caapi:api" version="*"
+}
+
+subPackage {
+	name "buildings-mod"
+	targetType "dynamicLibrary"
+	targetName "caapi_buildings"
+	targetPath "lib"
+	sourcePaths
+	sourceFiles "plugins/buildings/plugin.d"
+	importPaths "."
+	stringImportPaths "."
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	dependency "caapi:api" version="*"
+}
+
+subPackage {
+	name "connector-mod"
+	targetType "dynamicLibrary"
+	targetName "caapi_connector"
+	targetPath "lib"
+	sourcePaths
+	sourceFiles "plugins/connector/plugin.d"
+	importPaths "."
+	stringImportPaths "."
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	dependency "caapi:api" version="*"
+}
+
+subPackage {
+	name "blocks-mod"
+	targetType "dynamicLibrary"
+	targetName "caapi_blocks"
+	targetPath "lib"
+	sourcePaths
+	sourceFiles "plugins/blocks/plugin.d"
+	importPaths "."
+	stringImportPaths "."
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	dependency "caapi:api" version="*"
+}
+
+subPackage {
+	name "rooms-mod"
+	targetType "dynamicLibrary"
+	targetName "caapi_rooms"
+	targetPath "lib"
+	sourcePaths
+	sourceFiles "plugins/rooms/plugin.d"
+	importPaths "."
+	stringImportPaths "."
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	dependency "caapi:api" version="*"
+}
+
+subPackage {
+	name "horospheres-mod"
+	targetType "dynamicLibrary"
+	targetName "caapi_horospheres"
+	targetPath "lib"
+	sourcePaths
+	sourceFiles "plugins/horospheres/plugin.d"
+	importPaths "."
+	stringImportPaths "."
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	dependency "caapi:api" version="*"
+}
+
+subPackage {
+	name "base"
+	targetType "dynamicLibrary"
+	targetPath "lib"
+	sourcePaths "plugins/base"
+	importPaths "."
+	stringImportPaths "."
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	dependency "caapi:api" version="*"
 }
 
 subPackage {
@@ -181,9 +287,10 @@ subPackage {
 	targetPath "lib"
 	sourcePaths "plugins/planet"
 	importPaths "."
+	stringImportPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
-	dependency "mined:horospheres" version="*"
+	dependency "caapi:horospheres" version="*"
 }
 
 subPackage {
@@ -192,9 +299,10 @@ subPackage {
 	targetPath "lib"
 	sourcePaths "plugins/road"
 	importPaths "."
+	stringImportPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
-	dependency "mined:turtle" version="*"
+	dependency "caapi:turtle" version="*"
 }
 
 subPackage {
@@ -205,7 +313,7 @@ subPackage {
 	importPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
-	dependency "mined:horospheres" version="*"
+	dependency "caapi:horospheres" version="*"
 }
 
 subPackage {
@@ -216,7 +324,7 @@ subPackage {
 	importPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
-	dependency "mined:horospheres" version="*"
+	dependency "caapi:horospheres" version="*"
 }
 
 subPackage {
@@ -227,7 +335,7 @@ subPackage {
 	importPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
-	dependency "mined:box" version="*"
+	dependency "caapi:box" version="*"
 }
 
 subPackage {
@@ -238,7 +346,7 @@ subPackage {
 	importPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
-	dependency "mined:box" version="*"
+	dependency "caapi:box" version="*"
 }
 
 subPackage {
@@ -247,9 +355,10 @@ subPackage {
 	targetPath "lib"
 	sourcePaths "plugins/trail"
 	importPaths "."
+	stringImportPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
-	dependency "mined:box" version="*"
+	dependency "caapi:box" version="*"
 }
 
 subPackage {
@@ -258,9 +367,10 @@ subPackage {
 	targetPath "lib"
 	sourcePaths "plugins/babel"
 	importPaths "."
+	stringImportPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
-	dependency "mined:connector" version="*"
+	dependency "caapi:connector" version="*"
 }
 
 subPackage {
@@ -269,9 +379,10 @@ subPackage {
 	targetPath "lib"
 	sourcePaths "plugins/library"
 	importPaths "."
+	stringImportPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
-	dependency "mined:blocks" version="*"
+	dependency "caapi:blocks" version="*"
 }
 
 subPackage {
@@ -280,9 +391,10 @@ subPackage {
 	targetPath "lib"
 	sourcePaths "plugins/palace"
 	importPaths "."
+	stringImportPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
-	dependency "mined:turtle" version="*"
+	dependency "caapi:turtle" version="*"
 }
 
 subPackage {
@@ -291,9 +403,10 @@ subPackage {
 	targetPath "lib"
 	sourcePaths "plugins/arbor"
 	importPaths "."
+	stringImportPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
-	dependency "mined:horospheres" version="*"
+	dependency "caapi:horospheres" version="*"
 }
 
 subPackage {
@@ -302,9 +415,10 @@ subPackage {
 	targetPath "lib"
 	sourcePaths "plugins/lattice"
 	importPaths "."
+	stringImportPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
-	dependency "mined:turtle" version="*"
+	dependency "caapi:turtle" version="*"
 }
 
 subPackage {
@@ -315,6 +429,38 @@ subPackage {
 	importPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
-	dependency "mined:horospheres" version="*"
-	dependency "mined:box" version="*"
+	dependency "caapi:horospheres" version="*"
+	dependency "caapi:box" version="*"
+}
+
+subPackage {
+	name "carve"
+	targetType "sourceLibrary"
+	sourcePaths "plugins/carve"
+	importPaths "."
+	dependency "caapi:turtle" version="*"
+}
+
+subPackage {
+	name "caves"
+	targetType "dynamicLibrary"
+	targetPath "lib"
+	sourcePaths "plugins/caves"
+	importPaths "."
+	stringImportPaths "."
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	libs "m"
+	dependency "caapi:carve" version="*"
+}
+
+subPackage {
+	name "vaults"
+	targetType "dynamicLibrary"
+	targetPath "lib"
+	sourcePaths "plugins/vaults"
+	importPaths "."
+	stringImportPaths "."
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	libs "m"
+	dependency "caapi:carve" version="*"
 }

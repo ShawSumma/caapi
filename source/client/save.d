@@ -1,11 +1,13 @@
 module client.save;
 
-import core.stdc.stdio : FILE, fclose, fopen, fread, fseek, ftell, fwrite, SEEK_END, SEEK_SET;
 import core.stdc.string : memcpy, strncpy;
 import base.array : Array;
-import base.maybe : Maybe;
-import base.units : Length;
-import client.game : Beacon, Game, Seed;
+import base.maybe : Maybe, MaybeIndex;
+import base.flags : Readiness;
+import base.units : Length, Time;
+import client.game : Beacon, Compound, Game, MOST_COMPOUNDS, RAW_PER_DOSE, slotFor;
+import common.crafting : CraftKind, Crafting, IdSet, Reaction, SynthesisRule, insights, recipes, returnIngredients, syntheses, upgrades;
+import common.items : Item, ItemKind, contentNameOf, itemCount, itemNamed;
 import client.hud : worldNameOf;
 import common.biology.genome : Genome;
 import common.biology.kinetics : Body;
@@ -13,17 +15,18 @@ import common.biology.organism : Organism;
 import common.biology.signaling : Signaling;
 import common.edits : BlockRecord, CellEdit, ChunkEdits;
 import common.graph : Graph, NodeId, ParentList, ROOT_NODE;
-import common.inventory : Inventory;
+import common.inventory : Inventory, Stack;
 import common.node : ChunkId;
 import common.position : Position;
 import geometry.honeycomb : Corner, Face;
 import geometry.lorentz : Motion;
-import plugins.api.api : ENTRY;
+import plugins.api.api : ENTRY, Material;
 
-enum uint SAVE_MAGIC = 0x6D696E65;
-enum uint SAVE_FORMAT = 3;
-enum uint MOST_SAVED_SEEDS = 1 << 10;
-enum uint WORLDGEN_VERSION = 3;
+enum uint SAVE_MAGIC = 0x63616170;
+enum uint SAVE_FORMAT = 9;
+enum uint MOST_SAVED_NAMES = 1 << 16;
+enum uint MOST_NAME_BYTES = 1 << 10;
+enum uint WORLDGEN_VERSION = 4;
 enum size_t ENTRY_CAPACITY = 32;
 enum size_t WORLD_NAME_CAPACITY = 64;
 enum uint MOST_PATH_FACES = 1 << 16;
@@ -76,11 +79,150 @@ struct Reader {
     }
 }
 
+struct Remap {
+    Array!ushort items;
+    Array!(MaybeIndex!uint) upgrades;
+    Array!(MaybeIndex!uint) insights;
+
+    Item item(Item saved) const {
+        if (saved.id < items.length) {
+            return Item(items.ptr[saved.id]);
+        } else {
+            return Item.init;
+        }
+    }
+
+    Material material(Material saved) const {
+        Item found = item(Item(saved.id));
+        if (found.kind == ItemKind.block) {
+            return found.block;
+        } else {
+            return Material.none;
+        }
+    }
+
+    void release() {
+        items.release();
+        upgrades.release();
+        insights.release();
+    }
+}
+
+IdSet remapped(IdSet saved, const(MaybeIndex!uint)[] map) {
+    IdSet made;
+    foreach (index, now; map) {
+        if (saved.has(cast(uint) index) && now.exists) {
+            made.set(now.value);
+        }
+    }
+    return made;
+}
+
+void putName(ref Writer writer, const(char)[] name) {
+    uint length = cast(uint) name.length;
+    writer.put(length);
+    writer.putAll(name);
+}
+
+void putNames(T)(ref Writer writer, const(T)[] rows) {
+    uint count = cast(uint) rows.length;
+    writer.put(count);
+    foreach (ref row; rows) {
+        writer.putName(row.name);
+    }
+}
+
+void putNameTables(ref Writer writer) {
+    uint count = itemCount();
+    writer.put(count);
+    foreach (id; 0 .. count) {
+        writer.putName(contentNameOf(Item(cast(ushort) id)));
+    }
+    writer.putNames(upgrades());
+    writer.putNames(insights());
+}
+
+bool takeName(ref Reader reader, ref const(char)[] name) {
+    uint length;
+    if (!reader.take(length) || length > MOST_NAME_BYTES || reader.at + length > reader.bytes.length) {
+        return false;
+    } else {
+        name = cast(const(char)[]) reader.bytes[reader.at .. reader.at + length];
+        reader.at += length;
+        return true;
+    }
+}
+
+bool takeRows(T)(ref Reader reader, const(T)[] rows, ref Array!(MaybeIndex!uint) map) {
+    uint count;
+    if (!reader.take(count) || count > MOST_SAVED_NAMES) {
+        return false;
+    } else {
+        foreach (_; 0 .. count) {
+            const(char)[] name;
+            if (!reader.takeName(name)) {
+                return false;
+            }
+            uint index = 0;
+            while (index < rows.length && rows[index].name != name) {
+                index += 1;
+            }
+            if (index < rows.length) {
+                map.append(MaybeIndex!uint.of(index));
+            } else {
+                map.append(MaybeIndex!uint.init);
+            }
+        }
+        return true;
+    }
+}
+
+bool takeNameTables(ref Reader reader, ref Remap remap) {
+    uint count;
+    if (!reader.take(count) || count > MOST_SAVED_NAMES) {
+        return false;
+    } else {
+        foreach (_; 0 .. count) {
+            const(char)[] name;
+            if (!reader.takeName(name)) {
+                return false;
+            }
+            Maybe!Item found = itemNamed(name);
+            if (found.exists) {
+                remap.items.append(found.value.id);
+            } else {
+                remap.items.append(Item.init.id);
+            }
+        }
+        return reader.takeRows(upgrades(), remap.upgrades) && reader.takeRows(insights(), remap.insights);
+    }
+}
+
+void remapData(ref SaveData data, ref const Remap remap) {
+    foreach (ref stack; data.inventory.slots) {
+        Item now = remap.item(stack.item);
+        if (now.kind == ItemKind.nothing) {
+            stack = Stack.init;
+        } else {
+            stack.item = now;
+        }
+    }
+    data.owned = data.owned.remapped(remap.upgrades.slice());
+    data.noticed = data.noticed.remapped(remap.insights.slice());
+    foreach (ref edit; data.cells.slice()) {
+        edit.material = remap.material(edit.material);
+    }
+}
+
 struct SaveData {
     SaveHeader header;
     Array!Face path;
     Motion!float local;
     Inventory inventory;
+    IdSet owned;
+    IdSet noticed;
+    Time time;
+    Array!Compound compounds;
     Genome genome;
     Body body;
     Signaling signaling;
@@ -89,10 +231,9 @@ struct SaveData {
     Array!BlockRecord records;
     Array!SavedBeacon beacons;
     Array!Face beaconPaths;
-    Array!Seed seeds;
 
     void release() {
-        seeds.release();
+        compounds.release();
         path.release();
         chunks.release();
         cells.release();
@@ -129,9 +270,38 @@ void pathFromRoot(ref const Graph graph, uint slot, ref Array!Face path) {
     }
 }
 
+void refund(ref const Crafting crafting, ref Inventory kept, ref Array!Compound compounds) {
+    final switch (crafting.kind) {
+        case CraftKind.recipe:
+            kept.returnIngredients(recipes()[crafting.index], crafting.taken);
+            break;
+        case CraftKind.synthesis:
+            const(SynthesisRule)* rule = &syntheses()[crafting.index];
+            if (rule.reagent.kind != ItemKind.nothing) {
+                kept.gain(Stack(rule.reagent, 1));
+            }
+            final switch (rule.reaction) {
+                case Reaction.extract:
+                    kept.gain(crafting.pressed);
+                    break;
+                case Reaction.press:
+                    compounds.ptr[compounds.slotFor(crafting.molecule)].raw += RAW_PER_DOSE;
+                    break;
+                case Reaction.oxidize:
+                case Reaction.conjugate:
+                case Reaction.cleave:
+                case Reaction.attach:
+                    compounds.ptr[compounds.slotFor(crafting.molecule)].doses += 1;
+                    break;
+            }
+            break;
+    }
+}
+
 void writeGame(ref const Game game, ref Writer writer) {
     SaveHeader header = headerFor(game);
     writer.put(header);
+    writer.putNameTables();
     Array!Face path;
     Position body = game.characterState.position;
     pathFromRoot(game.world.graph, game.world.graph.slotOf(body.node).value, path);
@@ -140,7 +310,25 @@ void writeGame(ref const Game game, ref Writer writer) {
     writer.putAll(path.slice());
     writer.put(body.local);
     path.release();
-    writer.put(game.inventory);
+    Inventory kept = game.inventory;
+    Array!Compound compounds;
+    compounds.appendAll(game.compounds.slice());
+    foreach (ref crafting; game.crafts.slice()) {
+        if (crafting.started == Readiness.ready) {
+            refund(crafting, kept, compounds);
+        }
+    }
+    if (!game.carried.isEmpty) {
+        kept.gain(game.carried);
+    }
+    writer.put(kept);
+    writer.put(game.owned);
+    writer.put(game.noticed);
+    writer.put(game.time);
+    uint compoundCount = cast(uint) compounds.length;
+    writer.put(compoundCount);
+    writer.putAll(compounds.slice());
+    compounds.release();
     writer.put(game.organism.genome);
     writer.put(game.organism.body);
     writer.put(game.organism.signaling);
@@ -165,15 +353,12 @@ void writeGame(ref const Game game, ref Writer writer) {
         writer.putAll(beaconPath.slice());
     }
     beaconPath.release();
-    uint seedCount = cast(uint) game.seeds.length;
-    writer.put(seedCount);
-    writer.putAll(game.seeds.slice());
 }
 
 const(char)* readGame(const(ubyte)[] bytes, ref const Game game, ref SaveData data) {
     Reader reader = Reader(bytes);
     if (!reader.take(data.header) || data.header.magic != SAVE_MAGIC) {
-        return "is not a mined save";
+        return "is not a caapi save";
     } else if (data.header.format != SAVE_FORMAT) {
         return "was written by another save format";
     } else if (data.header.worldgen != WORLDGEN_VERSION) {
@@ -183,36 +368,47 @@ const(char)* readGame(const(ubyte)[] bytes, ref const Game game, ref SaveData da
     } else if (data.header.world != headerFor(game).world) {
         return "belongs to another world";
     } else {
-        return readBody(reader, data);
+        Remap remap;
+        const(char)* problem = "is cut short in its names";
+        if (reader.takeNameTables(remap)) {
+            problem = readBody(reader, data);
+        }
+        if (problem is null) {
+            remapData(data, remap);
+        }
+        remap.release();
+        return problem;
     }
 }
 
 const(char)* readBody(ref Reader reader, ref SaveData data) {
     if (!readPath(reader, data)) {
         return "is cut short in the body's place";
-    } else if (!reader.take(data.local) || !reader.take(data.inventory) || !reader.take(data.genome) || !reader.take(data.body) || !reader.take(data.signaling)) {
+    } else if (!reader.take(data.local) || !reader.take(data.inventory) || !reader.take(data.owned) || !reader.take(data.noticed) || !reader.take(data.time)) {
+        return "is cut short in the inventory";
+    } else if (!readCompounds(reader, data)) {
+        return "is cut short in the compounds";
+    } else if (!reader.take(data.genome) || !reader.take(data.body) || !reader.take(data.signaling)) {
         return "is cut short before the edits";
     } else if (!readEdits(reader, data)) {
         return "is cut short in the edits";
     } else if (!readBeacons(reader, data)) {
         return "is cut short in the beacons";
-    } else if (!readSeeds(reader, data)) {
-        return "is cut short in the seeds";
     } else {
         return null;
     }
 }
 
-bool readSeeds(ref Reader reader, ref SaveData data) {
+bool readCompounds(ref Reader reader, ref SaveData data) {
     uint count;
-    bool counted = reader.take(count) && count <= MOST_SAVED_SEEDS;
+    bool counted = reader.take(count) && count <= MOST_COMPOUNDS;
     if (counted) {
         foreach (_; 0 .. count) {
-            Seed seed;
-            if (!reader.take(seed)) {
+            Compound compound;
+            if (!reader.take(compound)) {
                 return false;
             }
-            data.seeds.append(seed);
+            data.compounds.append(compound);
         }
     }
     return counted;
@@ -310,12 +506,16 @@ uint replayed(ref Graph graph, const(Face)[] path) {
 
 void applyState(ref Game game, ref const SaveData data) {
     game.inventory = data.inventory;
+    game.owned = data.owned;
+    game.noticed = data.noticed;
+    game.time = data.time;
     game.organism.release();
     game.organism = Organism.make(data.genome);
     game.organism.body = data.body;
     game.organism.signaling = data.signaling;
-    game.seeds.clear();
-    game.seeds.appendAll(data.seeds.slice());
+    game.compounds.clear();
+    game.compounds.appendAll(data.compounds.slice());
+    game.assayAll();
     size_t first = 0;
     foreach (saved; data.beacons.slice()) {
         uint beaconSlot = replayed(game.world.graph, data.beaconPaths.slice()[first .. first + saved.faces]);
@@ -327,34 +527,3 @@ void applyState(ref Game game, ref const SaveData data) {
     game.placeAt(Position(game.world.graph.idAt(slot), data.local), Length(0));
 }
 
-bool writeFile(const(char)* path, const(ubyte)[] bytes) {
-    FILE* file = fopen(path, "wb");
-    if (file is null) {
-        return false;
-    } else {
-        size_t written = fwrite(bytes.ptr, 1, bytes.length, file);
-        fclose(file);
-        return written == bytes.length;
-    }
-}
-
-Maybe!(Array!ubyte) readFile(const(char)* path) {
-    FILE* file = fopen(path, "rb");
-    if (file is null) {
-        return Maybe!(Array!ubyte).init;
-    } else {
-        fseek(file, 0, SEEK_END);
-        long size = ftell(file);
-        fseek(file, 0, SEEK_SET);
-        Array!ubyte bytes;
-        bytes.resize(cast(size_t) size);
-        size_t read = fread(bytes.ptr, 1, bytes.length, file);
-        fclose(file);
-        if (read != bytes.length) {
-            bytes.release();
-            return Maybe!(Array!ubyte).init;
-        } else {
-            return Maybe!(Array!ubyte).of(bytes);
-        }
-    }
-}

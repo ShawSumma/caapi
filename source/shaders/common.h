@@ -4,7 +4,7 @@
 #include "target.h"
 
 BOUND(0, 0) uniform Common {
-    vec4 material_tints[96];
+    vec4 material_tints[256];
     mat4 projection;
     mat4 camera_inverse;
     vec4 frustum_planes[5];

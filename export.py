@@ -3,12 +3,17 @@ import glob
 
 srcs = []
 
-srcs.extend(glob.glob('makefile', recursive=True))
+srcs.append('dub.sdl')
 srcs.extend(glob.glob('plugins/**/*.d', recursive=True))
+srcs.extend(glob.glob('source/**/*.c', recursive=True))
 srcs.extend(glob.glob('source/**/*.d', recursive=True))
-srcs.extend(glob.glob('source/**/*.h', recursive=True))
 srcs.extend(glob.glob('source/**/*.frag', recursive=True))
+srcs.extend(glob.glob('source/**/*.h', recursive=True))
 srcs.extend(glob.glob('source/**/*.vert', recursive=True))
+srcs.extend(glob.glob('web/**/*.d', recursive=True))
+srcs.extend(glob.glob('web/**/*.html', recursive=True))
+srcs.extend(glob.glob('web/**/*.js', recursive=True))
+srcs.extend(glob.glob('web/**/*.syms', recursive=True))
 
 srcs.sort()
 

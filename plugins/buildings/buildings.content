@@ -1,0 +1,110 @@
+building-materials buildings:materials {
+    window -> base:glass
+    pad -> base:concrete
+    marking -> base:white-brick
+    tank-leg -> base:steel
+    tank -> base:wood-planks
+    lawn -> base:grass
+    leaves -> base:oak-leaves
+    trunk -> base:oak-wood
+}
+
+building-type buildings:brownstone {
+    form: brownstone
+    least-stories: 4
+    most-stories: 5
+    roof -> base:slate
+    palettes -> [buildings:brownstone-1 buildings:brownstone-2 buildings:brownstone-3 buildings:brownstone-4 buildings:brownstone-5]
+}
+building-palette buildings:brownstone-1 { wall -> base:red-sandstone, trim -> base:sandstone, floor -> base:wood-planks }
+building-palette buildings:brownstone-2 { wall -> base:red-sandstone, trim -> base:limestone, floor -> base:wood-planks }
+building-palette buildings:brownstone-3 { wall -> base:shale, trim -> base:limestone, floor -> base:wood-planks }
+building-palette buildings:brownstone-4 { wall -> base:clay, trim -> base:sandstone, floor -> base:wood-planks }
+building-palette buildings:brownstone-5 { wall -> base:spruce-wood, trim -> base:diorite, floor -> base:wood-planks }
+
+building-type buildings:civic {
+    form: civic
+    least-stories: 3
+    most-stories: 6
+    roof -> base:slate
+    palettes -> [buildings:civic-1 buildings:civic-2 buildings:civic-3 buildings:civic-4]
+}
+building-palette buildings:civic-1 { wall -> base:marble, trim -> base:limestone, floor -> base:marble, roof -> base:slate }
+building-palette buildings:civic-2 { wall -> base:limestone, trim -> base:marble, floor -> base:marble, roof -> base:steel }
+building-palette buildings:civic-3 { wall -> base:sandstone, trim -> base:limestone, floor -> base:wood-planks, roof -> base:clay }
+building-palette buildings:civic-4 { wall -> base:granite, trim -> base:marble, floor -> base:marble, roof -> base:slate }
+
+building-type buildings:deco {
+    form: deco
+    least-stories: 14
+    most-stories: 34
+    roof -> base:slate
+    palettes -> [buildings:deco-1 buildings:deco-2 buildings:deco-3 buildings:deco-4 buildings:deco-5]
+}
+building-palette buildings:deco-1 { wall -> base:limestone, trim -> base:steel, floor -> base:concrete }
+building-palette buildings:deco-2 { wall -> base:sandstone, trim -> base:marble, floor -> base:concrete }
+building-palette buildings:deco-3 { wall -> base:white-brick, trim -> base:steel, floor -> base:concrete }
+building-palette buildings:deco-4 { wall -> base:diorite, trim -> base:granite, floor -> base:concrete }
+building-palette buildings:deco-5 { wall -> base:dolomite, trim -> base:slate, floor -> base:concrete }
+
+building-type buildings:glass {
+    form: glass
+    least-stories: 12
+    most-stories: 38
+    roof -> base:concrete
+    palettes -> [buildings:glass-1 buildings:glass-2 buildings:glass-3 buildings:glass-4]
+}
+building-palette buildings:glass-1 { wall -> base:glass, trim -> base:steel, floor -> base:concrete, band -> base:concrete }
+building-palette buildings:glass-2 { wall -> base:glass, trim -> base:basalt, floor -> base:concrete, band -> base:slate }
+building-palette buildings:glass-3 { wall -> base:glass, trim -> base:steel, floor -> base:marble, band -> base:steel }
+building-palette buildings:glass-4 { wall -> base:glass, trim -> base:gabbro, floor -> base:concrete, band -> base:gabbro }
+
+building-type buildings:modern {
+    form: modern
+    least-stories: 6
+    most-stories: 20
+    roof -> base:concrete
+    palettes -> [buildings:modern-1 buildings:modern-2 buildings:modern-3 buildings:modern-4]
+}
+building-palette buildings:modern-1 { wall -> base:concrete, trim -> base:steel, floor -> base:concrete }
+building-palette buildings:modern-2 { wall -> base:white-brick, trim -> base:glass, floor -> base:marble }
+building-palette buildings:modern-3 { wall -> base:diorite, trim -> base:steel, floor -> base:concrete }
+building-palette buildings:modern-4 { wall -> base:gabbro, trim -> base:glass, floor -> base:concrete }
+
+building-type buildings:rowhouse {
+    form: rowhouse
+    least-stories: 2
+    most-stories: 3
+    roof -> base:wood-planks
+    palettes -> [buildings:rowhouse-1 buildings:rowhouse-2 buildings:rowhouse-3 buildings:rowhouse-4 buildings:rowhouse-5]
+}
+building-palette buildings:rowhouse-1 { wall -> base:white-brick, trim -> base:spruce-wood, floor -> base:wood-planks, roof -> base:slate }
+building-palette buildings:rowhouse-2 { wall -> base:wood-planks, trim -> base:white-brick, floor -> base:wood-planks, roof -> base:red-sandstone }
+building-palette buildings:rowhouse-3 { wall -> base:birch-wood, trim -> base:spruce-wood, floor -> base:wood-planks, roof -> base:shale }
+building-palette buildings:rowhouse-4 { wall -> base:sandstone, trim -> base:clay, floor -> base:wood-planks, roof -> base:clay }
+building-palette buildings:rowhouse-5 { wall -> base:limestone, trim -> base:grey-brick, floor -> base:wood-planks, roof -> base:slate }
+
+building-type buildings:tenement {
+    form: tenement
+    least-stories: 5
+    most-stories: 9
+    roof -> base:basalt
+    palettes -> [buildings:tenement-1 buildings:tenement-2 buildings:tenement-3 buildings:tenement-4 buildings:tenement-5]
+}
+building-palette buildings:tenement-1 { wall -> base:grey-brick, trim -> base:white-brick, floor -> base:wood-planks }
+building-palette buildings:tenement-2 { wall -> base:white-brick, trim -> base:grey-brick, floor -> base:wood-planks }
+building-palette buildings:tenement-3 { wall -> base:red-sandstone, trim -> base:white-brick, floor -> base:wood-planks }
+building-palette buildings:tenement-4 { wall -> base:clay, trim -> base:limestone, floor -> base:wood-planks }
+building-palette buildings:tenement-5 { wall -> base:andesite, trim -> base:sandstone, floor -> base:wood-planks }
+
+building-type buildings:warehouse {
+    form: warehouse
+    least-stories: 2
+    most-stories: 4
+    roof -> base:basalt
+    palettes -> [buildings:warehouse-1 buildings:warehouse-2 buildings:warehouse-3 buildings:warehouse-4]
+}
+building-palette buildings:warehouse-1 { wall -> base:red-sandstone, trim -> base:grey-brick, floor -> base:concrete }
+building-palette buildings:warehouse-2 { wall -> base:grey-brick, trim -> base:steel, floor -> base:concrete }
+building-palette buildings:warehouse-3 { wall -> base:concrete, trim -> base:steel, floor -> base:concrete }
+building-palette buildings:warehouse-4 { wall -> base:clay, trim -> base:basalt, floor -> base:wood-planks }

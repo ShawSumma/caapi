@@ -4,7 +4,7 @@ import core.stdc.math : acoshf, fabsf;
 import base.vector3 : Vec3;
 import common.worldgen.strokes : Nearest, Stroke, StrokeForm;
 import geometry.lorentz : Motion, Point, Vec4;
-import plugins.api.api : Material;
+import unit.named : blockNamed;
 
 enum double LENGTH = 0.8;
 enum double SIDE = 0.3;
@@ -12,7 +12,7 @@ enum float TOLERANCE = 1e-4f;
 
 unittest {
     Motion!double start = Motion!double.shift(Vec3!double(0.2, -0.1, 0.3));
-    Stroke stroke = Stroke.make(start, LENGTH, 0.1f, 0.05f, Material.oakWood, StrokeForm.solid);
+    Stroke stroke = Stroke.make(start, LENGTH, 0.1f, 0.05f, blockNamed("base:oak-wood"), StrokeForm.solid);
     Vec4!float beside = (start * Motion!double.shift(Vec3!double(0, 0, LENGTH / 2)) * Motion!double.shift(Vec3!double(SIDE, 0, 0)) * Point!double.origin()).v.as!float();
     Nearest middle = stroke.nearest(beside);
     assert(fabsf(acoshf(middle.coshDistance) - SIDE) < TOLERANCE && fabsf(middle.along - LENGTH / 2) < TOLERANCE);

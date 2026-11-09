@@ -2,11 +2,10 @@ module main;
 
 import core.bitop : bsf;
 import core.stdc.math : asinf, coshf, floorf, sinhf, tanf;
-import core.stdc.stdio : FILE, fclose, fflush, fopen, fprintf, fscanf, printf, snprintf, stderr;
+import core.stdc.stdio : FILE, SEEK_END, SEEK_SET, fclose, fflush, fopen, fprintf, fread, fscanf, fseek, ftell, fwrite, printf, snprintf, stderr;
 import core.stdc.stdlib : free, malloc;
 import core.sys.posix.sys.stat : mkdir;
 import core.sys.posix.time : nanosleep, timespec;
-import bindings.platform : VkExtent2D;
 import base.array : Array;
 import base.clock : FrameClock, MILLISECONDS_PER_SECOND, NANOSECONDS_PER_SECOND, PhaseTimes, nowSeconds, threadCpuMilliseconds;
 import base.crash : reportCrashes, reportHangAfter;
@@ -18,23 +17,26 @@ import base.numbers : higherOf, lowerOf;
 import base.parallel : ConcurrentQueue, QueueCell;
 import base.slab : RunPool, SLAB_SIZE, Slab;
 import base.units : Angle, Speed, Time;
+import bindings.platform : VkExtent2D;
 import client.arguments : ArgumentCursor, ExitStatus, HELP_OPTION, NOT_A_NUMBER, OUTPUT_OPTION, OptionSpec, REPORT_UNOPENED, StartupError, UNKNOWN_OPTION, VERSION_OPTION, VERSION_TEXT, WORLDGEN_OPTION, WorldgenArgument, closeReport, exitStatus, numberIn, openReport, parseOptions, sliceOf, usageOf;
+import client.bindings : Action, Bindings, Rules;
 import client.config : ClientConfig, PitchAxis;
 import client.drive : DIRECTORY_MODE, DriveEventKind, DriveHost, DriveInput, DriveKey, LEFT_BUTTON, NamedDrive;
 import client.frames : RenderTimes;
-import client.game : ChunkSupply, Command, CommandBinding, FrameInput, Game, Key, KeyBinding, KeyStroke, MAX_STEP_SECONDS, commandOf, frameInputOf, holdBound, letGoBound;
+import client.game : ChunkSupply, Click, FrameInput, Game, Key, KeyStroke, MOST_STEP_SECONDS, Screen, UiAction, UiKind, creativeInventory, frameInputOf;
 import client.graphics.core : SurfaceSource;
 import client.graphics.renderer : CaptureMark, FrameTimes, Renderer;
 import client.graphics.uniforms : HALF_VERTICAL_FOV;
 import client.graphics.voxels.meshes : ChunkMeshes;
-import client.hud : FrameMeter, Hud, MouseCapture, STATUS_CAPACITY, statusLine;
+import client.hud : FrameMeter, Hud, MouseCapture, STATUS_CAPACITY, statusLine, worldNameOf;
+import client.input : BUTTON_NAME_CAPACITY, Controls, Request, buttonName;
 import client.meshing : Mesher;
+import client.plugins : gatherWorlds, registry;
 import client.png : writePng;
 import client.sampler : Sampler;
-import client.save : SaveData, Writer, applyEdits, applyState, readFile, readGame, writeFile, writeGame;
+import client.save : SaveData, Writer, applyEdits, applyState, readGame, writeGame;
 import client.script : NamedScript, Script, ScriptRecorder, StepHook, named;
 import client.streaming : Pacing, Streamer;
-import client.plugins : gatherWorlds, registry;
 import client.structures : StructureHost, StructureProblem, TileCounts, WorldStep, growthProblem, placeStructure, restartGame, steppedWorld, tileCounts, worldgenAt;
 import client.tasks : TaskQueues;
 import client.tiles : PlanOutputs, TileHost, TilePainter, TileWork;
@@ -80,8 +82,10 @@ enum double FRAME_DEADLINE_MS = 1000.0 / 60.0;
 enum uint SLOW_FRAMES_SHOWN = 6;
 enum uint BENCH_TIME_LIMIT_SECONDS = 300;
 enum size_t BYTES_PER_MEGABYTE = 1024 * 1024;
-enum string DEFAULT_CONFIG = "mined.cfg";
-enum string USAGE = "usage: mined [options] [view or film]\n" ~ usageOf(OPTIONS[]);
+enum string DEFAULT_CONFIG = "caapi.cfg";
+enum string SAVE_DIRECTORY = "saves";
+enum double AUTOSAVE_SECONDS = 30;
+enum string USAGE = "usage: caapi [options] [view or film]\n" ~ usageOf(OPTIONS[]);
 
 enum Option : ubyte {
     worldgen,
@@ -98,6 +102,7 @@ enum Option : ubyte {
     flightSpeed,
     output,
     save,
+    creative,
     help,
     showVersion,
 }
@@ -116,17 +121,17 @@ immutable OptionSpec[Option.max + 1] OPTIONS = [
     Option.profile: OptionSpec("--profile", "", "sample the threads during the benchmark"),
     Option.flightSpeed: OptionSpec("--flight-speed", "<units/s>", "how fast the benchmark flies"),
     Option.output: OUTPUT_OPTION,
-    Option.save: OptionSpec("--save", "<file>", "load this save if it exists, and write it on quit"),
+    Option.save: OptionSpec("--save", "<file>", "save to this file instead of " ~ SAVE_DIRECTORY ~ "/<world>-<mode>.save"),
+    Option.creative: OptionSpec("--creative", "", "creative mode: start with blocks, mine fast, fly, noclip, change worlds, test doses"),
     Option.help: HELP_OPTION,
     Option.showVersion: VERSION_OPTION,
 ];
 
 version (OSX) {
-    import client.cocoa : Button1, Button3, CocoaWindow, KeyAction, KeyEvent, KeySym, WindowEvents, XK_1, XK_9, XK_bracketleft, XK_bracketright, XK_Escape, XK_Down, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_e, XK_f, XK_n, XK_o, XK_p, XK_s, XK_space, XK_v, XK_w;
+    import client.cocoa : Button1, Button3, Button4, Button5, ButtonEvent, CocoaWindow, KeyAction, KeyEvent, WindowEvents;
 
     enum string WINDOW_REQUIREMENT = "cannot open a window";
     enum int MACH_TASK_BASIC_INFO = 20;
-    enum CommandBinding!KeySym[] PLATFORM_COMMANDS = [];
 
     struct MachTaskBasicInfo {
         ulong virtualSize;
@@ -174,19 +179,18 @@ version (OSX) {
     }
 } else {
     import core.sys.posix.sys.resource : RUSAGE_SELF, getrusage, rusage;
-    import bindings.platform : Atom, Button1, Button3, ButtonPress, ClientMessage, CurrentTime, Cursor, Display, False, FocusOut, GenericEvent, GrabModeAsync, GrabSuccess, KeyPress, KeyRelease, KeySym, Pixmap, Success, True, UnmapNotify, Window, XBlackPixel, XCloseDisplay, XColor, XCreateBitmapFromData, XCreatePixmapCursor, XCreateSimpleWindow, XDefaultScreen, XDestroyWindow, XDisplayHeight, XDisplayWidth, XEvent, XFlush, XFreeCursor, XFreeEventData, XFreePixmap, XGenericEventCookie, XGetEventData, XGrabPointer, XIAllMasterDevices, XIDeviceInfo, XIEventMask, XIFreeDeviceInfo, XIModeAbsolute, XIQueryDevice, XIQueryVersion, XIRawEvent, XISelectEvents, XIValuatorClass, XIValuatorClassInfo, XI_DeviceChanged, XI_RawMotion, XInternAtom, XK_1, XK_9, XK_bracketleft, XK_bracketright, XK_Escape, XK_Down, XK_Left, XK_Right, XK_Shift_L, XK_Up, XK_a, XK_d, XK_e, XK_f, XK_n, XK_o, XK_p, XK_s, XK_space, XK_t, XK_v, XK_w, XLookupKeysym, XMapWindow, XNextEvent, XOpenDisplay, XPending, XQueryExtension, XRootWindow, XSelectInput, XSetWMProtocols, XStoreName, XUngrabPointer, XkbSetDetectableAutoRepeat, BUTTON_PRESS_EVENTS, FOCUS_EVENTS, KEY_PRESS_EVENTS, KEY_RELEASE_EVENTS, STRUCTURE_EVENTS, mallinfo2;
     import base.pages : pageSize;
+    import bindings.platform : Atom, BUTTON_PRESS_EVENTS, BUTTON_RELEASE_EVENTS, Button1, Button3, Button4, Button5, ButtonPress, ButtonRelease, ClientMessage, CurrentTime, Cursor, Display, FOCUS_EVENTS, False, FocusOut, GenericEvent, GrabModeAsync, GrabSuccess, KEY_PRESS_EVENTS, KEY_RELEASE_EVENTS, KeyPress, KeyRelease, KeySym, MotionNotify, POINTER_MOTION_EVENTS, Pixmap, STRUCTURE_EVENTS, Success, True, UnmapNotify, Window, XBlackPixel, XCloseDisplay, XColor, XCreateBitmapFromData, XCreatePixmapCursor, XCreateSimpleWindow, XDefaultScreen, XDestroyWindow, XDisplayHeight, XDisplayWidth, XEvent, XFlush, XFreeCursor, XFreeEventData, XFreePixmap, XGenericEventCookie, XGetEventData, XGrabPointer, XIAllMasterDevices, XIDeviceInfo, XIEventMask, XIFreeDeviceInfo, XIModeAbsolute, XIQueryDevice, XIQueryVersion, XIRawEvent, XISelectEvents, XIValuatorClass, XIValuatorClassInfo, XI_DeviceChanged, XI_RawMotion, XInternAtom, XKeysymToString, XLookupKeysym, XMapWindow, XNextEvent, XOpenDisplay, XPending, XQueryExtension, XRootWindow, XSelectInput, XSetWMProtocols, XStoreName, XUngrabPointer, XWarpPointer, XkbSetDetectableAutoRepeat, mallinfo2;
 
     enum string WINDOW_REQUIREMENT = "cannot open a window: needs an X display with XInput 2.1";
-    enum CommandBinding!KeySym[] PLATFORM_COMMANDS = [CommandBinding!KeySym(XK_t, Command.throwBlock)];
     enum string STATM_PATH = "/proc/self/statm";
     enum string DELETE_WINDOW_ATOM = "WM_DELETE_WINDOW";
     enum string XINPUT_EXTENSION = "XInputExtension";
     enum size_t BYTES_PER_KILOBYTE = 1024;
     enum uint KEYCODE_COUNT = 256;
     enum uint CURSOR_BITMAP_SIZE = 8;
-    enum long INPUT_EVENT_MASK = KEY_PRESS_EVENTS | KEY_RELEASE_EVENTS | BUTTON_PRESS_EVENTS | STRUCTURE_EVENTS | FOCUS_EVENTS;
-    enum uint POINTER_GRAB_MASK = BUTTON_PRESS_EVENTS;
+    enum long INPUT_EVENT_MASK = KEY_PRESS_EVENTS | KEY_RELEASE_EVENTS | BUTTON_PRESS_EVENTS | BUTTON_RELEASE_EVENTS | POINTER_MOTION_EVENTS | STRUCTURE_EVENTS | FOCUS_EVENTS;
+    enum uint POINTER_GRAB_MASK = BUTTON_PRESS_EVENTS | BUTTON_RELEASE_EVENTS | POINTER_MOTION_EVENTS;
     enum int XI_REQUIRED_MAJOR = 2;
     enum int XI_REQUIRED_MINOR = 1;
     enum size_t XI_MASK_BYTES = (XI_RawMotion >> 3) + 1;
@@ -288,6 +292,16 @@ enum SessionMark : ubyte {
     titleStale,
 }
 
+enum PointerGrab : ubyte {
+    freed,
+    held,
+}
+
+enum Saving : ubyte {
+    enabled,
+    refused,
+}
+
 struct Arguments {
     StartupError error;
     const(char)* program;
@@ -308,6 +322,7 @@ struct Arguments {
     PitchAxis pitchAxis;
     RunKind kind;
     Profiling profiling;
+    Rules rules;
 
     static Arguments fromArgv(int argc, char** argv) {
         Arguments arguments = Arguments(StartupError.init, argv[0]);
@@ -358,6 +373,9 @@ struct Arguments {
                 break;
             case Option.save:
                 savePath = cursor.next();
+                break;
+            case Option.creative:
+                rules = Rules.creative;
                 break;
             case Option.help:
                 kind = RunKind.help;
@@ -455,55 +473,31 @@ struct Arguments {
     }
 }
 
-immutable KeyBinding!KeySym[Key.max + 1] KEY_BINDINGS = [
-    KeyBinding!KeySym(XK_w, Key.fwd),
-    KeyBinding!KeySym(XK_s, Key.back),
-    KeyBinding!KeySym(XK_a, Key.left),
-    KeyBinding!KeySym(XK_d, Key.right),
-    KeyBinding!KeySym(XK_space, Key.up),
-    KeyBinding!KeySym(XK_Shift_L, Key.down),
-    KeyBinding!KeySym(XK_Left, Key.yawLeft),
-    KeyBinding!KeySym(XK_Right, Key.yawRight),
-    KeyBinding!KeySym(XK_Up, Key.pitchUp),
-    KeyBinding!KeySym(XK_Down, Key.pitchDown),
-];
-
-immutable CommandBinding!KeySym[] COMMAND_BINDINGS = [
-    CommandBinding!KeySym(XK_v, Command.walkMode),
-    CommandBinding!KeySym(XK_n, Command.noclipMode),
-    CommandBinding!KeySym(XK_bracketleft, Command.previousWorld),
-    CommandBinding!KeySym(XK_bracketright, Command.nextWorld),
-    CommandBinding!KeySym(XK_p, Command.nextPreset),
-    CommandBinding!KeySym(XK_o, Command.dose),
-    CommandBinding!KeySym(XK_e, Command.use),
-    CommandBinding!KeySym(XK_f, Command.eat),
-] ~ PLATFORM_COMMANDS;
-
-immutable KeySym[DriveKey.max + 1] DRIVE_KEYSYMS = [
-    DriveKey.w: XK_w,
-    DriveKey.a: XK_a,
-    DriveKey.s: XK_s,
-    DriveKey.d: XK_d,
-    DriveKey.space: XK_space,
-    DriveKey.shift: XK_Shift_L,
-    DriveKey.v: XK_v,
-    DriveKey.n: XK_n,
-    DriveKey.left: XK_Left,
-    DriveKey.right: XK_Right,
-    DriveKey.up: XK_Up,
-    DriveKey.down: XK_Down,
-    DriveKey.bracketLeft: XK_bracketleft,
-    DriveKey.bracketRight: XK_bracketright,
-    DriveKey.escape: XK_Escape,
-    DriveKey.digit1: XK_1,
-    DriveKey.digit2: XK_1 + 1,
-    DriveKey.digit3: XK_1 + 2,
-    DriveKey.digit4: XK_1 + 3,
-    DriveKey.digit5: XK_1 + 4,
-    DriveKey.digit6: XK_1 + 5,
-    DriveKey.digit7: XK_1 + 6,
-    DriveKey.digit8: XK_1 + 7,
-    DriveKey.digit9: XK_9,
+immutable string[DriveKey.max + 1] DRIVE_KEYS = [
+    DriveKey.w: "w",
+    DriveKey.a: "a",
+    DriveKey.s: "s",
+    DriveKey.d: "d",
+    DriveKey.space: "space",
+    DriveKey.shift: "Shift_L",
+    DriveKey.v: "v",
+    DriveKey.n: "n",
+    DriveKey.left: "Left",
+    DriveKey.right: "Right",
+    DriveKey.up: "Up",
+    DriveKey.down: "Down",
+    DriveKey.bracketLeft: "bracketleft",
+    DriveKey.bracketRight: "bracketright",
+    DriveKey.escape: "Escape",
+    DriveKey.digit1: "1",
+    DriveKey.digit2: "2",
+    DriveKey.digit3: "3",
+    DriveKey.digit4: "4",
+    DriveKey.digit5: "5",
+    DriveKey.digit6: "6",
+    DriveKey.digit7: "7",
+    DriveKey.digit8: "8",
+    DriveKey.digit9: "9",
 ];
 
 uint driveButton(uint button) {
@@ -511,6 +505,16 @@ uint driveButton(uint button) {
         return Button1;
     } else {
         return Button3;
+    }
+}
+
+Click clickOf(uint button, ref const Controls controls) {
+    if (button == Button3) {
+        return Click.secondary;
+    } else if (controls.held.has(Key.down)) {
+        return Click.quick;
+    } else {
+        return Click.primary;
     }
 }
 
@@ -532,13 +536,20 @@ struct Session {
     }
     double mouseDx = 0;
     double mouseDy = 0;
+    double lastSave = 0;
     ClientConfig config;
+    Controls controls;
     DriveHost drive;
     FrameMeter meter;
+    const(char)* configPath;
+    const(char)* chosenSave;
+    char[PATH_CAPACITY] savePath = 0;
     uint worldIndex;
-    Flags!Key held;
     Flags!SessionMark marks;
     MouseCapture mouse;
+    PointerGrab grab;
+    Rules rules;
+    Saving saving;
 
     bool isCaptured() const {
         return mouse == MouseCapture.captured;
@@ -608,13 +619,15 @@ struct Session {
         foreach (event; input.events) {
             final switch (event.kind) {
                 case DriveEventKind.press:
-                    handleKeyPress(DRIVE_KEYSYMS[event.key], KeyStroke.first);
+                    keyDown(DRIVE_KEYS[event.key], KeyStroke.first);
                     break;
                 case DriveEventKind.release:
-                    held.letGoBound(KEY_BINDINGS[], DRIVE_KEYSYMS[event.key]);
+                    controls.keyUp(game, DRIVE_KEYS[event.key]);
                     break;
                 case DriveEventKind.click:
-                    handleButton(driveButton(event.button));
+                    char[BUTTON_NAME_CAPACITY] name;
+                    keyDown(buttonName(driveButton(event.button), name[]), KeyStroke.first);
+                    controls.keyUp(game, buttonName(driveButton(event.button), name[]));
                     break;
             }
         }
@@ -650,49 +663,86 @@ struct Session {
         }
         game = Game.make(arguments.worldgen, config.reach);
         game.comfort = config.comfort;
+        game.thread.spacing = config.threadSpacing;
+        game.thread.most = config.threadBeads;
+        game.rules = rules;
         game.world.graph.bindView();
         worldIndex = worldIndexOf(arguments.worldgen);
         game.world.renderRadius = arguments.renderRadius;
+        startInventory();
         SaveData saved;
-        Saved loaded = Saved.absent;
-        ExitStatus status = ExitStatus.ok;
-        if (arguments.savePath !is null) {
-            Maybe!(Array!ubyte) bytes = readFile(arguments.savePath);
-            if (bytes.exists) {
-                const(char)* problem = readGame(bytes.value.slice(), game, saved);
-                bytes.value.release();
-                if (problem !is null) {
-                    StartupError(null, problem, arguments.savePath).report(arguments.program);
-                    status = ExitStatus.failed;
-                } else {
-                    applyEdits(game, saved);
-                    loaded = Saved.present;
-                }
-            }
-        }
-        if (status == ExitStatus.ok) {
-            status = placedStatus(game, arguments);
-        }
+        Saved loaded = loadEdits(saved);
+        ExitStatus status = placedStatus(game, arguments);
         if (status == ExitStatus.ok) {
             if (loaded == Saved.present) {
                 applyState(game, saved);
             }
             runLoop();
             status = grownStatus(game, arguments);
-            if (arguments.savePath !is null) {
-                Writer writer;
-                writeGame(game, writer);
-                if (!writeFile(arguments.savePath, writer.bytes.slice())) {
-                    StartupError(null, "cannot write the save", arguments.savePath).report(arguments.program);
-                    status = ExitStatus.failed;
-                }
-                writer.bytes.release();
-            }
+            writeSave();
         }
         saved.release();
         hud.release();
         game.release();
         return status;
+    }
+
+    void startInventory() {
+        if (rules == Rules.creative) {
+            game.inventory = creativeInventory();
+        }
+    }
+
+    void chooseSavePath() {
+        if (chosenSave !is null) {
+            snprintf(savePath.ptr, savePath.length, "%s", chosenSave);
+        } else {
+            mkdir(SAVE_DIRECTORY.ptr, DIRECTORY_MODE);
+            const(char)[] world = worldNameOf(game.world.graph.worldgen);
+            snprintf(savePath.ptr, savePath.length, "%s/%.*s-%s.save", SAVE_DIRECTORY.ptr, cast(int) world.length, world.ptr, ENUM_NAMES!Rules[rules].ptr);
+        }
+    }
+
+    Saved loadEdits(ref SaveData saved) {
+        chooseSavePath();
+        saving = Saving.enabled;
+        Maybe!(Array!ubyte) bytes = readFile(savePath.ptr);
+        if (!bytes.exists) {
+            return Saved.absent;
+        } else {
+            const(char)* problem = readGame(bytes.value.slice(), game, saved);
+            bytes.value.release();
+            if (problem !is null) {
+                fprintf(stderr, "the save %s %s; playing without saving so it is kept\n", savePath.ptr, problem);
+                saving = Saving.refused;
+                return Saved.absent;
+            } else {
+                applyEdits(game, saved);
+                return Saved.present;
+            }
+        }
+    }
+
+    void writeSave() {
+        if (saving == Saving.enabled && !isDriven) {
+            Writer writer;
+            writeGame(game, writer);
+            if (!writeFile(savePath.ptr, writer.bytes.slice())) {
+                fprintf(stderr, "cannot write the save %s\n", savePath.ptr);
+            }
+            writer.bytes.release();
+        }
+        lastSave = nowSeconds();
+    }
+
+    void saveConfig() {
+        config.bindings = controls.bindings;
+        Array!char text;
+        config.write(text);
+        if (!writeFile(configPath, cast(const(ubyte)[]) text.slice())) {
+            fprintf(stderr, "cannot write the settings to %s\n", configPath);
+        }
+        text.release();
     }
 
     version (OSX) {
@@ -711,38 +761,55 @@ struct Session {
 
         void capturePointer() {
             window.capturePointer();
+            grab = PointerGrab.held;
             mouse = MouseCapture.captured;
             marks.set(SessionMark.titleStale);
         }
 
         void releasePointer() {
-            if (isCaptured) {
+            if (grab == PointerGrab.held) {
                 window.releasePointer();
-                mouse = MouseCapture.released;
-                marks.set(SessionMark.titleStale);
             }
-            held = Flags!Key.init;
+            grab = PointerGrab.freed;
+            mouse = MouseCapture.released;
+            marks.set(SessionMark.titleStale);
+            controls.letGoAll();
+        }
+
+        void holdPointer() {
+            window.capturePointer();
+            grab = PointerGrab.held;
+        }
+
+        void freePointer() {
+            window.releasePointer();
+            grab = PointerGrab.freed;
         }
 
         void handleKey(KeyEvent key) {
             if (!isDriven) {
                 final switch (key.action) {
                     case KeyAction.pressed:
-                        handleKeyPress(key.symbol, KeyStroke.first);
+                        keyDown(key.name, KeyStroke.first);
                         break;
                     case KeyAction.repeated:
-                        handleKeyPress(key.symbol, KeyStroke.repeated);
+                        keyDown(key.name, KeyStroke.repeated);
                         break;
                     case KeyAction.released:
-                        held.letGoBound(KEY_BINDINGS[], key.symbol);
+                        controls.keyUp(game, key.name);
                         break;
                 }
             }
         }
 
-        void handleWindowButton(uint button) {
+        void handleWindowButton(ButtonEvent event) {
             if (!isDriven) {
-                handleButton(button);
+                hud.pointAt(cast(float) event.x, cast(float) event.y);
+                if (event.action == KeyAction.released) {
+                    buttonUp(event.button);
+                } else {
+                    buttonDown(event.button);
+                }
             }
         }
 
@@ -753,8 +820,12 @@ struct Session {
             }
         }
 
+        void handlePointer(double x, double y) {
+            hud.pointAt(cast(float) x, cast(float) y);
+        }
+
         void pollEvents() {
-            window.poll(WindowEvents(&handleKey, &handleWindowButton, &handleMotion));
+            window.poll(WindowEvents(&handleKey, &handleWindowButton, &handleMotion, &handlePointer));
             bool open = window.isOpen();
             bool focused = window.isFocused();
             if (!open) {
@@ -831,20 +902,46 @@ struct Session {
         }
 
         void capturePointer() {
-            int grab = XGrabPointer(display, window, True, POINTER_GRAB_MASK, GrabModeAsync, GrabModeAsync, window, invisibleCursor, CurrentTime);
-            if (grab == GrabSuccess) {
+            holdPointer();
+            if (grab == PointerGrab.held) {
                 mouse = MouseCapture.captured;
                 marks.set(SessionMark.titleStale);
             }
         }
 
         void releasePointer() {
-            if (isCaptured) {
+            if (grab == PointerGrab.held) {
                 XUngrabPointer(display, CurrentTime);
-                mouse = MouseCapture.released;
-                marks.set(SessionMark.titleStale);
             }
-            held = Flags!Key.init;
+            grab = PointerGrab.freed;
+            mouse = MouseCapture.released;
+            marks.set(SessionMark.titleStale);
+            controls.letGoAll();
+        }
+
+        void holdPointer() {
+            int grabbed = XGrabPointer(display, window, True, POINTER_GRAB_MASK, GrabModeAsync, GrabModeAsync, window, invisibleCursor, CurrentTime);
+            if (grabbed == GrabSuccess) {
+                grab = PointerGrab.held;
+            }
+        }
+
+        void freePointer() {
+            XUngrabPointer(display, CurrentTime);
+            grab = PointerGrab.freed;
+            int x = cast(int)(renderer.swapchain.extent.width / 2);
+            int y = cast(int)(renderer.swapchain.extent.height / 2);
+            XWarpPointer(display, 0, window, 0, 0, 0, 0, x, y);
+            hud.pointAt(x, y);
+        }
+
+        const(char)[] keysymName(KeySym symbol) {
+            const(char)* text = XKeysymToString(symbol);
+            if (text is null) {
+                return null;
+            } else {
+                return sliceOf(text);
+            }
         }
 
         void loadPointerAxes(int deviceId) {
@@ -907,18 +1004,23 @@ struct Session {
             if (event.type == KeyPress) {
                 uint keycode = event.xkey.keycode % KEYCODE_COUNT;
                 if (keysDown.has(keycode)) {
-                    handleKeyPress(XLookupKeysym(&event.xkey, 0), KeyStroke.repeated);
+                    keyDown(keysymName(XLookupKeysym(&event.xkey, 0)), KeyStroke.repeated);
                 } else {
-                    handleKeyPress(XLookupKeysym(&event.xkey, 0), KeyStroke.first);
+                    keyDown(keysymName(XLookupKeysym(&event.xkey, 0)), KeyStroke.first);
                 }
                 keysDown.set(keycode);
             } else if (event.type == KeyRelease) {
                 keysDown.clear(event.xkey.keycode % KEYCODE_COUNT);
-                held.letGoBound(KEY_BINDINGS[], XLookupKeysym(&event.xkey, 0));
+                controls.keyUp(game, keysymName(XLookupKeysym(&event.xkey, 0)));
             } else if (event.type == GenericEvent) {
                 handleGenericEvent(&event.xcookie);
             } else if (event.type == ButtonPress) {
-                handleButton(event.xbutton.button);
+                hud.pointAt(event.xbutton.x, event.xbutton.y);
+                buttonDown(event.xbutton.button);
+            } else if (event.type == ButtonRelease) {
+                buttonUp(event.xbutton.button);
+            } else if (event.type == MotionNotify) {
+                hud.pointAt(event.xmotion.x, event.xmotion.y);
             } else if (event.type == FocusOut) {
                 releasePointer();
                 keysDown.clearAll();
@@ -959,92 +1061,95 @@ struct Session {
         marks.set(SessionMark.titleStale);
     }
 
-    void handleKeyPress(KeySym symbol, KeyStroke press) {
-        if (symbol == XK_Escape) {
-            releasePointer();
-        } else if (isCaptured) {
-            handleGameKey(symbol, press);
-        }
-    }
-
-    void handleGameKey(KeySym symbol, KeyStroke press) {
-        Maybe!Command command = COMMAND_BINDINGS.commandOf(symbol, press);
-        if (command.exists) {
-            run(command.value);
-        } else if (symbol >= XK_1 && symbol <= XK_9) {
-            selectMaterial(cast(uint)(symbol - XK_1));
-        } else {
-            held.holdBound(KEY_BINDINGS[], symbol);
-        }
-    }
-
-    void run(Command command) {
-        final switch (command) {
-            case Command.walkMode:
-                game.toggleMode(MovementMode.walk);
-                recordModeChange();
-                break;
-            case Command.noclipMode:
-                game.toggleMode(MovementMode.noclip);
-                recordModeChange();
-                break;
-            case Command.previousWorld:
-                if (!isRecording) {
-                    switchWorld(WorldStep.previous);
-                }
-                break;
-            case Command.nextWorld:
-                if (!isRecording) {
-                    switchWorld(WorldStep.next);
-                }
-                break;
-            case Command.throwBlock:
-                game.throwBlock();
-                break;
-            case Command.nextPreset:
-                game.nextPreset();
-                if (isRecording) {
-                    recorder.recordPreset(game.preset);
-                }
-                marks.set(SessionMark.titleStale);
-                break;
-            case Command.dose:
-                game.doseNext();
-                recordCall("dose");
-                break;
-            case Command.use:
-                game.use();
-                recordCall("use");
-                break;
-            case Command.eat:
-                game.eat();
-                recordCall("eat");
-                break;
-        }
-    }
-
-    void selectMaterial(uint index) {
-        bool changed = game.inventory.select(index);
-        if (changed) {
-            if (isRecording) {
-                recorder.recordMaterial(index + 1);
+    void keyDown(const(char)[] name, KeyStroke press) {
+        if (isCaptured) {
+            Maybe!Action action = controls.bindings.actionOf(name, game.rules);
+            Request request = controls.keyDown(game, name, press);
+            if (action.exists && press == KeyStroke.first) {
+                record(action.value);
             }
-            marks.set(SessionMark.titleStale);
+            handle(request);
         }
     }
 
-    void handleButton(uint button) {
+    void buttonDown(uint button) {
+        char[BUTTON_NAME_CAPACITY] name;
         if (!isCaptured && isDriven) {
             mouse = MouseCapture.captured;
             marks.set(SessionMark.titleStale);
         } else if (!isCaptured) {
             capturePointer();
-        } else if (button == Button1) {
-            game.breakBlock();
-            recordCall("breakBlock");
-        } else if (button == Button3) {
-            game.placeBlock();
-            recordCall("placeBlock");
+        } else if (game.screen != Screen.none && !controls.awaiting.exists) {
+            clickScreen(button);
+        } else {
+            keyDown(buttonName(button, name[]), KeyStroke.first);
+        }
+    }
+
+    void buttonUp(uint button) {
+        char[BUTTON_NAME_CAPACITY] name;
+        controls.keyUp(game, buttonName(button, name[]));
+    }
+
+    void clickScreen(uint button) {
+        Maybe!UiAction action = hud.actionAt();
+        if (!action.exists || button == Button4 || button == Button5) {
+            marks.set(SessionMark.titleStale);
+        } else if (action.value.kind == UiKind.rebind) {
+            controls.awaiting = Maybe!Action.of(cast(Action) action.value.index);
+        } else if (action.value.kind == UiKind.resetBindings) {
+            controls.bindings = Bindings.defaults();
+            saveConfig();
+        } else {
+            game.apply(action.value, clickOf(button, controls));
+        }
+    }
+
+    void handle(Request request) {
+        final switch (request) {
+            case Request.nothing:
+                break;
+            case Request.previousWorld:
+                if (!isRecording) {
+                    switchWorld(WorldStep.previous);
+                }
+                break;
+            case Request.nextWorld:
+                if (!isRecording) {
+                    switchWorld(WorldStep.next);
+                }
+                break;
+            case Request.releaseMouse:
+                releasePointer();
+                break;
+            case Request.bindingsChanged:
+                saveConfig();
+                break;
+        }
+    }
+
+    void record(Action action) {
+        if (isRecording) {
+            if (action == Action.use) {
+                recordCall("interact");
+            } else if (action == Action.dose) {
+                recordCall("dose");
+            } else if (action == Action.fly || action == Action.noclip) {
+                recorder.recordMode(game.mode);
+            } else if (action == Action.nextPreset) {
+                recorder.recordPreset(game.preset);
+            } else if ((action >= Action.slot1 && action <= Action.slot12) || action == Action.previousSlot || action == Action.nextSlot) {
+                recorder.recordMaterial(game.inventory.selected + 1);
+            }
+        }
+        marks.set(SessionMark.titleStale);
+    }
+
+    void syncPointer() {
+        if (isCaptured && !isDriven && game.screen != Screen.none && grab == PointerGrab.held) {
+            freePointer();
+        } else if (isCaptured && !isDriven && game.screen == Screen.none && grab == PointerGrab.freed) {
+            holdPointer();
         }
     }
 
@@ -1055,12 +1160,19 @@ struct Session {
     }
 
     void switchWorld(WorldStep direction) {
+        writeSave();
         worldIndex = steppedWorld(worldIndex, direction);
-        StructureProblem problem = restartGame(game, worldgenAt(worldIndex));
+        game.rebuildWorld(worldgenAt(worldIndex));
+        SaveData saved;
+        Saved loaded = loadEdits(saved);
+        StructureProblem problem = placeStructure(game);
         if (problem.isPresent) {
             fprintf(stderr, "%s\n", problem.text.ptr);
             marks.set(SessionMark.stopped);
+        } else if (loaded == Saved.present) {
+            applyState(game, saved);
         }
+        saved.release();
         marks.set(SessionMark.titleStale);
     }
 
@@ -1069,10 +1181,11 @@ struct Session {
         double started = nowSeconds();
         FrameClock clock = FrameClock.startingAt(started);
         meter = FrameMeter.startingAt(started);
+        lastSave = started;
         while (isRunning) {
             renderer.waitForDisplay();
             double now = nowSeconds();
-            Time dt = Time(cast(float) clock.tick(now, MAX_STEP_SECONDS));
+            Time dt = Time(cast(float) clock.tick(now, MOST_STEP_SECONDS));
             mouseDx = 0;
             mouseDy = 0;
             pollEvents();
@@ -1081,7 +1194,11 @@ struct Session {
                 driven = driveFrame();
             }
             if (isRunning) {
-                FrameInput frame = frameInputOf(config, held, mouseDx, mouseDy, dt);
+                syncPointer();
+                if (now - lastSave > AUTOSAVE_SECONDS) {
+                    writeSave();
+                }
+                FrameInput frame = frameInputOf(config, controls.held, mouseDx, mouseDy, dt);
                 if (isRecording) {
                     recorder.recordFrame(frame, dt);
                 }
@@ -1093,7 +1210,7 @@ struct Session {
                     renderer.captureMarks.put(CaptureMark.wanted, drive.wantsImage());
                 }
                 hud.buildMarkers(game);
-                hud.build(game, renderer.swapchain.extent.width, renderer.swapchain.extent.height);
+                hud.build(game, controls, meter, renderer.swapchain.extent.width, renderer.swapchain.extent.height);
                 renderer.hudVertices = hud.vertices.slice();
                 renderer.markers = hud.markers.slice();
                 renderer.atlas = &hud.atlas;
@@ -1114,6 +1231,38 @@ struct Session {
                     updateWindowTitle();
                 }
             }
+        }
+    }
+}
+
+bool writeFile(const(char)* path, const(ubyte)[] bytes) {
+    FILE* file = fopen(path, "wb");
+    if (file is null) {
+        return false;
+    } else {
+        size_t written = fwrite(bytes.ptr, 1, bytes.length, file);
+        fclose(file);
+        return written == bytes.length;
+    }
+}
+
+Maybe!(Array!ubyte) readFile(const(char)* path) {
+    FILE* file = fopen(path, "rb");
+    if (file is null) {
+        return Maybe!(Array!ubyte).init;
+    } else {
+        fseek(file, 0, SEEK_END);
+        long size = ftell(file);
+        fseek(file, 0, SEEK_SET);
+        Array!ubyte bytes;
+        bytes.resize(cast(size_t) size);
+        size_t read = fread(bytes.ptr, 1, bytes.length, file);
+        fclose(file);
+        if (read != bytes.length) {
+            bytes.release();
+            return Maybe!(Array!ubyte).init;
+        } else {
+            return Maybe!(Array!ubyte).of(bytes);
         }
     }
 }
@@ -1195,9 +1344,22 @@ ExitStatus captureScreenshot(Arguments arguments, FILE* report, ref Renderer ren
     }
 }
 
+void makeParentDirectories(const(char)* path) {
+    char[PATH_CAPACITY] prefix = 0;
+    size_t index = 0;
+    while (path[index] != '\0' && index + 1 < prefix.length) {
+        if (path[index] == '/' && index > 0) {
+            mkdir(prefix.ptr, DIRECTORY_MODE);
+        }
+        prefix[index] = path[index];
+        index += 1;
+    }
+}
+
 ExitStatus renderSettled(Arguments arguments, FILE* report, ref Renderer renderer, ref Game game) {
     SettledFrame frame = SettledFrame.of(renderer, game, report, SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT);
     ExitStatus settled = frame.render();
+    makeParentDirectories(arguments.screenshotPath);
     ExitStatus written = exitStatus(writePng(arguments.screenshotPath, SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT, renderer.capture()));
     fprintf(report, "screenshot: %s after %u frames (%u chunks meshed, %u faces)\n", textFor(written == ExitStatus.ok, "written", "failed"), frame.frames, renderer.meshes.meshedChunks, renderer.meshes.allocator.used());
     frame.release();
@@ -1233,15 +1395,18 @@ struct SettledFrame {
             fprintf(report, "%s\n", grown.text.ptr);
         }
         hud.buildMarkers(*game);
-        hud.build(*game, width, height);
+        FrameMeter unmeasured;
+        Controls shown;
+        hud.build(*game, shown, unmeasured, width, height);
         renderer.hudVertices = hud.vertices.slice();
         renderer.markers = hud.markers.slice();
         renderer.atlas = &hud.atlas;
-        frames = 0;
-        do {
+        renderer.render(game.world);
+        frames = 1;
+        while (renderer.meshBacklog() > 0) {
             renderer.render(game.world);
             frames += 1;
-        } while (renderer.meshBacklog() > 0);
+        }
         return exitStatus(!grown.isPresent);
     }
 
@@ -1274,6 +1439,7 @@ void filmFrame(ref Script script, void* context) {
 }
 
 ExitStatus renderFilm(Arguments arguments) {
+    makeParentDirectories(arguments.filmPath);
     mkdir(arguments.filmPath, DIRECTORY_MODE);
     ExitStatus work(FILE* report, ref Renderer renderer, ref Game game) {
         return filmShots(arguments, report, renderer, game);
@@ -1500,15 +1666,20 @@ void measureFlight(FILE* report, ref Renderer renderer, ref Game game) {
     }
 }
 
+void settleFrame(ref Renderer renderer, ref Game game) {
+    double frameStart = nowSeconds();
+    game.step(FrameInput.init, Time(cast(float) BENCH_FRAME_SECONDS));
+    renderer.render(game.world);
+    pauseUntilFrameEnd(frameStart);
+}
+
 void measureSettle(FILE* report, ref Renderer renderer, ref Game game) {
-    uint frames = 0;
-    do {
-        double frameStart = nowSeconds();
-        game.step(FrameInput.init, Time(cast(float) BENCH_FRAME_SECONDS));
-        renderer.render(game.world);
+    settleFrame(renderer, game);
+    uint frames = 1;
+    while (frames < BENCH_SETTLE_FRAMES && (renderer.meshBacklog() > 0 || !game.world.isWorldgenSettled())) {
+        settleFrame(renderer, game);
         frames += 1;
-        pauseUntilFrameEnd(frameStart);
-    } while (frames < BENCH_SETTLE_FRAMES && (renderer.meshBacklog() > 0 || !game.world.isWorldgenSettled()));
+    }
     LoadedAround around;
     around.count(game.world);
     fprintf(report, "stopped after the flight for %u frames (at most %u): %s, nearby %zu nodes reaching %.2f\n", frames, BENCH_SETTLE_FRAMES, textFor(game.world.isWorldgenSettled(), "settled", "still loading"), game.world.cachedNodes.length, cast(double)(game.world.loadRadius() - game.world.radiusCut));
@@ -1650,7 +1821,7 @@ void measureLeg(FILE* report, ref Renderer renderer, ref Game game) {
     SlowFrames slow;
     uint backloggedFrames = 0;
     FrameInput forward;
-    forward.held.set(Key.fwd);
+    forward.held.set(Key.forward);
     game.world.phases = StepPhases.init;
     PhaseTimes stepCpu;
     NearbyStats start = game.world.nearbyStats;
@@ -2022,6 +2193,13 @@ ExitStatus runWindowed(Arguments arguments) {
     Session* session = cast(Session*) malloc(Session.sizeof);
     *session = Session.init;
     session.config = ClientConfig.fromFile(arguments.configPath);
+    session.configPath = arguments.configPath;
+    session.controls.bindings = session.config.bindings;
+    session.chosenSave = arguments.savePath;
+    session.rules = arguments.rules;
+    if (arguments.drive !is null) {
+        session.rules = Rules.creative;
+    }
     if (arguments.sensitivity.exists) {
         session.config.mouseTurnPerCount = Angle(arguments.sensitivity.value);
     }

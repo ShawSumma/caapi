@@ -15,3 +15,15 @@ version (WebAssembly) {
 } else {
     public import core.stdc.stdio : FILE, fclose, fgets, fopen, fprintf, snprintf, stderr;
 }
+
+const(char)[] printed(Args...)(char[] buffer, const(char)* format, Args args) {
+    int written = snprintf(buffer.ptr, buffer.length, format, args);
+    size_t length = 0;
+    if (written > 0) {
+        length = cast(size_t) written;
+    }
+    if (length > buffer.length - 1) {
+        length = buffer.length - 1;
+    }
+    return buffer[0 .. length];
+}

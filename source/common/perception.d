@@ -1,11 +1,18 @@
 module common.perception;
 
 import core.stdc.math : expf;
+import base.array : Array;
+import base.maybe : Maybe, MaybeIndex;
 import base.numbers : clamped, higherOf, lowerOf;
+import base.stdio : printed;
 import base.units : Angle, Length, Ratio, Time;
 import common.color : ColorTurn, TURN_PLANES;
-import common.material : FAMILY_SETS, HIDDEN_FAMILY_COUNT, MaterialSet, PLAIN_SOLID, joined, within, without;
+import common.content.declarations : declare;
+import common.content.graph : ContentGraph, PROBLEM_CAPACITY, targetOf;
+import common.material : MaterialSet, families, joined, plainSolid, within, without;
 import common.settings : CharacterConfig;
+import plugins.api.binding : kebabOf;
+import plugins.api.content : ContentRef, Holder;
 
 enum Length EYE_BACK_PER_LEVEL = Length(1.0f);
 enum float MOST_WARP_STRENGTH = 0.15f;
@@ -38,11 +45,19 @@ enum Channel : ubyte {
     coarseDetail,
 }
 
-static assert(Channel.revealTide - Channel.revealMist + 1 == HIDDEN_FAMILY_COUNT);
-
 static assert(Channel.colorTurn5 - Channel.colorTurn0 + 1 == TURN_PLANES);
 
 enum uint CHANNEL_COUNT = Channel.max + 1;
+
+string[CHANNEL_COUNT] channelNames() {
+    string[CHANNEL_COUNT] names;
+    static foreach (index, member; __traits(allMembers, Channel)) {
+        names[index] = "engine:" ~ kebabOf!member;
+    }
+    return names;
+}
+
+immutable string[CHANNEL_COUNT] CHANNEL_NAMES = channelNames();
 
 struct Perception {
     Ratio[CHANNEL_COUNT] level;
@@ -57,7 +72,7 @@ struct ViewEffects {
     Time afterimageTime;
     Ratio[BAND_COUNT] bandGains = Ratio(1);
     ColorTurn colorTurn;
-    MaterialSet visible = PLAIN_SOLID;
+    MaterialSet visible;
 }
 
 struct Reveal {
@@ -65,12 +80,12 @@ struct Reveal {
     MaterialSet touchable;
 
     void update(ref const Perception perception) {
-        foreach (index; 0 .. HIDDEN_FAMILY_COUNT) {
-            float level = perception.level[Channel.revealMist + index].value;
+        foreach (ref family; families.slice()) {
+            float level = perception.level[family.channel].value;
             if (level > REVEAL_ON_LEVEL) {
-                revealed = revealed.joined(FAMILY_SETS[index]);
+                revealed = revealed.joined(family.members);
             } else if (level < REVEAL_OFF_LEVEL) {
-                revealed = revealed.without(FAMILY_SETS[index]);
+                revealed = revealed.without(family.members);
             }
         }
         touchable = touchable.within(revealed);
@@ -83,21 +98,94 @@ struct SignalDrive {
     float gain;
 }
 
+struct NamedPreset {
+    const(char)[] name;
+    Perception perception;
+}
+
 immutable string[3] SIGNAL_NAMES = ["mist", "sway", "lift"];
 
-immutable SignalDrive[7] SIGNAL_DRIVES = [
-    SignalDrive(0, Channel.revealMist, 2.0f),
-    SignalDrive(0, Channel.colorTurn0, 1.2f),
-    SignalDrive(1, Channel.warp, 0.15f),
-    SignalDrive(1, Channel.fieldOfView, 0.6f),
-    SignalDrive(1, Channel.afterimage, 1.0f),
-    SignalDrive(2, Channel.gravity, -0.8f),
-    SignalDrive(2, Channel.jumpHeight, 0.8f),
-];
+enum string PLAIN_PRESET = "plain";
+enum string PRESET_KIND = "perception-preset";
+enum string DRIVE_KIND = "signal-drive";
+enum string PERCEPTION_DECLARATIONS = "perception.decl";
+
+__gshared Array!NamedPreset presets;
+__gshared Array!SignalDrive drives;
+
+void declarePerception(ref ContentGraph graph) {
+    declare(graph, import(PERCEPTION_DECLARATIONS), PERCEPTION_DECLARATIONS);
+}
+
+Maybe!Channel channelNamed(const(char)[] name) {
+    uint index = 0;
+    while (index < CHANNEL_COUNT && CHANNEL_NAMES[index] != name) {
+        index += 1;
+    }
+    if (index < CHANNEL_COUNT) {
+        return Maybe!Channel.of(cast(Channel) index);
+    } else {
+        return Maybe!Channel.init;
+    }
+}
+
+uint signalNamed(const(char)[] name) {
+    uint index = 0;
+    while (index < SIGNAL_NAMES.length && SIGNAL_NAMES[index] != name) {
+        index += 1;
+    }
+    return index;
+}
+
+void reportUnread(ref ContentGraph graph, uint owner, const(char)[] channel) {
+    char[PROBLEM_CAPACITY] buffer;
+    graph.report(owner, printed(buffer[], "names the channel '%.*s', which no engine system reads", cast(int) channel.length, channel.ptr));
+}
+
+void buildPerception(ref ContentGraph graph) {
+    presets.clear();
+    drives.clear();
+    presets.append(NamedPreset(PLAIN_PRESET, Perception.init));
+    foreach (node; 0 .. cast(uint) graph.nodes.length) {
+        if (graph.isKind(node, PRESET_KIND)) {
+            Perception made;
+            foreach (edge; graph.edgesFrom(node)) {
+                Maybe!Channel channel = channelNamed(graph.nameOf(graph.edges.ptr[edge].to));
+                if (!channel.exists) {
+                    reportUnread(graph, graph.edges.ptr[edge].owner, graph.nameOf(graph.edges.ptr[edge].to));
+                } else {
+                    made = made.leveled(channel.value, Ratio(graph.number(ContentRef(edge, Holder.edge), "level")));
+                }
+            }
+            presets.append(NamedPreset(graph.nameOf(node), made));
+        } else if (graph.isKind(node, DRIVE_KIND)) {
+            ContentRef at = ContentRef(node, Holder.node);
+            const(char)[] target = graph.nameOf(targetOf(graph, node, "drives").value);
+            Maybe!Channel channel = channelNamed(target);
+            if (!channel.exists) {
+                reportUnread(graph, graph.nodes.ptr[node].owner, target);
+            } else {
+                drives.append(SignalDrive(signalNamed(graph.textAt(at, "signal")), channel.value, graph.number(at, "gain")));
+            }
+        }
+    }
+}
+
+MaybeIndex!uint presetNamed(const(char)[] name) {
+    uint index = 0;
+    while (index < presets.length && presets.ptr[index].name != name) {
+        index += 1;
+    }
+    if (index < presets.length) {
+        return MaybeIndex!uint.of(index);
+    } else {
+        return MaybeIndex!uint.init;
+    }
+}
 
 Perception felt(Perception base, const(Ratio)[] signals) {
     Perception made = base;
-    foreach (drive; SIGNAL_DRIVES) {
+    foreach (drive; drives.slice()) {
         made.level[drive.channel] = made.level[drive.channel] + signals[drive.signal] * drive.gain;
     }
     return made;
@@ -131,7 +219,7 @@ ViewEffects viewOf(ref const Perception perception, Time time, MaterialSet revea
         MOST_AFTERIMAGE_TIME * (clamped(perception.level[Channel.afterimage].value, 0.0f, 1.0f) * comfort.value),
         perception.bandGainsOf(),
         perception.colorTurnOf(),
-        PLAIN_SOLID.joined(revealed),
+        plainSolid.joined(revealed),
     );
 }
 

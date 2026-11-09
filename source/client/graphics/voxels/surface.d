@@ -5,7 +5,7 @@ import bindings.platform : VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_B
 import client.graphics.pipeline : Blend, Culling, Depth, GpuBuffer, Outputs, PipelineSettings, QUEUE_FAMILY_IGNORED, WHOLE_SIZE, bindDeviceLocalImage, bufferWrite, createGraphicsPipeline, createPipelineLayout, createSetLayout, createShader, expectSuccess, imageWrite, layoutBinding;
 import client.graphics.uniforms : CommonUniforms;
 import common.material : MATERIAL_WORDS;
-import client.graphics.voxels.textures : TEXTURE_LAYERS, TEXTURE_MIPS, TEXTURE_SIZE, makeTexturePixels, mipOffset, textureBytes;
+import client.graphics.voxels.textures : TEXTURE_MIPS, TEXTURE_SIZE, makeTexturePixels, mipOffset, textureBytes, textureLayers;
 
 enum string VOXELS_VERT_SPV = import("voxels.vert.spv");
 enum string VOXELS_FRAG_SPV = import("voxels.frag.spv");
@@ -21,7 +21,7 @@ struct LayoutPush {
     float cellRatio;
     uint[MATERIAL_WORDS] glowing;
     uint[MATERIAL_WORDS] unseen;
-    uint framedMaterial;
+    uint[MATERIAL_WORDS] framed;
 }
 
 struct SurfacePipeline {
@@ -138,7 +138,7 @@ struct SurfacePipeline {
         ubyte[] pixels = makeTexturePixels();
         GpuBuffer staging = GpuBuffer.makeFilled(physicalDevice, device, pixels, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
         free(pixels.ptr);
-        VkImageSubresourceRange range = VkImageSubresourceRange(VK_IMAGE_ASPECT_COLOR_BIT, 0, TEXTURE_MIPS, 0, TEXTURE_LAYERS);
+        VkImageSubresourceRange range = VkImageSubresourceRange(VK_IMAGE_ASPECT_COLOR_BIT, 0, TEXTURE_MIPS, 0, textureLayers());
         createTextureImage(physicalDevice, device);
         uploadTexture(device, queue, commandPool, staging.buffer, range);
         staging.destroy(device);
@@ -168,7 +168,7 @@ struct SurfacePipeline {
         imageInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
         imageInfo.extent = VkExtent3D(TEXTURE_SIZE, TEXTURE_SIZE, 1);
         imageInfo.mipLevels = TEXTURE_MIPS;
-        imageInfo.arrayLayers = TEXTURE_LAYERS;
+        imageInfo.arrayLayers = textureLayers();
         imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
         imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
         imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -213,7 +213,7 @@ struct SurfacePipeline {
         VkBufferImageCopy[TEXTURE_MIPS] regions;
         foreach (mip; 0 .. TEXTURE_MIPS) {
             regions[mip].bufferOffset = mipOffset(mip);
-            regions[mip].imageSubresource = VkImageSubresourceLayers(VK_IMAGE_ASPECT_COLOR_BIT, mip, 0, TEXTURE_LAYERS);
+            regions[mip].imageSubresource = VkImageSubresourceLayers(VK_IMAGE_ASPECT_COLOR_BIT, mip, 0, textureLayers());
             regions[mip].imageExtent = VkExtent3D(TEXTURE_SIZE >> mip, TEXTURE_SIZE >> mip, 1);
         }
         vkCmdCopyBufferToImage(commands, staging, textureImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, TEXTURE_MIPS, regions.ptr);

@@ -1,0 +1,9 @@
+kind role {}
+
+extend material {
+    fills: many -> role
+}
+
+extend ware {
+    fills: many -> role
+}

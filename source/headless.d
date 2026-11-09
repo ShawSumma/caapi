@@ -1,11 +1,13 @@
 module headless;
 
-import core.stdc.stdio : FILE, fflush, fprintf, printf;
+import core.stdc.stdio : FILE, fflush, fprintf, printf, stderr;
 import base.array : Array;
 import base.clock : nowSeconds;
 import base.crash : reportCrashes, reportHangAfter;
 import base.maybe : Maybe;
 import base.names : ENUM_NAMES;
+import base.numbers : higherOf, lowerOf;
+import base.splitmix : SplitMix;
 import base.units : Ratio, Time;
 import client.arguments : ArgumentCursor, ExitStatus, HELP_OPTION, NOT_A_NUMBER, OUTPUT_OPTION, OptionSpec, REPORT_UNOPENED, StartupError, UNKNOWN_OPTION, VERSION_OPTION, VERSION_TEXT, WORLDGEN_OPTION, WorldgenArgument, closeReport, exitStatus, numberIn, openReport, optionNamed, parseOptions, sliceOf, usageOf;
 import client.config : ClientConfig;
@@ -13,19 +15,28 @@ import client.game : ChunkSupply, Game;
 import client.plugins : gatherWorlds, registry;
 import client.script : NamedScript, Script;
 import client.structures : StructureProblem, placeStructure;
+import common.biology.breeding : productOf;
 import common.biology.kinetics : Route;
+import common.biology.molecule : Molecule;
 import common.biology.occupancy : occupanciesOf;
-import common.biology.organism : Organism, STARTER_DOSES, starterGenome;
+import common.biology.organism : Dose, Organism, starterDoses, starterGenome;
 import common.biology.pocket : Binding;
 import common.biology.wild : WildGenes, differingGenes;
+import common.content.content : content;
+import common.content.exporting : writeGraphData, writeGraphDot, writeGraphJson;
 import common.graph : Graph, ROOT_NODE;
+import common.items : materialNames;
+import common.material : isLiving, materialCount;
+import common.perception : Channel, Perception, felt;
 import common.settings : CHUNK_DIMENSION;
 import common.worldgen.generation : PlaneWorld, Worldgen, WorldgenKind;
 import geometry.honeycomb : FACE_COUNT, Face;
+import plugins.api.api : Material;
+import scripts.claims : Outcome, isPrefixOf, ledger, namesTopic, writeClaimLines, writeDot, writeProblems, writeTally, writeWiki;
 import scripts.films : FILMS;
 import scripts.tests : TESTS;
 import scripts.views : VIEWS;
-import worldcheck : benchDrive, benchGen, benchHashMap, benchMesh, benchNearby, checkForget, checkRepaint, dumpStructure, dumpWorld, printMaterialCensus, printSlices, printSurfaceCensus, printWorldDigest;
+import worldcheck : benchDrive, benchGen, benchHashMap, benchMesh, benchNearby, checkContent, checkForget, checkRepaint, dumpStructure, dumpWorld, printMaterialCensus, printSlices, printSurfaceCensus, printWorldDigest;
 
 enum float DEFAULT_DUMP_RADIUS = 3.0f;
 enum float DEFAULT_GEN_RADIUS = 2.5f;
@@ -40,7 +51,16 @@ enum uint TABLE_ROWS = 31;
 enum Time TABLE_ROW_SECONDS = Time(2);
 enum uint CENSUS_DEPTH = 40;
 enum size_t CENSUS_WIDTH = 2000;
-enum string USAGE = "usage: mined-headless [options] <command> [name prefix ...]\noptions:\n" ~ usageOf(OPTIONS[]) ~ "commands:\n" ~ usageOf(COMMANDS[]);
+enum Ratio CENSUS_DOSE = Ratio(1);
+enum Ratio CENSUS_ACTING = Ratio(0.1f);
+enum uint CENSUS_SELECTIVE = 2;
+enum uint MOST_RECEPTORS_COUNTED = 16;
+enum uint CENSUS_RANDOM_SAMPLES = 4000;
+enum uint CENSUS_FELT_SAMPLES = 100;
+enum Time CENSUS_FELT_AFTER = Time(4);
+immutable Channel[5] CENSUS_CHANNELS = [Channel.revealMist, Channel.afterimage, Channel.fieldOfView, Channel.gravity, Channel.jumpHeight];
+enum ulong CENSUS_RANDOM_SALT = 0x5A_4D1E;
+enum string USAGE = "usage: caapi-headless [options] <command> [name prefix ...]\noptions:\n" ~ usageOf(OPTIONS[]) ~ "commands:\n" ~ usageOf(COMMANDS[]);
 
 enum Option : ubyte {
     worldgen,
@@ -66,6 +86,9 @@ enum Command : ubyte {
     tests,
     views,
     films,
+    claims,
+    wiki,
+    wikiDot,
     worldDigest,
     dumpWorld,
     materialCensus,
@@ -81,12 +104,19 @@ enum Command : ubyte {
     benchHashMap,
     biologyTables,
     wildCensus,
+    contentGraph,
+    contentDot,
+    contentData,
+    contentCheck,
 }
 
 immutable OptionSpec[Command.max + 1] COMMANDS = [
     Command.tests: OptionSpec("tests", "", "run the behavior tests (all, or those whose names start with a prefix)"),
     Command.views: OptionSpec("views", "", "run the screenshot view scripts without rendering, to check they still run"),
     Command.films: OptionSpec("films", "", "run the film shots without rendering, to check they still run"),
+    Command.claims: OptionSpec("claims", "", "run the behavior tests and print every claim they state with what was measured (all, or by test name prefix or topic)"),
+    Command.wiki: OptionSpec("wiki", "", "run the behavior tests and write their claims as one Markdown page (all, or by test name prefix or topic)"),
+    Command.wikiDot: OptionSpec("wiki-dot", "", "run the behavior tests and write the topics and the links between them for Graphviz"),
     Command.worldDigest: OptionSpec("world-digest", "", "hash the terrain world"),
     Command.dumpWorld: OptionSpec("dump-world", "", "print the terrain world"),
     Command.materialCensus: OptionSpec("material-census", "", "count the terrain world's materials"),
@@ -101,7 +131,11 @@ immutable OptionSpec[Command.max + 1] COMMANDS = [
     Command.benchNearby: OptionSpec("bench-nearby", "", "benchmark the nearby traversal"),
     Command.benchHashMap: OptionSpec("bench-hashmap", "", "benchmark the hash map"),
     Command.biologyTables: OptionSpec("biology-tables", "", "print dose-response and time-course tables for the starter body and doses"),
-    Command.wildCensus: OptionSpec("wild-census", "", "print how far wild genomes drift from the root's with depth"),
+    Command.wildCensus: OptionSpec("wild-census", "", "print how far wild genomes drift from the root's with depth, and how well their products bind the starter body"),
+    Command.contentGraph: OptionSpec("content-graph", "", "print the content graph of every loaded mod as JSON"),
+    Command.contentDot: OptionSpec("content-dot", "", "print the content graph of every loaded mod for Graphviz"),
+    Command.contentData: OptionSpec("content-data", "", "print the content of the named mods, or of every mod, in the data format"),
+    Command.contentCheck: OptionSpec("content-check", "", "place every world, then check every item can be reached and has uses"),
 ];
 
 enum RunKind : ubyte {
@@ -185,7 +219,7 @@ struct HeadlessArguments {
     }
 
     bool takesPrefixes() const {
-        return command.value == Command.tests || command.value == Command.views || command.value == Command.films;
+        return command.value == Command.tests || command.value == Command.views || command.value == Command.films || command.value == Command.claims || command.value == Command.wiki || command.value == Command.wikiDot || command.value == Command.contentData;
     }
 
     bool needsStructure() const {
@@ -241,10 +275,6 @@ bool isChosen(ref const HeadlessArguments arguments, string name) {
     return arguments.prefixes.length == 0 || index < arguments.prefixes.length;
 }
 
-bool isPrefixOf(const(char)[] prefix, string name) {
-    return prefix.length <= name.length && name[0 .. prefix.length] == prefix;
-}
-
 ExitStatus runTest(ref const NamedScript test, Worldgen worldgen, FILE* report) {
     double start = nowSeconds();
     fprintf(report, "== %.*s\n", cast(int) test.name.length, test.name.ptr);
@@ -255,16 +285,67 @@ ExitStatus runTest(ref const NamedScript test, Worldgen worldgen, FILE* report) 
     game.supply = ChunkSupply.onDemand;
     StructureProblem problem = game.placeStructure();
     ExitStatus status = ExitStatus.failed;
+    ledger.begin(test.name);
     if (problem.isPresent) {
         fprintf(report, "%s\n", problem.text.ptr);
+        ledger.end(Outcome.failed, sliceOf(problem.text.ptr));
     } else {
         Script script = Script.make(&game, report);
         status = script.run(test.run);
         fprintf(report, "session: steps=%u time=%.2f traveled=%.2f wall=%.1fs%s\n", script.steps, cast(double) game.time.value, cast(double) game.traveled.value, nowSeconds() - start, sessionSuffix(status));
+        ledger.end(outcomeOf(status), sliceOf(script.failure.ptr));
     }
     fflush(report);
     game.release();
     return status;
+}
+
+Outcome outcomeOf(ExitStatus status) {
+    if (status == ExitStatus.ok) {
+        return Outcome.passed;
+    } else {
+        return Outcome.failed;
+    }
+}
+
+enum ClaimForm : ubyte {
+    lines,
+    wiki,
+    dot,
+}
+
+ExitStatus runClaims(ref const HeadlessArguments arguments, FILE* output, ClaimForm form) {
+    Array!(const(char)[]) selectors;
+    foreach (name; arguments.prefixes.slice()) {
+        selectors.append(sliceOf(name));
+    }
+    FILE* progress = stderr;
+    if (form == ClaimForm.lines) {
+        progress = output;
+    }
+    foreach (ref test; TESTS) {
+        if (arguments.isChosen(test.name) || namesTopic(selectors.slice())) {
+            runTest(test, arguments.worldgen, progress);
+            if (form == ClaimForm.lines) {
+                writeClaimLines(output, ledger, cast(uint) ledger.tests.length - 1, selectors.slice());
+            }
+        }
+    }
+    final switch (form) {
+        case ClaimForm.lines:
+            break;
+        case ClaimForm.wiki:
+            writeWiki(output, ledger, selectors.slice());
+            break;
+        case ClaimForm.dot:
+            writeDot(output, ledger, selectors.slice());
+            break;
+    }
+    writeTally(progress, ledger, selectors.slice());
+    uint problems = writeProblems(progress, ledger);
+    bool clean = problems == 0 && ledger.tallyOf(selectors.slice()).failedTests == 0;
+    selectors.release();
+    return exitStatus(clean);
 }
 
 immutable(char)* sessionSuffix(ExitStatus status) {
@@ -316,6 +397,15 @@ ExitStatus runCommand(ref const HeadlessArguments arguments, FILE* output) {
         case Command.films:
             status = runFilms(arguments, output);
             break;
+        case Command.claims:
+            status = runClaims(arguments, output, ClaimForm.lines);
+            break;
+        case Command.wiki:
+            status = runClaims(arguments, output, ClaimForm.wiki);
+            break;
+        case Command.wikiDot:
+            status = runClaims(arguments, output, ClaimForm.dot);
+            break;
         case Command.worldDigest:
             status = printWorldDigest(output, radius, CHUNK_DIMENSION);
             break;
@@ -361,13 +451,99 @@ ExitStatus runCommand(ref const HeadlessArguments arguments, FILE* output) {
         case Command.wildCensus:
             printWildCensus(output);
             break;
+        case Command.contentGraph:
+            writeGraphJson(output, content());
+            break;
+        case Command.contentDot:
+            writeGraphDot(output, content());
+            break;
+        case Command.contentData:
+            writeModData(arguments, output);
+            break;
+        case Command.contentCheck:
+            status = checkContent(output, CHUNK_DIMENSION);
+            break;
     }
     return status;
+}
+
+void writeModData(ref const HeadlessArguments arguments, FILE* output) {
+    Array!(const(char)[]) mods;
+    foreach (name; arguments.prefixes.slice()) {
+        mods.append(sliceOf(name));
+    }
+    writeGraphData(output, content(), mods.slice());
+    mods.release();
+}
+
+void printSpeciesCensus(FILE* output, ref Organism organism, Material species) {
+    uint[MOST_RECEPTORS_COUNTED] targets;
+    uint acting = 0;
+    uint selective = 0;
+    SplitMix draw = SplitMix(CENSUS_RANDOM_SALT);
+    float[CENSUS_CHANNELS.length] feltSum = 0;
+    foreach (sample; 0 .. CENSUS_RANDOM_SAMPLES) {
+        WildGenes genes;
+        foreach (ref seed; genes.seeds) {
+            seed = draw.next();
+        }
+        Molecule product = productOf(species, genes);
+        if (sample < CENSUS_FELT_SAMPLES) {
+            Organism dosed = Organism.make(starterGenome());
+            dosed.dose(Dose(product, CENSUS_DOSE, Route.injected));
+            dosed.advance(CENSUS_FELT_AFTER);
+            Perception made = felt(Perception.init, dosed.signaling.signals[]);
+            foreach (index, channel; CENSUS_CHANNELS) {
+                feltSum[index] += made.level[channel].value;
+            }
+            dosed.release();
+        }
+        uint reach = receptorsActedOn(organism, product);
+        if (reach > 0) {
+            acting += 1;
+        }
+        foreach (index, ref receptor; organism.receptors.slice()) {
+            if (occupancyAlone(organism.cache.bindingOf(receptor.pocket, product).affinity) > CENSUS_ACTING) {
+                targets[lowerOf(cast(uint) index, MOST_RECEPTORS_COUNTED - 1)] += 1;
+            }
+        }
+        if (reach > 0 && reach <= CENSUS_SELECTIVE) {
+            selective += 1;
+        }
+    }
+    const(char)[] name = materialNames.ptr[species.id];
+    fprintf(output, "%-20.*s %.3f %.3f", cast(int) name.length, name.ptr, cast(double) acting / CENSUS_RANDOM_SAMPLES, cast(double) selective / higherOf(acting, 1u));
+    foreach (index, ref receptor; organism.receptors.slice()) {
+        fprintf(output, " %c%c:%u", cast(char)('A' + receptor.firstHalf), cast(char)('A' + receptor.secondHalf), targets[lowerOf(cast(uint) index, MOST_RECEPTORS_COUNTED - 1)]);
+    }
+    foreach (index, channel; CENSUS_CHANNELS) {
+        fprintf(output, " %s:%+.3f", ENUM_NAMES!Channel[channel].ptr, cast(double)(feltSum[index] / CENSUS_FELT_SAMPLES));
+    }
+    fprintf(output, "\n");
+}
+
+uint receptorsActedOn(ref Organism organism, Molecule molecule) {
+    uint count = 0;
+    foreach (ref receptor; organism.receptors.slice()) {
+        if (occupancyAlone(organism.cache.bindingOf(receptor.pocket, molecule).affinity) > CENSUS_ACTING) {
+            count += 1;
+        }
+    }
+    return count;
+}
+
+Ratio occupancyAlone(Ratio affinity) {
+    Ratio[1] concentrations = [CENSUS_DOSE];
+    Ratio[1] affinities = [affinity];
+    Ratio[1] occupied;
+    occupanciesOf(concentrations[], affinities[], occupied[]);
+    return occupied[0];
 }
 
 void printWildCensus(FILE* output) {
     Graph graph = Graph.make(CHUNK_DIMENSION, Worldgen.fromPlane(PlaneWorld(0)));
     graph.bindView();
+    Organism organism = Organism.make(starterGenome());
     uint root = graph.slotOf(ROOT_NODE).value;
     WildGenes rootGenes = graph.ensureState(root).wild;
     Array!uint frontier;
@@ -395,14 +571,22 @@ void printWildCensus(FILE* output) {
         frontier = next;
         next = swapped;
     }
+    fprintf(output, "species share_acting share_of_those_on_at_most_%u, products acting on each receptor, mean felt level\n", CENSUS_SELECTIVE);
+    foreach (id; 1 .. materialCount()) {
+        Material species = Material(cast(ubyte) id);
+        if (isLiving(species)) {
+            printSpeciesCensus(output, organism, species);
+        }
+    }
     frontier.release();
     next.release();
+    organism.release();
     graph.release();
 }
 
 void printBiologyTables(FILE* output) {
     Organism organism = Organism.make(starterGenome());
-    foreach (index, ref given; STARTER_DOSES) {
+    foreach (index, ref given; starterDoses.slice()) {
         fprintf(output, "dose %zu, %s\n  concentration:", index + 1, ENUM_NAMES!Route[given.route].ptr);
         foreach (receptor; organism.receptors.slice()) {
             fprintf(output, " %c%c", cast(char)('A' + receptor.firstHalf), cast(char)('A' + receptor.secondHalf));
@@ -470,6 +654,7 @@ extern (C) int main(int argc, char** argv) {
     gatherWorlds();
     HeadlessArguments arguments = HeadlessArguments.fromArgv(argc, argv);
     ExitStatus status = startCommand(arguments, argv[0]);
+    ledger.release();
     arguments.prefixes.release();
     return status;
 }

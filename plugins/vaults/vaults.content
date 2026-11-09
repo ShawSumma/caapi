@@ -1,0 +1,42 @@
+look vaults:look { red: 0.6, green: 0.52, blue: 0.4, tint: fog }
+
+vaults-materials vaults:materials {
+    lamp -> base:light-panel
+    palettes -> [vaults:marble vaults:dolomite vaults:sandstone vaults:diorite]
+}
+
+vaults-palette vaults:marble {
+    floor -> base:marble
+    inlay -> base:red-sandstone
+    wall -> base:sandstone
+    vault -> base:plaster
+    rib -> base:white-brick
+    accent -> base:red-sandstone
+}
+
+vaults-palette vaults:dolomite {
+    floor -> base:dolomite
+    inlay -> base:slate
+    wall -> base:plaster
+    vault -> base:marble
+    rib -> base:sandstone
+    accent -> base:sandstone
+}
+
+vaults-palette vaults:sandstone {
+    floor -> base:sandstone
+    inlay -> base:red-sandstone
+    wall -> base:red-sandstone
+    vault -> base:sandstone
+    rib -> base:plaster
+    accent -> base:sandstone
+}
+
+vaults-palette vaults:diorite {
+    floor -> base:diorite
+    inlay -> base:basalt
+    wall -> base:white-brick
+    vault -> base:plaster
+    rib -> base:marble
+    accent -> base:marble
+}

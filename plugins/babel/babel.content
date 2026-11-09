@@ -1,0 +1,10 @@
+look babel:look { red: 0.82, green: 0.74, blue: 0.58, tint: fog }
+
+babel-materials babel:materials {
+    wall -> base:sandstone
+    step -> base:red-sandstone
+    band -> base:marble
+    light -> base:light-panel
+    plaza -> base:granite
+    lawn -> base:grass
+}

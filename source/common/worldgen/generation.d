@@ -6,20 +6,20 @@ import core.stdc.string : memcpy;
 import base.array : Array;
 import base.flags : Readiness;
 import base.maybe : Maybe;
-import base.numbers : RADIANS_PER_DEGREE, clamped, higherOf, lowerOf;
 import base.murmur : murmurHash3;
-import common.biology.wild : WildGenes, inheritedGenes;
-import common.material : oreFor;
+import base.numbers : RADIANS_PER_DEGREE, clamped, higherOf, lowerOf;
 import base.splitmix : SplitMix;
 import base.vector3 : Vec3;
-import common.graph : Graph, MAX_PARENTS, NodeId, ParentList;
+import common.biology.wild : WildGenes, inheritedGenes;
+import common.graph : Graph, MOST_PARENTS, NodeId, ParentList;
 import common.neighbors : isInside;
 import common.node : ChunkLayout, Materials, Occupancy, Voxels, cellIndex;
 import common.view : GraphView;
 import common.worldgen.building : Building;
-import common.worldgen.climate : COVER_DEPTH, Climate, CubeClimate, NodeClimate, SNOW_WARMTH, SOIL_DEPTH, WATER_LEVEL, groundAt, isDesert, openAt, uniformRock;
+import common.worldgen.climate : COVER_DEPTH, Climate, CubeClimate, NodeClimate, SOIL_DEPTH, WATER_LEVEL, groundAt, openAt, uniformRock;
+import common.worldgen.horospheres : Fill, FlatLines, Ground, Grounds, MOST_GROUNDS, ensureGrounds, ensureHorospheresAt, flatLinesNear;
+import common.worldgen.palette : Tree, hasTrees, isGroundFor, isGroundForPlant, laidBy, oreFor, palette, treeAt, treeOf;
 import common.worldgen.plane : Plane, PlaneMeasure, chunkPoint, cubePoint;
-import common.worldgen.horospheres : Fill, FlatLines, Ground, Grounds, MAX_GROUNDS, ensureGrounds, ensureHorospheresAt, flatLinesNear;
 import common.worldgen.store : Standing;
 import common.worldgen.strokes : Stroke, StrokeForm;
 import common.worldgen.structure : calmAt, firstSideAmong, ringFaces;
@@ -36,22 +36,14 @@ enum WorldgenKind : ubyte {
 
 enum size_t STRUCTURE_NAME_CAPACITY = 256;
 enum string TERRAIN_STRUCTURE = "planet";
-enum Material DEFERRED_STAND_IN_MATERIAL = Material.dirt;
 enum float BASE_TREE_DENSITY = 0.05f;
 enum float WETNESS_PER_TREE_DENSITY = 4.0f;
-enum float MIN_TREE_DENSITY = 0.01f;
-enum float MAX_TREE_DENSITY = 0.3f;
-enum ubyte MIN_TREE_DIMENSION = 4;
+enum float LEAST_TREE_DENSITY = 0.01f;
+enum float MOST_TREE_DENSITY = 0.3f;
+enum ubyte LEAST_TREE_DIMENSION = 4;
 enum int CANOPY_RADIUS = 2;
 enum int CANOPY_CORNER_SPAN = 3;
 enum int SPRUCE_LOWEST_LEAVES = 2;
-enum float SPRUCE_WARMTH = -0.2f;
-enum float MAPLE_WARMTH = 0.05f;
-enum float TROPICAL_WARMTH = 0.25f;
-enum float WET = 0.45f;
-enum float DRY = -0.05f;
-enum ulong SHRUB_ODDS = 8;
-enum ulong CHOICE_SHIFT = 8;
 enum uint CHUNK_ROLL_SHIFT = 32;
 enum float RISER_MARGIN = 1.2f;
 enum float CLEAR_MARGIN = 1e-3f;
@@ -61,6 +53,12 @@ enum float VEIN_ODDS = 0.08f;
 enum int VEIN_RADIUS = 2;
 enum float VEIN_FILL = 0.7f;
 enum ulong PLANT_SALT = 0x91A7_5EED;
+enum int CAP_CROWN = 4;
+enum int CAP_SPREAD = 9;
+enum int CAP_RIM = 10;
+enum int BLOOM_SPREAD = 5;
+enum int BLOOM_CUP = 2;
+enum int BLOOM_TIPS = 4;
 enum float PLANT_DENSITY = 0.02f;
 
 struct PlaneWorld {
@@ -142,21 +140,6 @@ float degreesToRadians(float degrees) {
     return cast(float)(degrees * RADIANS_PER_DEGREE);
 }
 
-enum TreeKind : ubyte {
-    oak,
-    birch,
-    spruce,
-    bigOak,
-    cherry,
-    maple,
-    willow,
-    jungle,
-    acacia,
-    shrub,
-    snag,
-    cactus,
-}
-
 enum TreeShape : ubyte {
     round,
     cone,
@@ -167,35 +150,9 @@ enum TreeShape : ubyte {
     bush,
     bare,
     column,
+    cap,
+    bloom,
 }
-
-struct TreeSpecies {
-    Material wood;
-    Material leaves;
-    TreeShape shape;
-    ubyte minTrunk;
-    ubyte trunkChoices;
-    ubyte reach;
-}
-
-immutable TreeSpecies[TreeKind.max + 1] TREE_SPECIES = [
-    TreeKind.oak: TreeSpecies(Material.oakWood, Material.oakLeaves, TreeShape.round, 4, 2, 2),
-    TreeKind.birch: TreeSpecies(Material.birchWood, Material.birchLeaves, TreeShape.round, 5, 2, 2),
-    TreeKind.spruce: TreeSpecies(Material.spruceWood, Material.spruceLeaves, TreeShape.cone, 5, 3, 2),
-    TreeKind.bigOak: TreeSpecies(Material.oakWood, Material.oakLeaves, TreeShape.broad, 5, 2, 3),
-    TreeKind.cherry: TreeSpecies(Material.spruceWood, Material.cherryLeaves, TreeShape.round, 4, 2, 2),
-    TreeKind.maple: TreeSpecies(Material.oakWood, Material.mapleLeaves, TreeShape.round, 4, 3, 2),
-    TreeKind.willow: TreeSpecies(Material.oakWood, Material.willowLeaves, TreeShape.weeping, 5, 2, 2),
-    TreeKind.jungle: TreeSpecies(Material.jungleWood, Material.jungleLeaves, TreeShape.tall, 7, 3, 2),
-    TreeKind.acacia: TreeSpecies(Material.acaciaWood, Material.acaciaLeaves, TreeShape.flat, 3, 2, 3),
-    TreeKind.shrub: TreeSpecies(Material.oakWood, Material.oakLeaves, TreeShape.bush, 0, 1, 1),
-    TreeKind.snag: TreeSpecies(Material.spruceWood, Material.none, TreeShape.bare, 3, 3, 1),
-    TreeKind.cactus: TreeSpecies(Material.cactus, Material.none, TreeShape.column, 2, 3, 1),
-];
-
-immutable TreeKind[3] WET_TREES = [TreeKind.willow, TreeKind.bigOak, TreeKind.oak];
-immutable TreeKind[4] COOL_TREES = [TreeKind.maple, TreeKind.maple, TreeKind.birch, TreeKind.oak];
-immutable TreeKind[6] MILD_TREES = [TreeKind.oak, TreeKind.oak, TreeKind.birch, TreeKind.bigOak, TreeKind.cherry, TreeKind.maple];
 
 struct NodeState {
     Plane surface;
@@ -215,8 +172,8 @@ struct NodeState {
             const(char)[] name = view.worldgen.structureName();
             return NodeState(Plane.ofFace(Face.first), Plane.ofFace(firstSideAmong(ringFaces(Face.first))), NodeClimate.init, WildGenes.ofRoot(murmurHash3(cast(const(ubyte)[]) name).first));
         } else {
-            NodeClimate[MAX_PARENTS] climates;
-            WildGenes[MAX_PARENTS] wilds;
+            NodeClimate[MOST_PARENTS] climates;
+            WildGenes[MOST_PARENTS] wilds;
             foreach (index, link; parents.links[0 .. parents.count]) {
                 NodeState parent = view.ensureState(link.slot);
                 climates[index] = parent.climate;
@@ -482,7 +439,7 @@ struct TerrainGenerator {
     Materials materials;
     Readiness cells;
     Mat4!float toNode;
-    PlaneMeasure[MAX_GROUNDS] surfaces;
+    PlaneMeasure[MOST_GROUNDS] surfaces;
     float[ubyte.max] centers;
 
     void prepareCells() {
@@ -519,7 +476,7 @@ struct TerrainGenerator {
             if (rock.exists && rivals == 0) {
                 fillEmpty(rock.value);
             } else if (params.materials == MaterialPass.deferring && !params.hasStructure && params.strokes.length == 0 && rivals == 0 && params.isProvenBelowTerrain(altitudes.high)) {
-                voxels = Voxels.filled(DEFERRED_STAND_IN_MATERIAL);
+                voxels = Voxels.filled(palette.standIn);
                 materials = Materials.deferred;
             } else {
                 prepareCells();
@@ -591,7 +548,7 @@ struct TerrainGenerator {
         ubyte dimension = params.dimension;
         ValueRange range = params.groundRange(ground);
         if (range.high < 0) {
-            fillEmpty(Material.dirt);
+            fillEmpty(palette.flatFill);
         } else if (range.low <= 0) {
             prepareCells();
             foreach (x; 0 .. dimension) {
@@ -599,7 +556,7 @@ struct TerrainGenerator {
                     foreach (z; 0 .. dimension) {
                         Point!float point = cubePoint(toNode, centerOf(x, y, z));
                         if (params.levelFrom(ground, surfaces[ground].distanceTo(point), point) < 0) {
-                            setIfEmpty(Vec3!int(x, y, z), Material.dirt);
+                            setIfEmpty(Vec3!int(x, y, z), palette.flatFill);
                         }
                     }
                 }
@@ -709,9 +666,9 @@ struct TerrainGenerator {
 
     void generateTrees(uint ground) {
         ubyte dimension = params.dimension;
-        if (!voxels.isUniform() && dimension > MIN_TREE_DIMENSION) {
+        if (!voxels.isUniform() && dimension > LEAST_TREE_DIMENSION && hasTrees()) {
             Climate mean = params.climate.mean();
-            float density = clamped(BASE_TREE_DENSITY + mean.wetness / WETNESS_PER_TREE_DENSITY, MIN_TREE_DENSITY, MAX_TREE_DENSITY);
+            float density = clamped(BASE_TREE_DENSITY + mean.wetness / WETNESS_PER_TREE_DENSITY, LEAST_TREE_DENSITY, MOST_TREE_DENSITY);
             uint interior = dimension - 2;
             uint candidateCount = cast(uint)(cast(float)(interior * interior * interior) * density);
             foreach (_; 0 .. candidateCount) {
@@ -719,16 +676,16 @@ struct TerrainGenerator {
                 int y = cast(int)(1 + (rng.next() % interior));
                 int z = cast(int)(1 + (rng.next() % interior));
                 ulong roll = rng.next();
-                placeTree(ground, Vec3!int(x, y, z), treeKind(mean.warmth(), mean.wetness, roll));
+                placeTree(ground, Vec3!int(x, y, z), treeAt(mean.warmth(), mean.wetness, roll));
             }
         }
     }
 
     void generatePlants(uint ground) {
         ubyte dimension = params.dimension;
-        if (!voxels.isUniform() && dimension > MIN_TREE_DIMENSION) {
+        if (!voxels.isUniform() && dimension > LEAST_TREE_DIMENSION && palette.plants.length > 0) {
             Climate mean = params.climate.mean();
-            Material plant = plantFor(mean.warmth(), mean.wetness);
+            Material plant = palette.plants.slice().laidBy(mean.warmth(), mean.wetness, mean.relief);
             uint interior = dimension - 2;
             uint candidateCount = cast(uint)(cast(float)(interior * interior * interior) * PLANT_DENSITY);
             SplitMix plants = SplitMix(params.nodeSpice ^ (cast(ulong) params.chunk << CHUNK_ROLL_SHIFT) ^ PLANT_SALT);
@@ -746,14 +703,14 @@ struct TerrainGenerator {
         }
     }
 
-    void placeTree(uint ground, Vec3!int base, TreeKind kind) {
+    void placeTree(uint ground, Vec3!int base, uint kind) {
         ubyte dimension = params.dimension;
         prepareCells();
         if (voxels.at(cellIndex(dimension, base.x, base.y, base.z)) == Material.none && params.flats.reliefShareAt(cubePoint(toNode, centerOf(base.x, base.y, base.z))) > 0) {
             int upDirection = params.ground(ground).surface.risingNeighbor(params.chunk, params.layout, base);
             Vec3!int up = CELL_STEPS[upDirection];
             if (voxels.at(cellIndex(dimension, base.x + up.x, base.y + up.y, base.z + up.z)) == Material.none && isGroundFor(kind, voxels.at(cellIndex(dimension, base.x - up.x, base.y - up.y, base.z - up.z)))) {
-                TreeSpecies species = TREE_SPECIES[kind];
+                Tree species = treeOf(kind);
                 ulong roll = rng.next();
                 TreeFrame frame = TreeFrame.fromUp(base, upDirection, cast(int)(species.minTrunk + roll % species.trunkChoices), species.shape, species.reach);
                 if (frame.fitsWithin(dimension)) {
@@ -763,13 +720,22 @@ struct TerrainGenerator {
         }
     }
 
-    void growTree(TreeFrame frame, TreeSpecies species) {
+    void growTree(TreeFrame frame, ref const Tree species) {
         int reach = frame.reach;
         foreach (level; 0 .. frame.top + 1) {
             foreach (i; -reach .. reach + 1) {
                 foreach (j; -reach .. reach + 1) {
                     if (isWood(species.shape, frame.trunk, level, i, j)) {
                         setIfEmpty(frame.cell(level, i, j), species.wood);
+                    }
+                }
+            }
+        }
+        foreach (level; 0 .. frame.top + 1) {
+            foreach (i; -reach .. reach + 1) {
+                foreach (j; -reach .. reach + 1) {
+                    if (species.heart != Material.none && isHeart(species.shape, frame.trunk, level, i, j)) {
+                        setIfEmpty(frame.cell(level, i, j), species.heart);
                     }
                 }
             }
@@ -825,6 +791,8 @@ int aboveTrunk(TreeShape shape) {
         case TreeShape.broad:
         case TreeShape.flat:
         case TreeShape.bush:
+        case TreeShape.cap:
+        case TreeShape.bloom:
             return 1;
         case TreeShape.cone:
         case TreeShape.weeping:
@@ -833,35 +801,6 @@ int aboveTrunk(TreeShape shape) {
             return 0;
         case TreeShape.column:
             return -1;
-    }
-}
-
-TreeKind treeKind(float warmth, float wetness, ulong roll) {
-    ulong choice = roll >> CHOICE_SHIFT;
-    if (isDesert(warmth, wetness)) {
-        return TreeKind.cactus;
-    } else if (warmth < SNOW_WARMTH && choice % 3 == 0) {
-        return TreeKind.snag;
-    } else if (warmth < SNOW_WARMTH) {
-        return TreeKind.spruce;
-    } else if (warmth < SPRUCE_WARMTH && choice % 6 == 0) {
-        return TreeKind.birch;
-    } else if (warmth < SPRUCE_WARMTH) {
-        return TreeKind.spruce;
-    } else if (roll % SHRUB_ODDS == 0) {
-        return TreeKind.shrub;
-    } else if (warmth > TROPICAL_WARMTH && wetness > WET && choice % 3 == 0) {
-        return TreeKind.bigOak;
-    } else if (warmth > TROPICAL_WARMTH && wetness > WET) {
-        return TreeKind.jungle;
-    } else if (warmth > TROPICAL_WARMTH && wetness < DRY) {
-        return TreeKind.acacia;
-    } else if (wetness > WET) {
-        return WET_TREES[choice % WET_TREES.length];
-    } else if (warmth < MAPLE_WARMTH) {
-        return COOL_TREES[choice % COOL_TREES.length];
-    } else {
-        return MILD_TREES[choice % MILD_TREES.length];
     }
 }
 
@@ -877,6 +816,8 @@ bool isWood(TreeShape shape, int trunk, int level, int i, int j) {
         case TreeShape.weeping:
         case TreeShape.tall:
         case TreeShape.bush:
+        case TreeShape.cap:
+        case TreeShape.bloom:
             return isInTrunk(trunk, level, i, j);
         case TreeShape.flat:
             return isInTrunk(trunk, level, i, j) || (level == trunk - 1 && i == 1 && j == 0) || (level == trunk && i == 1 && j == 1);
@@ -910,9 +851,41 @@ bool isLeaf(TreeShape shape, int trunk, int level, int i, int j) {
             return (level == trunk && squared <= 10) || (level == trunk + 1 && squared <= 4);
         case TreeShape.bush:
             return (level == 0 && span <= 1) || (level == 1 && squared <= 2);
+        case TreeShape.cap:
+            return capLeaf(trunk, level, squared);
+        case TreeShape.bloom:
+            return bloomPetal(trunk, level, squared);
         case TreeShape.bare:
         case TreeShape.column:
             return false;
+    }
+}
+
+bool isHeart(TreeShape shape, int trunk, int level, int i, int j) {
+    return shape == TreeShape.bloom && i == 0 && j == 0 && (level == trunk || level == trunk + 1);
+}
+
+bool capLeaf(int trunk, int level, int squared) {
+    if (level == trunk + 1) {
+        return squared <= CAP_CROWN;
+    } else if (level == trunk) {
+        return squared <= CAP_SPREAD;
+    } else if (level == trunk - 1) {
+        return squared > CAP_CROWN + 1 && squared <= CAP_RIM;
+    } else {
+        return false;
+    }
+}
+
+bool bloomPetal(int trunk, int level, int squared) {
+    if (level == trunk) {
+        return squared > 0 && squared <= BLOOM_SPREAD;
+    } else if (level == trunk - 1) {
+        return squared > 0 && squared <= BLOOM_CUP;
+    } else if (level == trunk + 1) {
+        return squared == BLOOM_TIPS;
+    } else {
+        return false;
     }
 }
 
@@ -972,42 +945,4 @@ bool spruceLeaf(int trunk, int level, int spread, int span) {
 
 int chebyshevLength(int i, int j) {
     return higherOf(abs(i), abs(j));
-}
-
-bool isGroundMaterial(Material material) {
-    return material == Material.dirt || material == Material.grass || material == Material.mudGrass || material == Material.lushGrass || material == Material.tanGrass || material == Material.coarseGrass;
-}
-
-Material plantFor(float warmth, float wetness) {
-    if (isDesert(warmth, wetness)) {
-        return Material.thornbush;
-    } else if (warmth < SNOW_WARMTH) {
-        return Material.moss;
-    } else if (wetness > WET) {
-        return Material.fern;
-    } else {
-        return Material.flower;
-    }
-}
-
-bool isGroundForPlant(Material plant, Material material) {
-    if (plant == Material.thornbush) {
-        return material == Material.sand || material == Material.redSand || isGroundMaterial(material);
-    } else if (plant == Material.moss) {
-        return isGroundMaterial(material) || material == Material.snow || material == Material.gravel;
-    } else {
-        return isGroundMaterial(material);
-    }
-}
-
-bool isGroundFor(TreeKind kind, Material material) {
-    if (kind == TreeKind.cactus) {
-        return material == Material.sand || material == Material.redSand;
-    } else if (kind == TreeKind.willow || kind == TreeKind.shrub) {
-        return isGroundMaterial(material) || material == Material.mud;
-    } else if (kind == TreeKind.snag) {
-        return isGroundMaterial(material) || material == Material.snow || material == Material.gravel;
-    } else {
-        return isGroundMaterial(material);
-    }
 }

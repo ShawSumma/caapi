@@ -9,12 +9,12 @@ import common.biology.molecule : CENTER_CELL, Fragment, GRID_CELLS, GridPoint, M
 
 enum uint TRANSDUCER_COUNT = 2;
 enum uint HALF_CELLS = 13;
-enum float FILL_SCORE = 1;
 enum float MATCH_SCORE = 1;
-enum float MISMATCH_SCORE = 1;
+enum float MISMATCH_SCORE = 2;
 enum float CLASH_PENALTY = 4;
-enum float BINDING_SCALE = 0.5f;
-enum float REFERENCE_SCORE = 30;
+enum float EMPTY_PENALTY = 1;
+enum float BINDING_SCALE = 0.7f;
+enum float REFERENCE_SCORE = 2.5f;
 enum Ratio EFFICACY_LIMIT = Ratio(1);
 
 enum PocketKind : ubyte {
@@ -104,14 +104,14 @@ float poseScore(ref const Pocket pocket, Molecule pose) {
     float score = 0;
     foreach (cell; 0 .. GRID_CELLS) {
         Fragment fragment = pose.fragmentAt(cell);
-        if (fragment.isPresent) {
-            PocketCell place = pocket.cells[cell];
-            if (place.kind == PocketKind.wall) {
-                score -= CLASH_PENALTY;
-            } else {
-                uint matched = matchedBits(place.wanted, place.cares, fragment.properties);
-                score += FILL_SCORE + MATCH_SCORE * matched - MISMATCH_SCORE * (caredBits(place.cares) - matched);
-            }
+        PocketCell place = pocket.cells[cell];
+        if (fragment.isPresent && place.kind == PocketKind.wall) {
+            score -= CLASH_PENALTY;
+        } else if (fragment.isPresent) {
+            uint matched = matchedBits(place.wanted, place.cares, fragment.properties);
+            score += MATCH_SCORE * matched - MISMATCH_SCORE * (caredBits(place.cares) - matched);
+        } else if (place.kind == PocketKind.open && place.cares != 0) {
+            score -= EMPTY_PENALTY;
         }
     }
     return score;
@@ -152,6 +152,10 @@ Ratio[TRANSDUCER_COUNT] efficacyOf(ref const Pocket pocket, Molecule pose) {
     return efficacy;
 }
 
+Ratio affinityOfScore(float score) {
+    return Ratio(expf((REFERENCE_SCORE - score) * BINDING_SCALE));
+}
+
 Binding bindingOf(ref const Pocket pocket, Molecule molecule) {
     uint best = 0;
     float bestScore = poseScore(pocket, molecule);
@@ -163,7 +167,7 @@ Binding bindingOf(ref const Pocket pocket, Molecule molecule) {
         }
     }
     Molecule pose = molecule.rotated(best);
-    return Binding(Ratio(expf((REFERENCE_SCORE - bestScore) * BINDING_SCALE)), efficacyOf(pocket, pose), bestScore, cast(ubyte) best);
+    return Binding(affinityOfScore(bestScore), efficacyOf(pocket, pose), bestScore, cast(ubyte) best);
 }
 
 struct BindingKey {

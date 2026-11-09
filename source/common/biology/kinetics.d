@@ -10,6 +10,7 @@ enum Rate LUNG_ABSORPTION = Rate(2.0f);
 enum Rate BASE_CLEARANCE = Rate(0.02f);
 enum Rate POLAR_CLEARANCE = Rate(0.01f);
 enum Rate CONJUGATED_CLEARANCE = Rate(0.1f);
+enum Ratio CLEARED_AMOUNT = Ratio(1e-4f);
 
 enum Route : ubyte {
     injected,
@@ -98,6 +99,15 @@ struct Body {
             held.lung = held.lung * expf(-(LUNG_ABSORPTION * step).value);
             held.blood = Ratio(blood);
         }
+        uint kept = 0;
+        foreach (index; 0 .. count) {
+            Species held = species[index];
+            if (held.gut.value + held.lung.value + held.blood.value > CLEARED_AMOUNT.value) {
+                species[kept] = held;
+                kept += 1;
+            }
+        }
+        count = kept;
     }
 
     Ratio bloodOf(Molecule molecule) const {

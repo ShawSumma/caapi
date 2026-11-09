@@ -11,6 +11,7 @@ import client.camera : CAMERA_FORWARD;
 import client.streaming : Pacing, Streamer;
 import common.eviction : Evictor, Unloaded;
 import common.graph : Graph;
+import common.look : Color, Look, Tint;
 import common.neighbors : chunkNeighborId, neighborAxisMap, touchChunksReading;
 import common.node : Chunk, ChunkId, ChunkSlot, ChunkState, cellIndex;
 import common.perception : ViewEffects;
@@ -23,7 +24,7 @@ import geometry.cube : Cell, Direction, boundaryOf;
 import geometry.honeycomb : NODE_RADIUS;
 import geometry.lorentz : Motion, Point, Vec4;
 import geometry.ray : Ray;
-import plugins.api.api : Color, Look, Material, Tint;
+import plugins.api.api : Material;
 
 enum float NEARBY_PADDING = 0.05f;
 enum float NEARBY_REBUILD_DISTANCE = 0.25f;

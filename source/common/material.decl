@@ -1,0 +1,18 @@
+kind material {
+    red: integer 0..255 = 0
+    green: integer 0..255 = 0
+    blue: integer 0..255 = 0
+    grain: number 0.. = 0
+    break-seconds: number 0.. = 1.5
+    mining-tier: integer 0.. = 0
+    see-through: integer 0..1 = 0
+    glows: integer 0..1 = 0
+    living: integer 0..1 = 0
+    plant: integer 0..1 = 0
+    fluid: integer 0..1 = 0
+    hidden-in: optional -> hidden-family
+}
+
+kind hidden-family {
+    revealed-by: one -> channel
+}

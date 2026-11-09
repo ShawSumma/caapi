@@ -2,10 +2,21 @@ module plugins.horospheres.tree;
 
 import core.stdc.math : ceil, exp;
 import plugins.api.api : Material;
+import plugins.api.binding : bound;
+import plugins.api.content : Content;
 import plugins.turtle.turtle : Drawing, Turtle, clamped, higherOf;
 
-enum Material BARK = Material.oakWood;
-enum Material LEAVES = Material.oakLeaves;
+struct Materials {
+    Material bark;
+    Material leaves;
+}
+
+__gshared Materials materials;
+
+void resolveTree(const(Content)* content) {
+    materials = content.bound!Materials("horospheres:tree");
+}
+
 enum double GOLDEN_ANGLE = 137.5;
 enum double STEP = 3;
 enum double THINNEST = 0.7;
@@ -100,7 +111,7 @@ void branch(Drawing start, double length, double radius, size_t order) {
         double done = (index + 1.0) / steps;
         double from = radius + (tip - radius) * index / steps;
         double to = radius + (tip - radius) * done;
-        pen = pen.limb(BARK, step, from, to);
+        pen = pen.limb(materials.bark, step, from, to);
         while (child < count && places[child] <= done) {
             Drawing fork = pen.roll(roll + (child + 1) * GOLDEN_ANGLE).turn(0, pen.pickBetween(shape.angle - SPREAD, shape.angle + SPREAD));
             double reach = length * shape.length * (1 - LATER_SHORTER * places[child]);
@@ -108,12 +119,12 @@ void branch(Drawing start, double length, double radius, size_t order) {
             child += 1;
         }
         if (order + 1 == ORDERS.length && done >= LEAF_START) {
-            pen.leaves(LEAVES, pen.pickBetween(TWIG_LEAVES.smallest, TWIG_LEAVES.largest));
+            pen.leaves(materials.leaves, pen.pickBetween(TWIG_LEAVES.smallest, TWIG_LEAVES.largest));
         }
         pen = steered(wandered(pen, shape.wander), shape.elevation, shape.steer);
     }
     if (order + 2 >= ORDERS.length) {
-        pen.leaves(LEAVES, pen.pickBetween(TIP_LEAVES.smallest, TIP_LEAVES.largest));
+        pen.leaves(materials.leaves, pen.pickBetween(TIP_LEAVES.smallest, TIP_LEAVES.largest));
     }
 }
 
@@ -130,7 +141,7 @@ void roots(Drawing base) {
         foreach (index; 0 .. steps) {
             double from = ROOT_RADIUS + (ROOT_TIP - ROOT_RADIUS) * index / steps;
             double to = ROOT_RADIUS + (ROOT_TIP - ROOT_RADIUS) * (index + 1.0) / steps;
-            pen = wandered(pen.limb(BARK, STEP, from, to), ROOT_WANDER).lift(-ROOT_DROOP);
+            pen = wandered(pen.limb(materials.bark, STEP, from, to), ROOT_WANDER).lift(-ROOT_DROOP);
         }
     }
 }
@@ -160,7 +171,7 @@ void segment(Turtle base, int index, int ground, Trunk trunk) {
             if (above <= ROOT_HEIGHT && above + step > ROOT_HEIGHT) {
                 roots(pen);
             }
-            pen = pen.limb(BARK, step, trunkRadius(above), trunkRadius(above + step));
+            pen = pen.limb(materials.bark, step, trunkRadius(above), trunkRadius(above + step));
             while (limb < SEGMENT_LIMBS && (limb + 1.0) / (SEGMENT_LIMBS + 1) * edge <= height + step) {
                 double along = (limb + 1.0) / (SEGMENT_LIMBS + 1);
                 if (bottom + along * edge - ground >= BARE_HEIGHT) {

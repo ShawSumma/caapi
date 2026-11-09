@@ -1,0 +1,52 @@
+kind rooms-biome {
+    wall: one -> material
+    floor: one -> material
+    ceiling: one -> material
+    light: optional -> material
+    trim: optional -> material
+    damp: optional -> material
+    stair: one -> material
+    shelf: optional -> material
+    boxes: optional -> material
+    room-floors: many -> material
+    big: number 0..1 = 0.25
+    open: number 0..1 = 0
+    hall-doors: number 0..1 = 0.35
+    box-odds: number 0..1 = 0
+    skylight: number 0..1 = 0
+    nowhere: number 0..1 = 0
+    box-height: integer 0.. = 0
+    vents: "none" | "some" = "none"
+}
+
+kind rooms-hall {
+    floor: one -> material
+    ceiling: one -> material
+    light: one -> material
+    skylight: number 0..1 = 0
+}
+
+kind rooms-level {
+    halls: "none" | "grid" | "streets" = "none"
+    hall-width: integer 0.. = 0
+    room: integer 1.. = 4
+    kind: "rooms" | "maze" = "rooms"
+    solid: number 0..1 = 0
+    missing: number 0..1 = 0
+    rings: number 0..1 = 0
+    chapel: number 0..1 = 0
+    stairs: number 0..1 = 0
+    hall: optional -> rooms-hall
+    biomes: some -> rooms-biome
+}
+
+kind rooms-materials {
+    ground: one -> connector-ground
+    vent: one -> material
+    roof: one -> material
+    window: one -> material
+    sunlight: one -> material
+    mural: one -> material
+    mural-line: one -> material
+    levels: 2.. -> rooms-level
+}

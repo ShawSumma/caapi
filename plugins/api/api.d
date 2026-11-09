@@ -1,6 +1,8 @@
 module plugins.api.api;
 
-enum string ENTRY = "mined_plugin_14";
+import plugins.api.content : Manifest;
+
+enum string ENTRY = "caapi_plugin_23";
 
 version (WebAssembly) {
     enum string entryOf(string unit) = ENTRY ~ "_" ~ unit;
@@ -8,89 +10,13 @@ version (WebAssembly) {
     enum string entryOf(string unit) = ENTRY;
 }
 
-enum Material : ubyte {
-    none,
-    dirt,
-    sand,
-    redSand,
-    silt,
-    clay,
-    mud,
-    sandyLoam,
-    siltyLoam,
-    clayLoam,
-    gravel,
-    grass,
-    lushGrass,
-    coarseGrass,
-    tanGrass,
-    mudGrass,
-    caveGrass,
-    snow,
-    ice,
-    iceSlush,
-    limestone,
-    dolomite,
-    shale,
-    slate,
-    sandstone,
-    redSandstone,
-    marble,
-    granite,
-    diorite,
-    andesite,
-    gabbro,
-    basalt,
-    olivine,
-    water,
-    lava,
-    oakWood,
-    oakLeaves,
-    birchWood,
-    birchLeaves,
-    spruceWood,
-    spruceLeaves,
-    woodPlanks,
-    greyBrick,
-    whiteBrick,
-    concrete,
-    steel,
-    glass,
-    jungleWood,
-    jungleLeaves,
-    acaciaWood,
-    acaciaLeaves,
-    cherryLeaves,
-    mapleLeaves,
-    willowLeaves,
-    cactus,
-    wallpaper,
-    stainedWallpaper,
-    carpet,
-    dampCarpet,
-    ceilingTile,
-    lightPanel,
-    redCarpet,
-    sunlight,
-    plaster,
-    wetConcrete,
-    mistStone,
-    mistLight,
-    emberStone,
-    emberLight,
-    tideStone,
-    tideLight,
-    beacon,
-    ironOre,
-    copperOre,
-    sulfur,
-    fern,
-    flower,
-    thornbush,
-    moss,
-    collector,
-    bench,
+struct Material {
+    ubyte id;
+
+    enum Material none = Material(0);
 }
+
+enum uint MOST_MATERIALS = ubyte.max + 1;
 
 enum Turn : ubyte {
     left,
@@ -136,6 +62,17 @@ struct MaybeIndex(Indexed) {
 struct Tagged;
 
 alias KindTag = MaybeIndex!Tagged;
+
+enum ulong TAG_MIX = 0x2545F4914F6CDD1D;
+enum uint TAG_FOLD = 32;
+
+uint tagNamed(const(char)[] name) {
+    ulong hash = 0;
+    foreach (c; name) {
+        hash = (hash ^ c) * TAG_MIX;
+    }
+    return cast(uint)((hash ^ (hash >> TAG_FOLD)) % uint.max);
+}
 alias KindId = MaybeIndex!RisingKind;
 
 struct Site {
@@ -225,23 +162,6 @@ struct Risen {
     }
 }
 
-enum Tint : ubyte {
-    sky,
-    fog,
-}
-
-struct Color {
-    float red;
-    float green;
-    float blue;
-}
-
-struct Look {
-    const(char)* name;
-    Color fog = Color(0, 0, 0);
-    Tint tint;
-}
-
 alias Structure = void function(const(Api)* api, Site site, const(void)* data);
 alias Tile = void function(const(Api)* api, Site face, const(Risen)* risen, const(void)* data);
 
@@ -252,7 +172,7 @@ struct RisingKind {
     Tile tile;
     const(void)* data;
     size_t size;
-    Look look;
+    const(char)[] look;
     uint under;
 }
 
@@ -296,8 +216,8 @@ struct Api {
     void function(const(Api)* api, Pen pen, Material material, double cells, double fromRadius, double toRadius) limb;
     void function(const(Api)* api, Pen pen, Material material, double radius) leaves;
     bool function(const(Api)* api, const(char)* world, Site site) build;
-    void function(const(Api)* api, KindId kind, const(Look)* look) look;
-    void function(const(Api)* api, const(Look)* look) worldLook;
+    void function(const(Api)* api, KindId kind, const(char)[] look) look;
+    void function(const(Api)* api, const(char)[] look) worldLook;
     void function(const(Api)* api, double odds) risingKinds;
     bool function(const(Api)* api, uint index, Site site) landmark;
 }
@@ -307,6 +227,7 @@ struct Registry {
     void function(const(Registry)* registry, const(char)* name, Structure world) add;
     void function(const(Registry)* registry, const(char)* name, const(RisingKind)* kind) addKind;
     void function(const(Registry)* registry, const(char)* name, Structure landmark) addLandmark;
+    void function(const(Registry)* registry, const(Manifest)* manifest) declare;
 }
 
 alias Entry = void function(const(Registry)* registry);

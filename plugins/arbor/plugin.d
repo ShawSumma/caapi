@@ -1,11 +1,13 @@
 module plugins.arbor.plugin;
 
-import plugins.api.api : Api, Color, HorosphereForm, KindId, Look, Material, Registry, Risen, RisingKind, Site, Span, Spot, Tint, entryOf;
-import plugins.connector.connector : Tag;
-import plugins.horospheres.tree : TRUNK_RADIUS, Trunk, segment;
+import plugins.api.api : Api, HorosphereForm, KindId, Material, Registry, Risen, RisingKind, Site, Span, Spot, entryOf;
+import plugins.api.binding : bound;
+import plugins.api.content : BASE, Content, Dependency, FIRST_VERSION, Manifest, dependencyOn;
+import plugins.horospheres.horospheres : TREE_TAG;
+import plugins.horospheres.tree : TRUNK_RADIUS, Trunk, resolveTree, segment;
 import plugins.turtle.turtle : Offset, Rows, STAIR_HEADROOM, TREAD_THICKNESS, TURN_TREADS, Turtle, boxOf, floorMod, lawn, onWedge, ringRows, treadSpan, wedgeRows;
 
-immutable Look LOOK = Look("arbor", Color(0.72f, 0.84f, 0.74f), Tint.fog);
+enum string LOOK = "arbor:look";
 
 enum double TREAD_IN = TRUNK_RADIUS - 1;
 enum double ROOM_IN = TRUNK_RADIUS + 1.5;
@@ -20,10 +22,22 @@ enum int LANTERN_EVERY = 6;
 enum int LANTERN_HEIGHT = 2;
 enum uint TREE_EDGES = 2;
 enum double ROOT_SHARE = 0.1;
-enum Material STEP = Material.spruceWood;
-enum Material DECK = Material.woodPlanks;
-enum Material POST = Material.spruceWood;
 immutable Spot SPAWN = Spot(6, 0, 0);
+
+struct Materials {
+    Material step;
+    Material deck;
+    Material post;
+    Material lantern;
+    Material lawn;
+}
+
+__gshared Materials materials;
+
+void resolve(const(Content)* content) {
+    resolveTree(content);
+    materials = content.bound!Materials("arbor:materials");
+}
 
 void climb(Turtle tower, int bottom, int ground) {
     Rows[TURN_TREADS] treads = wedgeRows(tower.column(), TREAD_IN, TREAD_OUT);
@@ -36,9 +50,9 @@ void climb(Turtle tower, int bottom, int ground) {
             tower.clearOver(*room, tread);
         }
         if (tread >= 0 && height >= ground - BURIED_TREADS) {
-            tower.fillRows(STEP, *wedge, treadSpan(tread));
+            tower.fillRows(materials.step, *wedge, treadSpan(tread));
             if (height >= ground) {
-                tower.paintRows(STEP, *room, treadSpan(tread));
+                tower.paintRows(materials.step, *room, treadSpan(tread));
             }
         }
     }
@@ -47,13 +61,13 @@ void climb(Turtle tower, int bottom, int ground) {
 void deck(Turtle tower) {
     Rows floor = ringRows(tower.column(), TREAD_IN, DECK_OUT);
     Rows rail = ringRows(tower.column(), RAIL_IN, DECK_OUT);
-    tower.fillRows(DECK, floor, Span(0, 0));
-    tower.fillRows(POST, rail, Span(1, 1));
+    tower.fillRows(materials.deck, floor, Span(0, 0));
+    tower.fillRows(materials.post, rail, Span(1, 1));
     foreach (tread; 0 .. TURN_TREADS / LANTERN_EVERY) {
         Offset at = onWedge(tread * LANTERN_EVERY, RAIL_IN);
         int x = cast(int) at.x;
         int y = cast(int) at.y;
-        tower.fill(Material.lightPanel, boxOf(Span(x, x), Span(y, y), Span(2, LANTERN_HEIGHT)));
+        tower.fill(materials.lantern, boxOf(Span(x, x), Span(y, y), Span(2, LANTERN_HEIGHT)));
     }
 }
 
@@ -70,7 +84,7 @@ void tile(const(Api)* api, Site base, const(Risen)* risen, const(void)* data) {
 }
 
 void plant(const(Api)* api, Site at) {
-    KindId kind = api.horosphere(api, 0, HorosphereForm.upright, Tag.tree, &tile, null, 0);
+    KindId kind = api.horosphere(api, 0, HorosphereForm.upright, TREE_TAG, &tile, null, 0);
     api.openHorosphere(api, at, kind, TREE_EDGES);
 }
 
@@ -89,16 +103,20 @@ void landmark(const(Api)* api, Site at, const(void)* data) {
 
 void world(const(Api)* api, Site at, const(void)* data) {
     plant(api, at);
-    api.tile(api, &lawn, null, 0);
-    api.worldLook(api, &LOOK);
+    api.tile(api, &lawn, &materials.lawn, Material.sizeof);
+    api.worldLook(api, LOOK);
     Turtle tower = Turtle(api, at).columnSite();
     route(tower);
     tower.entrance(SPAWN.x, SPAWN.y, SPAWN.z);
 }
 
+immutable Dependency[2] NEEDS = [dependencyOn(BASE), dependencyOn("horospheres")];
+immutable Manifest MANIFEST = Manifest("arbor", FIRST_VERSION, NEEDS[], null, &resolve, null, null, import("plugins/arbor/arbor.decl"), import("plugins/arbor/arbor.content"));
+
 pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
+    registry.declare(registry, &MANIFEST);
     registry.add(registry, "arbor", &world);
-    RisingKind rising = RisingKind(ROOT_SHARE, HorosphereForm.upright, Tag.tree, &tile, null, 0, LOOK);
+    RisingKind rising = RisingKind(ROOT_SHARE, HorosphereForm.upright, TREE_TAG, &tile, null, 0, LOOK);
     registry.addKind(registry, "arbor", &rising);
     registry.addLandmark(registry, "arbor", &landmark);
 }

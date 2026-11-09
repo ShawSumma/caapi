@@ -15,7 +15,7 @@ import files : Outcome, PATH_CAPACITY, writeFile;
 
 enum ushort MARIONETTE_PORT = 2828;
 enum string LOOPBACK = "127.0.0.1";
-enum string GAME_PAGE = "mined.html";
+enum string GAME_PAGE = "caapi.html";
 enum string CHECK_PAGE = "obj/web/check.html";
 enum string PLAY_COMMAND = "play";
 enum string CHECK_COMMAND = "check";
@@ -68,6 +68,7 @@ enum string STATE_SCRIPT = "return document.getElementById('status').textContent
 enum string RESULT_SCRIPT = "return document.getElementById('status').textContent + ' | failure: ' + document.getElementById('failure').textContent";
 enum string CANVAS_SCRIPT = "const c = document.getElementById('game'); return c.width + 'x' + c.height";
 enum string RELEASE_SCRIPT = "document.exitPointerLock(); return 'released'";
+enum string REFUSED_SCRIPT = "const c = document.getElementById('game'); const p = document.createElement('div').requestPointerLock(); const kind = (p && typeof p.then === 'function') ? 'returns a promise' : 'returns no promise'; if (p && p.catch) { p.catch(() => 0); } const parent = c.parentNode; const next = c.nextSibling; parent.removeChild(c); c.dispatchEvent(new MouseEvent('mousedown', {button: 0})); parent.insertBefore(c, next); return 'requestPointerLock ' + kind + '; asked for the mouse from a detached canvas'";
 enum string SHOT_START = "{\"full\":false,\"hash\":false}";
 enum string SHOT_DIRECTORY = ".firefox-check/";
 enum string VALUE_MARK = "\"value\":\"";
@@ -330,6 +331,12 @@ void playThrough(ref Marionette browser) {
     browser.state("after release");
     browser.hold("w", SETTLE_MILLISECONDS);
     browser.state("W while released");
+    browser.report("refused", REFUSED_SCRIPT);
+    pause(SETTLE_MILLISECONDS);
+    browser.state("after a refused capture");
+    browser.click(LEFT_BUTTON);
+    pause(SETTLE_MILLISECONDS);
+    browser.state("clicked to capture again");
     browser.call(SET_WINDOW_RECT, SMALL_WINDOW);
     pause(WORLD_MILLISECONDS);
     browser.state("resized");

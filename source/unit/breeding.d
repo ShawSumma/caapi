@@ -4,6 +4,7 @@ import common.biology.breeding : crossed, expressionIn;
 import common.biology.wild : WILD_GENES, WildGenes;
 import common.worldgen.climate : Climate;
 import plugins.api.api : Material;
+import unit.named : blockNamed;
 
 enum ulong SALT = 0x1234;
 
@@ -27,7 +28,10 @@ unittest {
 unittest {
     Climate wet = Climate(0, 0.2f, 0.9f, 0);
     Climate dry = Climate(0, 0.2f, -0.9f, 0);
-    assert(expressionIn(Material.fern, wet) > expressionIn(Material.fern, dry));
-    assert(expressionIn(Material.thornbush, dry) > expressionIn(Material.thornbush, wet));
-    assert(expressionIn(Material.flower, wet) > 0 && expressionIn(Material.flower, wet) < 1);
+    Material fern = blockNamed("base:fern");
+    Material thornbush = blockNamed("base:thornbush");
+    Material flower = blockNamed("base:flower");
+    assert(expressionIn(fern, wet) > expressionIn(fern, dry));
+    assert(expressionIn(thornbush, dry) > expressionIn(thornbush, wet));
+    assert(expressionIn(flower, wet) > 0 && expressionIn(flower, wet) < 1);
 }

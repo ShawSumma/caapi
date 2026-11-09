@@ -1,0 +1,33 @@
+kind connector-palette {
+    wall: one -> material
+    trim: one -> material
+    floor: one -> material
+}
+
+kind connector-ground {
+    tag: text
+    level: integer = 0
+}
+
+kind connector-pair {
+    lower: text
+    upper: text
+    tower: integer 0.. = 0
+    spiral: integer 0.. = 0
+    drift: integer 0.. = 0
+    lantern: integer 0.. = 0
+    hidden: integer 0.. = 0
+}
+
+kind connector-materials {
+    landing: one -> material
+    window: one -> material
+    stone: one -> material
+    light: one -> material
+    palettes: some -> connector-palette
+    drift: one -> connector-palette
+    lantern: one -> connector-palette
+    hidden: one -> connector-palette
+    grounds: many -> connector-ground
+    pairs: many -> connector-pair
+}

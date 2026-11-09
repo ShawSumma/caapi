@@ -14,6 +14,7 @@ import client.game : Game;
 import client.plugins : registry;
 import client.tiles : TileCall, TileCalls, TileSpan, TileWork, isTiledBy, visitTilesAt;
 import common.graph : Graph;
+import common.look : Look, lookNamed;
 import common.node : ChunkLayout;
 import common.view : GraphView;
 import common.worldgen.blueprint : BlueprintBuilder, CellBox, Cover, PaintOwner, PaintResult, Rhythm;
@@ -24,11 +25,12 @@ import common.worldgen.store : Grower, TileKey;
 import common.worldgen.strokes : Stroke, StrokeForm;
 import common.worldgen.structure : ClaimKey, ColumnSpot, PLACE_SLACK, RootedCorner, SiteFrame, anchorBits, calmAt, edgeCells, edgeLength, ensureClaimKey, ensureSiteHash, ensureSiteOrigin, forwarded, frameOf, moveToLevel, rootSite, siteOf, sitePlacement, turnSite;
 import geometry.lorentz : Motion, Vec4;
-import plugins.api.api : Api, Box, ColumnCell, HorosphereForm, KindId, KindTag, Look, Material, Pen, Repeat, RisingKind, Site, SitePart, Span, Spot, Structure, Tile, Turn;
+import plugins.api.api : Api, Box, ColumnCell, HorosphereForm, KindId, KindTag, Material, Pen, Repeat, RisingKind, Site, SitePart, Span, Spot, Structure, Tile, Turn;
 import plugins.api.api : ApiRhythm = Rhythm;
 
 enum size_t MESSAGE_CAPACITY = 1024;
 enum string UNBOUNDED_PAINT = "paints bounded heights: give the box a z range";
+enum string UNKNOWN_LOOK = "names a look that no mod defines";
 enum string BAD_PEN_DRAW = "a pen draws a length of at least zero with radii above zero";
 enum string ONLY_WORLD_TILES_GROUND = "only the world's own structure tiles the ground, and only once";
 enum string ONLY_WORLD_TILES_EDGES = "only the world's own structure tiles the edges, and only once";
@@ -508,21 +510,27 @@ struct StructureHost {
         return made;
     }
 
-    void look(KindId kind, ref const Look chosen) {
+    void look(KindId kind, const(char)[] name) {
+        Maybe!Look chosen = lookNamed(name);
         if (builder.isGrowing) {
             refuse(ONLY_WORLD_SETS_LOOK);
         } else if (!isKnownKind(kind)) {
             refuse(UNKNOWN_KIND);
+        } else if (!chosen.exists) {
+            refuse(UNKNOWN_LOOK);
         } else {
-            builder.graph.horospheres.kinds.ptr[kind.value].look = chosen;
+            builder.graph.horospheres.kinds.ptr[kind.value].look = chosen.value;
         }
     }
 
-    void worldLook(ref const Look chosen) {
+    void worldLook(const(char)[] name) {
+        Maybe!Look chosen = lookNamed(name);
         if (builder.isGrowing) {
             refuse(ONLY_WORLD_SETS_LOOK);
+        } else if (!chosen.exists) {
+            refuse(UNKNOWN_LOOK);
         } else {
-            builder.graph.structures.blueprint.look = chosen;
+            builder.graph.structures.blueprint.look = chosen.value;
         }
     }
 
@@ -821,12 +829,12 @@ int mainBalance(const(Api)* api, Site site, int most) {
     return 0;
 }
 
-void mainLook(const(Api)* api, KindId kind, const(Look)* look) {
-    mainHost(api).look(kind, *look);
+void mainLook(const(Api)* api, KindId kind, const(char)[] look) {
+    mainHost(api).look(kind, look);
 }
 
-void mainWorldLook(const(Api)* api, const(Look)* look) {
-    mainHost(api).worldLook(*look);
+void mainWorldLook(const(Api)* api, const(char)[] look) {
+    mainHost(api).worldLook(look);
 }
 
 void mainRisingKinds(const(Api)* api, double odds) {

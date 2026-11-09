@@ -1,0 +1,8 @@
+kind babel-materials {
+    wall: one -> material
+    step: one -> material
+    band: one -> material
+    light: one -> material
+    plaza: one -> material
+    lawn: one -> material
+}

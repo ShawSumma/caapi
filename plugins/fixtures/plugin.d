@@ -1,12 +1,14 @@
 module plugins.fixtures.plugin;
 
 import plugins.api.api : Api, HorosphereForm, KindId, Registry, Site, SitePart, Spot, entryOf;
+import plugins.api.content : BASE, Content, Dependency, FIRST_VERSION, Manifest, dependencyOn;
 import box = plugins.box.box;
-import plugins.buildings.building : Bound, Lot, Lots, Side, Spec;
-import plugins.buildings.types : Type, build, palettes;
-import plugins.connector.connector : Connection, Routing, Style, Tag;
+import plugins.api.binding : bound;
+import plugins.buildings.building : Bound, Lot, Lots, Side, Spec, Traits;
+import plugins.buildings.types : build;
+import plugins.connector.connector : Connection, Routing, Style;
 import layout = plugins.rooms.layout;
-import plugins.horospheres.horospheres : Kinds, addKinds, cityTile;
+import plugins.horospheres.horospheres : CITY_TAG, Kinds, addKinds, cityTile, resolveHorospheres;
 import plugins.rooms.rooms : MaybeLayer;
 import plugins.turtle.turtle : Turtle, cornersOf;
 
@@ -82,7 +84,7 @@ void trip(Style style, Ground lower, Ground upper)(const(Api)* api, Site site, c
 
 void chain(const(Api)* api, Site site, const(void)* data) {
     Kinds kinds = addKinds(api, 0, 0, &UNROUTED);
-    KindId upper = api.horosphere(api, 0, HorosphereForm.solid, Tag.city, &cityTile, &ROUTED, Connection.sizeof);
+    KindId upper = api.horosphere(api, 0, HorosphereForm.solid, CITY_TAG, &cityTile, &ROUTED, Connection.sizeof);
     api.openHorosphere(api, site, kinds.city, RISE_EDGES);
     Turtle along = Turtle(api, site).pitchUp().forward(RISE_EDGES).pitchUp().forward(CHAIN_EDGES);
     api.openHorosphere(api, along.site, upper, RISE_EDGES);
@@ -105,24 +107,32 @@ void backroomsStairs(const(Api)* api, Site site, const(void)* data) {
     forcedStair(api, site, TOP_FLOOR);
 }
 
-Turtle show(Turtle quarter, Type type, int stories) {
+struct Shown {
+    string type;
+    int stories;
+}
+
+immutable Shown[4] SHOWN = [Shown("buildings:brownstone", 5), Shown("buildings:tenement", 8), Shown("buildings:deco", 24), Shown("buildings:glass", 30)];
+
+__gshared Traits[SHOWN.length] showcased;
+
+Turtle show(Turtle quarter, ref const Traits traits, int stories) {
     Lot lot;
     lot.site = quarter;
     lot.bounds = [Bound.street, Bound.street, Bound.lot, Bound.lot];
     lot.front = Side.yLow;
     Lots lots;
     lots.add(lot);
-    Spec spec = {stories: stories, palette: palettes(type)[0], front: SHOWCASE_FRONT};
-    build(type, lots, spec);
+    Spec spec = {stories: stories, palette: traits.palettes.items[0], front: SHOWCASE_FRONT};
+    build(traits, lots, spec);
     return quarter.right();
 }
 
 void showcase(const(Api)* api, Site site, const(void)* data) {
     Turtle quarter = Turtle(api, site);
-    quarter = show(quarter, Type.brownstone, 5);
-    quarter = show(quarter, Type.tenement, 8);
-    quarter = show(quarter, Type.deco, 24);
-    show(quarter, Type.glass, 30);
+    foreach (index, ref shown; SHOWN) {
+        quarter = show(quarter, showcased[index], shown.stories);
+    }
 }
 
 void hut(Turtle site) {
@@ -138,7 +148,19 @@ void hamlet(const(Api)* api, Site site, const(void)* data) {
     }
 }
 
+void resolve(const(Content)* content) {
+    resolveHorospheres(content);
+    box.resolveBox(content);
+    foreach (index, ref shown; SHOWN) {
+        showcased[index] = content.bound!Traits(shown.type);
+    }
+}
+
+immutable Dependency[7] NEEDS = [dependencyOn(BASE), dependencyOn("buildings"), dependencyOn("connector"), dependencyOn("blocks"), dependencyOn("rooms"), dependencyOn("horospheres"), dependencyOn("box")];
+immutable Manifest MANIFEST = Manifest("fixtures", FIRST_VERSION, NEEDS[], null, &resolve);
+
 pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
+    registry.declare(registry, &MANIFEST);
     registry.add(registry, "risencity", &risenCity);
     registry.add(registry, "spiralcity", &styled!(Style.spiral));
     registry.add(registry, "driftcity", &styled!(Style.drift));

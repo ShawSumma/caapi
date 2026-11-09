@@ -1,6 +1,7 @@
 module plugins.city.plugin;
 
 import plugins.api.api : Api, Registry, Site, Spot, entryOf;
+import plugins.api.content : BASE, Dependency, FIRST_VERSION, Manifest, dependencyOn;
 import blocks = plugins.blocks.blocks;
 import plugins.horospheres.horospheres : CITY_LOOK;
 import plugins.turtle.turtle : Turtle;
@@ -11,10 +12,14 @@ void world(const(Api)* api, Site site, const(void)* data) {
     Turtle at = Turtle(api, site);
     blocks.Root root = blocks.rootAt(at);
     api.tile(api, &blocks.tile, &root, blocks.Root.sizeof);
-    api.worldLook(api, &CITY_LOOK);
+    api.worldLook(api, CITY_LOOK);
     at.right().entrance(SPAWN.x, SPAWN.y, SPAWN.z);
 }
 
+immutable Dependency[5] NEEDS = [dependencyOn(BASE), dependencyOn("buildings"), dependencyOn("connector"), dependencyOn("blocks"), dependencyOn("horospheres")];
+immutable Manifest MANIFEST = Manifest("city", FIRST_VERSION, NEEDS[], null, &blocks.resolveBlocks);
+
 pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
+    registry.declare(registry, &MANIFEST);
     registry.add(registry, "city", &world);
 }

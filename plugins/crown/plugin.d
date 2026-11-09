@@ -1,10 +1,11 @@
 module plugins.crown.plugin;
 
-import plugins.api.api : Api, Box, Look, Material, Registry, Rhythm, Site, Span, entryOf;
+import plugins.api.api : Api, Box, Material, Registry, Rhythm, Site, Span, entryOf;
+import plugins.api.content : BASE, Dependency, FIRST_VERSION, Manifest, dependencyOn;
 import box = plugins.box.box;
 import plugins.turtle.turtle : Along, FACE_CORNERS, Turtle, boxOf, cornersOf, upright;
 
-immutable Look LOOK = Look("crown");
+enum string LOOK = "base:sky";
 enum int HEIGHT_EDGES = 2;
 enum int HALL_ROOF = 2 * box.STORY;
 enum int HALL_WINDOW_OFFSET = 2;
@@ -150,11 +151,15 @@ void landmark(const(Api)* api, Site root, const(void)* data) {
 void world(const(Api)* api, Site root, const(void)* data) {
     Turtle site = Turtle(api, root);
     landmark(api, root, data);
-    api.worldLook(api, &LOOK);
+    api.worldLook(api, LOOK);
     site.entrance(0, 1, site.edgeCells() / 2);
 }
 
+immutable Dependency[2] NEEDS = [dependencyOn(BASE), dependencyOn("box")];
+immutable Manifest MANIFEST = Manifest("crown", FIRST_VERSION, NEEDS[], null, &box.resolveBox);
+
 pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
+    registry.declare(registry, &MANIFEST);
     registry.add(registry, "crown", &world);
     registry.addLandmark(registry, "crown", &landmark);
 }

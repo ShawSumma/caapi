@@ -38,7 +38,7 @@ struct NodeId {
 }
 
 enum NodeId ROOT_NODE = NodeId(Hash128(1, 1));
-enum uint MAX_PARENTS = 3;
+enum uint MOST_PARENTS = 3;
 enum ushort ALL_FACES = (1u << FACE_COUNT) - 1;
 enum uint DISCARDS_PER_FRAME = 256;
 
@@ -75,7 +75,7 @@ struct ParentEntry {
 }
 
 struct ParentList {
-    ParentEntry[MAX_PARENTS] links;
+    ParentEntry[MOST_PARENTS] links;
     uint count;
 }
 

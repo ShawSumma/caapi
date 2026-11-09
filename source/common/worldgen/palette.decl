@@ -1,0 +1,82 @@
+kind cover-rule {
+    order: number = 0
+    warmth-above: number?
+    warmth-below: number?
+    wetness-above: number?
+    wetness-below: number?
+    relief-above: number?
+    relief-below: number?
+    lays: one -> material
+}
+
+kind soil-rule {
+    order: number = 0
+    warmth-above: number?
+    warmth-below: number?
+    wetness-above: number?
+    wetness-below: number?
+    relief-above: number?
+    relief-below: number?
+    lays: one -> material
+}
+
+kind fluid-rule {
+    order: number = 0
+    warmth-above: number?
+    warmth-below: number?
+    wetness-above: number?
+    wetness-below: number?
+    relief-above: number?
+    relief-below: number?
+    lays: one -> material
+}
+
+kind plant-rule {
+    order: number = 0
+    warmth-above: number?
+    warmth-below: number?
+    wetness-above: number?
+    wetness-below: number?
+    relief-above: number?
+    relief-below: number?
+    lays: one -> material
+}
+
+kind rock-layer {
+    band: integer 0..3
+    wetness-class: integer 0..2
+    warmth-class: integer 0..1
+    lays: one -> material
+}
+
+kind tree {
+    shape: "round" | "cone" | "broad" | "weeping" | "tall" | "flat" | "bush" | "bare" | "column" | "cap" | "bloom"
+    trunk: integer 0.. = 0
+    trunk-choices: integer 1.. = 1
+    reach: integer 1.. = 1
+    wood: one -> material
+    leaves: optional -> material
+    heart: optional -> material
+    grows-on: many -> material | group
+}
+
+kind tree-rule {
+    order: number = 0
+    warmth-above: number?
+    warmth-below: number?
+    wetness-above: number?
+    wetness-below: number?
+    one-in: integer 1..?
+    draw: "roll" | "choice"?
+    picks: some -> tree
+}
+
+kind terrain {
+    flat-fill: one -> material
+    stand-in: one -> material
+}
+
+extend material {
+    vein-in: many -> material
+    grows-on: many -> material | group
+}

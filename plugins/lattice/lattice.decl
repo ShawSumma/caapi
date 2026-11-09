@@ -1,0 +1,11 @@
+kind lattice-materials {
+    pole: one -> material
+    girder: one -> material
+    joint: one -> material
+    step: one -> material
+    lantern: one -> material
+    leaves: one -> material
+    hut: one -> material
+    roof: one -> material
+    floors: some -> material
+}

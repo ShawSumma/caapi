@@ -1,12 +1,12 @@
 module plugins.planet.plugin;
 
 import plugins.api.api : Api, Registry, Site, Spot, entryOf;
+import plugins.api.binding : settingsOf;
+import plugins.api.content : BASE, Content, Dependency, FIRST_VERSION, Manifest, dependencyOn;
 import plugins.connector.connector : Connection;
-import plugins.horospheres.horospheres : Kinds, WILD_LOOK, addKinds;
+import plugins.horospheres.horospheres : Kinds, WILD_LOOK, addKinds, resolveHorospheres;
 import plugins.turtle.turtle : Turtle;
 
-enum double RISE_ODDS = 0.015;
-enum double TREE_ODDS = 0.002;
 enum int TREE_EDGES = 1;
 enum uint TREE_RISE = 2;
 enum int LANDMARK_RINGS = 3;
@@ -49,16 +49,32 @@ void landmarks(const(Api)* api, Turtle at) {
 void world(const(Api)* api, Site site, const(void)* data) {
     Turtle at = Turtle(api, site);
     at.build("road");
-    Kinds kinds = addKinds(api, RISE_ODDS, TREE_ODDS, &CONNECTION);
+    Kinds kinds = addKinds(api, tuning.riseOdds, tuning.treeOdds, &CONNECTION);
     api.rooted(api, kinds.wild);
-    api.risingKinds(api, RISE_ODDS);
-    api.worldLook(api, &WILD_LOOK);
+    api.risingKinds(api, tuning.riseOdds);
+    api.worldLook(api, WILD_LOOK);
     Turtle tree = at.right().forward(TREE_EDGES);
     api.openHorosphere(api, tree.site, kinds.tree, TREE_RISE);
     tree.entrance(SPAWN.x, SPAWN.y, SPAWN.z);
     landmarks(api, at);
 }
 
+immutable Dependency[7] NEEDS = [dependencyOn(BASE), dependencyOn("road"), dependencyOn("buildings"), dependencyOn("connector"), dependencyOn("blocks"), dependencyOn("rooms"), dependencyOn("horospheres")];
+struct Tuning {
+    double riseOdds;
+    double treeOdds;
+}
+
+__gshared Tuning tuning;
+
+void resolve(const(Content)* content) {
+    resolveHorospheres(content);
+    tuning = content.settingsOf!Tuning("planet");
+}
+
+immutable Manifest MANIFEST = Manifest("planet", FIRST_VERSION, NEEDS[], null, &resolve, null, import("plugins/planet/settings.conf"));
+
 pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
+    registry.declare(registry, &MANIFEST);
     registry.add(registry, "planet", &world);
 }

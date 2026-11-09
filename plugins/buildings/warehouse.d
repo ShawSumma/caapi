@@ -1,27 +1,18 @@
 module plugins.buildings.warehouse;
 
-import plugins.api.api : Material, Rhythm, Span;
-import plugins.buildings.building : Lots, Palette, Parts, STORY, Spec, banded, chimney, crown, enter, makeParts, pick, roof, shell, tiers, waterTower;
+import plugins.api.api : Rhythm;
+import plugins.buildings.building : Lots, Parts, STORY, Spec, Traits, banded, chimney, crown, enter, makeParts, pick, roof, shell, tiers, waterTower;
 
-enum Span STORIES = Span(2, 4);
-enum Material ROOF = Material.basalt;
 enum Rhythm HIGH_ROWS = Rhythm(STORY, 2, 1);
 
-immutable Palette[4] PALETTES = [
-    Palette(Material.redSandstone, Material.greyBrick, Material.concrete),
-    Palette(Material.greyBrick, Material.steel, Material.concrete),
-    Palette(Material.concrete, Material.steel, Material.concrete),
-    Palette(Material.clay, Material.basalt, Material.woodPlanks),
-];
-
-void build(ref const Lots lots, Spec spec) {
+void build(ref const Lots lots, Spec spec, ref const Traits traits) {
     Parts parts;
     makeParts(parts, lots, spec);
     foreach (ref part; parts.slice()) {
         foreach (tier; tiers(part, spec, 0).slice()) {
             banded(part, shell(part, spec.palette, tier), tier, HIGH_ROWS);
             if (tier.isRoofed()) {
-                roof(part, spec.palette, ROOF, tier);
+                roof(part, spec.palette, traits.roof, tier);
             }
         }
     }

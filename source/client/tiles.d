@@ -20,7 +20,7 @@ import common.worldgen.strokes : Stroke, StrokeForm;
 import common.worldgen.structure : CanonicalSite, ColumnSpot, EDGE_NODES, LineTouch, SiteFrame, SlotTouch, addPendingTouch, canonicalOf, edgeSitesOf, ensureAroundEdge, ensureGroundRing, faceSite, frameOf, seedTouch, sideAxis, siteOf, sitePlacement, turnSite, walkTouch;
 import geometry.honeycomb : CORNER_COUNT, FACE_COUNT, Face;
 import geometry.lorentz : Motion;
-import plugins.api.api : Api, Box, HorosphereForm, KindId, KindTag, Look, Material, Pen, Risen, Rising, Site, SitePart, Span, Spot, Structure, Tile, Turn;
+import plugins.api.api : Api, Box, HorosphereForm, KindId, KindTag, Material, Pen, Risen, Rising, Site, SitePart, Span, Spot, Structure, Tile, Turn;
 import plugins.api.api : ApiRhythm = Rhythm;
 
 enum double PAINT_AHEAD_MILLISECONDS = 2.0;
@@ -697,11 +697,11 @@ int tileBalance(const(Api)* api, Site site, int most) {
     }
 }
 
-void tileLook(const(Api)* api, KindId kind, const(Look)* look) {
+void tileLook(const(Api)* api, KindId kind, const(char)[] look) {
     tileHost(api).refuse(ONLY_WORLD_SETS_LOOK);
 }
 
-void tileWorldLook(const(Api)* api, const(Look)* look) {
+void tileWorldLook(const(Api)* api, const(char)[] look) {
     tileHost(api).refuse(ONLY_WORLD_SETS_LOOK);
 }
 

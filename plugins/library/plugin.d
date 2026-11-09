@@ -1,11 +1,13 @@
 module plugins.library.plugin;
 
-import plugins.api.api : Api, Color, HorosphereForm, KindId, KindTag, Look, Material, Registry, Rhythm, Risen, RisingKind, Site, SitePart, Span, Spot, Tint, entryOf;
+import plugins.api.api : Api, HorosphereForm, KindId, KindTag, Material, Registry, Rhythm, Risen, RisingKind, Site, SitePart, Span, Spot, entryOf, tagNamed;
+import plugins.api.binding : List, bound, settingsOf;
+import plugins.api.content : BASE, Content, Dependency, FIRST_VERSION, Manifest, dependencyOn;
 import blocks = plugins.blocks.blocks;
-import plugins.connector.connector : Connection, Tag, connect;
+import plugins.connector.connector : Connection, connect, resolveConnector;
 import plugins.turtle.turtle : Along, Cell, EVERY_HEIGHT, Offset, Rows, STAIR_HEADROOM, TURN_TREADS, Turtle, boxOf, cornersOf, floorDiv, floorMod, higherOf, line, lowerOf, onWedge, ringRows, roll, treadSpan, upright, wedgeRows;
 
-immutable Look LOOK = Look("library", Color(0.72f, 0.62f, 0.46f), Tint.fog);
+enum string LOOK = "library:look";
 
 enum int STORY = 6;
 enum int CEILING_AT = STORY - 1;
@@ -20,21 +22,13 @@ enum int CLEAR = 6;
 enum Cell LAMP = Cell(10, 4);
 enum Span TABLE_X = Span(3, 8);
 enum Span TABLE_Y = Span(5, 6);
-enum double RISE_ODDS = 0.02;
-enum double SHAFT_ODDS = 0.06;
 enum double SHAFT_SHARE = 2;
-enum double HALL_ODDS = 0.15;
-enum double STAIR_ODDS = 0.2;
-enum double ARCADE_ODDS = 0.12;
-enum double SOLID_ODDS = 0.2;
 enum ulong KIND_SALT = 0x3B9ACA07;
 enum ulong FLOOR_SALT = 0x7F4A7C15;
 enum ulong WALL_SALT = 0x1B873593;
-enum Material FRAME = Material.spruceWood;
-enum Material CEILING = Material.plaster;
-enum double FOG = 6;
-immutable Material[4] FLOORS = [Material.woodPlanks, Material.spruceWood, Material.marble, Material.redCarpet];
-immutable Material[7] BOOKS = [Material.redCarpet, Material.acaciaWood, Material.jungleWood, Material.birchWood, Material.oakWood, Material.carpet, Material.redSandstone];
+enum uint LIBRARY_TAG = tagNamed("library:library");
+enum uint STACKS_TAG = tagNamed("library:stacks");
+enum size_t MOST_CHOICES = 16;
 immutable Rhythm[2] WALL_BOOKS = [Rhythm(2 * STORY, 2, 2), Rhythm(2 * STORY, STORY + 2, 2)];
 immutable Connection ROLLED = Connection.rolled();
 
@@ -48,6 +42,45 @@ enum int TOP_TREAD = STORY;
 enum int ROUTE_TREADS = 20 * TURN_TREADS;
 enum int LAMP_SPOT = 6;
 immutable Spot SPAWN = Spot(10, 7, 1);
+
+struct Materials {
+    Material frame;
+    Material ceiling;
+    Material lamp;
+    Material table;
+    Material stair;
+    Material well;
+    List!(Material, MOST_CHOICES) floors;
+    List!(Material, MOST_CHOICES) books;
+}
+
+__gshared Materials materials;
+
+struct Tuning {
+    double riseOdds;
+    double shaftOdds;
+    double hallOdds;
+    double stairOdds;
+    double arcadeOdds;
+    double solidOdds;
+    double fog;
+}
+
+__gshared Tuning tuning;
+
+void resolve(const(Content)* content) {
+    resolveConnector(content);
+    materials = content.bound!Materials("library:materials");
+    tuning = content.settingsOf!Tuning("library");
+}
+
+Material floorOf(ulong hash) {
+    return materials.floors.items[cast(size_t)(roll(hash, FLOOR_SALT) * materials.floors.count)];
+}
+
+Material bookOf(Turtle tower) {
+    return materials.books.items[tower.pick(materials.books.count)];
+}
 
 enum Kind : ubyte {
     gallery,
@@ -89,9 +122,9 @@ Clearing clearingAt(Turtle corner, ref const Risen risen) {
 
 Kind kindOf(ulong face) {
     double chance = roll(face, KIND_SALT);
-    if (chance < HALL_ODDS) {
+    if (chance < tuning.hallOdds) {
         return Kind.hall;
-    } else if (chance < HALL_ODDS + STAIR_ODDS) {
+    } else if (chance < tuning.hallOdds + tuning.stairOdds) {
         return Kind.stair;
     } else {
         return Kind.gallery;
@@ -100,9 +133,9 @@ Kind kindOf(ulong face) {
 
 Wall wallOf(ulong edge) {
     double chance = roll(edge, WALL_SALT);
-    if (chance < ARCADE_ODDS) {
+    if (chance < tuning.arcadeOdds) {
         return Wall.arcade;
-    } else if (chance < ARCADE_ODDS + SOLID_ODDS) {
+    } else if (chance < tuning.arcadeOdds + tuning.solidOdds) {
         return Wall.solid;
     } else {
         return Wall.door;
@@ -127,10 +160,10 @@ void spread(ref const Quarter q, Material material, Span z, Rhythm rhythm) {
 
 void shelves(Turtle tower, Along direction, Span span) {
     Span rooms = Span(BOTTOM + 1, ROOF - 1);
-    tower.paint(FRAME, line(direction, span, rooms));
+    tower.paint(materials.frame, line(direction, span, rooms));
     foreach (along; span.low .. span.high + 1) {
         foreach (row; WALL_BOOKS) {
-            tower.paint(BOOKS[tower.pick(BOOKS.length)], line(direction, Span(along, along), rooms), row);
+            tower.paint(bookOf(tower), line(direction, Span(along, along), rooms), row);
         }
     }
 }
@@ -152,8 +185,8 @@ void wall(Turtle tower, Along direction, ulong edge) {
 
 void stack(Turtle tower, Span x, Span y) {
     Span rooms = Span(BOTTOM + 1, ROOF - 1);
-    tower.paint(FRAME, boxOf(x, y, rooms), Rhythm(STORY, 1, 3));
-    tower.paint(BOOKS[tower.pick(BOOKS.length)], boxOf(x, y, rooms), Rhythm(STORY, 2, 1));
+    tower.paint(materials.frame, boxOf(x, y, rooms), Rhythm(STORY, 1, 3));
+    tower.paint(bookOf(tower), boxOf(x, y, rooms), Rhythm(STORY, 2, 1));
 }
 
 void floors(ref const Quarter q, Kind kind, Material material) {
@@ -164,15 +197,15 @@ void floors(ref const Quarter q, Kind kind, Material material) {
     }
     spread(q, Material.none, Span(BOTTOM + 1, ROOF - 1), EVERY_HEIGHT);
     spread(q, material, whole, Rhythm(story, 0, 1));
-    spread(q, CEILING, whole, Rhythm(story, story - 1, 1));
-    q.tower.paint(Material.lightPanel, boxOf(Span(LAMP.x, LAMP.x), Span(LAMP.y, LAMP.y), whole), Rhythm(story, story - 1, 1));
+    spread(q, materials.ceiling, whole, Rhythm(story, story - 1, 1));
+    q.tower.paint(materials.lamp, boxOf(Span(LAMP.x, LAMP.x), Span(LAMP.y, LAMP.y), whole), Rhythm(story, story - 1, 1));
     if (kind == Kind.hall) {
-        q.tower.paint(Material.oakWood, boxOf(TABLE_X, TABLE_Y, whole), Rhythm(HALL_STORY, 1, 1));
+        q.tower.paint(materials.table, boxOf(TABLE_X, TABLE_Y, whole), Rhythm(HALL_STORY, 1, 1));
     }
 }
 
 void tread(Turtle tower, int x, Span y, int top) {
-    tower.paint(Material.marble, boxOf(Span(x, x), y, Span(top - 1, top)));
+    tower.paint(materials.stair, boxOf(Span(x, x), y, Span(top - 1, top)));
 }
 
 void stairwell(Turtle tower) {
@@ -184,7 +217,7 @@ void stairwell(Turtle tower) {
         foreach (step; 0 .. 2) {
             tread(tower, 3 + step, low, level + step);
         }
-        tower.paint(Material.marble, boxOf(Span(5, 8), Span(1, 7), Span(level + 1, level + 2)));
+        tower.paint(materials.stair, boxOf(Span(5, 8), Span(1, 7), Span(level + 1, level + 2)));
         foreach (step; 0 .. 3) {
             tread(tower, 4 - step, high, level + 3 + step);
         }
@@ -193,7 +226,7 @@ void stairwell(Turtle tower) {
 
 void quarter(Turtle corner, size_t index, Kind kind, Material material, ref const Risen risen) {
     KindTag rising = corner.probeRising();
-    if (rising != KindTag.of(Tag.stacks)) {
+    if (rising != KindTag.of(STACKS_TAG)) {
         Quarter q = Quarter(upright(corner), clearingAt(corner, risen));
         floors(q, kind, material);
         if (!q.isClear()) {
@@ -217,14 +250,14 @@ void tile(const(Api)* api, Site site, const(Risen)* risen, const(void)* data) {
     Connection connection = *cast(const(Connection)*) data;
     ulong hash = face.probeHash(SitePart.face);
     Kind kind = kindOf(hash);
-    Material material = FLOORS[cast(size_t)(roll(hash, FLOOR_SALT) * FLOORS.length)];
+    Material material = floorOf(hash);
     foreach (index, corner; cornersOf(face)) {
         quarter(corner, index, kind, material, *risen);
     }
     if (risen.hasRisen) {
         bool owner = blocks.probeOwnsFoot(face, *risen);
         if (owner) {
-            connect(Turtle(api, risen.foot), *risen, Tag.library, connection);
+            connect(Turtle(api, risen.foot), *risen, LIBRARY_TAG, connection);
         }
     }
 }
@@ -235,21 +268,21 @@ void stories(Turtle tower, double outer, Span z, Material floor) {
     tower.paintRows(Material.none, ring, z);
     tower.paintRows(Material.none, well, z);
     tower.paintRows(floor, ring, z, Rhythm(STORY, 0, 1));
-    tower.paintRows(Material.glass, well, z, Rhythm(STORY, 0, 1));
-    tower.paintRows(CEILING, ring, z, Rhythm(STORY, CEILING_AT, 1));
+    tower.paintRows(materials.well, well, z, Rhythm(STORY, 0, 1));
+    tower.paintRows(materials.ceiling, ring, z, Rhythm(STORY, CEILING_AT, 1));
     immutable int[2] sides = [-LAMP_SPOT, LAMP_SPOT - 1];
     foreach (x; sides) {
         foreach (y; sides) {
-            tower.paint(Material.lightPanel, boxOf(Span(x, x), Span(y, y), z), Rhythm(STORY, CEILING_AT, 1));
+            tower.paint(materials.lamp, boxOf(Span(x, x), Span(y, y), z), Rhythm(STORY, CEILING_AT, 1));
         }
     }
 }
 
 void shelving(Turtle tower, Span z) {
     Rows wall = ringRows(tower.column(), SHELF, RIM);
-    tower.paintRows(FRAME, wall, z);
+    tower.paintRows(materials.frame, wall, z);
     foreach (row; wall.slice()) {
-        tower.paint(BOOKS[tower.pick(BOOKS.length)], boxOf(row.x, Span(row.y, row.y), z), Rhythm(STORY, 2, 2));
+        tower.paint(bookOf(tower), boxOf(row.x, Span(row.y, row.y), z), Rhythm(STORY, 2, 2));
     }
 }
 
@@ -259,7 +292,7 @@ void descent(Turtle tower, int lastTread) {
         Rows* wedge = &treads[floorMod(at, TURN_TREADS)];
         tower.clearOver(*wedge, at);
         if (at >= 0) {
-            tower.paintRows(Material.marble, *wedge, treadSpan(at));
+            tower.paintRows(materials.stair, *wedge, treadSpan(at));
         }
     }
 }
@@ -269,7 +302,7 @@ void shaft(const(Api)* api, Site base, const(Risen)* risen, const(void)* data) {
     int length = tower.edgeCells();
     int bottom = risen.segment * length;
     int top = lowerOf(ROOF, bottom + length - 1);
-    Material floor = FLOORS[cast(size_t)(roll(Turtle(api, risen.foot).probeHash(SitePart.vertex), FLOOR_SALT) * FLOORS.length)];
+    Material floor = floorOf(Turtle(api, risen.foot).probeHash(SitePart.vertex));
     Span deep = Span(bottom, lowerOf(BOTTOM - 1, top));
     Span slab = Span(higherOf(BOTTOM, bottom), top);
     if (deep.low <= deep.high) {
@@ -284,7 +317,7 @@ void shaft(const(Api)* api, Site base, const(Risen)* risen, const(void)* data) {
     if (risen.segment == 0) {
         lastTread = TOP_TREAD;
         Rows cap = ringRows(tower.column(), 0, WELL);
-        tower.paintRows(CEILING, cap, Span(ROOF, ROOF));
+        tower.paintRows(materials.ceiling, cap, Span(ROOF, ROOF));
     }
     descent(tower, lastTread);
 }
@@ -300,21 +333,25 @@ void route(Turtle tower) {
 void world(const(Api)* api, Site site, const(void)* data) {
     Turtle at = Turtle(api, site);
     Connection connection = Connection.rolled();
-    KindId kind = api.horosphere(api, RISE_ODDS, HorosphereForm.solid, Tag.library, &tile, &connection, Connection.sizeof);
+    KindId kind = api.horosphere(api, tuning.riseOdds, HorosphereForm.solid, LIBRARY_TAG, &tile, &connection, Connection.sizeof);
     api.rooted(api, kind);
-    api.look(api, kind, &LOOK);
-    KindId stacks = api.sunken(api, SHAFT_ODDS, Tag.library, Tag.stacks, &shaft, null, 0);
+    api.look(api, kind, LOOK);
+    KindId stacks = api.sunken(api, tuning.shaftOdds, LIBRARY_TAG, STACKS_TAG, &shaft, null, 0);
     api.openHorosphere(api, site, stacks, 2);
-    api.fog(api, FOG);
+    api.fog(api, tuning.fog);
     Turtle tower = at.columnSite();
     route(tower);
     tower.entrance(SPAWN.x, SPAWN.y, SPAWN.z);
 }
 
+immutable Dependency[2] NEEDS = [dependencyOn(BASE), dependencyOn("connector")];
+immutable Manifest MANIFEST = Manifest("library", FIRST_VERSION, NEEDS[], null, &resolve, null, import("plugins/library/settings.conf"), import("plugins/library/library.decl"), import("plugins/library/library.content"));
+
 pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
+    registry.declare(registry, &MANIFEST);
     registry.add(registry, "library", &world);
-    RisingKind rising = RisingKind(1, HorosphereForm.solid, Tag.library, &tile, &ROLLED, Connection.sizeof, LOOK);
+    RisingKind rising = RisingKind(1, HorosphereForm.solid, LIBRARY_TAG, &tile, &ROLLED, Connection.sizeof, LOOK);
     registry.addKind(registry, "library", &rising);
-    RisingKind stacks = RisingKind(SHAFT_SHARE, HorosphereForm.sunken, Tag.stacks, &shaft, null, 0, LOOK, Tag.library);
+    RisingKind stacks = RisingKind(SHAFT_SHARE, HorosphereForm.sunken, STACKS_TAG, &shaft, null, 0, LOOK, LIBRARY_TAG);
     registry.addKind(registry, "librarystacks", &stacks);
 }

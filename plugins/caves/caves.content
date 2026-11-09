@@ -1,0 +1,58 @@
+look caves:look { red: 0.035, green: 0.04, blue: 0.05, tint: fog }
+
+caves-materials caves:materials {
+    stair -> base:limestone
+}
+
+caves-theme caves:opening {
+    floor-threshold: 1
+    ceiling-odds: 0
+    lit -> base:light-panel
+}
+
+caves-theme caves:frost {
+    floor-threshold: -1
+    patched -> base:ice-slush
+    ceiling-odds: 0.015
+    lit -> base:light-panel
+    hanging -> base:ice
+}
+
+caves-theme caves:glow {
+    floor-threshold: 0.5
+    patched -> base:cave-grass
+    elsewhere -> base:silt
+    ceiling-odds: 0.22
+    patchiness: 1
+    lit -> base:light-panel
+    hanging -> base:tide-stone
+    standing -> base:dolomite
+}
+
+caves-theme caves:gypsum {
+    floor-threshold: 0.42
+    patched -> base:silty-loam
+    ceiling-odds: 0.03
+    lit -> base:light-panel
+    hanging -> base:marble
+    chandelier -> base:snow
+}
+
+caves-theme caves:crystal {
+    floor-threshold: 0.6
+    patched -> base:silt
+    ceiling-odds: 0.012
+    lit -> base:tide-light
+    beam -> base:glass
+}
+
+caves-theme caves:ember {
+    floor-threshold: 0.58
+    patched -> base:lava
+    ceiling-odds: 0.03
+    vein-odds: 0.12
+    lit -> base:ember-light
+    veined -> base:ember-stone
+    hanging -> base:ember-stone
+    standing -> base:basalt
+}

@@ -1,0 +1,10 @@
+kind library-materials {
+    frame: one -> material
+    ceiling: one -> material
+    lamp: one -> material
+    table: one -> material
+    stair: one -> material
+    well: one -> material
+    floors: some -> material
+    books: some -> material
+}

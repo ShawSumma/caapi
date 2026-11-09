@@ -1,0 +1,18 @@
+kind caves-theme {
+    floor-threshold: number
+    patched: optional -> material
+    elsewhere: optional -> material
+    ceiling-odds: number 0..1
+    patchiness: number 0..1 = 0
+    vein-odds: number 0..1 = 0
+    lit: one -> material
+    veined: optional -> material
+    hanging: optional -> material
+    standing: optional -> material
+    chandelier: optional -> material
+    beam: optional -> material
+}
+
+kind caves-materials {
+    stair: one -> material
+}

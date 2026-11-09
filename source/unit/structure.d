@@ -13,6 +13,7 @@ import common.worldgen.structure : CanonicalSite, ClaimKey, ColumnChunk, ColumnS
 import geometry.honeycomb : CORNER_COUNT, Corner, FACE_COUNT, FACE_DISTANCE, Face, across, cornerToNode, cubeToNode, faces, isAdjacentTo, mirror;
 import geometry.lorentz : Motion, Point, Vec4;
 import plugins.api.api : Material, SitePart, Turn;
+import unit.named : blockNamed;
 
 enum uint FACE_CORNERS = 5;
 enum ubyte DIMENSION = 12;
@@ -97,13 +98,13 @@ unittest {
     SiteFrame[8] sites = graph.testSites();
     CellBox pillar = CellBox.make(-2, 1, -3, 0, -12, 30);
     foreach (site; sites[0 .. 4]) {
-        PaintResult result = builder.paint(site, pillar, EVERY_HEIGHT, Material.granite, Cover.over);
+        PaintResult result = builder.paint(site, pillar, EVERY_HEIGHT, blockNamed("base:granite"), Cover.over);
         assert(result == PaintResult.painted);
     }
-    PaintResult endlessResult = builder.paint(sites[4], CellBox.alongLine(-6, 5, 0, 1), EVERY_HEIGHT, Material.granite, Cover.over);
+    PaintResult endlessResult = builder.paint(sites[4], CellBox.alongLine(-6, 5, 0, 1), EVERY_HEIGHT, blockNamed("base:granite"), Cover.over);
     assert(endlessResult == PaintResult.painted);
     foreach (site; sites[5 .. $]) {
-        PaintResult result = builder.paint(site, pillar, EVERY_HEIGHT, Material.granite, Cover.over);
+        PaintResult result = builder.paint(site, pillar, EVERY_HEIGHT, blockNamed("base:granite"), Cover.over);
         assert(result == PaintResult.painted);
     }
     NearbyScratch scratch;
@@ -317,9 +318,9 @@ unittest {
     SiteFrame tower = graph.view.turnSite(rootSite(graph.anchorSlot), Turn.pitchUp);
     SiteFrame high = forwarded(tower, BEHIND_EDGES);
     builder.growFrom(graph.view.ensureSiteOrigin(high).depth);
-    PaintResult behind = builder.paint(tower, CellBox.make(0, 0, 0, 0, 0, 1), EVERY_HEIGHT, Material.granite, Cover.over);
-    PaintResult endless = builder.paint(high, CellBox.alongLine(0, 0, 0, 0), EVERY_HEIGHT, Material.granite, Cover.over);
-    PaintResult painted = builder.paint(high, CellBox.make(0, 0, 0, 0, 0, 1), EVERY_HEIGHT, Material.granite, Cover.over);
+    PaintResult behind = builder.paint(tower, CellBox.make(0, 0, 0, 0, 0, 1), EVERY_HEIGHT, blockNamed("base:granite"), Cover.over);
+    PaintResult endless = builder.paint(high, CellBox.alongLine(0, 0, 0, 0), EVERY_HEIGHT, blockNamed("base:granite"), Cover.over);
+    PaintResult painted = builder.paint(high, CellBox.make(0, 0, 0, 0, 0, 1), EVERY_HEIGHT, blockNamed("base:granite"), Cover.over);
     assert(behind == PaintResult.behind);
     assert(endless == PaintResult.endless);
     assert(painted == PaintResult.painted);

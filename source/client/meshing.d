@@ -51,7 +51,7 @@ struct Quad {
         if (isDiagonalFlipped(occlusion)) {
             axisCode |= FLIPPED_BIT;
         }
-        uint packed = material | window << WINDOW_SHIFT;
+        uint packed = material.id | window << WINDOW_SHIFT;
         foreach (corner; 0 .. CORNERS_PER_FACE) {
             packed |= occlusion[corner] << (OCCLUSION_SHIFT + OCCLUSION_BITS * corner);
         }

@@ -20,19 +20,24 @@ import client.structures : StructureProblem, growthProblem, placeWorldStructure;
 import client.world : FULL_RADIUS;
 import common.eviction : Evictor, Unloaded;
 import common.graph : Graph, NodeId;
-import common.material : MATERIAL_COUNT;
+import client.game : highestMiningTier;
+import client.plugins : registry;
+import common.content.check : Reach, checkReach, checkUses, terrainMaterials;
+import common.content.content : content;
+import common.items : materialNames;
+import common.material : MaterialSet, including, joined, materialCount, nameHashOf;
 import common.neighbors : needsMesh;
 import common.node : Chunk, ChunkSlot, ChunkState, Materials, Voxels, cellIndex;
 import common.position : Position;
 import common.traversal : NearbyNode, NearbyScratch;
 import common.worldgen.blueprint : Blueprint, EdgeUses;
-import common.worldgen.generation : ChunkParams, GeneratedVoxels, Worldgen;
+import common.worldgen.generation : ChunkParams, GeneratedVoxels, StructureWorld, Worldgen;
 import common.worldgen.horospheres : ChunkPoint, chunkPointOf;
 import common.worldgen.store : dropTile;
 import common.worldgen.structure : ColumnSpot, SiteFrame, altitude, columnPoint, edgeLength, forwarded, rootSite, sitePlacement, turnSite;
 import geometry.honeycomb : CORNER_COUNT, CUBE_RADIUS, Corner, FACE_COUNT, Face, cubeCenter;
 import geometry.lorentz : Motion, Point;
-import plugins.api.api : Material, Turn;
+import plugins.api.api : MOST_MATERIALS, Material, Turn;
 
 enum uint DRIVE_NEARBY_VERSION = 1;
 enum uint DRIVE_IDLE_ITERATIONS = 200;
@@ -56,9 +61,9 @@ struct ContentHashes {
 
     static ContentHashes fromVoxels(Corner corner, const Voxels voxels, ubyte dimension) {
         size_t cells = cast(size_t) dimension * dimension * dimension;
-        ubyte* materialBytes = cast(ubyte*) malloc(HASH_HEADER_BYTES + cells * Material.sizeof);
+        ubyte* materialBytes = cast(ubyte*) malloc(HASH_HEADER_BYTES + cells * ulong.sizeof);
         ubyte* occupancy = cast(ubyte*) malloc(HASH_HEADER_BYTES + cells);
-        Material* materials = cast(Material*)(materialBytes + HASH_HEADER_BYTES);
+        ulong* materials = cast(ulong*)(materialBytes + HASH_HEADER_BYTES);
         materialBytes[0] = corner;
         materialBytes[1] = dimension;
         occupancy[0] = corner;
@@ -67,16 +72,17 @@ struct ContentHashes {
         foreach (x; 0 .. dimension) {
             foreach (y; 0 .. dimension) {
                 foreach (z; 0 .. dimension) {
-                    materials[cell] = voxels.at(cellIndex(dimension, x, y, z));
+                    Material material = voxels.at(cellIndex(dimension, x, y, z));
+                    materials[cell] = nameHashOf(material);
                     occupancy[HASH_HEADER_BYTES + cell] = 0;
-                    if (materials[cell] != Material.none) {
+                    if (material != Material.none) {
                         occupancy[HASH_HEADER_BYTES + cell] = 1;
                     }
                     cell += 1;
                 }
             }
         }
-        ContentHashes result = ContentHashes(murmurHash3(materialBytes[0 .. HASH_HEADER_BYTES + cells * Material.sizeof]), murmurHash3(occupancy[0 .. HASH_HEADER_BYTES + cells]));
+        ContentHashes result = ContentHashes(murmurHash3(materialBytes[0 .. HASH_HEADER_BYTES + cells * ulong.sizeof]), murmurHash3(occupancy[0 .. HASH_HEADER_BYTES + cells]));
         free(materialBytes);
         free(occupancy);
         return result;
@@ -229,20 +235,16 @@ ExitStatus dumpWorld(FILE* output, float radius, ubyte dimension) {
 ExitStatus printMaterialCensus(FILE* output, float radius, ubyte dimension) {
     Graph graph = terrainGraph(dimension);
     graph.generateWorld(radius);
-    size_t[MATERIAL_COUNT] counts;
+    size_t[MOST_MATERIALS] counts;
     foreach (index; 0 .. cast(size_t) graph.slotCount * CORNER_COUNT) {
         const(Chunk)* chunk = graph.chunks.at(ChunkSlot.fromIndex(index));
         if (chunk.state == ChunkState.populated) {
             foreach (cell; 0 .. cast(size_t) dimension * dimension * dimension) {
-                counts[chunk.voxels.at(cell)] += 1;
+                counts[chunk.voxels.at(cell).id] += 1;
             }
         }
     }
-    foreach (material, count; counts) {
-        if (count > 0 && material != Material.none) {
-            fprintf(output, "%.*s %zu\n", cast(int) ENUM_NAMES!Material[material].length, ENUM_NAMES!Material[material].ptr, count);
-        }
-    }
+    printCounts(output, counts[1 .. materialCount()], 1);
     return finishWorld(output, graph);
 }
 
@@ -262,7 +264,7 @@ bool touchesAir(const(Chunk)* chunk, ubyte dimension, Vec3!int cell) {
 ExitStatus printSurfaceCensus(FILE* output, float radius, ubyte dimension) {
     Graph graph = terrainGraph(dimension);
     graph.generateWorld(radius);
-    size_t[MATERIAL_COUNT] counts;
+    size_t[MOST_MATERIALS] counts;
     foreach (index; 0 .. cast(size_t) graph.slotCount * CORNER_COUNT) {
         const(Chunk)* chunk = graph.chunks.at(ChunkSlot.fromIndex(index));
         if (chunk.state == ChunkState.populated && !chunk.voxels.isUniform()) {
@@ -271,19 +273,24 @@ ExitStatus printSurfaceCensus(FILE* output, float radius, ubyte dimension) {
                     foreach (z; 0 .. dimension) {
                         Material material = chunk.voxels.at(cellIndex(dimension, x, y, z));
                         if (material != Material.none && touchesAir(chunk, dimension, Vec3!int(x, y, z))) {
-                            counts[material] += 1;
+                            counts[material.id] += 1;
                         }
                     }
                 }
             }
         }
     }
-    foreach (material, count; counts) {
+    printCounts(output, counts[1 .. materialCount()], 1);
+    return finishWorld(output, graph);
+}
+
+void printCounts(FILE* output, const(size_t)[] counts, uint first) {
+    foreach (index, count; counts) {
         if (count > 0) {
-            fprintf(output, "%.*s %zu\n", cast(int) ENUM_NAMES!Material[material].length, ENUM_NAMES!Material[material].ptr, count);
+            const(char)[] name = materialNames.ptr[first + index];
+            fprintf(output, "%.*s %zu\n", cast(int) name.length, name.ptr, count);
         }
     }
-    return finishWorld(output, graph);
 }
 
 void printProblem(FILE* output, ref const StructureProblem problem) {
@@ -337,6 +344,45 @@ ExitStatus dumpStructure(FILE* output, ubyte dimension, Worldgen worldgen) {
     ExitStatus status = exitStatus(!problem.isPresent);
     graph.release();
     return status;
+}
+
+MaterialSet placedBy(const(char)[] name, ubyte dimension, FILE* output) {
+    MaterialSet placed;
+    Graph graph = Graph.make(dimension, Worldgen.fromStructure(StructureWorld.fromName(name)));
+    StructureProblem problem = graph.placeWorldStructure();
+    if (problem.isPresent) {
+        fprintf(output, "%.*s: ", cast(int) name.length, name.ptr);
+        printProblem(output, problem);
+    } else {
+        NearbyScratch scratch;
+        NearbyNode[] nearby = scratch.collectAll(graph, Position(graph.idAt(graph.anchorSlot), Motion!float.identity()), STRUCTURE_DUMP_RADIUS);
+        foreach (node; nearby) {
+            graph.ensureStructureAt(node.slot);
+        }
+        foreach (material; graph.structures.blueprint.materials.slice()) {
+            placed = placed.including(material);
+        }
+        scratch.release();
+    }
+    graph.release();
+    return placed;
+}
+
+ExitStatus checkContent(FILE* output, ubyte dimension) {
+    MaterialSet found = terrainMaterials();
+    foreach (name; registry().allNames()) {
+        found = found.joined(placedBy(name, dimension, output));
+    }
+    Reach reach = Reach.make(found);
+    reach.settle();
+    uint problems = cast(uint) content().problems.length + checkReach(reach, output) + checkUses(output);
+    if (reach.tier != highestMiningTier()) {
+        fprintf(output, "the reachable tools mine tier %u of the %u some block needs\n", reach.tier, highestMiningTier());
+        problems += 1;
+    }
+    reach.release();
+    fprintf(output, "content-check: %u problems\n", problems);
+    return exitStatus(problems == 0);
 }
 
 ExitStatus checkRepaint(FILE* output, ubyte dimension, Worldgen worldgen) {

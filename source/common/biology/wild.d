@@ -3,7 +3,7 @@ module common.biology.wild;
 import base.maybe : Maybe;
 import base.splitmix : SplitMix;
 import common.biology.metabolism : Enzyme, MotifCell, Operation, Presence, SITE_CELL, productOf;
-import common.biology.molecule : Fragment, GRID_CELLS, Molecule, PROPERTY_MASK, withFragment;
+import common.biology.molecule : Fragment, GRID_CELLS, Molecule, PROPERTY_MASK, fragmentAt, withFragment;
 
 enum uint WILD_GENES = 4;
 enum uint SCAFFOLD_GENE = 0;
@@ -14,11 +14,14 @@ enum ulong ROOT_WILD_SALT = 0x77_11D5_EED5;
 enum ulong MUTATION_SALT = 0x0B5E_55ED_CA75;
 enum ulong PARENT_SALT = 0x9A2E_7A15;
 enum ulong CELL_SALT = 0xCE11_5A17;
+enum ulong SPECIES_SALT = 0x5BEC_1E5A_17ED;
+enum float SPECIES_DIVERGENCE = 0.5f;
 enum float NODE_MUTATION_ODDS = 0.04f;
 enum float CELL_MUTATION_ODDS = 0.1f;
 enum uint LEAST_SCAFFOLD_FRAGMENTS = 4;
 enum uint SCAFFOLD_FRAGMENT_CHOICES = 5;
 enum uint OPERATION_COUNT = Operation.max + 1;
+enum float CORE_LOSS_ODDS = 0.25f;
 
 struct WildGenes {
     ulong[WILD_GENES] seeds;
@@ -48,6 +51,14 @@ ulong mutated(ulong seed, ulong spice, float odds) {
     } else {
         return seed;
     }
+}
+
+WildGenes speciesGenes(WildGenes node, ulong species) {
+    WildGenes genes;
+    foreach (index; 0 .. WILD_GENES) {
+        genes.seeds[index] = mutated(node.seeds[index], species * SPECIES_SALT ^ index, SPECIES_DIVERGENCE);
+    }
+    return genes;
 }
 
 WildGenes cellGenes(WildGenes node, ulong cellHash) {
@@ -87,8 +98,22 @@ Enzyme enzymeFromSeed(ulong seed) {
     return enzyme;
 }
 
-Molecule productOfGenes(WildGenes genes) {
+Molecule variantOf(Molecule core, ulong seed) {
+    SplitMix rng = SplitMix(seed);
+    Molecule made = core;
+    foreach (cell; 0 .. GRID_CELLS) {
+        if (core.fragmentAt(cell).isPresent && rng.roll() < CORE_LOSS_ODDS) {
+            made = made.withFragment(cell, Fragment.init);
+        }
+    }
+    return made;
+}
+
+Molecule productFrom(Maybe!Molecule core, WildGenes genes) {
     Molecule product = scaffoldOf(genes.seeds[SCAFFOLD_GENE]);
+    if (core.exists) {
+        product = variantOf(core.value, genes.seeds[SCAFFOLD_GENE]);
+    }
     foreach (index; 0 .. ENZYME_GENES) {
         Maybe!Molecule changed = enzymeFromSeed(genes.seeds[FIRST_ENZYME_GENE + index]).productOf(product);
         if (changed.exists) {

@@ -1,0 +1,4 @@
+kind horospheres-tree {
+    bark: one -> material
+    leaves: one -> material
+}

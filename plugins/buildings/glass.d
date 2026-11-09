@@ -1,23 +1,14 @@
 module plugins.buildings.glass;
 
 import plugins.api.api : Box, Material, Rhythm, Span;
-import plugins.buildings.building : ANTENNA, Bound, Lots, Palette, Part, PartJoin, Parts, STORY, Spec, Split, Tier, crown, enter, footprint, helipad, makeParts, masts, middle, narrowing, pick, roof, setbacks, shell, strips, tiers, walls, xSpan, ySpan;
+import plugins.buildings.building : ANTENNA, Bound, Lots, Palette, Part, PartJoin, Parts, STORY, Spec, Split, Tier, Traits, crown, enter, footprint, helipad, makeParts, masts, middle, narrowing, pick, roof, setbacks, shell, strips, tiers, walls, xSpan, ySpan;
 import plugins.turtle.turtle : boxOf;
 
-enum Span STORIES = Span(12, 38);
 enum int SETBACKS = 1;
-enum Material ROOF = Material.concrete;
 enum Rhythm SPANDRELS = Rhythm(STORY, STORY - 1, 1);
 enum int MULLION_SPACING = 3;
 enum int PENTHOUSE_SETBACK = 2;
 enum int LEAST_WIDTH = 3;
-
-immutable Palette[4] PALETTES = [
-    Palette(Material.glass, Material.steel, Material.concrete, Material.concrete),
-    Palette(Material.glass, Material.basalt, Material.concrete, Material.slate),
-    Palette(Material.glass, Material.steel, Material.marble, Material.steel),
-    Palette(Material.glass, Material.gabbro, Material.concrete, Material.gabbro),
-];
 
 void curtain(ref const Part part, Palette palette, Box box, Tier tier) {
     foreach (face; walls(part, box, tier).slice()) {
@@ -46,7 +37,7 @@ void antenna(ref const Part part, Palette palette, Tier tier) {
     part.tower.paint(palette.trim, boxOf(Span(x, x), Span(y, y), Span(tier.high + 1, tier.high + ANTENNA)));
 }
 
-void build(ref const Lots lots, Spec spec) {
+void build(ref const Lots lots, Spec spec, ref const Traits traits) {
     Parts parts;
     makeParts(parts, lots, spec);
     int chosen = setbacks(parts, SETBACKS);
@@ -54,7 +45,7 @@ void build(ref const Lots lots, Spec spec) {
         foreach (tier; tiers(part, spec, chosen).slice()) {
             curtain(part, spec.palette, shell(part, spec.palette, tier), tier);
             if (tier.isRoofed()) {
-                roof(part, spec.palette, ROOF, tier);
+                roof(part, spec.palette, traits.roof, tier);
             }
         }
         part.stand = penthouse(part, spec.palette, part.top);

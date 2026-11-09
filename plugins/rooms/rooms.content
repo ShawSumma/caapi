@@ -1,0 +1,150 @@
+connector-ground rooms:ground {
+    tag: "horospheres:backrooms"
+    level: -1
+}
+
+connector-materials connector:materials {
+    grounds -> rooms:ground
+}
+
+rooms-materials rooms:materials {
+    ground -> rooms:ground
+    vent -> base:steel
+    roof -> base:steel
+    window -> base:glass
+    sunlight -> base:sunlight
+    mural -> base:slate
+    mural-line -> base:white-brick
+    levels -> [rooms:offices rooms:houses rooms:mazes]
+}
+
+rooms-level rooms:offices {
+    halls: grid
+    hall-width: 2
+    solid: 0.6
+    rings: 0.02
+    chapel: 0.04
+    stairs: 0.24
+    hall -> rooms:office-hall
+    biomes -> [rooms:office rooms:sodden rooms:stained]
+}
+
+rooms-hall rooms:office-hall {
+    floor -> base:carpet
+    ceiling -> base:ceiling-tile
+    light -> base:light-panel
+    skylight: 0.25
+}
+
+rooms-level rooms:houses {
+    missing: 0.03
+    stairs: 0.24
+    biomes -> [rooms:parlor rooms:study rooms:attic]
+}
+
+rooms-level rooms:mazes {
+    room: 3
+    kind: maze
+    biomes -> [rooms:bunker rooms:cellar rooms:sump]
+}
+
+rooms-biome rooms:office {
+    wall -> base:wallpaper
+    floor -> base:carpet
+    ceiling -> base:ceiling-tile
+    light -> base:light-panel
+    trim -> base:wood-planks
+    damp -> base:damp-carpet
+    stair -> base:carpet
+    boxes -> base:wallpaper
+    vents: some
+    box-odds: 0.15
+    box-height: 4
+    skylight: 0.2
+}
+
+rooms-biome rooms:sodden {
+    wall -> base:wallpaper
+    floor -> base:damp-carpet
+    ceiling -> base:ceiling-tile
+    light -> base:light-panel
+    damp -> base:carpet
+    stair -> base:carpet
+    boxes -> base:wallpaper
+    vents: some
+    box-odds: 0.25
+    box-height: 3
+    skylight: 0.1
+}
+
+rooms-biome rooms:stained {
+    wall -> base:stained-wallpaper
+    floor -> base:carpet
+    ceiling -> base:ceiling-tile
+    light -> base:light-panel
+    damp -> base:damp-carpet
+    stair -> base:carpet
+    vents: some
+    skylight: 0.15
+}
+
+rooms-biome rooms:parlor {
+    wall -> base:plaster
+    floor -> base:wood-planks
+    ceiling -> base:plaster
+    light -> base:light-panel
+    trim -> base:spruce-wood
+    stair -> base:wood-planks
+    room-floors -> [base:wood-planks base:wood-planks base:carpet]
+    big: 0.35
+}
+
+rooms-biome rooms:study {
+    wall -> base:birch-wood
+    floor -> base:wood-planks
+    ceiling -> base:plaster
+    light -> base:light-panel
+    trim -> base:spruce-wood
+    stair -> base:spruce-wood
+    shelf -> base:spruce-wood
+    room-floors -> [base:wood-planks base:spruce-wood]
+    big: 0.3
+}
+
+rooms-biome rooms:attic {
+    wall -> base:plaster
+    floor -> base:spruce-wood
+    ceiling -> base:plaster
+    light -> base:light-panel
+    trim -> base:wood-planks
+    damp -> base:damp-carpet
+    stair -> base:spruce-wood
+    room-floors -> [base:spruce-wood base:carpet base:damp-carpet]
+    big: 0.4
+}
+
+rooms-biome rooms:bunker {
+    wall -> base:concrete
+    floor -> base:concrete
+    ceiling -> base:concrete
+    light -> base:light-panel
+    stair -> base:concrete
+    nowhere: 0.15
+}
+
+rooms-biome rooms:cellar {
+    wall -> base:grey-brick
+    floor -> base:wet-concrete
+    ceiling -> base:concrete
+    light -> base:light-panel
+    stair -> base:concrete
+    nowhere: 0.2
+}
+
+rooms-biome rooms:sump {
+    wall -> base:concrete
+    floor -> base:wet-concrete
+    ceiling -> base:wet-concrete
+    stair -> base:wet-concrete
+    nowhere: 0.25
+}

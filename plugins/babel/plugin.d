@@ -1,7 +1,8 @@
 module plugins.babel.plugin;
 
-import plugins.api.api : Api, Color, HorosphereForm, KindId, Look, Material, Registry, Rhythm, Risen, RisingKind, Site, Span, Spot, Tint, entryOf;
-import plugins.connector.connector : Tag;
+import plugins.api.api : Api, HorosphereForm, KindId, Material, Registry, Rhythm, Risen, RisingKind, Site, Span, Spot, entryOf, tagNamed;
+import plugins.api.binding : bound;
+import plugins.api.content : Content, FIRST_VERSION, Manifest, ON_BASE;
 import plugins.turtle.turtle : Tread, Turtle, boxOf, floorMod, higherOf, lawn, middle, treadAround;
 
 enum int CORE = 3;
@@ -14,27 +15,40 @@ enum int BAND_EVERY = 64;
 enum int ROUTE_TURNS = 2;
 enum int FOOTING = 12;
 immutable Spot SPAWN = Spot(-PLAZA, 0, 1);
-enum Material WALL = Material.sandstone;
-enum Material STEP = Material.redSandstone;
-enum Material BAND = Material.marble;
 enum double COLUMN_SHARE = 0.1;
 enum uint COLUMN_EDGES = 2;
-immutable Look LOOK = Look("babel", Color(0.82f, 0.74f, 0.58f), Tint.fog);
+enum uint COLUMN_TAG = tagNamed("babel:column");
+enum string LOOK = "babel:look";
+
+struct Materials {
+    Material wall;
+    Material step;
+    Material band;
+    Material light;
+    Material plaza;
+    Material lawn;
+}
+
+__gshared Materials materials;
+
+void resolve(const(Content)* content) {
+    materials = content.bound!Materials("babel:materials");
+}
 
 void core(Turtle tower, Span rising, int lifted) {
     Span wall = Span(-CORE, CORE - 1);
     Span room = Span(-CORE + 1, CORE - 2);
-    tower.paint(WALL, boxOf(wall, wall, rising));
-    tower.paint(BAND, boxOf(wall, wall, rising), Rhythm(BAND_EVERY, floorMod(BAND_EVERY - 1 - lifted, BAND_EVERY), 1));
+    tower.paint(materials.wall, boxOf(wall, wall, rising));
+    tower.paint(materials.band, boxOf(wall, wall, rising), Rhythm(BAND_EVERY, floorMod(BAND_EVERY - 1 - lifted, BAND_EVERY), 1));
     tower.paint(Material.none, boxOf(room, room, rising), Rhythm(TREADS, floorMod(2 - lifted, TREADS), TREADS - 1));
-    tower.paint(Material.lightPanel, boxOf(Span(-1, 0), Span(-1, 0), rising), Rhythm(TREADS, floorMod(-lifted, TREADS), 1));
+    tower.paint(materials.light, boxOf(Span(-1, 0), Span(-1, 0), rising), Rhythm(TREADS, floorMod(-lifted, TREADS), 1));
     tower.paint(Material.none, boxOf(Span(0, 1), Span(CORE - 1, CORE - 1), rising), Rhythm(TREADS, floorMod(2 - lifted, TREADS), 3));
 }
 
 void stair(Turtle tower, Span rising, int lifted) {
     foreach (index; 0 .. TREADS) {
         Tread tread = treadAround(CORE, RING, SIDE_TREADS, index);
-        tower.paint(STEP, boxOf(tread.x, tread.y, rising), Rhythm(TREADS, floorMod(index - TREAD_DEPTH + 1 - lifted, TREADS), TREAD_DEPTH));
+        tower.paint(materials.step, boxOf(tread.x, tread.y, rising), Rhythm(TREADS, floorMod(index - TREAD_DEPTH + 1 - lifted, TREADS), TREAD_DEPTH));
     }
 }
 
@@ -52,8 +66,8 @@ void column(const(Api)* api, Site base, const(Risen)* risen, const(void)* data) 
     int lifted = risen.segment * length;
     int plaza = risen.ground - lifted;
     if (plaza >= 0 && plaza < length) {
-        tower.fill(WALL, boxOf(Span(-PLAZA, PLAZA - 1), Span(-PLAZA, PLAZA - 1), Span(plaza - FOOTING, plaza - 1)));
-        tower.paint(Material.granite, boxOf(Span(-PLAZA, PLAZA - 1), Span(-PLAZA, PLAZA - 1), Span(plaza, plaza)));
+        tower.fill(materials.wall, boxOf(Span(-PLAZA, PLAZA - 1), Span(-PLAZA, PLAZA - 1), Span(plaza - FOOTING, plaza - 1)));
+        tower.paint(materials.plaza, boxOf(Span(-PLAZA, PLAZA - 1), Span(-PLAZA, PLAZA - 1), Span(plaza, plaza)));
     }
     if (plaza < length) {
         Span rising = Span(higherOf(0, plaza), length - 1);
@@ -63,22 +77,25 @@ void column(const(Api)* api, Site base, const(Risen)* risen, const(void)* data) 
 }
 
 void landmark(const(Api)* api, Site site, const(void)* data) {
-    KindId kind = api.horosphere(api, 0, HorosphereForm.upright, Tag.column, &column, null, 0);
+    KindId kind = api.horosphere(api, 0, HorosphereForm.upright, COLUMN_TAG, &column, null, 0);
     api.openHorosphere(api, site, kind, COLUMN_EDGES);
 }
 
 void world(const(Api)* api, Site site, const(void)* data) {
     landmark(api, site, data);
-    api.tile(api, &lawn, null, 0);
-    api.worldLook(api, &LOOK);
+    api.tile(api, &lawn, &materials.lawn, Material.sizeof);
+    api.worldLook(api, LOOK);
     Turtle tower = Turtle(api, site).columnSite();
     route(tower);
     tower.entrance(SPAWN.x, SPAWN.y, SPAWN.z);
 }
 
+immutable Manifest MANIFEST = Manifest("babel", FIRST_VERSION, ON_BASE[], null, &resolve, null, null, import("plugins/babel/babel.decl"), import("plugins/babel/babel.content"));
+
 pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
+    registry.declare(registry, &MANIFEST);
     registry.add(registry, "babel", &world);
-    RisingKind rising = RisingKind(COLUMN_SHARE, HorosphereForm.upright, Tag.column, &column, null, 0, LOOK);
+    RisingKind rising = RisingKind(COLUMN_SHARE, HorosphereForm.upright, COLUMN_TAG, &column, null, 0, LOOK);
     registry.addKind(registry, "babel", &rising);
     registry.addLandmark(registry, "babel", &landmark);
 }

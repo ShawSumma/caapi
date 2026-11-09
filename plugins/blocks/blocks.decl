@@ -1,0 +1,26 @@
+kind blocks-lot {
+    lots: integer 1..
+    shape: "corner" | "run"
+    most-stories: integer 1..
+    types: some -> building-type
+}
+
+kind blocks-zoning {
+    rules: some -> blocks-lot
+    island: one -> blocks-lot
+    route: one -> building-type
+}
+
+kind blocks-materials {
+    road: one -> material
+    sidewalk: one -> material
+    marking: one -> material
+    leaves: one -> material
+    trunk: one -> material
+    basin: one -> material
+    water: one -> material
+    pond-bed: one -> material
+    lot: one -> material
+    plaza: one -> material
+    park: one -> material
+}

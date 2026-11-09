@@ -1,0 +1,21 @@
+connector-ground library:ground {
+    tag: "library:library"
+    level: 1
+}
+
+connector-materials connector:materials {
+    grounds -> library:ground
+}
+
+look library:look { red: 0.72, green: 0.62, blue: 0.46, tint: fog }
+
+library-materials library:materials {
+    frame -> base:spruce-wood
+    ceiling -> base:plaster
+    lamp -> base:light-panel
+    table -> base:oak-wood
+    stair -> base:marble
+    well -> base:glass
+    floors -> [base:wood-planks base:spruce-wood base:marble base:red-carpet]
+    books -> [base:red-carpet base:acacia-wood base:jungle-wood base:birch-wood base:oak-wood base:carpet base:red-sandstone]
+}

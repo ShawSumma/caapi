@@ -5,13 +5,12 @@ import core.stdc.stdlib : free, malloc;
 import base.numbers : clamped, higherOf;
 import base.splitmix : SplitMix;
 import client.meshing : WINDOWS_PER_SIDE;
-import common.material : MATERIAL_COLORS;
+import common.material : ByteColor, grains, has, materialColors, materialCount, seeThrough;
 import plugins.api.api : Material;
 
 enum uint TEXELS_PER_WINDOW = 16;
 enum uint TEXTURE_SIZE = WINDOWS_PER_SIDE * TEXELS_PER_WINDOW;
 enum uint TEXTURE_MIPS = 9;
-enum uint TEXTURE_LAYERS = Material.max;
 enum uint TEXEL_BYTES = 4;
 enum uint COLOR_CHANNELS = 3;
 enum ubyte TEXTURE_OPAQUE = 255;
@@ -33,89 +32,9 @@ immutable Octave[4] OCTAVES = [
     Octave(32, 0.25f),
 ];
 
-immutable float[Material.max + 1] GRAIN = [
-    Material.none: 0,
-    Material.dirt: 0.13f,
-    Material.sand: 0.05f,
-    Material.redSand: 0.06f,
-    Material.silt: 0.08f,
-    Material.clay: 0.08f,
-    Material.mud: 0.1f,
-    Material.sandyLoam: 0.1f,
-    Material.siltyLoam: 0.1f,
-    Material.clayLoam: 0.1f,
-    Material.gravel: 0.22f,
-    Material.grass: 0.12f,
-    Material.lushGrass: 0.12f,
-    Material.coarseGrass: 0.14f,
-    Material.tanGrass: 0.12f,
-    Material.mudGrass: 0.12f,
-    Material.caveGrass: 0.12f,
-    Material.snow: 0.02f,
-    Material.ice: 0.03f,
-    Material.iceSlush: 0.04f,
-    Material.limestone: 0.08f,
-    Material.dolomite: 0.08f,
-    Material.shale: 0.1f,
-    Material.slate: 0.1f,
-    Material.sandstone: 0.08f,
-    Material.redSandstone: 0.09f,
-    Material.marble: 0.04f,
-    Material.granite: 0.14f,
-    Material.diorite: 0.14f,
-    Material.andesite: 0.1f,
-    Material.gabbro: 0.14f,
-    Material.basalt: 0.1f,
-    Material.olivine: 0.14f,
-    Material.water: 0.04f,
-    Material.lava: 0.3f,
-    Material.oakWood: 0.1f,
-    Material.oakLeaves: 0.1f,
-    Material.birchWood: 0.05f,
-    Material.birchLeaves: 0.1f,
-    Material.spruceWood: 0.1f,
-    Material.spruceLeaves: 0.1f,
-    Material.woodPlanks: 0.07f,
-    Material.greyBrick: 0.07f,
-    Material.whiteBrick: 0.05f,
-    Material.concrete: 0.05f,
-    Material.steel: 0.03f,
-    Material.glass: 0,
-    Material.jungleWood: 0.1f,
-    Material.jungleLeaves: 0.1f,
-    Material.acaciaWood: 0.1f,
-    Material.acaciaLeaves: 0.1f,
-    Material.cherryLeaves: 0.08f,
-    Material.mapleLeaves: 0.1f,
-    Material.willowLeaves: 0.1f,
-    Material.cactus: 0.08f,
-    Material.wallpaper: 0.025f,
-    Material.stainedWallpaper: 0.05f,
-    Material.carpet: 0.07f,
-    Material.dampCarpet: 0.09f,
-    Material.ceilingTile: 0.02f,
-    Material.lightPanel: 0,
-    Material.redCarpet: 0.07f,
-    Material.sunlight: 0,
-    Material.plaster: 0.025f,
-    Material.wetConcrete: 0.07f,
-    Material.mistStone: 0.06f,
-    Material.mistLight: 0,
-    Material.emberStone: 0.1f,
-    Material.emberLight: 0,
-    Material.tideStone: 0.08f,
-    Material.tideLight: 0,
-    Material.beacon: 0,
-    Material.ironOre: 0.25f,
-    Material.copperOre: 0.25f,
-    Material.sulfur: 0.2f,
-    Material.fern: 0.15f,
-    Material.flower: 0.15f,
-    Material.thornbush: 0.15f,
-    Material.moss: 0.12f,
-    Material.collector: 0.04f,
-    Material.bench: 0.08f,
-];
+uint textureLayers() {
+    return materialCount() - 1;
+}
 
 float latticeAt(ulong salt, uint u, uint v) {
     return 2 * SplitMix(salt ^ (cast(ulong) u << 20) ^ v).roll() - 1;
@@ -158,7 +77,7 @@ bool insideFrame(uint u, uint v) {
 
 size_t mipBytes(uint mip) {
     size_t side = TEXTURE_SIZE >> mip;
-    return side * side * TEXEL_BYTES * TEXTURE_LAYERS;
+    return side * side * TEXEL_BYTES * textureLayers();
 }
 
 size_t mipOffset(uint mip) {
@@ -180,18 +99,19 @@ ubyte shaded(ubyte channel, float shade) {
 void fillFirstMip(ubyte[] pixels) {
     float[] noise = makeNoise();
     size_t at = 0;
-    foreach (layer; 0 .. TEXTURE_LAYERS) {
-        Material material = cast(Material)(layer + 1);
-        float grain = GRAIN[material];
+    foreach (layer; 0 .. textureLayers()) {
+        Material material = Material(cast(ubyte)(layer + 1));
+        float grain = grains.ptr[material.id];
+        ByteColor color = materialColors.ptr[material.id];
         uint shift = layer * LAYER_SHIFT;
         foreach (v; 0 .. TEXTURE_SIZE) {
             foreach (u; 0 .. TEXTURE_SIZE) {
                 float shade = 1 + grain * noise[((v + shift) % TEXTURE_SIZE) * TEXTURE_SIZE + (u + shift) % TEXTURE_SIZE];
-                pixels[at] = shaded(MATERIAL_COLORS[material].red, shade);
-                pixels[at + 1] = shaded(MATERIAL_COLORS[material].green, shade);
-                pixels[at + 2] = shaded(MATERIAL_COLORS[material].blue, shade);
+                pixels[at] = shaded(color.red, shade);
+                pixels[at + 1] = shaded(color.green, shade);
+                pixels[at + 2] = shaded(color.blue, shade);
                 pixels[at + COLOR_CHANNELS] = TEXTURE_OPAQUE;
-                if (material == Material.glass && insideFrame(u, v)) {
+                if (seeThrough.has(material) && insideFrame(u, v)) {
                     pixels[at + COLOR_CHANNELS] = TEXTURE_CLEAR;
                 }
                 at += TEXEL_BYTES;
@@ -202,7 +122,7 @@ void fillFirstMip(ubyte[] pixels) {
 }
 
 void downsample(const(ubyte)[] from, ubyte[] to, uint side) {
-    foreach (layer; 0 .. TEXTURE_LAYERS) {
+    foreach (layer; 0 .. textureLayers()) {
         foreach (y; 0 .. side / 2) {
             foreach (x; 0 .. side / 2) {
                 uint[COLOR_CHANNELS] sum = 0;

@@ -19,7 +19,7 @@ import client.hud : HudVertex, Marker;
 import client.text : GlyphAtlas;
 import client.graphics.pipeline : GpuBuffer, QUEUE_FAMILY_IGNORED, VULKAN_TRUE, expectSuccess;
 import client.graphics.uniforms : CommonUniforms, HighlightTarget, LinearColor, PostSettings, commonUniforms, findHighlightTarget, perceivedFog, postSettings, unseenMaterials;
-import common.material : GLOWING, MaterialSet;
+import common.material : MaterialSet, glowing, seeThrough;
 import client.graphics.voxels.cull : CullPipeline;
 import client.graphics.voxels.meshes : ChunkMeshes, Replaced;
 import client.graphics.voxels.surface : FACES_BINDING, LayoutPush, SurfacePipeline, TRANSFORMS_BINDING;
@@ -338,7 +338,7 @@ struct Renderer {
             voxels.staticSet,
         ];
         vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, voxels.pipelineLayout, 0, sets.length, sets.ptr, 0, null);
-        LayoutPush layoutPush = LayoutPush(layout.dimension, layout.cellRatio, GLOWING.words, unseen.words, Material.glass);
+        LayoutPush layoutPush = LayoutPush(layout.dimension, layout.cellRatio, glowing.words, unseen.words, seeThrough.words);
         vkCmdPushConstants(commands, voxels.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, LayoutPush.sizeof, &layoutPush);
         uint drawn = 0;
         while (drawn < meshes.drawableCount) {

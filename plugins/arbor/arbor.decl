@@ -1,0 +1,7 @@
+kind arbor-materials {
+    step: one -> material
+    deck: one -> material
+    post: one -> material
+    lantern: one -> material
+    lawn: one -> material
+}

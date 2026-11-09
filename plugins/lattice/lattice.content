@@ -1,0 +1,13 @@
+look lattice:look { red: 0.05, green: 0.06, blue: 0.1, tint: fog }
+
+lattice-materials lattice:materials {
+    pole -> base:steel
+    girder -> base:concrete
+    joint -> base:basalt
+    step -> base:wood-planks
+    lantern -> base:light-panel
+    leaves -> base:oak-leaves
+    hut -> base:wood-planks
+    roof -> base:red-sandstone
+    floors -> [base:wood-planks base:marble base:grey-brick]
+}

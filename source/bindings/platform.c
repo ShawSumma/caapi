@@ -21,6 +21,8 @@ enum {
     KEY_PRESS_EVENTS = KeyPressMask,
     KEY_RELEASE_EVENTS = KeyReleaseMask,
     BUTTON_PRESS_EVENTS = ButtonPressMask,
+    BUTTON_RELEASE_EVENTS = ButtonReleaseMask,
+    POINTER_MOTION_EVENTS = PointerMotionMask,
     STRUCTURE_EVENTS = StructureNotifyMask,
     FOCUS_EVENTS = FocusChangeMask,
 };

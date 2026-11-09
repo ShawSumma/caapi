@@ -12,6 +12,7 @@ import common.worldgen.generation : GeneratedVoxels, Worldgen;
 import geometry.cube : DIRECTIONS;
 import geometry.honeycomb : CORNER_COUNT, FACE_COUNT, Face;
 import plugins.api.api : Material;
+import unit.named : blockNamed;
 
 enum ubyte DIMENSION = 4;
 enum ulong MIX = 0xBF58476D1CE4E5B9;
@@ -21,11 +22,11 @@ enum size_t BATCH_STRIDE = 3;
 
 GeneratedVoxels madeVoxels(size_t chunk) {
     if (chunk % KINDS == 0) {
-        return GeneratedVoxels(Voxels.filled(Material.granite), Materials.resolved);
+        return GeneratedVoxels(Voxels.filled(blockNamed("base:granite")), Materials.resolved);
     } else if (chunk % KINDS == 1) {
         return GeneratedVoxels(Voxels.filled(Material.none), Materials.resolved);
     } else {
-        Voxels voxels = Voxels.filled(Material.granite);
+        Voxels voxels = Voxels.filled(blockNamed("base:granite"));
         Material[] cells = voxels.toDense(DIMENSION);
         foreach (cell; 0 .. cellCount(DIMENSION)) {
             if (((chunk * FIBONACCI_MULTIPLIER + cell) * MIX >> 32) % VOID_ODDS == 0) {

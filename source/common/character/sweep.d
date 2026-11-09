@@ -7,8 +7,8 @@ import base.numbers : higherOf;
 import base.vector3 : Vec3, ZERO_VECTOR, cross, dot, magnitude, minus, plus, scaled;
 import common.character.features : Edge, Features, Quad, unit;
 
-enum double MIN_DISPLACEMENT_SQUARED = 1e-16;
-enum float MIN_CREASE_SINE = 1e-3f;
+enum double LEAST_DISPLACEMENT_SQUARED = 1e-16;
+enum float LEAST_CREASE_SINE = 1e-3f;
 
 struct Capsule {
     Vec3!float axis;
@@ -68,7 +68,7 @@ struct ContactPlane {
 }
 
 bool isSameDirection(Vec3!float a, Vec3!float b) {
-    return a.dot(b) > 0 && a.cross(b).magnitude < MIN_CREASE_SINE;
+    return a.dot(b) > 0 && a.cross(b).magnitude < LEAST_CREASE_SINE;
 }
 
 struct Section {
@@ -152,7 +152,7 @@ struct Sweep {
 
     static Sweep fromCapsule(ref const Features features, Capsule capsule, Vec3!float start, Vec3!float displacement, const(ContactPlane)[] clipped) {
         float displacementSquared = displacement.dot(displacement);
-        if (displacementSquared < MIN_DISPLACEMENT_SQUARED) {
+        if (displacementSquared < LEAST_DISPLACEMENT_SQUARED) {
             return Sweep(ZERO_VECTOR);
         } else {
             float distance = sqrt(displacementSquared);

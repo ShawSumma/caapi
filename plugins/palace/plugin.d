@@ -1,9 +1,11 @@
 module plugins.palace.plugin;
 
-import plugins.api.api : Api, Look, Material, Registry, Risen, Site, SitePart, Span, Turn, entryOf;
+import plugins.api.api : Api, Material, Registry, Risen, Site, SitePart, Span, Turn, entryOf;
+import plugins.api.binding : bound;
+import plugins.api.content : Content, FIRST_VERSION, Manifest, ON_BASE;
 import plugins.turtle.turtle : Along, Turtle, boxOf, cornersOf, grass, line, middle, roll, upright;
 
-immutable Look LOOK = Look("palace");
+enum string LOOK = "base:sky";
 
 enum size_t MOST_FACES = 16;
 enum int FLOOR = -11;
@@ -24,9 +26,25 @@ enum int BASIN = 8;
 enum int JET_TOP = -6;
 enum double STAIR_ODDS = 0.3;
 enum ulong STAIR_SALT = 0x2545F491;
-enum Material STONE = Material.limestone;
-enum Material FLOOR_STONE = Material.marble;
-enum Material TREAD = Material.whiteBrick;
+
+struct Materials {
+    Material stone;
+    Material floor;
+    Material tread;
+    Material window;
+    Material ceiling;
+    Material rod;
+    Material lamp;
+    Material carpet;
+    Material water;
+    Material lawn;
+}
+
+__gshared Materials materials;
+
+void resolve(const(Content)* content) {
+    materials = content.bound!Materials("palace:materials");
+}
 
 struct FaceHashes {
     ulong[MOST_FACES] items;
@@ -77,9 +95,9 @@ bool probeExterior(ref const Footprint footprint, Turtle across) {
 
 void outerWall(Turtle tower, Along direction) {
     int far = tower.column().high;
-    tower.paint(STONE, line(direction, Span(0, far), Span(FLOOR - 1, ROOF)));
+    tower.paint(materials.stone, line(direction, Span(0, far), Span(FLOOR - 1, ROOF)));
     for (int along = 2; along < far; along += WINDOW_EVERY) {
-        tower.paint(Material.glass, line(direction, Span(along, along + 1), WINDOW_Z));
+        tower.paint(materials.window, line(direction, Span(along, along + 1), WINDOW_Z));
     }
 }
 
@@ -88,12 +106,12 @@ void hall(Turtle corner, ref const Footprint footprint) {
     int far = tower.column().high;
     Span whole = Span(0, far);
     tower.paint(Material.none, boxOf(whole, whole, Span(FLOOR + 1, CEILING - 1)));
-    tower.paint(FLOOR_STONE, boxOf(whole, whole, Span(FLOOR - 1, FLOOR)));
-    tower.paint(Material.plaster, boxOf(whole, whole, Span(CEILING, CEILING)));
-    tower.paint(STONE, boxOf(whole, whole, Span(ROOF, ROOF)));
-    tower.paint(FLOOR_STONE, boxOf(Span(0, 1), Span(0, 1), Span(FLOOR, CEILING)));
-    tower.paint(Material.steel, boxOf(Span(LAMP, LAMP), Span(LAMP, LAMP), Span(LAMP_Z.high + 1, CEILING - 1)));
-    tower.paint(Material.lightPanel, boxOf(Span(LAMP, LAMP), Span(LAMP, LAMP), LAMP_Z));
+    tower.paint(materials.floor, boxOf(whole, whole, Span(FLOOR - 1, FLOOR)));
+    tower.paint(materials.ceiling, boxOf(whole, whole, Span(CEILING, CEILING)));
+    tower.paint(materials.stone, boxOf(whole, whole, Span(ROOF, ROOF)));
+    tower.paint(materials.floor, boxOf(Span(0, 1), Span(0, 1), Span(FLOOR, CEILING)));
+    tower.paint(materials.rod, boxOf(Span(LAMP, LAMP), Span(LAMP, LAMP), Span(LAMP_Z.high + 1, CEILING - 1)));
+    tower.paint(materials.lamp, boxOf(Span(LAMP, LAMP), Span(LAMP, LAMP), LAMP_Z));
     bool outerX = probeExterior(footprint, corner.left());
     if (outerX) {
         outerWall(tower, Along.x);
@@ -107,10 +125,10 @@ void hall(Turtle corner, ref const Footprint footprint) {
 void centrePiece(Turtle corner) {
     Turtle tower = upright(corner);
     int far = tower.column().high;
-    tower.paint(Material.redCarpet, boxOf(Span(2, BASIN - 1), Span(2, BASIN - 1), Span(FLOOR, FLOOR)));
-    tower.paint(FLOOR_STONE, boxOf(Span(BASIN, far), Span(BASIN, far), Span(FLOOR + 1, FLOOR + 1)));
-    tower.paint(Material.water, boxOf(Span(BASIN + 1, far), Span(BASIN + 1, far), Span(FLOOR + 1, FLOOR + 1)));
-    tower.paint(Material.water, boxOf(Span(far, far), Span(far, far), Span(FLOOR + 2, JET_TOP)));
+    tower.paint(materials.carpet, boxOf(Span(2, BASIN - 1), Span(2, BASIN - 1), Span(FLOOR, FLOOR)));
+    tower.paint(materials.floor, boxOf(Span(BASIN, far), Span(BASIN, far), Span(FLOOR + 1, FLOOR + 1)));
+    tower.paint(materials.water, boxOf(Span(BASIN + 1, far), Span(BASIN + 1, far), Span(FLOOR + 1, FLOOR + 1)));
+    tower.paint(materials.water, boxOf(Span(far, far), Span(far, far), Span(FLOOR + 2, JET_TOP)));
 }
 
 struct Run {
@@ -137,12 +155,12 @@ int alongIn(ref const Run run, int cell) {
 
 void grandStair(ref const Run run) {
     run.near.paint(Material.none, boxOf(DOOR_X, Span(0, 0), Span(GROUND, GROUND + DOOR_TOP)));
-    run.near.paint(TREAD, boxOf(Span(0, LANDING - 1), STAIR_Y, Span(FLOOR, GROUND - 1)));
+    run.near.paint(materials.tread, boxOf(Span(0, LANDING - 1), STAIR_Y, Span(FLOOR, GROUND - 1)));
     foreach (step; 1 .. TREADS) {
         foreach (offset; 0 .. TREAD_DEPTH) {
             int cell = LANDING + (step - 1) * TREAD_DEPTH + offset;
             int along = alongIn(run, cell);
-            frameAt(run, cell).paint(TREAD, boxOf(Span(along, along), STAIR_Y, Span(FLOOR, GROUND - step - 1)));
+            frameAt(run, cell).paint(materials.tread, boxOf(Span(along, along), STAIR_Y, Span(FLOOR, GROUND - step - 1)));
         }
     }
 }
@@ -167,7 +185,7 @@ void lawn(const(Api)* api, Site site, const(Risen)* risen, const(void)* data) {
     const(FaceHashes)* built = cast(const(FaceHashes)*) data;
     ulong hash = face.probeHash(SitePart.face);
     if (!built.contains(hash)) {
-        grass(face);
+        grass(face, materials.lawn);
     }
 }
 
@@ -217,10 +235,13 @@ void world(const(Api)* api, Site site, const(void)* data) {
     Halls built = halls(Turtle(api, site));
     built.entranceRun.near.turn(Turn.rollLeft).entrance(0, -middle(DOOR_X), GROUND);
     api.tile(api, &lawn, &built.footprint.hashes, FaceHashes.sizeof);
-    api.worldLook(api, &LOOK);
+    api.worldLook(api, LOOK);
 }
 
+immutable Manifest MANIFEST = Manifest("palace", FIRST_VERSION, ON_BASE[], null, &resolve, null, null, import("plugins/palace/palace.decl"), import("plugins/palace/palace.content"));
+
 pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
+    registry.declare(registry, &MANIFEST);
     registry.add(registry, "palace", &world);
     registry.addLandmark(registry, "palace", &landmark);
 }

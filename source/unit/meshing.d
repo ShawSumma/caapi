@@ -6,6 +6,7 @@ import client.meshing : CORNERS_PER_FACE, ChunkCells, Facing, OCCLUSION_LEVELS, 
 import common.node : ChunkSlot;
 import geometry.cube : AXIS_COUNT;
 import plugins.api.api : Material;
+import unit.named : blockNamed;
 
 enum ubyte DIMENSION = 4;
 enum ubyte CELL = 2;
@@ -15,7 +16,7 @@ unittest {
     padded[] = Material.none;
     Vec3!int center = Vec3!int(CELL, CELL, CELL);
     ChunkCells cells = ChunkCells(padded.ptr, null, ChunkSlot.init, DIMENSION, 1);
-    padded[paddedIndex(DIMENSION, center)] = Material.granite;
+    padded[paddedIndex(DIMENSION, center)] = blockNamed("base:granite");
     assert(cells.isOccupied(center));
     Quad* quads = cast(Quad*) malloc(maxQuads(DIMENSION) * Quad.sizeof);
     uint count = cells.extractQuads(quads);
@@ -23,13 +24,13 @@ unittest {
     uint[CORNERS_PER_FACE] unoccluded = OCCLUSION_LEVELS;
     foreach (quad; quads[0 .. count]) {
         uint window = (quad.occlusionMaterial >> WINDOW_SHIFT) & ((1u << WINDOW_BITS) - 1);
-        assert(quad.occlusionMaterial == Quad.fromVoxel(center, 0, Facing.outward, Material.granite, unoccluded, window).occlusionMaterial);
+        assert(quad.occlusionMaterial == Quad.fromVoxel(center, 0, Facing.outward, blockNamed("base:granite"), unoccluded, window).occlusionMaterial);
     }
-    padded[paddedIndex(DIMENSION, Vec3!int(CELL - 1, CELL, CELL))] = Material.glass;
+    padded[paddedIndex(DIMENSION, Vec3!int(CELL - 1, CELL, CELL))] = blockNamed("base:glass");
     uint glassCount = cells.extractQuads(quads);
     uint glassQuads = 0;
     foreach (quad; quads[0 .. glassCount]) {
-        if ((quad.occlusionMaterial & ((1u << WINDOW_SHIFT) - 1)) == Material.glass) {
+        if ((quad.occlusionMaterial & ((1u << WINDOW_SHIFT) - 1)) == blockNamed("base:glass").id) {
             glassQuads += 1;
         }
     }

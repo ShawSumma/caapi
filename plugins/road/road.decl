@@ -1,0 +1,8 @@
+kind road-materials {
+    surface: one -> material
+    stripe: one -> material
+    deck: one -> material
+    parapet: one -> material
+    masonry: one -> material
+    ring: one -> material
+}

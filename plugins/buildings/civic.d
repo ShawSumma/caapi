@@ -2,20 +2,11 @@ module plugins.buildings.civic;
 
 import core.stdc.math : floor, sqrt;
 import plugins.api.api : Box, Material, Span;
-import plugins.buildings.building : Bound, Lots, Palette, Part, Parts, SIDES, STORY, Spec, Split, Tier, along, crown, enter, faceOf, footprint, makeParts, masonry, middle, movedOut, narrowestOf, pick, pyramid, roof, setbacks, shell, strips, tiers, withAlong, xSpan, ySpan;
+import plugins.buildings.building : Bound, Lots, Palette, Part, Parts, SIDES, STORY, Spec, Split, Tier, Traits, along, crown, enter, faceOf, footprint, makeParts, masonry, materials, middle, movedOut, narrowestOf, pick, pyramid, roof, setbacks, shell, strips, tiers, withAlong, xSpan, ySpan;
 import plugins.turtle.turtle : boxOf, floorDiv;
 
-enum Span STORIES = Span(3, 6);
 enum int SETBACKS = 1;
-enum Material ROOF = Material.slate;
 enum int COLUMN_SPACING = 3;
-
-immutable Palette[4] PALETTES = [
-    Palette(Material.marble, Material.limestone, Material.marble, Material.none, Material.slate),
-    Palette(Material.limestone, Material.marble, Material.marble, Material.none, Material.steel),
-    Palette(Material.sandstone, Material.limestone, Material.woodPlanks, Material.none, Material.clay),
-    Palette(Material.granite, Material.marble, Material.marble, Material.none, Material.slate),
-];
 
 void arcade(ref const Part part, Palette palette) {
     Box box = footprint(part, 0, Split.below, 1, STORY - 1);
@@ -28,7 +19,7 @@ void arcade(ref const Part part, Palette palette) {
             }
             Box behind = movedOut(face, side, -1);
             Span run = along(behind, side);
-            part.tower.paint(Material.glass, withAlong(behind, side, Span(run.low + 1, run.high - 1)));
+            part.tower.paint(materials.window, withAlong(behind, side, Span(run.low + 1, run.high - 1)));
         }
     }
 }
@@ -45,7 +36,7 @@ void dome(ref const Part part, Palette palette, Tier tier) {
     }
 }
 
-void build(ref const Lots lots, Spec spec) {
+void build(ref const Lots lots, Spec spec, ref const Traits traits) {
     Parts parts;
     makeParts(parts, lots, spec);
     int chosen = setbacks(parts, SETBACKS);
@@ -53,7 +44,7 @@ void build(ref const Lots lots, Spec spec) {
         foreach (tier; tiers(part, spec, chosen).slice()) {
             masonry(part, spec.palette, shell(part, spec.palette, tier), tier);
             if (tier.isRoofed()) {
-                roof(part, spec.palette, ROOF, tier);
+                roof(part, spec.palette, traits.roof, tier);
             }
         }
         arcade(part, spec.palette);

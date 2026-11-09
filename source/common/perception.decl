@@ -1,0 +1,11 @@
+kind perception-preset {
+    sets: many -> channel {
+        level: number
+    }
+}
+
+kind signal-drive {
+    signal: "mist" | "sway" | "lift"
+    gain: number
+    drives: one -> channel
+}

@@ -1,0 +1,36 @@
+connector-materials connector:materials {
+    landing -> base:concrete
+    window -> base:glass
+    stone -> base:marble
+    light -> base:sunlight
+    palettes -> [connector:brick connector:sandstone connector:steel connector:grey]
+    drift -> connector:drift
+    lantern -> connector:lantern
+    hidden -> connector:hidden
+    pairs -> [connector:wild-wild connector:wild-city connector:wild-backrooms connector:wild-library connector:city-wild connector:city-city connector:city-backrooms connector:city-library connector:backrooms-wild connector:backrooms-city connector:backrooms-backrooms connector:backrooms-library connector:library-wild connector:library-city connector:library-backrooms connector:library-library]
+}
+
+connector-pair connector:wild-wild { lower: "horospheres:wild", upper: "horospheres:wild", tower: 39, spiral: 44, drift: 11, lantern: 6 }
+connector-pair connector:wild-city { lower: "horospheres:wild", upper: "horospheres:city", tower: 64, spiral: 26, drift: 5, lantern: 5 }
+connector-pair connector:wild-backrooms { lower: "horospheres:wild", upper: "horospheres:backrooms", tower: 25, spiral: 12, drift: 25, lantern: 38 }
+connector-pair connector:wild-library { lower: "horospheres:wild", upper: "library:library", tower: 28, spiral: 39, drift: 17, lantern: 16 }
+connector-pair connector:city-wild { lower: "horospheres:city", upper: "horospheres:wild", tower: 44, spiral: 44, drift: 6, lantern: 6 }
+connector-pair connector:city-city { lower: "horospheres:city", upper: "horospheres:city", tower: 67, spiral: 22, drift: 5, lantern: 6 }
+connector-pair connector:city-backrooms { lower: "horospheres:city", upper: "horospheres:backrooms", tower: 53, spiral: 0, drift: 20, lantern: 27 }
+connector-pair connector:city-library { lower: "horospheres:city", upper: "library:library", tower: 53, spiral: 18, drift: 12, lantern: 17 }
+connector-pair connector:backrooms-wild { lower: "horospheres:backrooms", upper: "horospheres:wild", tower: 17, spiral: 17, drift: 33, lantern: 33 }
+connector-pair connector:backrooms-city { lower: "horospheres:backrooms", upper: "horospheres:city", tower: 60, spiral: 0, drift: 20, lantern: 20 }
+connector-pair connector:backrooms-backrooms { lower: "horospheres:backrooms", upper: "horospheres:backrooms", tower: 57, spiral: 0, drift: 21, lantern: 22 }
+connector-pair connector:backrooms-library { lower: "horospheres:backrooms", upper: "library:library", tower: 50, spiral: 10, drift: 20, lantern: 20 }
+connector-pair connector:library-wild { lower: "library:library", upper: "horospheres:wild", tower: 29, spiral: 36, drift: 21, lantern: 14 }
+connector-pair connector:library-city { lower: "library:library", upper: "horospheres:city", tower: 55, spiral: 20, drift: 10, lantern: 15 }
+connector-pair connector:library-backrooms { lower: "library:library", upper: "horospheres:backrooms", tower: 50, spiral: 0, drift: 25, lantern: 25 }
+connector-pair connector:library-library { lower: "library:library", upper: "library:library", tower: 50, spiral: 28, drift: 6, lantern: 16 }
+
+connector-palette connector:brick { wall -> base:white-brick, trim -> base:limestone, floor -> base:wood-planks }
+connector-palette connector:sandstone { wall -> base:red-sandstone, trim -> base:white-brick, floor -> base:wood-planks }
+connector-palette connector:steel { wall -> base:limestone, trim -> base:steel, floor -> base:concrete }
+connector-palette connector:grey { wall -> base:grey-brick, trim -> base:white-brick, floor -> base:wood-planks }
+connector-palette connector:drift { wall -> base:sunlight, trim -> base:limestone, floor -> base:marble }
+connector-palette connector:lantern { wall -> base:glass, trim -> base:steel, floor -> base:marble }
+connector-palette connector:hidden { wall -> base:mist-stone, trim -> base:mist-light, floor -> base:mist-stone }

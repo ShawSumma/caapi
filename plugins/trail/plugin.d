@@ -1,10 +1,23 @@
 module plugins.trail.plugin;
 
-import plugins.api.api : Api, Look, Material, Registry, Site, SitePart, Span, entryOf;
+import plugins.api.api : Api, Material, Registry, Site, SitePart, Span, entryOf;
+import plugins.api.binding : bound;
+import plugins.api.content : BASE, Content, Dependency, FIRST_VERSION, Manifest, dependencyOn;
 import box = plugins.box.box;
 import plugins.turtle.turtle : Turtle, boxOf;
 
-immutable Look LOOK = Look("trail");
+enum string LOOK = "base:sky";
+
+struct Materials {
+    Material path;
+}
+
+__gshared Materials materials;
+
+void resolve(const(Content)* content) {
+    box.resolveBox(content);
+    materials = content.bound!Materials("trail:materials");
+}
 
 enum int HALF_WIDTH = 2;
 enum uint HUT_EVERY = 3;
@@ -32,7 +45,7 @@ struct Length {
 
 void pave(Turtle segment) {
     int length = segment.edgeCells();
-    segment.paint(Material.gravel, boxOf(Span(-HALF_WIDTH, HALF_WIDTH - 1), Span(-1, -1), Span(-HALF_WIDTH, length + HALF_WIDTH - 1)));
+    segment.paint(materials.path, boxOf(Span(-HALF_WIDTH, HALF_WIDTH - 1), Span(-1, -1), Span(-HALF_WIDTH, length + HALF_WIDTH - 1)));
     segment.stop(ROUTE_LANE, 0, length / 2.0f);
 }
 
@@ -103,11 +116,15 @@ void landmark(const(Api)* api, Site site, const(void)* data) {
 
 void world(const(Api)* api, Site site, const(void)* data) {
     Length length = Length(0, Extent.endless);
-    api.worldLook(api, &LOOK);
+    api.worldLook(api, LOOK);
     stretch(api, site, &length);
 }
 
+immutable Dependency[2] NEEDS = [dependencyOn(BASE), dependencyOn("box")];
+immutable Manifest MANIFEST = Manifest("trail", FIRST_VERSION, NEEDS[], null, &resolve, null, null, import("plugins/trail/trail.decl"), import("plugins/trail/trail.content"));
+
 pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
+    registry.declare(registry, &MANIFEST);
     registry.add(registry, "trail", &world);
     registry.addLandmark(registry, "trail", &landmark);
 }

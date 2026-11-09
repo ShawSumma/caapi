@@ -1,11 +1,12 @@
 module plugins.tower.plugin;
 
-import plugins.api.api : Api, Look, Registry, Site, entryOf;
+import plugins.api.api : Api, Registry, Site, entryOf;
+import plugins.api.content : BASE, Dependency, FIRST_VERSION, Manifest, dependencyOn;
 import box = plugins.box.box;
 import plugins.turtle.turtle : Turtle;
 
 enum int HEIGHT_EDGES = 3;
-immutable Look LOOK = Look("tower");
+enum string LOOK = "base:sky";
 
 void landmark(const(Api)* api, Site site, const(void)* data) {
     Turtle tower = Turtle(api, site).pitchUp();
@@ -18,11 +19,15 @@ void landmark(const(Api)* api, Site site, const(void)* data) {
 
 void world(const(Api)* api, Site site, const(void)* data) {
     landmark(api, site, data);
-    api.worldLook(api, &LOOK);
+    api.worldLook(api, LOOK);
     Turtle(api, site).pitchUp().entrance(-box.HALF_WIDTH, 0, 1);
 }
 
+immutable Dependency[2] NEEDS = [dependencyOn(BASE), dependencyOn("box")];
+immutable Manifest MANIFEST = Manifest("tower", FIRST_VERSION, NEEDS[], null, &box.resolveBox);
+
 pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
+    registry.declare(registry, &MANIFEST);
     registry.add(registry, "tower", &world);
     registry.addLandmark(registry, "tower", &landmark);
 }

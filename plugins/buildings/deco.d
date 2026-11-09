@@ -1,21 +1,11 @@
 module plugins.buildings.deco;
 
-import plugins.api.api : Box, Material, Span;
-import plugins.buildings.building : Lots, Palette, Part, Parts, Spec, Split, Tier, crown, enter, footprint, makeParts, masonry, middle, pick, pyramid, roof, setbacks, shell, storefront, tiers, xSpan, ySpan;
+import plugins.api.api : Box, Span;
+import plugins.buildings.building : Lots, Palette, Part, Parts, Spec, Split, Tier, Traits, crown, enter, footprint, makeParts, masonry, middle, pick, pyramid, roof, setbacks, shell, storefront, tiers, xSpan, ySpan;
 import plugins.turtle.turtle : boxOf;
 
-enum Span STORIES = Span(14, 34);
 enum int SETBACKS = 2;
-enum Material ROOF = Material.slate;
 enum int SPIRE = 10;
-
-immutable Palette[5] PALETTES = [
-    Palette(Material.limestone, Material.steel, Material.concrete),
-    Palette(Material.sandstone, Material.marble, Material.concrete),
-    Palette(Material.whiteBrick, Material.steel, Material.concrete),
-    Palette(Material.diorite, Material.granite, Material.concrete),
-    Palette(Material.dolomite, Material.slate, Material.concrete),
-];
 
 void spire(ref const Part part, Palette palette, Tier tier) {
     Box roofBox = footprint(part, tier.shrink, Split.above, tier.high, tier.high);
@@ -25,7 +15,7 @@ void spire(ref const Part part, Palette palette, Tier tier) {
     part.tower.paint(palette.trim, boxOf(Span(x, x), Span(y, y), Span(tier.high + 3, tier.high + SPIRE)));
 }
 
-void build(ref const Lots lots, Spec spec) {
+void build(ref const Lots lots, Spec spec, ref const Traits traits) {
     Parts parts;
     makeParts(parts, lots, spec);
     int chosen = setbacks(parts, SETBACKS);
@@ -33,7 +23,7 @@ void build(ref const Lots lots, Spec spec) {
         foreach (tier; tiers(part, spec, chosen).slice()) {
             masonry(part, spec.palette, shell(part, spec.palette, tier), tier);
             if (tier.isRoofed()) {
-                roof(part, spec.palette, ROOF, tier);
+                roof(part, spec.palette, traits.roof, tier);
             }
         }
         storefront(part);

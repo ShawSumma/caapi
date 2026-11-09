@@ -1,6 +1,8 @@
 module plugins.box.box;
 
 import plugins.api.api : Material, Rhythm, Span;
+import plugins.api.binding : List, bound;
+import plugins.api.content : Content;
 import plugins.turtle.turtle : Turtle, boxOf;
 
 enum int HALF_WIDTH = 5;
@@ -19,6 +21,7 @@ enum int LOW = -HALF_WIDTH;
 enum int HIGH = HALF_WIDTH - 1;
 enum int HUT_STORIES = 2;
 enum int HUT_TOP = HUT_STORIES * STORY;
+enum size_t MOST_PALETTES = 16;
 
 struct Palette {
     Material wall;
@@ -26,20 +29,22 @@ struct Palette {
     Material trim;
 }
 
-immutable Palette[4] PALETTES = [
-    Palette(Material.concrete, Material.concrete, Material.steel),
-    Palette(Material.whiteBrick, Material.greyBrick, Material.steel),
-    Palette(Material.sandstone, Material.woodPlanks, Material.steel),
-    Palette(Material.greyBrick, Material.concrete, Material.marble),
-];
+struct Palettes {
+    List!(Palette, MOST_PALETTES) palettes;
+    Palette timber;
+}
 
-immutable Palette TIMBER = Palette(Material.oakWood, Material.woodPlanks, Material.spruceWood);
+__gshared Palettes palettes;
+
+void resolveBox(const(Content)* content) {
+    palettes = content.bound!Palettes("box:palettes");
+}
 
 immutable int[2] SIDES = [LOW, HIGH];
 immutable int[2] WINDOW_STARTS = [LOW + 1 + WINDOW_INSET, HIGH - WINDOW_INSET - WINDOW_WIDTH];
 
 Palette palette(Turtle site) {
-    return PALETTES[site.pick(PALETTES.length)];
+    return palettes.palettes.items[site.pick(palettes.palettes.count)];
 }
 
 int top(Turtle site, int edges) {
@@ -115,7 +120,7 @@ void door(Turtle tower) {
 }
 
 void hut(Turtle at) {
-    tower(at, HUT_TOP, TIMBER);
+    tower(at, HUT_TOP, palettes.timber);
     door(at);
 }
 

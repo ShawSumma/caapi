@@ -10,14 +10,14 @@ import client.graphics.frustum : FRUSTUM_PLANE_COUNT, Frustum, kleinDepthScale;
 import client.graphics.matrices : MATRIX_FLOATS, determinant, flatten, matrixMultiply;
 import client.world : FOG_SHARPNESS, LocalWorld, fogReach;
 import common.color : ColorTurn, Seen, seenOf, spectrumOf, turned;
-import common.material : BITS_PER_WORD, ByteColor, HIDDEN, MATERIAL_COLORS, MATERIAL_COUNT, MATERIAL_WORDS, MaterialSet, without;
+import common.look : Color;
+import common.material : BITS_PER_WORD, ByteColor, MATERIAL_WORDS, MaterialSet, hidden, materialColors, materialCount, without;
 import common.node : ChunkLayout;
 import common.perception : BAND_COUNT;
 import common.raycast.graph : GraphCastHit;
 import geometry.cube : Cell;
 import geometry.honeycomb : CUBE_RADIUS, cubeToNode;
 import geometry.lorentz : Motion, Normal, Point, Vec4;
-import plugins.api.api : Color;
 
 enum Angle HALF_VERTICAL_FOV = Angle(cast(float)(45 * RADIANS_PER_DEGREE));
 enum float NEAR_PLANE = 1.0e-4f;
@@ -57,7 +57,7 @@ struct CommonUniforms {
 
 struct PostSettings {
     float[BAND_COUNT] bandGains;
-    float afterimage;
+    float afterimage = 0;
 }
 
 struct HighlightTarget {
@@ -134,7 +134,7 @@ LinearColor linearOf(Color color) {
 }
 
 MaterialSet unseenMaterials(ref const LocalWorld world) {
-    return HIDDEN.without(world.view.visible);
+    return hidden.without(world.view.visible);
 }
 
 LinearColor perceivedFog(ref const LocalWorld world) {
@@ -145,8 +145,8 @@ LinearColor perceivedFog(ref const LocalWorld world) {
 
 LinearColor[TINT_SLOTS] materialTints(ColorTurn turn) {
     LinearColor[TINT_SLOTS] tints = LinearColor(1, 1, 1, 1);
-    foreach (index; 1 .. MATERIAL_COUNT) {
-        ByteColor written = MATERIAL_COLORS[index];
+    foreach (index; 1 .. materialCount()) {
+        ByteColor written = materialColors.ptr[index];
         Seen plain = [srgbToLinear(written.red / CHANNEL_MOST), srgbToLinear(written.green / CHANNEL_MOST), srgbToLinear(written.blue / CHANNEL_MOST)];
         Seen seen = seenOf(turned(spectrumOf(plain), turn));
         tints[index] = LinearColor(tintOf(seen[0], plain[0]), tintOf(seen[1], plain[1]), tintOf(seen[2], plain[2]), 1);
