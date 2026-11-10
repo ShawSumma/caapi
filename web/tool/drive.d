@@ -38,6 +38,7 @@ enum int LEFT_BUTTON = 0;
 enum int RIGHT_BUTTON = 2;
 enum int CENTER_X = 640;
 enum int CENTER_Y = 360;
+enum int EMPTY_X = 40;
 enum long NANOSECONDS_PER_MILLISECOND = 1_000_000;
 enum uint MILLISECONDS_PER_SECOND = 1000;
 enum size_t RECEIVE_BYTES = 65536;
@@ -64,7 +65,7 @@ enum string NO_TIMEOUTS = `{"script":3600000,"pageLoad":3600000,"implicit":0}`;
 enum string WIDE_WINDOW = `{"x":0,"y":0,"width":1280,"height":800}`;
 enum string SMALL_WINDOW = `{"x":0,"y":0,"width":900,"height":600}`;
 enum string SHEET_WINDOW = `{"x":0,"y":0,"width":1940,"height":1200}`;
-enum string STATE_SCRIPT = "return document.getElementById('status').textContent + ' | failure: ' + document.getElementById('failure').textContent + ' | locked: ' + (document.pointerLockElement !== null)";
+enum string STATE_SCRIPT = "return document.title + ' | failure: ' + document.getElementById('failure').textContent + ' | locked: ' + (document.pointerLockElement !== null)";
 enum string RESULT_SCRIPT = "return document.getElementById('status').textContent + ' | failure: ' + document.getElementById('failure').textContent";
 enum string CANVAS_SCRIPT = "const c = document.getElementById('game'); return c.width + 'x' + c.height";
 enum string RELEASE_SCRIPT = "document.exitPointerLock(); return 'released'";
@@ -276,10 +277,14 @@ struct Marionette {
         }
     }
 
-    void click(int button) {
+    void clickAt(int x, int y, int button) {
         char[PARAMETERS_CAPACITY] parameters = 0;
-        snprintf(parameters.ptr, parameters.length, CLICK_FORMAT.ptr, CENTER_X, CENTER_Y, button, button);
+        snprintf(parameters.ptr, parameters.length, CLICK_FORMAT.ptr, x, y, button, button);
         call(PERFORM_ACTIONS, parameters.ptr);
+    }
+
+    void click(int button) {
+        clickAt(CENTER_X, CENTER_Y, button);
     }
 
     void moveBy(int dx, int dy) {
@@ -305,9 +310,9 @@ void playThrough(ref Marionette browser) {
     pause(LOAD_MILLISECONDS);
     browser.state("loaded for a while, nothing pressed");
     browser.shot("play-start");
-    browser.click(LEFT_BUTTON);
+    browser.clickAt(EMPTY_X, CENTER_Y, LEFT_BUTTON);
     pause(SETTLE_MILLISECONDS);
-    browser.state("clicked to capture");
+    browser.state("clicked beside the menu to capture");
     browser.hold("w", WALK_MILLISECONDS);
     browser.state("held W");
     browser.shot("play-walked");
@@ -329,14 +334,15 @@ void playThrough(ref Marionette browser) {
     browser.report("release", RELEASE_SCRIPT);
     pause(SETTLE_MILLISECONDS);
     browser.state("after release");
+    browser.shot("play-menu");
     browser.hold("w", SETTLE_MILLISECONDS);
     browser.state("W while released");
     browser.report("refused", REFUSED_SCRIPT);
     pause(SETTLE_MILLISECONDS);
     browser.state("after a refused capture");
-    browser.click(LEFT_BUTTON);
+    browser.clickAt(EMPTY_X, CENTER_Y, LEFT_BUTTON);
     pause(SETTLE_MILLISECONDS);
-    browser.state("clicked to capture again");
+    browser.state("clicked beside the menu to capture again");
     browser.call(SET_WINDOW_RECT, SMALL_WINDOW);
     pause(WORLD_MILLISECONDS);
     browser.state("resized");

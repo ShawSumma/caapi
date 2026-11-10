@@ -2,7 +2,7 @@ module main;
 
 import core.bitop : bsf;
 import core.stdc.math : asinf, coshf, floorf, sinhf, tanf;
-import core.stdc.stdio : FILE, SEEK_END, SEEK_SET, fclose, fflush, fopen, fprintf, fread, fscanf, fseek, ftell, fwrite, printf, snprintf, stderr;
+import core.stdc.stdio : FILE, SEEK_END, SEEK_SET, fclose, fflush, fopen, fprintf, fread, fscanf, fseek, ftell, fwrite, printf, remove, snprintf, stderr;
 import core.stdc.stdlib : free, malloc;
 import core.sys.posix.sys.stat : mkdir;
 import core.sys.posix.time : nanosleep, timespec;
@@ -23,7 +23,7 @@ import client.bindings : Action, Bindings, Rules;
 import client.config : ClientConfig, PitchAxis;
 import client.drive : DIRECTORY_MODE, DriveEventKind, DriveHost, DriveInput, DriveKey, LEFT_BUTTON, NamedDrive;
 import client.frames : RenderTimes;
-import client.game : ChunkSupply, Click, FrameInput, Game, Key, KeyStroke, MOST_STEP_SECONDS, Screen, UiAction, UiKind, creativeInventory, frameInputOf;
+import client.game : ChunkSupply, Click, FrameInput, Game, Key, KeyStroke, MOST_STEP_SECONDS, Saving, Screen, UiAction, UiKind, creativeInventory, frameInputOf;
 import client.graphics.core : SurfaceSource;
 import client.graphics.renderer : CaptureMark, FrameTimes, Renderer;
 import client.graphics.uniforms : HALF_VERTICAL_FOV;
@@ -31,7 +31,7 @@ import client.graphics.voxels.meshes : ChunkMeshes;
 import client.hud : FrameMeter, Hud, MouseCapture, STATUS_CAPACITY, statusLine, worldNameOf;
 import client.input : BUTTON_NAME_CAPACITY, Controls, Request, buttonName;
 import client.meshing : Mesher;
-import client.plugins : gatherWorlds, registry;
+import client.plugins : gatherWorlds, registry, worldCount, worldNameAt;
 import client.png : writePng;
 import client.sampler : Sampler;
 import client.save : SaveData, Writer, applyEdits, applyState, readGame, writeGame;
@@ -42,7 +42,9 @@ import client.tasks : TaskQueues;
 import client.tiles : PlanOutputs, TileHost, TilePainter, TileWork;
 import client.world : LocalWorld, NearbyStage, NearbyStats, RENDER_RADIUS, StepPhases, fogVisibility;
 import common.character.controller : MovementMode;
+import common.crafting : IdSet;
 import common.graph : Graph, Node, childParentFaces;
+import common.inventory : Cycle;
 import common.neighbors : chunkNeighborSlot, needsMesh;
 import common.node : Chunk, ChunkSlot, ChunkState, cellCount;
 import common.settings : CHUNK_DIMENSION;
@@ -295,11 +297,6 @@ enum SessionMark : ubyte {
 enum PointerGrab : ubyte {
     freed,
     held,
-}
-
-enum Saving : ubyte {
-    enabled,
-    refused,
 }
 
 struct Arguments {
@@ -691,6 +688,52 @@ struct Session {
         if (rules == Rules.creative) {
             game.inventory = creativeInventory();
         }
+    }
+
+    bool isSaved(uint index) const {
+        char[PATH_CAPACITY] path = 0;
+        if (index == worldIndex) {
+            return isFile(savePath.ptr);
+        } else if (chosenSave !is null) {
+            return false;
+        } else {
+            pathOf(index, path);
+            return isFile(path.ptr);
+        }
+    }
+
+    void pathOf(uint index, ref char[PATH_CAPACITY] path) const {
+        const(char)[] world = worldNameAt(index);
+        snprintf(path.ptr, path.length, "%s/%.*s-%s.save", SAVE_DIRECTORY.ptr, cast(int) world.length, world.ptr, ENUM_NAMES!Rules[rules].ptr);
+    }
+
+    void openMenu() {
+        writeSave();
+        listWorlds();
+        game.openScreen(Screen.menu);
+    }
+
+    void listWorlds() {
+        game.worlds.current = worldIndex;
+        game.worlds.saving = saving;
+        game.worlds.saved = IdSet.init;
+        foreach (index; 0 .. worldCount()) {
+            if (isSaved(index)) {
+                game.worlds.saved.set(index);
+            }
+        }
+    }
+
+    void deleteWorld(uint index) {
+        char[PATH_CAPACITY] path = 0;
+        if (index == worldIndex) {
+            remove(savePath.ptr);
+            enterWorld(index);
+        } else {
+            pathOf(index, path);
+            remove(path.ptr);
+        }
+        listWorlds();
     }
 
     void chooseSavePath() {
@@ -1093,13 +1136,24 @@ struct Session {
 
     void clickScreen(uint button) {
         Maybe!UiAction action = hud.actionAt();
-        if (!action.exists || button == Button4 || button == Button5) {
+        if (button == Button4) {
+            hud.wheel(Cycle.back);
+        } else if (button == Button5) {
+            hud.wheel(Cycle.ahead);
+        } else if (!action.exists && game.screen == Screen.menu) {
+            game.closeScreen();
+        } else if (!action.exists) {
             marks.set(SessionMark.titleStale);
         } else if (action.value.kind == UiKind.rebind) {
             controls.awaiting = Maybe!Action.of(cast(Action) action.value.index);
         } else if (action.value.kind == UiKind.resetBindings) {
             controls.bindings = Bindings.defaults();
             saveConfig();
+        } else if (action.value.kind == UiKind.playWorld) {
+            writeSave();
+            enterWorld(action.value.index);
+        } else if (action.value.kind == UiKind.deleteWorld) {
+            deleteWorld(action.value.index);
         } else {
             game.apply(action.value, clickOf(button, controls));
         }
@@ -1119,8 +1173,8 @@ struct Session {
                     switchWorld(WorldStep.next);
                 }
                 break;
-            case Request.releaseMouse:
-                releasePointer();
+            case Request.menu:
+                openMenu();
                 break;
             case Request.bindingsChanged:
                 saveConfig();
@@ -1161,8 +1215,14 @@ struct Session {
 
     void switchWorld(WorldStep direction) {
         writeSave();
-        worldIndex = steppedWorld(worldIndex, direction);
-        game.rebuildWorld(worldgenAt(worldIndex));
+        enterWorld(steppedWorld(worldIndex, direction));
+    }
+
+    void enterWorld(uint index) {
+        worldIndex = index;
+        game.rebuildWorld(worldgenAt(index));
+        game.startOver();
+        startInventory();
         SaveData saved;
         Saved loaded = loadEdits(saved);
         StructureProblem problem = placeStructure(game);
@@ -1232,6 +1292,16 @@ struct Session {
                 }
             }
         }
+    }
+}
+
+bool isFile(const(char)* path) {
+    FILE* file = fopen(path, "rb");
+    if (file is null) {
+        return false;
+    } else {
+        fclose(file);
+        return true;
     }
 }
 

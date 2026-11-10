@@ -15,7 +15,7 @@ enum Request : ubyte {
     nothing,
     previousWorld,
     nextWorld,
-    releaseMouse,
+    menu,
     bindingsChanged,
 }
 
@@ -91,7 +91,7 @@ struct Controls {
             game.closeScreen();
             return Request.nothing;
         } else if (isSameKey(name, ESCAPE_KEY)) {
-            return Request.releaseMouse;
+            return Request.menu;
         } else {
             Maybe!Action action = bindings.actionOf(name, game.rules);
             if (!action.exists) {
@@ -155,7 +155,10 @@ struct Controls {
                 }
                 return Request.nothing;
             case Action.inventory:
-                game.toggleCharacter();
+                game.toggle(Screen.character);
+                return Request.nothing;
+            case Action.journal:
+                game.toggle(Screen.journal);
                 return Request.nothing;
             case Action.previousSlot:
                 game.inventory.cycle(Cycle.back);

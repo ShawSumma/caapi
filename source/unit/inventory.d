@@ -4,7 +4,7 @@ import base.array : Array;
 import base.maybe : Maybe;
 import common.biology.wild : WildGenes;
 import common.crafting : IdSet, MOST_MAKERS, Recipe, Shortfall, Taken, canCraft, makersOf, planRecipe, recipes, returnIngredients, takeIngredients;
-import common.inventory : Cycle, HOTBAR_SLOTS, Inventory, SLOT_COUNT, STACK_LIMIT, Section, Stack, isSameKind;
+import common.inventory : Cycle, HOTBAR_SLOTS, Inventory, MOST_STRAINS, SLOT_COUNT, STACK_LIMIT, Section, Sorting, Stack, Strain;
 import common.items : Item, ItemKind, itemNamed;
 import unit.named : named;
 
@@ -33,9 +33,9 @@ unittest {
 
 unittest {
     Inventory inventory;
-    inventory.slots[0] = Stack(named("base:glass"), 5);
-    assert(inventory.gainInto(Section.pack, inventory.slots[0]) == 0);
-    assert(inventory.slots[HOTBAR_SLOTS] == Stack(named("base:glass"), 5));
+    Stack moving = Stack(named("base:glass"), 5);
+    inventory.pour(Section.pack, moving);
+    assert(moving.isEmpty && inventory.slots[HOTBAR_SLOTS] == Stack(named("base:glass"), 5));
     inventory.cycle(Cycle.back);
     assert(inventory.selected == HOTBAR_SLOTS - 1);
     inventory.cycle(Cycle.ahead);
@@ -45,17 +45,35 @@ unittest {
 unittest {
     Inventory inventory;
     Item leaves = named("base:oak-leaves");
-    Stack first = Stack(leaves, 2, Maybe!WildGenes.of(WildGenes([1, 2, 3, 4])));
-    Stack second = Stack(leaves, 3, Maybe!WildGenes.of(WildGenes([5, 6, 7, 8])));
+    Stack first = Stack.ofLiving(leaves, 2, WildGenes([1, 2, 3, 4]), Sorting.unsorted);
+    Stack second = Stack.ofLiving(leaves, 3, WildGenes([5, 6, 7, 8]), Sorting.unsorted);
+    Stack known = Stack.ofLiving(leaves, 1, WildGenes([5, 6, 7, 8]), Sorting.sorted);
     Stack plain = Stack(leaves, 4);
     inventory.gain(first);
     inventory.gain(second);
     inventory.gain(plain);
     inventory.gain(first);
-    assert(inventory.slots[0].isSameKind(first) && inventory.slots[0].count == 4);
-    assert(inventory.slots[1].isSameKind(second) && inventory.slots[2].isSameKind(plain) && inventory.slots[3].isEmpty);
-    assert(inventory.countOf(leaves) == 11 && inventory.countOfKind(second) == 3);
-    assert(inventory.spendKind(second) && inventory.countOfKind(second) == 2 && inventory.countOfKind(first) == 4);
+    inventory.gain(known);
+    assert(inventory.slots[0].count == 7 && inventory.slots[0].strainCount == 2 && inventory.slots[0].sorting == Sorting.unsorted);
+    assert(inventory.slots[1] == plain && inventory.slots[2] == known && inventory.slots[3].isEmpty);
+    assert(inventory.countOf(leaves) == 12 && inventory.countOfKind(first) == 4 && inventory.countOfKind(second) == 4);
+    assert(inventory.spendKind(second) && inventory.slots[2].isEmpty && inventory.countOfKind(second) == 3 && inventory.countOfKind(first) == 4);
+    Stack drawn = inventory.slots[0].draw(5);
+    assert(drawn.count == 5 && drawn.strainCount == 2 && drawn.strains[0] == Strain(WildGenes([1, 2, 3, 4]), 4) && drawn.strains[1] == Strain(WildGenes([5, 6, 7, 8]), 1));
+    assert(inventory.slots[0].count == 2 && inventory.slots[0].strainCount == 1 && inventory.slots[0].front() == Stack.ofLiving(leaves, 1, WildGenes([5, 6, 7, 8]), Sorting.unsorted));
+    drawn.pourInto(inventory.slots[0]);
+    assert(drawn.isEmpty && inventory.slots[0].count == 7 && inventory.countOfKind(first) == 4);
+}
+
+unittest {
+    Inventory inventory;
+    Item leaves = named("base:oak-leaves");
+    foreach (strain; 0 .. MOST_STRAINS + 1) {
+        WildGenes genes;
+        genes.seeds[0] = strain;
+        inventory.gain(Stack.ofLiving(leaves, 1, genes, Sorting.unsorted));
+    }
+    assert(inventory.slots[0].strainCount == MOST_STRAINS && inventory.slots[0].count == MOST_STRAINS && inventory.slots[1].count == 1 && inventory.slots[2].isEmpty);
 }
 
 unittest {

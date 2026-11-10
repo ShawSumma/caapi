@@ -1,17 +1,19 @@
 module scripts.tests;
 
 import core.math : sqrt;
-import core.stdc.math : atan2, exp, fabs, roundf, sin;
+import core.stdc.math : acos, atan2, exp, fabs, roundf, sin;
 import base.flags : Readiness;
 import base.maybe : Maybe, MaybeIndex;
 import base.names : textFor;
 import base.numbers : RADIANS_PER_DEGREE, higherOf, lowerOf;
 import base.units : AngularSpeed, Length, Time;
 import base.vector3 : Vec3, ZERO_VECTOR, magnitude, minus;
-import client.bindings : Rules;
+import client.bindings : ACTIONS, Action, Rules;
+import client.camera : CAMERA_FORWARD;
 import client.config : ClientConfig;
-import client.game : AimKind, BeaconSighting, COLLECTION_RATE, ChunkSupply, Click, GROWN_SECONDS, Game, HARVEST_RAW, Key, MOST_EXTRA_YIELD, Mineable, NoteKind, PLANT_DOSE, RAW_PER_DOSE, RouteWaypoint, Screen, Sheet, UiAction, UiKind, UnloadedCount;
+import client.game : AimKind, BeaconSighting, COLLECTION_RATE, ChunkSupply, Click, GROWN_SECONDS, Game, HARVEST_RAW, Key, KeyStroke, MOST_EXTRA_YIELD, Mineable, NoteKind, PLANT_DOSE, RAW_PER_DOSE, Ripeness, RouteWaypoint, Screen, Sheet, UiAction, UiKind, UnloadedCount;
 import client.hud : Growth;
+import client.input : Controls, ESCAPE_KEY, Request;
 import client.save : SaveData, Writer, applyEdits, applyState, readGame, writeGame;
 import client.script : NamedScript, ONE_SECOND, Script, StepHook, degrees, insightNamed, materialNamed, named, recipeNamed, stationNamed, synthesisNamed, upgradeNamed;
 import client.structures : StructureProblem, placeStructure;
@@ -26,7 +28,7 @@ import common.character.controller : MovementMode;
 import common.content.content : hooks;
 import common.crafting : Insight, Reaction, Station, Synthesis, Upgrade, doseRoutes, recipes, syntheses, synthesized;
 import common.graph : Graph, NodeId;
-import common.inventory : HOTBAR_SLOTS, Inventory, SLOT_COUNT, STACK_LIMIT, Stack, isSameKind, taken;
+import common.inventory : HOTBAR_SLOTS, Inventory, SLOT_COUNT, STACK_LIMIT, Sorting, Stack, isSameKind;
 import common.items : Item, itemOf;
 import common.material : has;
 import common.node : ChunkSlot, ChunkState, cellIndex;
@@ -34,7 +36,7 @@ import common.perception : effectiveFor;
 import common.position : Position;
 import common.settings : CharacterConfig;
 import common.worldgen.generation : Worldgen;
-import geometry.lorentz : Point;
+import geometry.lorentz : Point, Vec4;
 import plugins.api.api : Material;
 import plugins.api.content : Event, Happening, Play;
 import scripts.claims : Measure, Topic, claim, link;
@@ -68,6 +70,8 @@ immutable NamedScript[] TESTS = [
     NamedScript("gene/harvest", &geneHarvest),
     NamedScript("gene/kept", &geneKept),
     NamedScript("gene/ripening", &geneRipening),
+    NamedScript("gene/wild", &geneWild),
+    NamedScript("gene/unsorted", &geneUnsorted),
     NamedScript("flat/learning", &flatLearning),
     NamedScript("gene/synthesis", &geneSynthesis),
     NamedScript("hidden/climb", &hiddenClimb),
@@ -89,6 +93,7 @@ immutable NamedScript[] TESTS = [
     NamedScript("slope/turning", &slopeTurning),
     NamedScript("slope/uphill", &slopeUphill),
     NamedScript("slope/wall", &slopeWall),
+    NamedScript("ui/keys", &uiKeys),
     NamedScript("ui/screen-holds", &uiScreenHolds),
     NamedScript("ui/catalog", &uiCatalog),
     NamedScript("structure/arbor", &climbing!("arbor", 2.5f, SpawnCheck.checked)),
@@ -305,6 +310,11 @@ enum double QUARTER_TOLERANCE = 3;
 enum double STRAIGHT_TOLERANCE = 0.5;
 enum float CLOSED_SHARE = 0.25f;
 
+Vec4!float facingAt(ref Script world, Position at) {
+    Vec3!float forward = world.game.camera.heading.rotate(CAMERA_FORWARD);
+    return at.local * Vec4!float([forward.x, forward.y, forward.z, 0]);
+}
+
 float pentagonLap(ref Script world) {
     world.look(degrees(0), degrees(0));
     world.resetCompass();
@@ -325,10 +335,13 @@ void demoHolonomy(ref Script world) {
     double straight = world.compassOff().value / RADIANS_PER_DEGREE;
     world.claim(Topic.navigation, "Going straight ahead does not turn the compass.", fabs(straight) < STRAIGHT_TOLERANCE, Measure.of("compass turned by (degrees)",straight));
     Position start = world.game.characterState.position;
+    Vec4!float first = facingAt(world, start);
     double off = pentagonLap(world) / RADIANS_PER_DEGREE;
     Position end = world.game.characterState.position;
     float apart = (end.local * Point!float.origin()).distance(start.local * Point!float.origin());
+    double facing = acos(higherOf(lowerOf(first.minkowski(facingAt(world, end)), 1.0f), -1.0f)) / RADIANS_PER_DEGREE;
     world.claim(Topic.space, "A walk of five equal legs with a right turn after each ends where it began. In flat space it would take four.", end.node == start.node && apart < CLOSED_SHARE * PENTAGON_SIDE, Measure.of("leg length", PENTAGON_SIDE), Measure.of("ended this far from its start", apart));
+    world.claim(Topic.space, "After those five legs and five right turns, a turn and a quarter in all, the walker faces the way it first faced.", end.node == start.node && facing < QUARTER_TOLERANCE, Measure.of("facing off its first direction (degrees)", facing));
     world.claim(Topic.navigation, "The compass holds the direction it was set to while the player turns: after five right turns it reads a quarter turn off.", fabs(fabs(off) - QUARTER_TURN) < QUARTER_TOLERANCE, Measure.of("compass turned by (degrees)",off));
 }
 
@@ -721,7 +734,7 @@ void geneHarvest(ref Script world) {
     }
     world.check(held.exists && productOf(materialNamed("base:oak-leaves"), world.game.inventory.slots[held.value].genes.value) == product, "the broken leaves did not keep the genes that make the compound they read as");
     if (!world.isFailed) {
-        Stack kind = world.game.inventory.slots[held.value].taken(1);
+        Stack kind = world.game.inventory.slots[held.value].front();
         world.game.inventory.slots[PRESS_SLOT] = Stack(named("base:press"), 1);
         world.material(PRESS_SLOT + 1);
         world.check(world.placeBlock() && world.interact() && world.game.screen == Screen.station, "could not place and open the press");
@@ -742,7 +755,7 @@ void geneKept(ref Script world) {
     world.plane(degrees(0));
     walk.spawn(world);
     WildGenes genes = WildGenes([41, 42, 43, 44]);
-    Stack kind = Stack(named("base:oak-leaves"), 1, Maybe!WildGenes.of(genes));
+    Stack kind = Stack.ofLiving(named("base:oak-leaves"), 1, genes, Sorting.unsorted);
     world.game.inventory.slots[0] = kind;
     world.material(1);
     world.look(degrees(0), degrees(AHEAD_DEGREES));
@@ -989,8 +1002,8 @@ void geneBreedSplice(ref Script world) {
     walk.spawn(world);
     WildGenes first = WildGenes([11, 12, 13, 14]);
     WildGenes second = WildGenes([21, 22, 23, 24]);
-    Stack mother = Stack(named("base:flower"), 2, Maybe!WildGenes.of(first));
-    Stack father = Stack(named("base:flower"), 1, Maybe!WildGenes.of(second));
+    Stack mother = Stack.ofLiving(named("base:flower"), 2, first, Sorting.sorted);
+    Stack father = Stack.ofLiving(named("base:flower"), 1, second, Sorting.sorted);
     world.game.inventory.slots[HOTBAR_SLOTS] = mother;
     world.game.inventory.slots[HOTBAR_SLOTS + 1] = father;
     world.material(BENCH_SLOT);
@@ -1028,14 +1041,30 @@ void geneGrow(ref Script world) {
     world.plane(degrees(0));
     walk.spawn(world);
     WildGenes genes = WildGenes([31, 32, 33, 34]);
-    world.game.inventory.slots[0] = Stack(named("base:flower"), 1, Maybe!WildGenes.of(genes));
+    world.game.inventory.slots[0] = Stack.ofLiving(named("base:flower"), 1, genes, Sorting.unsorted);
     world.material(1);
     world.look(degrees(0), degrees(AHEAD_DEGREES));
     world.check(world.placeBlock() && world.game.inventory.slots[0].isEmpty, "planting did not use the flower");
     world.step();
-    world.check(world.game.aim.kind == AimKind.living && world.game.aim.living.growth == Readiness.pending && world.game.aim.living.product == productOf(materialNamed("base:flower"), genes), "aiming at the planted flower does not read it as a growing plant with its genes");
+    world.check(world.game.aim.kind == AimKind.living && world.game.aim.living.growth == Ripeness.growing && world.game.aim.living.product == productOf(materialNamed("base:flower"), genes), "aiming at the planted flower does not read it as a growing plant with its genes");
     world.wait(GROWN_SECONDS.value + 1);
-    world.claim(Topic.plants, "A planted plant reads as growing at first, and as ripe once its growing time has passed.", world.game.aim.living.growth == Readiness.ready, Measure.of("growing time (seconds)", GROWN_SECONDS.value));
+    world.claim(Topic.plants, "A planted plant reads as growing at first, and as ripe once its growing time has passed.", world.game.aim.living.growth == Ripeness.ripe, Measure.of("growing time (seconds)", GROWN_SECONDS.value));
+}
+
+void geneWild(ref Script world) {
+    world.plane(degrees(0));
+    walk.spawn(world);
+    world.game.inventory = Inventory.init;
+    world.look(degrees(0), degrees(AHEAD_DEGREES));
+    Maybe!Placement spot = world.game.world.placementTarget();
+    world.check(spot.exists && world.game.world.setVoxel(spot.value.chunk, spot.value.coords, materialNamed("base:flower")), "could not set a flower into the world");
+    world.step();
+    world.check(world.game.aim.kind == AimKind.living && world.game.aim.living.growth == Ripeness.wild, "a flower that nobody planted does not read as wild");
+    uint slot = world.game.world.graph.slotOf(world.game.characterState.position.node).value;
+    float fit = expressionIn(materialNamed("base:flower"), world.game.world.graph.stateAt(slot).climate.climate());
+    world.check(world.breakBlock(), "could not break the wild flower");
+    uint gathered = world.game.inventory.countOf(named("base:flower"));
+    world.claim(Topic.plants, "Breaking a plant that nobody planted gives one of itself.", gathered == 1, Measure.of("yielded", gathered), Measure.of("a ripe planted one would yield here", 1 + cast(uint) roundf(MOST_EXTRA_YIELD * fit)));
 }
 
 enum double HALF_EAT_SECONDS = 0.5;
@@ -1057,7 +1086,7 @@ void plantEat(ref Script world) {
     Time tried = world.time();
     world.check(!world.eat() && notedSince(world, NoteKind.noGenes, tried), "ate a flower with no genes of its own");
     WildGenes genes = WildGenes([51, 52, 53, 54]);
-    world.game.inventory.slots[0] = Stack(named("base:flower"), 2, Maybe!WildGenes.of(genes));
+    world.game.inventory.slots[0] = Stack.ofLiving(named("base:flower"), 2, genes, Sorting.unsorted);
     world.press(HALF_EAT_SECONDS, Key.eat);
     world.step();
     world.check(world.game.inventory.slots[0].count == 2 && world.game.organism.body.count == 0, "letting go of eat after %.1f s still ate", HALF_EAT_SECONDS);
@@ -1070,6 +1099,56 @@ void plantEat(ref Script world) {
     world.material(2);
     tried = world.time();
     world.check(!world.eat() && notedSince(world, NoteKind.nothingToEat, tried), "ate something that is not living");
+}
+
+uint stacksOf(ref Script world, Item item) {
+    uint held = 0;
+    foreach (ref stack; world.game.inventory.slots) {
+        if (!stack.isEmpty && stack.item == item) {
+            held += 1;
+        }
+    }
+    return held;
+}
+
+void geneUnsorted(ref Script world) {
+    world.plane(degrees(0));
+    walk.spawn(world);
+    world.game.inventory = Inventory.init;
+    Item flower = named("base:flower");
+    Stack first = Stack.ofLiving(flower, 2, WildGenes([61, 62, 63, 64]), Sorting.unsorted);
+    Stack second = Stack.ofLiving(flower, 3, WildGenes([71, 72, 73, 74]), Sorting.unsorted);
+    world.game.store(first);
+    world.game.store(second);
+    uint together = stacksOf(world, flower);
+    world.claim(Topic.plants, "Plants whose compounds the player has not identified share one stack, and each keeps its own genes inside it.", together == 1 && world.game.inventory.countOfKind(first) == 2 && world.game.inventory.countOfKind(second) == 3, Measure.of("stacks held", together), Measure.of("of the first strain", world.game.inventory.countOfKind(first)), Measure.of("of the second strain", world.game.inventory.countOfKind(second)));
+    world.game.keepCompound(productOf(materialNamed("base:flower"), first.strains[0].genes), HARVEST_RAW, 0);
+    Maybe!uint apart = slotHolding(world, first);
+    world.check(apart.exists, "the first strain is no longer at the front of any stack");
+    if (!world.isFailed) {
+        Stack known = world.game.inventory.slots[apart.value];
+        world.link(Topic.chemistry, Topic.plants, "Once the player holds a compound, the plants that make it leave the unidentified stack for a stack of their own.", known.sorting == Sorting.sorted && known.count == 2 && stacksOf(world, flower) == 2 && world.game.inventory.countOfKind(second) == 3, Measure.of("stacks held", stacksOf(world, flower)), Measure.of("in the identified stack", known.count));
+    }
+}
+
+void uiKeys(ref Script world) {
+    world.plane(degrees(0));
+    walk.spawn(world);
+    Controls controls;
+    string inventory = ACTIONS[Action.inventory].key;
+    controls.keyDown(*world.game, inventory, KeyStroke.first);
+    UiAction shown = {kind: UiKind.sheet, index: Sheet.body};
+    world.game.apply(shown, Click.primary);
+    controls.keyDown(*world.game, inventory, KeyStroke.first);
+    world.check(world.game.screen == Screen.none, "the inventory key did not close the inventory");
+    controls.keyDown(*world.game, inventory, KeyStroke.first);
+    world.check(world.game.screen == Screen.character && world.game.sheet == Sheet.items, "after the body sheet was shown, the inventory key opened sheet %u and not the inventory", cast(uint) world.game.sheet);
+    controls.keyDown(*world.game, ESCAPE_KEY, KeyStroke.first);
+    controls.keyDown(*world.game, ACTIONS[Action.journal].key, KeyStroke.first);
+    world.check(world.game.screen == Screen.journal, "the journal key did not open the journal");
+    Request closed = controls.keyDown(*world.game, ESCAPE_KEY, KeyStroke.first);
+    Request asked = controls.keyDown(*world.game, ESCAPE_KEY, KeyStroke.first);
+    world.check(closed == Request.nothing && world.game.screen == Screen.none && asked == Request.menu, "Escape did not close the journal and then ask for the menu");
 }
 
 enum double SCREEN_WALK_SECONDS = 1;
@@ -1138,7 +1217,7 @@ void plantCollector(ref Script world) {
         AirMix air = airOf(world.game.world.graph.stateAt(slot).climate.climate());
         float expected = air.fractions[0].value * COLLECTION_RATE.value * cast(float) COLLECTING_SECONDS;
         float held = body.species[0].lung.value + body.species[0].blood.value;
-        world.link(Topic.air, Topic.body, "A collector gathers a gas at its share of the local air times the collection rate, and breathing it in puts that much into the body.", fabs(held - expected) < COLLECTED_TOLERANCE + expected * 0.05f, Measure.of("seconds collecting", COLLECTING_SECONDS), Measure.of("first gas breathed in", held), Measure.of("predicted", expected));
+        world.link(Topic.air, Topic.body, "A collector gathers a gas at its level in the local air times the collection rate, and breathing it in puts that much into the body.", fabs(held - expected) < COLLECTED_TOLERANCE + expected * 0.05f, Measure.of("seconds collecting", COLLECTING_SECONDS), Measure.of("first gas breathed in", held), Measure.of("predicted", expected));
         world.game.breatheMachine();
         float again = body.species[0].lung.value + body.species[0].blood.value;
         world.check(fabs(again - held) < COLLECTED_TOLERANCE, "collecting again at once added %.4f", again - held);

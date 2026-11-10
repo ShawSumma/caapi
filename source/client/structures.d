@@ -11,7 +11,7 @@ import base.splitmix : SplitMix;
 import base.stdio : snprintf;
 import base.vector3 : Vec3;
 import client.game : Game;
-import client.plugins : registry;
+import client.plugins : registry, worldCount;
 import client.tiles : TileCall, TileCalls, TileSpan, TileWork, isTiledBy, visitTilesAt;
 import common.graph : Graph;
 import common.look : Look, lookNamed;
@@ -220,7 +220,7 @@ enum WorldStep : ubyte {
 }
 
 uint steppedWorld(uint index, WorldStep direction) {
-    uint count = cast(uint) registry().allNames().length + 1;
+    uint count = worldCount();
     uint step = count - 1;
     if (direction == WorldStep.next) {
         step = 1;

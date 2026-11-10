@@ -9,14 +9,15 @@ import base.stdio : printed;
 import base.units : Time;
 import client.bindings : Action, Bindings, Rules;
 import client.config : ClientConfig;
-import client.game : Click, Game, Key, KeyStroke, MOST_STEP_SECONDS, Screen, UiAction, UiKind, creativeInventory, frameInputOf;
-import client.hud : FrameMeter, Hud, MouseCapture, STATUS_CAPACITY, statusLine, worldNameOf;
+import client.game : Click, Game, Key, KeyStroke, MOST_STEP_SECONDS, Saving, Screen, UiAction, UiKind, creativeInventory, frameInputOf;
+import client.hud : FrameMeter, Hud, MouseCapture, STATUS_CAPACITY, statusLine;
 import client.input : BUTTON_NAME_CAPACITY, Controls, Request, buttonName;
-import client.plugins : gatherWorlds;
+import client.plugins : gatherWorlds, worldCount, worldNameAt;
 import client.save : SaveData, Writer, applyEdits, applyState, readGame, writeGame;
 import client.structures : StructureProblem, WorldStep, growthProblem, placeStructure, steppedWorld, worldgenAt;
+import common.crafting : IdSet;
+import common.inventory : Cycle;
 import common.settings : CHUNK_DIMENSION;
-import common.worldgen.generation : Worldgen;
 import plugins.api.flags : Flags;
 import web.renderer : WebRenderer;
 
@@ -26,7 +27,10 @@ enum double AUTOSAVE_SECONDS = 30;
 enum size_t NAME_CAPACITY = 32;
 enum size_t STORE_KEY_CAPACITY = 128;
 enum string CONFIG_KEY = "config";
+enum string WORLD_KEY = "world";
 enum uint RIGHT_BUTTON = 3;
+enum uint WHEEL_BACK = 4;
+enum uint WHEEL_AHEAD = 5;
 
 enum SessionMark : ubyte {
     stopped,
@@ -38,11 +42,6 @@ enum Saved : ubyte {
     present,
 }
 
-enum Saving : ubyte {
-    enabled,
-    refused,
-}
-
 extern (C) nothrow @nogc {
     void web_status(const(char)* text);
     void web_fail(const(char)* text);
@@ -50,6 +49,7 @@ extern (C) nothrow @nogc {
     uint web_store_size(const(char)* key, uint keyLength);
     uint web_store_read(const(char)* key, uint keyLength, ubyte* into, uint capacity);
     void web_store_write(const(char)* key, uint keyLength, const(ubyte)* from, uint length);
+    void web_store_remove(const(char)* key, uint keyLength);
 }
 
 Maybe!(Array!ubyte) readStored(const(char)[] key) {
@@ -100,16 +100,15 @@ struct Session {
         rules = chosen;
         renderer.setup(CHUNK_DIMENSION, width, height);
         loadConfig();
-        game = Game.make(Worldgen.makeTerrain(), config.reach);
+        worldIndex = storedWorld();
+        game = Game.make(worldgenAt(worldIndex), config.reach);
         game.comfort = config.comfort;
         game.thread.spacing = config.threadSpacing;
         game.thread.most = config.threadBeads;
         game.rules = rules;
         game.world.graph.bindView();
         game.world.renderRadius = renderRadius;
-        if (rules == Rules.creative) {
-            game.inventory = creativeInventory();
-        }
+        startInventory();
         SaveData saved;
         Saved loaded = loadEdits(saved);
         report(game.placeStructure());
@@ -122,6 +121,28 @@ struct Session {
         meter = FrameMeter.startingAt(started);
         lastSave = started;
         marks.set(SessionMark.titleStale);
+    }
+
+    void startInventory() {
+        if (rules == Rules.creative) {
+            game.inventory = creativeInventory();
+        }
+    }
+
+    uint storedWorld() {
+        Maybe!(Array!ubyte) bytes = readStored(WORLD_KEY);
+        uint index = 0;
+        if (bytes.exists) {
+            while (index < worldCount() && worldNameAt(index) != cast(const(char)[]) bytes.value.slice()) {
+                index += 1;
+            }
+            bytes.value.release();
+        }
+        if (index < worldCount()) {
+            return index;
+        } else {
+            return 0;
+        }
     }
 
     void loadConfig() {
@@ -141,9 +162,13 @@ struct Session {
         text.release();
     }
 
+    const(char)[] saveKeyOf(uint index, char[] key) const {
+        const(char)[] world = worldNameAt(index);
+        return printed(key, "save-%.*s-%s", cast(int) world.length, world.ptr, ENUM_NAMES!Rules[rules].ptr);
+    }
+
     Saved loadEdits(ref SaveData saved) {
-        const(char)[] world = worldNameOf(game.world.graph.worldgen);
-        saveKeyLength = printed(saveKey[], "save-%.*s-%s", cast(int) world.length, world.ptr, ENUM_NAMES!Rules[rules].ptr).length;
+        saveKeyLength = saveKeyOf(worldIndex, saveKey[]).length;
         saving = Saving.enabled;
         Maybe!(Array!ubyte) bytes = readStored(saveKey[0 .. saveKeyLength]);
         if (!bytes.exists) {
@@ -182,6 +207,9 @@ struct Session {
         double frameStart = nowMilliseconds();
         double now = nowSeconds();
         Time dt = Time(cast(float) clock.tick(now, MOST_STEP_SECONDS));
+        if (game.screen == Screen.none && !isCaptured) {
+            openMenu();
+        }
         if (game.screen != Screen.none && isCaptured) {
             web_free_pointer();
         }
@@ -236,8 +264,8 @@ struct Session {
             case Request.nextWorld:
                 switchWorld(WorldStep.next);
                 break;
-            case Request.releaseMouse:
-                web_free_pointer();
+            case Request.menu:
+                openMenu();
                 break;
             case Request.bindingsChanged:
                 saveConfig();
@@ -246,10 +274,36 @@ struct Session {
         marks.set(SessionMark.titleStale);
     }
 
+    void openMenu() {
+        writeSave();
+        listWorlds();
+        game.openScreen(Screen.menu);
+    }
+
+    void listWorlds() {
+        char[STORE_KEY_CAPACITY] key;
+        game.worlds.current = worldIndex;
+        game.worlds.saving = saving;
+        game.worlds.saved = IdSet.init;
+        foreach (index; 0 .. worldCount()) {
+            const(char)[] stored = saveKeyOf(index, key[]);
+            if (web_store_size(stored.ptr, cast(uint) stored.length) > 0) {
+                game.worlds.saved.set(index);
+            }
+        }
+    }
+
     void switchWorld(WorldStep direction) {
         writeSave();
-        worldIndex = steppedWorld(worldIndex, direction);
-        game.rebuildWorld(worldgenAt(worldIndex));
+        enterWorld(steppedWorld(worldIndex, direction));
+    }
+
+    void enterWorld(uint index) {
+        worldIndex = index;
+        writeStored(WORLD_KEY, cast(const(ubyte)[]) worldNameAt(index));
+        game.rebuildWorld(worldgenAt(index));
+        game.startOver();
+        startInventory();
         SaveData saved;
         Saved loaded = loadEdits(saved);
         report(placeStructure(game));
@@ -257,6 +311,16 @@ struct Session {
             applyState(game, saved);
         }
         saved.release();
+    }
+
+    void deleteWorld(uint index) {
+        char[STORE_KEY_CAPACITY] key;
+        const(char)[] stored = saveKeyOf(index, key[]);
+        web_store_remove(stored.ptr, cast(uint) stored.length);
+        if (index == worldIndex) {
+            enterWorld(index);
+        }
+        listWorlds();
     }
 
     void button(uint pressed, float x, float y) {
@@ -276,11 +340,22 @@ struct Session {
 
     void clickScreen(uint pressed) {
         Maybe!UiAction action = hud.actionAt();
-        if (action.exists && action.value.kind == UiKind.rebind) {
+        if (pressed == WHEEL_BACK) {
+            hud.wheel(Cycle.back);
+        } else if (pressed == WHEEL_AHEAD) {
+            hud.wheel(Cycle.ahead);
+        } else if (action.exists && action.value.kind == UiKind.rebind) {
             controls.awaiting = Maybe!Action.of(cast(Action) action.value.index);
         } else if (action.exists && action.value.kind == UiKind.resetBindings) {
             controls.bindings = Bindings.defaults();
             saveConfig();
+        } else if (action.exists && action.value.kind == UiKind.playWorld) {
+            writeSave();
+            enterWorld(action.value.index);
+        } else if (action.exists && action.value.kind == UiKind.deleteWorld) {
+            deleteWorld(action.value.index);
+        } else if (!action.exists && game.screen == Screen.menu) {
+            game.closeScreen();
         } else if (action.exists) {
             Click click = Click.primary;
             if (pressed == RIGHT_BUTTON) {
@@ -307,6 +382,8 @@ struct Session {
         mouse = state;
         if (state == MouseCapture.released && game.screen == Screen.none) {
             controls.letGoAll();
+        } else if (state == MouseCapture.captured && game.screen == Screen.menu) {
+            game.closeScreen();
         }
         marks.set(SessionMark.titleStale);
     }

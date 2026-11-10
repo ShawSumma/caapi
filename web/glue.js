@@ -374,9 +374,16 @@ const gameOn = (canvas, gl, showStatus, showFailure) => {
         }
     };
 
+    const kept = new Set();
+
     const stored = (key, keyLength) => {
+        const name = STORAGE_PREFIX + textAt(key, keyLength);
         try {
-            return localStorage.getItem(STORAGE_PREFIX + textAt(key, keyLength));
+            const text = localStorage.getItem(name);
+            if (text !== null) {
+                kept.add(name);
+            }
+            return text;
         } catch (error) {
             return null;
         }
@@ -412,10 +419,26 @@ const gameOn = (canvas, gl, showStatus, showFailure) => {
         for (let start = 0; start < length; start += STORAGE_CHUNK) {
             parts.push(String.fromCharCode.apply(null, bytes.subarray(from + start, from + Math.min(length, start + STORAGE_CHUNK))));
         }
+        const name = STORAGE_PREFIX + textAt(key, keyLength);
         try {
-            localStorage.setItem(STORAGE_PREFIX + textAt(key, keyLength), btoa(parts.join("")));
+            if (kept.has(name) && localStorage.getItem(name) === null) {
+                console.error("not saving " + name + ": it was cleared from the browser's storage while the game ran");
+            } else {
+                localStorage.setItem(name, btoa(parts.join("")));
+                kept.add(name);
+            }
         } catch (error) {
             console.error("could not save: " + error);
+        }
+    };
+
+    const web_store_remove = (key, keyLength) => {
+        const name = STORAGE_PREFIX + textAt(key, keyLength);
+        kept.delete(name);
+        try {
+            localStorage.removeItem(name);
+        } catch (error) {
+            console.error("could not delete the save: " + error);
         }
     };
 
@@ -435,7 +458,7 @@ const gameOn = (canvas, gl, showStatus, showFailure) => {
     const fd_close = (descriptor) => WASI_ERRNO_BADF;
     const fd_seek = (descriptor, offset, whence, position) => WASI_ERRNO_BADF;
 
-    const imports = {env: {web_now, web_status, web_fail, web_free_pointer, web_store_size, web_store_read, web_store_write, web_gl_program, web_gl_setup, web_gl_grow_faces, web_gl_upload_faces, web_gl_begin, web_gl_voxels, web_gl_highlight, web_gl_marker, web_gl_finish, web_gl_atlas}, wasi_snapshot_preview1: {fd_write, fd_close, fd_seek}};
+    const imports = {env: {web_now, web_status, web_fail, web_free_pointer, web_store_size, web_store_read, web_store_write, web_store_remove, web_gl_program, web_gl_setup, web_gl_grow_faces, web_gl_upload_faces, web_gl_begin, web_gl_voxels, web_gl_highlight, web_gl_marker, web_gl_finish, web_gl_atlas}, wasi_snapshot_preview1: {fd_write, fd_close, fd_seek}};
     const game = {gl, imports, makeTargets, exports: null};
     game.name = (text) => {
         refreshViews();

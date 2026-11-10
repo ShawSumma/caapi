@@ -20,6 +20,19 @@ enum size_t MAX_LANDMARKS = 32;
 enum size_t PATH_CAPACITY = 4096;
 enum string PLUGIN_DIRECTORY = "lib";
 enum size_t READ_CHUNK = 4096;
+
+uint worldCount() {
+    return cast(uint) registry().allNames().length + 1;
+}
+
+const(char)[] worldNameAt(uint index) {
+    if (index == 0) {
+        return "terrain";
+    } else {
+        return registry().allNames()[index - 1];
+    }
+}
+
 version (WebAssembly) {
     import arbor = plugins.arbor.plugin;
     import babel = plugins.babel.plugin;

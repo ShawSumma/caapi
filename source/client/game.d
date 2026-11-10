@@ -33,7 +33,7 @@ import common.content.roles : Role, roleBlock, roleItem;
 import common.crafting : CraftKind, Crafting, DoseRoute, Effect, HAND, IdSet, Insight, Product, Reaction, Recipe, Shortfall, Station, Synthesis, SynthesisRule, Taken, Trigger, Upgrade, canCraft, doseRoutes, insights, isKnown, planRecipe, projected, recipes, returnIngredients, stationOf, stations, syntheses, synthesized, takeIngredients, upgrades;
 import common.edits : BlockRecord, RecordKind;
 import common.graph : Graph, NodeId;
-import common.inventory : Inventory, SLOT_COUNT, STACK_LIMIT, Section, Stack, emptied, isAmong, isSameKind, sectionOf, taken;
+import common.inventory : Inventory, SLOT_COUNT, STACK_LIMIT, Section, Sorting, Stack, isAmong, isSameKind, sectionOf;
 import common.items : Item, ItemKind, itemNamed, itemOf, materialNames, placedBlock;
 import common.material : MaterialSet, breakSeconds, families, fluids, has, isEmpty, isHidden, isLiving, isPlant, joined, materialCount, miningTiers, nameHashOf, plainSolid, within;
 import common.node : ChunkId, ChunkSlot, ChunkState, cellIndex;
@@ -87,6 +87,7 @@ enum NoteKind : ubyte {
     planted,
     plantedWild,
     ate,
+    ateUnknown,
     nothingToEat,
     noGenes,
     spliced,
@@ -264,6 +265,9 @@ enum Screen : ubyte {
     bench,
     collector,
     station,
+    journal,
+    menu,
+    controls,
 }
 
 enum Sheet : ubyte {
@@ -271,9 +275,31 @@ enum Sheet : ubyte {
     body,
     chemistry,
     surroundings,
-    controls,
-    journal,
     catalog,
+}
+
+enum Deleting : ubyte {
+    idle,
+    asked,
+}
+
+enum Saving : ubyte {
+    enabled,
+    refused,
+}
+
+struct WorldMenu {
+    IdSet saved;
+    MaybeIndex!uint picked;
+    uint current;
+    Deleting deleting;
+    Saving saving;
+}
+
+enum Ripeness : ubyte {
+    wild,
+    growing,
+    ripe,
 }
 
 enum uint SHEET_COUNT = Sheet.max + 1;
@@ -310,6 +336,11 @@ enum UiKind : ubyte {
     synthesize,
     takeDose,
     takeItem,
+    open,
+    pickWorld,
+    askDelete,
+    playWorld,
+    deleteWorld,
 }
 
 struct UiAction {
@@ -544,7 +575,7 @@ struct LivingGenes {
     WildGenes genes;
     Time left;
     Material species;
-    Readiness growth;
+    Ripeness growth;
 }
 
 struct Eating {
@@ -569,7 +600,7 @@ struct LivingReading {
     Ratio fit;
     uint receptors;
     Material species;
-    Readiness growth;
+    Ripeness growth;
 }
 
 struct Aim {
@@ -643,6 +674,7 @@ struct Game {
     uint preset;
     Screen screen;
     Sheet sheet;
+    WorldMenu worlds;
     Station workstation;
     Rules rules;
     ChunkSupply supply;
@@ -883,6 +915,23 @@ struct Game {
         world.epoch = epoch + 1;
     }
 
+    void startOver() {
+        inventory = Inventory.init;
+        carried = Stack.init;
+        owned = IdSet.init;
+        noticed = IdSet.init;
+        crafts.clear();
+        compounds.clear();
+        notes.clear();
+        chosenCompound = MaybeIndex!uint.init;
+        chosen[] = MaybeIndex!uint.init;
+        eating = Maybe!Eating.init;
+        organism.release();
+        organism = Organism.make(starterGenome());
+        doses = 0;
+        time = Time(0);
+    }
+
     void release() {
         thrown.release();
         beacons.release();
@@ -901,6 +950,56 @@ struct Game {
             Note made = {kind: NoteKind.inventoryFull, item: stack.item, amount: lost};
             post(made);
         }
+        if (stack.strainCount > 0) {
+            sortLiving();
+        }
+    }
+
+    bool isKnownStrain(Item item, WildGenes genes) const {
+        return isKnownProduct(productOf(item.block, genes));
+    }
+
+    bool hasKnownStrain(ref const Stack stack) const {
+        uint index = 0;
+        while (index < stack.strainCount && !(stack.sorting == Sorting.unsorted && isKnownStrain(stack.item, stack.strains[index].genes))) {
+            index += 1;
+        }
+        return index < stack.strainCount;
+    }
+
+    void sortLiving() {
+        foreach (slot; 0 .. SLOT_COUNT) {
+            if (hasKnownStrain(inventory.slots[slot])) {
+                Inventory before = inventory;
+                uint stranded = sortStack(slot);
+                if (stranded > 0) {
+                    inventory = before;
+                }
+            }
+        }
+    }
+
+    uint sortStack(uint slot) {
+        Stack mixed = inventory.slots[slot];
+        inventory.slots[slot] = Stack.init;
+        uint stranded = 0;
+        foreach (ref run; mixed.strains[0 .. mixed.strainCount]) {
+            if (!isKnownStrain(mixed.item, run.genes)) {
+                Stack unknown = Stack.ofLiving(mixed.item, run.count, run.genes, Sorting.unsorted);
+                unknown.pourInto(inventory.slots[slot]);
+            }
+        }
+        foreach (ref run; mixed.strains[0 .. mixed.strainCount]) {
+            if (isKnownStrain(mixed.item, run.genes)) {
+                Stack known = Stack.ofLiving(mixed.item, run.count, run.genes, Sorting.sorted);
+                inventory.joinWithin(0, SLOT_COUNT, known);
+                if (inventory.slots[slot].isEmpty) {
+                    known.pourInto(inventory.slots[slot]);
+                }
+                stranded += inventory.gain(known);
+            }
+        }
+        return stranded;
     }
 
     uint miningTier() const {
@@ -1060,7 +1159,7 @@ struct Game {
             post(NoteKind.queueFull);
             return false;
         } else {
-            Stack pressed = inventory.slots[slot].taken(1);
+            Stack pressed = inventory.slots[slot].front();
             crafts.append(Crafting(Taken.init, productOf(pressed.item.block, pressed.genes.value), syntheses()[rule.value].time, rule.value, CraftKind.synthesis, Readiness.pending, pressed));
             return true;
         }
@@ -1160,6 +1259,10 @@ struct Game {
         return rules == Rules.creative || hasEffect(Effect.assay);
     }
 
+    bool isKnownProduct(Molecule molecule) const {
+        return hasAssay() || compoundIndexOf(molecule).exists;
+    }
+
     MaybeIndex!uint compoundIndexOf(Molecule molecule) const {
         uint index = 0;
         while (index < compounds.length && compounds.ptr[index].molecule != molecule) {
@@ -1250,6 +1353,7 @@ struct Game {
                     case Product.upgrade:
                         owned.set(recipe.upgrade.id);
                         assayAll();
+                        sortLiving();
                         Note granted = {kind: NoteKind.upgraded, label: upgrades()[recipe.upgrade.id].title};
                         post(granted);
                         break;
@@ -1315,6 +1419,7 @@ struct Game {
         compounds.ptr[index].doses += doses;
         if (!found.exists) {
             assay(compounds.ptr[index]);
+            sortLiving();
         }
     }
 
@@ -1377,12 +1482,11 @@ struct Game {
         Stack* stack = &inventory.slots[slot];
         final switch (click) {
             case Click.primary:
-                if (!carried.isEmpty && !stack.isEmpty && (*stack).isSameKind(carried)) {
-                    uint moved = lowerOf(carried.count, stack.room);
-                    stack.count += moved;
-                    carried.count -= moved;
-                    carried = carried.emptied;
-                } else {
+                uint held = carried.count;
+                if (!carried.isEmpty && !stack.isEmpty) {
+                    carried.pourInto(*stack);
+                }
+                if (carried.count == held) {
                     Stack swapped = *stack;
                     *stack = carried;
                     carried = swapped;
@@ -1390,14 +1494,11 @@ struct Game {
                 break;
             case Click.secondary:
                 if (carried.isEmpty && !stack.isEmpty) {
-                    uint half = (stack.count + 1) / 2;
-                    carried = (*stack).taken(half);
-                    stack.count -= half;
-                    *stack = (*stack).emptied;
-                } else if (!carried.isEmpty && (stack.isEmpty || ((*stack).isSameKind(carried) && stack.room > 0))) {
-                    *stack = carried.taken(stack.count + 1);
-                    carried.count -= 1;
-                    carried = carried.emptied;
+                    carried = stack.draw((stack.count + 1) / 2);
+                } else if (!carried.isEmpty) {
+                    Stack one = carried.draw(1);
+                    one.pourInto(*stack);
+                    one.pourInto(carried);
                 }
                 break;
             case Click.quick:
@@ -1408,10 +1509,8 @@ struct Game {
                     }
                     Stack moving = *stack;
                     *stack = Stack.init;
-                    uint left = inventory.gainInto(other, moving);
-                    if (left > 0) {
-                        *stack = moving.taken(left);
-                    }
+                    inventory.pour(other, moving);
+                    *stack = moving;
                 }
                 break;
         }
@@ -1431,12 +1530,15 @@ struct Game {
     void openScreen(Screen chosen) {
         closeScreen();
         screen = chosen;
+        sheet = Sheet.items;
+        worlds.picked = MaybeIndex!uint.init;
+        worlds.deleting = Deleting.idle;
         mining = Maybe!Mining.init;
     }
 
-    void toggleCharacter() {
+    void toggle(Screen chosen) {
         if (screen == Screen.none) {
-            openScreen(Screen.character);
+            openScreen(chosen);
         } else {
             closeScreen();
         }
@@ -1509,15 +1611,20 @@ struct Game {
 
     void harvest(LivingGenes genes, uint slot) {
         uint count = 1;
-        if (isPlant(genes.species) && genes.growth == Readiness.ready) {
-            count += cast(uint) roundf(MOST_EXTRA_YIELD * expressionIn(genes.species, world.graph.stateAt(slot).climate.climate()));
-            Note made = {kind: NoteKind.harvested, material: genes.species, amount: count};
-            post(made);
-        } else if (isPlant(genes.species)) {
-            Note unripe = {kind: NoteKind.unripeHarvest, material: genes.species};
-            post(unripe);
+        final switch (genes.growth) {
+            case Ripeness.wild:
+                break;
+            case Ripeness.growing:
+                Note unripe = {kind: NoteKind.unripeHarvest, material: genes.species};
+                post(unripe);
+                break;
+            case Ripeness.ripe:
+                count += cast(uint) roundf(MOST_EXTRA_YIELD * expressionIn(genes.species, world.graph.stateAt(slot).climate.climate()));
+                Note made = {kind: NoteKind.harvested, material: genes.species, amount: count};
+                post(made);
+                break;
         }
-        store(Stack(itemOf(genes.species), count, Maybe!WildGenes.of(genes.genes)));
+        store(Stack.ofLiving(itemOf(genes.species), count, genes.genes, Sorting.unsorted));
     }
 
     Maybe!LivingGenes livingGenesAt(Maybe!GraphCastHit hit) {
@@ -1533,16 +1640,16 @@ struct Game {
                 return Maybe!LivingGenes.init;
             } else if (record !is null && record.kind == RecordKind.planted) {
                 Time left = GROWN_SECONDS - (time - record.placed);
-                Readiness growth = Readiness.pending;
+                Ripeness growth = Ripeness.growing;
                 if (left <= Time(0)) {
-                    growth = Readiness.ready;
+                    growth = Ripeness.ripe;
                     left = Time(0);
                 }
                 return Maybe!LivingGenes.of(LivingGenes(record.genes, left, species, growth));
             } else if (record !is null && record.kind == RecordKind.placedLiving) {
-                return Maybe!LivingGenes.of(LivingGenes(record.genes, Time(0), species, Readiness.ready));
+                return Maybe!LivingGenes.of(LivingGenes(record.genes, Time(0), species, Ripeness.wild));
             } else {
-                return Maybe!LivingGenes.of(LivingGenes(wildGenesAt(hit.value.chunk, cell, species), Time(0), species, Readiness.ready));
+                return Maybe!LivingGenes.of(LivingGenes(wildGenesAt(hit.value.chunk, cell, species), Time(0), species, Ripeness.wild));
             }
         }
     }
@@ -1684,7 +1791,7 @@ struct Game {
             Stack second = inventory.slots[chosen[1].value];
             ulong salt = BREEDING_SALT ^ (cast(ulong)(time.value * MILLISECONDS_PER_SECOND) << 8) ^ first.count;
             inventory.spendFrom(chosen[0].value);
-            store(Stack(first.item, 1, Maybe!WildGenes.of(crossed(first.genes.value, second.genes.value, salt, odds.value))));
+            store(Stack.ofLiving(first.item, 1, crossed(first.genes.value, second.genes.value, salt, odds.value), Sorting.unsorted));
             Note made = {kind: kind, material: first.item.block, amount: odds.value, item: roleItem(Role.mutagen)};
             post(made);
             return true;
@@ -1786,8 +1893,20 @@ struct Game {
             case UiKind.takeItem:
                 takeFromCatalog(Item(cast(ushort) action.index), click);
                 break;
+            case UiKind.open:
+                openScreen(cast(Screen) action.index);
+                break;
+            case UiKind.pickWorld:
+                worlds.picked = MaybeIndex!uint.of(action.index);
+                worlds.deleting = Deleting.idle;
+                break;
+            case UiKind.askDelete:
+                worlds.deleting = Deleting.asked;
+                break;
             case UiKind.rebind:
             case UiKind.resetBindings:
+            case UiKind.playWorld:
+            case UiKind.deleteWorld:
                 break;
         }
     }
@@ -1865,8 +1984,12 @@ struct Game {
     void swallow(Stack food) {
         inventory.spendFrom(inventory.selected);
         Molecule product = productOf(food.item.block, food.genes.value);
+        NoteKind kind = NoteKind.ateUnknown;
+        if (isKnownProduct(product)) {
+            kind = NoteKind.ate;
+        }
         organism.dose(Dose(product, PLANT_DOSE, Route.ingested));
-        Note made = {kind: NoteKind.ate, item: food.item, amount: PLANT_DOSE.value, route: Route.ingested, molecule: product};
+        Note made = {kind: kind, item: food.item, amount: PLANT_DOSE.value, route: Route.ingested, molecule: product};
         post(made);
     }
 

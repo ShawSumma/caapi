@@ -1,5 +1,6 @@
 module scripts.claims;
 
+import core.stdc.math : fabs, floor;
 import base.array : Array;
 import base.maybe : Maybe;
 import base.names : ENUM_NAMES;
@@ -8,7 +9,15 @@ import client.arguments : VERSION;
 import client.script : Script;
 
 enum size_t LINE_CAPACITY = 1024;
+enum size_t NUMBER_CAPACITY = 32;
+enum size_t ANCHOR_CAPACITY = 64;
 enum char SENTENCE_END = '.';
+enum char CELL_EDGE = '|';
+enum uint MOST_ROWS_SHOWN = 12;
+enum double MOST_WHOLE_NUMBER = 1e9;
+enum int PAGE_DIGITS = 4;
+enum int REPORT_DIGITS = 6;
+enum string BREAKING_NODE = "end";
 
 enum Topic : ubyte {
     space,
@@ -30,58 +39,103 @@ enum Topic : ubyte {
     saves,
     screens,
     mods,
-    scripts,
 }
 
 enum uint TOPIC_COUNT = Topic.max + 1;
 
-struct TopicInfo {
-    string title;
-    string intro;
-}
-
-TopicInfo infoOf(Topic topic) {
+string titleOf(Topic topic) {
     final switch (topic) {
         case Topic.space:
-            return TopicInfo("Space", "Space is hyperbolic. There is exponentially more room farther out, and a path that closes on itself turns whatever is carried along it.");
+            return "Space";
         case Topic.gravity:
-            return TopicInfo("Ground and gravity", "The ground is a plane, and some worlds raise more planes above it. Gravity pulls toward the grounds that are near and blends between them.");
+            return "Ground and gravity";
         case Topic.movement:
-            return TopicInfo("Movement", "The body walks, jumps, steps up single blocks and slides along what it cannot pass. In creative mode it can also fly, or pass through everything.");
+            return "Movement";
         case Topic.world:
-            return TopicInfo("The loaded world", "The world is made as the player comes near and dropped again behind them. What the player changed is kept apart and put back.");
+            return "The loaded world";
         case Topic.structures:
-            return TopicInfo("Built worlds", "Built worlds are laid out along the honeycomb by plugins: cities, towers, stairs and the routes through them.");
+            return "Built worlds";
         case Topic.climate:
-            return TopicInfo("Climate and terrain", "Each cell has a climate: relief, heat, wetness and strata. It decides what the ground is made of and what grows there.");
+            return "Climate and terrain";
         case Topic.air:
-            return TopicInfo("Air", "The air is a mix of three gases whose shares follow the climate. A collector gathers it over time.");
+            return "Air";
         case Topic.blocks:
-            return TopicInfo("Mining and placing", "A block is mined by holding the mine key for its break time, and placed from the hotbar. Harder blocks need a better pickaxe.");
+            return "Mining and placing";
         case Topic.crafting:
-            return TopicInfo("Crafting", "Recipes are queued and worked one at a time, by hand or at a station the player has used nearby.");
+            return "Crafting";
         case Topic.learning:
-            return TopicInfo("Learning", "Some recipes are unknown until the player notices something, by breaking a block or by working at a station.");
+            return "Learning";
         case Topic.plants:
-            return TopicInfo("Plants", "Living blocks carry genes. A planted plant ripens with time and yields more where the climate suits it.");
+            return "Plants";
         case Topic.breeding:
-            return TopicInfo("Breeding", "At a bench two plants can be crossed, and a plant's enzyme can be spliced into the player's own genome.");
+            return "Breeding";
         case Topic.chemistry:
-            return TopicInfo("Compounds", "The genes of a living block make a compound. A press extracts it and turns extract into doses, a lab changes it, and a dose is swallowed, inhaled or injected.");
+            return "Compounds";
         case Topic.body:
-            return TopicInfo("The body", "A dose moves from the gut or the lung into the blood and is cleared from there. In the blood it binds the body's receptors, which drive three signals.");
+            return "The body";
         case Topic.perception:
-            return TopicInfo("Perception", "The body's signals shift perception. Perception changes how the body moves and how the world looks, and it reveals blocks that are otherwise not there.");
+            return "Perception";
         case Topic.navigation:
-            return TopicInfo("Finding the way", "Beacons, a thread laid behind the player and the compass help to find a place again.");
+            return "Finding the way";
         case Topic.saves:
-            return TopicInfo("Saves", "A save holds the player's edits, inventory, body and place for one world.");
+            return "Saves";
         case Topic.screens:
-            return TopicInfo("Screens", "The inventory and the station screens.");
+            return "Screens";
         case Topic.mods:
-            return TopicInfo("Mods", "Mods add content as data and can react to what happens in play.");
-        case Topic.scripts:
-            return TopicInfo("Scripts", "Tests, views and films are scripts that drive the game step by step.");
+            return "Mods";
+    }
+}
+
+bool isTopicName(const(char)[] name) {
+    size_t index = 0;
+    while (index < TOPIC_COUNT && ENUM_NAMES!Topic[index] != name) {
+        index += 1;
+    }
+    return index < TOPIC_COUNT;
+}
+
+bool isLetter(char letter) {
+    return (letter >= 'a' && letter <= 'z') || (letter >= 'A' && letter <= 'Z');
+}
+
+bool isPlainTitle(string title) {
+    size_t index = 0;
+    while (index < title.length && (isLetter(title[index]) || title[index] == ' ')) {
+        index += 1;
+    }
+    return title.length > 0 && title.length < ANCHOR_CAPACITY && index == title.length;
+}
+
+bool areTitlesPlain() {
+    uint index = 0;
+    while (index < TOPIC_COUNT && isPlainTitle(titleOf(cast(Topic) index))) {
+        index += 1;
+    }
+    return index == TOPIC_COUNT;
+}
+
+static assert(areTitlesPlain(), "a topic title may hold only letters and spaces, because the page makes the link to its section from the title");
+static assert(!isTopicName(BREAKING_NODE), "a topic named 'end' breaks the map, because that word ends a block in a Mermaid flowchart");
+
+char anchorLetter(char letter) {
+    if (letter == ' ') {
+        return '-';
+    } else if (letter >= 'A' && letter <= 'Z') {
+        return cast(char)(letter - 'A' + 'a');
+    } else {
+        return letter;
+    }
+}
+
+struct Anchor {
+    char[ANCHOR_CAPACITY] text = 0;
+
+    static Anchor of(string title) {
+        Anchor made;
+        foreach (index, letter; title) {
+            made.text[index] = anchorLetter(letter);
+        }
+        return made;
     }
 }
 
@@ -137,7 +191,6 @@ struct Claim {
     uint test;
     uint firstMeasure;
     uint measureCount;
-    uint times;
     Topic topic;
     Verdict verdict;
 
@@ -167,10 +220,21 @@ struct Tested {
 }
 
 struct Tally {
+    uint laws;
     uint held;
     uint failed;
     uint tests;
     uint failedTests;
+}
+
+const(char)[] numberText(char[] buffer, double number, int digits) {
+    if (number == 0) {
+        return printed(buffer, "0");
+    } else if (number == floor(number) && fabs(number) < MOST_WHOLE_NUMBER) {
+        return printed(buffer, "%.0f", number);
+    } else {
+        return printed(buffer, "%.*g", digits, number);
+    }
 }
 
 struct Line {
@@ -182,9 +246,11 @@ struct Line {
     }
 
     void addMeasure(string label, MeasureKind kind, double number, const(char)[] words) {
+        char[NUMBER_CAPACITY] buffer;
         final switch (kind) {
             case MeasureKind.number:
-                add("%.*s %.6g", cast(int) label.length, label.ptr, number);
+                const(char)[] digits = numberText(buffer[], number, REPORT_DIGITS);
+                add("%.*s %.*s", cast(int) label.length, label.ptr, cast(int) digits.length, digits.ptr);
                 break;
             case MeasureKind.text:
                 add("%.*s %.*s", cast(int) label.length, label.ptr, cast(int) words.length, words.ptr);
@@ -198,6 +264,14 @@ immutable(char)* separatorBefore(size_t index) {
         return "";
     } else {
         return "; ";
+    }
+}
+
+immutable(char)* commaBefore(size_t index) {
+    if (index == 0) {
+        return "";
+    } else {
+        return ", ";
     }
 }
 
@@ -253,22 +327,14 @@ struct Ledger {
     }
 
     void keep(Claim stated, bool condition, const(Measure)[] given) {
-        size_t index = tests.ptr[open.value].firstClaim;
-        while (index < claims.length && !(claims.ptr[index].isSameLawAs(stated) && claims.ptr[index].file == stated.file && claims.ptr[index].line == stated.line)) {
-            index += 1;
-        }
-        if (index == claims.length) {
-            stated.test = open.value;
-            claims.append(stated);
-        }
-        Claim* kept = &claims.ptr[index];
-        kept.times += 1;
-        kept.verdict = verdictOf(condition);
-        kept.firstMeasure = cast(uint) measures.length;
-        kept.measureCount = cast(uint) given.length;
+        stated.test = open.value;
+        stated.verdict = verdictOf(condition);
+        stated.firstMeasure = cast(uint) measures.length;
+        stated.measureCount = cast(uint) given.length;
         foreach (measure; given) {
             measures.append(Kept(measure.label, measure.number, keepText(measure.text), cast(uint) measure.text.length, measure.kind));
         }
+        claims.append(stated);
     }
 
     const(char)[] wordsOf(ref const Kept kept) const {
@@ -283,15 +349,33 @@ struct Ledger {
         return claims.ptr[tests.ptr[test].firstClaim .. tests.ptr[test].firstClaim + tests.ptr[test].claimCount];
     }
 
+    const(Kept)[] measuresOf(ref const Claim claim) const {
+        return measures.ptr[claim.firstMeasure .. claim.firstMeasure + claim.measureCount];
+    }
+
+    string testOf(ref const Claim claim) const {
+        return tests.ptr[claim.test].name;
+    }
+
+    bool hasSameLabels(ref const Claim first, ref const Claim second) const {
+        const(Kept)[] ours = measuresOf(first);
+        const(Kept)[] theirs = measuresOf(second);
+        size_t index = 0;
+        while (index < ours.length && index < theirs.length && ours[index].label == theirs[index].label) {
+            index += 1;
+        }
+        return ours.length == theirs.length && index == ours.length;
+    }
+
     void addMeasures(ref Line line, ref const Claim claim) const {
-        foreach (index, ref kept; measures.ptr[claim.firstMeasure .. claim.firstMeasure + claim.measureCount]) {
+        foreach (index, ref kept; measuresOf(claim)) {
             line.add("%s", separatorBefore(index));
             line.addMeasure(kept.label, kept.kind, kept.number, wordsOf(kept));
         }
     }
 
     bool isShown(ref const Claim claim, const(const(char)[])[] selectors) const {
-        string name = tests.ptr[claim.test].name;
+        string name = testOf(claim);
         size_t index = 0;
         while (index < selectors.length && !(isPrefixOf(selectors[index], name) || selectors[index] == ENUM_NAMES!Topic[claim.topic] || (claim.onto.exists && selectors[index] == ENUM_NAMES!Topic[claim.onto.value]))) {
             index += 1;
@@ -299,18 +383,30 @@ struct Ledger {
         return selectors.length == 0 || index < selectors.length;
     }
 
-    bool isFirstOfLaw(size_t at, Topic about, Part part, const(const(char)[])[] selectors) const {
+    bool isEvidenceOf(ref const Claim claim, size_t law, const(const(char)[])[] selectors) const {
+        return claim.isSameLawAs(claims.ptr[law]) && isShown(claim, selectors);
+    }
+
+    bool isLawHead(size_t at, const(const(char)[])[] selectors) const {
         size_t index = 0;
-        while (index < at && !(claims.ptr[index].isIn(about, part) && claims.ptr[index].isSameLawAs(claims.ptr[at]) && isShown(claims.ptr[index], selectors))) {
+        while (index < at && !isEvidenceOf(claims.ptr[index], at, selectors)) {
             index += 1;
         }
-        return index == at;
+        return index == at && isShown(claims.ptr[at], selectors);
+    }
+
+    bool isLawFailed(size_t law, const(const(char)[])[] selectors) const {
+        size_t index = law;
+        while (index < claims.length && !(isEvidenceOf(claims.ptr[index], law, selectors) && claims.ptr[index].verdict == Verdict.failed)) {
+            index += 1;
+        }
+        return index < claims.length;
     }
 
     uint lawCount(Topic about, Part part, const(const(char)[])[] selectors) const {
         uint count = 0;
         foreach (index, ref claim; claims.slice()) {
-            if (claim.isIn(about, part) && isShown(claim, selectors) && isFirstOfLaw(index, about, part, selectors)) {
+            if (claim.isIn(about, part) && isLawHead(index, selectors)) {
                 count += 1;
             }
         }
@@ -320,16 +416,20 @@ struct Ledger {
     uint linkCount(Topic from, Topic onto, const(const(char)[])[] selectors) const {
         uint count = 0;
         foreach (index, ref claim; claims.slice()) {
-            if (claim.isIn(from, Part.actsOn) && claim.onto.value == onto && isShown(claim, selectors) && isFirstOfLaw(index, from, Part.actsOn, selectors)) {
+            if (claim.isIn(from, Part.actsOn) && claim.onto.value == onto && isLawHead(index, selectors)) {
                 count += 1;
             }
         }
         return count;
     }
 
+    bool hasSection(Topic about, const(const(char)[])[] selectors) const {
+        return lawCount(about, Part.own, selectors) + lawCount(about, Part.actsOn, selectors) + lawCount(about, Part.actedOnBy, selectors) > 0;
+    }
+
     Tally tallyOf(const(const(char)[])[] selectors) const {
         Tally tally;
-        foreach (ref claim; claims.slice()) {
+        foreach (index, ref claim; claims.slice()) {
             if (isShown(claim, selectors)) {
                 final switch (claim.verdict) {
                     case Verdict.held:
@@ -339,6 +439,9 @@ struct Ledger {
                         tally.failed += 1;
                         break;
                 }
+            }
+            if (isLawHead(index, selectors)) {
+                tally.laws += 1;
             }
         }
         foreach (ref test; tests.slice()) {
@@ -362,14 +465,6 @@ __gshared Ledger ledger;
 
 bool isPrefixOf(const(char)[] prefix, const(char)[] name) {
     return prefix.length <= name.length && name[0 .. prefix.length] == prefix;
-}
-
-bool isTopicName(const(char)[] name) {
-    size_t index = 0;
-    while (index < TOPIC_COUNT && ENUM_NAMES!Topic[index] != name) {
-        index += 1;
-    }
-    return index < TOPIC_COUNT;
 }
 
 bool namesTopic(const(const(char)[])[] selectors) {
@@ -420,15 +515,20 @@ immutable(char)* wordFor(Verdict verdict) {
     }
 }
 
+immutable(char)* markFor(Verdict verdict) {
+    final switch (verdict) {
+        case Verdict.held:
+            return "";
+        case Verdict.failed:
+            return " **FAILED**";
+    }
+}
+
 void writeClaimLines(FILE* output, ref const Ledger ledger, uint test, const(const(char)[])[] selectors) {
     foreach (ref claim; ledger.claimsOf(test)) {
         if (ledger.isShown(claim, selectors)) {
             Line line;
-            line.add("  %s", wordFor(claim.verdict));
-            if (claim.times > 1) {
-                line.add(" x%u", claim.times);
-            }
-            line.add(" [%s", ENUM_NAMES!Topic[claim.topic].ptr);
+            line.add("  %s [%s", wordFor(claim.verdict), ENUM_NAMES!Topic[claim.topic].ptr);
             if (claim.onto.exists) {
                 line.add(" -> %s", ENUM_NAMES!Topic[claim.onto.value].ptr);
             }
@@ -445,13 +545,13 @@ void writeClaimLines(FILE* output, ref const Ledger ledger, uint test, const(con
 
 void writeTally(FILE* output, ref const Ledger ledger, const(const(char)[])[] selectors) {
     Tally tally = ledger.tallyOf(selectors);
-    fprintf(output, "%u claims held, %u failed, in %u tests of which %u failed\n", tally.held, tally.failed, tally.tests, tally.failedTests);
+    fprintf(output, "%u laws in %u checks: %u held, %u failed. %u tests ran, %u failed.\n", tally.laws, tally.held + tally.failed, tally.held, tally.failed, tally.tests, tally.failedTests);
 }
 
 uint writeProblems(FILE* output, ref const Ledger ledger) {
     uint problems = 0;
     foreach (index, ref claim; ledger.claims.slice()) {
-        if (claim.law.length == 0 || claim.law[$ - 1] != SENTENCE_END) {
+        if (ledger.isLawHead(index, null) && (claim.law.length == 0 || claim.law[$ - 1] != SENTENCE_END)) {
             fprintf(output, "%.*s:%u: a law is a full sentence that ends with a full stop, and this one is '%.*s'\n", cast(int) claim.file.length, claim.file.ptr, claim.line, cast(int) claim.law.length, claim.law.ptr);
             problems += 1;
         }
@@ -459,7 +559,7 @@ uint writeProblems(FILE* output, ref const Ledger ledger) {
         while (earlier < index && !(ledger.claims.ptr[earlier].law == claim.law && !ledger.claims.ptr[earlier].isSameLawAs(claim))) {
             earlier += 1;
         }
-        if (earlier < index) {
+        if (earlier < index && ledger.isLawHead(index, null)) {
             const(Claim)* other = &ledger.claims.ptr[earlier];
             fprintf(output, "%.*s:%u: this law is also stated at %.*s:%u about another topic: '%.*s'\n", cast(int) claim.file.length, claim.file.ptr, claim.line, cast(int) other.file.length, other.file.ptr, other.line, cast(int) claim.law.length, claim.law.ptr);
             problems += 1;
@@ -468,124 +568,276 @@ uint writeProblems(FILE* output, ref const Ledger ledger) {
     return problems;
 }
 
-void writeEvidence(FILE* output, ref const Ledger ledger, size_t first, Topic about, Part part, const(const(char)[])[] selectors) {
-    foreach (ref claim; ledger.claims.slice()[first .. $]) {
-        if (claim.isIn(about, part) && claim.isSameLawAs(ledger.claims.ptr[first]) && ledger.isShown(claim, selectors)) {
-            Line line;
-            line.add("  - `%s`: %s", ledger.tests.ptr[claim.test].name.ptr, wordFor(claim.verdict));
-            if (claim.measureCount > 0) {
-                line.add(", ");
-                ledger.addMeasures(line, claim);
-            }
-            if (claim.times > 1) {
-                line.add(" (checked %u times, the last is shown)", claim.times);
-            }
-            fprintf(output, "%s\n", line.text.ptr);
+void writeText(FILE* output, const(char)[] text) {
+    size_t start = 0;
+    foreach (index, letter; text) {
+        if (letter == CELL_EDGE) {
+            fprintf(output, "%.*s\\%c", cast(int)(index - start), text.ptr + start, CELL_EDGE);
+            start = index + 1;
         }
     }
+    fprintf(output, "%.*s", cast(int)(text.length - start), text.ptr + start);
 }
 
-void writePart(FILE* output, ref const Ledger ledger, Topic about, Part part, const(const(char)[])[] selectors) {
-    if (ledger.lawCount(about, part, selectors) > 0) {
-        final switch (part) {
-            case Part.own:
-                fprintf(output, "\n");
+void writeLink(FILE* output, Topic topic) {
+    string title = titleOf(topic);
+    Anchor anchor = Anchor.of(title);
+    fprintf(output, "[%.*s](#%s)", cast(int) title.length, title.ptr, anchor.text.ptr);
+}
+
+void writeTableHead(FILE* output, ref const Ledger ledger, ref const Claim claim) {
+    fprintf(output, "| Test |");
+    foreach (ref kept; ledger.measuresOf(claim)) {
+        fprintf(output, " ");
+        writeText(output, kept.label);
+        fprintf(output, " |");
+    }
+    fprintf(output, "\n| --- |");
+    foreach (_; ledger.measuresOf(claim)) {
+        fprintf(output, " --- |");
+    }
+    fprintf(output, "\n");
+}
+
+void writeTableRow(FILE* output, ref const Ledger ledger, ref const Claim claim) {
+    char[NUMBER_CAPACITY] buffer;
+    string name = ledger.testOf(claim);
+    fprintf(output, "| `%.*s`%s |", cast(int) name.length, name.ptr, markFor(claim.verdict));
+    foreach (ref kept; ledger.measuresOf(claim)) {
+        final switch (kept.kind) {
+            case MeasureKind.number:
+                const(char)[] digits = numberText(buffer[], kept.number, PAGE_DIGITS);
+                fprintf(output, " %.*s |", cast(int) digits.length, digits.ptr);
                 break;
-            case Part.actsOn:
-                fprintf(output, "\nHow it acts on other things:\n\n");
-                break;
-            case Part.actedOnBy:
-                fprintf(output, "\nWhat acts on it:\n\n");
+            case MeasureKind.text:
+                fprintf(output, " `");
+                writeText(output, ledger.wordsOf(kept));
+                fprintf(output, "` |");
                 break;
         }
-        foreach (index, ref claim; ledger.claims.slice()) {
-            if (claim.isIn(about, part) && ledger.isShown(claim, selectors) && ledger.isFirstOfLaw(index, about, part, selectors)) {
-                final switch (part) {
-                    case Part.own:
-                        fprintf(output, "- %.*s\n", cast(int) claim.law.length, claim.law.ptr);
-                        writeEvidence(output, ledger, index, about, part, selectors);
-                        break;
-                    case Part.actsOn:
-                        fprintf(output, "- On %s: %.*s\n", infoOf(claim.onto.value).title.ptr, cast(int) claim.law.length, claim.law.ptr);
-                        writeEvidence(output, ledger, index, about, part, selectors);
-                        break;
-                    case Part.actedOnBy:
-                        fprintf(output, "- %s: %.*s\n", infoOf(claim.topic).title.ptr, cast(int) claim.law.length, claim.law.ptr);
-                        break;
+    }
+    fprintf(output, "\n");
+}
+
+void writeCheckers(FILE* output, ref const Ledger ledger, size_t law, const(const(char)[])[] selectors) {
+    Maybe!uint last;
+    uint listed = 0;
+    foreach (ref claim; ledger.claims.slice()[law .. $]) {
+        if (ledger.isEvidenceOf(claim, law, selectors) && claim.measureCount == 0 && !(last.exists && last.value == claim.test && claim.verdict == Verdict.held)) {
+            string name = ledger.testOf(claim);
+            if (listed == 0) {
+                fprintf(output, " Checked by ");
+            }
+            fprintf(output, "%s`%.*s`%s", commaBefore(listed), cast(int) name.length, name.ptr, markFor(claim.verdict));
+            last = Maybe!uint.of(claim.test);
+            listed += 1;
+        }
+    }
+    if (listed > 0) {
+        fprintf(output, ".");
+    }
+    fprintf(output, "\n\n");
+}
+
+void writeTables(FILE* output, ref const Ledger ledger, size_t law, const(const(char)[])[] selectors) {
+    Maybe!size_t head;
+    uint rows = 0;
+    uint hidden = 0;
+    foreach (offset, ref claim; ledger.claims.slice()[law .. $]) {
+        if (ledger.isEvidenceOf(claim, law, selectors) && claim.measureCount > 0) {
+            if (rows < MOST_ROWS_SHOWN || claim.verdict == Verdict.failed) {
+                if (!head.exists || !ledger.hasSameLabels(ledger.claims.ptr[head.value], claim)) {
+                    if (head.exists) {
+                        fprintf(output, "\n");
+                    }
+                    writeTableHead(output, ledger, claim);
+                    head = Maybe!size_t.of(law + offset);
                 }
+                writeTableRow(output, ledger, claim);
+                rows += 1;
+            } else {
+                hidden += 1;
             }
         }
     }
-}
-
-uint lawsAbout(ref const Ledger ledger, Topic about, const(const(char)[])[] selectors) {
-    return ledger.lawCount(about, Part.own, selectors) + ledger.lawCount(about, Part.actsOn, selectors) + ledger.lawCount(about, Part.actedOnBy, selectors);
-}
-
-void writeUnshown(FILE* output, ref const Ledger ledger) {
-    fprintf(output, "\n## Not shown yet\n\nNo test states a claim about these:\n\n");
-    foreach (index; 0 .. TOPIC_COUNT) {
-        if (lawsAbout(ledger, cast(Topic) index, null) == 0) {
-            fprintf(output, "- %s\n", infoOf(cast(Topic) index).title.ptr);
-        }
+    if (rows > 0) {
+        fprintf(output, "\n");
     }
-    fprintf(output, "\nThese tests state no claim:\n\n");
-    foreach (ref test; ledger.tests.slice()) {
-        if (test.claimCount == 0) {
-            fprintf(output, "- `%s`\n", test.name.ptr);
-        }
+    if (hidden > 0) {
+        fprintf(output, "%u more checks of this law held. `caapi-headless claims` lists every check.\n\n", hidden);
     }
 }
 
-void writeWiki(FILE* output, ref const Ledger ledger, const(const(char)[])[] selectors) {
-    Tally tally = ledger.tallyOf(selectors);
-    fprintf(output, "# What caapi does\n\n");
-    fprintf(output, "This page was written by `caapi-headless wiki` (caapi %s) from a run of the behavior tests. Each statement is a claim that a test checked in that run. Under it are the test that checked it and what the run measured.\n\n", VERSION.ptr);
-    if (tally.failed == 0 && tally.failedTests == 0) {
-        fprintf(output, "All %u claims held, in %u tests.\n", tally.held, tally.tests);
-    } else {
-        fprintf(output, "NOT VERIFIED: in this run %u of %u claims failed and %u of %u tests failed.\n", tally.failed, tally.held + tally.failed, tally.failedTests, tally.tests);
-        fprintf(output, "\n## Failed in this run\n\n");
-        foreach (ref test; ledger.tests.slice()) {
-            if (test.outcome == Outcome.failed) {
-                const(char)[] failure = ledger.failureOf(test);
-                fprintf(output, "- `%s`: %.*s\n", test.name.ptr, cast(int) failure.length, failure.ptr);
+void writeLaws(FILE* output, ref const Ledger ledger, Topic about, Part part, const(const(char)[])[] selectors) {
+    foreach (index, ref claim; ledger.claims.slice()) {
+        if (claim.isIn(about, part) && ledger.isLawHead(index, selectors)) {
+            if (claim.onto.exists) {
+                writeLink(output, claim.onto.value);
+                fprintf(output, ": ");
             }
+            fprintf(output, "**%.*s**", cast(int) claim.law.length, claim.law.ptr);
+            writeCheckers(output, ledger, index, selectors);
+            writeTables(output, ledger, index, selectors);
         }
-    }
-    foreach (index; 0 .. TOPIC_COUNT) {
-        Topic about = cast(Topic) index;
-        if (lawsAbout(ledger, about, selectors) > 0) {
-            TopicInfo info = infoOf(about);
-            fprintf(output, "\n## %s\n\n%s\n", info.title.ptr, info.intro.ptr);
-            writePart(output, ledger, about, Part.own, selectors);
-            writePart(output, ledger, about, Part.actsOn, selectors);
-            writePart(output, ledger, about, Part.actedOnBy, selectors);
-        }
-    }
-    if (selectors.length == 0) {
-        writeUnshown(output, ledger);
     }
 }
 
-void writeDot(FILE* output, ref const Ledger ledger, const(const(char)[])[] selectors) {
-    fprintf(output, "digraph claims {\n");
+void writeActors(FILE* output, ref const Ledger ledger, Topic about, const(const(char)[])[] selectors) {
+    foreach (index, ref claim; ledger.claims.slice()) {
+        if (claim.isIn(about, Part.actedOnBy) && ledger.isLawHead(index, selectors)) {
+            fprintf(output, "- ");
+            writeLink(output, claim.topic);
+            fprintf(output, ": %.*s%s\n", cast(int) claim.law.length, claim.law.ptr, markFor(verdictOf(!ledger.isLawFailed(index, selectors))));
+        }
+    }
+    fprintf(output, "\n");
+}
+
+void writeSection(FILE* output, ref const Ledger ledger, Topic about, const(const(char)[])[] selectors) {
+    string title = titleOf(about);
+    fprintf(output, "## %.*s\n\n", cast(int) title.length, title.ptr);
+    writeLaws(output, ledger, about, Part.own, selectors);
+    if (ledger.lawCount(about, Part.actsOn, selectors) > 0) {
+        fprintf(output, "### %.*s: acts on\n\n", cast(int) title.length, title.ptr);
+        writeLaws(output, ledger, about, Part.actsOn, selectors);
+    }
+    if (ledger.lawCount(about, Part.actedOnBy, selectors) > 0) {
+        fprintf(output, "### %.*s: acted on by\n\n", cast(int) title.length, title.ptr);
+        writeActors(output, ledger, about, selectors);
+    }
+}
+
+uint linksBetween(ref const Ledger ledger, Topic about, Topic other, Part part, const(const(char)[])[] selectors) {
+    final switch (part) {
+        case Part.own:
+            return 0;
+        case Part.actsOn:
+            return ledger.linkCount(about, other, selectors);
+        case Part.actedOnBy:
+            return ledger.linkCount(other, about, selectors);
+    }
+}
+
+void writeNeighbors(FILE* output, ref const Ledger ledger, Topic about, Part part, const(const(char)[])[] selectors) {
+    uint listed = 0;
+    fprintf(output, " ");
     foreach (index; 0 .. TOPIC_COUNT) {
-        Topic about = cast(Topic) index;
-        uint laws = ledger.lawCount(about, Part.own, selectors);
-        if (lawsAbout(ledger, about, selectors) > 0) {
-            fprintf(output, "    %s [label=\"%s\\n%u claims\"];\n", ENUM_NAMES!Topic[index].ptr, infoOf(about).title.ptr, laws);
-        } else if (selectors.length == 0) {
-            fprintf(output, "    %s [label=\"%s\\nno claims\", style=dashed];\n", ENUM_NAMES!Topic[index].ptr, infoOf(about).title.ptr);
+        if (linksBetween(ledger, about, cast(Topic) index, part, selectors) > 0) {
+            fprintf(output, "%s", commaBefore(listed));
+            writeLink(output, cast(Topic) index);
+            listed += 1;
+        }
+    }
+    fprintf(output, " |");
+}
+
+void writeMap(FILE* output, ref const Ledger ledger, const(const(char)[])[] selectors) {
+    fprintf(output, "## Map\n\n```mermaid\nflowchart LR\n");
+    foreach (index; 0 .. TOPIC_COUNT) {
+        if (ledger.hasSection(cast(Topic) index, selectors)) {
+            string title = titleOf(cast(Topic) index);
+            fprintf(output, "    %s[%.*s]\n", ENUM_NAMES!Topic[index].ptr, cast(int) title.length, title.ptr);
         }
     }
     foreach (from; 0 .. TOPIC_COUNT) {
         foreach (onto; 0 .. TOPIC_COUNT) {
-            uint links = ledger.linkCount(cast(Topic) from, cast(Topic) onto, selectors);
-            if (links > 0) {
-                fprintf(output, "    %s -> %s [label=\"%u\"];\n", ENUM_NAMES!Topic[from].ptr, ENUM_NAMES!Topic[onto].ptr, links);
+            if (ledger.linkCount(cast(Topic) from, cast(Topic) onto, selectors) > 0) {
+                fprintf(output, "    %s --> %s\n", ENUM_NAMES!Topic[from].ptr, ENUM_NAMES!Topic[onto].ptr);
             }
         }
     }
-    fprintf(output, "}\n");
+    fprintf(output, "```\n\n| System | Laws | Acts on | Acted on by |\n| --- | --- | --- | --- |\n");
+    foreach (index; 0 .. TOPIC_COUNT) {
+        Topic about = cast(Topic) index;
+        if (ledger.hasSection(about, selectors)) {
+            fprintf(output, "| ");
+            writeLink(output, about);
+            fprintf(output, " | %u |", ledger.lawCount(about, Part.own, selectors) + ledger.lawCount(about, Part.actsOn, selectors));
+            writeNeighbors(output, ledger, about, Part.actsOn, selectors);
+            writeNeighbors(output, ledger, about, Part.actedOnBy, selectors);
+            fprintf(output, "\n");
+        }
+    }
+    fprintf(output, "\n");
+}
+
+void writeHeader(FILE* output, ref const Ledger ledger, const(const(char)[])[] selectors) {
+    Tally tally = ledger.tallyOf(selectors);
+    fprintf(output, "# What caapi does\n\n");
+    fprintf(output, "Written by `caapi-headless wiki` (caapi %s) from a run of the behavior tests. Each statement in bold is a law that a test checked in that run, and the table under it holds what the run measured. Lengths are in units of the curvature radius of the space, and times are in seconds.\n\n", VERSION.ptr);
+    if (selectors.length > 0) {
+        fprintf(output, "This page holds only what was asked for: ");
+        foreach (index, selector; selectors) {
+            fprintf(output, "%s`%.*s`", commaBefore(index), cast(int) selector.length, selector.ptr);
+        }
+        fprintf(output, ".\n\n");
+    }
+    if (tally.failed == 0 && tally.failedTests == 0) {
+        fprintf(output, "All %u laws held, in %u checks.\n\n", tally.laws, tally.held);
+    } else {
+        fprintf(output, "**NOT VERIFIED.** %u of %u checks failed, and %u of %u tests failed. A test stops at its first failure, so the laws it would have checked after that are missing from this page.\n\n", tally.failed, tally.held + tally.failed, tally.failedTests, tally.tests);
+        fprintf(output, "## Failed in this run\n\n| Test | What failed |\n| --- | --- |\n");
+        foreach (ref test; ledger.tests.slice()) {
+            if (test.outcome == Outcome.failed) {
+                fprintf(output, "| `%.*s` | ", cast(int) test.name.length, test.name.ptr);
+                writeText(output, ledger.failureOf(test));
+                fprintf(output, " |\n");
+            }
+        }
+        fprintf(output, "\n");
+    }
+}
+
+void writeGaps(FILE* output, ref const Ledger ledger) {
+    uint topics = 0;
+    uint tests = 0;
+    foreach (index; 0 .. TOPIC_COUNT) {
+        if (!ledger.hasSection(cast(Topic) index, null)) {
+            topics += 1;
+        }
+    }
+    foreach (ref test; ledger.tests.slice()) {
+        if (test.claimCount == 0) {
+            tests += 1;
+        }
+    }
+    if (topics + tests > 0) {
+        fprintf(output, "## Gaps\n\n");
+    }
+    if (topics > 0) {
+        uint listed = 0;
+        fprintf(output, "No test states a law about: ");
+        foreach (index; 0 .. TOPIC_COUNT) {
+            if (!ledger.hasSection(cast(Topic) index, null)) {
+                string title = titleOf(cast(Topic) index);
+                fprintf(output, "%s%.*s", commaBefore(listed), cast(int) title.length, title.ptr);
+                listed += 1;
+            }
+        }
+        fprintf(output, ".\n\n");
+    }
+    if (tests > 0) {
+        uint listed = 0;
+        fprintf(output, "These tests state no law: ");
+        foreach (ref test; ledger.tests.slice()) {
+            if (test.claimCount == 0) {
+                fprintf(output, "%s`%.*s`", commaBefore(listed), cast(int) test.name.length, test.name.ptr);
+                listed += 1;
+            }
+        }
+        fprintf(output, ".\n");
+    }
+}
+
+void writeWiki(FILE* output, ref const Ledger ledger, const(const(char)[])[] selectors) {
+    writeHeader(output, ledger, selectors);
+    writeMap(output, ledger, selectors);
+    foreach (index; 0 .. TOPIC_COUNT) {
+        if (ledger.hasSection(cast(Topic) index, selectors)) {
+            writeSection(output, ledger, cast(Topic) index, selectors);
+        }
+    }
+    if (selectors.length == 0) {
+        writeGaps(output, ledger);
+    }
 }

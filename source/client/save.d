@@ -23,7 +23,7 @@ import geometry.lorentz : Motion;
 import plugins.api.api : ENTRY, Material;
 
 enum uint SAVE_MAGIC = 0x63616170;
-enum uint SAVE_FORMAT = 9;
+enum uint SAVE_FORMAT = 10;
 enum uint MOST_SAVED_NAMES = 1 << 16;
 enum uint MOST_NAME_BYTES = 1 << 10;
 enum uint WORLDGEN_VERSION = 4;

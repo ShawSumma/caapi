@@ -11,7 +11,7 @@ import common.biology.wild : WildGenes;
 import common.character.controller : MovementMode;
 import common.crafting : Insight, Upgrade;
 import common.graph : Graph;
-import common.inventory : HOTBAR_SLOTS, Inventory, Stack;
+import common.inventory : HOTBAR_SLOTS, Inventory, Sorting, Stack;
 import common.node : ChunkSlot, ChunkState;
 import common.position : Position;
 import geometry.honeycomb : CORNER_COUNT, Corner, cubeToNode;
@@ -104,7 +104,8 @@ immutable NamedScript[] VIEWS = [
     NamedScript("skyward", &skyward),
     NamedScript("slope", &slope),
     NamedScript("sheetbody", &sheetBody),
-    NamedScript("sheetcontrols", &sheet!(Sheet.controls)),
+    NamedScript("controls", &screen!(Screen.controls)),
+    NamedScript("menu", &screen!(Screen.menu)),
     NamedScript("sheetsurroundings", &sheet!(Sheet.surroundings)),
     NamedScript("collector", &collectorView),
     NamedScript("crafting", &craftingView),
@@ -114,7 +115,7 @@ immutable NamedScript[] VIEWS = [
     NamedScript("press", &pressView),
     NamedScript("sheetchemistry", &chemistryView),
     NamedScript("sheetcatalog", &catalogView),
-    NamedScript("sheetjournal", &journalView),
+    NamedScript("journal", &journalView),
     NamedScript("mining", &miningView),
     NamedScript("stairs", &towardWaypoint!("tower", 3, -20)),
     NamedScript("starter", &starterView),
@@ -175,8 +176,8 @@ void lookingHere(double pitch)(ref Script view) {
 void benchPlaced(ref Script view) {
     view.plane(degrees(0));
     view.step();
-    view.game.inventory.slots[FIRST_PACK_SLOT] = Stack(named("base:flower"), 3, Maybe!WildGenes.of(WildGenes([0x1234_5678_9ABC_DEF0, 0x0FED_CBA9_8765_4321, 0x1357_9BDF_2468_ACE0, 0xA5A5_5A5A_F0F0_0F0F])));
-    view.game.inventory.slots[FIRST_PACK_SLOT + 1] = Stack(named("base:fern"), 2, Maybe!WildGenes.of(WildGenes([0x1111_2222_3333_4444, 0x5555_6666_7777_8888, 0x9999_AAAA_BBBB_CCCC, 0xDDDD_EEEE_FFFF_0000])));
+    view.game.inventory.slots[FIRST_PACK_SLOT] = Stack.ofLiving(named("base:flower"), 3, WildGenes([0x1234_5678_9ABC_DEF0, 0x0FED_CBA9_8765_4321, 0x1357_9BDF_2468_ACE0, 0xA5A5_5A5A_F0F0_0F0F]), Sorting.sorted);
+    view.game.inventory.slots[FIRST_PACK_SLOT + 1] = Stack.ofLiving(named("base:fern"), 2, WildGenes([0x1111_2222_3333_4444, 0x5555_6666_7777_8888, 0x9999_AAAA_BBBB_CCCC, 0xDDDD_EEEE_FFFF_0000]), Sorting.unsorted);
     view.material(7);
     view.look(degrees(0), degrees(30));
     view.placeBlock();
@@ -220,6 +221,11 @@ void starterView(ref Script view) {
 void sheet(Sheet shown)(ref Script view) {
     view.open(Screen.character);
     view.game.sheet = shown;
+    lookingHere!(10)(view);
+}
+
+void screen(Screen shown)(ref Script view) {
+    view.open(shown);
     lookingHere!(10)(view);
 }
 
@@ -290,7 +296,7 @@ void labView(ref Script view) {
 
 void pressView(ref Script view) {
     view.game.owned.set(upgradeNamed("base:assay-kit").id);
-    view.game.inventory.slots[FIRST_PACK_SLOT] = Stack(named("base:oak-leaves"), 4, Maybe!WildGenes.of(WildGenes([0x0123_4567_89AB_CDEF, 0x7654_3210_FEDC_BA98, 0x1357_9BDF_2468_ACE0, 0x0F0F_F0F0_5A5A_A5A5])));
+    view.game.inventory.slots[FIRST_PACK_SLOT] = Stack.ofLiving(named("base:oak-leaves"), 4, WildGenes([0x0123_4567_89AB_CDEF, 0x7654_3210_FEDC_BA98, 0x1357_9BDF_2468_ACE0, 0x0F0F_F0F0_5A5A_A5A5]), Sorting.sorted);
     stationPlaced!("base:press")(view);
     keepCompounds(view);
     view.step();
@@ -300,7 +306,7 @@ void journalView(ref Script view) {
     view.game.learn(insightNamed("base:charring"));
     view.game.learn(insightNamed("base:sifting"));
     view.game.learn(insightNamed("base:salvage"));
-    sheet!(Sheet.journal)(view);
+    screen!(Screen.journal)(view);
 }
 
 void catalogView(ref Script view) {

@@ -104,16 +104,22 @@ struct FrameClock {
     }
 
     double tick(double now, double most) {
-        double interval = lowerOf(now - last, most);
-        intervals[count % SMOOTHED_FRAMES] = interval;
-        worst = higherOf(interval, worst);
+        double interval = now - last;
         last = now;
-        count += 1;
-        uint used = lowerOf(count, SMOOTHED_FRAMES);
-        double total = 0;
-        foreach (recent; intervals[0 .. used]) {
-            total += recent;
+        worst = higherOf(lowerOf(interval, most), worst);
+        if (!(interval > most)) {
+            intervals[count % SMOOTHED_FRAMES] = interval;
+            count += 1;
         }
-        return total / used;
+        uint used = lowerOf(count, SMOOTHED_FRAMES);
+        if (used == 0) {
+            return most;
+        } else {
+            double total = 0;
+            foreach (recent; intervals[0 .. used]) {
+                total += recent;
+            }
+            return total / used;
+        }
     }
 }

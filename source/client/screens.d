@@ -14,14 +14,15 @@ import common.biology.metabolism : Operation;
 import common.biology.molecule : Molecule;
 import common.biology.organism : Organism;
 import common.crafting : Crafting, HAND, IdSet, Insight, Product, Reaction, Recipe, Station, Synthesis, SynthesisRule, Taken, actsOnCompounds, canCraft, doseRoutes, insights, recipes, stationOf, syntheses, synthesized, timeOf;
-import common.inventory : HOTBAR_SLOTS, PACK_ROWS, SLOT_COUNT, Stack;
+import common.inventory : HOTBAR_SLOTS, PACK_ROWS, SLOT_COUNT, Sorting, Stack;
 import common.material : isPlant, materialCount;
 import common.worldgen.climate : Climate;
 import client.bindings : ACTIONS, ACTION_COUNT, Action, Rules;
-import client.game : CHOSEN_PLANTS, COLLECTION_RATE, Compound, DOSE_SIZE, Game, MOST_COLLECTED_SECONDS, RAW_PER_DOSE, RecipePlan, Screen, Sheet, SHEET_COUNT, UiAction, UiKind, isCatalogued, sheetsFor, toolFor;
+import client.game : CHOSEN_PLANTS, COLLECTION_RATE, Compound, DOSE_SIZE, Deleting, Game, MOST_COLLECTED_SECONDS, RAW_PER_DOSE, RecipePlan, Saving, Screen, Sheet, SHEET_COUNT, UiAction, UiKind, isCatalogued, sheetsFor, toolFor;
 import common.items : Item, itemCount;
-import client.hud : BAR_SHARE, Box, CYAN, DIM, Effect, FIRST_HALF_NAME, FrameMeter, GOLD, Hud, LINE_CAPACITY, NAME_CAPACITY, PANEL, PLOT_SHARE, Panel, RAISED, RED, RIM, SOLID, STRIP_CELLS, WHITE, actsOnAny, bindsOf, craftLabel, craftSwatch, effectsOf, faded, itemName, letterColor, materialName, moleculeName, receptorName, stackName, stationName, swatchOf;
+import client.hud : BAR_SHARE, Box, CYAN, Column, DIM, Effect, FIRST_HALF_NAME, FrameMeter, GOLD, Hud, LINE_CAPACITY, NAME_CAPACITY, PANEL, PLOT_SHARE, Panel, RAISED, RED, RIM, SOLID, STRIP_CELLS, WHITE, actsOnAny, bindsOf, craftLabel, craftSwatch, effectsOf, faded, itemName, letterColor, materialName, moleculeName, receptorName, stackMake, stackName, stationName, swatchOf;
 import client.input : Controls, keyLabel;
+import client.plugins : worldCount, worldNameAt;
 import common.perception : Channel;
 import plugins.api.api : Material;
 import plugins.api.flags : Flags;
@@ -35,19 +36,29 @@ enum uint CONTROL_COLUMNS = 34;
 enum uint CONTROL_LABEL_COLUMNS = 22;
 enum uint LABEL_COLUMNS = 10;
 enum uint TWO_COLUMNS = 60;
-enum uint CLOSE_COLUMNS = 8;
 enum float WAITING_SHADE = 0.35f;
 enum size_t JOURNAL_CAPACITY = 1024;
 enum float WARM = 0.3f;
 enum float WET = 0.3f;
-immutable string[SHEET_COUNT] SHEET_NAMES = ["items", "body", "chemistry", "surroundings", "controls", "journal", "catalog"];
+enum uint MENU_FIXED_ROWS = 3;
+enum uint WORLDS_FIRST_ROW = 1;
+immutable string[SHEET_COUNT] SHEET_NAMES = ["inventory", "body", "chemistry", "surroundings", "catalog"];
 
 void buildScreen(ref Hud hud, ref const Game game, ref const Controls controls, ref const FrameMeter meter, Box area) {
     final switch (game.screen) {
         case Screen.none:
             break;
         case Screen.character:
-            buildCharacter(hud, game, controls, meter, area);
+            buildCharacter(hud, game, meter, area);
+            break;
+        case Screen.journal:
+            buildJournal(hud, game, area);
+            break;
+        case Screen.menu:
+            buildMenu(hud, game, area);
+            break;
+        case Screen.controls:
+            buildControls(hud, game, controls, area);
             break;
         case Screen.bench:
             buildBench(hud, game, area);
@@ -82,17 +93,12 @@ void tooltip(ref Hud hud, const(char)[] shown) {
     hud.text(x + pad, y + pad, line, WHITE);
 }
 
-Panel panelIn(ref const Hud hud, Box box) {
-    uint rows = cast(uint) higherOf(floorf(box.h / hud.rowHeight()), 0.0f);
-    return Panel(box.x, box.y, hud.rowHeight(), box.w, rows);
-}
-
 void heading(ref Hud hud, ref Panel panel, const(char)[] shown) {
     hud.row(panel, shown, GOLD);
 }
 
 void barRow(ref Hud hud, ref Panel panel, const(char)[] label, float share, uint color, const(char)[] after) {
-    if (panel.hasRoom) {
+    if (panel.takes(1)) {
         float labelWidth = hud.columns(LABEL_COLUMNS + 4);
         float bar = higherOf(lowerOf(BAR_SHARE * hud.height, panel.width - labelWidth - hud.columns(12)), 0.0f);
         hud.put(panel, 0, label, WHITE);
@@ -103,7 +109,7 @@ void barRow(ref Hud hud, ref Panel panel, const(char)[] label, float share, uint
 }
 
 void buttonRow(ref Hud hud, ref Panel panel, const(char)[] label, Maybe!UiAction action) {
-    if (panel.hasRoom) {
+    if (panel.takes(1)) {
         hud.button(Box(panel.x, panel.y, panel.width, panel.row - hud.scale), label, action);
         panel.advance();
     }
@@ -116,7 +122,90 @@ Box window(ref Hud hud, Box area) {
     return box;
 }
 
-void buildCharacter(ref Hud hud, ref const Game game, ref const Controls controls, ref const FrameMeter meter, Box area) {
+float titleButton(ref const Hud hud, const(char)[] label, float room) {
+    return lowerOf(hud.columns(cast(uint) label.length + 2), room / 3);
+}
+
+Box titled(ref Hud hud, Box area, const(char)[] title, const(char)[] label, UiAction action) {
+    float pad = hud.padding();
+    float row = hud.rowHeight();
+    Box box = window(hud, area);
+    float wide = titleButton(hud, label, box.w);
+    hud.clippedText(box.x + pad, box.y + pad, box.w - wide - 3 * pad, title, GOLD);
+    hud.button(Box(box.x + box.w - pad - wide, box.y + pad, wide, row), label, Maybe!UiAction.of(action));
+    return Box(box.x + pad, box.y + row + 3 * pad, box.w - 2 * pad, box.h - row - 4 * pad);
+}
+
+void buildMenu(ref Hud hud, ref const Game game, Box area) {
+    char[LINE_CAPACITY] buffer;
+    char[LINE_CAPACITY] playBuffer;
+    char[LINE_CAPACITY] deleteBuffer;
+    float pad = hud.padding();
+    float row = hud.rowHeight();
+    UiAction resume = {kind: UiKind.close};
+    Box content = titled(hud, area, "click any empty spot to play", "resume", resume);
+    UiAction controls = {kind: UiKind.open, index: Screen.controls};
+    float beside = titleButton(hud, "resume", content.w + 2 * pad);
+    float wide = titleButton(hud, "controls", content.w + 2 * pad);
+    hud.button(Box(content.x + content.w - beside - pad - wide, content.y - row - 2 * pad, wide, row), "controls", Maybe!UiAction.of(controls));
+    final switch (game.worlds.saving) {
+        case Saving.enabled:
+            hud.clippedText(content.x, content.y + (WORLDS_FIRST_ROW - 1) * row, content.w, "worlds: * has a save, the one you are in is outlined", DIM);
+            break;
+        case Saving.refused:
+            hud.clippedText(content.x, content.y + (WORLDS_FIRST_ROW - 1) * row, content.w, "this world's save is from another version: nothing is saved until you delete it", RED);
+            break;
+    }
+    uint count = worldCount();
+    uint rows = cast(uint) higherOf(floorf(content.h / row), MENU_FIXED_ROWS + 1.0f) - MENU_FIXED_ROWS;
+    uint columnCount = higherOf(cast(uint) ceilf(cast(float) count / rows), 1u);
+    float columnWidth = (content.w - (columnCount - 1) * pad) / columnCount;
+    foreach (index; 0 .. count) {
+        const(char)[] name = worldNameAt(index);
+        char mark = ' ';
+        if (game.worlds.saved.has(index)) {
+            mark = '*';
+        }
+        Box cell = Box(content.x + (index / rows) * (columnWidth + pad), content.y + (WORLDS_FIRST_ROW + index % rows) * row, columnWidth, row - hud.scale);
+        UiAction pick = {kind: UiKind.pickWorld, index: index};
+        hud.button(cell, printed(buffer[], "%c %.*s", mark, cast(int) name.length, name.ptr), Maybe!UiAction.of(pick));
+        if (game.worlds.picked == MaybeIndex!uint.of(index)) {
+            hud.outline(cell, 2 * hud.scale, GOLD);
+        } else if (index == game.worlds.current) {
+            hud.outline(cell, hud.scale, CYAN);
+        }
+    }
+    Maybe!UiAction play;
+    Maybe!UiAction remove;
+    const(char)[] playLabel = "pick a world to play";
+    const(char)[] deleteLabel = "pick a world to delete";
+    if (game.worlds.picked.exists) {
+        uint picked = game.worlds.picked.value;
+        const(char)[] name = worldNameAt(picked);
+        playLabel = printed(playBuffer[], "you are in %.*s", cast(int) name.length, name.ptr);
+        deleteLabel = printed(deleteBuffer[], "%.*s has no save", cast(int) name.length, name.ptr);
+        if (picked != game.worlds.current) {
+            UiAction made = {kind: UiKind.playWorld, index: picked};
+            play = Maybe!UiAction.of(made);
+            playLabel = printed(playBuffer[], "play %.*s", cast(int) name.length, name.ptr);
+        }
+        if (game.worlds.saved.has(picked) && game.worlds.deleting == Deleting.asked) {
+            UiAction made = {kind: UiKind.deleteWorld, index: picked};
+            remove = Maybe!UiAction.of(made);
+            deleteLabel = printed(deleteBuffer[], "click again: %.*s is lost for good", cast(int) name.length, name.ptr);
+        } else if (game.worlds.saved.has(picked)) {
+            UiAction made = {kind: UiKind.askDelete, index: picked};
+            remove = Maybe!UiAction.of(made);
+            deleteLabel = printed(deleteBuffer[], "delete %.*s and start it over", cast(int) name.length, name.ptr);
+        }
+    }
+    float half = (content.w - pad) / 2;
+    float bottom = content.y + content.h - row;
+    hud.button(Box(content.x, bottom, half, row - hud.scale), playLabel, play);
+    hud.button(Box(content.x + half + pad, bottom, half, row - hud.scale), deleteLabel, remove);
+}
+
+void buildCharacter(ref Hud hud, ref const Game game, ref const FrameMeter meter, Box area) {
     float pad = hud.padding();
     float row = hud.rowHeight();
     Box box = window(hud, area);
@@ -144,12 +233,6 @@ void buildCharacter(ref Hud hud, ref const Game game, ref const Controls control
         case Sheet.surroundings:
             buildSurroundings(hud, game, meter, content);
             break;
-        case Sheet.controls:
-            buildControls(hud, game, controls, content);
-            break;
-        case Sheet.journal:
-            buildJournal(hud, game, content);
-            break;
         case Sheet.catalog:
             buildCatalog(hud, game, content);
             break;
@@ -159,7 +242,7 @@ void buildCharacter(ref Hud hud, ref const Game game, ref const Controls control
 void wrappedRows(ref Hud hud, ref Panel panel, const(char)[] text, uint color) {
     size_t room = cast(size_t) higherOf(floorf(panel.width / hud.atlas.advance), 1.0f);
     size_t start = 0;
-    while (start < text.length && panel.hasRoom) {
+    while (start < text.length) {
         size_t end = lowerOf(start + room, text.length);
         if (end < text.length) {
             size_t space = end;
@@ -178,10 +261,12 @@ void wrappedRows(ref Hud hud, ref Panel panel, const(char)[] text, uint color) {
     }
 }
 
-void buildJournal(ref Hud hud, ref const Game game, Box content) {
+void buildJournal(ref Hud hud, ref const Game game, Box area) {
     char[LINE_CAPACITY] buffer;
     char[LINE_CAPACITY] storage;
-    Panel panel = panelIn(hud, content);
+    UiAction closing = {kind: UiKind.close};
+    Box content = titled(hud, area, "journal", "close", closing);
+    Panel panel = hud.scrollPanel(content, Column.first);
     IdSet known = game.knowledge();
     uint unknown = 0;
     heading(hud, panel, "what you have noticed");
@@ -211,6 +296,7 @@ void buildJournal(ref Hud hud, ref const Game game, Box content) {
     if (unknown > 0) {
         hud.row(panel, printed(buffer[], "%u more things to notice", unknown), DIM);
     }
+    hud.closeScroll(panel, content, Column.first);
 }
 
 uint columnsFor(ref const Hud hud, Box content, float cell) {
@@ -263,21 +349,14 @@ void buildCatalog(ref Hud hud, ref const Game game, Box content) {
         tooltip(hud, itemName(hovered.value, storage[]));
     } else if (slotHovered.exists && !slotHovered.value.isEmpty) {
         char[LINE_CAPACITY] buffer;
-        tooltip(hud, stackName(slotHovered.value, buffer[]));
+        tooltip(hud, stackName(game, slotHovered.value, buffer[]));
     }
 }
 
 void buildStation(ref Hud hud, ref const Game game, Box area) {
-    float pad = hud.padding();
-    float row = hud.rowHeight();
-    Box box = window(hud, area);
     char[NAME_CAPACITY] place;
-    const(char)[] name = stationName(game.workstation, place[]);
-    float close = lowerOf(hud.columns(CLOSE_COLUMNS), box.w / 3);
-    hud.clippedText(box.x + pad, box.y + pad, box.w - close - 3 * pad, name, GOLD);
     UiAction closing = {kind: UiKind.close};
-    hud.button(Box(box.x + box.w - pad - close, box.y + pad, close, row), "close", Maybe!UiAction.of(closing));
-    Box content = Box(box.x + pad, box.y + row + 3 * pad, box.w - 2 * pad, box.h - row - 4 * pad);
+    Box content = titled(hud, area, stationName(game.workstation, place[]), "close", closing);
     if (hasSyntheses(game.workstation)) {
         buildSynthesisStation(hud, game, content, game.workstation);
     } else {
@@ -344,15 +423,16 @@ void buildItems(ref Hud hud, ref const Game game, Box content, Station station) 
     hud.clippedText(content.x, content.y + row, gridWidth, printed(buffer[], "mining with %.*s", cast(int) tool.length, tool.ptr), DIM);
     Maybe!Stack hovered;
     slotGrid(hud, game, content.x, content.y + 2 * row, cell, hovered);
-    Panel panel = panelIn(hud, crafting);
+    Panel panel = hud.scrollPanel(crafting, Column.first);
     buildQueue(hud, game, panel);
     Maybe!uint recipe = buildRecipes(hud, game, panel, station);
     if (station == HAND) {
         hud.row(panel, "more at placed stations", DIM);
     }
+    hud.closeScroll(panel, crafting, Column.first);
     if (hovered.exists && !hovered.value.isEmpty) {
         char[LINE_CAPACITY] named;
-        const(char)[] name = stackName(hovered.value, named[]);
+        const(char)[] name = stackName(game, hovered.value, named[]);
         tooltip(hud, printed(buffer[], "%.*s x%u", cast(int) name.length, name.ptr, hovered.value.count));
     } else if (recipe.exists) {
         recipeTooltip(hud, game, recipe.value);
@@ -384,7 +464,7 @@ Maybe!uint buildRecipes(ref Hud hud, ref const Game game, ref Panel panel, Stati
     float swatch = hud.atlas.lineHeight;
     Maybe!uint hovered;
     foreach (index, ref recipe; recipes()) {
-        if (recipe.station == station && game.isKnownRecipe(cast(uint) index) && panel.left >= 2) {
+        if (recipe.station == station && game.isKnownRecipe(cast(uint) index) && panel.takes(2)) {
             char[LINE_CAPACITY] storage;
             char[LINE_CAPACITY] buffer;
             Box line = Box(panel.x, panel.y, panel.width, 2 * panel.row);
@@ -433,7 +513,7 @@ Maybe!uint buildRecipes(ref Hud hud, ref const Game game, ref Panel panel, Stati
 }
 
 void buildQueue(ref Hud hud, ref const Game game, ref Panel panel) {
-    if (panel.hasRoom) {
+    if (panel.takes(1)) {
         float side = panel.row - hud.scale;
         float label = hud.columns(6);
         hud.put(panel, 0, "queue", GOLD);
@@ -488,10 +568,10 @@ void compoundList(ref Hud hud, ref const Game game, ref Panel panel) {
     char[LINE_CAPACITY] buffer;
     heading(hud, panel, "compounds you hold");
     if (game.compounds.length == 0) {
-        hud.row(panel, "none; mine living things for extract", WHITE);
+        hud.row(panel, "none; a press squeezes extract out of living blocks", WHITE);
     }
     foreach (index, ref compound; game.compounds.slice()) {
-        if (panel.hasRoom) {
+        if (panel.takes(1)) {
             Box line = Box(panel.x, panel.y, panel.width, panel.row);
             bool chosen = game.chosenCompound.exists && game.chosenCompound.value == index;
             if (chosen) {
@@ -544,7 +624,7 @@ void compoundPlot(ref Hud hud, ref const Game game, ref Panel panel) {
         const(Ratio)[] affinity = compound.affinity[0 .. compound.receptors];
         float plot = PLOT_SHARE * hud.height;
         uint plotRows = cast(uint)(plot / hud.rowHeight()) + 1;
-        if (actsOnAny(DOSE_SIZE, affinity) && panel.left >= plotRows) {
+        if (actsOnAny(DOSE_SIZE, affinity) && panel.takes(plotRows)) {
             hud.assayPlot(panel.x, panel.y, panel.width, plot, affinity, compound.efficacy[0 .. compound.receptors]);
             foreach (_; 0 .. plotRows) {
                 panel.advance();
@@ -555,23 +635,40 @@ void compoundPlot(ref Hud hud, ref const Game game, ref Panel panel) {
 
 void buildChemistry(ref Hud hud, ref const Game game, Box content) {
     if (content.w >= hud.columns(TWO_COLUMNS)) {
-        float half = (content.w - hud.padding()) / 2;
-        Panel left = panelIn(hud, Box(content.x, content.y, half, content.h));
-        Panel right = panelIn(hud, Box(content.x + half + hud.padding(), content.y, half, content.h));
+        Box first = firstHalf(hud, content);
+        Box second = secondHalf(hud, content);
+        Panel left = hud.scrollPanel(first, Column.first);
+        Panel right = hud.scrollPanel(second, Column.second);
         chemistryColumns(hud, game, left, right);
+        hud.closeScroll(left, first, Column.first);
+        hud.closeScroll(right, second, Column.second);
     } else {
-        Panel panel = panelIn(hud, content);
+        Panel panel = hud.scrollPanel(content, Column.first);
         chemistryColumns(hud, game, panel, panel);
+        hud.closeScroll(panel, content, Column.first);
     }
 }
 
+Box firstHalf(ref const Hud hud, Box content) {
+    return Box(content.x, content.y, (content.w - hud.padding()) / 2, content.h);
+}
+
+Box secondHalf(ref const Hud hud, Box content) {
+    float half = (content.w - hud.padding()) / 2;
+    return Box(content.x + half + hud.padding(), content.y, half, content.h);
+}
+
 void chemistryColumns(ref Hud hud, ref const Game game, ref Panel left, ref Panel right) {
+    char[LINE_CAPACITY] buffer;
     compoundList(hud, game, left);
     compoundDetail(hud, game, right);
     compoundPlot(hud, game, right);
     const(Compound)* compound = chosenOf(game);
     if (compound !is null) {
         heading(hud, right, "take a dose");
+        if (compound.doses < 1) {
+            hud.row(right, printed(buffer[], "no doses: a press makes one from %.0f extract", cast(double) RAW_PER_DOSE), DIM);
+        }
         foreach (index, ref route; doseRoutes()) {
             Maybe!UiAction take;
             if (compound.doses >= 1) {
@@ -584,9 +681,10 @@ void chemistryColumns(ref Hud hud, ref const Game game, ref Panel left, ref Pane
 }
 
 void buildSynthesisStation(ref Hud hud, ref const Game game, Box content, Station station) {
-    float half = (content.w - hud.padding()) / 2;
-    Panel left = panelIn(hud, Box(content.x, content.y, half, content.h));
-    Panel right = panelIn(hud, Box(content.x + half + hud.padding(), content.y, half, content.h));
+    Box first = firstHalf(hud, content);
+    Box second = secondHalf(hud, content);
+    Panel left = hud.scrollPanel(first, Column.first);
+    Panel right = hud.scrollPanel(second, Column.second);
     compoundList(hud, game, left);
     compoundDetail(hud, game, left);
     const(Compound)* compound = chosenOf(game);
@@ -602,6 +700,8 @@ void buildSynthesisStation(ref Hud hud, ref const Game game, Box content, Statio
     }
     buildQueue(hud, game, right);
     Maybe!uint recipe = buildRecipes(hud, game, right, station);
+    hud.closeScroll(left, first, Column.first);
+    hud.closeScroll(right, second, Column.second);
     if (recipe.exists) {
         recipeTooltip(hud, game, recipe.value);
     }
@@ -614,7 +714,7 @@ void livingList(ref Hud hud, ref const Game game, ref Panel panel) {
     uint listed = 0;
     foreach (slot; 0 .. SLOT_COUNT) {
         if (game.isPressable(slot)) {
-            const(char)[] name = stackName(game.inventory.slots[slot], storage[]);
+            const(char)[] name = stackName(game, game.inventory.slots[slot], storage[]);
             UiAction press = {kind: UiKind.pressLiving, index: slot};
             buttonRow(hud, panel, printed(buffer[], "%.*s x%u", cast(int) name.length, name.ptr, game.inventory.slots[slot].count), Maybe!UiAction.of(press));
             listed += 1;
@@ -651,15 +751,19 @@ void synthesisButton(ref Hud hud, ref const Game game, ref Panel panel, ref cons
 
 void buildBody(ref Hud hud, ref const Game game, Box content) {
     if (content.w >= hud.columns(TWO_COLUMNS)) {
-        float half = (content.w - hud.padding()) / 2;
-        Panel left = panelIn(hud, Box(content.x, content.y, half, content.h));
-        Panel right = panelIn(hud, Box(content.x + half + hud.padding(), content.y, half, content.h));
+        Box first = firstHalf(hud, content);
+        Box second = secondHalf(hud, content);
+        Panel left = hud.scrollPanel(first, Column.first);
+        Panel right = hud.scrollPanel(second, Column.second);
         bodyFeelings(hud, game, left);
         bodyReceptors(hud, game, right);
+        hud.closeScroll(left, first, Column.first);
+        hud.closeScroll(right, second, Column.second);
     } else {
-        Panel panel = panelIn(hud, content);
+        Panel panel = hud.scrollPanel(content, Column.first);
         bodyFeelings(hud, game, panel);
         bodyReceptors(hud, game, panel);
+        hud.closeScroll(panel, content, Column.first);
     }
 }
 
@@ -744,7 +848,7 @@ string wetnessWord(float wetness) {
 }
 
 void buildSurroundings(ref Hud hud, ref const Game game, ref const FrameMeter meter, Box content) {
-    Panel panel = panelIn(hud, content);
+    Panel panel = hud.scrollPanel(content, Column.first);
     char[LINE_CAPACITY] buffer;
     uint slot = game.world.graph.slotOf(game.characterState.position.node).value;
     heading(hud, panel, "here");
@@ -772,15 +876,18 @@ void buildSurroundings(ref Hud hud, ref const Game game, ref const FrameMeter me
         hud.row(panel, printed(buffer[], "crossing seeds here mutates %.0f%%", cast(double) game.mutationOddsAt(slot).value * 100), WHITE);
     }
     hud.row(panel, printed(buffer[], "%u nodes deep, %.0f frames a second", game.world.graph.depthOf(slot), cast(double) meter.fps), DIM);
+    hud.closeScroll(panel, content, Column.first);
 }
 
 bool isListed(Action action, Rules rules) {
     return ACTIONS[action].needs == Rules.survival || rules == Rules.creative;
 }
 
-void buildControls(ref Hud hud, ref const Game game, ref const Controls controls, Box content) {
+void buildControls(ref Hud hud, ref const Game game, ref const Controls controls, Box area) {
     float pad = hud.padding();
     float row = hud.rowHeight();
+    UiAction back = {kind: UiKind.open, index: Screen.menu};
+    Box content = titled(hud, area, "controls", "back", back);
     uint listed = 0;
     foreach (index; 0 .. ACTION_COUNT) {
         if (isListed(cast(Action) index, game.rules)) {
@@ -933,9 +1040,12 @@ void plantRow(ref Hud hud, ref const Game game, Box line, uint slot, float cell)
     char[NAME_CAPACITY] productStorage;
     char[LINE_CAPACITY] buffer;
     const(char)[] plant = itemName(stack.item, plantStorage[]);
-    const(char)[] product = moleculeName(productOf(stack.item.block, stack.genes.value), productStorage[]);
-    const(char)[] text = printed(buffer[], "%c %-9.*s x%-2u makes %.*s", mark, cast(int) plant.length, plant.ptr, stack.count, cast(int) product.length, product.ptr);
-    float left = stripLeft(hud, text, line.w, cell);
+    const(char)[] make = stackMake(game, stack, productStorage[]);
+    const(char)[] text = printed(buffer[], "%c %-9.*s x%-2u %.*s", mark, cast(int) plant.length, plant.ptr, stack.count, cast(int) make.length, make.ptr);
+    float left = line.w;
+    if (stack.sorting == Sorting.sorted) {
+        left = stripLeft(hud, text, line.w, cell);
+    }
     hud.clippedText(line.x, line.y, left, text, CYAN);
     if (left < line.w) {
         hud.geneStrip(line.x + left, line.y, cell, stack.genes.value);

@@ -11,7 +11,6 @@ const play = async () => {
     const status = document.getElementById("status");
     const failures = failuresGoTo(document.getElementById("failure"));
     const showStatus = (text) => {
-        status.textContent = text;
         document.title = text;
     };
     resizeCanvas(canvas);
@@ -20,13 +19,17 @@ const play = async () => {
         const module = await WebAssembly.compile(wasmFromBase64(CAAPI_WASM));
         game.attach(await WebAssembly.instantiate(module, game.imports));
         game.exports.web_start(canvas.width, canvas.height, renderRadiusFromAddress(), creativeFromAddress());
+        status.hidden = true;
         const isCaptured = () => document.pointerLockElement === canvas;
         const pixelsOf = (event) => {
             const box = canvas.getBoundingClientRect();
             const scale = canvas.width / box.width;
             return [(event.clientX - box.left) * scale, (event.clientY - box.top) * scale];
         };
-        const refused = () => showStatus(LOCK_REFUSED);
+        const refused = () => {
+            status.textContent = LOCK_REFUSED;
+            status.hidden = false;
+        };
         const lockIfWanted = () => {
             if (!isCaptured() && game.exports.web_wants_lock() !== 0) {
                 const asked = canvas.requestPointerLock();
@@ -37,6 +40,7 @@ const play = async () => {
         };
         document.addEventListener("pointerlockchange", () => {
             if (isCaptured()) {
+                status.hidden = true;
                 game.exports.web_capture(CAPTURE_CAPTURED);
             } else {
                 game.exports.web_capture(CAPTURE_RELEASED);
@@ -61,9 +65,10 @@ const play = async () => {
         });
         canvas.addEventListener("contextmenu", (event) => event.preventDefault());
         canvas.addEventListener("wheel", (event) => {
-            if (isCaptured() && event.deltaY !== 0) {
+            if (event.deltaY !== 0) {
                 event.preventDefault();
-                game.exports.web_button(event.deltaY < 0 ? WHEEL_BACK : WHEEL_AHEAD, 0, 0);
+                const [x, y] = pixelsOf(event);
+                game.exports.web_button(event.deltaY < 0 ? WHEEL_BACK : WHEEL_AHEAD, x, y);
                 game.exports.web_button_up(event.deltaY < 0 ? WHEEL_BACK : WHEEL_AHEAD);
             }
         });
@@ -77,7 +82,8 @@ const play = async () => {
         });
         document.addEventListener("keydown", (event) => {
             const name = keyNameOf(event.code);
-            if (name !== undefined && game.exports.web_takes_keys(isCaptured() ? 1 : 0) !== 0) {
+            const shortcut = event.ctrlKey || event.metaKey || event.altKey;
+            if (name !== undefined && !shortcut && game.exports.web_takes_keys(isCaptured() ? 1 : 0) !== 0) {
                 event.preventDefault();
                 game.exports.web_key_down(game.name(name), event.repeat ? STROKE_REPEATED : STROKE_FIRST);
                 lockIfWanted();

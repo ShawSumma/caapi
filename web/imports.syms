@@ -5,6 +5,7 @@ web_free_pointer
 web_store_size
 web_store_read
 web_store_write
+web_store_remove
 web_gl_program
 web_gl_setup
 web_gl_grow_faces

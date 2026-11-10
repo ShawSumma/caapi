@@ -6,7 +6,7 @@ caapi is a voxel game set in hyperbolic space, and the engine under it. This is 
 
 Space is hyperbolic 3-space, tiled by right-angled dodecahedra. Every cell is cut into twenty cubes of voxels, one at each of its corners. Nothing has global coordinates. A place is a cell and a position inside it, and the farther out you go, the more room there is, exponentially.
 
-The ground is a hyperbolic plane. Some worlds raise further planes above it and join them with buildings, and gravity follows whichever ground is near. The code calls these planes horospheres, but they are geodesic planes: walk five equal legs with a right turn after each and your compass ends up a quarter turn off.
+The ground is a hyperbolic plane. Some worlds raise further planes above it and join them with buildings, and gravity follows whichever ground is near. The code calls these planes horospheres, but they are geodesic planes: walk five equal legs with a right turn after each and you are back where you started, which on flat ground takes four.
 
 The terrain world has a climate, soil and rock, trees and plants. The other worlds are built places such as a city, the backrooms, a library, a palace, caves and vaults.
 

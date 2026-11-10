@@ -32,7 +32,7 @@ import common.settings : CHUNK_DIMENSION;
 import common.worldgen.generation : PlaneWorld, Worldgen, WorldgenKind;
 import geometry.honeycomb : FACE_COUNT, Face;
 import plugins.api.api : Material;
-import scripts.claims : Outcome, isPrefixOf, ledger, namesTopic, writeClaimLines, writeDot, writeProblems, writeTally, writeWiki;
+import scripts.claims : Outcome, Topic, isPrefixOf, isTopicName, ledger, namesTopic, writeClaimLines, writeProblems, writeTally, writeWiki;
 import scripts.films : FILMS;
 import scripts.tests : TESTS;
 import scripts.views : VIEWS;
@@ -88,7 +88,6 @@ enum Command : ubyte {
     films,
     claims,
     wiki,
-    wikiDot,
     worldDigest,
     dumpWorld,
     materialCensus,
@@ -114,9 +113,8 @@ immutable OptionSpec[Command.max + 1] COMMANDS = [
     Command.tests: OptionSpec("tests", "", "run the behavior tests (all, or those whose names start with a prefix)"),
     Command.views: OptionSpec("views", "", "run the screenshot view scripts without rendering, to check they still run"),
     Command.films: OptionSpec("films", "", "run the film shots without rendering, to check they still run"),
-    Command.claims: OptionSpec("claims", "", "run the behavior tests and print every claim they state with what was measured (all, or by test name prefix or topic)"),
-    Command.wiki: OptionSpec("wiki", "", "run the behavior tests and write their claims as one Markdown page (all, or by test name prefix or topic)"),
-    Command.wikiDot: OptionSpec("wiki-dot", "", "run the behavior tests and write the topics and the links between them for Graphviz"),
+    Command.claims: OptionSpec("claims", "", "run the behavior tests and print every check of a law with what was measured (all, or by test name prefix or topic)"),
+    Command.wiki: OptionSpec("wiki", "", "run the behavior tests and write the laws they checked as one Markdown page: a map of the systems, then a linked section for each (all, or by test name prefix or topic)"),
     Command.worldDigest: OptionSpec("world-digest", "", "hash the terrain world"),
     Command.dumpWorld: OptionSpec("dump-world", "", "print the terrain world"),
     Command.materialCensus: OptionSpec("material-census", "", "count the terrain world's materials"),
@@ -219,7 +217,23 @@ struct HeadlessArguments {
     }
 
     bool takesPrefixes() const {
-        return command.value == Command.tests || command.value == Command.views || command.value == Command.films || command.value == Command.claims || command.value == Command.wiki || command.value == Command.wikiDot || command.value == Command.contentData;
+        return command.value == Command.tests || command.value == Command.views || command.value == Command.films || takesSelectors() || command.value == Command.contentData;
+    }
+
+    bool takesSelectors() const {
+        return command.value == Command.claims || command.value == Command.wiki;
+    }
+
+    Maybe!(const(char)*) unknownSelector() const {
+        size_t index = 0;
+        while (index < prefixes.length && isKnownSelector(sliceOf(prefixes.ptr[index]))) {
+            index += 1;
+        }
+        if (index < prefixes.length) {
+            return Maybe!(const(char)*).of(prefixes.ptr[index]);
+        } else {
+            return Maybe!(const(char)*).init;
+        }
     }
 
     bool needsStructure() const {
@@ -233,6 +247,8 @@ struct HeadlessArguments {
             return StartupError(null, "nothing to do: give a command");
         } else if (needsStructure() && worldgen.kind != WorldgenKind.structure) {
             return StartupError(registry().allNames(), "needs a structure world", null, COMMANDS[command.value].name);
+        } else if (takesSelectors() && unknownSelector().exists) {
+            return StartupError(ENUM_NAMES!Topic[], "knows no topic by this name and no test whose name starts with it:", unknownSelector().value, COMMANDS[command.value].name);
         } else {
             return StartupError.init;
         }
@@ -265,6 +281,14 @@ struct HeadlessArguments {
             return DEFAULT_NEARBY_ITERATIONS;
         }
     }
+}
+
+bool isKnownSelector(const(char)[] selector) {
+    size_t index = 0;
+    while (index < TESTS.length && !isPrefixOf(selector, TESTS[index].name)) {
+        index += 1;
+    }
+    return isTopicName(selector) || index < TESTS.length;
 }
 
 bool isChosen(ref const HeadlessArguments arguments, string name) {
@@ -311,7 +335,6 @@ Outcome outcomeOf(ExitStatus status) {
 enum ClaimForm : ubyte {
     lines,
     wiki,
-    dot,
 }
 
 ExitStatus runClaims(ref const HeadlessArguments arguments, FILE* output, ClaimForm form) {
@@ -337,10 +360,8 @@ ExitStatus runClaims(ref const HeadlessArguments arguments, FILE* output, ClaimF
         case ClaimForm.wiki:
             writeWiki(output, ledger, selectors.slice());
             break;
-        case ClaimForm.dot:
-            writeDot(output, ledger, selectors.slice());
-            break;
     }
+    fflush(output);
     writeTally(progress, ledger, selectors.slice());
     uint problems = writeProblems(progress, ledger);
     bool clean = problems == 0 && ledger.tallyOf(selectors.slice()).failedTests == 0;
@@ -402,9 +423,6 @@ ExitStatus runCommand(ref const HeadlessArguments arguments, FILE* output) {
             break;
         case Command.wiki:
             status = runClaims(arguments, output, ClaimForm.wiki);
-            break;
-        case Command.wikiDot:
-            status = runClaims(arguments, output, ClaimForm.dot);
             break;
         case Command.worldDigest:
             status = printWorldDigest(output, radius, CHUNK_DIMENSION);

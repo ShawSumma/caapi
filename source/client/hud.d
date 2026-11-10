@@ -3,7 +3,6 @@ module client.hud;
 import core.stdc.math : asinhf, cosf, fabsf, floorf, powf, sinf, sqrtf;
 import base.array : Array;
 import base.clock : FrameClock, MILLISECONDS_PER_SECOND;
-import base.flags : Readiness;
 import base.maybe : Maybe, MaybeIndex;
 import base.names : ENUM_NAMES;
 import base.numbers : PI, clamped, higherOf, lowerOf;
@@ -24,16 +23,16 @@ import common.biology.wild : WildGenes;
 import common.character.controller : MovementMode;
 import common.crafting : CraftKind, Crafting, Product, Recipe, Station, recipes, stationOf, stations, syntheses, timeOf, upgrades;
 import common.graph : Graph;
-import common.inventory : HOTBAR_SLOTS, Inventory, Stack;
+import common.inventory : Cycle, HOTBAR_SLOTS, Inventory, Sorting, Stack;
 import common.items : Item, ItemKind, colorOf, contentNameOf, itemOf, materialNames;
-import common.material : ByteColor, families, isPlant;
+import common.material : ByteColor, families;
 import common.perception : Channel, presets;
 import common.position : Position;
 import common.traversal : NearbyScratch;
 import common.worldgen.generation : Worldgen, WorldgenKind;
 import client.bindings : Action, Rules;
 import client.camera : Quaternion;
-import client.game : AimKind, BeaconSighting, Game, LivingReading, MOST_NOTES, Mineable, NOTE_SECONDS, Note, NoteKind, PLANT_DOSE, Screen, TRAIL_POINTS, UiAction, requiredTierOf, toolFor;
+import client.game : AimKind, BeaconSighting, Game, LivingReading, MOST_NOTES, Mineable, NOTE_SECONDS, Note, NoteKind, PLANT_DOSE, Ripeness, Screen, Sheet, TRAIL_POINTS, UiAction, requiredTierOf, toolFor;
 import client.input : Controls, keyLabel;
 import client.screens : buildScreen;
 import client.text : AtlasGlyph, FIRST_CHARACTER, GlyphAtlas, LAST_CHARACTER, WHITE_TEXEL, emPixelsFor, texelOf;
@@ -167,13 +166,32 @@ const(char)[] itemName(Item item, char[] buffer) {
     }
 }
 
-const(char)[] stackName(Stack stack, char[] buffer) {
+const(char)[] makeOf(ref const Game game, Molecule product, char[] buffer) {
     char[NAME_CAPACITY] storage;
-    char[NAME_CAPACITY] moleculeStorage;
+    if (game.isKnownProduct(product)) {
+        const(char)[] molecule = moleculeName(product, storage[]);
+        return printed(buffer, "makes %.*s", cast(int) molecule.length, molecule.ptr);
+    } else {
+        return printed(buffer, "unidentified");
+    }
+}
+
+const(char)[] stackMake(ref const Game game, ref const Stack stack, char[] buffer) {
+    final switch (stack.sorting) {
+        case Sorting.unsorted:
+            return printed(buffer, "unidentified");
+        case Sorting.sorted:
+            return makeOf(game, productOf(stack.item.block, stack.strains[0].genes), buffer);
+    }
+}
+
+const(char)[] stackName(ref const Game game, Stack stack, char[] buffer) {
+    char[NAME_CAPACITY] storage;
+    char[NAME_CAPACITY] makeStorage;
     const(char)[] name = itemName(stack.item, storage[]);
-    if (stack.genes.exists) {
-        const(char)[] molecule = moleculeName(productOf(stack.item.block, stack.genes.value), moleculeStorage[]);
-        return printed(buffer, "%.*s, makes %.*s", cast(int) name.length, name.ptr, cast(int) molecule.length, molecule.ptr);
+    if (stack.strainCount > 0) {
+        const(char)[] make = stackMake(game, stack, makeStorage[]);
+        return printed(buffer, "%.*s, %.*s", cast(int) name.length, name.ptr, cast(int) make.length, make.ptr);
     } else {
         return printed(buffer, "%.*s", cast(int) name.length, name.ptr);
     }
@@ -318,6 +336,8 @@ const(char)[] describe(ref const Note note, char[] buffer) {
             return printed(buffer, "planted a %.*s with no genes of its own; it took this place's, ripe in %.0fs", length, name.ptr, cast(double) note.amount);
         case NoteKind.ate:
             return printed(buffer, "ate the %.*s: %.*s, %.*s", itemLength, item.ptr, moleculeLength, molecule.ptr, cast(int) route.length, route.ptr);
+        case NoteKind.ateUnknown:
+            return printed(buffer, "ate the %.*s", itemLength, item.ptr);
         case NoteKind.nothingToEat:
             return printed(buffer, "hold something living to eat it");
         case NoteKind.noGenes:
@@ -529,7 +549,7 @@ char[STATUS_CAPACITY] statusLine(ref const Game game, MouseCapture mouse, ref co
     string rules = ENUM_NAMES!Rules[game.rules];
     final switch (mouse) {
         case MouseCapture.captured:
-            snprintf(text.ptr, text.length, "caapi - %.*s - %.*s - Esc frees the mouse - %.0f fps", cast(int) world.length, world.ptr, cast(int) rules.length, rules.ptr, cast(double) meter.fps);
+            snprintf(text.ptr, text.length, "caapi - %.*s - %.*s - Esc opens the menu - %.0f fps",cast(int) world.length, world.ptr, cast(int) rules.length, rules.ptr, cast(double) meter.fps);
             break;
         case MouseCapture.released:
             snprintf(text.ptr, text.length, "caapi - %.*s - %.*s - click to play - %.0f fps", cast(int) world.length, world.ptr, cast(int) rules.length, rules.ptr, cast(double) meter.fps);
@@ -616,9 +636,19 @@ struct Panel {
     float row;
     float width;
     uint left;
+    uint skip;
+    uint cut;
 
-    bool hasRoom() const {
-        return left > 0;
+    bool takes(uint rows) {
+        if (skip > 0) {
+            skip -= lowerOf(skip, rows);
+            return false;
+        } else if (cut == 0 && left >= rows) {
+            return true;
+        } else {
+            cut += rows;
+            return false;
+        }
     }
 
     void advance() {
@@ -643,6 +673,20 @@ struct Hotspot {
     UiAction action;
 }
 
+enum Column : ubyte {
+    first,
+    second,
+}
+
+enum uint COLUMN_COUNT = Column.max + 1;
+enum uint WHEEL_ROWS = 3;
+
+struct Scrolled {
+    Box box = Box(0, 0, 0, 0);
+    uint above;
+    uint below;
+}
+
 struct Hud {
     Array!HudVertex vertices;
     Array!Marker markers;
@@ -651,10 +695,13 @@ struct Hud {
     Growth growth;
     GlyphAtlas atlas;
     float[ANCHOR_COUNT] used = 0;
+    Scrolled[COLUMN_COUNT] scrolled;
     ScreenPoint cursor = ScreenPoint(0, 0);
     float width = 0;
     float height = 0;
     float scale = 1;
+    Screen shownScreen;
+    Sheet shownSheet;
 
     void rect(float x, float y, float w, float h, uint color) {
         quad(ScreenPoint(x, y), ScreenPoint(x + w, y), ScreenPoint(x + w, y + h), ScreenPoint(x, y + h), color);
@@ -802,9 +849,50 @@ struct Hud {
     }
 
     void row(ref Panel panel, const(char)[] shown, uint color) {
-        if (panel.hasRoom) {
+        if (panel.takes(1)) {
             put(panel, 0, shown, color);
             panel.advance();
+        }
+    }
+
+    uint rowsIn(Box box) const {
+        return cast(uint) higherOf(floorf(box.h / rowHeight()), 0.0f);
+    }
+
+    float scrollBar() const {
+        return 2 * scale;
+    }
+
+    Panel scrollPanel(Box box, Column column) const {
+        return Panel(box.x, box.y, rowHeight(), box.w - scrollBar() - padding(), rowsIn(box), scrolled[column].above);
+    }
+
+    void closeScroll(ref const Panel panel, Box box, Column column) {
+        Scrolled* kept = &scrolled[column];
+        kept.box = box;
+        kept.above -= panel.skip;
+        kept.below = panel.cut;
+        uint shown = rowsIn(box);
+        if (shown > 0 && kept.above + kept.below > 0) {
+            uint total = kept.above + shown + kept.below;
+            float x = box.x + box.w - scrollBar();
+            rect(x, box.y, scrollBar(), box.h, faded(WHITE, BAR_BACK_SHARE));
+            rect(x, box.y + box.h * kept.above / total, scrollBar(), box.h * shown / total, RIM);
+        }
+    }
+
+    void wheel(Cycle direction) {
+        foreach (ref kept; scrolled) {
+            if (kept.box.holds(cursor)) {
+                final switch (direction) {
+                    case Cycle.back:
+                        kept.above -= lowerOf(kept.above, WHEEL_ROWS);
+                        break;
+                    case Cycle.ahead:
+                        kept.above += lowerOf(kept.below, WHEEL_ROWS);
+                        break;
+                }
+            }
         }
     }
 
@@ -880,6 +968,14 @@ struct Hud {
         vertices.clear();
         hotspots.clear();
         used[] = 0;
+        foreach (ref kept; scrolled) {
+            kept.box = Box(0, 0, 0, 0);
+            if (game.screen != shownScreen || game.sheet != shownSheet) {
+                kept.above = 0;
+            }
+        }
+        shownScreen = game.screen;
+        shownSheet = game.sheet;
         width = pixelsWide;
         height = pixelsHigh;
         scale = higherOf(1u, pixelsHigh / BASE_HEIGHT);
@@ -933,7 +1029,7 @@ struct Hud {
             Panel panel = openPanel(Anchor.topLeft, label + BAR_SHARE * height / 2, count);
             float bar = higherOf(panel.width - label, 0.0f);
             foreach (ref effect; effects[0 .. count]) {
-                if (panel.hasRoom) {
+                if (panel.takes(1)) {
                     put(panel, 0, effect.label, WHITE);
                     fillBar(panel.x + label, panel.y, bar, effect.share, CYAN);
                     panel.advance();
@@ -992,20 +1088,26 @@ struct Hud {
         if (!actsOnAny(PLANT_DOSE, affinity)) {
             plotRows = 0;
         }
-        const(char)[] product = moleculeName(reading.product, storage[]);
+        const(char)[] make = makeOf(game, reading.product, storage[]);
         Panel panel = openPanel(Anchor.topRight, columns(TARGET_COLUMNS), 4 + plotRows);
         row(panel, name, WHITE);
-        if (!isPlant(reading.species)) {
-            row(panel, printed(buffer[], "makes %.*s", cast(int) product.length, product.ptr), CYAN);
-        } else if (reading.growth == Readiness.ready) {
-            row(panel, printed(buffer[], "makes %.*s, ripe, %.0f%% suited here", cast(int) product.length, product.ptr, cast(double) reading.fit.value * 100), CYAN);
-        } else {
-            row(panel, printed(buffer[], "makes %.*s, ripe in %.0fs", cast(int) product.length, product.ptr, cast(double) reading.left.value), CYAN);
+        final switch (reading.growth) {
+            case Ripeness.wild:
+                row(panel, make, CYAN);
+                break;
+            case Ripeness.ripe:
+                row(panel, printed(buffer[], "%.*s, ripe, %.0f%% suited here", cast(int) make.length, make.ptr, cast(double) reading.fit.value * 100), CYAN);
+                break;
+            case Ripeness.growing:
+                row(panel, printed(buffer[], "%.*s, ripe in %.0fs", cast(int) make.length, make.ptr, cast(double) reading.left.value), CYAN);
+                break;
         }
         if (game.hasAssay()) {
             row(panel, bindsOf(PLANT_DOSE, affinity, reading.efficacy[0 .. reading.receptors], game.organism.receptors.slice(), buffer[]), DIM);
-        } else {
+        } else if (game.isKnownProduct(reading.product)) {
             row(panel, "an assay kit reads its effect", DIM);
+        } else {
+            row(panel, "a press shows what it makes", DIM);
         }
         row(panel, printed(buffer[], "%.*s: break it to carry", cast(int) mine.length, mine.ptr), DIM);
         if (plotRows > 0 && panel.left >= plotRows) {
@@ -1137,7 +1239,7 @@ struct Hud {
         Item held = inventory.held();
         float label = top - rowHeight() - 2 * padding();
         if (held.kind != ItemKind.nothing && game.screen == Screen.none) {
-            const(char)[] name = fitting(stackName(inventory.slots[inventory.selected], storage[]), total);
+            const(char)[] name = fitting(stackName(game, inventory.slots[inventory.selected], storage[]), total);
             float w = textWidth(name) + 2 * padding();
             float x = floorf((width - w) / 2);
             rect(x, label, w, rowHeight() + padding(), PANEL);
