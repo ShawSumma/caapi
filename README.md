@@ -51,21 +51,26 @@ Default keys:
 - The mouse or the arrow keys look around.
 - Hold the left mouse button to mine. The right button places the block you hold, or uses the block you aim at.
 - 1 to 9, 0, - and = pick one of the twelve hotbar slots, and the mouse wheel steps through them.
-- E opens the inventory: the hotbar plus 36 more slots, 64 to a stack.
+- E opens the inventory: the hotbar plus 36 more slots, 64 to a stack. Its other tabs show your body, the compounds you hold and your surroundings.
+- J opens the journal of what you have noticed.
+- Esc opens the menu. It lists every world and marks the ones that have a save; pick one to play it, or to delete its save and start it over. The key bindings are behind its controls button.
 - Hold F to eat what you hold.
+- In any screen the mouse wheel scrolls a list that is longer than its panel.
 
 What there is to do:
 
 - **Mining** takes time. Harder blocks need a better pickaxe, and a better pickaxe also mines faster.
 - **Crafting** is a queue. Queue a recipe and the recipes that make its missing ingredients are queued ahead of it. Cancel one that has started and its ingredients come back. Work that needs a station only moves while you are near one you have used. Some recipes have to be learned first, by breaking the right block or by working at a station.
-- **Living blocks** carry genes, and their genes make a compound. A press extracts it and a lab changes it with reagents. A dose can be swallowed, inhaled or injected.
+- **Living blocks** carry genes, and their genes make a compound. A press extracts it and a lab changes it with reagents. A dose can be swallowed, inhaled or injected. What a living block makes is unidentified until you hold that compound or own an assay kit. Unidentified blocks of one species share a stack, each keeping its own genes, and the ones you identify move to a stack of their own.
 - **Your body** has receptors, and what a compound does depends on which of them it binds. It can change how fast you walk, how hard gravity pulls, how high you jump and how the world looks, and it can reveal blocks that were not there before.
-- **Plants** grow from what you plant, ripen in a minute, and yield more where the climate suits them. At a bench you can cross two plants, or splice a plant's enzyme into yourself. A collector fills with the local air, which you can then breathe.
+- **Plants** grow from what you plant, ripen in a minute, and yield more where the climate suits them. A plant found growing wild gives just one. At a bench you can cross two plants, or splice a plant's enzyme into yourself. A collector fills with the local air, which you can then breathe.
 - **Beacons** mark a place so that you can find it again.
 
 `--creative` starts you with blocks and mines fast. It also adds these keys: V to switch between walking and flying, N for noclip, [ and ] for the previous and next world, T to throw a block, O to take a test dose and P for the next perception preset.
 
-The game saves to `saves/<world>-<mode>.save`.
+The game saves to `saves/<world>-<mode>.save`. Each world has its own save, and a world without one starts you fresh. A save written by another version of the game is left as it is and nothing is saved over it; the menu says so, and deleting it there starts that world over.
+
+In the browser the page opens on the menu: click any empty spot to play, and Esc brings the menu back. The saves are kept in the page's local storage, one for each world, and the page reopens in the world you last entered.
 
 Settings are read from `caapi.cfg` in the working directory, one `key = value` per line:
 
