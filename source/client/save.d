@@ -5,7 +5,7 @@ import base.array : Array;
 import base.maybe : Maybe, MaybeIndex;
 import base.flags : Readiness;
 import base.units : Length, Time;
-import client.game : Beacon, Compound, Game, MOST_COMPOUNDS, RAW_PER_DOSE, slotFor;
+import client.game : Beacon, Compound, Game, MOST_COMPOUNDS, MOST_FOOTHOLDS, RAW_PER_DOSE, slotFor;
 import common.crafting : CraftKind, Crafting, IdSet, Reaction, SynthesisRule, insights, recipes, returnIngredients, syntheses, upgrades;
 import common.items : Item, ItemKind, contentNameOf, itemCount, itemNamed;
 import client.hud : worldNameOf;
@@ -23,7 +23,7 @@ import geometry.lorentz : Motion;
 import plugins.api.api : ENTRY, Material;
 
 enum uint SAVE_MAGIC = 0x63616170;
-enum uint SAVE_FORMAT = 10;
+enum uint SAVE_FORMAT = 11;
 enum uint MOST_SAVED_NAMES = 1 << 16;
 enum uint MOST_NAME_BYTES = 1 << 10;
 enum uint WORLDGEN_VERSION = 4;
@@ -50,6 +50,11 @@ struct SavedBeacon {
     uint faces;
     uint cell;
     Corner corner;
+}
+
+struct SavedFoothold {
+    uint faces;
+    Motion!float local;
 }
 
 struct Writer {
@@ -231,6 +236,8 @@ struct SaveData {
     Array!BlockRecord records;
     Array!SavedBeacon beacons;
     Array!Face beaconPaths;
+    Array!SavedFoothold footholds;
+    Array!Face footholdPaths;
 
     void release() {
         compounds.release();
@@ -240,6 +247,8 @@ struct SaveData {
         records.release();
         beacons.release();
         beaconPaths.release();
+        footholds.release();
+        footholdPaths.release();
     }
 }
 
@@ -353,6 +362,16 @@ void writeGame(ref const Game game, ref Writer writer) {
         writer.putAll(beaconPath.slice());
     }
     beaconPath.release();
+    uint footholdCount = game.footholds.count;
+    writer.put(footholdCount);
+    Array!Face footholdPath;
+    foreach (place; game.footholds.places[0 .. game.footholds.count]) {
+        pathFromRoot(game.world.graph, game.world.graph.slotOf(place.node).value, footholdPath);
+        SavedFoothold saved = SavedFoothold(cast(uint) footholdPath.length, place.local);
+        writer.put(saved);
+        writer.putAll(footholdPath.slice());
+    }
+    footholdPath.release();
 }
 
 const(char)* readGame(const(ubyte)[] bytes, ref const Game game, ref SaveData data) {
@@ -394,6 +413,8 @@ const(char)* readBody(ref Reader reader, ref SaveData data) {
         return "is cut short in the edits";
     } else if (!readBeacons(reader, data)) {
         return "is cut short in the beacons";
+    } else if (!readFootholds(reader, data)) {
+        return "is cut short in the places to wake";
     } else {
         return null;
     }
@@ -430,6 +451,28 @@ bool readBeacons(ref Reader reader, ref SaveData data) {
                     return false;
                 }
                 data.beaconPaths.append(along);
+            }
+        }
+    }
+    return counted;
+}
+
+bool readFootholds(ref Reader reader, ref SaveData data) {
+    uint count;
+    bool counted = reader.take(count) && count <= MOST_FOOTHOLDS;
+    if (counted) {
+        foreach (_; 0 .. count) {
+            SavedFoothold saved;
+            if (!reader.take(saved) || saved.faces > MOST_PATH_FACES) {
+                return false;
+            }
+            data.footholds.append(saved);
+            foreach (face; 0 .. saved.faces) {
+                Face along;
+                if (!reader.take(along)) {
+                    return false;
+                }
+                data.footholdPaths.append(along);
             }
         }
     }
@@ -522,6 +565,14 @@ void applyState(ref Game game, ref const SaveData data) {
         first += saved.faces;
         game.world.graph.reference(beaconSlot);
         game.beacons.append(Beacon(ChunkId(game.world.graph.idAt(beaconSlot), saved.corner), saved.cell));
+    }
+    size_t start = 0;
+    foreach (saved; data.footholds.slice()) {
+        uint footholdSlot = replayed(game.world.graph, data.footholdPaths.slice()[start .. start + saved.faces]);
+        start += saved.faces;
+        game.world.graph.reference(footholdSlot);
+        game.footholds.places[game.footholds.count] = Position(game.world.graph.idAt(footholdSlot), saved.local);
+        game.footholds.count += 1;
     }
     uint slot = replayed(game.world.graph, data.path.slice());
     game.placeAt(Position(game.world.graph.idAt(slot), data.local), Length(0));

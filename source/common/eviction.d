@@ -12,7 +12,7 @@ import common.node : Chunk, ChunkSlot, ChunkState;
 import common.traversal : NearbyNode, NearbyScratch;
 import common.worldgen.blueprint : Blueprint;
 import common.worldgen.horospheres : releaseIdleHorospheres;
-import common.worldgen.store : dropTile, forgetTile, isTileGone, isTilePinned, unpin;
+import common.worldgen.store : TileDrops, dropIdleTilesAt, forgetTile, isTileGone, unpin;
 import geometry.cube : DIRECTIONS;
 import geometry.honeycomb : CORNER_COUNT, CUBE_RADIUS, Corner, cubeCenter;
 import geometry.lorentz : Point;
@@ -23,17 +23,12 @@ enum uint SWEEP_LEAST_SLOTS = 1024;
 enum double SWEEP_MOST_MILLISECONDS = 3.0;
 enum float KEEP_RADIUS = 3.0f;
 enum float DROP_RADIUS = 3.5f;
-enum uint TILE_IDLE_SWEEPS = 60;
-enum uint TILE_CYCLE_FRAMES = 30;
-enum uint TILES_PER_CLOCK_CHECK = 64;
 
 struct Evictor {
     Array!uint stack;
     Bits recent;
     uint cursor;
-    uint tileCursor;
     uint forgetCursor;
-    uint seenLive;
     uint seenNodes;
     uint evicted;
     uint dropped;
@@ -44,7 +39,7 @@ struct Evictor {
         Near near = Near(&published, building);
         recent.cover(graph.slotCount);
         double deadline = start + SWEEP_MOST_MILLISECONDS;
-        dropIdleTiles(graph, near, deadline);
+        graph.structures.blueprint.sweep += 1;
         forgetGoneTiles(graph);
         float dropThreshold = coshf(DROP_RADIUS + CUBE_RADIUS);
         uint wanted = higherOf(graph.slotCount / SWEEP_CYCLE_FRAMES, SWEEP_LEAST_SLOTS);
@@ -76,10 +71,15 @@ struct Evictor {
                     if (index.exists && graph.chunks.has(slot)) {
                         dropped += graph.dropFarChunks(published.nodes.ptr[index.value], camera, dropThreshold);
                     }
-                } else if (graph.isEvictable(slot)) {
-                    evictFrom(graph, slot, near, unloaded);
                 } else {
-                    graph.unloadNode(slot, unloaded);
+                    TileDrops drops = graph.dropIdleTilesAt(slot);
+                    droppedTiles += drops.dropped;
+                    forgottenTiles += drops.forgotten;
+                    if (graph.isEvictable(slot)) {
+                        evictFrom(graph, slot, near, unloaded);
+                    } else {
+                        graph.unloadNode(slot, unloaded);
+                    }
                 }
             }
         }
@@ -97,43 +97,6 @@ struct Evictor {
             foreach (link; parents.links[0 .. parents.count]) {
                 if (!recent.has(link.slot) && !near.contains(link.slot) && graph.isEvictable(link.slot)) {
                     stack.append(link.slot);
-                }
-            }
-        }
-    }
-
-    void dropIdleTiles(ref Graph graph, Near near, double deadline) {
-        Blueprint* blueprint = &graph.structures.blueprint;
-        blueprint.sweep += 1;
-        uint owed = blueprint.madeLive - seenLive;
-        seenLive = blueprint.madeLive;
-        size_t count = blueprint.liveTiles.length / TILE_CYCLE_FRAMES + 1;
-        size_t examined = 0;
-        while (examined < count) {
-            if (tileCursor >= blueprint.liveTiles.length) {
-                tileCursor = 0;
-            }
-            if (tileCursor < blueprint.liveTiles.length) {
-                uint tile = blueprint.liveTiles.ptr[tileCursor];
-                if (graph.isTileIdle(tile, tileCursor, near)) {
-                    graph.dropTile(tile);
-                    droppedTiles += 1;
-                    if (owed > 0) {
-                        owed -= 1;
-                    }
-                    if (graph.isTileGone(tile)) {
-                        graph.forgetTile(tile);
-                        forgottenTiles += 1;
-                    }
-                } else {
-                    tileCursor += 1;
-                }
-            }
-            examined += 1;
-            if (examined % TILES_PER_CLOCK_CHECK == 0 && owed == 0) {
-                double now = nowMilliseconds();
-                if (now >= deadline) {
-                    return;
                 }
             }
         }
@@ -161,16 +124,6 @@ struct Evictor {
     void release() {
         stack.release();
         recent.release();
-    }
-}
-
-bool isTileIdle(ref const Graph graph, uint tile, uint listed, Near near) {
-    const(Blueprint)* blueprint = &graph.structures.blueprint;
-    if (blueprint.sweep - blueprint.liveUses.ptr[listed] > TILE_IDLE_SWEEPS && !graph.isTilePinned(tile)) {
-        MaybeIndex!uint face = graph.slotOf(blueprint.tiles.ptr[tile].face);
-        return !face.exists || !near.contains(face.value);
-    } else {
-        return false;
     }
 }
 
@@ -217,7 +170,7 @@ bool isSettled(ref const Graph graph, Maybe!ChunkSlot chunk) {
 }
 
 bool isEvictable(ref const Graph graph, uint slot) {
-    return graph.nodeAt(slot).liveChildren == 0 && graph.nodeAt(slot).references == 0 && !graph.isPinned(slot);
+    return graph.nodeAt(slot).liveChildren == 0 && graph.nodeAt(slot).references == 0 && !graph.structures.at(slot).tiles.exists && !graph.isPinned(slot);
 }
 
 bool isPinned(ref const Graph graph, uint slot) {

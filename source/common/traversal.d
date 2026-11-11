@@ -10,7 +10,7 @@ import base.numbers : higherOf, lowerOf;
 import base.parallel : Executor, ParallelJob;
 import common.graph : Graph, NodeContent;
 import common.position : Position;
-import common.worldgen.horospheres : probeMayHoldContent;
+import common.worldgen.horospheres : probeDeep, probeMayHoldContent;
 import geometry.honeycomb : FACE_COUNT, FACE_DISTANCE, Face, NODE_RADIUS, mirror;
 import geometry.lorentz : Motion, Point, Vec4;
 
@@ -18,7 +18,7 @@ enum size_t EXPAND_BATCH = 256;
 version (WebAssembly) {
     enum size_t PAINT_BATCH = 16;
 } else {
-    enum size_t PAINT_BATCH = 256;
+    enum size_t PAINT_BATCH = 64;
 }
 enum size_t DERIVE_BATCH = 64;
 enum double SHELL_FLOOR = 0.01;
@@ -139,7 +139,7 @@ void expandBatch(void* context, size_t index, uint worker) {
         NodeContent content = job.graph.nodeAt(current.slot).content;
         if (scratch.isInner(current) || content == NodeContent.holding) {
             scratch.expandKnown(*job.graph, current, cast(uint) position, *output);
-        } else if (content == NodeContent.unknown && scratch.hasOpenSide(*job.graph, current)) {
+        } else if ((content == NodeContent.unknown || content == NodeContent.shallow) && scratch.hasOpenSide(*job.graph, current)) {
             output.unknown.append(cast(uint) position);
         }
     }
@@ -391,8 +391,10 @@ struct NearbyScratch {
         candidates.clear();
         size_t index = unknownHead;
         while (index < serial.unknown.length && candidates.length < PAINT_BATCH) {
+            uint slot = nodes.ptr[serial.unknown.ptr[index]].slot;
+            graph.ensureDepthAt(slot);
             if (!isUnknownReady(graph, index)) {
-                candidates.append(nodes.ptr[serial.unknown.ptr[index]].slot);
+                candidates.append(slot);
             }
             index += 1;
         }
@@ -405,7 +407,7 @@ struct NearbyScratch {
 
     bool isUnknownReady(ref const Graph graph, size_t index) const {
         uint slot = nodes.ptr[serial.unknown.ptr[index]].slot;
-        return graph.isFinished(slot) || graph.structures.at(slot).isCovered;
+        return graph.nodeAt(slot).content == NodeContent.deep || graph.isFinished(slot) || graph.structures.at(slot).isCovered;
     }
 
     bool hasSerialWork() const {
@@ -743,8 +745,20 @@ struct NearbyScratch {
     }
 }
 
-NodeContent ensureContentAt(ref Graph graph, uint slot) {
+NodeContent ensureDepthAt(ref Graph graph, uint slot) {
     if (graph.nodeAt(slot).content == NodeContent.unknown) {
+        bool deep = graph.probeDeep(slot);
+        if (deep) {
+            graph.nodeAt(slot).content = NodeContent.deep;
+        } else {
+            graph.nodeAt(slot).content = NodeContent.shallow;
+        }
+    }
+    return graph.nodeAt(slot).content;
+}
+
+NodeContent ensureContentAt(ref Graph graph, uint slot) {
+    if (graph.ensureDepthAt(slot) == NodeContent.shallow) {
         bool holding = graph.probeMayHoldContent(slot);
         if (holding) {
             graph.nodeAt(slot).content = NodeContent.holding;

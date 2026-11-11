@@ -4,7 +4,7 @@ import core.stdc.math : coshf, expf, logf, powf;
 import base.array : Array;
 import base.clock : Deadline, PhaseTimes, nowMilliseconds, threadCpuMilliseconds;
 import base.maybe : Maybe, MaybeIndex;
-import base.numbers : higherOf, lowerOf;
+import base.numbers : clamped, higherOf, lowerOf;
 import base.vector3 : Vec3;
 import client.arrivals : resolveIfExposed, resolveMaterials;
 import client.camera : CAMERA_FORWARD;
@@ -37,11 +37,17 @@ enum float REDERIVE_RADIUS = 6.0f;
 enum double TELEPORT_TRAVEL = 1.0e3;
 enum float RENDER_RADIUS = 8.0f;
 enum float FOG_VISIBILITY_THRESHOLD = 1e-3f;
-enum float FOG_LOAD_THRESHOLD = 1.0f / 256;
+enum float FOG_LOAD_THRESHOLD = 1.0f / 8;
+enum float FOG_FAINT_THRESHOLD = 1.0f / 256;
 enum float FOG_SHARPNESS = 4.0f;
 enum float FULL_RADIUS = 4.5f;
 enum float CAMERA_REACH = 2.0f;
 enum double STEP_BUDGET_MILLISECONDS = 8.0;
+enum double LEAST_STEP_BUDGET = 4.0;
+enum double MOST_STEP_BUDGET = 13.0;
+enum double IDLE_TARGET_MILLISECONDS = 3.0;
+enum double BUDGET_GAIN = 0.25;
+enum double NEARBY_SHARE = 0.5;
 enum double NEARBY_LEAST_MILLISECONDS = 1.0;
 enum double STREAMER_LEAST_MILLISECONDS = 1.0;
 version (WebAssembly) {
@@ -103,6 +109,7 @@ struct LocalWorld {
     Array!uint candidates;
     double rebuildTravel = 0;
     double startTravel = 0;
+    double stepBudget = STEP_BUDGET_MILLISECONDS;
     float renderRadius;
     float radiusCut = 0;
     float publishedCut = 0;
@@ -187,16 +194,35 @@ struct LocalWorld {
     }
 
     float loadRadius() const {
-        return fogReach(viewRadius()) * powf(logf(1.0f / FOG_LOAD_THRESHOLD), 1.0f / FOG_SHARPNESS);
+        return lowerOf(fogDistance(viewRadius(), FOG_FAINT_THRESHOLD), loadReach(renderRadius));
+    }
+
+    float deepRadius() const {
+        const(Under)[] unders = graph.structures.blueprint.unders.slice();
+        float widest = 0;
+        foreach (ref under; unders) {
+            widest = higherOf(widest, loadReach(lowerOf(renderRadius, under.fog)));
+        }
+        if (graph.underAt(cameraPosition) !is null) {
+            return loadRadius();
+        } else if (unders.length == 0) {
+            return lowerOf(loadRadius(), FULL_RADIUS);
+        } else {
+            return lowerOf(loadRadius(), widest);
+        }
+    }
+
+    void paceBy(double idleMilliseconds) {
+        stepBudget = clamped(stepBudget + BUDGET_GAIN * (idleMilliseconds - IDLE_TARGET_MILLISECONDS), LEAST_STEP_BUDGET, MOST_STEP_BUDGET);
     }
 
     void update(Pacing pacing) {
         double start = nowMilliseconds();
-        double end = start + STEP_BUDGET_MILLISECONDS - phases.evict.lastMs;
+        double end = start + stepBudget - phases.evict.lastMs;
         paintAhead();
         double painted = nowMilliseconds();
         double paintedCpu = threadCpuMilliseconds();
-        Deadline deadline = phaseDeadline(pacing, end - phases.streamer.lastMs, NEARBY_LEAST_MILLISECONDS);
+        Deadline deadline = phaseDeadline(pacing, higherOf(end - phases.streamer.lastMs, painted + (end - painted) * NEARBY_SHARE), NEARBY_LEAST_MILLISECONDS);
         if (nearbyStage == NearbyStage.initial) {
             buildInitialNearby(deadline);
         } else if (!cameraNearbyIndex().exists) {
@@ -209,7 +235,7 @@ struct LocalWorld {
         trackTravel();
         double found = nowMilliseconds();
         double foundCpu = threadCpuMilliseconds();
-        streamer.drive(graph, cachedNodes, cameraPosition, cameraInNearbyFrame(), loadRadius(), nearbyVersion, pacing, phaseDeadline(pacing, end, STREAMER_LEAST_MILLISECONDS));
+        streamer.drive(graph, nearby[published], cameraPosition, cameraInNearbyFrame(), loadRadius(), deepRadius(), nearbyVersion, pacing, phaseDeadline(pacing, end, STREAMER_LEAST_MILLISECONDS));
         double streamed = nowMilliseconds();
         double streamedCpu = threadCpuMilliseconds();
         evict();
@@ -502,6 +528,14 @@ struct LocalWorld {
 
 float fogReach(float renderRadius) {
     return renderRadius / powf(logf(1.0f / FOG_VISIBILITY_THRESHOLD), 1.0f / FOG_SHARPNESS);
+}
+
+float fogDistance(float viewRadius, float left) {
+    return fogReach(viewRadius) * powf(logf(1.0f / left), 1.0f / FOG_SHARPNESS);
+}
+
+float loadReach(float viewRadius) {
+    return fogDistance(viewRadius, FOG_LOAD_THRESHOLD);
 }
 
 float fogVisibility(float distance, float renderRadius) {

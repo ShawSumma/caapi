@@ -1,11 +1,12 @@
+__pycache__
 .firefox-check/
 *.a
-export.txt
-lib/
 caapi
 caapi-headless
 caapi-unittest
 caapi.html
+export.txt
+lib/
 obj/
 saves/
 screenshots/

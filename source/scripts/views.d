@@ -149,11 +149,15 @@ immutable NamedScript[] VIEWS = [
     NamedScript("grove", &grove),
     NamedScript("backroomspool", &foundIn!("backrooms", "base:water", 0, 0.14f, 0.12f, 60)),
     NamedScript("backroomscourt", &foundIn!("backrooms", "base:oak-wood", 0, 0.6f, 0.35f, 55)),
-    NamedScript("citycave", &foundIn!("city", "base:cave-grass", 2.3f, 0.12f, 0.45f, -10)),
+    NamedScript("citycave", &underPort!("city", "base:cave-grass", 2.3f, 0.12f, 0.45f, -10)),
     NamedScript("librarywalk", &rising!("library", 1.5f, 0, 0)),
     NamedScript("citywell", &atPort!("city", 0.3f, 0.35f, 40)),
     NamedScript("backroomswell", &atPort!("backrooms", 0.08f, 0.3f, 15)),
     NamedScript("void", &voidBelow),
+    NamedScript("under25", &underSpawn!(2.5f)),
+    NamedScript("under35", &underSpawn!(3.5f)),
+    NamedScript("under45", &underSpawn!(4.5f)),
+    NamedScript("underwindow", &underWindow),
     NamedScript("thread", &threadView),
 ];
 
@@ -809,6 +813,28 @@ void foundIn(string name, string wanted, float depth, float rise, float back, do
     view.wait(SETTLE_SECONDS);
 }
 
+void underPort(string name, string wanted, float depth, float rise, float back, double pitch)(ref Script view) {
+    view.structure(name);
+    view.live();
+    Maybe!Position port = walk.ensurePort(view);
+    view.check(port.exists, "found no port among the vertices nearest the root of %s", name.ptr);
+    if (port.exists) {
+        view.mode(MovementMode.noclip);
+        view.game.placeAt(port.value, Length(0));
+        noclip(view, depth, Key.down);
+        view.wait(CAVES_LOAD_SECONDS);
+        Maybe!Position found = firstOf(view, materialNamed(wanted));
+        view.check(found.exists, "found no %s among %u loaded nodes %.1f under a port of %s", wanted.ptr, view.game.world.graph.slotCount, depth, name.ptr);
+        if (found.exists) {
+            view.game.placeAt(view.game.world.graph.ensureNormalized(found.value), Length(0));
+            noclip(view, rise, Key.up);
+            noclip(view, back, Key.back);
+            view.look(degrees(0), degrees(pitch));
+        }
+    }
+    view.wait(SETTLE_SECONDS);
+}
+
 void sinkhole(ref Script view) {
     view.terrain();
     Maybe!Position rim = walk.ensureLastFlat(view);
@@ -846,6 +872,33 @@ void voidBelow(ref Script view) {
     noclip(view, VOID_DEPTH, Key.down);
     view.look(degrees(0), degrees(VOID_PITCH));
     view.step();
+}
+
+enum double UNDER_SPAWN_YAW = 90;
+
+void underSpawn(float depth)(ref Script view) {
+    view.terrain();
+    view.mode(MovementMode.noclip);
+    noclip(view, depth, Key.down);
+    view.look(degrees(UNDER_SPAWN_YAW), degrees(0));
+    view.step();
+}
+
+enum float WINDOW_RISE = 1.0f;
+enum double WINDOW_PITCH = -70;
+
+void underWindow(ref Script view) {
+    view.terrain();
+    Maybe!Position window = walk.ensureUnderGround(view, walk.Beneath.open);
+    view.check(window.exists, "no node %d and a half edges under a ground vertex near spawn is in the open void", walk.BENEATH_EDGES);
+    if (window.exists) {
+        view.mode(MovementMode.noclip);
+        view.game.placeAt(window.value, Length(0));
+        noclip(view, WINDOW_RISE, Key.up);
+        view.look(degrees(0), degrees(WINDOW_PITCH));
+    }
+    view.step();
+    view.game.world.settleFogColor();
 }
 
 enum double GROVE_CLIMB_SECONDS = 3;

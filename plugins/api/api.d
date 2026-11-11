@@ -2,7 +2,7 @@ module plugins.api.api;
 
 import plugins.api.content : Manifest;
 
-enum string ENTRY = "caapi_plugin_25";
+enum string ENTRY = "caapi_plugin_28";
 
 version (WebAssembly) {
     enum string entryOf(string unit) = ENTRY ~ "_" ~ unit;
@@ -226,6 +226,11 @@ struct Api {
     void function(const(Api)* api, KindTag ground, double edges) crust;
     void function(const(Api)* api, double odds) ports;
     bool function(const(Api)* api, Site site) probePort;
+    void function(const(Api)* api, KindTag ground, double edges) thinCrust;
+    double function(const(Api)* api, Site site) probeCrust;
+    void function(const(Api)* api, KindTag ground, const(char)[] look, double edges, double fog) underCrust;
+    void function(const(Api)* api, KindTag ground, double edges) abyss;
+    void function(const(Api)* api, double cells) edgeCeiling;
 }
 
 struct Registry {

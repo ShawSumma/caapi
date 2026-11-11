@@ -33,7 +33,8 @@ Built and checked at the time of writing. Everything in this list was **Tested**
 - The default world holds the others as risen grounds, has caves under all of it, lattice groves on wild ground, and stands six landmarks around spawn.
 - Caves: open sinkholes on wild ground, sealed caves from 1.9 edges down under city, backrooms and vaults, none under the library. A world gets caves by calling `build("underground")`.
 - Ports and wells: `api.ports(odds)` rolls ports per ground vertex (3 in 100), `probePort` answers, every tile leaves the port's column open and the cave edge tile sinks a spiral stair two edges down to a cave head that is forced open. No port at a world's root vertex, at a risen ground's foot, or where a ground rises.
-- Crust: `api.crust(ground, edges)`. Root wild ground 5.6 edges, risen wild ground and vaults 3.4 edges, city and backrooms none. Below the crust nothing is generated, and the planet's edge tile hangs the lattice there (`lattice.hang`). `api.under` changes look and fog by depth.
+- Crust: `api.crust(ground, edges)`. Risen wild ground and vaults 3.4 edges, city and backrooms none. Below the crust nothing is generated, and the planet's edge tile hangs the lattice there (`lattice.hang`). `api.under` changes look and fog by depth.
+- Package A, built and checked: the root wild ground's crust is a field between 5.6 edges and 2 (`api.thinCrust`; settings in `plugins/planet/settings.conf`). `probeCrust` answers the underside at a site; `api.underCrust` sets a look below the crust; the caves keep a chamber only half an edge or more inside the rock (`ROCK_MARGIN`); the lattice hangs wherever an end of a beam is in the open. Plugin ABI is 26. What it looks like: a roof about two edges thick, and under it great stepped masses of pale rock with lattice in the open between them; thin and thick places both lie right under spawn.
 - Flat ground is soil over rock bands and veins.
 - City districts (five), backrooms plans (pillars, pools, courts) and 18 biomes, library rooms (atrium, studies, lounge).
 - Vaults rise with `bridge: none`: no connector to them or from them.
@@ -42,12 +43,15 @@ The checks that passed on that build: 103 behavior tests, the unit tests, the ap
 
 Known weak spots, none of them fixed:
 
-- `world-digest` came out the same before and after the crust, the void and the wells were added. It does not look deep enough to guard them.
+- `world-digest` came out the same before and after the crust, the void and the wells were added. Fixed by N2: it now prints a second line, `deep`, for a column under spawn eight edges down, tiles included. Since package A the two lines read `digest populated=10140 materials 135fa9e2dc893a80983fd133d6ad301c occupancy 78676cc3384bc6057a5cc686700ed889` and `deep populated=856 materials e824508e4f1cc59d701a5f201d6d5178 occupancy bb3ed9d320159f549a78d96ee548fecf`, and package P left both as they were. It still does not reach a port.
 - Under the root crust nothing catches a falling body but the lattice. **Tested** only as far as: a body let go 6.4 units under spawn fell 0.5 in a second and landed on a girder.
+- Package A made generation near spawn slower: `bench-gen` and `bench-drive` both took about half as long again after it. The cause is read from the counts: within 2.5 units of spawn nearly four times as many chunks are generated cell by cell, because a chunk whose shield range crosses a threshold cannot be proven whole. The owner keeps the masses, so this cost stays; package P took back part of it (the parameters) and stopped the far underground from being generated at all from the surface.
+- `structure/void`'s first law ("in the open and falls") would also hold for a body inside solid rock, since a body inside uniform rock falls. `structure/window` and `structure/shield` ask for solid cells and are the stronger statements.
+- Probably, cave floors, ceilings and formations hang in the open where a chamber meets the flank of a rock mass (inferred by the scout of B from the code; the four renders of A did not look there). The repair is the first piece of B.
 - A port is a bare hole with a limestone stair in every ground.
 - In the backrooms the well's column is left open on every level (**Read**), but only the top level was looked at.
 - `wiki.md` is a generated page and is behind the code.
-- `live/fly` ran 66 to 68 s of its 120 s limit in single runs. Not a benchmark, but the margin is thinner than it was.
+- `live/fly` had come to use more than half of its 120 s limit. After package P it uses under a quarter.
 - Lattice poles that straddle the underside are painted up into the rock as far as the vertex above (**Read** in `lattice.hang` and `beam`), so a joint may show in the floor of a deep cave chamber. Not looked at.
 
 ## 2. The owner's answers
@@ -84,6 +88,35 @@ In the owner's words. Where an answer was a choice among offered options, the op
 | 12 | What makes a backrooms subtype a place? | Regions, by level | All four (regions with edges, rare rooms, levels, uses). "All of these are good, but don't close off. This is where variety really matters. Take inspiration from minecraft's multiple table worldgen" |
 | 13 | What do the library's rooms hold? | Plain blocks | Notes, the catalog and working rooms. "Stock goes in the backrooms, tho maybe library-ish stock once and a while. More like a break room for library employees" |
 | 14 | Where does normal play meet a debug structure? | Six stand at spawn; the menu lists none | A creative menu. "Essentially debug worlds are for seeing a structure out of context or in isolation. Normal play doesn't really see them. Think the concept of a scene or prefab in unity or godot". And on the six at spawn: "I think placing them is fine, but rather the goal is to turn them into real things that are not just for testing. Like, real places and objects" |
+
+### Answers given after this plan was first written
+
+Asked four of the questions in section 8:
+
+- Where a fallen player wakes: "I think going back to the last thing they stood on before they entered the place would be good."
+- On "megaphobia" and the maze sheet: "The fear of structures larger than you can comphrend. The flat maze should be closer to a rafter with no railings. Not walls as much as a minecraft-ish mineshaft."
+- On "minecraft's multiple table worldgen": "Yes, but onlt a bit. You don't have to, and should not, do exactly that... just that's how I mean doing multiple strategies. You can't make it a tree, it's a space of parameters"
+- On whether capacities fall under the threes rule: "The queue shouldn't have a size and should work like factorio. 24 compounds kept is also a bad/weird thing. Flowers stacking but being unidentified is a bit odd. They are basically a bundle of items, in a way."
+
+And on who builds: the work is done by Opus 5.5 subagents, briefed and checked from the main session.
+
+Asked five more once the scouts had reported:
+
+- On the audit table: "I'm fine with your judgement. I like 81 as the limit. Minecraft has inventory problems. Hotbar should be 12 (maybe 13 with tilde). Not powers of 3 for thier own sake, but just when somerthing has no default"
+- On the queue: "The queue should work as best you can. The ingrediants are taken immediately and you shouldn't be able to queue what you don't have. Very factorio"
+- On bundles: "A bundle is that which you cannot make any distinction between. It just picks from it. The player should be aware of this, with some tooltip or UI drawing of the different flowers. Like you know which one you have but not what that means. It's a sort of abstract idea. I'd say be forgiving, when the player only has one of a thing, even if they don't know it."
+- On the landmark table: "Give it a shot, if it's no good then we can remove it"
+- On waking when the ground last stood on is gone: "If it's not there go to the block before it. If nothing is there go to world spawn"
+
+### On speed, after the crust was built
+
+"Btw the slowdowns are absolute failures. It was already slow. That is not good *at all*. The world gen is so slow, it's always overcommiting to work then just doing nothing. It's genuinely 10x to slow now as opposed to only being 5x before"
+
+This outranks every package. See package P, which comes before all the others.
+
+And then, on how: "I think work queues should be min-heaps of distance in a way. I want you to spend time optimizing things here. Think about data structures and remember that the goal is having fast generation, not just clever tricks. Like, do all the things that would make it fast. I'm fine with masses, it feels more geological to me."
+
+So question 1 is answered: the rock masses stay, and the second build of package A is not built.
 
 ## 3. What the answers are taken to mean
 
@@ -128,15 +161,137 @@ These are in `CLAUDE.md` in full. The ones that have bitten:
 
 - **Generation is a function of place.** Nodes and tiles are evicted and made again. Anything rolled comes from a hash of the node, face, edge or vertex, never from visiting order, time or a counter. `check-repaint` and `check-forget` catch violations, and every package that touches worldgen runs them on all seven worlds.
 - **Tiles agree by hash or keep out.** Placed structures paint first and tile paints go over them in an order set by the tile's hash. Two tiles of different plugins that could paint the same cells must compute the same answer from hashes alone (`probeOwner`, `settled`, `probePort`), or one of them must leave the cells alone. A tile cannot place, claim or read claims.
-- **Only the world's own structure shapes grounds.** `tile`, `tileEdges`, `horosphere`, `under`, `crust`, `ports`, `flatten`, `fog`, `look` are refused from tiles and from structures placed later.
+- **Only the world's own structure shapes grounds.** `tile`, `tileEdges`, `horosphere`, `under`, `crust`, `ports`, `flatten`, `fog`, `look` are refused from tiles and from structures placed later. A structure placed later is also refused `openHorosphere`, `rooted`, `invertGravity`, `worldLook`, pens and endless paint. A tile is also refused `place`, `claim`, `probeClaimed`, `landmark`, `columnSite` and endless paint.
+- **A tile paints only what is not yet finished.** A paint that reaches a node which is already finished is refused, and the refusal stops the world. In practice a face tile stays on the columns at its own face's five vertices, at any height or depth, and on the ground edges between them.
+- **A stop pins its node.** A route stop or an entrance from a tile or a placed structure references a node for good. Anything that recurs lays none.
+- **Shaping calls go by tag to the kinds that exist.** `crust` and its relatives set a number on every kind already registered with that tag, so they are called after the kinds are added. Nothing refuses the other order; it silently does nothing.
+- **A new ABI number refuses every older save**, as does a new `SAVE_FORMAT`. The project changes formats and does not migrate.
 - **The ABI number.** `ENTRY` in `plugins/api/api.d` goes up whenever the layout of `Api`, `Registry` or `Risen` changes, and new members go at the end. Two packages that both change the API must not be in flight together.
 - **A new plugin** needs a subpackage and a `preGenerateCommands` line in `dub.sdl` and an entry in `WEB_ENTRIES` and `WEB_PLUGINS` in `source/client/plugins.d`. Shared code is a `sourceLibrary` with a `-mod` library beside it (see `caves`, `lattice`).
 - **Laws are claims.** What a package makes true about the game is stated with `world.claim` or `world.link` in `source/scripts/tests.d`, with measures, and says no more than its condition checks. A view goes into `source/scripts/views.d` and is looked at with `./caapi --screenshot <png> <view>`; the PNG is deleted afterwards.
 - **Verification** for a worldgen change: unit tests, all behavior tests, `content-check`, `world-digest` (must not change unless the package means it to), `check-repaint` on planet, city, backrooms, library, vaults, caves and lattice, `check-forget` on lattice, `views`, `films`, and the application and `:web` builds. Rebuild headless in release after `dub test`.
-- **Load.** The void made deep nodes hold content. A package that adds content below the crust or more tile work measures it with the bench commands (`./caapi-headless --help` lists `bench-*`), against a baseline taken the same way, with repeats.
+- **A slowdown is a failure, not a cost.** The owner's word for it. World generation was too slow before any of this work and the work made it worse. Every package measures generation before and after (the bench commands, and the `live/` tests' wall times), against a baseline taken the same way, with repeats, and hands back a tree that is no slower. If a feature cannot be had without a slowdown, the builder stops and reports instead of landing it.
 - **Style.** D with `-betterC`, no comments, no ternaries, no `continue`, typed locals, `final switch` on enums, state as types. Content is data in `.decl`, `.content` and `settings.conf`, not constants in D, wherever a mod could want to change it.
 
 ## 5. The packages
+
+### P. Speed first
+
+**For.** World generation that keeps up with play. Nothing else in this plan is built until this is done, apart from the fall (C), which was already with a builder and brings a bottom below which tiles are not run.
+
+**The owner's words.** "the slowdowns are absolute failures. It was already slow. ... The world gen is so slow, it's always overcommiting to work then just doing nothing. It's genuinely 10x to slow now as opposed to only being 5x before"
+
+**Two problems.**
+
+1. **The new one, which this work caused.** The scripted `live/` sessions all took longer than before any of this work, `live/fly` by half as much again. The owner's experience in play was worse than those ratios, so the sessions understate it; they never mesh or draw, and the application now generates, tiles and meshes lattice and broken rock under the ground where there was uniform rock that cost almost nothing. What was added: the cave tile run once per filled ground near each edge; groves; rock bands and veins under built ground; the void's lattice at any depth; ports and wells; and the crust field, which alone made `bench-gen` take half as long again and nearly four times as many chunks near spawn generate cell by cell.
+2. **The old one.** It was already several times too slow, and the pattern the owner sees is that it commits to more than it can do and then does nothing.
+
+**The bar.** First: every number above back to where it was before this work or better, with everything this work added still there. Then the old problem.
+
+**The owner's direction.** Work queues are min-heaps keyed by distance: the nearest work is done first, and work for places left behind does not hold up work for where the player is. Time is to be spent here, on data structures and on doing less work, with fast generation as the goal and not tricks: everything that makes it fast, each thing measured. The masses stay, so the speed has to be found with them: a smoother shield (larger masses, fewer chunks that straddle the edge of one) is a tuning the owner's answer allows, and is tried and shown in renders if the measurements say the mixed chunks matter.
+
+**How.** A scout is reading the whole streaming, tile, generation and meshing path for both problems and for a way to measure them. A builder then, in this order: a benchmark of a streamed session that reports where time and idle go, added to the harness in `source/worldcheck.d`; the fixes that undo the regression, one at a time, each measured; then the old problem. Candidates known before the scout reports, none of them measured:
+
+- restore the chunk fast paths under the crust field (bound the thickness exactly from the chunk's corner values, or decide thick or thin once per node);
+- tighten `isInBand`, which now lets nearly every node between two and 5.6 edges down hold content;
+- do not generate, tile or mesh what cannot be seen: with the camera above the ground, what lies under an unbroken roof; with it below, what lies above;
+- bound the lattice (the abyss from C);
+- do not run the cave tile for a ground that can have no cave at that edge.
+
+**Checked by.** Section 4 in full, both digest lines unchanged unless a fix is meant to change what is generated, and the benchmark numbers before and after, raw, three runs each.
+
+**From the scout, read in the code. Nothing in it was measured; the sizes are its estimates.**
+
+*How a frame streams.* `Game.step` calls `world.update` with a budget of 8 ms. In order: paint tiles ahead (up to 256 candidate nodes, up to four rounds of planning, then every task in one blocking job with no deadline, then each task applied on the main thread); rebuild or refresh the set of nearby nodes (everything within 4.5 units is expanded whatever it holds; beyond that only nodes that may hold content, out to the load reach, which is 7.57 units above ground and about 3.3 in the void's fog); drive the streamer (integrate arrivals, scan nodes, plan chunk parameters in one blocking job, submit generation and building requests to queues); evict. Workers are cores less two; they join any open job first, then take from the queues. Meshing is a 2 ms job per frame that every worker joins. The GPU culls against the frustum only: nothing is culled for being hidden or far.
+
+*Where it commits to more than it can do and then idles.*
+
+1. **Batches with no bound that the frame waits for.** Chunks within 3 units are all "urgent" and planned without a budget; a frame can plan thousands of parameters in one blocking job and then the queues hold seconds of work.
+2. **Queues that never forget.** Requests are first in, first out, and are never cancelled when the camera moves, so the chunk under the body waits behind everything within 3 units, and work arrives for places already left.
+3. **A main thread every stage passes through.** On it, serially: tiles that were not painted ahead (through `ensureStructureAt` in the scan), `planBuilding` for every building (which runs the whole tile visit of the node again on the main view), parameters for every chunk whose worker view was blocked, `resolveMaterials`, merging what the workers found, and applying every tile task. A node needs at least paint, building, parameters, generation, integration and mesh, each gated by the main thread on a different frame. With the frame paced to the display, the main thread sleeps, the queues drain, and the workers sleep until the next frame plans more. The headless sessions are not paced, which is why they hide it and why play feels worse than their numbers.
+4. **Work redone after a blocked view.** A blocked chunk falls back to the main thread; a blocked tile candidate is planned again from scratch, up to four times.
+5. **A batch waits for its slowest task.** A cave vertex carves 6912 cells with several tests each; a sky edge does almost nothing.
+6. **Generate, drop, generate again.** The load reach is 7.57 units but dense chunks beyond 3.5 are dropped once meshed, and every fresh arrival restores (regenerates) its dropped neighbors. The shell between holds most of the volume.
+7. **A cache flushed whole.** About every two seconds the sweep releases idle grounds and, if it released even one, clears the entire cache of what rises where.
+8. **A reach that jumps.** The load reach follows the fog every frame, so going under half an edge shrinks it to about 3 and coming back up asks for the whole shell at once.
+
+*What this work added.*
+
+- With the camera on the ground, about 45 percent of the nodes that are always collected (the 4.5 ball) lie at or below the thin underside. That region used to be uniform rock: opaque, unmeshed, nearly free. It is now masses generated cell by cell and a lattice on every edge in the open, so nearly every deep node needs a building (which pays the main-thread `planBuilding`), loses the uniform fast path for all twenty of its chunks, and is meshed and drawn. None of it can be seen from above. This is taken to be the main source of the doubling.
+- The bottom that C adds is twelve edges down, deeper than anything streamed from the surface. It does nothing for play above ground.
+- The cave tile: each edge task runs once per filled ground near it, up to four times; each call opens pens, and for an owned end walks the chain of parents with a fresh memo, so shared chains are walked again by every task. `keeps` and `hang` now call `probeCrust`, which builds a climate around the point (eight node states, created if missing). Every edge in rock deeper than four cells pays two of them.
+- The fast paths under the crust field were lost honestly: the bound from the chunk's corner values is already exact, and the ramp is as wide as one node step's noise, so most chunks between thin and thick really are mixed. Bounding better recovers little.
+- `isInBand` widened only where relief is high; elsewhere the set of content nodes is about what it was.
+- Rock bands and veins under flat ground make 8 percent of rock chunks dense; each is meshed in full for no faces and dropped and restored beyond 3.5.
+
+*Fixes that undo the regression, by expected gain.*
+
+- **R1. Do not make what cannot be seen.** Plan and mesh a chunk only if it is close (for collision and editing) or a face neighbor is made and has a cell on the shared face that does not block sight. Solid rock stops the flood; sinkholes, ports, wells and cave tubes let it through, which is why it stays correct. It never changes what is generated, only whether and when. Expected to save about half the nodes of the near ball above ground, with most of the lattice's cost. A depth gate would be simpler and is not provably correct.
+- **R2. Decide thick or thin once per node,** or make the shield smoother. Brings cell-by-cell chunks back toward the old count. It changes the look and the `deep` digest line, so it is the owner's call and belongs with question 1.
+- **R3. Cheaper exact paths:** hoist the climate's x and y interpolation out of the innermost cell loop (the floats are identical); in `lattice.hang` test the bottom before asking the crust; remember `probeCrust` per vertex within a task.
+- **R4. Remember cave openness per worker,** not per tile call. It is a pure function.
+- **R5. Do not run the node's tiles again on the main thread for every building,** only when one of its tiles was dropped.
+- **R6. Tighten the shield's slack in `isInBand`.** Helps only in hills.
+- **R7. Take a risen ground's plane from the reference the node already carries,** not by walking a path. The floats differ slightly, so the digest may move.
+
+*Fixes for the old problem.*
+
+- **O1. Priority and cancellation.** "Urgent" only for what is right at the body; far fewer requests in flight; a request popped for a place now out of reach is dropped back to fresh.
+- **O2. Take the serial stages off the main thread:** blocked parameters retried on workers, material resolution as a request, building plans made on workers.
+- **O3. Stop the drop-and-regenerate churn.**
+- **O4. Do not mesh a dense chunk whose cells all block sight when its six neighbors do too.**
+- **O5. Forget only the rising keys that changed.**
+- **O6. Deadlines on the parameter and tile batches.**
+- **O7. Tuning that is not exact:** the relief slack makes the content band eight units thick; a fog threshold of 1 in 32 in place of 1 in 256 would halve the far nodes at the cost of faint popping.
+- **O8. A linear search inside a per-frame walk.** Small.
+
+*How to measure.* `./caapi --bench-load --profile` exists and is the closest thing to play: it renders offscreen, flies six legs paced at 60 frames a second, and prints slow frames with their phases, how long the main thread waited, tiles painted ahead against tiles painted late, and faces by distance. Run it first. Then add `bench-stream` to `source/worldcheck.d`: a fresh streamed game on a fixed path at a paced 60 frames a second, with the meshing job run without a GPU, printing per run the phase times, worker idle time, fresh against restored arrivals, blocked views, tile counts, the depth of the queues, and faces meshed above against below the camera's ground. A few counters go into the streamer, the tile work, the integrator and the worker pool for it. Baselines are taken by running the old and new binaries interleaved, five or more each, and comparing medians and spread.
+
+*What reading could not tell,* and so is measured first: how the main thread's frame divides among its serial stages, how long workers sleep, the share of nearby nodes below two edges, how many faces are drawn from under the ground, the ratio of restored to fresh chunks, how often views block.
+
+**Measured and done by the main session (2026-11-11).** The owner asked for the speed work to be done directly, with work queues as min-heaps of distance and with data structures in mind. Everything below was measured with `./caapi --bench-load --profile` on the planet world from spawn, single runs unless it says otherwise; the bench now also prints, per distance shell, how many tiles painted nothing, how many are edge tiles and the nodes by content class, and at the end the nodes holding chunks by their nearest ground.
+
+*What the measurements said.*
+
+- The number of nodes tracked is set by the load reach, and it grows as e^(2r). At the old cutoff (fog leaves 1 in 256, 7.57 units) the bench never settled: it crashed growing the GPU face buffer with about two million nodes tracked. At 1 in 32 (6.73 units) it settled with about a million nodes and tens of gigabytes; at 1 in 8 (5.93 units, where a chunk is about 2 pixels and the fog leaves 12 percent) with well under half of that. The rule in `source/client/world.d` is now: load as far as the fog around the camera shows anything (1 in 256, `FOG_FAINT_THRESHOLD`, as before), but never farther than where the open sky's fog leaves 1 in 8 (`FOG_LOAD_THRESHOLD`, 5.93 units at the default render radius). Under a ground, where the fog is short and the reach cheap, nothing changed. In the open this is a tuning the owner can see: chunks appear at about 5.9 units, faintly.
+- The main thread was the bottleneck and the workers idled: of thirty workers, about two were busy on average during a load. That is the "commits to work and then does nothing" the owner sees.
+- Tiles: about sixteen live tile records for every node, nearly all of them edge tiles, and nearly three in four of those had painted nothing (sky and rock edges where the cave and lattice tile has nothing to do). Each still cost a record, two hash entries, an apply on the main thread, and later a sweep, a drop and a forget.
+- The evictor's sweep for idle tiles looked at a thirtieth of all live tiles every frame with a hash lookup each: about half of the step budget during the load, more in flight.
+- A fifth of all worker CPU went to `calmAt`: every node state walked a path to each of the world's thirteen flattened sites.
+- In flight the set of nearby nodes could not be rebuilt as fast as the camera moved: a rebuild took a couple of seconds, and within 4 units of the camera well under half of the chunks were loaded at the worst moments.
+- **The regression itself.** Counted by the ground nearest each node: all but about a fortieth of the faces drawn were below the root ground, with nearly all of the dense chunks and of the per-node buildings (which were most of the memory). The sealed underground (the masses and the lattice that package A put where uniform rock had been) was being generated, built, meshed and drawn out to six units from a camera standing on top of it. The test for "wholly underground" could not catch it: it allowed four units of slack (`RELIEF_SLACK`) for how far the terrain might vary across a node, so only nodes five units down counted.
+
+*What was changed.*
+
+- **Calm from a table.** `spreadCalm` (in `structure.d`) walks the nodes within reach of a site once, when the world flattens it, and stores each node's calm in `Blueprint.calms`; `calmAt` is one lookup. The arithmetic per node is the old one, so terrain is bit for bit the same (both digest lines unchanged).
+- **A blank edge tile is one bit.** An edge tile that paints nothing sets a bit in its node's `NodeStructure.blankEdges` and leaves no record. Tile records are made when a tile's output is applied, not when it is queued.
+- **A tile's life hangs off its node.** Live tiles are chained from the node whose face, vertex or edge they belong to (`NodeStructure.tiles`, `TileRecord.nextOnFace`). The evictor drops a node's idle tiles when its sweep finds the node outside the nearby set, and a node with live tiles is not evicted. Nothing sweeps all tiles any more.
+- **Buried, exactly.** `probeBuried` (`horospheres.d`) says whether a node lies wholly below the surface of the root or of any risen ground near it, using the lowest relief among the 63 nodes that share a vertex with it (a chunk's relief is interpolated from exactly those), not a slack. It runs on the workers: in the tile planner, and in a parallel pass at the head of the streamer's scan. A buried node becomes `NodeContent.deep` and is never painted ahead. A camera above ground loads it only within 2.6 units (where the lattice's fog of 3.5 would leave 1 in 8): from above, the underground is seen only through holes and only that close. A camera that is itself under a ground loads it as far as that fog shows, as before.
+- **A clear node is filled once.** `probeClear` says whether a node lies wholly above everything any ground near it can fill. If its structure also needs no building, its chunks are stored as air directly (`Streamer.fillAir`) with no parameters built. The bound is chosen so that it implies the per-chunk proof (`CLEAR_SLACK`), and a unit test checks both directions on terrain: clear nodes have twenty chunks predicted empty, buried nodes generate no air.
+- **An edge tile's ceiling.** `api.edgeCeiling(cells)` (plugin ABI 28): the world says its edge tile paints nothing along an edge whose two ends are both higher than that over every ground the tile runs over. The engine then skips those edges without running the tile. The planet and the cave tile use the height above which the cave tile already did nothing.
+- **Workers woken to the size of the job.** A parallel job of one item runs on the calling thread; larger jobs wake only as many sleeping workers as there are grains (Linux; macOS still wakes all).
+- **Work heaps.** `base/heap.d` holds `WorkHeap`, a min-heap behind a futex lock. Chunk requests and building requests each sit in one, keyed by the hyperbolic cosine of their distance from the camera; a worker takes whichever heap's top is nearer. Every quarter unit the camera travels, and whenever the nearby set changes, the streamer re-keys both heaps and drops fresh-chunk and building requests that have fallen out of range, returning the chunk to fresh. The urgent and normal queues are gone.
+
+- **A step budget that follows the frame.** `LocalWorld.paceBy(idle)` moves the step's budget between `LEAST_STEP_BUDGET` and `MOST_STEP_BUDGET` so that `IDLE_TARGET_MILLISECONDS` of each frame stays idle; the window loop feeds it the time spent waiting for the display (when the driver can wait for a present), the bench the time left before its 60 Hz pause. The nearby set is given at least half of what is left after painting ahead, where it used to get only what the streamer had not used the frame before. Scan windows and the nearby set's paint batches are smaller (`SCAN_WINDOW`, `PAINT_BATCH`), so a batch that starts just before the deadline overruns it by less, and a scan window with nothing pending in it starts no parallel pass at all.
+
+*Tried and taken out.* A table of node states for nodes that are not in the graph, shared between the workers' views so that each is computed once: it cut worker time a little and cost the main thread a sixth of its time inserting into it. The main thread is the scarce one, so the workers go on recomputing.
+
+*What it bought,* same world, same cutoff (the numbers were reported to the owner and are not kept here; run the bench for today's):
+
+- The load from spawn settles about eight times sooner and in about a tenth of the memory.
+- The faces drawn fell to about a thirtieth; the surface's own faces are the same ones as before.
+- Live tile records and tiles run during a load fell to around a hundredth.
+- The evict phase is a small fraction of what it was, and a rebuild of the nearby set in flight takes a fraction of a second.
+- In flight a few frames in a hundred run late, where a third to a half did, and the visible chunks within 4 units are all but a handful loaded at any moment. "Visible" leaves out the underground that is left unloaded on purpose: about a quarter of the chunks within 4 units of a camera on the surface are buried more than 3 units away.
+- The scripted `live/` sessions are all at or under their times from before this conversation's work, and `bench-gen`'s parameters and `bench-drive` are under their times from after package A. Its voxel time is unchanged: nothing in that path was touched, and six runs at the end spread over a few percent around the earlier readings.
+
+*Still open.*
+
+- Single frames still overrun by a few milliseconds: each slow frame the bench lists is one unbudgeted batch in the streamer or the nearby phase (a scan window's parallel pass, a tile batch, the keep pass of a rebuild).
+- The workers still idle most of the time: the main thread is the only feeder. What it still does serially: applying painted tiles, finishing structure for nodes the painter did not reach, planning buildings, creating nodes.
+- Horosphere discovery for nodes outside the graph is recomputed by every job (12 percent of worker time in the last profile).
+- The exact relief span is recomputed on each scan of a node with fresh chunks, on a worker; it could be kept on the node.
+- The load cutoff, the fog's reach under the ground (which sets how far the underground loads from above: 2.6 units) and the idle target are tunings the owner may want different.
 
 Each package gives: what it is for, which answers it serves, what it reads first, a design, steps, what it states as laws, how it is checked, what it must not touch, and what is still undecided. Letters are names, not an order; section 6 has the order.
 
@@ -205,6 +360,21 @@ Each package gives: what it is for, which answers it serves, what it reads first
 
 **Undecided.** How sparse the ways back are (section 8).
 
+**From the scout, read in the code.** These correct the design above; where they differ, they win. Nothing here is built, and none of it starts before package P.
+
+- **A probable fault in what package A left, inferred and not rendered.** The cave tile keeps a chamber by a test at its vertex only, but the underside can jump between two edges and 5.6 within a fraction of an edge sideways (the shield's thresholds are 0.1 apart from zero and a node step carries twice that in noise). A chamber's dome reaches 11 cells and its passages 10. Where one meets the flank of a rock mass, the tile paints its floor and ceiling skins, formations and treads into cells that generation left open: ice, cave grass, light panels and limestone hanging in the void. No margin can fix it, because the tile cannot know where generation puts the boundary cell by cell.
+- **The fix is a third way to paint: only into what is solid.** One more member of `Cover` beside over and into air, one branch in `materialAt` in `building.d`, an `Api` member for it (ABI goes up) and a turtle method, and the carve code choosing it for floors, ceilings and formations. With it, breaches, drains and mouths all end exactly where the rock ends. This is the first piece of B and it stands on its own as a repair.
+- **What "open" means.** Under wild ground a network is painted only if its chain of parents reaches a sinkhole: the forced one, or one in fifty surface vertices. So open networks are exactly the trees under sinkholes. Under sealed beds a network can be painted without being joined to the surface at all (an opened head).
+- **`probeCrust` is not a column's bottom.** It answers the threshold between rock and open at the site's own point, and one column can go rock, open, rock several times between two and 5.6 edges. Only "is this vertex in rock" means something, and it can only be asked at vertices.
+- **Breach.** Straight down, a chamber never shows the void today (its floor is at least twelve cells above its own threshold). Once skins cannot hang, a band is added: a vertex up to a quarter edge past its threshold is kept by a roll, so its floor is open while its dome still has a cap, on condition that its parent is kept in the ordinary way (or level links would chain galleries of floorless chambers).
+- **Drain.** Only in networks that are already painted and only under open beds: a drain does not open a closed network (openness is walked upward only, and a network open only from below does not lead home). The vertex is kept in the ordinary way; its way down lies on its owner line (about one vertex in three; without that, the lower half of the shaft falls in a box nobody paints); the link is steep enough to be a shaft; the vertex below is in the open by the lattice's own test (which moves to `turtle.d` so both use one definition); and the edge's hash rolls under the drain's odds. A second roll makes it a stair or a bare chute. The shaft stops three cells short of the vertex below, so it stays off the platform there.
+- **Mouth.** The same shape sideways: a passage along the owner line toward a neighbor in the open, cut three cells short. The lattice already hangs that edge in the same tile, so a girder runs out of the passage floor to the neighbor: a way to walk out. Whether a body can walk a girder two cells wide has never been tested.
+- **Something to land on.** The planet passes the lattice no root today, and a bare function pointer cannot carry what the caves would need. So: flags per end, worked out by the planet's edge tile from a new function in the caves code, handed to the lattice, which raises a platform there and leaves off the lantern, tree or hut it would otherwise put up the pole (they would fill the chute). The same glue tells the lattice not to run a beam into an open chamber, which is also the cure for joints in the floors of deep chambers. It runs for every edge near the underside and has to be measured.
+- **Ways back.** Stair drains. Pole stairs come free where a bare chute's edge also rolls a lattice stair. Deep wells under the vaults: a port's well that goes on down while it is in rock and hangs its last edge. Proposed odds: a half for drains, mouths and breaches, a third for deep wells.
+- **They will be sparse whatever the odds.** The scout's estimate, on the back of an envelope: about 0.1 to 0.2 links within three steps of a landing, because only the two in a hundred trees under sinkholes are open at all. "Not exactly one way out" needs about ten times more open cave near the underside, and that is the owner's choice: more sinkholes, wells into the caves under wild ground too, or a new narrow opening. A census should be taken before choosing.
+- **The forced route.** The planet does not lay the cave route today, only the caves world does, and the planet's route already starts with the road's and the landmarks' stops, so a script needs to follow a leg and not the whole route. Searching a sinkhole's tree for a drain when the world is built costs up to a second in the worst case at every start of the default world, and flattening the sinkhole moves the underside under it (calm scales relief, and the underside carries half the relief). Both have to be measured under the speed rule.
+- **The pieces.** A census of open networks, flank cases and candidate openings near spawn, which needs no API change. The paint-into-solid repair. Landings, and the lattice kept out of open chambers, with the breach band. Drains. Mouths. The route and the two laws. Deep wells under the vaults. Pole stairs through solid rock, optional.
+
 ### C. The fall and the way back from it (decision 2)
 
 **For.** A fall that is real, a respawn that keeps most of the inventory, and the loss rule in threes.
@@ -215,10 +385,10 @@ Each package gives: what it is for, which answers it serves, what it reads first
 
 1. **The world has a bottom.** A world names, per ground, the depth below which it builds nothing: `api.abyss(ground, edges)` (ABI goes up), stored beside the crust. Two things use it. Tiles are not run for nodes wholly below it, which gives the void the named reach that `CLAUDE.md` asks of anything that grows outward. And a body below it is lost. A depth is chosen over "has fallen for so many seconds" because a long fall would have to generate everything it passes.
 2. **Lost.** In `Game.step`, in walk mode, when the body is below the abyss of the ground that has it (`nearestGround` and `heightAbove` already measure that), the play calls `wake`.
-3. **Wake.** The body is put where it wakes, standing, with no speed; the thread is kept (it still leads to the edge that was fallen from); the body's chemistry is left as it is. Where: the newest beacon still standing, else the world's entrance (`placeAtSpawn`). Section 8 asks.
+3. **Wake.** The body is put where it wakes, standing, with no speed; the thread is kept (it still leads to the edge that was fallen from); the body's chemistry is left as it is. Where, by the owner's answer: the last thing the body stood on before it entered the place. So the play remembers the last position at which the body was on the ground and not yet below a crust, and wakes there. Standing on something inside the void does not move that mark; standing in a cave does. If there is no mark yet, the world's entrance (`placeAtSpawn`).
 4. **The loss.** For each kind of item, counted over all slots: three or more held, lose a third, rounded down; one or two held, lose nothing. 3 loses 1, 8 loses 2, 9 loses 3, 81 loses 27. Taken from the last slots first. A living stack's kind includes its genes, as `isSameKind` has it. Upgrades are not items and are kept. Compounds and doses are left alone unless the owner says otherwise. Creative rules lose nothing. This is one function on `Inventory`, with a unit test.
 5. **Said.** A note that names what happened and how much was lost, and an `Event` for mods beside `Event.broke`.
-6. **Saved.** Nothing new, as long as the waking place is worked out from beacons and the entrance.
+6. **Saved.** The mark is one position and goes into the save, so that a play saved in the void still knows where it wakes.
 
 **Laws.** A body that falls past the bottom of the world wakes at the world's entrance, standing. It keeps every kind it held one or two of and loses a third, rounded down, of each kind it held three or more of (the prediction is computed from the counts, not recorded). Under creative rules it loses nothing.
 
@@ -227,6 +397,26 @@ Each package gives: what it is for, which answers it serves, what it reads first
 **Checked by.** Section 4. The unit test in `source/unit/`. `live/` tests still inside their time.
 
 **Must not touch.** Noclip and fly modes never wake. A world that names no abyss behaves as now.
+
+**Settled by the owner since.**
+
+- **Not one mark but a short trail of them.** "If it's not there go to the block before it. If nothing is there go to world spawn". The play keeps the last few places the body stood before it entered the void (nine, each at least a block from the one before), newest first. Waking tries the newest; if nothing is there to stand on, the one before it; and so on. If none holds, the world's spawn. Each mark holds its graph reference, and all of them are saved.
+- **The loss counts by strain, and is forgiving.** "be forgiving, when the player only has one of a thing, even if they don't know it". A strain the player holds one or two of is untouched even when it sits in a bundle with many others. This is what the scout's function already does.
+
+**From the scout, read in the code.** These correct and complete the design above; where they differ, they win.
+
+- **The laws.** The body wakes where it last stood, not at the entrance. A second law covers a play with no mark yet: that one wakes at the entrance.
+- **Lost.** The check goes in `Game.step` right after `traveled = traveled + stepped.traveled;` and before `layThread()`. The abyss is measured as the crust is: the raw distance from the ground's plane, with no relief and no gravity sign, so below means `altitude < -abyss`. A function `isBelowAbyss` beside `underAt` in `horospheres.d` takes `nearestGround` and compares; the step first makes sure the node's state and horospheres exist, as `ensureGravityAt` does. `Game.altitude` is the wrong number (root only, and signed by gravity).
+- **A long fall today.** There is no top speed. The controller's substeps grow with speed. In on-demand supply every step generates the whole reach around the body and nothing is evicted, so a deep fall in a test is slow and keeps every node; in streamed supply the body stalls and its speed resets. Rigs keep the abyss shallow.
+- **Skipping tiles below the abyss** belongs at the top of `visitTilesAt` in `tiles.d`, which serves both the cover path and the paint-ahead path. A node is skipped when the root's plane is farther above it than the root's abyss (with `NODE_RADIUS` of slack), the same holds for every non-upright ground near it, and no upright or sunken column is near (the library's stacks run down without end). This changes which nodes visit which tiles, so `check-repaint` decides whether it is right.
+- **The mark.** Marked on a step when the mode is walk, `footing` is grounded, and the body is not below the underside of its nearest ground, by the same test generation uses (`altitude > -(crust + UNDERSIDE_SWING * relief)` with `loadedClimateAt`). Not marked while hidden blocks are revealed (`reveal.touchable`), since that ground is air once the dose fades. It is a `Maybe!Position` in `Game`. A `Position` names a node by id, and a node with no reference can be evicted, so the mark holds a graph reference the way beacons do (`reference` on the new node, `unreference` on the old) and is cleared in `rebuildWorld`.
+- **Wake.** `closeScreen` first (it puts the `carried` stack back, so it is counted), clear `mining` and `eating`, then `placeAt(mark, Length(0))` and one bounded settle of the kind `settleToGround` does inside its loop. `settleToGround` itself loops until it lands and has no bound, so if the ground under the mark is gone (mined out, or hidden) it would fall and generate forever: when the bounded settle does not land, use `placeAtSpawn`. Then `world.settleFogColor()` and `updateView()`.
+- **The loss.** `isSameKind` compares only the first strain of a living stack, so it is the wrong tool. `Stack.countLike` and `Inventory.countOfKind` count one kind (the item, plain or living, and one strain's genes, whatever the sorting). The function reads kinds from a copy of the inventory taken before anything is removed, takes `count / 3` of each kind from the last slots first, and returns the total. A stack of several strains is several kinds, so eight different unidentified flowers in one stack lose nothing: that is a question for the owner and it meets the bundle question in M.
+- **Save.** `readGame` refuses any other `SAVE_FORMAT`, any other `ENTRY` and any other world, so the project changes the format and does not migrate. `SAVE_FORMAT` goes from 10 to 11, the mark is written as a face path from the root as beacons are, and `save/round-trip` gains a claim that a save keeps where the player wakes. Raising `ENTRY`, which every engine package does, already refuses every older save.
+- **Said.** `describe` in `hud.d` is a `final switch` over `NoteKind`, so a new kind does not compile without its words. A new `Event` goes at the end of the enum in `plugins/api/content.d` and is fired after the loss.
+- **The API.** `abyss` is appended to `Api`; `abyssOf` mirrors `crustOf`; the world's host copies `crust` (refused once growing, refused unless above zero, by tag for every kind already registered, so it must be called after the kinds exist, which nothing checks today). An abyss that is not below the crust should be refused. `HorosphereKind` is built positionally in `StructureHost.horosphere` and all through `source/unit/horospheres.d`.
+- **The rig.** A debug structure `abyss` in `plugins/fixtures`: `crust` of one edge and `abyss` of three on the root, nothing else; a plain root is flat fill, which keeps the depths exact. The test stocks one, two, three, eight and 81 of five plain kinds and a living stack with two strains (four and two), walks a step to set the mark, noclips down past the crust, switches to walk, and steps until the wake note (`notedSince` exists in `tests.d`). A creative run loses nothing; a run with no mark wakes at spawn; a fly-mode run never wakes.
+- **The planet** gets its abyss below the lattice, and `structure/void` must still pass.
 
 ### D. Ports that belong to their ground (decision 5)
 
@@ -315,13 +505,13 @@ A, C, D and F each add to `Api` or `Registry`, and G3 adds a `SitePart`. They ar
 
 **The brief every one of them shares.** It is "more nightmare than a place". Abstract, too large, patterned, wrong in small ways. No friendly marks. Decided by hash. Bounded work per edge. And enough to land on that a fall usually ends on something, since below the last layer a fall is the end of the trip.
 
-**What an edge tile can do (Read).** It paints boxes in the column of its edge, which is 24 cells square and 24 long (`columnOf`, `boxRefusal`), it can draw strokes (`TileHost.draw`), and it knows hashes of its vertices, its edge and the faces around it. It cannot place or claim.
+**What an edge tile can do (Read).** It paints boxes within 24 cells square around a site's line (`columnOf`, `boxRefusal`), along that line as far as it likes, and it can move its site; what stops it is that it may not paint a node that is already finished. It can draw strokes (`TileHost.draw`), and it knows hashes of its vertices, its edge and the faces around it. It cannot place or claim.
 
 **G1. Other fillings of the lattice.** `lattice.d` only. A weave, in content: how many edges are kept, whether there are diagonals, doubled beams, beams that stop half way, the odds of platforms and stairs. Which weave is used varies by cluster and by depth. Cheapest of all, and it comes first.
 
 **G2. Patterns that break.** A filling with no randomness at all, the same motif on every edge by its direction, and then, at long odds (1 in 81), a motif turned, missing, doubled or replaced, with the breaks gathered in clusters so that a stretch is wrong together. It can be a weave of G1.
 
-**G3. Structures too large to take in.** "megaphobia" is read as megalophobia. Two ways to be large:
+**G3. Structures too large to take in.** The owner's meaning: "The fear of structures larger than you can comphrend." So the test of a G3 structure is that no view of it shows its extent: it runs out of sight in every direction it has. Two ways to be that large:
 
 - **Endless beams.** Every edge lies on a straight line of edges, and the engine already has a canonical key for that line (`canonicalOf` and `LineKey`, used by `TilePainter`). A hash of the line, offered to plugins as a new `SitePart` (ABI goes up), lets a void world thicken every edge of a chosen line to the full column: a girder 24 cells square that never ends, a few of them hollow with a corridor inside.
 - **Hanging columns.** `api.sunken` already opens a column downward from a ground vertex (the library's stacks). A colossal pier or chain hung from wild ground through the crust is that form with a different tile.
@@ -330,11 +520,11 @@ A, C, D and F each add to `Api` or `Registry`, and G3 adds a `SitePart`. They ar
 
 **G5. Sparse islands, and islands that connect.** With the first design of A the deep is already islands of rock with caves and ore inside. Beyond that: small floating islands drawn with strokes at about 1 vertex in 27, a turf top and a tree, and a bridge along an edge when both its ends are islands. Larger islands that carry something (a hut, a garden, a station) wait for L.
 
-**G6. The dangling maze sheet.** Read as a flat sheet, in the sense the code gives "horosphere" (a plane along cell faces), with a maze on it, hanging below the crust from one point. Planes spread apart, so a sheet opened a few edges below a ground vertex is nearest the crust at its foot and falls away from it everywhere else: it dangles. The maze is the backrooms' maze level (`rooms:mazes`) on its own.
+**G6. The dangling maze.** A flat maze hanging below the crust from one point. The owner's picture of it: "closer to a rafter with no railings. Not walls as much as a minecraft-ish mineshaft." So it is not rooms and not the backrooms' maze level. It is a maze of narrow walkways: beams a cell or two wide with posts and braces, open on both sides, over the drop. The maze is in which walkways exist and which are missing, not in walls. It is flat in the sense the code gives "horosphere" (a plane along cell faces). Planes spread apart, so a plane opened a few edges below a ground vertex is nearest the crust at its foot and falls away from it everywhere else: it dangles.
 
 - **Engine.** Today a plane rises above a ground vertex and faces back at its parent (`risenHorosphere`, `risenPlaneOver`). A hung sheet is the same construction through the ground, downward. That touches `risenHorosphere`, `probeRiseClear` and `probeClearOfAncestors`, `ensureAirSideNode`, `probeRisenSide` (which side a ground's tiles paint), and the limit of four grounds near a node (`MOST_GROUNDS`).
-- This is the one sub-package with real engine risk. It starts with a design debate, not with code.
-- If the owner meant a true horosphere, flat inside and not along cell faces, it is a different and much larger piece of work (section 8).
+- This is the one sub-package with real engine risk. It starts with a design debate, not with code. The debate includes whether a maze of rafters needs a hung plane at all: walkways along the edges of one face-plane of the honeycomb might be picked by hash from an edge tile, if a plane can be given a canonical hash the way a line can.
+- The tile, either way, is new shared code: walkways, posts, braces, gaps. It falls under the fall (C): a missed step is a real fall.
 
 **Order within G.** G1 and G2, then G5, then G3, then G4, then G6.
 
@@ -357,7 +547,7 @@ A, C, D and F each add to `Api` or `Registry`, and G3 adds a `SitePart`. They ar
 
 **Laws.** A body let go under a city street lands in a tunnel (its floor is the tunnel's material). A collector in a sealed cave gathers faster than one on the ground above it, by the gain the content names (the prediction is computed). The backrooms have a level below the mazes.
 
-**Checked by.** Section 4. How far below its face a tile may paint is limited (`probeLineAhead` in `blueprint.d`, **Unread**), so H1 and H3 find that limit first.
+**Checked by.** Section 4. A tile has no limit on depth; its limit is that it may not paint a node already finished, so H1 and H3 keep to the columns at their face's own vertices and the edges between them.
 
 ### I. Backrooms from several tables (decision 12)
 
@@ -365,7 +555,7 @@ A, C, D and F each add to `Api` or `Registry`, and G3 adds a `SitePart`. They ar
 
 **How it is today (Read, `plugins/rooms/layout.d`, `rooms.d`, `rooms.content`).** One roll per region and level picks a biome: `tileAt` takes `strongestNear(face)` and indexes the level's biome list with it. A biome is a row of materials and odds (`big`, `open`, `skylight`, `pillars`, `pool`, `court`, `nowhere`, ...). `planOf` then picks each quarter's plan: maze, lobby, rooms, solid, rings, chapel, or one of pillars, pool and court by the biome's odds. Three levels (offices, houses, mazes) hold 8, 5 and 5 biomes.
 
-**Reading.** "minecraft's multiple table worldgen" is taken as two things Minecraft does: a biome is looked up in a table over several fields that vary independently, and a structure is assembled from weighted pools of pieces. Section 8 asks.
+**Reading.** "minecraft's multiple table worldgen" was taken as two things Minecraft does: a biome is looked up in a table over several fields that vary independently, and a structure is assembled from weighted pools of pieces. The owner's correction: "Yes, but onlt a bit. You don't have to, and should not, do exactly that... just that's how I mean doing multiple strategies. You can't make it a tree, it's a space of parameters". So Minecraft is the hint and not the model. What is wanted is several strategies at work at once, and subtypes that live in a space of parameters, never in a tree of choices where one roll decides the next. The design below keeps to that and should stay small: where a table is not needed, there is none.
 
 **Design.** Several tables, each of which a mod can add rows to, in place of one list.
 
@@ -384,6 +574,44 @@ A, C, D and F each add to `Api` or `Registry`, and G3 adds a `SitePart`. They ar
 **Checked by.** Section 4, `check-repaint` on backrooms and planet, and a bench of the tile.
 
 **Must not touch.** `plugins/blocks` uses `strongestAround` for districts; a change to the helpers must leave the city as it is.
+
+**From the scout, read in the code.** These correct the design above; where they differ, they win. Nothing here is built, and none of it starts before package P.
+
+- **Fields have to be salted before the maximum is taken.** `strongestAround` and `strongestNear` take the largest raw face hash, so fields that differ only by a salt applied afterwards would all share one set of region borders: one roll in disguise. Each field takes the largest of `mixed(faceHash, itsSalt)` over the ball, and its value is a re-hash of the face that won. The level is not a field: it is the floor, and each level has its own list.
+- **Cost.** A tile makes about 171 hash probes today, 36 of them in `strongestNear`. Gathering the ball's faces once and taking every field from that costs no more than today for fields up to two rings wide. Thresholds between regions need every neighbor's fields, so the gather grows by a ring: about 241 probes if each face is fetched once, about 351 the recursive way. A three-ring field together with thresholds is 306 to 1296. Under the speed rule that has to be measured, and the three-ring field is left out unless it is free.
+- **What a space of parameters is here.** There are no coordinates to feed noise. A field is a function of a face's neighborhood: a salted maximum over a ball of so many rings. Each face is then a point in a cube of field values, a biome is a box in that cube, and a biome's area in the world is the overlap of several independently cut sets of regions, which no single roll can make. Depth is the one real coordinate.
+- **The table needs no parser change.** The palette already does it (`warmth-above`, `warmth-below`, absent meaning no bound). A biome gets an above and a below per field and a weight. The pick is the box nearest the point (zero inside), ties broken by a weighted roll on a hash that is constant over the overlap, so no face is ever left without a biome. `MOST_BIOMES` is 8 and the offices already list 8, so it is raised; today's pick is the hash modulo the count, so adding any biome reshuffles every region, which the table ends.
+- **First ranges**, which give today's shares if the fields are uniform and independent. Grandeur and darkness one ring wide, age and wetness two.
+
+  | Biome | Grandeur | Wetness | Age | Darkness |
+  | --- | --- | --- | --- | --- |
+  | office | below .5 | below .5 | below .5 | any |
+  | stained | below .5 | below .5 | .5 and up | any |
+  | tiled | below .5 | .5 and up | below .5 | any |
+  | sodden | below .5 | .5 and up | .5 and up | any |
+  | open-hall | .5 and up | below .5 | any | below .5 |
+  | atrium | .5 and up | .5 and up | any | below .5 |
+  | red-room | .5 and up | any | below .5 | .5 and up |
+  | archive | .5 and up | any | .5 and up | .5 and up |
+  | parlor | below .4 | any | below .5 | any |
+  | attic | below .4 | any | .5 and up | any |
+  | study | .4 and up | any | any | .67 and up |
+  | gallery | .4 and up | below .5 | any | below .67 |
+  | conservatory | .4 and up | .5 and up | any | below .67 |
+  | bunker | any | below .5 | below .4 | any |
+  | cellar | any | .5 and up | below .4 | any |
+  | sump | any | .67 and up | .4 and up | any |
+  | hedge | any | below .67 | .4 and up | below .5 |
+  | catacomb | any | below .67 | .4 and up | .5 and up |
+
+- **Plans.** The plan is rolled in two stages today (the level's odds for rings and chapel, then the biome's odds for pillars, pool and court), and four plans are forced by the situation and cannot be pooled: maze, lobby, the rooms around a stair, and solid. A weight on an edge can be written in content today, but the plugin binding reads only the edge's target, so a small addition to `plugins/api/binding.d` is needed (no ABI change). Cheap new plans with the painting code there is: pillars at other spacings, a colonnade, a long gallery, a sunken floor, a raised dais, a flooded room.
+- **Rare rooms.** `roll` in `turtle.d` returns hundredths, so 1 in 81 cannot be said with it. The chapel is chosen per quarter today, offices only, where no hall crosses. As a table each row is rolled on its own from the face hash, so no row's roll depends on another's. Set pieces the code can build now: the chapel, a drowned room, a hall of pillars, a garden hall under the sky.
+- **Uses.** The backrooms' shell already is salvage: its walls and floors are cloth and masonry, its lights are lamps. So stock means concentrations of what is scarce there: lamps, steel (which needs an iron pickaxe, so it is a late find), bales and pallets. Boxes, shelves and damp patches become rows of the same table.
+- **Edges.** A line along a face's edge is already two walls back to back, each side painting its own. A threshold is each side framing its half in its own trim at the door slots the line's hash gives. Both sides agree because the biome is a pure function of hashes; anything taken from the tile's own random numbers would make the halves disagree. An inner line can never be a threshold, and on the offices a hall edge has no wall at all.
+- **Regions are mostly border.** A face and its two rings are 21 faces, 15 of them in the outer ring, so "sameness inside a region" is a small inside.
+- **The laws as first worded cannot be checked,** since scripts cannot call plugin code. They become censuses of materials, or use a rig: the root face forced to a point of the cube, the way `ForcedStair` forces a stair.
+- **Tests that can flip with the mix.** `checkBackroomsAround` accepts only certain floors and ceilings; an atrium's plank floor is not among them, so a spawn face that becomes an atrium fails two tests. The pool and court views need water and oak within reach.
+- **The pieces.** Fields and the table, with a function that says which biome a face has (package D's backrooms port rule wants it). Plan pools. Rare rooms. Uses. Edges, last and measured. None of it changes the API, the ABI number or the save format.
 
 ### J. The library's rooms (decision 13)
 
@@ -406,11 +634,32 @@ A, C, D and F each add to `Api` or `Registry`, and G3 adds a `SitePart`. They ar
 
 **Checked by.** Section 4, `check-repaint` on library and planet.
 
+**From the scout, read in the code.** These correct the paragraphs above; where they differ, they win. Nothing here is built, and none of it starts before package P.
+
+- **The library as it is.** A slab of four stories (floors at -12, -6, 0 and 6 cells), each face's five corners painted as quarters. A face's kind comes from its hash: gallery, hall, stair, atrium, studies or lounge. Studies split a quarter into four carrels per story with a desk each; `loop-odds` (0.4) decides whether all four doors are open, so the carrels form a loop, or one is shut and they form a chain. The stacks are sunken columns under some vertices, endless downward. Everything structural comes from hashes; the color of each book and the gallery's second stack come from the tile's own random numbers, so a new `pick` before them shifts every later book color.
+- **Stations.** The stations are workbench, furnace, anvil, press and lab. The bench is not a station but a role (`engine:bench`) and it works when painted. A station painted by worldgen works exactly like a placed one: `interact` remembers the cell, and `isNearStation` only asks that the block there is still the station and within reach. A painted collector does not work (it needs the record of having been placed), so it is left out. Creative rules skip the station check, so the law runs under survival.
+- **Where they go.** In a carrel, replacing one cell of the desk, decided per story and per carrel by a hash (content paints repeat over the four stories by a rhythm today, so a station needs its own box). Proposed: a press in one carrel in nine, a lab in one in 27, a bench at a table end in some halls, a workbench in the staff room. `roll` in `turtle.d` resolves only hundredths, so one in 81 cannot be said with it.
+- **A concern.** A painted station can be broken and carried off. The press needs no tool, and a lab found this way skips the recipe for one. The owner said stations are to be used where they stand; keeping them there needs engine work.
+- **The library is already a salvage mine.** Its books include cloth, its lamps are light panels, its partitions are plaster, its tables are oak. So the staff room's own stock is what is new to it: steel lockers, a sink with water, wallpaper, ceiling tile.
+- **Notes.** A role is the wrong carrier (a role is exactly one material and must be filled by the base mod) and no new trigger is needed. Proposed: a content kind for a rumor (its text, the materials it is found in, the insight it teaches if any); any material some rumor names is readable, and it has to be a material only the library paints; which rumor a block holds is a hash of its place among the rumors for that material; reading sets a mark in a new set in `Game`, teaches the insight once, and posts a short note. A note on the hud is one line of about 57 characters for five seconds, so the text itself goes in the journal, which wraps and scrolls. The set is saved, so `SAVE_FORMAT` goes up. The word "note" is taken in the code by the hud's messages; "rumor" is free.
+- **Nine draft rumors, for the owner to read.** The first seven can be checked in the game today; the last two point at work that is not built and are not shipped until it is.
+  1. "Walk five equal lengths, turning right after each, and you stand where you began, facing the way you set out. Only the compass disagrees, by a quarter turn."
+  2. "The panels that light these rooms are mostly glass. A furnace would give it back."
+  3. "Many of the books here are bound in cloth, and cloth chars in a furnace like wood."
+  4. "The fern of wet ground opens something in the eye. The thornbush of dry sand sits in the same lock and does not turn it."
+  5. "Copper keeps to marble and slate; iron to the dark rocks further down; sulfur to the pale layered stone near the top."
+  6. "Seeds crossed where the air is thick with ash come out stranger, and stranger still with sulfur in the pocket."
+  7. "Ore smelted alone gives back less metal than ore worked with charcoal."
+  8. "By the lake beds there are stones that show only to an eye coming down from a dose." (waits on tide)
+  9. "In the deepest caves there are stones that show only when two things are felt at once." (waits on ember)
+- **The catalog.** There are 2 x 9^27 compounds, about 1.16e26. A shelf thirty steps from a door needs nine choices a step (28 steps exactly); a walk through the library's rooms has four doors forward and would take at least 44. Three ways: a tree of rooms with nine exits each, one fragment a room (a new structure, since the library's faces do not form a tree); a walk that is recorded as the thread is, with marks on doorways (cheap, but a compound is then not a place); or a card-catalog desk whose screen sets the 27 cells and shows the effect (no walk). The screen that shows what a compound does to the player's receptors exists for an aimed plant and could be reused; nothing draws a molecule's shape. The scout would build the desk first. The owner decides whether every compound must be a place, whether reading needs the assay kit, and whether a compound's 24 rotations share a shelf.
+- **The pieces.** Presses and labs in carrels, with a law that a press found there presses. A bench in reading halls. The staff room. The rumor engine (it touches `game.d`, `hud.d`, `screens.d`, `save.d` and `crafting.d`, the same files as C and M, so it comes after them). The rumors in the library. The catalog's debate.
+
 ### K. Debug scenes in the creative menu (decision 14)
 
 **For.** A debug list in the world menu under creative rules.
 
-**How it is today (Read).** `worldCount` and `worldNameAt` in `source/client/plugins.d` count and name "terrain" and then the worlds; `worldgenAt` and `steppedWorld` in `source/client/structures.d` turn an index into a `Worldgen`; `Game.worlds` is a `WorldMenu` (`saved`, `picked`, `current`, `deleting`, `saving`) driven by `UiKind.pickWorld`, `askDelete`, `playWorld` and `deleteWorld`. `sheetsFor(rules)` in `game.d` is the existing pattern for something creative rules add. `StructureHost.build` finds a name among worlds and debug structures alike. **Unread:** `source/client/hud.d` (how the menu is drawn), `source/client/save.d`, `web/play.js`.
+**How it is today (Read).** `worldCount` and `worldNameAt` in `source/client/plugins.d` count and name "terrain" and then the worlds; `worldgenAt` and `steppedWorld` in `source/client/structures.d` turn an index into a `Worldgen`; `Game.worlds` is a `WorldMenu` (`saved`, `picked`, `current`, `deleting`, `saving`) driven by `UiKind.pickWorld`, `askDelete`, `playWorld` and `deleteWorld`. `sheetsFor(rules)` in `game.d` is the existing pattern for something creative rules add. `StructureHost.build` finds a name among worlds and debug structures alike. The menu is drawn in `source/client/screens.d`. **Unread:** `screens.d`, `web/play.js`.
 
 **Design.** Under creative rules the menu shows a second list after the worlds, the scenes, one per debug structure (`allDebugNames`). A pick is a typed thing (a world or a scene, and its number), not an index that runs across both lists. A scene is never saved. Under survival rules the menu is what it is now.
 
@@ -449,6 +698,44 @@ A, C, D and F each add to `Api` or `Registry`, and G3 adds a `SitePart`. They ar
 
 **L1 and on.** One sub-package per structure, after L0, each with its rule, its contents, a view, and a law that it is met within some number of edges of spawn.
 
+**From the scout, read in the code.** These correct the paragraphs above; where they differ, they win.
+
+- **The structures as they are.**
+  - *Tower:* one column at a vertex, ten cells square, three edges tall, floors every four cells with a stair each, a door, merlons. Assumes flat ground.
+  - *Crown:* on the five vertices of one face: a two-edge tower and a two-story hall at each, and a deck two cells wide along each of the face's five edges one edge up, with no rails. Assumes flat ground.
+  - *Palace:* the site's face and every face touching it, eleven faces, each quadrant a half-sunken hall with pillars, lamps, outer walls with windows, grand stairs down, and a basin with a jet at the middle. Needs flat ground badly.
+  - *Arbor and Babel:* upright kinds whose tiles run per segment, endless upward, taking the ground as it is. They already recur across the default world as rising kinds, each at 0.0015 per ground vertex (`rise-odds` 0.015 times a share of 0.1). `ideas.md` is wrong to say they are only reachable by a flag.
+  - *Road:* an endless paint along one line of ground edges, twelve cells wide, cut and fill against the plane, with a pier eight edges deep at every vertex placed one after another forever. It only works through the root: endless paint is allowed only while the world is placed, and a pier whose next site is behind the growth fails the whole world.
+  - *Trail:* claims the vertex at each end of an edge, paves gravel four wide at the plane's height (so off its flattened start it is buried under hills and floats over valleys; inferred, not rendered), a hut on one edge in three, and extends itself by `place`. Twelve segments as a landmark, endless as a scene.
+  - *Hamlet:* five timber huts on the five vertices of a face. Assumes flat ground.
+- **What a tile may touch.** There is no limit on depth and none on how far a turtle moves. The limit is that a tile may not paint a node that is already finished (`probeLineAhead`), and the refusal stops the world. In practice a face tile is safe on the columns at its own face's five vertices, at any height or depth, and on the ground edges between them, which is exactly what a grove paints. The tower, the crown and the hamlet fit that. The palace does not: its outer vertices are out of reach.
+- **Two traps.** A `stop` laid by a tile or by a placed structure references its node forever, and every one of these structures lays stops, so the recurring copies must lay none. And `api.build` from a tile cannot run any of them: it finds only worlds and debug structures, never landmarks, and each debug function calls something a tile is refused.
+- **Linking.** The planet cannot call the tower's or the crown's code, which live in other libraries. Either their bodies move into shared code compiled into the planet (the box code already is shared), or the registry gains tile-safe prefabs (ABI goes up).
+- **Flat sites.** Two flatteners exist. The list (`flatten`, read by `calmAt` for every new node state) is why only the world's structure may flatten: calm is baked into a node's state when the state is made, so a flat added later would give old and remade nodes different relief. The other is already a rule of place: `reliefShareAmong` and `flatLinesNear` flatten relief around the column of every planar risen ground, found through the horosphere references nodes carry. Flat sites by rule should ride on that (a kind that flattens, with its own radius), not on `calmAt`.
+- **Footings.** The alternative needs one read-only call, the height of the ground along the vertical at a vertex (`ensureGroundAlong`, which upright columns already use), and a second for a node's relief and climate would make "on high ground" computable. Today a face tile on terrain cannot learn the terrain's height at all.
+- **Growing with the world** is not a way to scatter things. The queue is global by depth, not by nearness: every trail and road grows whenever the player goes deeper anywhere, creating nodes and pinning memory in directions nobody visits. And tiles cannot read claims, so groves, sinkholes and ports can land on the trail past its start, on its huts and on the road outside the spawn ring (inferred, not rendered). What recurs has to be decided by a hash that every tile can evaluate.
+- **The scout's table**, replacing the first proposal:
+
+  | Structure | Becomes | Stands where | How often | Holds |
+  | --- | --- | --- | --- | --- |
+  | tower | a watchtower | at a vertex higher than its neighbors and above a threshold; never on a port or where a ground rises | about 1 hilltop in 3 | stairs, a deck, a place for a beacon |
+  | crown | a ring of towers with bridges | unsure: a face that wins a roll of about 1 in 81, or where rising grounds crowd (which risks meeting connectors) | | a hall with stations; the loop that leaves the ground |
+  | hamlet | a village | a face lower than its neighbors, or where trails meet | about 1 cluster in 27 | huts with stations and stock |
+  | arbor, babel | as now | as now | as now | decks and floors with stations or notes on some |
+  | road | a highway | every line of ground edges whose line hash wins a roll; it never bends | unsure | piers down to the crust, a post hut every few edges |
+  | trail | a path between places | each trail vertex points by hash to a neighbor, ending at a hamlet or a tower | unsure; a debate first | gravel on the ground, cairns at forks |
+  | palace | a great house | unsure: a set piece of the city's own tile, or shrunk to one face on low wild ground, or the copy at spawn only | | rooms with stock and notes |
+
+- **The owner on the table:** "Give it a shot, if it's no good then we can remove it". So the unsure rows are built as the scout proposed them, each small enough to take out again: the crown on a face that wins a roll of about 1 in 81; the road on lines that win a roll; the palace shrunk to one face on low wild ground; the trail after its debate.
+- **The scout's recommendation.** A mix. Arbor and Babel stay rising kinds and only gain contents. Tower, hamlet and crown are built by face tiles from a hash, on footings. The road is built per edge from a hash of its line. The trail and the palace each get a debate first. Placing with growth is not used for recurrence at all. The six at spawn stay.
+- **The pieces.**
+  1. Engine, one ABI step: the ground's height at a vertex, a node's climate, a hash of an edge's line. (The line hash is also what G3 needs.)
+  2. Shared code that holds the predicates for which face or vertex holds what, compiled into the planet and the caves, so that groves, sinkholes, wells and ports keep off structures.
+  3. The tower's and the hut's bodies as tile-safe shared code with no stops; the debug scenes call the same code.
+  4. The watchtower, with a view and a law that one stands within some edges of spawn.
+  5. The hamlet. 6. The crown. 7. Road lines in the planet's edge tile. 8. Contents for arbor and Babel, after J1. 9. The trail's debate. 10. The palace's debate.
+- **Possible faults seen on the way, not confirmed by a render:** a port opening inside the tower, crown or palace at spawn (ports are kept off the root vertex, a foot and a rising vertex, not off landmarks); groves, sinkholes and ports over the trail, its huts and the road.
+
 **Depends on.** J1 and J3 for things to put in them (stations, notes), M for counts, and containers, which do not exist yet and are not planned here.
 
 ### M. Threes in what is held and needed (the item rule)
@@ -457,7 +744,7 @@ A, C, D and F each add to `Api` or `Registry`, and G3 adds a `SitePart`. They ar
 
 **The rule.** The owner's: "all arbitrary numbers that are a count of things you can hold or need", "not a hard rule", "Not for the world".
 
-**Known so far (Read, `source/client/game.d`).** Four extract make a dose (`RAW_PER_DOSE`). A ripe plant yields one to three (`MOST_EXTRA_YIELD` is 2), which already fits. The crafting queue holds 16 (`MOST_CRAFTS`) and 24 compounds are kept (`MOST_COMPOUNDS`). The hotbar has nine slots. **Unread:** `source/common/inventory.d` (`STACK_LIMIT`, `SLOT_COUNT`), the recipes in the base mod's content, `source/common/crafting.d`.
+**Known so far (Read, `source/client/game.d`, and by the scout in `inventory.d`, `crafting.d`, `screens.d`, `save.d` and `plugins/base/base.content`).** Four extract make a dose (`RAW_PER_DOSE`). A ripe plant yields one to three (`MOST_EXTRA_YIELD` is 2), which already fits. The crafting queue holds 16 (`MOST_CRAFTS`) and 24 compounds are kept (`MOST_COMPOUNDS`). The hotbar has twelve slots (`HOTBAR_SLOTS`, keys 1 to 9, 0, minus and equal), the pack three rows of twelve, 48 slots in all; a stack holds 64 (`STACK_LIMIT`) and a living stack up to eight strains (`MOST_STRAINS`). All recipes are data in `plugins/base/base.content`; the press ratio and the yields are constants in D. The queue, the inventory, the compound list, the bench, the press and the world menu are drawn in `source/client/screens.d`, not `hud.d`. The inventory is saved as one raw block, so any change to its layout raises `SAVE_FORMAT`.
 
 **Steps.**
 
@@ -468,7 +755,86 @@ A, C, D and F each add to `Api` or `Registry`, and G3 adds a `SitePart`. They ar
 
 **Not in it.** Chunk and edge sizes, the port's width, treads per turn, anything that is the world's.
 
-**Laws.** None new; the existing ones must still hold with the new numbers.
+**Three things the owner added, which are not about threes and belong with items.**
+
+- **The queue has no size and works like Factorio's.** Today `MOST_CRAFTS` is 16 and a full queue refuses (`NoteKind.queueFull`). Wanted: no limit; a recipe queued when its ingredients are missing queues what makes them (it does already, through `planRecipe`); many of one thing queue as one entry with a count; cancelling gives back what was taken. What "like Factorio" adds beyond dropping the limit is for a scout to list against the code.
+- **Keeping 24 compounds is wrong.** `slotFor` in `game.d` drops the oldest compound when a 25th arrives. A compound a player made should not vanish because of a count. What bounds the list instead, if anything, is undecided.
+- **Unidentified flowers that stack are odd.** A living stack holds runs of different genes (`strains`, `Sorting.unsorted`), so a stack of unknown flowers is really several different things that look alike. The owner: "They are basically a bundle of items, in a way." Reading: show and treat it as a bundle, a thing that holds different items, not as a count of one item. This needs `source/common/inventory.d` read and a small design before anything is changed.
+
+**Laws.** For the threes: none new; the existing ones must still hold with the new numbers. For the queue: more recipes can be queued than the old limit, and each finishes.
+
+**Settled by the owner since.** The table below was left to the planner's judgement, with these fixed points, and the rule restated: a power of three only where a number has no default of its own.
+
+- **A stack holds 81.**
+- **The hotbar stays at twelve.** A thirteenth slot on the tilde key is a maybe, and is not built unless asked for. The pack stays three rows of twelve.
+- **The recipes, as judged.** Every row of the table is applied as proposed, with these choices on the doubtful ones: the workbench takes nine planks (three wood); the stone, copper and iron pickaxes keep two planks for the handle, which has a default of its own; smelting takes three ore; the lab takes three and three; the masonry furnace takes nine; charring and pulping cloth take three.
+- **The queue is Factorio's.** Ingredients leave the inventory when a thing is queued, and a thing that cannot be paid for cannot be queued. Missing intermediates are paid for and queued ahead, as now. So the present law that a lab reaction waits for its reagent goes: without the reagent it is not queued. Work still waits for its station. Cancelling gives everything back. The queue is saved if that is not costly; until it is, a save refunds every entry.
+- **A bundle is what cannot be told apart.** It is not a holder to take things out of: an action picks from it. What changes is that the player can see it: the cell and its tooltip draw the different flowers in the bundle, so the player knows there are several and which is which by look, and not what any of them means. Nothing underneath changes, so `MOST_STRAINS` stays and the save is untouched by this.
+
+**The audit.** From the scout. "In" is what a recipe takes, "out" what it gives. Rounding was done in powers of three: 2 and 4 go to 3, 6 and 8 go to 9. Rows marked (?) are the doubtful ones. Nothing here is applied.
+
+| Where | Now | Proposed | Note |
+| --- | --- | --- | --- |
+| `STACK_LIMIT` | 64 | 81 (?) | 27 is the other choice |
+| `HOTBAR_SLOTS` | 12 | 9 | drops the keys 0, minus and equal |
+| pack rows | 3 of 12 | 3 of 9 | pack 27 and hotbar 9, 36 slots in all |
+| `MOST_STRAINS` | 8 | 9 (?) | depends on the bundle |
+| `MOST_CRAFTS` | 16 | removed | the owner's answer |
+| `MOST_COMPOUNDS` | 24 | removed | the owner's answer |
+| `RAW_PER_DOSE` | 4 | 3 | better as a field of the pressing in content |
+| harvest yield, extract per pressing, parents per cross | 1 to 3, 1, 2 | leave | already fit, or not arbitrary |
+| planks | 1 wood gives 4 | gives 3 | the owner's example |
+| make-workbench (?) | 6 planks | 9, or 3 | "3 wood" reads either way |
+| make-wooden-pickaxe | 3 planks | leave | |
+| make-stone-pickaxe (?) | 2 planks, 3 stones | 3 and 3 | |
+| make-furnace | 8 stones | 9 | |
+| make-press, make-bench | 4 planks and 2 of another | 3 and 3 | |
+| make-anvil | 4 stones, 3 copper bars | 3 and 3 | |
+| make-inhaler | 2 glass, 1 plank | 3 and 1 | |
+| smelt-glass | 2 sands | 3 | |
+| smelt-copper, smelt-iron (?) | 2 ore | 3 | bars cost half again as much ore |
+| make-copper-pickaxe, make-iron-pickaxe (?) | 2 planks, 3 bars | 3 and 3 | |
+| make-collector, make-assay-kit | 2 glass, 2 copper bars | 3 and 3 | |
+| make-lab (?) | 4 iron bars, 4 glass | 3 and 3 | cheaper than now; 9 and 3 is the other choice |
+| make-beacon, make-syringe, make-cleaver | 1 and 1 | leave | |
+| make-oxidizer, char-wood, strip-lamp, melt-steel | 1 gives 2 | gives 3 | |
+| make-conjugant | 2 leaves give 2 | 3 give 3 | |
+| make-polar-graft, make-bulky-graft, fire-brick, crush-rubble, melt-ice, strange-charge, strange-bulk | 2 | 3 | |
+| make-charged-graft, cool-lava, crush-masonry, lamp-beacon, melt-fine-soil | 1 or 3 | leave | |
+| reduce-iron, reduce-copper | 2 ore and 1 charcoal give 2 | 3 and 1 give 3 | charring then triples the bars |
+| quench-glass | 2 sands and 1 water give 2 | 3 and 1 give 3 | quenching then triples the glass |
+| sift-sand, sift-clay | 4 soil | 3 | |
+| masonry-furnace (?) | 6 masonry | 9, or 3 | cheaper than the stone furnace today |
+| char-cloth, pulp-cloth (?) | 2 cloth | 3, or 1 | |
+| steel-anvil | 4 stones, 1 steel | 3 and 1 | |
+
+What follows if it is signed: `flat/crafting` and `flat/learning` state recipe numbers outright and change; `gene/unsorted` states the present stack model; the other tests derive their numbers. In `ideas.md` the press and garden arithmetic under "Steady states", "four extract into a dose", "a queue of at most 16 steps" and "double a yield" go stale.
+
+**The queue, from the scout.** Today: `craft` plans a recipe against a projected stock, queuing what makes the missing ingredients (known recipes only, four deep), one entry per batch; work skips forward to the first entry whose station is at hand; ingredients are taken when an entry starts, not when it is queued; cancelling a started entry refunds it; the queue is not saved (started entries are refunded into the save, pending ones dropped); the screen draws one row and silently leaves out what does not fit. Against Factorio's hand queue, as the scout remembers it and not from a source, the gaps are:
+
+1. the limit itself;
+2. one entry per batch, where Factorio shows one entry with a count;
+3. no way to queue several at once (one, a few, all that can be made);
+4. ingredients taken at start, where Factorio takes them when queuing. This is a real fork: taking at start is what lets a lab reaction wait for its reagent, which is a law the tests state. The scout recommends keeping it;
+5. entries are not linked, so cancelling the planks leaves the workbench waiting forever;
+6. a refund that does not fit is lost without a word (an existing fault);
+7. a finished product with no room is lost, with a note;
+8. the queue is not saved.
+
+**Compounds, from the scout.** No array is sized by the 24. The 25th distinct compound silently deletes the oldest with its extract and doses, unselects the chosen one, makes plants that produce it read as unidentified again, and leaves any queued work on it waiting forever; `save.d` refuses a save with more than 24. Recommended: drop the cap and nothing else, and list the compounds that hold something first.
+
+**Living stacks, from the scout.** A `Stack` holds up to eight runs of (genes, count). Harvests arrive unsorted and pour into any unsorted stack of that item, which is where "unidentified flowers stack" comes from. A strain is identified when the player has an assay kit or already holds its compound, and then leaves for a sorted stack of its own. Every action quietly uses the first run. Three designs were offered: label it (draw the mix as a bundle, change nothing underneath); split it (never mix); open it (a holder the player takes strains out of). The owner's answer is the first: a band or mark per strain colored from its genes (`letterColor` exists for that), the name saying it is a bundle and of how many, the tooltip listing the runs with their gene strips.
+
+**The pieces, in an order that keeps the tests passing.**
+
+1. The recipes in `base.content`, with `flat/crafting` and `flat/learning` reading their counts from the recipes.
+2. The press ratio, moved into content if that is cheap, and the "Steady states" arithmetic redone.
+3. The compound cap removed, with a law that 27 distinct compounds are all still held.
+4. The queue's core: no limit, ingredients taken when queued, nothing queued that cannot be paid for, counts on entries, queuing several, a screen that wraps. A law that 27 batches queue and all finish, and a law that a recipe whose ingredients are missing is refused. The law about a reaction waiting for its reagent is restated.
+5. The stack limit of 81, with `SAVE_FORMAT`.
+6. Cancelling: linked entries, and refunds that say when they do not fit.
+7. Bundles drawn as bundles.
+8. Saving the queue.
 
 ### N. Keeping the record straight
 
@@ -587,32 +953,40 @@ A builder's piece is one that ends in a green tree in one sitting. As a guide: o
 
 ## 8. Questions still open for the owner
 
-1. **A, after the renders.** Shafts or masses? The first design gives a two-edge roof with great islands of rock under it and void between. The second gives true windows: columns of void that widen as they go down, with walls. Which is "shields and windows"?
-2. **C, the fall.** Where does the player wake: at their newest beacon, at the world's entrance, somewhere else? Do compounds and doses count as items for the loss? Is the third rounded down (8 loses 2)? Is creative exempt?
+1. **A, after the renders.** Answered: masses. "I'm fine with masses, it feels more geological to me."
+2. **C, the fall.** Answered in part: the player wakes on the last thing they stood on before entering the place. Still open: do compounds and doses count as items for the loss? Is the third rounded down (8 loses 2)? Is creative exempt? The plan assumes no, yes and yes.
 3. **B, the ways back.** How sparse? The plan tunes for "usually not the way you came", but an order of magnitude would help: one way back in sight of most landings, or a real search?
 4. **D, ports.** Does every works block, sump and spired vault have a port, or only some of them?
 5. **E, the hidden stair.** From inside the vaults an undosed player would see a hole in the floor where the stair's mist-stone top is, and could drop down it. Keep that as the undosed way out, or close it with a hatch?
-6. **G.** Is "megaphobia" the fear of very large things? Is the "flat maze horosphere" a sheet in the sense the code uses (a plane along cell faces, hung below the crust), or a true horosphere, flat inside and off the honeycomb?
+6. **G.** Answered: structures larger than can be comprehended, and a maze of rafters with no railings, like a mineshaft, not walls. Taken as flat in the code's sense; say so if a true horosphere, off the honeycomb, was meant.
 7. **L, landmarks.** The table in L0: what each structure becomes, where it stands and what it holds. And whether structures may stand on rough ground on footings, or need flat sites wherever they are.
-8. **M, threes.** The audit table, when it exists. In particular: do capacities (the crafting queue of 16, the stack limit, the 24 compounds kept) fall under the rule, or only recipes and yields?
-9. **I, backrooms.** Is "minecraft's multiple table worldgen" the multi-field biome table and the weighted pools of pieces, or something else?
+8. **M, threes.** The audit table, when it exists. Answered for capacities: the queue gets no size, and the cap of 24 compounds goes. Open: what a bundle of unidentified flowers is in the hand and in the inventory.
+9. **I, backrooms.** Answered: a hint, not a model; a space of parameters, not a tree.
 10. **J3, notes.** Who writes them? The plan assumes drafts from `ideas.md` that the owner reads before they go in.
+11. **M, the audit.** Answered: left to judgement, a stack of 81, a hotbar of twelve, threes only where a number has no default. The choices made are under package M.
+12. **M, the queue.** Answered: ingredients are taken when a thing is queued, and what cannot be paid for cannot be queued.
+13. **M, bundles.** Answered: a bundle is what cannot be told apart; actions pick from it; the player is shown the different flowers in it; and the fall is forgiving of a strain held once or twice.
+14. **C, the mark.** Answered: the place before it, and before that, and the world's spawn if nothing holds.
+15. **L, landmarks.** Answered: build the table as proposed and take out what is no good.
 
 ## 9. Status
 
+Work was being done by Opus 5.5 subagents: one builder at a time, scouts beside it, the main session briefing them and checking what they hand back by running section 4 itself. The last builder was stopped, and a new agent is launched only when the owner asks for one. Package P was done by the main session directly. The plugin ABI is 28.
+
 | Package | State |
 | --- | --- |
-| A. A crust that varies | not started |
-| B. Caves that open downward, ways back | not started |
-| C. The fall and the way back | not started |
+| P. Speed first | done by the main session, at the owner's request, as far as the "Still open" list in the package: the load from spawn settles about eight times sooner in about a tenth of the memory, and flight keeps the visible world loaded with a few late frames in a hundred. What is open is tuning and the serial stages left on the main thread |
+| A. A crust that varies | built and checked; the owner keeps the masses, so the second build is not built. Its cost is package P's to remove |
+| B. Caves that open downward, ways back | scouted; findings are in the package, including a probable fault left by A (cave skins hanging in the open at rock flanks); held until P is done |
+| C. The fall and the way back | the builder was stopped before it reported. Its work is in the tree and its tests pass (`falls/`, `save/round-trip`), the bottom under a ground included (`api.abyss`); nobody has reviewed it or looked at it in play |
 | D. Ports that belong to their ground | not started |
 | E. The hidden stair to the vaults | not started |
 | F. Void worlds: the interface | not started |
 | G. Void worlds: the nightmare | not started |
 | H. Under built ground | not started |
-| I. Backrooms from several tables | not started |
-| J. The library's rooms | not started |
+| I. Backrooms from several tables | scouted; findings and a first table of ranges are in the package; held until P is done |
+| J. The library's rooms | scouted; findings and nine draft rumors are in the package; held until P is done |
 | K. Debug scenes in the creative menu | not started |
-| L. Landmarks that are real | not started |
-| M. Threes in what is held and needed | not started |
-| N. Keeping the record straight | not started |
+| L. Landmarks that are real | scouted and answered; ready to build piece by piece, the engine piece first |
+| M. Threes in what is held and needed | scouted and answered; ready to build piece by piece |
+| N. Keeping the record straight | N2 done and checked (the `deep` digest line). N1, N3, N4 ongoing |

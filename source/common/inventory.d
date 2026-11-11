@@ -10,6 +10,7 @@ enum uint PACK_ROWS = 3;
 enum uint SLOT_COUNT = HOTBAR_SLOTS * (PACK_ROWS + 1);
 enum uint STACK_LIMIT = 64;
 enum uint MOST_STRAINS = 8;
+enum uint LOSS_DIVISOR = 3;
 
 enum Cycle : ubyte {
     back,
@@ -139,11 +140,31 @@ struct Stack {
         }
     }
 
-    void spendLike(ref const Stack kind) {
-        if (strainCount == 0) {
-            draw(1);
+    uint takeLike(ref const Stack kind, uint wanted) {
+        uint taken = lowerOf(countLike(kind), wanted);
+        if (taken > 0 && strainCount == 0) {
+            draw(taken);
+        } else if (taken > 0) {
+            takeFromRun(runOf(kind.strains[0].genes).value, taken);
+        }
+        return taken;
+    }
+
+    uint kindCount() const {
+        if (isEmpty) {
+            return 0;
+        } else if (strainCount == 0) {
+            return 1;
         } else {
-            takeFromRun(runOf(kind.strains[0].genes).value, 1);
+            return strainCount;
+        }
+    }
+
+    Stack kindAt(uint index) const {
+        if (strainCount == 0) {
+            return Stack(item, 1);
+        } else {
+            return Stack.ofLiving(item, 1, strains[index].genes, sorting);
         }
     }
 
@@ -252,11 +273,44 @@ struct Inventory {
             slot -= 1;
         }
         if (slot > 0) {
-            slots[slot - 1].spendLike(kind);
+            slots[slot - 1].takeLike(kind, 1);
             return true;
         } else {
             return false;
         }
+    }
+
+    uint firstSlotHolding(Stack kind) const {
+        uint slot = 0;
+        while (slot < SLOT_COUNT && slots[slot].countLike(kind) == 0) {
+            slot += 1;
+        }
+        return slot;
+    }
+
+    void takeKind(Stack kind, uint count) {
+        uint left = count;
+        uint slot = SLOT_COUNT;
+        while (slot > 0 && left > 0) {
+            slot -= 1;
+            left -= slots[slot].takeLike(kind, left);
+        }
+    }
+
+    uint loseShare() {
+        Inventory before = this;
+        uint lost = 0;
+        foreach (slot; 0 .. SLOT_COUNT) {
+            foreach (index; 0 .. before.slots[slot].kindCount) {
+                Stack kind = before.slots[slot].kindAt(index);
+                if (before.firstSlotHolding(kind) == slot) {
+                    uint taken = before.countOfKind(kind) / LOSS_DIVISOR;
+                    takeKind(kind, taken);
+                    lost += taken;
+                }
+            }
+        }
+        return lost;
     }
 
     uint countAmong(const(Item)[] options) const {

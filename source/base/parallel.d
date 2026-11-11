@@ -15,6 +15,9 @@ version (WebAssembly) {
 
     void wake(ref shared uint word) {
     }
+
+    void wakeSome(ref shared uint word, uint count) {
+    }
 } else version (OSX) {
     import core.sys.posix.pthread : pthread_create, pthread_join, pthread_t;
 
@@ -28,6 +31,10 @@ version (WebAssembly) {
     }
 
     void wake(ref shared uint word) {
+        os_sync_wake_by_address_all(&word, uint.sizeof, OS_SYNC_NONE);
+    }
+
+    void wakeSome(ref shared uint word, uint count) {
         os_sync_wake_by_address_all(&word, uint.sizeof, OS_SYNC_NONE);
     }
 } else {
@@ -44,6 +51,10 @@ version (WebAssembly) {
 
     void wake(ref shared uint word) {
         syscall(CALL_FUTEX, &word, FUTEX_WAKE_HERE, WAKE_ALL, null, null, 0);
+    }
+
+    void wakeSome(ref shared uint word, uint count) {
+        syscall(CALL_FUTEX, &word, FUTEX_WAKE_HERE, cast(int) count, null, null, 0);
     }
 }
 
@@ -201,25 +212,39 @@ struct WorkerPool {
         }
     }
 
+    void call(size_t helpers) {
+        atomicOp!"+="(epoch, 1);
+        uint sleeping = atomicLoad(sleepers);
+        if (sleeping > 0 && helpers > 0) {
+            wakeSome(epoch, cast(uint) lowerOf(helpers, cast(size_t) sleeping));
+        }
+    }
+
     void run(ParallelJob* parallel) {
-        if (!parallel.deadline.isBounded) {
-            parallel.grain = grainFor(parallel.count, participants());
+        if (parallel.count <= 1) {
+            parallel.work(MAIN_WORKER);
+            parallel.finish();
+            runs += 1;
+        } else {
+            if (!parallel.deadline.isBounded) {
+                parallel.grain = grainFor(parallel.count, participants());
+            }
+            atomicStore(job, cast(size_t) parallel);
+            call((parallel.count + parallel.grain - 1) / parallel.grain - 1);
+            parallel.work(MAIN_WORKER);
+            atomicStore(job, 0);
+            double start = nowMilliseconds();
+            atomicStore(joiners, 1);
+            uint inside = atomicLoad(active);
+            while (inside != 0) {
+                waitWhile(active, inside);
+                inside = atomicLoad(active);
+            }
+            atomicStore(joiners, 0);
+            parallel.finish();
+            runs += 1;
+            waitedMs += nowMilliseconds() - start;
         }
-        atomicStore(job, cast(size_t) parallel);
-        signal();
-        parallel.work(MAIN_WORKER);
-        atomicStore(job, 0);
-        double start = nowMilliseconds();
-        atomicStore(joiners, 1);
-        uint inside = atomicLoad(active);
-        while (inside != 0) {
-            waitWhile(active, inside);
-            inside = atomicLoad(active);
-        }
-        atomicStore(joiners, 0);
-        parallel.finish();
-        runs += 1;
-        waitedMs += nowMilliseconds() - start;
     }
 
     void release() {

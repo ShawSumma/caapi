@@ -5,13 +5,14 @@ import base.maybe : Maybe, MaybeIndex;
 import base.numbers : higherOf;
 import base.vector3 : Vec3, magnitude, minus, scaled;
 import common.graph : Graph;
+import common.node : Occupancy;
 import common.position : Position;
 import common.traversal : NearbyNode, NearbyScratch;
 import common.view : GraphView;
 import common.worldgen.blueprint : BlueprintBuilder, CellBox, Cover, EVERY_HEIGHT, PaintResult;
 import common.worldgen.building : Building;
 import common.worldgen.generation : ChunkParams, GeneratedVoxels, StructureWorld, Worldgen;
-import common.worldgen.horospheres : CLEARANCE_EDGES, ChunkPoint, EdgeLine, FLAT_EDGE, GROUND_EDGES, Gravity, Grounds, Horosphere, HorosphereId, HorosphereKind, HorosphereRef, Horospheres, LOWEST_RISE_EDGES, MOST_GROUNDS, ROOT, Rise, RiseLine, RiseMeasure, blendedGravity, chunkPointOf, columnDistanceOf, edgeOf, ensureClimate, ensureGravityAt, ensureGroundNode, ensureHorosphereOver, ensureHorospheresAt, ensureMeasure, ensurePlaneIn, ensureRising, ensureSegmentSite, ensureSegmentsNear, groundsOf, isApart, isOnFootLine, isRayApart, loadedClimateAt, openHorosphere, probeClearOfAncestors, refIn, riseLineOver, risenPlaneOver;
+import common.worldgen.horospheres : CLEARANCE_EDGES, ChunkPoint, EdgeLine, FLAT_EDGE, GROUND_EDGES, Gravity, Grounds, Horosphere, HorosphereId, HorosphereKind, HorosphereRef, Horospheres, LOWEST_RISE_EDGES, MOST_GROUNDS, ROOT, Rise, RiseLine, RiseMeasure, blendedGravity, chunkPointOf, columnDistanceOf, edgeOf, ensureClimate, ensureGravityAt, ensureGroundNode, ensureHorosphereOver, ensureHorospheresAt, ensureMeasure, ensurePlaneIn, ensureRising, ensureSegmentSite, ensureSegmentsNear, groundsOf, isApart, isOnFootLine, isRayApart, loadedClimateAt, openHorosphere, probeBuried, probeClear, probeClearOfAncestors, refIn, riseLineOver, risenPlaneOver;
 import common.worldgen.plane : Plane;
 import common.worldgen.structure : ColumnSpot, GROUND_RING, SiteFrame, columnPoint, edgeCells, ensureGroundRing, forwarded, moveToLevel, rootSite, sitePlacement, siteToNode, turnSite;
 import geometry.honeycomb : CORNER_COUNT, Corner, FACE_DISTANCE, Face, NODE_RADIUS, opposite;
@@ -37,6 +38,7 @@ enum float MOST_PULL_CHANGE = 0.2f;
 enum double RISING_SKY_ODDS = 0.05;
 enum int CLEARING_CELLS = 8;
 enum float NESTING_RADIUS = 5.0f;
+enum float EXPOSURE_RADIUS = 4.0f;
 immutable Vec3!float[6] PULL_HEADINGS = [Vec3!float(1, 0, 0), Vec3!float(-1, 0, 0), Vec3!float(0, 1, 0), Vec3!float(0, -1, 0), Vec3!float(0, 0, 1), Vec3!float(0, 0, -1)];
 immutable float[5] GROUND_HEIGHTS = [-2.5f, 1.0f, -0.5f, 2.0f, 1.5f];
 immutable Vec3!int[3] PAINTED_CELLS = [
@@ -485,5 +487,30 @@ unittest {
         }
     }
     assert(trees > 0);
+    graph.release();
+}
+
+unittest {
+    Graph graph = Graph.make(DIMENSION, Worldgen.makeTerrain());
+    NearbyScratch scratch;
+    NearbyNode[] nearby = scratch.collectAll(graph, Position.origin(), EXPOSURE_RADIUS);
+    uint clear = 0;
+    uint buried = 0;
+    foreach (node; nearby) {
+        bool open = graph.view.probeClear(node.slot);
+        bool under = graph.view.probeBuried(node.slot);
+        assert(!(open && under));
+        if (open) {
+            clear += 1;
+            foreach (index; 0 .. CORNER_COUNT) {
+                assert(ChunkParams.make(graph.view, node.slot, cast(Corner) index).predictOccupancy() == Occupancy.empty);
+            }
+        } else if (under) {
+            buried += 1;
+            assert(airIn(graph, node.slot) == 0);
+        }
+    }
+    assert(clear > 0 && buried > 0);
+    scratch.release();
     graph.release();
 }

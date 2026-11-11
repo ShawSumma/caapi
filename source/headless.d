@@ -115,7 +115,7 @@ immutable OptionSpec[Command.max + 1] COMMANDS = [
     Command.films: OptionSpec("films", "", "run the film shots without rendering, to check they still run"),
     Command.claims: OptionSpec("claims", "", "run the behavior tests and print every check of a law with what was measured (all, or by test name prefix or topic)"),
     Command.wiki: OptionSpec("wiki", "", "run the behavior tests and write the laws they checked as one Markdown page: a map of the systems, then a linked section for each (all, or by test name prefix or topic)"),
-    Command.worldDigest: OptionSpec("world-digest", "", "hash the terrain world"),
+    Command.worldDigest: OptionSpec("world-digest", "", "hash the terrain world, then a column under spawn down through the crust"),
     Command.dumpWorld: OptionSpec("dump-world", "", "print the terrain world"),
     Command.materialCensus: OptionSpec("material-census", "", "count the terrain world's materials"),
     Command.surfaceCensus: OptionSpec("surface-census", "", "count the terrain world's surfaces"),

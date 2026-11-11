@@ -320,7 +320,7 @@ From the review: ember and tide are "the most obvious open door".
 - **Single buildings are debug structures, not worlds.** `tower`, `crown`, `palace`, `arbor`, `babel`, `road`, `trail` and the test rigs are reached by `--worldgen debug <name>` and by the tests, and the world menu does not list them. The default world still stands `arbor`, `babel`, `crown`, `palace`, `tower` and `trail` once each around spawn, and builds the road through it.
 - **Caves under everything.** On wild ground they open as sinkholes, at 2 in 100 vertices, with one forced near spawn. Under the city, the backrooms and the vaults they are sealed and begin about two edges down. The library has its stacks below it and gets none. A single-structure world gets caves only if it asks for them.
 - **Ports and wells.** A port is a ground vertex, 3 in 100 of them, where the street, the floor or the hall leaves a hole 8 cells square. A spiral stair runs from it two edges down to a cave that is always open. In the backrooms the well's column is left open on every level it passes, so it should also be a second way between levels; that is read from the code, and only the top level has been looked at. No port sits where a world starts, where a connector lands, or where a ground rises.
-- **The ground has an underside.** 5.6 edges down under the default world's root, below the deepest cave, and 3.4 edges down under risen wild ground and under vaults. City and backrooms are rock all the way. Below the underside it is open, and the lattice hangs there. The look and the fog change on the way down: cave dark below half an edge under wild ground and below 1.5 edges under built ground, lattice dark below the underside.
+- **The ground has an underside, and under the default world's root it varies.** The rock is between two edges thick and 5.6, by a slow field read where the rock is, so under a roof of about two edges the deep is great masses of rock with open void between them; thin and thick places both lie right under spawn. Under risen wild ground and under vaults it is 3.4 edges everywhere. City and backrooms are rock all the way. Below the underside it is open, and the lattice hangs there. The look and the fog change on the way down: cave dark below half an edge under wild ground and below 1.5 edges under built ground, lattice dark below the underside.
 - **Groves.** On 15 in 100 clusters of wild faces a frame of lattice poles and girders stands on the ground, with its poles sunk an edge into it.
 - **City districts.** Five of them (midtown, downtown, rows, works, green), each a cluster of faces with its own lots, street trees, parks and parking.
 - **Backrooms subtypes.** A biome is picked per region of faces two rings wide, and per level, and it sets more than the wallpaper: pillar halls, pools, and courtyards open to the sky, beside the rooms, rings, chapels and mazes there were. Eight office biomes, five house biomes, five maze biomes.
@@ -350,7 +350,7 @@ From the review: ember and tide are "the most obvious open door".
 - **A grove is a sign.** Grove poles already go an edge into the ground. If the void's poles came up through the rock to meet them, a grove on the surface would mark a way down.
 - **A fall has to end somewhere.** Under the root nothing catches a body but the lattice itself. What a fall costs is the first thing to decide about the void.
 - **Whatever is next.** Candidates for the void world after the lattice: the flat sheet, a sky with fixed stars, a ground hung upside down from the crust, a sea.
-- **Debug structures still carry lessons.** The crown's loop that leaves the ground, the arbor's wide decks. Each needs a home in a real world, or it is only reachable by a flag.
+- **Debug structures still carry lessons.** The crown's loop that leaves the ground, the arbor's wide decks. The arbor and Babel have a home already: they rise all over the default world as kinds, each at about 15 in 10,000 ground vertices. The crown, the tower, the palace, the road and the trail stand only once, at spawn, and need one.
 
 **Open.** The choices this left were put to the owner and answered: see [Decisions waiting](#decisions-waiting). None of the answers is built yet.
 
@@ -877,7 +877,7 @@ Named in this file from general knowledge, and not looked up for it: Mohs's hard
 
 Choices left open by joining the worlds. A reviewer drew them up from the code and this file, and the owner answered them. "Built now" says what the game does today, and "Answer" is the owner's, in their words where they wrote some. What waits is the building: where an answer differs from "Built now", nothing has been done about it yet.
 
-1. **Under the default world's root, does the void replace the deep or lie below it?** (a) A thin crust about two edges down, with the lattice close and the deep geology moved elsewhere. (b) A full-depth crust, with the lattice as the very bottom. (c) Shields and windows: clusters of faces roll thick or thin. (d) No void under the root, only under risen grounds. Built now: (b), at 5.6 edges. Answer: (c), shields and windows.
+1. **Under the default world's root, does the void replace the deep or lie below it?** (a) A thin crust about two edges down, with the lattice close and the deep geology moved elsewhere. (b) A full-depth crust, with the lattice as the very bottom. (c) Shields and windows: clusters of faces roll thick or thin. (d) No void under the root, only under risen grounds. Built now: (b), at 5.6 edges. Answer: (c), shields and windows. Since built, in a first form: a thickness between two edges and 5.6 that varies in space, which gives masses of rock under a thin roof and not shafts with walls. The owner keeps it: "I'm fine with masses, it feels more geological to me."
 2. **What happens to a player who steps off the lattice into the void?** (a) You land somewhere deeper, and lose only the way back. (b) You fall back up onto the crust's underside. (c) The thread winds you back to your last bead. (d) The fall is real unless you stop it. Built now: nothing catches a body but the lattice. Answer: (d), with a way back. "The fall is real but we plan for a mechanism to get back. Like a respawn, with keepinventory-style things. Maybe 1/3 of items you have 3 or more of are lost."
 3. **How does a player get from the caves through the crust into the void?** (a) The lowest chambers open through the floor. (b) A well goes on past its chamber. (c) The void's poles rise through the crust and stand on the surface as groves. Built now: no way through. Answer: (a), through the caves.
 4. **Is the way back up the way the player came down?** (a) The same way: every well is a stair from top to bottom. (b) Another way: a last drop on the way down, and rarer stairs back up somewhere else. (c) Your own way: blocks you place, or a lift dose. Built now: wells are stairs both ways, and stop at the caves. Answer: near (b), and more than one. "A network that almost doesn't feel so. I think the another way is good but not exactly one way out, but not too obvious either".
@@ -907,6 +907,21 @@ What the answers ask for, in the order the pieces depend on each other:
 - **A debug list in the creative menu.** A debug world is a scene for looking at one structure in isolation, and normal play does not go there.
 - **Landmarks that are real.** The tower, the crown, the palace and the rest stop being test pieces that happen to stand at spawn and become places and objects with a reason to be where they are.
 - **Threes in what is held and needed.** Recipe inputs, yields and the like lean to powers of three. The fall's loss rule is already one.
+
+Four follow-ups, asked and answered after the list above:
+
+- **Where a fallen player wakes.** "I think going back to the last thing they stood on before they entered the place would be good."
+- **The largeness, and the maze.** "The fear of structures larger than you can comphrend. The flat maze should be closer to a rafter with no railings. Not walls as much as a minecraft-ish mineshaft."
+- **Several tables.** Minecraft is a hint and not a model: "You don't have to, and should not, do exactly that... just that's how I mean doing multiple strategies. You can't make it a tree, it's a space of parameters".
+- **Capacities.** "The queue shouldn't have a size and should work like factorio. 24 compounds kept is also a bad/weird thing. Flowers stacking but being unidentified is a bit odd. They are basically a bundle of items, in a way."
+
+And five more, once the code had been read for them:
+
+- **Sizes.** "I like 81 as the limit. Minecraft has inventory problems. Hotbar should be 12 (maybe 13 with tilde). Not powers of 3 for thier own sake, but just when somerthing has no default".
+- **The queue.** "The ingrediants are taken immediately and you shouldn't be able to queue what you don't have. Very factorio".
+- **Bundles.** "A bundle is that which you cannot make any distinction between. It just picks from it. The player should be aware of this, with some tooltip or UI drawing of the different flowers. Like you know which one you have but not what that means. It's a sort of abstract idea. I'd say be forgiving, when the player only has one of a thing, even if they don't know it."
+- **Landmarks.** Build the proposed places and see: "Give it a shot, if it's no good then we can remove it".
+- **Waking when the ground is gone.** "If it's not there go to the block before it. If nothing is there go to world spawn".
 
 The work is laid out in `plan.md`.
 

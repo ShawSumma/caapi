@@ -39,6 +39,7 @@ enum Topic : ubyte {
     saves,
     screens,
     mods,
+    falls,
 }
 
 enum uint TOPIC_COUNT = Topic.max + 1;
@@ -83,6 +84,8 @@ string titleOf(Topic topic) {
             return "Screens";
         case Topic.mods:
             return "Mods";
+        case Topic.falls:
+            return "Falling and waking";
     }
 }
 

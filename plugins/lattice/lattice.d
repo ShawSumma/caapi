@@ -248,18 +248,31 @@ void beam(Turtle start, ref const Root root) {
     }
 }
 
-void hang(Turtle start, double crust) {
-    double edge = start.edgeCells();
+bool probeOpen(Turtle end, double height) {
+    if (!(height < -HANG_CLEAR)) {
+        return false;
+    } else {
+        return height < -(end.probeCrust() * end.edgeCells() + HANG_CLEAR);
+    }
+}
+
+void hang(Turtle start, double abyss) {
     Drawing pen = start.openPen();
-    double lower = lowerOf(pen.height(), pen.forward(edge).height());
-    if (lower < -(crust * edge + HANG_CLEAR)) {
+    double near = pen.height();
+    double far = pen.forward(start.edgeCells()).height();
+    double bottom = -abyss * start.edgeCells();
+    bool open = probeOpen(start, near);
+    if (!open) {
+        open = probeOpen(start.forward(1), far);
+    }
+    if (open && (near > bottom || far > bottom)) {
         Root root;
         beam(start, root);
     }
 }
 
-void deepen(const(Api)* api, KindTag ground, double crust) {
-    api.under(api, ground, LOOK, crust, tuning.fog);
+void deepen(const(Api)* api, KindTag ground) {
+    api.underCrust(api, ground, LOOK, 0, tuning.fog);
 }
 
 bool probeGrove(Turtle face, double share) {

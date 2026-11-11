@@ -78,6 +78,7 @@ enum Event : ubyte {
     placed,
     crafted,
     dosed,
+    woke,
 }
 
 struct Happening {

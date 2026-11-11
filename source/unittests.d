@@ -10,6 +10,7 @@ import unitAllocator = unit.allocator;
 import unitSlab = unit.slab;
 import unitClock = unit.clock;
 import unitParallel = unit.parallel;
+import unitHeap = unit.heap;
 import unitNames = unit.names;
 import unitUnits = unit.units;
 import unitVector3 = unit.vector3;

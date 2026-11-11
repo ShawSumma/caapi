@@ -13,7 +13,10 @@ import common.worldgen.building : Building;
 import common.worldgen.horospheres : HorosphereId, ROOT;
 import common.worldgen.strokes : Stroke, Strokes;
 import common.worldgen.structure : LineTouch;
+import geometry.honeycomb : CORNER_COUNT, FACE_COUNT;
 import plugins.api.flags : Flags;
+
+enum uint TILE_IDLE_SWEEPS = 60;
 
 struct Grower {
     void function(void* context, ref Graph graph, int through) grow;
@@ -48,10 +51,29 @@ enum Standing : ubyte {
     inside,
 }
 
+enum ubyte FIRST_EDGE_FEATURE = FACE_COUNT + CORNER_COUNT;
+enum uint EDGE_FEATURES = CORNER_COUNT * 3;
+
+static assert(EDGE_FEATURES <= ulong.sizeof * 8);
+
+bool isEdgeFeature(ubyte feature) {
+    return feature >= FIRST_EDGE_FEATURE;
+}
+
+ulong edgeBit(ubyte feature) {
+    return 1UL << (feature - FIRST_EDGE_FEATURE);
+}
+
 struct NodeStructure {
     Run touches;
+    ulong blankEdges;
     MaybeIndex!uint building;
+    MaybeIndex!uint tiles;
     Flags!NodeMark marks;
+
+    bool isBlankEdge(ubyte feature) const {
+        return (blankEdges & edgeBit(feature)) != 0;
+    }
 
     bool isFinished() const {
         return marks.has(NodeMark.finished);
@@ -193,7 +215,22 @@ struct StructureStore {
         }
     }
 
+    void linkTile(uint slot, uint tile) {
+        blueprint.tiles.ptr[tile].nextOnFace = at(slot).tiles;
+        at(slot).tiles = MaybeIndex!uint.of(tile);
+    }
+
+    void unlinkTile(uint slot, uint tile) {
+        MaybeIndex!uint* link = &at(slot).tiles;
+        while (link.value != tile) {
+            link = &blueprint.tiles.ptr[link.value].nextOnFace;
+        }
+        *link = blueprint.tiles.ptr[tile].nextOnFace;
+        blueprint.tiles.ptr[tile].nextOnFace = MaybeIndex!uint.init;
+    }
+
     void forget(uint slot) {
+        assert(!at(slot).tiles.exists);
         releaseBuilding(slot);
         foreach (touch; touchesAt(slot)) {
             blueprint.lineStates.ptr[touch.line].touchers -= 1;
@@ -268,8 +305,37 @@ bool isPinning(ref const Graph graph, NodeId id) {
     return slot.exists && graph.structures.at(slot.value).isPinning;
 }
 
+bool isTileIdle(ref const Graph graph, uint tile) {
+    const(Blueprint)* blueprint = &graph.structures.blueprint;
+    return blueprint.sweep - blueprint.liveUses.ptr[blueprint.tiles.ptr[tile].listIndex] > TILE_IDLE_SWEEPS && !graph.isTilePinned(tile);
+}
+
+struct TileDrops {
+    uint dropped;
+    uint forgotten;
+}
+
+TileDrops dropIdleTilesAt(ref Graph graph, uint slot) {
+    TileDrops drops;
+    MaybeIndex!uint next = graph.structures.at(slot).tiles;
+    while (next.exists) {
+        uint tile = next.value;
+        next = graph.structures.blueprint.tiles.ptr[tile].nextOnFace;
+        if (graph.isTileIdle(tile)) {
+            graph.dropTile(tile);
+            drops.dropped += 1;
+            if (graph.isTileGone(tile)) {
+                graph.forgetTile(tile);
+                drops.forgotten += 1;
+            }
+        }
+    }
+    return drops;
+}
+
 void dropTile(ref Graph graph, uint tile) {
     StructureStore* structures = &graph.structures;
+    structures.unlinkTile(graph.slotOf(structures.blueprint.tiles.ptr[tile].face).value, tile);
     foreach (id; structures.blueprint.tiles.ptr[tile].painted.reached.slice()) {
         structures.strokes.remove(id, PaintOwner.ofTile(tile));
         MaybeIndex!uint slot = graph.slotOf(id);

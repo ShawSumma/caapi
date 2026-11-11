@@ -1,6 +1,6 @@
 module plugins.fixtures.plugin;
 
-import plugins.api.api : Api, HorosphereForm, KindId, Registry, Site, SitePart, Spot, entryOf;
+import plugins.api.api : Api, HorosphereForm, KindId, KindTag, Registry, Site, SitePart, Spot, entryOf;
 import plugins.api.content : BASE, Content, Dependency, FIRST_VERSION, Manifest, dependencyOn;
 import box = plugins.box.box;
 import plugins.api.binding : bound;
@@ -20,6 +20,8 @@ immutable Connection ROUTED = Connection.forced(Style.tower, Routing.routed);
 enum uint HOUSE_FLOOR = 1;
 enum uint TOP_FLOOR = 0;
 enum int SHOWCASE_FRONT = 4;
+enum double ABYSS_CRUST = 1;
+enum double ABYSS_DEPTH = 3;
 
 Kinds routedKinds(const(Api)* api) {
     return addKinds(api, 0, 0, &ROUTED);
@@ -148,6 +150,11 @@ void hamlet(const(Api)* api, Site site, const(void)* data) {
     }
 }
 
+void abyss(const(Api)* api, Site site, const(void)* data) {
+    api.crust(api, KindTag.init, ABYSS_CRUST);
+    api.abyss(api, KindTag.init, ABYSS_DEPTH);
+}
+
 void resolve(const(Content)* content) {
     resolveHorospheres(content);
     box.resolveBox(content);
@@ -184,4 +191,5 @@ pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
     registry.addDebug(registry, "backroomsstairs", &backroomsStairs);
     registry.addDebug(registry, "showcase", &showcase);
     registry.addDebug(registry, "hamlet", &hamlet);
+    registry.addDebug(registry, "abyss", &abyss);
 }

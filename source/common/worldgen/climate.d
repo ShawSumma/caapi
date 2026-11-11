@@ -30,6 +30,7 @@ immutable Process HEAT = Process(0.94f, 0.3f, 0x2B992DD3);
 immutable Process WETNESS = Process(0.94f, 0.3f, 0x6C8E9CF5);
 immutable Process STRATA = Process(0.8f, 0.25f, 0x3C6EF372);
 immutable Process RUGGEDNESS = Process(0.9f, 0.2f, 0x1F83D9AB);
+immutable Process SHIELD = Process(0.9f, 0.2f, 0x5D1E7A3B);
 immutable float[3] ROCK_BAND_DEPTHS = [1.2f, 2.6f, 4.5f];
 immutable float[2] WETNESS_CLASS_LIMITS = [-0.2f, 0.3f];
 
@@ -43,6 +44,7 @@ float mountainOf(float ruggedness) {
 
 enum float RELIEF_BOUND = boundOf(BROAD_RELIEF) + boundOf(LOCAL_RELIEF) + MOUNTAIN_HEIGHT * (boundOf(RUGGEDNESS) - RUGGED_THRESHOLD);
 enum float RELIEF_SLACK = 4 * (BROAD_RELIEF.spread + LOCAL_RELIEF.spread + MOUNTAIN_HEIGHT * RUGGEDNESS.spread);
+enum float SHIELD_SLACK = 4 * SHIELD.spread;
 
 struct NodeClimate {
     float broad = 0;
@@ -51,6 +53,7 @@ struct NodeClimate {
     float wetness = 0;
     float strata = 0;
     float ruggedness = 0;
+    float shield = 0;
     float calm = 1;
 
     static NodeClimate fromParents(const(NodeClimate)[] parents, ulong spice) {
@@ -62,12 +65,13 @@ struct NodeClimate {
             mean.wetness += parent.wetness / parents.length;
             mean.strata += parent.strata / parents.length;
             mean.ruggedness += parent.ruggedness / parents.length;
+            mean.shield += parent.shield / parents.length;
         }
-        return NodeClimate(stepped(mean.broad, BROAD_RELIEF, spice), stepped(mean.local, LOCAL_RELIEF, spice), stepped(mean.heat, HEAT, spice), stepped(mean.wetness, WETNESS, spice), stepped(mean.strata, STRATA, spice), stepped(mean.ruggedness, RUGGEDNESS, spice));
+        return NodeClimate(stepped(mean.broad, BROAD_RELIEF, spice), stepped(mean.local, LOCAL_RELIEF, spice), stepped(mean.heat, HEAT, spice), stepped(mean.wetness, WETNESS, spice), stepped(mean.strata, STRATA, spice), stepped(mean.ruggedness, RUGGEDNESS, spice), stepped(mean.shield, SHIELD, spice));
     }
 
     Climate climate() const {
-        return Climate(calm * (broad + local + mountainOf(ruggedness)), heat, wetness, strata);
+        return Climate(calm * (broad + local + mountainOf(ruggedness)), heat, wetness, strata, shield);
     }
 }
 
@@ -84,15 +88,16 @@ struct Climate {
     float heat = 0;
     float wetness = 0;
     float strata = 0;
+    float shield = 0;
 
     static Climate lerp(Climate a, Climate b, float t) {
-        return Climate(a.relief + (b.relief - a.relief) * t, a.heat + (b.heat - a.heat) * t, a.wetness + (b.wetness - a.wetness) * t, a.strata + (b.strata - a.strata) * t);
+        return Climate(a.relief + (b.relief - a.relief) * t, a.heat + (b.heat - a.heat) * t, a.wetness + (b.wetness - a.wetness) * t, a.strata + (b.strata - a.strata) * t, a.shield + (b.shield - a.shield) * t);
     }
 
     static Climate mean(const(Climate)[] values) {
         Climate sum;
         foreach (value; values) {
-            sum = Climate(sum.relief + value.relief / values.length, sum.heat + value.heat / values.length, sum.wetness + value.wetness / values.length, sum.strata + value.strata / values.length);
+            sum = Climate(sum.relief + value.relief / values.length, sum.heat + value.heat / values.length, sum.wetness + value.wetness / values.length, sum.strata + value.strata / values.length, sum.shield + value.shield / values.length);
         }
         return sum;
     }
@@ -124,8 +129,8 @@ struct CubeClimate {
         cube.lowest = cube.corners[0];
         cube.highest = cube.corners[0];
         foreach (corner; cube.corners[1 .. $]) {
-            cube.lowest = Climate(lowerOf(cube.lowest.relief, corner.relief), lowerOf(cube.lowest.heat, corner.heat), lowerOf(cube.lowest.wetness, corner.wetness), lowerOf(cube.lowest.strata, corner.strata));
-            cube.highest = Climate(higherOf(cube.highest.relief, corner.relief), higherOf(cube.highest.heat, corner.heat), higherOf(cube.highest.wetness, corner.wetness), higherOf(cube.highest.strata, corner.strata));
+            cube.lowest = Climate(lowerOf(cube.lowest.relief, corner.relief), lowerOf(cube.lowest.heat, corner.heat), lowerOf(cube.lowest.wetness, corner.wetness), lowerOf(cube.lowest.strata, corner.strata), lowerOf(cube.lowest.shield, corner.shield));
+            cube.highest = Climate(higherOf(cube.highest.relief, corner.relief), higherOf(cube.highest.heat, corner.heat), higherOf(cube.highest.wetness, corner.wetness), higherOf(cube.highest.strata, corner.strata), higherOf(cube.highest.shield, corner.shield));
         }
         return cube;
     }

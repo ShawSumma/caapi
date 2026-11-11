@@ -44,9 +44,9 @@ import common.settings : CHUNK_DIMENSION, CharacterConfig;
 import common.traversal : NearbyNode, NearbyScratch;
 import common.worldgen.blueprint : RouteStop;
 import common.worldgen.generation : NodeState, Worldgen;
-import common.worldgen.horospheres : Gravity, ensureGravityAt, gravityAt, isGravityKnown;
+import common.worldgen.horospheres : Gravity, ensureGravityAt, ensureGravityKnown, gravityAt, isBelowAbyss, isBelowUnderside, isGravityKnown;
 import common.worldgen.spawn : collectChunksNear, findSpawnPosition;
-import common.worldgen.structure : SiteFrame, columnPoint, edgeLength, forwarded, moveToLevel, nodeToNode, rootSite, sitePlacement, siteToNode, spawnBefore, turnSite;
+import common.worldgen.structure : SiteFrame, columnPoint, edgeCells, edgeLength, forwarded, moveToLevel, nodeToNode, rootSite, sitePlacement, siteToNode, spawnBefore, turnSite;
 import geometry.cube : Cell;
 import geometry.honeycomb : CORNER_COUNT, Corner, Face, cornerToNode, cubeToNode, nodeToCorner;
 import geometry.lorentz : Motion, Point, Vec4;
@@ -82,6 +82,7 @@ enum size_t MOST_NOTES = 4;
 enum Time NOTE_SECONDS = Time(5);
 enum Time CREATIVE_BREAK = Time(0.15f);
 enum Time HAND_BREAK = Time(1.5f);
+enum uint MOST_FOOTHOLDS = 9;
 
 enum NoteKind : ubyte {
     planted,
@@ -118,6 +119,7 @@ enum NoteKind : ubyte {
     learned,
     unripeHarvest,
     told,
+    woke,
 }
 
 struct Note {
@@ -520,6 +522,11 @@ struct Beacon {
     uint cell;
 }
 
+struct Footholds {
+    Position[MOST_FOOTHOLDS] places;
+    uint count;
+}
+
 struct Thread {
     Array!Position beads;
     Length spacing = THREAD_SPACING;
@@ -653,6 +660,7 @@ struct Game {
     Array!Crafting crafts;
     Array!Compound compounds;
     Thread thread;
+    Footholds footholds;
     HashMap!(NodeId, Present) explored;
     Aim aim;
     Ratio[GAS_COUNT] machineAir;
@@ -802,20 +810,29 @@ struct Game {
     }
 
     void settleToGround() {
-        Length reach = regionReach(character) + bodyReach();
-        Features features;
-        Slide drop;
-        while (!drop.hasLanded) {
-            generateAround(characterState.position, reach);
-            characterState.up = world.graph.ensureGravityAt(characterState.position).up;
-            characterState.pull = characterState.up;
-            features.collect(world.graph, characterState.position, reach, bodySolid());
-            drop = Mover.make(character, features, characterState.up, Length(0)).settle(ZERO_VECTOR, bodyReach());
-            characterState.position = world.graph.movedBy(characterState.position, drop.position);
+        Footing footing = settleStep();
+        while (footing == Footing.airborne) {
+            footing = settleStep();
         }
+    }
+
+    Footing settleStep() {
+        Length reach = regionReach(character) + bodyReach();
+        generateAround(characterState.position, reach);
+        characterState.up = world.graph.ensureGravityAt(characterState.position).up;
+        characterState.pull = characterState.up;
+        Features features;
+        features.collect(world.graph, characterState.position, reach, bodySolid());
+        Slide drop = Mover.make(character, features, characterState.up, Length(0)).settle(ZERO_VECTOR, bodyReach());
         features.release();
-        characterState.groundNormal = drop.groundNormal;
-        characterState.footing = Footing.grounded;
+        characterState.position = world.graph.movedBy(characterState.position, drop.position);
+        if (drop.hasLanded) {
+            characterState.groundNormal = drop.groundNormal;
+            characterState.footing = Footing.grounded;
+            return Footing.grounded;
+        } else {
+            return Footing.airborne;
+        }
     }
 
     void resetView() {
@@ -903,6 +920,7 @@ struct Game {
         thrown.clear();
         beacons.clear();
         thread.restart(traveled);
+        footholds = Footholds.init;
         explored.clear();
         usedStations[] = Maybe!Beacon.init;
         closeScreen();
@@ -1580,6 +1598,79 @@ struct Game {
         return explored.find(node) !is null;
     }
 
+    Length blockLength() const {
+        return Length(edgeLength(world.graph.layout).value / edgeCells(world.graph.layout.dimension));
+    }
+
+    void keepFoothold(Position at) {
+        if (footholds.count == MOST_FOOTHOLDS) {
+            world.graph.unreference(world.graph.slotOf(footholds.places[MOST_FOOTHOLDS - 1].node).value);
+            footholds.count -= 1;
+        }
+        foreach_reverse (index; 0 .. footholds.count) {
+            footholds.places[index + 1] = footholds.places[index];
+        }
+        footholds.places[0] = at;
+        footholds.count += 1;
+        world.graph.reference(world.graph.slotOf(at.node).value);
+    }
+
+    void dropNewestFoothold() {
+        world.graph.unreference(world.graph.slotOf(footholds.places[0].node).value);
+        foreach (index; 1 .. footholds.count) {
+            footholds.places[index - 1] = footholds.places[index];
+        }
+        footholds.count -= 1;
+    }
+
+    bool isApartFromFootholds(Position at) const {
+        if (footholds.count == 0) {
+            return true;
+        } else {
+            Position newest = footholds.places[0];
+            Motion!float toNewest = world.graph.ownView.nodeToNode(world.graph.slotOf(at.node).value, world.graph.slotOf(newest.node).value);
+            Point!float here = toNewest * at.local * Point!float.origin();
+            return here.coshDistance(newest.local * Point!float.origin()) >= coshf(blockLength().value);
+        }
+    }
+
+    void markFoothold() {
+        Position here = characterState.position;
+        if (mode == MovementMode.walk && characterState.isOnGround && reveal.touchable.isEmpty && !world.graph.isBelowUnderside(here) && isApartFromFootholds(here)) {
+            keepFoothold(here);
+        }
+    }
+
+    void wake() {
+        closeScreen();
+        mining = Maybe!Mining.init;
+        eating = Maybe!Eating.init;
+        Footing landed = Footing.airborne;
+        while (landed == Footing.airborne && footholds.count > 0) {
+            placeAt(footholds.places[0], Length(0));
+            landed = settleStep();
+            if (landed == Footing.airborne) {
+                dropNewestFoothold();
+            }
+        }
+        if (landed == Footing.airborne) {
+            placeAtSpawn();
+        }
+        uint lost = 0;
+        final switch (rules) {
+            case Rules.survival:
+                lost = inventory.loseShare();
+                break;
+            case Rules.creative:
+                break;
+        }
+        Note made = {kind: NoteKind.woke, amount: lost};
+        post(made);
+        happen(Event.woke, world.graph.worldgen.structureName());
+        world.settleFogColor();
+        updateView();
+    }
+
     void happen(Event event, const(char)[] subject) {
         Play play = Play(&this, &readApi, &playGive, &playLearn, &playNote);
         fire(&play, Happening(subject, event));
@@ -2179,6 +2270,12 @@ struct Game {
         Stepped stepped = runCharacter(effective, characterInput(moveX, moveY, moveZ, jumpFrom(input.held)), dt);
         lastHeld = input.held;
         traveled = traveled + stepped.traveled;
+        world.graph.ensureGravityKnown(characterState.position);
+        if (mode == MovementMode.walk && world.graph.isBelowAbyss(characterState.position)) {
+            wake();
+        } else {
+            markFoothold();
+        }
         layThread();
         altitude = ensureAltitude();
         followBody();

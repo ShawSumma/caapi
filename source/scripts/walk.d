@@ -11,8 +11,8 @@ import common.character.controller : Footing, MovementMode;
 import common.graph : Graph;
 import common.items : materialNames;
 import common.position : Position;
-import common.worldgen.horospheres : ROOT;
-import common.worldgen.structure : SiteFrame, forwarded, moveToLevel, rootSite, siteOf, sitePlacement, turnSite;
+import common.worldgen.horospheres : ROOT, edgeOf, ensurePlaneHeight, ensureUndersideAt;
+import common.worldgen.structure : ColumnSpot, SiteFrame, columnPoint, edgeCells, forwarded, moveToLevel, rootSite, siteOf, sitePlacement, turnSite;
 import geometry.lorentz : Point, Shift = Motion;
 import plugins.api.api : Material, Turn;
 import scripts.claims : Measure, Topic, claim;
@@ -40,6 +40,8 @@ enum double LANDING_SECONDS = 2;
 enum float LEAST_BLOCK_EDGE = 0.035f;
 enum float MOST_BLOCK_EDGE = 0.077f;
 enum size_t MOST_PORT_SITES = 512;
+enum int BENEATH_EDGES = 3;
+enum float BENEATH_MARGIN_EDGES = 0.5f;
 immutable string[2] STREET_MATERIALS =["base:basalt", "base:white-brick"];
 immutable string[7] TOWER_MATERIALS = ["base:concrete", "base:white-brick", "base:grey-brick", "base:sandstone", "base:wood-planks", "base:steel", "base:marble"];
 immutable string[5] BACKROOMS_FLOORS = ["base:carpet", "base:damp-carpet", "base:red-carpet", "base:concrete", "base:marble"];
@@ -48,6 +50,11 @@ immutable string[6] BACKROOMS_CEILINGS = ["base:ceiling-tile", "base:light-panel
 struct BuildLayer {
     uint slot;
     string material;
+}
+
+enum Beneath : ubyte {
+    open,
+    rock,
 }
 
 enum ClimbGoal : ubyte {
@@ -116,6 +123,49 @@ Maybe!Position ensureLastFlat(ref Script world) {
     } else {
         return Maybe!Position.of((*graph).ensureVertex(flats[$ - 1]));
     }
+}
+
+Position ensureBelowVertex(ref Graph graph, SiteFrame site, int edges) {
+    SiteFrame up = graph.view.turnSite(site, Turn.pitchUp);
+    float center = graph.layout.dimension;
+    Point!float spot = sitePlacement(up, graph.layout) * columnPoint(graph.layout, ColumnSpot(center, center, -edges * edgeCells(graph.layout.dimension) - center));
+    return graph.ensureNormalized(Position(graph.idAt(up.node), Shift!float.shiftTo(spot)));
+}
+
+bool isBeneath(Beneath wanted, float depth, float underside, float margin) {
+    final switch (wanted) {
+        case Beneath.open:
+            return depth > underside + margin;
+        case Beneath.rock:
+            return depth < underside - margin;
+    }
+}
+
+Maybe!Position ensureUnderGround(ref Script world, Beneath wanted) {
+    Graph* graph = &world.game.world.graph;
+    float margin = BENEATH_MARGIN_EDGES * graph.view.edgeOf();
+    SiteFrame[MOST_PORT_SITES] sites;
+    sites[0] = rootSite(graph.anchorSlot);
+    size_t count = 1;
+    size_t next = 0;
+    Maybe!Position found;
+    while (!found.exists && next < count) {
+        SiteFrame site = graph.view.moveToLevel(sites[next], 0);
+        next += 1;
+        Position below = (*graph).ensureBelowVertex(site, BENEATH_EDGES);
+        float depth = -graph.view.ensurePlaneHeight(ROOT, below);
+        float underside = graph.view.ensureUndersideAt(ROOT, below);
+        if (isBeneath(wanted, depth, underside, margin)) {
+            found = Maybe!Position.of(below);
+        } else if (count + 3 <= MOST_PORT_SITES) {
+            SiteFrame ahead = forwarded(site, 1);
+            sites[count] = ahead;
+            sites[count + 1] = graph.view.turnSite(ahead, Turn.left);
+            sites[count + 2] = graph.view.turnSite(ahead, Turn.right);
+            count += 3;
+        }
+    }
+    return found;
 }
 
 Maybe!Position ensurePort(ref Script world) {

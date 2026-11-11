@@ -16,14 +16,15 @@ import client.tiles : TileCall, TileCalls, TileSpan, TileWork, isTiledBy, visitT
 import common.graph : Graph;
 import common.look : Look, lookNamed;
 import common.node : ChunkLayout;
+import common.position : Position;
 import common.view : GraphView;
-import common.worldgen.blueprint : BlueprintBuilder, CellBox, Cover, PaintOwner, PaintResult, Rhythm, Under;
+import common.worldgen.blueprint : Below, BlueprintBuilder, CellBox, Cover, PaintOwner, PaintResult, Rhythm, Under;
 import common.worldgen.generation : StructureWorld, Worldgen;
-import common.worldgen.horospheres : GravityPull, HorosphereId, HorosphereKind, Horospheres, LOWEST_RISE_EDGES, ROOT, Rise, ensureColumnSite, ensureRise, openHorosphere;
+import common.worldgen.horospheres : GravityPull, HorosphereId, HorosphereKind, Horospheres, LOWEST_RISE_EDGES, ROOT, Rise, Thickness, edgeOf, ensureColumnSite, ensureRise, ensureUndersideAt, openHorosphere;
 import common.worldgen.plane : Plane;
 import common.worldgen.store : Grower, TileKey;
 import common.worldgen.strokes : Stroke, StrokeForm;
-import common.worldgen.structure : ClaimKey, ColumnSpot, PLACE_SLACK, RootedCorner, SiteFrame, anchorBits, calmAt, edgeCells, edgeLength, ensureClaimKey, ensureSiteHash, ensureSiteOrigin, forwarded, frameOf, moveToLevel, rootSite, siteOf, sitePlacement, turnSite;
+import common.worldgen.structure : ClaimKey, ColumnSpot, PLACE_SLACK, RootedCorner, SiteFrame, anchorBits, calmAt, edgeCells, edgeLength, ensureClaimKey, ensureSiteHash, ensureSiteOrigin, forwarded, frameOf, moveToLevel, rootSite, siteOf, sitePlacement, spreadCalm, turnSite;
 import geometry.lorentz : Motion, Vec4;
 import plugins.api.api : Api, Box, ColumnCell, HorosphereForm, KindId, KindTag, Material, Pen, Repeat, RisingKind, Site, SitePart, Span, Spot, Structure, Tile, Turn;
 import plugins.api.api : ApiRhythm = Rhythm;
@@ -41,7 +42,8 @@ enum string ONLY_WORLD_GIVES_KINDS = "only the world's own structure gives horos
 enum string ONLY_WORLD_SETS_LOOK = "only the world's own structure sets how it looks";
 enum string ONLY_WORLD_OPENS = "only the world's own structure opens horospheres";
 enum string ONLY_WORLD_ROOTS = "only the world's own structure gives the root its kind, and only once";
-enum string ONLY_WORLD_SHAPES_GROUND = "only the world's own structure gives a ground its crust or its ports";
+enum string ONLY_WORLD_SHAPES_GROUND = "only the world's own structure gives a ground its crust, its bottom or its ports";
+enum string BOTTOM_UNDER_CRUST = "a ground's bottom lies below the whole of its crust: give the ground a crust first, thinner than the bottom is deep";
 enum string NOT_AN_EDGE_CLAIM = "a site claims its vertex or face, not its edge";
 enum ulong PORT_SALT = 0x504F_5254_5F31;
 enum string UNKNOWN_KIND = "unknown kind of horosphere";
@@ -250,6 +252,16 @@ bool probePort(ref GraphView view, Site site, HorosphereId over) {
             bool rising = view.ensureRisingTag(site, over).exists;
             return !rising;
         }
+    }
+}
+
+double probeCrust(ref GraphView view, Site site, HorosphereId over) {
+    if (view.horospheres.crustOf(over).isBottomless()) {
+        return double.infinity;
+    } else {
+        SiteFrame frame = frameOf(site);
+        Position at = view.ensureNormalized(Position(view.idAt(frame.node), sitePlacement(frame, view.layout)));
+        return view.ensureUndersideAt(over, at) / view.edgeOf();
     }
 }
 
@@ -476,6 +488,16 @@ struct StructureHost {
         }
     }
 
+    void edgeCeiling(double cells) {
+        if (builder.isGrowing) {
+            refuse(ONLY_WORLD_TILES_EDGES);
+        } else if (!(cells >= 0)) {
+            refuse("the edge tile's ceiling is at least zero cells over a ground");
+        } else {
+            calls.edgeCeiling = Maybe!float.of(cast(float)(cells * cellLength()));
+        }
+    }
+
     void flatten(Site site) {
         if (builder.isGrowing) {
             refuse(ONLY_WORLD_FLATTENS);
@@ -483,6 +505,7 @@ struct StructureHost {
             SiteFrame at = builder.graph.view.moveToLevel(frameOf(site), 0);
             builder.graph.structures.blueprint.flats.append(at);
             builder.graph.reference(at.node);
+            (*builder.graph).spreadCalm(at);
             foreach (slot; 0 .. builder.graph.slotCount) {
                 if (builder.graph.nodeAt(slot).hasState) {
                     builder.graph.states.at(slot).climate.calm = builder.graph.view.calmAt(slot);
@@ -559,7 +582,7 @@ struct StructureHost {
         }
     }
 
-    void under(KindTag ground, const(char)[] name, double depth, double fog) {
+    void under(KindTag ground, const(char)[] name, double depth, double fog, Below below) {
         Maybe!Look chosen = lookNamed(name);
         if (builder.isGrowing) {
             refuse(ONLY_WORLD_SETS_LOOK);
@@ -568,11 +591,11 @@ struct StructureHost {
         } else if (!(depth >= 0) || !(fog > 0)) {
             refuse("a ground looks different below a depth of at least zero edges, with fog closing in past a distance above zero");
         } else {
-            builder.graph.structures.blueprint.unders.append(Under(ground, chosen.value, cast(float)(depth * edgeLength(builder.graph.layout).value), cast(float) fog));
+            builder.graph.structures.blueprint.unders.append(Under(ground, chosen.value, cast(float)(depth * edgeLength(builder.graph.layout).value), cast(float) fog, below));
         }
     }
 
-    void crust(KindTag ground, double edges) {
+    void crust(KindTag ground, double edges, Thickness thickness) {
         Horospheres* horospheres = &builder.graph.horospheres;
         float units = cast(float)(edges * edgeLength(builder.graph.layout).value);
         if (builder.isGrowing) {
@@ -580,11 +603,37 @@ struct StructureHost {
         } else if (!(edges > 0)) {
             refuse("a ground's crust is thicker than zero edges");
         } else if (!ground.exists) {
-            horospheres.rootCrust = units;
+            horospheres.rootCrust = horospheres.rootCrust.withThickness(units, thickness);
         } else {
             foreach (ref kind; horospheres.kinds.slice()) {
                 if (kind.tag == ground.value) {
-                    kind.crust = units;
+                    kind.crust = kind.crust.withThickness(units, thickness);
+                }
+            }
+        }
+    }
+
+    double probeCrustAt(Site site) {
+        return builder.graph.view.probeCrust(site, ROOT);
+    }
+
+    void abyss(KindTag ground, double edges) {
+        Horospheres* horospheres = &builder.graph.horospheres;
+        float units = cast(float)(edges * edgeLength(builder.graph.layout).value);
+        if (builder.isGrowing) {
+            refuse(ONLY_WORLD_SHAPES_GROUND);
+        } else if (!(edges > 0)) {
+            refuse("a ground's bottom lies deeper than zero edges");
+        } else if (!ground.exists && !horospheres.rootCrust.isShallowerThan(units)) {
+            refuse(BOTTOM_UNDER_CRUST);
+        } else if (!ground.exists) {
+            horospheres.rootAbyss = Maybe!float.of(units);
+        } else {
+            foreach (ref kind; horospheres.kinds.slice()) {
+                if (kind.tag == ground.value && !kind.crust.isShallowerThan(units)) {
+                    refuse(BOTTOM_UNDER_CRUST);
+                } else if (kind.tag == ground.value) {
+                    kind.abyss = Maybe!float.of(units);
                 }
             }
         }
@@ -737,7 +786,16 @@ Api mainApi(StructureHost* host) {
     api.crust = &mainCrust;
     api.ports = &mainPorts;
     api.probePort = &apiPort!mainHost;
+    api.thinCrust = &mainThinCrust;
+    api.probeCrust = &apiCrust!mainHost;
+    api.underCrust = &mainUnderCrust;
+    api.abyss = &mainAbyss;
+    api.edgeCeiling = &mainEdgeCeiling;
     return api;
+}
+
+void mainEdgeCeiling(const(Api)* api, double cells) {
+    mainHost(api).edgeCeiling(cells);
 }
 
 const(char)* apiFailure(alias hostOf)(const(Api)* api) {
@@ -916,11 +974,23 @@ void mainRisingKinds(const(Api)* api, double odds) {
 }
 
 void mainUnder(const(Api)* api, KindTag ground, const(char)[] look, double depth, double fog) {
-    mainHost(api).under(ground, look, depth, fog);
+    mainHost(api).under(ground, look, depth, fog, Below.ground);
+}
+
+void mainUnderCrust(const(Api)* api, KindTag ground, const(char)[] look, double edges, double fog) {
+    mainHost(api).under(ground, look, edges, fog, Below.crust);
 }
 
 void mainCrust(const(Api)* api, KindTag ground, double edges) {
-    mainHost(api).crust(ground, edges);
+    mainHost(api).crust(ground, edges, Thickness.thick);
+}
+
+void mainThinCrust(const(Api)* api, KindTag ground, double edges) {
+    mainHost(api).crust(ground, edges, Thickness.thin);
+}
+
+void mainAbyss(const(Api)* api, KindTag ground, double edges) {
+    mainHost(api).abyss(ground, edges);
 }
 
 void mainPorts(const(Api)* api, double odds) {
@@ -929,6 +999,10 @@ void mainPorts(const(Api)* api, double odds) {
 
 bool apiPort(alias hostOf)(const(Api)* api, Site site) {
     return hostOf(api).probePortAt(site);
+}
+
+double apiCrust(alias hostOf)(const(Api)* api, Site site) {
+    return hostOf(api).probeCrustAt(site);
 }
 
 bool mainLandmark(const(Api)* api, uint index, Site site) {

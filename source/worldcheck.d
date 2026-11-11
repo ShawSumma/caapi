@@ -34,7 +34,7 @@ import common.worldgen.blueprint : Blueprint, EdgeUses;
 import common.worldgen.generation : ChunkParams, GeneratedVoxels, StructureWorld, Worldgen;
 import common.worldgen.horospheres : ChunkPoint, chunkPointOf;
 import common.worldgen.store : dropTile;
-import common.worldgen.structure : ColumnSpot, SiteFrame, altitude, columnPoint, edgeLength, forwarded, rootSite, sitePlacement, turnSite;
+import common.worldgen.structure : ColumnSpot, SiteFrame, altitude, columnPoint, edgeLength, forwarded, moveToLevel, rootSite, sitePlacement, turnSite;
 import geometry.honeycomb : CORNER_COUNT, CUBE_RADIUS, Corner, FACE_COUNT, Face, cubeCenter;
 import geometry.lorentz : Motion, Point;
 import plugins.api.api : MOST_MATERIALS, Material, Turn;
@@ -54,6 +54,8 @@ enum uint FORGET_STEPS = 16;
 enum uint FORGET_SIDE_STRIDE = 5;
 enum float FORGET_NEAR_RADIUS = 1.0f;
 enum uint FORGET_SWEEPS = 4000;
+enum int DEEP_EDGES = 8;
+enum float DEEP_RADIUS = 1.0f;
 
 struct ContentHashes {
     Hash128 materials;
@@ -114,8 +116,8 @@ struct WorldDigest {
         populated += 1;
     }
 
-    void print(FILE* output) const {
-        fprintf(output, "digest populated=%zu materials ", populated);
+    void print(FILE* output, string label) const {
+        fprintf(output, "%.*s populated=%zu materials ", cast(int) label.length, label.ptr, populated);
         printHash(output, materials);
         fprintf(output, " occupancy ");
         printHash(output, occupancy);
@@ -132,9 +134,8 @@ struct ChunkPass {
     uint solid;
     uint deferred;
 
-    void generate(ref Graph graph, const(NearbyNode)[] nearby, float radius) {
+    void generate(ref Graph graph, const(NearbyNode)[] nearby, Point!float start, float radius) {
         float threshold = coshf(radius + CUBE_RADIUS);
-        Point!float start = Point!float.origin();
         foreach (nearbyNode; nearby) {
             foreach (cornerIndex; 0 .. CORNER_COUNT) {
                 Corner corner = cast(Corner) cornerIndex;
@@ -189,13 +190,27 @@ void resolveAllMaterials(ref Graph graph) {
     }
 }
 
-void generateWorld(ref Graph graph, float radius) {
+void generateNear(ref Graph graph, ref ChunkPass pass, Position center, float radius) {
     NearbyScratch scratch;
-    NearbyNode[] nearby = scratch.collectAll(graph, Position.origin(), radius);
-    ChunkPass pass;
-    pass.generate(graph, nearby, radius);
-    graph.resolveAllMaterials();
+    NearbyNode[] nearby = scratch.collectAll(graph, center, radius);
+    pass.generate(graph, nearby, center.local * Point!float.origin(), radius);
     scratch.release();
+}
+
+void generateWorld(ref Graph graph, float radius) {
+    ChunkPass pass;
+    graph.generateNear(pass, Position.origin(), radius);
+    graph.resolveAllMaterials();
+}
+
+void generateDeep(ref Graph graph) {
+    ChunkPass pass;
+    SiteFrame down = graph.view.turnSite(graph.structures.blueprint.entrance.value.site, Turn.pitchDown);
+    foreach (edges; 0 .. DEEP_EDGES + 1) {
+        SiteFrame vertex = graph.view.moveToLevel(forwarded(down, edges), 0);
+        graph.generateNear(pass, Position(graph.idAt(vertex.node), sitePlacement(vertex, graph.layout)), DEEP_RADIUS);
+    }
+    graph.resolveAllMaterials();
 }
 
 void printHash(FILE* output, Hash128 hash) {
@@ -228,7 +243,7 @@ ExitStatus dumpWorld(FILE* output, float radius, ubyte dimension) {
             printChunkLine(output, graph.idAt(slot.slot), slot.corner, ContentHashes.fromVoxels(slot.corner, chunk.voxels, dimension));
         }
     }
-    WorldDigest.fromGraph(graph).print(output);
+    WorldDigest.fromGraph(graph).print(output, "digest");
     return finishWorld(output, graph);
 }
 
@@ -302,8 +317,13 @@ void printProblem(FILE* output, ref const StructureProblem problem) {
 ExitStatus printWorldDigest(FILE* output, float radius, ubyte dimension) {
     Graph graph = terrainGraph(dimension);
     graph.generateWorld(radius);
-    WorldDigest.fromGraph(graph).print(output);
-    return finishWorld(output, graph);
+    WorldDigest.fromGraph(graph).print(output, "digest");
+    ExitStatus status = finishWorld(output, graph);
+    Graph deep = terrainGraph(dimension);
+    deep.generateDeep();
+    WorldDigest.fromGraph(deep).print(output, "deep");
+    ExitStatus deepStatus = finishWorld(output, deep);
+    return exitStatus(status == ExitStatus.ok && deepStatus == ExitStatus.ok);
 }
 
 size_t countFilled(ref Graph graph, uint slot) {
@@ -620,7 +640,7 @@ void benchGen(FILE* output, float radius, ubyte dimension) {
     NearbyScratch scratch;
     NearbyNode[] nearby = scratch.collectAll(graph, Position.origin(), radius);
     ChunkPass pass;
-    pass.generate(graph, nearby, radius);
+    pass.generate(graph, nearby, Point!float.origin(), radius);
     uint dense = pass.generated - pass.solid;
     fprintf(output, "bench-gen dim=%u radius=%.2f chunks=%u solid=%u dense=%u deferred=%u resolved_on_exposure=%u\n", cast(uint) dimension, cast(double) radius, pass.generated, pass.solid, dense, pass.deferred, pass.deferred - graph.countDeferred());
     fprintf(output, "params total=%.1fms avg=%.3fms\n", pass.paramsMs, averageOf(pass.paramsMs, pass.generated));
@@ -668,7 +688,7 @@ void benchDrive(FILE* output, float radius, ubyte dimension) {
     uint drives = 0;
     do {
         double driveStart = nowMilliseconds();
-        streamer.drive(graph, nearby, Position.origin(), Motion!float.identity(), radius, DRIVE_NEARBY_VERSION, Pacing.budgeted, Deadline.at(driveStart + DRIVE_BUDGET_MILLISECONDS));
+        streamer.drive(graph, scratch, Position.origin(), Motion!float.identity(), radius, radius, DRIVE_NEARBY_VERSION, Pacing.budgeted, Deadline.at(driveStart + DRIVE_BUDGET_MILLISECONDS));
         driveMs += nowMilliseconds() - driveStart;
         drives += 1;
         if (streamer.inFlight > 0) {
@@ -685,7 +705,7 @@ void benchDrive(FILE* output, float radius, ubyte dimension) {
     fprintf(output, "bench-drive dim=%u radius=%.2f populated=%u nodes=%u->%u drives=%u total=%.1fms drive=%.1fms integrate_and_wait=%.1fms\n", cast(uint) dimension, cast(double) radius, populated, nodesBefore, graph.slotCount, drives, totalMs, driveMs, totalMs - driveMs);
     double idleStart = nowMilliseconds();
     foreach (_; 0 .. DRIVE_IDLE_ITERATIONS) {
-        streamer.drive(graph, nearby, Position.origin(), Motion!float.identity(), radius, DRIVE_NEARBY_VERSION, Pacing.budgeted, Deadline.at(nowMilliseconds() + DRIVE_BUDGET_MILLISECONDS));
+        streamer.drive(graph, scratch, Position.origin(), Motion!float.identity(), radius, radius, DRIVE_NEARBY_VERSION, Pacing.budgeted, Deadline.at(nowMilliseconds() + DRIVE_BUDGET_MILLISECONDS));
     }
     fprintf(output, "bench-drive idle scan=%.3fms/drive nodes=%zu\n", (nowMilliseconds() - idleStart) / DRIVE_IDLE_ITERATIONS, nearby.length);
     streamer.release();

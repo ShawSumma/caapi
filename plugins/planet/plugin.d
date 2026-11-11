@@ -16,8 +16,6 @@ enum int LANDMARK_RINGS = 3;
 enum int SINK_EDGES = 2;
 enum uint LIBRARY_TAG = tagNamed("library:library");
 enum uint VAULT_TAG = tagNamed("vaults:vaults");
-enum double ROOT_CRUST = 5.6;
-enum double RISEN_CRUST = 3.4;
 immutable uint[3] BUILT_TAGS = [CITY_TAG, BACKROOMS_TAG, VAULT_TAG];
 immutable uint[2] HOLLOW_TAGS = [WILD_TAG, VAULT_TAG];
 immutable Spot SPAWN = Spot(-14, 12, 0);
@@ -118,27 +116,29 @@ void sink(const(Api)* api, Turtle at, ref const Clear clear) {
         api.flatten(api, entry.surface.frame.site);
     }
     api.tileEdges(api, &underground, &root, caves.Root.sizeof);
+    api.edgeCeiling(api, caves.SURFACE_BAND);
     api.ports(api, caves.tuning.portOdds);
     caves.darken(api, KindTag.init, caves.OPEN_UNDER);
     caves.darken(api, KindTag.of(WILD_TAG), caves.OPEN_UNDER);
     foreach (tag; BUILT_TAGS) {
         caves.darken(api, KindTag.of(tag), caves.SEALED_UNDER);
     }
-    api.crust(api, KindTag.init, ROOT_CRUST);
-    lattice.deepen(api, KindTag.init, ROOT_CRUST);
+    api.crust(api, KindTag.init, tuning.rootCrust);
+    api.thinCrust(api, KindTag.init, tuning.rootThinCrust);
+    api.abyss(api, KindTag.init, tuning.rootAbyss);
+    lattice.deepen(api, KindTag.init);
     foreach (tag; HOLLOW_TAGS) {
-        api.crust(api, KindTag.of(tag), RISEN_CRUST);
-        lattice.deepen(api, KindTag.of(tag), RISEN_CRUST);
+        api.crust(api, KindTag.of(tag), tuning.risenCrust);
+        api.abyss(api, KindTag.of(tag), tuning.risenAbyss);
+        lattice.deepen(api, KindTag.of(tag));
     }
 }
 
-double crustUnder(ref const Risen risen) {
-    if (!risen.hasRisen) {
-        return ROOT_CRUST;
-    } else if (risen.tag == KindTag.of(HOLLOW_TAGS[0]) || risen.tag == KindTag.of(HOLLOW_TAGS[1])) {
-        return RISEN_CRUST;
+double abyssUnder(ref const Risen risen) {
+    if (risen.hasRisen) {
+        return tuning.risenAbyss;
     } else {
-        return 0;
+        return tuning.rootAbyss;
     }
 }
 
@@ -146,10 +146,7 @@ void underground(const(Api)* api, Site site, const(Risen)* risen, const(void)* d
     if (risen.tag != KindTag.of(LIBRARY_TAG)) {
         caves.tile(api, site, risen, data);
     }
-    double crust = crustUnder(*risen);
-    if (crust > 0) {
-        lattice.hang(Turtle(api, site), crust);
-    }
+    lattice.hang(Turtle(api, site), abyssUnder(*risen));
 }
 
 void world(const(Api)* api, Site site, const(void)* data) {
@@ -174,6 +171,11 @@ struct Tuning {
     double riseOdds;
     double treeOdds;
     double groveShare;
+    double rootCrust;
+    double rootThinCrust;
+    double risenCrust;
+    double rootAbyss;
+    double risenAbyss;
 }
 
 __gshared Tuning tuning;

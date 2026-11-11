@@ -408,6 +408,10 @@ struct Turtle {
         return api.probePort(api, site);
     }
 
+    double probeCrust() const {
+        return api.probeCrust(api, site);
+    }
+
     bool build(const(char)* world) const {
         return api.build(api, world, site);
     }

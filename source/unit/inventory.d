@@ -4,7 +4,7 @@ import base.array : Array;
 import base.maybe : Maybe;
 import common.biology.wild : WildGenes;
 import common.crafting : IdSet, MOST_MAKERS, Recipe, Shortfall, Taken, canCraft, makersOf, planRecipe, recipes, returnIngredients, takeIngredients;
-import common.inventory : Cycle, HOTBAR_SLOTS, Inventory, MOST_STRAINS, SLOT_COUNT, STACK_LIMIT, Section, Sorting, Stack, Strain;
+import common.inventory : Cycle, HOTBAR_SLOTS, Inventory, LOSS_DIVISOR, MOST_STRAINS, SLOT_COUNT, STACK_LIMIT, Section, Sorting, Stack, Strain;
 import common.items : Item, ItemKind, itemNamed;
 import unit.named : named;
 
@@ -74,6 +74,28 @@ unittest {
         inventory.gain(Stack.ofLiving(leaves, 1, genes, Sorting.unsorted));
     }
     assert(inventory.slots[0].strainCount == MOST_STRAINS && inventory.slots[0].count == MOST_STRAINS && inventory.slots[1].count == 1 && inventory.slots[2].isEmpty);
+}
+
+unittest {
+    Inventory inventory;
+    Item leaves = named("base:oak-leaves");
+    immutable string[5] kinds = ["base:granite", "base:dirt", "base:sand", "base:glass", "base:iron-bar"];
+    immutable uint[5] counts = [1, 2, 3, 8, STACK_LIMIT + 17];
+    foreach (index, name; kinds) {
+        inventory.gain(Stack(named(name), counts[index]));
+    }
+    Stack first = Stack.ofLiving(leaves, 4, WildGenes([1, 2, 3, 4]), Sorting.unsorted);
+    Stack second = Stack.ofLiving(leaves, 2, WildGenes([5, 6, 7, 8]), Sorting.unsorted);
+    inventory.gain(first);
+    inventory.gain(second);
+    assert(inventory.slots[6].strainCount == 2);
+    uint lost = inventory.loseShare();
+    foreach (index, name; kinds) {
+        assert(inventory.countOf(named(name)) == counts[index] - counts[index] / LOSS_DIVISOR);
+    }
+    assert(inventory.slots[4].count == STACK_LIMIT + 17 - (STACK_LIMIT + 17) / LOSS_DIVISOR && inventory.slots[5].isEmpty);
+    assert(inventory.countOfKind(first) == 3 && inventory.countOfKind(second) == 2);
+    assert(lost == 1 + 2 + (STACK_LIMIT + 17) / LOSS_DIVISOR + 1);
 }
 
 unittest {

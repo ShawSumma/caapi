@@ -46,6 +46,8 @@ enum NodeContent : ubyte {
     unknown,
     empty,
     holding,
+    shallow,
+    deep,
 }
 
 enum SlotUse : ubyte {

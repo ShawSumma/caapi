@@ -10,16 +10,16 @@ import base.numbers : clamped;
 import base.parallel : Executor, ParallelJob;
 import base.splitmix : SplitMix;
 import base.stdio : snprintf;
-import client.structures : BAD_PEN_DRAW, MESSAGE_CAPACITY, ONLY_WORLD_FLATTENS, ONLY_WORLD_GIVES_KINDS, ONLY_WORLD_OPENS, ONLY_WORLD_ROOTS, ONLY_WORLD_SETS_FOG, ONLY_WORLD_SETS_LOOK, ONLY_WORLD_SHAPES_GROUND, ONLY_WORLD_TILES_EDGES, ONLY_WORLD_TILES_GROUND, ONLY_WORLD_TURNS_GRAVITY, PenFrame, Refusing, UNBOUNDED_PAINT, apiBuild, apiColumn, apiEdgeCells, apiFail, apiFailure, apiFill, apiForward, apiHash, apiLeaves, apiLimb, apiPaint, apiPen, apiPenForward, apiPenHeight, apiPenLift, apiPenRise, apiPenRoll, apiPenTurn, apiPick, apiPort, apiRandom, apiRising, apiTurned, boxRefusal, cellBoxOf, cellLengthOf, columnOf, engineRhythm, ensureRisingTag, probePort, unitNormal;
-import common.graph : Graph, NodeId;
+import client.structures : BAD_PEN_DRAW, MESSAGE_CAPACITY, ONLY_WORLD_FLATTENS, ONLY_WORLD_GIVES_KINDS, ONLY_WORLD_OPENS, ONLY_WORLD_ROOTS, ONLY_WORLD_SETS_FOG, ONLY_WORLD_SETS_LOOK, ONLY_WORLD_SHAPES_GROUND, ONLY_WORLD_TILES_EDGES, ONLY_WORLD_TILES_GROUND, ONLY_WORLD_TURNS_GRAVITY, PenFrame, Refusing, UNBOUNDED_PAINT, apiBuild, apiColumn, apiCrust, apiEdgeCells, apiFail, apiFailure, apiFill, apiForward, apiHash, apiLeaves, apiLimb, apiPaint, apiPen, apiPenForward, apiPenHeight, apiPenLift, apiPenRise, apiPenRoll, apiPenTurn, apiPick, apiPort, apiRandom, apiRising, apiTurned, boxRefusal, cellBoxOf, cellLengthOf, columnOf, engineRhythm, ensureRisingTag, probeCrust, probePort, unitNormal;
+import common.graph : Graph, NodeContent, NodeId;
 import common.view : GraphView;
 import common.worldgen.blueprint : Blueprint, Brush, CellBox, Cover, LevelRange, LineEdge, LineKey, LineSpec, Paint, PaintOwner, PaintResult, Rhythm, RouteStop, SiteLine, TileEdge, canonicalBox, canonicalRhythm, edgeOf, probeLineAhead;
-import common.worldgen.horospheres : Fill, Grounds, Horosphere, HorosphereId, HorosphereRef, ROOT, RiseMeasure, ensureBalanceAlong, ensureGroundNode, ensureGrounds, ensureHorospheresAt, ensureMeasure, ensureMeasured, ensurePlaneIn, ensureSegmentSite, ensureSegmentsNear, probePaintedBy, storeMeasure;
-import common.worldgen.store : NodeMark, TileKey;
+import common.worldgen.horospheres : Fill, Ground, Grounds, Horosphere, HorosphereId, HorosphereRef, ROOT, RiseMeasure, ensureBalanceAlong, ensureGroundNode, ensureGrounds, ensureHorospheresAt, ensureMeasure, ensureMeasured, ensurePlaneIn, ensureSegmentSite, ensureSegmentsNear, probeBelowBottom, probeBuried, probePaintedBy, storeMeasure;
+import common.worldgen.store : NodeMark, TileKey, edgeBit;
 import common.worldgen.strokes : Stroke, StrokeForm;
 import common.worldgen.structure : CanonicalSite, ColumnSpot, EDGE_NODES, LineTouch, SiteFrame, SlotTouch, addPendingTouch, canonicalOf, edgeSitesOf, ensureAroundEdge, ensureGroundRing, faceSite, frameOf, seedTouch, sideAxis, siteOf, sitePlacement, turnSite, walkTouch;
-import geometry.honeycomb : CORNER_COUNT, FACE_COUNT, Face;
-import geometry.lorentz : Motion;
+import geometry.honeycomb : CORNER_COUNT, FACE_COUNT, Face, cornerToNode;
+import geometry.lorentz : Motion, Point;
 import plugins.api.api : Api, Box, HorosphereForm, KindId, KindTag, Material, Pen, Risen, Rising, Site, SitePart, Span, Spot, Structure, Tile, Turn;
 import plugins.api.api : ApiRhythm = Rhythm;
 
@@ -28,6 +28,7 @@ enum double INITIAL_MS_PER_TASK = PAINT_AHEAD_MILLISECONDS / 256;
 enum double TILE_TASK_LEAST = 64;
 enum double TILE_TASK_MOST = 4096;
 enum uint PLAN_ROUNDS = 4;
+enum float CEILING_SLACK = 0.02f;
 enum string TILE_CANNOT_PLACE = "a tile cannot place: tiles run in any order, so decide from site:hash";
 
 enum TileSpan : ubyte {
@@ -53,6 +54,7 @@ enum StopKind : ubyte {
 enum PlanEnd : ubyte {
     planned,
     blocked,
+    buried,
 }
 
 struct TileCall {
@@ -64,6 +66,7 @@ struct TileCalls {
     TileCall root;
     TileCall edge;
     Array!TileCall kinds;
+    Maybe!float edgeCeiling;
 
     bool hasRoot() const {
         return root.tile !is null;
@@ -136,6 +139,10 @@ struct TileOutput {
     uint strokeStart;
     uint strokeCount;
     TaskEnd end;
+
+    bool isBlank() const {
+        return lineCount == 0 && brushCount == 0 && touchCount == 0 && stopCount == 0 && strokeCount == 0;
+    }
 }
 
 struct TilePainter {
@@ -282,7 +289,7 @@ struct TileTask {
     uint start;
     uint pathStart;
     uint pathLength;
-    uint record;
+    MaybeIndex!uint record;
     HorosphereId horosphere;
     SiteFrame site;
     int segment;
@@ -359,37 +366,68 @@ const(TileCall)* callFor(ref const Graph graph, ref const TileCalls calls, Horos
 }
 
 void visitTilesAt(alias onTile)(ref GraphView view, ref const TileCalls calls, uint slot) {
-    if (isTiledBy(*view.graph, calls, ROOT)) {
-        foreach (face; view.ensureGroundRing(view.ensureGroundNode(slot, ROOT), Face.first)) {
-            onTile(view.faceKey(face, Face.first), faceSite(face, Face.first), ROOT, 0, TileSpan.ground);
+    bool bottomed = view.probeBelowBottom(slot);
+    if (!bottomed) {
+        if (isTiledBy(*view.graph, calls, ROOT)) {
+            foreach (face; view.ensureGroundRing(view.ensureGroundNode(slot, ROOT), Face.first)) {
+                onTile(view.faceKey(face, Face.first), faceSite(face, Face.first), ROOT, 0, TileSpan.ground);
+            }
         }
-    }
-    size_t count = view.ensureHorospheresAt(slot).length;
-    foreach (index; 0 .. count) {
-        HorosphereRef near = view.horospheresAt(slot)[index];
-        if (!view.isBlocked && isTiledBy(*view.graph, calls, near.horosphere)) {
-            if (view.horospheres.isUpright(near.horosphere)) {
-                Span segments = view.ensureSegmentsNear(near);
-                foreach (segment; segments.low .. segments.high + 1) {
-                    SiteFrame site = view.ensureSegmentSite(near.horosphere, segment);
-                    onTile(view.segmentKey(site), site, near.horosphere, segment, TileSpan.ground);
+        size_t count = view.ensureHorospheresAt(slot).length;
+        foreach (index; 0 .. count) {
+            HorosphereRef near = view.horospheresAt(slot)[index];
+            if (!view.isBlocked && isTiledBy(*view.graph, calls, near.horosphere)) {
+                if (view.horospheres.isUpright(near.horosphere)) {
+                    Span segments = view.ensureSegmentsNear(near);
+                    foreach (segment; segments.low .. segments.high + 1) {
+                        SiteFrame site = view.ensureSegmentSite(near.horosphere, segment);
+                        onTile(view.segmentKey(site), site, near.horosphere, segment, TileSpan.ground);
+                    }
+                } else {
+                    bool painted = view.probePaintedBy(slot, near);
+                    if (painted) {
+                        Face label = view.horospheres.horosphere(near.horosphere).label;
+                        foreach (face; view.ensureGroundRing(view.ensureGroundNode(slot, near.horosphere), label)) {
+                            onTile(view.faceKey(face, label), faceSite(face, label), near.horosphere, 0, TileSpan.ground);
+                        }
+                    }
                 }
-            } else {
-                bool painted = view.probePaintedBy(slot, near);
-                if (painted) {
-                    Face label = view.horospheres.horosphere(near.horosphere).label;
-                    foreach (face; view.ensureGroundRing(view.ensureGroundNode(slot, near.horosphere), label)) {
-                        onTile(view.faceKey(face, label), faceSite(face, label), near.horosphere, 0, TileSpan.ground);
+            }
+        }
+        if (calls.hasEdge) {
+            foreach (site; view.edgeSitesOf(slot)) {
+                TileKey key = view.edgeKey(site);
+                if (!view.graph.structures.at(site.node).isBlankEdge(key.feature)) {
+                    Grounds grounds = view.ensureGrounds(site.node);
+                    if (!isOverCeiling(calls, site, grounds)) {
+                        onTile(key, site, ROOT, 0, TileSpan.edge);
                     }
                 }
             }
         }
     }
-    if (calls.hasEdge) {
-        foreach (site; view.edgeSitesOf(slot)) {
-            view.ensureGrounds(site.node);
-            onTile(view.edgeKey(site), site, ROOT, 0, TileSpan.edge);
+}
+
+bool isOverCeiling(ref const TileCalls calls, SiteFrame site, ref const Grounds grounds) {
+    if (!calls.edgeCeiling.exists) {
+        return false;
+    } else {
+        Point!float near = site.corner.cornerToNode * Point!float.origin();
+        Point!float far = site.nextCorner().cornerToNode * Point!float.origin();
+        float ceiling = calls.edgeCeiling.value + CEILING_SLACK;
+        uint index = 0;
+        while (index < grounds.count && isClearOver(grounds.items[index], index, near, far, ceiling)) {
+            index += 1;
         }
+        return index == grounds.count;
+    }
+}
+
+bool isClearOver(ref const Ground ground, uint index, Point!float near, Point!float far, float ceiling) {
+    if (index > 0 && ground.fill == Fill.none) {
+        return true;
+    } else {
+        return ground.surface.distanceTo(near) > ceiling && ground.surface.distanceTo(far) > ceiling;
     }
 }
 
@@ -537,21 +575,32 @@ struct TileHost {
         return (*view).probePort(site, horosphere);
     }
 
+    double probeCrustAt(Site site) {
+        return (*view).probeCrust(site, horosphere);
+    }
+
     void planCandidate(ref const Graph graph, GraphView* threadView, uint candidate, uint index) {
         view = threadView;
         uint tileStart = cast(uint) plan.tiles.length;
+        PlanEnd end = PlanEnd.planned;
         if (!graph.isFinished(candidate)) {
-            void onTile(TileKey key, SiteFrame site, HorosphereId over, int segment, TileSpan span) {
-                planTile(graph, key, site, over, segment, span);
+            NodeContent content = graph.nodeAt(candidate).content;
+            bool buried = (content == NodeContent.unknown || content == NodeContent.shallow) && (*view).probeBuried(candidate);
+            if (buried) {
+                end = PlanEnd.buried;
+            } else {
+                void onTile(TileKey key, SiteFrame site, HorosphereId over, int segment, TileSpan span) {
+                    planTile(graph, key, site, over, segment, span);
+                }
+                visitTilesAt!onTile(*view, *calls, candidate);
             }
-            visitTilesAt!onTile(*view, *calls, candidate);
         }
         if (view.isBlocked) {
             plan.tiles.length = tileStart;
             plan.results.append(PlanResult(index, tileStart, 0, PlanEnd.blocked));
             view.forget();
         } else {
-            plan.results.append(PlanResult(index, tileStart, cast(uint) plan.tiles.length - tileStart, PlanEnd.planned));
+            plan.results.append(PlanResult(index, tileStart, cast(uint) plan.tiles.length - tileStart, end));
             measureRises(graph, tileStart);
         }
     }
@@ -641,7 +690,16 @@ Api tileApi(TileHost* host) {
     api.crust = &tileCrust;
     api.ports = &tilePorts;
     api.probePort = &apiPort!tileHost;
+    api.thinCrust = &tileThinCrust;
+    api.probeCrust = &apiCrust!tileHost;
+    api.underCrust = &tileUnderCrust;
+    api.abyss = &tileAbyss;
+    api.edgeCeiling = &tileEdgeCeiling;
     return api;
+}
+
+void tileEdgeCeiling(const(Api)* api, double cells) {
+    tileHost(api).refuse(ONLY_WORLD_TILES_EDGES);
 }
 
 void tileStop(const(Api)* api, Site site, Spot spot) {
@@ -739,7 +797,19 @@ void tileUnder(const(Api)* api, KindTag ground, const(char)[] look, double depth
     tileHost(api).refuse(ONLY_WORLD_SETS_LOOK);
 }
 
+void tileUnderCrust(const(Api)* api, KindTag ground, const(char)[] look, double edges, double fog) {
+    tileHost(api).refuse(ONLY_WORLD_SETS_LOOK);
+}
+
 void tileCrust(const(Api)* api, KindTag ground, double edges) {
+    tileHost(api).refuse(ONLY_WORLD_SHAPES_GROUND);
+}
+
+void tileThinCrust(const(Api)* api, KindTag ground, double edges) {
+    tileHost(api).refuse(ONLY_WORLD_SHAPES_GROUND);
+}
+
+void tileAbyss(const(Api)* api, KindTag ground, double edges) {
     tileHost(api).refuse(ONLY_WORLD_SHAPES_GROUND);
 }
 
@@ -829,6 +899,8 @@ struct TileWork {
                 PlanResult result = host.plan.results.ptr[outputOf.ptr[index].output];
                 if (result.end == PlanEnd.blocked) {
                     blocked.append(planning.ptr[index]);
+                } else if (result.end == PlanEnd.buried) {
+                    target.nodeAt(planning.ptr[index]).content = NodeContent.deep;
                 } else {
                     foreach (tile; host.plan.tiles.ptr[result.tileStart .. result.tileStart + result.tileCount]) {
                         addTask(target, tile.key, tile.start, host.plan.paths.ptr[tile.pathStart .. tile.pathStart + tile.pathLength], tile.horosphere, tile.site, tile.segment, tile.span);
@@ -896,25 +968,53 @@ struct TileWork {
     void addTask(ref Graph target, TileKey key, uint start, const(Face)[] path, HorosphereId horosphere, SiteFrame site, int segment, TileSpan span) {
         if (taskOf.find(key) is null) {
             const(uint)* known = target.structures.tiledFaces.find(key);
-            Maybe!uint record;
-            TilePass pass = TilePass.first;
-            if (known is null) {
-                record = Maybe!uint.of(target.structures.blueprint.addTile(key.node, key.feature, horosphere));
-                target.structures.tiledFaces.insert(key, record.value);
-            } else if (target.structures.blueprint.tiles.ptr[*known].isDropped) {
-                record = Maybe!uint.of(*known);
-                target.structures.blueprint.tiles.ptr[record.value].horosphere = horosphere;
-                pass = TilePass.restoring;
-            }
-            if (record.exists) {
+            if (known is null || target.structures.blueprint.tiles.ptr[*known].isDropped) {
+                MaybeIndex!uint record;
+                TilePass pass = TilePass.first;
+                if (known !is null) {
+                    record = MaybeIndex!uint.of(*known);
+                    target.structures.blueprint.tiles.ptr[record.value].horosphere = horosphere;
+                    pass = TilePass.restoring;
+                }
                 if (horosphere != ROOT) {
                     target.horospheres.horospheres.ptr[horosphere.index].tiles += 1;
                     target.ensureMeasured(horosphere);
                 }
                 taskOf.insert(key, cast(uint) tasks.length);
-                tasks.append(TileTask(key, start, cast(uint) paths.length, cast(uint) path.length, record.value, horosphere, site, segment, span, pass));
+                tasks.append(TileTask(key, start, cast(uint) paths.length, cast(uint) path.length, record, horosphere, site, segment, span, pass));
                 paths.appendAll(path);
             }
+        }
+    }
+
+    uint faceOf(ref Graph target, ref const TileTask task) {
+        uint slot = task.start;
+        foreach (side; paths.ptr[task.pathStart .. task.pathStart + task.pathLength]) {
+            slot = target.ensureNeighborSlot(slot, side);
+        }
+        return slot;
+    }
+
+    uint ensureRecord(ref Graph target, ref const TileTask task, uint face) {
+        Blueprint* blueprint = &target.structures.blueprint;
+        if (task.record.exists) {
+            blueprint.reviveTile(task.record.value);
+            target.structures.linkTile(face, task.record.value);
+            return task.record.value;
+        } else {
+            uint record = blueprint.addTile(task.key.node, task.key.feature, task.horosphere);
+            target.structures.tiledFaces.insert(task.key, record);
+            target.structures.linkTile(face, record);
+            return record;
+        }
+    }
+
+    void apply(ref Graph target, ref const TileTask task, ref const TilePainter painter, TileOutput output) {
+        uint face = faceOf(target, task);
+        if (task.span == TileSpan.edge && output.isBlank) {
+            target.structures.at(face).blankEdges |= edgeBit(task.key.feature);
+        } else {
+            keep(target, task, ensureRecord(target, task, face), painter, output);
         }
     }
 
@@ -958,7 +1058,7 @@ struct TileWork {
         return slot;
     }
 
-    void apply(ref Graph target, ref const TileTask task, ref const TilePainter painter, TileOutput output) {
+    void keep(ref Graph target, ref const TileTask task, uint record, ref const TilePainter painter, TileOutput output) {
         Blueprint* blueprint = &target.structures.blueprint;
         lineIndices.resize(output.lineCount);
         uint[] lines = lineIndices.slice();
@@ -971,7 +1071,7 @@ struct TileWork {
             lines[local] = index;
         }
         const(BrushOutput)[] painted = painter.brushes.ptr[output.brushStart .. output.brushStart + output.brushCount];
-        blueprint.tiles.ptr[task.record].painted.brushes.reserve(output.brushCount);
+        blueprint.tiles.ptr[record].painted.brushes.reserve(output.brushCount);
         lineFills.resize(output.lineCount + 1);
         lineFills.slice()[] = 0;
         foreach (made; painted) {
@@ -991,7 +1091,7 @@ struct TileWork {
             Brush brush = made.brush;
             brush.order = index;
             brush.paint.material = blueprint.ensurePaint(made.material);
-            blueprint.addBrush(PaintOwner.ofTile(task.record), lines[made.line - output.lineStart], brush);
+            blueprint.addBrush(PaintOwner.ofTile(record), lines[made.line - output.lineStart], brush);
         }
         foreach (touched; painter.touches.ptr[output.touchStart .. output.touchStart + output.touchCount]) {
             uint line = lines[touched.line - output.lineStart];
@@ -1005,7 +1105,7 @@ struct TileWork {
             }
         }
         if (task.pass == TilePass.first) {
-            useEdges(blueprint, task.record, painted, lines, output.lineStart);
+            useEdges(blueprint, record, painted, lines, output.lineStart);
         }
         foreach (stop; painter.stops.ptr[output.stopStart .. output.stopStart + output.stopCount]) {
             uint slot = slotAlong(target, painter, stop.start, stop.pathStart, stop.pathLength);
@@ -1021,10 +1121,9 @@ struct TileWork {
         }
         foreach (drawn; painter.strokes.ptr[output.strokeStart .. output.strokeStart + output.strokeCount]) {
             uint slot = slotAlong(target, painter, drawn.start, drawn.pathStart, drawn.pathLength);
-            target.structures.addStroke(target.view, PaintOwner.ofTile(task.record), slot, Stroke.make(drawn.frame, drawn.length, drawn.startRadius, drawn.endRadius, drawn.material, drawn.form));
+            target.structures.addStroke(target.view, PaintOwner.ofTile(record), slot, Stroke.make(drawn.frame, drawn.length, drawn.startRadius, drawn.endRadius, drawn.material, drawn.form));
         }
-        blueprint.reviveTile(task.record);
-        blueprint.useTile(task.record);
+        blueprint.useTile(record);
         if (task.pass == TilePass.restoring) {
             blueprint.restoredTiles += 1;
         }

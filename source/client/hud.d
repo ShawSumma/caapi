@@ -400,6 +400,8 @@ const(char)[] describe(ref const Note note, char[] buffer) {
             return printed(buffer, "the %.*s was not ripe: only the plant back", length, name.ptr);
         case NoteKind.told:
             return printed(buffer, "%.*s", labelLength, note.label.ptr);
+        case NoteKind.woke:
+            return printed(buffer, "you fell past the bottom of the world and woke again, %.0f things lost", cast(double) note.amount);
     }
 }
 

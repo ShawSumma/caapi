@@ -23,6 +23,7 @@ enum double WALKABLE_RISE = 47.3;
 enum double STEEP_RISE = 65;
 enum double RISE_STEP = 0.25;
 enum double MAX_DEPTH = 5.2;
+enum double ROCK_MARGIN = 0.5;
 enum double FIRST_BAND = 1.6;
 enum uint BAND_COUNT = 5;
 enum uint MOST_KNOWN = 256;
@@ -438,7 +439,7 @@ bool probeSunk(ref const Vertex at, ulong hash, ref const Root root) {
 
 bool keeps(ref const Vertex at, ulong hash, ref const Bed bed) {
     double depth = depthOf(at);
-    return depth <= bed.bottom && depth >= bed.top && unitOf(hash, KEEP_SALT) < tuning.keepOdds[bandOf(depth)];
+    return depth <= bed.bottom && depth >= bed.top && unitOf(hash, KEEP_SALT) < tuning.keepOdds[bandOf(depth)] && depth <= at.frame.probeCrust() - ROCK_MARGIN;
 }
 
 bool isAboveBed(ref const Vertex at, ref const Bed bed) {
@@ -1110,6 +1111,7 @@ void stairDown(Turtle top) {
 void carve(const(Api)* api) {
     Root root;
     api.tileEdges(api, &tile, &root, Root.sizeof);
+    api.edgeCeiling(api, SURFACE_BAND);
 }
 
 void darken(const(Api)* api, KindTag ground, double depth) {

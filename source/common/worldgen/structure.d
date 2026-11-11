@@ -1,8 +1,8 @@
 module common.worldgen.structure;
 
-import core.stdc.math : atanhf, floorf;
+import core.stdc.math : atanhf, coshf, floorf;
 import base.array : Array;
-import base.hashmap : FIBONACCI_MULTIPLIER;
+import base.hashmap : FIBONACCI_MULTIPLIER, HashMap, Present;
 import base.maybe : Maybe, MaybeIndex;
 import base.numbers : clamped, higherOf, lowerOf;
 import base.splitmix : SplitMix;
@@ -10,11 +10,11 @@ import base.units : Length;
 import base.vector3 : Vec3;
 import common.graph : Graph, NodeId, ParentEntry, ParentList, ROOT_NODE;
 import common.node : ChunkLayout;
-import common.view : GraphView;
+import common.view : GraphView, SlotKey;
 import common.worldgen.blueprint : CellBox, LevelRange, LineSpec, canonicalBox, floorDivision;
 import common.worldgen.generation : NodeState;
 import common.worldgen.store : NodeMark, pin;
-import geometry.honeycomb : CORNER_COUNT, Corner, FACE_COUNT, Face, across, cornerToNode, faceBit, faces, isAdjacentTo, mirror;
+import geometry.honeycomb : CORNER_COUNT, Corner, FACE_COUNT, Face, NODE_RADIUS, across, cornerToNode, faceBit, faces, isAdjacentTo, mirror;
 import geometry.lorentz : Mat4, Motion, Point, Vec4;
 import plugins.api.api : Extent, Site, SitePart, Turn;
 
@@ -29,6 +29,7 @@ enum uint NODE_EDGES = 30;
 enum float FLAT_RADIUS = 1.8f;
 enum float FLAT_BLEND = 1.4f;
 enum uint FLAT_DEPTH_SPAN = 8;
+enum float CALM_SLACK = 0.05f;
 
 struct LineTouch {
     int level;
@@ -713,17 +714,60 @@ ulong anchorBits(ref const Graph graph, uint slot) {
 }
 
 float calmAt(ref const GraphView view, uint node) {
-    float calm = 1;
-    foreach (ref flat; view.blueprint.flats.slice()) {
-        uint here = view.depthOf(node);
-        uint there = view.depthOf(flat.node);
-        if (here <= there + FLAT_DEPTH_SPAN && there <= here + FLAT_DEPTH_SPAN) {
-            float away = (view.siteToNode(flat, node) * Point!float.origin()).distance(Point!float.origin());
-            float share = clamped((away - FLAT_RADIUS) / FLAT_BLEND, 0.0f, 1.0f);
-            calm = lowerOf(calm, share * share * (3 - 2 * share));
+    const(float)* calm = view.blueprint.calms.find(view.idAt(node));
+    if (calm is null) {
+        return 1;
+    } else {
+        return *calm;
+    }
+}
+
+float calmBeside(ref const GraphView view, ref const SiteFrame flat, uint node) {
+    uint here = view.depthOf(node);
+    uint there = view.depthOf(flat.node);
+    if (here <= there + FLAT_DEPTH_SPAN && there <= here + FLAT_DEPTH_SPAN) {
+        float away = (view.siteToNode(flat, node) * Point!float.origin()).distance(Point!float.origin());
+        float share = clamped((away - FLAT_RADIUS) / FLAT_BLEND, 0.0f, 1.0f);
+        return share * share * (3 - 2 * share);
+    } else {
+        return 1;
+    }
+}
+
+struct CalmVisit {
+    uint node;
+    Vec4!float flat;
+}
+
+void spreadCalm(ref Graph graph, ref const SiteFrame flat) {
+    GraphView view = GraphView.over(graph);
+    Array!CalmVisit queue;
+    HashMap!(SlotKey, Present) seen;
+    float reach = coshf(FLAT_RADIUS + FLAT_BLEND + CALM_SLACK);
+    float spread = coshf(FLAT_RADIUS + FLAT_BLEND + NODE_RADIUS + CALM_SLACK);
+    queue.append(CalmVisit(flat.node, (sitePlacement(flat, graph.layout) * Point!float.origin()).v));
+    seen.insert(SlotKey(flat.node), Present.init);
+    size_t head = 0;
+    while (head < queue.length) {
+        CalmVisit current = queue.ptr[head];
+        head += 1;
+        if (!(current.flat.c[3] > reach)) {
+            graph.structures.blueprint.noteCalm(view.idAt(current.node), view.calmBeside(flat, current.node));
+        }
+        if (!(current.flat.c[3] > spread)) {
+            foreach (index; 0 .. FACE_COUNT) {
+                Face side = cast(Face) index;
+                uint beside = view.ensureNeighborSlot(current.node, side);
+                if (seen.find(SlotKey(beside)) is null) {
+                    seen.insert(SlotKey(beside), Present.init);
+                    queue.append(CalmVisit(beside, side.mirror * current.flat));
+                }
+            }
         }
     }
-    return calm;
+    queue.release();
+    seen.release();
+    view.release();
 }
 
 float altitude(ref const NodeState state) {

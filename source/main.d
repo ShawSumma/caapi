@@ -11,6 +11,7 @@ import base.clock : FrameClock, MILLISECONDS_PER_SECOND, NANOSECONDS_PER_SECOND,
 import base.crash : reportCrashes, reportHangAfter;
 import base.flags : Bits, Readiness;
 import base.hashmap : HashMap, HashSlot;
+import base.heap : WorkHeap;
 import base.maybe : Maybe, MaybeIndex;
 import base.names : ENUM_NAMES, textFor;
 import base.numbers : higherOf, lowerOf;
@@ -43,23 +44,23 @@ import client.tiles : PlanOutputs, TileHost, TilePainter, TileWork;
 import client.world : LocalWorld, NearbyStage, NearbyStats, RENDER_RADIUS, StepPhases, fogVisibility;
 import common.character.controller : MovementMode;
 import common.crafting : IdSet;
-import common.graph : Graph, Node, childParentFaces;
+import common.graph : Graph, Node, NodeContent, childParentFaces;
 import common.inventory : Cycle;
 import common.neighbors : chunkNeighborSlot, needsMesh;
 import common.node : Chunk, ChunkSlot, ChunkState, cellCount;
 import common.settings : CHUNK_DIMENSION;
 import common.traversal : Collected, NearbyNode, NearbyScratch;
 import common.view : GraphView;
-import common.worldgen.blueprint : Blueprint, Brush, LineRun, RunRef;
+import common.worldgen.blueprint : Blueprint, Brush, LineRun, RunRef, TileRecord;
 import common.worldgen.building : Building;
 import common.worldgen.generation : NodeState, StructureWorld, Worldgen, WorldgenKind;
-import common.worldgen.horospheres : HorosphereStage, Horospheres, NodeHorospheres, NodeRises;
+import common.worldgen.horospheres : HorosphereKind, HorosphereStage, Horospheres, NearGround, NodeHorospheres, NodeRises, ROOT, isGravityKnown, nearestGround;
 import common.worldgen.store : NodeStructure, StructureStore;
 import common.worldgen.structure : nodeToNode;
 import geometry.cube : DIRECTIONS;
 import geometry.honeycomb : CORNER_COUNT, CUBE_RADIUS, Corner, FACE_COUNT, Face, NODE_RADIUS, cubeCenter, mirror;
 import geometry.lorentz : Motion, Point;
-import plugins.api.api : Material;
+import plugins.api.api : HorosphereForm, Material;
 import plugins.api.flags : Flags;
 import scripts.drives : DRIVES;
 import scripts.films : FILMS, NamedFilm;
@@ -1243,8 +1244,12 @@ struct Session {
         meter = FrameMeter.startingAt(started);
         lastSave = started;
         while (isRunning) {
+            double waitStart = nowSeconds();
             renderer.waitForDisplay();
             double now = nowSeconds();
+            if (renderer.core.isPresentWaitable()) {
+                game.world.paceBy((now - waitStart) * MILLISECONDS_PER_SECOND);
+            }
             Time dt = Time(cast(float) clock.tick(now, MOST_STEP_SECONDS));
             mouseDx = 0;
             mouseDy = 0;
@@ -1350,8 +1355,9 @@ uint worldIndexOf(Worldgen worldgen) {
     }
 }
 
-void pauseUntilFrameEnd(double frameStart) {
+void pauseUntilFrameEnd(ref LocalWorld world, double frameStart) {
     double remaining = BENCH_FRAME_SECONDS - (nowSeconds() - frameStart);
+    world.paceBy(remaining * MILLISECONDS_PER_SECOND);
     if (remaining > 0) {
         timespec pause = timespec(0, cast(long)(remaining * NANOSECONDS_PER_SECOND));
         nanosleep(&pause, null);
@@ -1657,7 +1663,7 @@ void measureLoad(FILE* report, ref Renderer renderer, ref Game game) {
             fprintf(report, "loading: frame %u at %.1fs, nearby %zu nodes, %u chunks in flight, %u meshes queued\n", frames, nowSeconds() - start, game.world.cachedNodes.length, game.world.streamer.inFlight, renderer.meshBacklog());
             fflush(report);
         }
-        pauseUntilFrameEnd(frameStart);
+        pauseUntilFrameEnd(game.world, frameStart);
     } while (renderer.meshBacklog() > 0 || !game.world.isWorldgenSettled());
     double elapsed = nowSeconds() - start;
     uint dense = 0;
@@ -1740,7 +1746,7 @@ void settleFrame(ref Renderer renderer, ref Game game) {
     double frameStart = nowSeconds();
     game.step(FrameInput.init, Time(cast(float) BENCH_FRAME_SECONDS));
     renderer.render(game.world);
-    pauseUntilFrameEnd(frameStart);
+    pauseUntilFrameEnd(game.world, frameStart);
 }
 
 void measureSettle(FILE* report, ref Renderer renderer, ref Game game) {
@@ -1767,6 +1773,7 @@ enum Shortfall : ubyte {
     scanned,
     unlisted,
     unmade,
+    buried,
 }
 
 struct LoadedAround {
@@ -1818,6 +1825,8 @@ struct LoadedAround {
                     Shortfall reason = waiting;
                     if (state == ChunkState.generating) {
                         reason = Shortfall.generating;
+                    } else if (graph.nodeAt(current.slot).content == NodeContent.deep) {
+                        reason = Shortfall.buried;
                     }
                     missed[reason] += 1;
                 }
@@ -1915,7 +1924,7 @@ void measureLeg(FILE* report, ref Renderer renderer, ref Game game) {
         if (frame % CENSUS_INTERVAL == 0) {
             around.count(game.world);
         }
-        pauseUntilFrameEnd(frameStart);
+        pauseUntilFrameEnd(game.world, frameStart);
     }
     fprintf(report, "moving noclip: frame avg=%.2fms worst=%.2fms, %u of %u frames with loading pending, %u over %.1fms\n", moving.averageMs(), moving.worstMs, backloggedFrames, BENCH_MOVE_FRAMES, slow.count, FRAME_DEADLINE_MS);
     fprintf(report, "moving step avg=%.2fms worst=%.2fms (main thread cpu avg=%.2fms), render avg=%.2fms worst=%.2fms\n", movingStep.averageMs(), movingStep.worstMs, stepCpu.averageMs(), movingRender.averageMs(), movingRender.worstMs);
@@ -2069,6 +2078,10 @@ size_t bytesIn(T)(ref const ConcurrentQueue!T queue) {
     return (queue.mask + 1) * QueueCell!T.sizeof;
 }
 
+size_t bytesIn(T)(ref const WorkHeap!T heap) {
+    return bytesIn(heap.entries) + bytesIn(heap.items) + bytesIn(heap.spare);
+}
+
 size_t bytesIn(ref const NearbyScratch scratch) {
     size_t bytes = bytesIn(scratch.nodes) + bytesIn(scratch.collected) + bytesIn(scratch.candidates) + bytesIn(scratch.kinds) + bytesIn(scratch.blocks) + bytesIn(scratch.around) + bytesIn(scratch.chain) + bytesIn(scratch.claimed) + bytesIn(scratch.rederived.words) + bytesIn(scratch.derived) + bytesIn(scratch.outputs);
     foreach (ref batch; scratch.derived.slice()) {
@@ -2155,9 +2168,9 @@ void printMemoryParts(FILE* report, ref const LocalWorld world, ref const Render
     }
     fprintf(report, "  scratch: nearby sets %zu and %zu, graph views %zu, tile painting %zu\n", megabytes(bytesIn(world.nearby[0])), megabytes(bytesIn(world.nearby[1])), megabytes(viewBytes), megabytes(tileBytes));
     const(Streamer)* streamer = &world.streamer;
-    size_t streamBytes = bytesIn(streamer.requests) + bytesIn(streamer.urgentRequests) + bytesIn(streamer.buildingSlots) + bytesIn(streamer.urgentBuildingSlots) + bytesIn(streamer.planned) + bytesIn(streamer.made) + bytesIn(streamer.facts) + bytesIn(streamer.waiting) + bytesIn(streamer.nearCamera) + bytesIn(streamer.integrator.arrivals);
+    size_t streamBytes = bytesIn(streamer.buildingSlots) + bytesIn(streamer.urgentBuildingSlots) + bytesIn(streamer.planned) + bytesIn(streamer.made) + bytesIn(streamer.facts) + bytesIn(streamer.waiting) + bytesIn(streamer.nearCamera) + bytesIn(streamer.integrator.arrivals);
     const(TaskQueues)* queues = streamer.queues;
-    size_t queueBytes = bytesIn(queues.generations) + bytesIn(queues.urgent) + bytesIn(queues.buildings) + bytesIn(queues.urgentBuildings) + bytesIn(queues.generated) + bytesIn(queues.built);
+    size_t queueBytes = bytesIn(queues.generations) + bytesIn(queues.buildings) + bytesIn(queues.generated) + bytesIn(queues.built);
     fprintf(report, "  streaming: rescan marks %zu, work lists %zu, task queues %zu, eviction marks %zu\n", megabytes(bytesIn(streamer.rescanAt)), megabytes(streamBytes), megabytes(queueBytes), megabytes(bytesIn(world.evictor.recent.words) + bytesIn(world.evictor.stack)));
     const(ChunkMeshes)* meshes = &renderer.meshes;
     size_t drawBytes = bytesIn(meshes.renderBlocks) + bytesIn(meshes.freeRenderBlocks) + bytesIn(meshes.drawableChunks) + bytesIn(meshes.drawableRecords) + bytesIn(meshes.placedVersions) + bytesIn(meshes.unlisted);
@@ -2179,7 +2192,19 @@ struct Shell {
     size_t buildingBytes;
     size_t tiles;
     size_t unlistedTiles;
+    size_t edgeTiles;
+    size_t blankTiles;
+    size_t blankEdgeTiles;
     size_t brushes;
+    size_t[NodeContent.max + 1] contents;
+}
+
+bool isBlank(ref const TileRecord tile) {
+    return tile.painted.brushes.length == 0 && tile.painted.strokes.length == 0 && tile.edges.length == 0;
+}
+
+bool isEdgeTile(ref const TileRecord tile) {
+    return tile.feature >= FACE_COUNT + CORNER_COUNT;
 }
 
 uint shellAt(Point!float eye, Point!float center) {
@@ -2207,6 +2232,7 @@ void printShells(FILE* report, ref const LocalWorld world, ref const Renderer re
     foreach (ref node; nearby.nodes.slice()) {
         Shell* shell = &shells[shellAt(eye, node.transform * Point!float.origin())];
         shell.nodes += 1;
+        shell.contents[graph.nodeAt(node.slot).content] += 1;
         if (graph.chunks.has(node.slot)) {
             shell.holding += 1;
             if (isSingleFill(*graph, node.slot)) {
@@ -2241,6 +2267,15 @@ void printShells(FILE* report, ref const LocalWorld world, ref const Renderer re
             }
             shells[shell].tiles += 1;
             shells[shell].brushes += tile.painted.brushes.length;
+            if (isEdgeTile(tile)) {
+                shells[shell].edgeTiles += 1;
+            }
+            if (isBlank(tile)) {
+                shells[shell].blankTiles += 1;
+                if (isEdgeTile(tile)) {
+                    shells[shell].blankEdgeTiles += 1;
+                }
+            }
         }
     }
     size_t nodeBytes = Node.sizeof + NodeState.sizeof + NodeStructure.sizeof + NodeHorospheres.sizeof + NodeRises.sizeof + uint.sizeof + 2 * (NearbyNode.sizeof + Collected.sizeof);
@@ -2256,7 +2291,73 @@ void printShells(FILE* report, ref const LocalWorld world, ref const Renderer re
             fprintf(report, "  %u-%u: fog leaves %.3f, chunk %.1fpx:", cast(uint) index, cast(uint) index + 1, cast(double) fogVisibility(inner, world.viewRadius()), cast(double) chunkPixels);
         }
         fprintf(report, " nodes %zu holding chunks %zu (one uniform fill %zu), dense chunks %zu, faces %zu, buildings %zu (%zuMB), tiles %zu (%zu outside the set), brushes %zu, about %zuMB\n", shell.nodes, shell.holding, shell.singleFill, shell.dense, shell.faces, shell.buildings, megabytes(shell.buildingBytes), shell.tiles, shell.unlistedTiles, shell.brushes, megabytes(bytes));
+        fprintf(report, "    tiles that painted nothing %zu, edge tiles %zu of which %zu painted nothing; nodes by content:", shell.blankTiles, shell.edgeTiles, shell.blankEdgeTiles);
+        foreach (kind, name; ENUM_NAMES!NodeContent) {
+            fprintf(report, " %.*s %zu", cast(int) name.length, name.ptr, shell.contents[kind]);
+        }
+        fprintf(report, "\n");
     }
+    printGrounds(report, world, renderer);
+}
+
+struct GroundShare {
+    size_t nodes;
+    size_t dense;
+    size_t faces;
+    size_t buildings;
+}
+
+void printGrounds(FILE* report, ref const LocalWorld world, ref const Renderer renderer) {
+    const(Graph)* graph = &world.graph;
+    const(Horospheres)* horospheres = &graph.horospheres;
+    Array!GroundShare shares;
+    shares.resize((horospheres.kinds.length + 1) * 2);
+    GroundShare unknown;
+    foreach (ref node; world.nearby[world.published].nodes.slice()) {
+        if (graph.chunks.has(node.slot)) {
+            GroundShare* share = &unknown;
+            if (world.graph.isGravityKnown(node.slot)) {
+                NearGround nearest = world.graph.nearestGround(node.slot, Point!float.origin());
+                size_t row = 0;
+                if (nearest.horosphere != ROOT) {
+                    row = horospheres.horosphere(nearest.horosphere).kind + 1;
+                }
+                size_t side = 0;
+                if (nearest.altitude < 0) {
+                    side = 1;
+                }
+                share = &shares.ptr[row * 2 + side];
+            }
+            share.nodes += 1;
+            foreach (index; 0 .. CORNER_COUNT) {
+                Corner corner = cast(Corner) index;
+                if (!graph.chunks.at(ChunkSlot(node.slot, corner)).voxels.isUniform()) {
+                    share.dense += 1;
+                }
+                share.faces += renderer.meshes.faceCountOf(graph.chunks.blockOf(node.slot), corner);
+            }
+            if (graph.structures.buildingAt(node.slot) !is null) {
+                share.buildings += 1;
+            }
+        }
+    }
+    fprintf(report, "nodes holding chunks by the ground nearest their center (above it, then below it):\n");
+    foreach (row; 0 .. horospheres.kinds.length + 1) {
+        const(GroundShare)* above = &shares.ptr[row * 2];
+        const(GroundShare)* below = &shares.ptr[row * 2 + 1];
+        if (above.nodes + below.nodes > 0) {
+            if (row == 0) {
+                fprintf(report, "  the root:");
+            } else {
+                const(HorosphereKind)* kind = &horospheres.kinds.ptr[row - 1];
+                const(char)[] form = ENUM_NAMES!HorosphereForm[kind.form];
+                fprintf(report, "  kind %zu (%.*s, tag %x, crust %.1f):", row - 1, cast(int) form.length, form.ptr, kind.tag, cast(double) kind.crust.thick);
+            }
+            fprintf(report, " nodes %zu and %zu, dense chunks %zu and %zu, faces %zu and %zu, buildings %zu and %zu\n", above.nodes, below.nodes, above.dense, below.dense, above.faces, below.faces, above.buildings, below.buildings);
+        }
+    }
+    fprintf(report, "  grounds not known: nodes %zu, dense chunks %zu, faces %zu, buildings %zu\n", unknown.nodes, unknown.dense, unknown.faces, unknown.buildings);
+    shares.release();
 }
 
 ExitStatus runWindowed(Arguments arguments) {

@@ -2,16 +2,17 @@ module scripts.tests;
 
 import core.math : sqrt;
 import core.stdc.math : acos, atan2, exp, fabs, roundf, sin;
+import base.array : Array;
 import base.flags : Readiness;
 import base.maybe : Maybe, MaybeIndex;
 import base.names : textFor;
 import base.numbers : RADIANS_PER_DEGREE, higherOf, lowerOf;
 import base.units : AngularSpeed, Length, Time;
-import base.vector3 : Vec3, ZERO_VECTOR, magnitude, minus;
+import base.vector3 : Vec3, ZERO_VECTOR, dot, magnitude, minus, rejectAlong;
 import client.bindings : ACTIONS, Action, Rules;
 import client.camera : CAMERA_FORWARD;
 import client.config : ClientConfig;
-import client.game : AimKind, BeaconSighting, COLLECTION_RATE, ChunkSupply, Click, GROWN_SECONDS, Game, HARVEST_RAW, Key, KeyStroke, MOST_EXTRA_YIELD, Mineable, NoteKind, PLANT_DOSE, RAW_PER_DOSE, Ripeness, RouteWaypoint, Screen, Sheet, UiAction, UiKind, UnloadedCount;
+import client.game : AimKind, BeaconSighting, COLLECTION_RATE, ChunkSupply, Click, GROWN_SECONDS, Game, HARVEST_RAW, Key, KeyStroke, MOST_EXTRA_YIELD, Mineable, Note, NoteKind, PLANT_DOSE, RAW_PER_DOSE, Ripeness, RouteWaypoint, Screen, Sheet, SolidProbe, UiAction, UiKind, UnloadedCount;
 import client.hud : Growth;
 import client.input : Controls, ESCAPE_KEY, Request;
 import client.save : SaveData, Writer, applyEdits, applyState, readGame, writeGame;
@@ -25,17 +26,22 @@ import common.biology.molecule : Molecule;
 import common.biology.organism : starterDoses;
 import common.biology.wild : WILD_GENES, WildGenes;
 import common.character.controller : MovementMode;
+import common.character.features : CellRange, LocalFrame, visitCells;
 import common.content.content : hooks;
 import common.crafting : Insight, Reaction, Station, Synthesis, Upgrade, doseRoutes, recipes, syntheses, synthesized;
 import common.graph : Graph, NodeId;
 import common.inventory : HOTBAR_SLOTS, Inventory, SLOT_COUNT, STACK_LIMIT, Sorting, Stack, isSameKind;
 import common.items : Item, itemOf;
 import common.material : has;
-import common.node : ChunkSlot, ChunkState, cellIndex;
+import common.node : ChunkId, ChunkSlot, ChunkState, cellIndex;
 import common.perception : effectiveFor;
 import common.position : Position;
 import common.settings : CharacterConfig;
 import common.worldgen.generation : Worldgen;
+import common.worldgen.horospheres : ROOT, edgeOf, ensureGravityAt, ensureUndersideAt, isBelowAbyss;
+import common.worldgen.structure : nodeToNode;
+import geometry.cube : Cell;
+import geometry.honeycomb : Face;
 import geometry.lorentz : Point, Vec4;
 import plugins.api.api : Material;
 import plugins.api.content : Event, Happening, Play;
@@ -142,12 +148,264 @@ immutable NamedScript[] TESTS = [
     NamedScript("structure/sinkhole", &structureSinkhole),
     NamedScript("structure/well", &structureWell),
     NamedScript("structure/void", &structureVoid),
+    NamedScript("structure/window", &structureWindow),
+    NamedScript("structure/shield", &structureShield),
     NamedScript("structure/vaults", &climbing!("vaults", 0.35f, SpawnCheck.checked)),
     NamedScript("content/hooks", &contentHooks),
     NamedScript("lost/thread-off", &lostThreadOff),
     NamedScript("lost/thread", &lostThread),
     NamedScript("lost/thread-full", &lostThreadFull),
+    NamedScript("falls/wake", &fallsWake),
+    NamedScript("falls/loss", &fallsLoss),
+    NamedScript("falls/creative", &fallsCreative),
+    NamedScript("falls/unmarked", &fallsUnmarked),
+    NamedScript("falls/gone", &fallsGone),
+    NamedScript("falls/nowhere", &fallsNowhere),
+    NamedScript("falls/fly", &fallsFly),
+    NamedScript("falls/planet", &fallsPlanet),
 ];
+
+enum string ABYSS_RIG = "abyss";
+enum float FOOTHOLD_HOP = 0.5f;
+enum float DIVE_EDGES = 1.5f;
+enum float BELOW_ABYSS_EDGES = 3.5f;
+enum float PLANET_PAST_BOTTOM_EDGES = 0.5f;
+enum double MOST_FALL_SECONDS = 10;
+enum double HOVER_SECONDS = 3;
+enum float WAKE_TOLERANCE = 1e-3f;
+enum float HOLE_RADIUS = 0.06f;
+enum float HOLE_DEPTH = 0.2f;
+enum uint LOST_THIRD = 3;
+enum string STRAINED = "base:flower";
+immutable string[5] FALL_KINDS = ["base:granite", "base:dirt", "base:sand", "base:glass", "base:wood-planks"];
+immutable uint[5] FALL_COUNTS = [1, 2, 3, 8, 81];
+immutable WildGenes[2] FALL_STRAINS = [WildGenes([81, 82, 83, 84]), WildGenes([91, 92, 93, 94])];
+immutable uint[2] STRAIN_COUNTS = [4, 2];
+immutable string[2] STRAIN_NAMES = ["base:flower, first strain", "base:flower, second strain"];
+
+struct Hollow {
+    Vec3!float up;
+    Array!ChunkSlot slots;
+    Array!Cell cells;
+
+    void visitMissingNode(uint, Face) {
+    }
+
+    void visitChunk(ref const Graph graph, LocalFrame frame, ChunkSlot slot, CellRange range) {
+        foreach (x; range.low.x .. range.high.x + 1) {
+            foreach (y; range.low.y .. range.high.y + 1) {
+                foreach (z; range.low.z .. range.high.z + 1) {
+                    Vec3!float center = frame.cell(graph.layout, slot.corner, Vec3!int(x, y, z)).center();
+                    float below = -center.dot(up);
+                    if (below > 0 && below < HOLE_DEPTH && center.rejectAlong(up).magnitude < HOLE_RADIUS) {
+                        slots.append(slot);
+                        cells.append(Cell(cast(ubyte) x, cast(ubyte) y, cast(ubyte) z));
+                    }
+                }
+            }
+        }
+    }
+
+    void release() {
+        slots.release();
+        cells.release();
+    }
+}
+
+uint hollowUnder(ref Script world, Position at) {
+    Graph* graph = &world.game.world.graph;
+    world.game.generateAround(at, Length(HOLE_DEPTH));
+    Hollow hollow = Hollow((*graph).ensureGravityAt(at).up);
+    visitCells(*graph, at, Length(HOLE_DEPTH), hollow);
+    uint removed = 0;
+    foreach (index, slot; hollow.slots.slice()) {
+        Cell cell = hollow.cells.ptr[index];
+        ChunkId chunk = ChunkId(graph.idAt(slot.slot), slot.corner);
+        Maybe!Material held = world.game.materialAt(chunk, cast(uint) cellIndex(graph.layout.dimension, cell.x, cell.y, cell.z));
+        if (held.exists && held.value != Material.none && world.game.world.setVoxel(chunk, cell, Material.none)) {
+            removed += 1;
+        }
+    }
+    hollow.release();
+    return removed;
+}
+
+float apartOn(ref Script world, Position from, Position to) {
+    const(Graph)* graph = &world.game.world.graph;
+    Point!float there = graph.ownView.nodeToNode(graph.slotOf(from.node).value, graph.slotOf(to.node).value) * from.local * Point!float.origin();
+    return there.distance(to.local * Point!float.origin());
+}
+
+void standAfter(ref Script world, float ahead) {
+    world.mode(MovementMode.noclip);
+    world.press(ahead / walk.NOCLIP_SPEED, Key.forward);
+    world.mode(MovementMode.walk);
+    world.wait(walk.LANDING_SECONDS);
+}
+
+void dive(ref Script world, float edges) {
+    world.mode(MovementMode.noclip);
+    world.press(edges * world.game.world.graph.view.edgeOf() / walk.NOCLIP_SPEED, Key.down);
+}
+
+bool fallUntilWoken(ref Script world) {
+    Time since = world.time();
+    world.mode(MovementMode.walk);
+    double fallen = 0;
+    while (!world.isFailed && !notedSince(world, NoteKind.woke, since) && fallen < MOST_FALL_SECONDS) {
+        world.step();
+        fallen += world.timestep.value;
+    }
+    return notedSince(world, NoteKind.woke, since);
+}
+
+Inventory fallStock() {
+    Inventory stock;
+    foreach (index, name; FALL_KINDS) {
+        stock.gain(Stack(named(name), FALL_COUNTS[index]));
+    }
+    foreach (index, genes; FALL_STRAINS) {
+        stock.gain(Stack.ofLiving(named(STRAINED), STRAIN_COUNTS[index], genes, Sorting.unsorted));
+    }
+    return stock;
+}
+
+void fallsWake(ref Script world) {
+    world.structure(ABYSS_RIG);
+    walk.spawn(world);
+    standAfter(world, FOOTHOLD_HOP);
+    standAfter(world, FOOTHOLD_HOP);
+    Position stood = world.game.characterState.position;
+    Position marked = world.game.footholds.places[0];
+    float behind = apartOn(world, marked, stood);
+    float block = world.game.blockLength().value;
+    dive(world, DIVE_EDGES);
+    bool woke = fallUntilWoken(world);
+    float apart = apartOn(world, world.game.characterState.position, marked);
+    world.claim(Topic.falls, "A body that falls past the bottom of the world wakes standing within a block of the last place it stood before it went under the ground.", woke && world.isOnGround() && apart < WAKE_TOLERANCE && behind < block, Measure.of("let go this many edges below the ground", DIVE_EDGES), Measure.of("woke this far from the place marked", apart), Measure.of("that place was this far from where it last stood", behind), Measure.of("a block", block));
+}
+
+void fallsLoss(ref Script world) {
+    world.structure(ABYSS_RIG);
+    walk.spawn(world);
+    world.game.inventory = fallStock();
+    dive(world, DIVE_EDGES);
+    bool woke = fallUntilWoken(world);
+    world.check(woke, "the body let go under the ground did not wake");
+    uint predictedLost = 0;
+    foreach (index, name; FALL_KINDS) {
+        uint held = FALL_COUNTS[index];
+        uint predicted = held - held / LOST_THIRD;
+        uint kept = world.game.inventory.countOf(named(name));
+        predictedLost += held / LOST_THIRD;
+        world.claim(Topic.falls, "A fall keeps every kind of thing the body held one or two of and loses a third, rounded down, of every kind it held three or more of.", woke && kept == predicted, Measure.of("kind", name), Measure.of("held", held), Measure.of("kept", kept), Measure.of("predicted", predicted));
+    }
+    foreach (index, genes; FALL_STRAINS) {
+        uint held = STRAIN_COUNTS[index];
+        uint predicted = held - held / LOST_THIRD;
+        uint kept = world.game.inventory.countOfKind(Stack.ofLiving(named(STRAINED), 1, genes, Sorting.unsorted));
+        predictedLost += held / LOST_THIRD;
+        world.claim(Topic.falls, "A fall keeps every kind of thing the body held one or two of and loses a third, rounded down, of every kind it held three or more of.", woke && kept == predicted, Measure.of("kind", STRAIN_NAMES[index]), Measure.of("held", held), Measure.of("kept", kept), Measure.of("predicted", predicted));
+    }
+    const(Note)* said = &world.game.notes.ptr[world.game.notes.length - 1];
+    world.check(said.kind == NoteKind.woke && said.amount == predictedLost, "the note after the fall says %.0f things were lost, not %u", cast(double) said.amount, predictedLost);
+}
+
+void fallsCreative(ref Script world) {
+    world.structure(ABYSS_RIG);
+    walk.spawn(world);
+    world.game.rules = Rules.creative;
+    world.game.inventory = fallStock();
+    Inventory before = world.game.inventory;
+    dive(world, DIVE_EDGES);
+    bool woke = fallUntilWoken(world);
+    uint held = 0;
+    foreach (ref stack; before.slots) {
+        held += stack.count;
+    }
+    uint kept = 0;
+    foreach (ref stack; world.game.inventory.slots) {
+        kept += stack.count;
+    }
+    world.claim(Topic.falls, "Under creative rules a fall loses nothing.", woke && world.game.inventory == before, Measure.of("things held", held), Measure.of("things kept", kept));
+}
+
+void fallsUnmarked(ref Script world) {
+    world.structure(ABYSS_RIG);
+    walk.spawn(world);
+    Position spawned = world.game.characterState.position;
+    dive(world, DIVE_EDGES);
+    uint marked = world.game.footholds.count;
+    bool woke = fallUntilWoken(world);
+    float apart = apartOn(world, world.game.characterState.position, spawned);
+    world.claim(Topic.falls, "A body that has not stood anywhere since the world began wakes at the world's spawn.", woke && marked == 0 && world.isOnGround() && apart < WAKE_TOLERANCE, Measure.of("places it had stood", marked), Measure.of("woke this far from spawn", apart));
+}
+
+uint hollowUnderNewest(ref Script world, uint count) {
+    uint removed = 0;
+    foreach (index; 0 .. count) {
+        removed += hollowUnder(world, world.game.footholds.places[index]);
+    }
+    return removed;
+}
+
+void fallsGone(ref Script world) {
+    world.structure(ABYSS_RIG);
+    walk.spawn(world);
+    standAfter(world, FOOTHOLD_HOP);
+    uint first = world.game.footholds.count;
+    Position earlier = world.game.footholds.places[0];
+    standAfter(world, FOOTHOLD_HOP);
+    uint marked = world.game.footholds.count;
+    uint removed = hollowUnderNewest(world, marked - first);
+    world.check(first > 0 && marked > first && removed > 0, "standing in two places marked %u and then %u, and %u cells were removed", first, marked, removed);
+    dive(world, DIVE_EDGES);
+    bool woke = fallUntilWoken(world);
+    float apart = apartOn(world, world.game.characterState.position, earlier);
+    world.claim(Topic.falls, "When the ground is gone under the last places the body stood, it wakes on the latest place it stood that still has ground under it.", woke && world.isOnGround() && apart < WAKE_TOLERANCE && world.game.footholds.count == first, Measure.of("places whose ground was removed", marked - first), Measure.of("cells removed under them", removed), Measure.of("woke this far from the latest place left", apart));
+}
+
+void fallsNowhere(ref Script world) {
+    world.structure(ABYSS_RIG);
+    walk.spawn(world);
+    Position spawned = world.game.characterState.position;
+    standAfter(world, FOOTHOLD_HOP);
+    standAfter(world, FOOTHOLD_HOP);
+    uint marked = world.game.footholds.count;
+    uint removed = hollowUnderNewest(world, marked);
+    world.check(marked > 0 && removed > 0, "standing in two places marked %u, and %u cells were removed", marked, removed);
+    dive(world, DIVE_EDGES);
+    bool woke = fallUntilWoken(world);
+    float apart = apartOn(world, world.game.characterState.position, spawned);
+    world.claim(Topic.falls, "When the ground is gone under every place the body stood, it wakes at the world's spawn.", woke && world.isOnGround() && apart < WAKE_TOLERANCE && world.game.footholds.count == 0, Measure.of("places whose ground was removed", marked), Measure.of("cells removed under them", removed), Measure.of("woke this far from spawn", apart));
+}
+
+void fallsPlanet(ref Script world) {
+    world.terrain();
+    walk.spawn(world);
+    Position spawned = world.game.characterState.position;
+    Maybe!float abyss = world.game.world.graph.horospheres.abyssOf(ROOT);
+    world.check(abyss.exists, "the default world names no bottom under its root");
+    if (!world.isFailed) {
+        float bottom = abyss.value / world.game.world.graph.view.edgeOf();
+        float depth = bottom + PLANET_PAST_BOTTOM_EDGES;
+        dive(world, depth);
+        bool woke = fallUntilWoken(world);
+        float apart = apartOn(world, world.game.characterState.position, spawned);
+        world.claim(Topic.falls, "The default world has a bottom: a body let go below it wakes, and with nowhere stood yet it wakes at the world's spawn.", woke && world.isOnGround() && apart < WAKE_TOLERANCE, Measure.of("bottom (edges down)", bottom), Measure.of("let go this many edges below the ground", depth), Measure.of("woke this far from spawn", apart));
+    }
+}
+
+void fallsFly(ref Script world) {
+    world.structure(ABYSS_RIG);
+    walk.spawn(world);
+    dive(world, BELOW_ABYSS_EDGES);
+    world.mode(MovementMode.fly);
+    Time since = world.time();
+    world.wait(HOVER_SECONDS);
+    bool below = world.game.world.graph.isBelowAbyss(world.game.characterState.position);
+    world.claim(Topic.falls, "In fly mode a body below the bottom of the world never wakes.", below && !notedSince(world, NoteKind.woke, since), Measure.of("let go this many edges below the ground", BELOW_ABYSS_EDGES), Measure.of("seconds flying there", HOVER_SECONDS));
+}
 
 enum double THREAD_WALK_SECONDS = 4;
 enum uint FEW_BEADS = 8;
@@ -1257,6 +1515,7 @@ void beaconHome(ref Script world) {
 }
 
 enum float SAVE_WALK = 0.5f;
+enum double SAVE_STROLL_SECONDS = 1;
 enum float SAVE_PLACE_TOLERANCE = 1e-3f;
 
 void saveRoundTrip(ref Script world) {
@@ -1266,6 +1525,7 @@ void saveRoundTrip(ref Script world) {
     world.press(SAVE_WALK / walk.NOCLIP_SPEED, Key.forward);
     world.mode(MovementMode.walk);
     world.wait(walk.LANDING_SECONDS);
+    world.press(SAVE_STROLL_SECONDS, Key.forward);
     world.look(degrees(0), degrees(AHEAD_DEGREES));
     world.check(world.placeBlock(), "placed a block to save");
     world.dose();
@@ -1290,6 +1550,14 @@ void saveRoundTrip(ref Script world) {
         Position there = copy.characterState.position;
         float apart = (here.local * Point!float.origin()).distance(there.local * Point!float.origin());
         world.claim(Topic.saves, "A save keeps where the player stands.", here.node == there.node && apart < SAVE_PLACE_TOLERANCE, Measure.of("came back this far away", apart));
+        uint kept = world.game.footholds.count;
+        uint matched = 0;
+        float farthestApart = 0;
+        while (matched < kept && copy.footholds.places[matched].node == world.game.footholds.places[matched].node) {
+            farthestApart = higherOf(farthestApart, (copy.footholds.places[matched].local * Point!float.origin()).distance(world.game.footholds.places[matched].local * Point!float.origin()));
+            matched += 1;
+        }
+        world.link(Topic.saves, Topic.falls, "A save keeps every place the player would wake on after a fall.", kept > 1 && copy.footholds.count == kept && matched == kept && farthestApart < SAVE_PLACE_TOLERANCE, Measure.of("places saved", kept), Measure.of("places loaded back", copy.footholds.count), Measure.of("farthest any came back from where it was", farthestApart));
     }
     Game other = Game.make(Worldgen.makeTerrain(), config.reach);
     SaveData refused;
@@ -2164,4 +2432,47 @@ void structureVoid(ref Script world) {
     Maybe!Material below = walk.lookBelow(world);
     const(char)[] name = walk.nameOf(below);
     world.claim(Topic.structures, "A lattice hangs in the open under the default world's ground: the body let go under spawn lands on it.", world.isOnGround() && walk.isOneOf(below, LATTICE_MATERIALS[]), Measure.of("landed this far below the ground", -world.altitude().value), Measure.of("landed on", name));
+}
+
+enum double WINDOW_FALL_SECONDS = 1;
+
+float undersideEdges(ref Script world, Position at) {
+    return world.game.world.graph.view.ensureUndersideAt(ROOT, at) / world.game.world.graph.view.edgeOf();
+}
+
+uint solidCellsAt(ref Script world, Position at) {
+    world.game.generateAround(at, Length(0));
+    SolidProbe probe = SolidProbe(world.game.bodySolid());
+    visitCells(world.game.world.graph, at, Length(0), probe);
+    return probe.solidCells;
+}
+
+void structureWindow(ref Script world) {
+    world.terrain();
+    Maybe!Position window = walk.ensureUnderGround(world, walk.Beneath.open);
+    world.check(window.exists, "no node %d and a half edges under a ground vertex near spawn is in the open void", walk.BENEATH_EDGES);
+    if (!world.isFailed) {
+        float rock = undersideEdges(world, window.value);
+        world.mode(MovementMode.noclip);
+        world.game.placeAt(window.value, Length(0));
+        uint solid = solidCellsAt(world, world.game.characterState.position);
+        float start = world.altitude().value;
+        world.mode(MovementMode.walk);
+        world.wait(WINDOW_FALL_SECONDS);
+        float fell = start - world.altitude().value;
+        world.claim(Topic.structures, "Near spawn the default world's crust is thin in places: a body let go three and a half edges under the ground there is in the open and falls.", solid == 0 && fell >= VOID_LEAST_FALL, Measure.of("let go this far below the ground", -start), Measure.of("rock ends there this many edges down", rock), Measure.of("solid cells where it was let go", solid), Measure.of("fell in a second", fell));
+    }
+}
+
+void structureShield(ref Script world) {
+    world.terrain();
+    Maybe!Position shield = walk.ensureUnderGround(world, walk.Beneath.rock);
+    world.check(shield.exists, "no node %d and a half edges under a ground vertex near spawn is in rock", walk.BENEATH_EDGES);
+    if (!world.isFailed) {
+        float rock = undersideEdges(world, shield.value);
+        world.mode(MovementMode.noclip);
+        world.game.placeAt(shield.value, Length(0));
+        uint solid = solidCellsAt(world, world.game.characterState.position);
+        world.claim(Topic.structures, "Near spawn the default world's crust is thick in places: three and a half edges under the ground there, a body is inside solid rock.", solid > 0, Measure.of("placed this far below the ground", -world.altitude().value), Measure.of("rock ends there this many edges down", rock), Measure.of("solid cells where the body is", solid));
+    }
 }

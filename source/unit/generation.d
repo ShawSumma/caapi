@@ -14,7 +14,7 @@ bool isSamePlane(Plane a, Plane b) {
 }
 
 bool isSameState(NodeState a, NodeState b) {
-    return isSamePlane(a.surface, b.surface) && isSamePlane(a.reference, b.reference) && a.climate.broad == b.climate.broad && a.climate.local == b.climate.local && a.climate.heat == b.climate.heat && a.climate.wetness == b.climate.wetness && a.climate.strata == b.climate.strata && a.climate.ruggedness == b.climate.ruggedness;
+    return isSamePlane(a.surface, b.surface) && isSamePlane(a.reference, b.reference) && a.climate.broad == b.climate.broad && a.climate.local == b.climate.local && a.climate.heat == b.climate.heat && a.climate.wetness == b.climate.wetness && a.climate.strata == b.climate.strata && a.climate.ruggedness == b.climate.ruggedness && a.climate.shield == b.climate.shield;
 }
 
 unittest {

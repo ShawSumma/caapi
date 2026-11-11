@@ -142,11 +142,17 @@ struct RouteStop {
     ColumnSpot spot;
 }
 
+enum Below : ubyte {
+    ground,
+    crust,
+}
+
 struct Under {
     KindTag ground;
     Look look;
     float depth = 0;
     float fog = 0;
+    Below below;
 
     bool isOver(HorosphereId horosphere, KindTag tag) const {
         if (horosphere == HorosphereId.init) {
@@ -207,6 +213,7 @@ struct TileRecord {
     Array!TileEdge edges;
     NodeId face;
     HorosphereId horosphere;
+    MaybeIndex!uint nextOnFace;
     uint listIndex;
     ubyte feature;
     TileState state;
@@ -322,6 +329,7 @@ struct Blueprint {
     HashMap!(LineKey, uint) lineIndex;
     HashMap!(LineEdge, EdgeRecord) touchedEdges;
     HashMap!(ClaimKey, Present) claims;
+    HashMap!(NodeId, float) calms;
     Maybe!RouteStop entrance;
     Look look;
     Maybe!float fog;
@@ -606,6 +614,15 @@ struct Blueprint {
         return paints[material.id];
     }
 
+    void noteCalm(NodeId node, float calm) {
+        float* known = calms.find(node);
+        if (known !is null) {
+            *known = lowerOf(*known, calm);
+        } else if (calm < 1) {
+            calms.insert(node, calm);
+        }
+    }
+
     bool isClaimed(ClaimKey key) const {
         return claims.find(key) !is null;
     }
@@ -646,6 +663,7 @@ struct Blueprint {
         lineIndex.release();
         touchedEdges.release();
         claims.release();
+        calms.release();
     }
 }
 

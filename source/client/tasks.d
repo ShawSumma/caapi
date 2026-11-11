@@ -2,7 +2,7 @@ module client.tasks;
 
 import core.atomic : atomicLoad, atomicOp, atomicStore;
 import core.stdc.stdlib : calloc;
-import base.array : Array;
+import base.heap : WorkHeap;
 import base.numbers : higherOf;
 import base.parallel : ConcurrentQueue, MAIN_WORKER, WorkerPool, waitWhile, wake;
 import common.node : ChunkSlot;
@@ -40,10 +40,8 @@ struct BuildingResult {
 }
 
 struct TaskQueues {
-    ConcurrentQueue!GenRequest generations;
-    ConcurrentQueue!GenRequest urgent;
-    ConcurrentQueue!BuildingRequest buildings;
-    ConcurrentQueue!BuildingRequest urgentBuildings;
+    WorkHeap!GenRequest generations;
+    WorkHeap!BuildingRequest buildings;
     ConcurrentQueue!GenResult generated;
     ConcurrentQueue!BuildingResult built;
     WorkerPool* pool;
@@ -52,10 +50,6 @@ struct TaskQueues {
 
     static TaskQueues* make() {
         TaskQueues* queues = cast(TaskQueues*) calloc(1, TaskQueues.sizeof);
-        queues.generations = ConcurrentQueue!GenRequest.make(QUEUE_CAPACITY);
-        queues.urgent = ConcurrentQueue!GenRequest.make(QUEUE_CAPACITY);
-        queues.buildings = ConcurrentQueue!BuildingRequest.make(QUEUE_CAPACITY);
-        queues.urgentBuildings = ConcurrentQueue!BuildingRequest.make(QUEUE_CAPACITY);
         queues.generated = ConcurrentQueue!GenResult.make(QUEUE_CAPACITY);
         queues.built = ConcurrentQueue!BuildingResult.make(QUEUE_CAPACITY);
         return queues;
@@ -82,27 +76,22 @@ struct TaskQueues {
     }
 
     void release() {
-        void dropRequest(ref GenRequest request) {
-        }
-        void dropPlan(ref BuildingRequest request) {
-            request.plan.release();
-        }
         void dropVoxels(ref GenResult result) {
             result.generated.voxels.release();
         }
         void dropBuilding(ref BuildingResult result) {
             result.building.release();
         }
-        drained!dropRequest(generations);
-        drained!dropRequest(urgent);
-        drained!dropPlan(buildings);
-        drained!dropPlan(urgentBuildings);
+        BuildingRequest building;
+        bool took = buildings.pop(building);
+        while (took) {
+            building.plan.release();
+            took = buildings.pop(building);
+        }
         drained!dropVoxels(generated);
         drained!dropBuilding(built);
         generations.release();
-        urgent.release();
         buildings.release();
-        urgentBuildings.release();
         generated.release();
         built.release();
     }
@@ -131,17 +120,8 @@ bool takeTask(void* context, uint worker) {
     TaskQueues* queues = cast(TaskQueues*) context;
     BuildingRequest building;
     GenRequest request;
-    bool took = queues.urgentBuildings.pop(building);
-    if (took) {
-        makeBuilding(queues, building);
-    }
-    if (!took) {
-        took = queues.urgent.pop(request);
-        if (took) {
-            generate(queues, request, worker);
-        }
-    }
-    if (!took) {
+    bool took = false;
+    if (queues.buildings.nearest() <= queues.generations.nearest()) {
         took = queues.buildings.pop(building);
         if (took) {
             makeBuilding(queues, building);
@@ -151,6 +131,12 @@ bool takeTask(void* context, uint worker) {
         took = queues.generations.pop(request);
         if (took) {
             generate(queues, request, worker);
+        }
+    }
+    if (!took) {
+        took = queues.buildings.pop(building);
+        if (took) {
+            makeBuilding(queues, building);
         }
     }
     if (took) {
@@ -170,22 +156,6 @@ void generate(TaskQueues* queues, GenRequest request, uint worker) {
     JobHelp help = JobHelp(queues.pool, worker);
     bool accepted = queues.generated.push(GenResult(request.params.generateVoxels(Yield(&yieldToJob, &help)), request.chunk, request.kind));
     assert(accepted);
-}
-
-size_t pushedPrefix(T)(ref ConcurrentQueue!T queue, ref Array!T pending, size_t room) {
-    size_t pushed = 0;
-    bool accepted = true;
-    while (accepted && pushed < pending.length && pushed < room) {
-        accepted = queue.push(pending.ptr[pushed]);
-        if (accepted) {
-            pushed += 1;
-        }
-    }
-    foreach (index; pushed .. pending.length) {
-        pending.ptr[index - pushed] = pending.ptr[index];
-    }
-    pending.length -= pushed;
-    return pushed;
 }
 
 uint workerThreadCount(long cores) {
