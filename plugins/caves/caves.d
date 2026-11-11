@@ -1,11 +1,11 @@
 module plugins.caves.caves;
 
 import core.stdc.math : asinh, atan2, cos, fabs, floor, sin, sqrt, tanh;
-import plugins.api.api : Api, HorosphereForm, KindTag, Material, Pen, Risen, Site, SitePart, Spot;
+import plugins.api.api : Api, HorosphereForm, KindTag, Material, Pen, Rhythm, Risen, Site, SitePart, Span, Spot;
 import plugins.api.binding : bound, kebabOf;
 import plugins.api.content : Content, settingAt;
 import plugins.carve.carve : Choice, Triad, Vec, WAYS, WAY_COUNT, Way, aimed, along, axisOf, between, carried, chartOf, degreesOf, dot, edgeHash, emit, fromAlong, isOwnedBy, latticeHash, minus, mixed, noiseAt, normalized, opposite, penCarried, physicalOf, plus, rejected, scaled, slabAt, squared, triadAt, unitOf, upOf;
-import plugins.turtle.turtle : Drawing, Hashes, PI, TURN_TREADS, Turtle;
+import plugins.turtle.turtle : Drawing, Hashes, PI, PORT, TURN_TREADS, Tread, Turtle, boxOf, settled, treadAround;
 
 enum string NAME = "caves";
 enum string LOOK = "caves:look";
@@ -13,7 +13,11 @@ enum double SURFACE_BAND = 6;
 enum double SEALED_TOP = 1.9;
 enum double RISEN_DEPTH = 3;
 enum double OPEN_UNDER = 0.5;
-enum double SEALED_UNDER = 1.6;
+enum double SEALED_UNDER = 1.5;
+enum int WELL_EDGES = 2;
+enum int WELL_TREADS = 8;
+enum double WELL_SLACK = 0.02;
+enum double VERTICAL_SLACK = 0.5;
 enum double MIN_CLIMB = 1.37;
 enum double WALKABLE_RISE = 47.3;
 enum double STEEP_RISE = 65;
@@ -35,6 +39,7 @@ struct Tuning {
     double fog;
     double rootOdds;
     double headOdds;
+    double portOdds;
     double chamberOdds;
 }
 
@@ -70,6 +75,7 @@ void resolveCaves(const(Content)* content) {
     tuning.fog = content.setting(content, NAME, "fog");
     tuning.rootOdds = content.setting(content, NAME, "root-odds");
     tuning.headOdds = content.setting(content, NAME, "head-odds");
+    tuning.portOdds = content.setting(content, NAME, "port-odds");
     tuning.chamberOdds = content.setting(content, NAME, "chamber-odds");
     foreach (band; 0 .. BAND_COUNT) {
         tuning.keepOdds[band] = content.settingAt(NAME, "keep-odds", band);
@@ -310,6 +316,7 @@ struct Scene {
     Triad triad;
     Tube[WAY_COUNT] tubes;
     Formation[MOST_FORMATIONS] formations;
+    Parent well;
     ulong seed;
     double dome = 0;
     double domeHeight = 0;
@@ -438,6 +445,30 @@ bool isAboveBed(ref const Vertex at, ref const Bed bed) {
     return bed.mouth == Mouth.sealed && depthOf(at) < bed.top;
 }
 
+Parent probeWell(ref const Vertex at, ref const Bed bed) {
+    double edge = at.frame.edgeCells();
+    if (bed.mouth != Mouth.sealed || fabs(depthOf(at) - WELL_EDGES) > WELL_SLACK) {
+        return Parent.init;
+    } else {
+        Parent up;
+        foreach (way; WAYS) {
+            if (at.climbs[way] > edge - VERTICAL_SLACK) {
+                up = Parent(way, Found.some);
+            }
+        }
+        if (up.found == Found.none) {
+            return up;
+        } else {
+            bool port = along(at.frame, up.way).forward(WELL_EDGES).probePort();
+            if (port) {
+                return up;
+            } else {
+                return Parent.init;
+            }
+        }
+    }
+}
+
 Parent linkedParentOf(ref const Vertex at, ref const Bed bed) {
     Parent parent = parentOf(at);
     if (parent.found == Found.none) {
@@ -479,15 +510,20 @@ Openness opennessOf(ref const Vertex start, ref const Bed bed, ref Memo memo) {
                         result = Openness.open;
                     }
                 }
-            } else if (at.height < 0 && keeps(at, hash, bed)) {
-                Parent parent = parentOf(at);
-                if (parent.found == Found.some) {
-                    Vertex above = neighborOf(at, parent.way);
-                    if (!isAboveBed(above, bed)) {
-                        at = above;
-                        decided = Found.none;
-                    } else if (unitOf(hash, HEAD_SALT) < tuning.headOdds) {
-                        result = Openness.open;
+            } else if (at.height < 0) {
+                Parent well = probeWell(at, bed);
+                if (well.found == Found.some) {
+                    result = Openness.open;
+                } else if (keeps(at, hash, bed)) {
+                    Parent parent = parentOf(at);
+                    if (parent.found == Found.some) {
+                        Vertex above = neighborOf(at, parent.way);
+                        if (!isAboveBed(above, bed)) {
+                            at = above;
+                            decided = Found.none;
+                        } else if (unitOf(hash, HEAD_SALT) < tuning.headOdds) {
+                            result = Openness.open;
+                        }
                     }
                 }
             }
@@ -597,6 +633,7 @@ Scene sceneAt(ref const Vertex at, ref const Bed bed) {
     Parent parent;
     if (!isSurface(at)) {
         parent = linkedParentOf(at, bed);
+        scene.well = probeWell(at, bed);
     }
     double widest = 0;
     uint shafts = 0;
@@ -956,7 +993,26 @@ Choice ceilingChoice(ref const Scene scene, Vec point) {
     }
 }
 
+bool isInWell(ref const Scene scene, Vec point) {
+    if (scene.well.found == Found.none) {
+        return false;
+    } else {
+        Vec axis = axisOf(scene.well.way);
+        double height = point.dot(axis);
+        Vec side = point.minus(axis.scaled(height));
+        return height > 0 && fabs(side.x) < PORT && fabs(side.y) < PORT && fabs(side.z) < PORT;
+    }
+}
+
 Choice choiceAt(ref const Scene scene, Vec point) {
+    if (isInWell(scene, point)) {
+        return Choice.keep();
+    } else {
+        return chosenAt(scene, point);
+    }
+}
+
+Choice chosenAt(ref const Scene scene, Vec point) {
     Space here = spaceAt(scene, point);
     final switch (here) {
         case Space.tread:
@@ -1011,6 +1067,44 @@ void tile(const(Api)* api, Site site, const(Risen)* risen, const(void)* data) {
         paintEnd(start, Way.zPlus, bed, memo);
         paintEnd(start.forward(1), Way.zMinus, bed, memo);
     }
+    if (bed.mouth == Mouth.sealed) {
+        well(Turtle(api, site));
+    }
+}
+
+void well(Turtle start) {
+    double edge = start.edgeCells();
+    Drawing pen = start.openPen();
+    double near = pen.height();
+    double far = pen.forward(edge).height();
+    if (fabs(fabs(far - near) - edge) < VERTICAL_SLACK) {
+        Turtle down = start;
+        double top = near;
+        if (far > near) {
+            down = start.forward(1).pitchUp().pitchUp();
+            top = far;
+        }
+        int above = cast(int) floor(-top / edge + 0.5);
+        if (above >= 0 && above < WELL_EDGES) {
+            Turtle mouth = down.forward(-above);
+            bool port = mouth.probePort();
+            if (port) {
+                stairDown(settled(mouth).forward(above));
+            }
+        }
+    }
+}
+
+void stairDown(Turtle top) {
+    Span port = Span(-PORT, PORT - 1);
+    Span newel = Span(-1, 0);
+    Span whole = Span(0, top.edgeCells() - 1);
+    top.paint(Material.none, boxOf(port, port, whole));
+    top.paint(materials.stair, boxOf(newel, newel, whole));
+    foreach (index; 0 .. WELL_TREADS) {
+        Tread tread = treadAround(1, PORT - 1, 1, index);
+        top.paint(materials.stair, boxOf(tread.x, tread.y, whole), Rhythm(WELL_TREADS, index, 1));
+    }
 }
 
 void carve(const(Api)* api) {
@@ -1020,6 +1114,12 @@ void carve(const(Api)* api) {
 
 void darken(const(Api)* api, KindTag ground, double depth) {
     api.under(api, ground, LOOK, depth, tuning.fog);
+}
+
+void underlie(const(Api)* api) {
+    carve(api);
+    api.ports(api, tuning.portOdds);
+    darken(api, KindTag.init, SEALED_UNDER);
 }
 
 struct Entry {

@@ -2,7 +2,7 @@ module plugins.api.api;
 
 import plugins.api.content : Manifest;
 
-enum string ENTRY = "caapi_plugin_24";
+enum string ENTRY = "caapi_plugin_25";
 
 version (WebAssembly) {
     enum string entryOf(string unit) = ENTRY ~ "_" ~ unit;
@@ -223,6 +223,9 @@ struct Api {
     void function(const(Api)* api, double odds) risingKinds;
     bool function(const(Api)* api, uint index, Site site) landmark;
     void function(const(Api)* api, KindTag ground, const(char)[] look, double depth, double fog) under;
+    void function(const(Api)* api, KindTag ground, double edges) crust;
+    void function(const(Api)* api, double odds) ports;
+    bool function(const(Api)* api, Site site) probePort;
 }
 
 struct Registry {
@@ -231,6 +234,7 @@ struct Registry {
     void function(const(Registry)* registry, const(char)* name, const(RisingKind)* kind) addKind;
     void function(const(Registry)* registry, const(char)* name, Structure landmark) addLandmark;
     void function(const(Registry)* registry, const(Manifest)* manifest) declare;
+    void function(const(Registry)* registry, const(char)* name, Structure structure) addDebug;
 }
 
 alias Entry = void function(const(Registry)* registry);

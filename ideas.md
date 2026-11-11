@@ -14,6 +14,8 @@ Each section uses the same labels:
 
 New in this version: blueprints (a recording played once), what the geometry gives for free, sections for climate, plants, compounds and the body, what the factory is for, a journal that works like the wiki, candidate content, cheap experiments, and the index of inspirations.
 
+Since then the built worlds were joined to the default world, and the ground got caves under all of it and an underside. That is written up in [Worlds](#worlds-one-default-world-that-holds-the-others), and the **Exists** lines it touches (Down, Up) were brought up to date from the code and its tests, which are ahead of `wiki.md`. The choices that work left open are listed in [Decisions waiting](#decisions-waiting), with their options and the owner's answers.
+
 ## Contents
 
 - [What we want](#what-we-want)
@@ -21,6 +23,7 @@ New in this version: blueprints (a recording played once), what the geometry giv
 - [What already works this way](#what-already-works-this-way)
 - [What the space gives for free](#what-the-space-gives-for-free)
 - [Directions instead of tiers](#directions-instead-of-tiers): [Down](#down-geology), [Up](#up-gravity-and-grounds), [In](#in-perception-and-hidden-families), [Out](#out-distance-and-the-way-back)
+- [Worlds: one default world that holds the others](#worlds-one-default-world-that-holds-the-others)
 - [The living chain](#the-living-chain): [climate and air](#climate-and-air-every-place-has-a-use), [plants](#plants-and-breeding), [compounds](#compounds-one-chemistry-for-everything), [the body](#the-body-your-genome-is-the-tech-tree)
 - [Crafting and learning](#crafting-and-learning)
 - [Automation: the player is the machine](#automation-the-player-is-the-machine)
@@ -30,6 +33,7 @@ New in this version: blueprints (a recording played once), what the geometry giv
 - [Candidate content](#candidate-content)
 - [Cheap experiments](#cheap-experiments)
 - [Inspiration index](#inspiration-index)
+- [Decisions waiting](#decisions-waiting)
 - [Open questions](#open-questions)
 
 ## What we want
@@ -40,6 +44,9 @@ New in this version: blueprints (a recording played once), what the geometry giv
 - **A lonely world that fills with you.** Alive only as much as you make it. In the Minecraft sense, your builds and gardens are the life. In the Last Clockwinder sense, the machines are you: recorded copies of yourself doing the work.
 - **Automation is a big part of the plan.**
 - **You never redo a thing.** Like Factorio's blueprints: once you have built or done something by hand, it can be done again without you. Everything in the world was still done by your hands, once.
+- **No boring areas.** From the owner: "I don't want boring areas to exist." That holds downward too: no ground is dirt all the way down.
+- **Both, as variety.** From the owner, on choosing between two designs for a place: "for some of these doing both works as a form of variety". A choice between ways to fill the world is often not a choice.
+- **Threes where Minecraft has twos.** From the owner: "where minecraft has things based on 2^n I like 3^n better, sizes of 1, 3, 27, 81 and so on". Asked how far it reaches: "It applies to all arbitrary numbers that are a count of things you can hold or need. So for crafting I'd go with 3 wood instead of 4 and then so on. It's not a hard rule, sometimes something else makes sense. Not for the world, it's an item-centric rule".
 
 ## Tests for an idea
 
@@ -104,6 +111,7 @@ What follows:
 | 3.18 (a tower three edges high) | x 12 | x 145 |
 | 4.5 (the bottom rock band) | x 45 | x 2,000 |
 | 5.3 (the bottom of the caves) | x 100 | x 10,000 |
+| 5.94 (the underside of the default world's ground) | x 190 | x 36,000 |
 
 What follows:
 
@@ -159,6 +167,8 @@ The crafting ladder (wood, stone, copper, iron) is the least "caapi" part. It is
 
 **Exists.** Rock bands by depth, shifted by strata. Ores form only in certain rocks, which puts sulfur at about 0.4 to 1.2 down, copper at 1.2 to 2.6 and iron below 2.6. A vein is a ball of radius 2 voxels, in 8 percent of chunks. Pickaxe tiers gate the harder stones and ores, and a block that needs a better tool "does not crack however long you hold". The caves change theme with depth: frost, dripstone, gypsum, crystal, then basalt columns (the ember theme). Lava, snow and ice are blocks.
 
+The caves are no longer a world apart. They lie under the default world: sinkholes open them on wild ground, and under the city, the backrooms and the vaults they are sealed and reached by wells. Built ground is soil over the same rock bands and veins as wild ground, where it used to be dirt all the way down. The ground also ends. Under the default world's wild ground the rock stops 5.6 edges down (5.94 units), a little below the deepest cave, and a lattice hangs in the open below it. The details are in [Worlds](#worlds-one-default-world-that-holds-the-others).
+
 **Numbers.** The deep is big (table above). The copper band has 3 to 46 times a tile's area under each tile, and the iron bands have more. Sideways travel down there is 7 times longer at 2.6 and 45 times longer at 4.5.
 
 **Ideas**
@@ -174,6 +184,9 @@ The crafting ladder (wood, stone, copper, iron) is the least "caapi" part. It is
 - **The shaft is the bottleneck.** With that much rock below and sideways travel so long down there, a mine is limited by its shaft. Chutes go down for free. Coming up is the work.
 - **Caves hold air.** A collector in a low chamber could fill faster or richer than one on the surface. A deep chamber rich in ash would be a breeding room, since ash raises the odds of mutation.
 - **Built worlds as ore.** Salvage already turns steel into iron and lamps into glass. The city, the backrooms and the library are mines of worked material: steel is found, not smelted, until you understand alloying. That gives the ruins a reason to exist in play.
+- **The lattice is a steel yard.** Its poles are steel and its girders concrete, and it now hangs under the default world. It is the largest store of worked metal there is, and the hardest to stand on while taking it apart.
+- **Undergrowth above a void.** The owner's picture for what lies under some grounds: the caves as a layer of undergrowth, and under them an open void world, "like that of the lattice and whatever is next". The underside of the ground is then a place of its own: a ceiling of rock with things hanging from it.
+- **Sealed means kept.** A sealed cave under a built ground has had nothing leave it. It could hold what open caves lose: richer air, and the hidden-family stones the glow and ember themes already carry.
 
 **Borrowed**
 
@@ -184,11 +197,11 @@ The crafting ladder (wood, stone, copper, iron) is the least "caapi" part. It is
 - Naica's Cave of Crystals holds gypsum crystals meters long in air near 48 degrees C and 90 percent humidity. Explorers [wore ice-cooled suits](https://www.nationalgeographic.com/adventure/article/101007-lost-crystal-caves-mexico-science-mine-superman-ice-palace) and still counted their visits in minutes. caapi's caves already pass gypsum chandeliers and crystal beams on the way down.
 - Starbound [groups its biomes by tier](https://playstarbound.com/?p=2697) and opens the next group when the player has gear against cold, heat or airlessness. caapi can make the same gate out of climate and the body instead of a backpack.
 
-**Open.** What is at the very bottom? Does the deep have its own air?
+**Open.** What is at the very bottom? Under the default world it is now the lattice, in the open; whether it stays that way, and what a fall into it costs, are in [Decisions waiting](#decisions-waiting). Does the deep have its own air?
 
 ### Up: gravity and grounds
 
-**Exists.** Gravity pulls toward the nearest ground, and the pull turns smoothly as you climb between grounds. Risen grounds (wild, city, backrooms, library) are joined by connector buildings in four styles, about 2.05 up. The lift signal lowers gravity (gain -0.8) and raises the jump (+0.8). The lattice inverts gravity. Giant trees and Babel rise as upright grounds.
+**Exists.** Gravity pulls toward the nearest ground, and the pull turns smoothly as you climb between grounds. Risen grounds (wild, city, backrooms, library) are joined by connector buildings in four styles, about 2.05 up. The lift signal lowers gravity (gain -0.8) and raises the jump (+0.8). The lattice inverts gravity. Giant trees and Babel rise as upright grounds. Vaults rise as a ground too, and nothing is built up to them: a ground can be marked as having no bridge, and then neither it nor anything rising from it gets a connector. Groves of lattice frames stand on some wild ground, about two edges tall.
 
 **Numbers**
 
@@ -201,7 +214,7 @@ The crafting ladder (wood, stone, copper, iron) is the least "caapi" part. It is
 
 - **Lift as a way up that skips the stairs.** Dosed enough, you can jump onto a risen ground or float between two of them. Halfway between two grounds the pull changes sides, so there is a weightless band to exploit.
 - **Launch towers.** Build up to just under the band, dose, and jump the rest. Coming down is the problem: the dose wears off with rebound, and rebound on lift is weight. Plan the way down before the way up.
-- **Grounds with no stair.** Risen grounds you can only reach while dosed: no connector, just a gap that lift crosses.
+- **Grounds with no stair.** Risen grounds you can only reach while dosed: no connector, just a gap that lift crosses. The vaults are the first: the owner asked that the more abstract structures have no bridges to them. Today nothing reaches them at all, so the way there is still to be chosen (see [Decisions waiting](#decisions-waiting)).
 - **Gravity conveyors.** Things fall up there too. Thrown blocks already fall toward the nearest ground. Items, water and echoes could follow the same rule, so a drop from a risen ground carries cargo down by itself.
 - **Sling lines.** By the game's own law a level throw from a height can stay up. Tower to tower, with something at the far end to catch, is long-range transport with no road. One echo throwing to another is also what the Last Clockwinder's clones do.
 - **The connector is a port.** Two grounds are only close at the connector, so everything that passes between them wants to be there. Put the hub at the foot of the stair.
@@ -298,6 +311,48 @@ From the review: ember and tide are "the most obvious open door".
 - Death Stranding [wears a path](https://pcgamer.com/death-stranding-relaxed-me-so-hard-i-became-a-road-building-madman) into ground that is walked often, the way [desire paths](https://media.cordite.org.au/degrees-of-freedom-in-live-space/) form in a park. There it is other players' feet. Here it would only ever be yours.
 - Subnautica ships [without a map](https://steamcommunity.com/app/264710/discussions/0/1693785035819973504/?l=latam) on purpose, with a compass and beacons instead, and players have asked for a map ever since. The lesson cuts both ways. No map makes being lost matter, and the aids have to be good enough that it stays fun.
 - HyperRogue's Land of Eternal Motion: a pursuer who cannot share your straight line has to take [the longer curve beside it](https://zenorogue.blogspot.com/2012/03/hyperbolic-geometry-in-hyperbolic-rogue.html) and falls behind. That is the reason there is no second lane.
+
+## Worlds: one default world that holds the others
+
+**Exists.** From the code and its tests.
+
+- **Seven worlds.** `planet`, `city`, `backrooms`, `library`, `vaults`, `caves` and `lattice`. `planet` is the default world and the only one that holds others: its root is wild ground, and city, backrooms, library, vaults and more wild ground rise from it.
+- **Single buildings are debug structures, not worlds.** `tower`, `crown`, `palace`, `arbor`, `babel`, `road`, `trail` and the test rigs are reached by `--worldgen debug <name>` and by the tests, and the world menu does not list them. The default world still stands `arbor`, `babel`, `crown`, `palace`, `tower` and `trail` once each around spawn, and builds the road through it.
+- **Caves under everything.** On wild ground they open as sinkholes, at 2 in 100 vertices, with one forced near spawn. Under the city, the backrooms and the vaults they are sealed and begin about two edges down. The library has its stacks below it and gets none. A single-structure world gets caves only if it asks for them.
+- **Ports and wells.** A port is a ground vertex, 3 in 100 of them, where the street, the floor or the hall leaves a hole 8 cells square. A spiral stair runs from it two edges down to a cave that is always open. In the backrooms the well's column is left open on every level it passes, so it should also be a second way between levels; that is read from the code, and only the top level has been looked at. No port sits where a world starts, where a connector lands, or where a ground rises.
+- **The ground has an underside.** 5.6 edges down under the default world's root, below the deepest cave, and 3.4 edges down under risen wild ground and under vaults. City and backrooms are rock all the way. Below the underside it is open, and the lattice hangs there. The look and the fog change on the way down: cave dark below half an edge under wild ground and below 1.5 edges under built ground, lattice dark below the underside.
+- **Groves.** On 15 in 100 clusters of wild faces a frame of lattice poles and girders stands on the ground, with its poles sunk an edge into it.
+- **City districts.** Five of them (midtown, downtown, rows, works, green), each a cluster of faces with its own lots, street trees, parks and parking.
+- **Backrooms subtypes.** A biome is picked per region of faces two rings wide, and per level, and it sets more than the wallpaper: pillar halls, pools, and courtyards open to the sky, beside the rooms, rings, chapels and mazes there were. Eight office biomes, five house biomes, five maze biomes.
+- **Library rooms.** Atriums, study rooms and lounges among the shelves.
+
+**From the owner**, in the conversation that made these changes:
+
+- "I don't want boring areas to exist."
+- "There should be caves and rock and variety under anything that was just all dirt or something."
+- The more abstract structures should not have bridges to them.
+- On the backrooms: it "has different subtypes and various things", the way the Minecraft mods do it. It felt far too uniform, with no places that feel different.
+- On the library: "think local american library but infinite. Big areas, small areas, rooms with things. Entrances that sometimes loop and sometimes don't."
+- On what lies under the ground: some of it "should be sort of undergrowths above a void world like that of the lattice and whatever is next."
+- On single-structure worlds: caves under them are "no by default but with an option for yes", and they "should transition into more debug than being presented as co-equal to a world, let alone a world that embeds others".
+
+**Numbers**
+
+- The underside of the root ground is 5.94 units down. A level surface there is 190 times longer than the ground in every sideways direction, with 36,000 times the area. So the open space just under one ground tile has the floor area of 36,000 tiles.
+- A body let go 6.4 units under spawn fell half a unit in its first second and landed on a lattice girder. That is from a test, and it is the only measurement of the void there is.
+
+**Ideas**
+
+- **A test for places.** "No boring areas" could stand beside the seven tests: is there a stretch of this place, in any direction including down, with nothing in it to find?
+- **A port is dressed by its ground.** Today every port is the same bare hole with a stone stair. A manhole in the city, a stairwell door in the backrooms, a broken inlay in a vault floor.
+- **A port you can predict.** Today a port is a flat roll. It could follow something the ground already shows (the `works` district, the `sump` biome, a vault with a spire), so that a player who knows the rule knows where to look.
+- **The underside can be read.** From the void, the ground overhead could show what stands on it: roots, footings, the bottoms of wells.
+- **A grove is a sign.** Grove poles already go an edge into the ground. If the void's poles came up through the rock to meet them, a grove on the surface would mark a way down.
+- **A fall has to end somewhere.** Under the root nothing catches a body but the lattice itself. What a fall costs is the first thing to decide about the void.
+- **Whatever is next.** Candidates for the void world after the lattice: the flat sheet, a sky with fixed stars, a ground hung upside down from the crust, a sea.
+- **Debug structures still carry lessons.** The crown's loop that leaves the ground, the arbor's wide decks. Each needs a home in a real world, or it is only reachable by a flag.
+
+**Open.** The choices this left were put to the owner and answered: see [Decisions waiting](#decisions-waiting). None of the answers is built yet.
 
 ## The living chain
 
@@ -633,6 +688,11 @@ Outer Wilds teaches a rule in one place and asks for it in another. The built wo
 | `vaults` | What is hidden is solid once seen. | The hidden connector |
 | `road`, `trail` | A straight line never bends, and a winding one costs. | Edge roads, relays, huts as hand-off posts |
 
+Two things have moved since this table was written.
+
+- `arbor`, `babel`, `crown`, `road` and `trail` are no longer worlds. They are debug structures, and the default world stands most of them once around spawn. Their lessons still need a home a player can reach.
+- The backrooms' lesson pulls against what the owner asked of it. It felt far too uniform, so it now has subtypes that differ in plan and not only in wallpaper. Whether sameness holds inside one subtype, or moves to the maze level, or goes, is in [Decisions waiting](#decisions-waiting).
+
 **Borrowed.** Games gated by knowledge have picked up the name "metroidbrainia": [exploration that knowledge unlocks](https://thinkygames.com/features/metroidbrainia-an-in-depth-exploration-of-knowledge-gated-games/). Toki Tori 2 is a clean case: two verbs, and a world to learn. The label is [argued over](https://blog.vbuckenham.com/database-games/), but the design is what "knowledge first" means.
 
 ### Tables with gaps
@@ -646,7 +706,8 @@ Outer Wilds runs on places that tell you something. The built worlds are already
 - The library: books are blocks today. A few shelves could hold readable notes, a ship log left by someone else.
 - The caves change with depth, and each theme is a chapter: frost, dripstone, gypsum, crystal, ember.
 - The strange stones' insight already says they "still carry charge and bulk". That is a hint pointing at chemistry; there should be more like it, pointing at ember and tide.
-- The hidden connector style, built of mist stone, has no weight in the base content today. It could become the way into a place that is only reached by changing yourself.
+- The hidden connector style, built of mist stone, has no weight in the base content today. It could become the way into a place that is only reached by changing yourself. The vaults are now such a place in waiting: they rise with no bridge at all.
+- The library now has rooms (atriums, study rooms, lounges), and the things in them are plain blocks. What a player can do with them is undecided.
 
 ## A lonely world that fills with you
 
@@ -720,7 +781,9 @@ Every item here comes from an idea above. None is decided.
 **Places**
 
 - A launch tower. A sling line. A ring garden.
-- A risen ground with no stair.
+- A risen ground with no stair. (The vaults are one now. The way onto it is not built.)
+- A dressed port for each built ground. A way from the caves into the void. A floor for the void.
+- The void world after the lattice.
 - The place where the sky is even.
 - A flat sheet.
 
@@ -810,13 +873,50 @@ Each source once, with what caapi takes from it and where in this file it is use
 
 Named in this file from general knowledge, and not looked up for it: Mohs's hardness scale, Mendel's peas, Mendeleev's gaps, Borges's library, *Piranesi*, Kerbal Space Program's flight planning, flame tests, planting maize with beans and squash, Factorio's inserters and science packs, the flow sense of fish, and Toki Tori 2.
 
+## Decisions waiting
+
+Choices left open by joining the worlds. A reviewer drew them up from the code and this file, and the owner answered them. "Built now" says what the game does today, and "Answer" is the owner's, in their words where they wrote some. What waits is the building: where an answer differs from "Built now", nothing has been done about it yet.
+
+1. **Under the default world's root, does the void replace the deep or lie below it?** (a) A thin crust about two edges down, with the lattice close and the deep geology moved elsewhere. (b) A full-depth crust, with the lattice as the very bottom. (c) Shields and windows: clusters of faces roll thick or thin. (d) No void under the root, only under risen grounds. Built now: (b), at 5.6 edges. Answer: (c), shields and windows.
+2. **What happens to a player who steps off the lattice into the void?** (a) You land somewhere deeper, and lose only the way back. (b) You fall back up onto the crust's underside. (c) The thread winds you back to your last bead. (d) The fall is real unless you stop it. Built now: nothing catches a body but the lattice. Answer: (d), with a way back. "The fall is real but we plan for a mechanism to get back. Like a respawn, with keepinventory-style things. Maybe 1/3 of items you have 3 or more of are lost."
+3. **How does a player get from the caves through the crust into the void?** (a) The lowest chambers open through the floor. (b) A well goes on past its chamber. (c) The void's poles rise through the crust and stand on the surface as groves. Built now: no way through. Answer: (a), through the caves.
+4. **Is the way back up the way the player came down?** (a) The same way: every well is a stair from top to bottom. (b) Another way: a last drop on the way down, and rarer stairs back up somewhere else. (c) Your own way: blocks you place, or a lift dose. Built now: wells are stairs both ways, and stop at the caves. Answer: near (b), and more than one. "A network that almost doesn't feel so. I think the another way is good but not exactly one way out, but not too obvious either".
+5. **What decides where a port is?** (a) Its own flat roll. (b) A feature of the place. (c) The connector's foot. (d) One for each cluster of faces. Built now: (a), 3 in 100 vertices. Answer: (b), a feature of the place.
+6. **Where does the line between a world and a debug structure fall?** (a) Only `planet` is a world. (b) Endless grounds and spaces are worlds; anything that is one structure is debug. (c) As (b), but endless single structures (`arbor`, `babel`, `road`, `trail`) stay worlds. Built now: (b). Answer: (b), as built.
+7. **How does a player reach a ground that has no bridge?** (a) The hidden stair of mist stone. (b) A tower and a lift jump. (c) From below, through its underside. (d) By a giant tree or Babel passing it. Built now: nothing reaches the vaults. Answer: (a), the hidden stair.
+8. **What may rise from a no-bridge ground?** (a) Nothing. (b) Grounds that are cut off as well. (c) Grounds with their connectors. Built now: (b). Answer: (b), as built.
+9. **What decides which void world lies under a crust?** (a) The ground above names it. (b) Depth: void worlds are layers. (c) Region: clusters of faces roll it. (d) The surface: the void is the underside of what stands above. Built now: (a), with one void world. Answer: (a), (b) and (d) together: the ground above, depth, and the surface. Not region.
+10. **Which void world comes after the lattice?** (a) The flat sheet. (b) The sky. (c) The far side: a ground hung upside down from the crust. (d) The sea. Built now: none. Answer: none of the four as offered. "More abstract things. Different ways of filling the lattice. Megaphobia structures and fractals. It's meant to be more nightmare than a place. Repeating patterns that break once in awhile. Island worlds that connect. A flat maze horosphere that is dangling from whatever's above it. Sparse islands".
+11. **Is what lies under a built ground set by depth alone or by what is built above it?** (a) Depth alone. (b) The ground above writes its own underground. (c) Same geology, but sealed caves keep what open ones lose. Built now: (a). Answer: (b) and (c) together: the ground above writes its own underground, and sealed caves keep what open ones lose.
+12. **What makes a backrooms subtype a place and not a repaint?** (a) Regions with edges you can find and follow. (b) Rare rooms in a plain field. (c) Levels: sameness sideways, variety downward. (d) Uses: a subtype is where one thing is found. Built now: (a), by region and by level. Answer: all four. "All of these are good, but don't close off. This is where variety really matters. Take inspiration from minecraft's multiple table worldgen".
+13. **What do the library's rooms hold that a player can use?** (a) Notes that enter the journal as rumors. (b) The catalog of compounds. (c) Working stations. (d) Stock to salvage. Built now: plain blocks. Answer: (a), (b) and (c): notes, the catalog and working rooms. On (d): "Stock goes in the backrooms, tho maybe library-ish stock once and a while. More like a break room for library employees".
+14. **Where does a player in a normal game meet a debug structure?** (a) Nowhere. (b) Once each around spawn. (c) Across the land, by roll or by a rule of the place. (d) In a creative menu. Built now: (b). Answer: (d). "Essentially debug worlds are for seeing a structure out of context or in isolation. Normal play doesn't really see them. Think the concept of a scene or prefab in unity or godot". Asked afterwards whether the default world should stop standing six of them at spawn: "I think placing them is fine, but rather the goal is to turn them into real things that are not just for testing. Like, real places and objects".
+
+What the answers ask for, in the order the pieces depend on each other:
+
+- **A crust that varies.** Thick and thin rolled per cluster of faces, so some wild ground has the full deep and some has the void close under it.
+- **Caves that open downward.** Where the crust is thin, the lowest chambers break through it. That is the way into the void, and with wells, pole stairs and other caves it makes the several ways back that the owner asked for: a network that does not feel like one, with no single exit and none too obvious.
+- **A fall that is real, and a way back from it.** A respawn that keeps most of what is carried. The owner's first number: lose a third of every item held three or more of. This also answers part of an older open question: something in the game can now end a trip.
+- **Ports that belong somewhere.** Tied to a feature of the ground and dressed by it, in place of a flat roll.
+- **The hidden stair up to the vaults.** The mist-stone connector style, used for grounds with no bridge. Whatever rises from such a ground stays unbridged.
+- **Void worlds by ground, by depth and by what stands above.** Named by the ground over them, stacked as layers, and showing the underside of the surface.
+- **The void as nightmare.** More ways of filling the lattice, structures too large to take in, fractals, patterns that repeat and break once in a while, sparse islands and island worlds that connect, a flat maze sheet dangling from whatever is above it.
+- **An underground written by what is built over it,** with sealed caves keeping what open ones lose.
+- **Backrooms variety from several tables at once.** Regions with edges, rare rooms, levels and uses together, and nothing closed off.
+- **A library with notes, the catalog and working rooms.** Salvage stock belongs in the backrooms; the library gets a little of its own kind, such as a staff break room.
+- **A debug list in the creative menu.** A debug world is a scene for looking at one structure in isolation, and normal play does not go there.
+- **Landmarks that are real.** The tower, the crown, the palace and the rest stop being test pieces that happen to stand at spawn and become places and objects with a reason to be where they are.
+- **Threes in what is held and needed.** Recipe inputs, yields and the like lean to powers of three. The fall's loss rule is already one.
+
+The work is laid out in `plan.md`.
+
 ## Open questions
 
 From the first draft:
 
 - Should the wood, stone, copper and iron ladder stay as early scaffolding, or be replaced by tools whose power comes from their material's place in geology?
 - How many echoes, and how long a loop, before the world is too busy to keep loaded?
-- Is a dose ever dangerous, or only disorienting? Starbound-style threat tiers could map onto depth (heat) and up (falls) instead of monsters.
+- Is a dose ever dangerous, or only disorienting? Starbound-style threat tiers could map onto depth (heat) and up (falls) instead of monsters. (Since answered for falls: a fall into the void is real, with a respawn that keeps most of the inventory. See [Decisions waiting](#decisions-waiting). Doses are still open.)
 - Should mods be able to add a direction, or only deepen the existing ones?
 
 New in this version:

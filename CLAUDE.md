@@ -24,15 +24,17 @@ dub build -q -b release --compiler=ldc2 :web                                # ca
 ./caapi-headless world-digest                               # hash the terrain world
 ./caapi-headless --worldgen structure city check-repaint    # a dropped tile repaints identically
 ./caapi-headless --worldgen structure lattice check-forget  # evicted structure state regenerates identically
+./caapi-headless --worldgen debug tower check-repaint       # a debug structure goes after the word debug
 ./caapi-headless --help                                     # the rest: dumps, censuses, bench-*, biology-tables, content-graph
 ./caapi --help                                              # --worldgen, --creative, --screenshot <png> <view>, --film, --drive, --record
 ```
 
-- A change to the engine is checked by the unit tests, the behavior tests, `views`, `films`, `content-check`, `check-repaint` on city, backrooms, library, lattice and planet, and `check-forget` on lattice. A change that is not meant to alter worldgen must leave the `world-digest` line as it was.
+- A change to the engine is checked by the unit tests, the behavior tests, `views`, `films`, `content-check`, `check-repaint` on every world (planet, city, backrooms, library, vaults, caves, lattice), and `check-forget` on lattice. A change that is not meant to alter worldgen must leave the `world-digest` line as it was.
 - The headless and unittest configurations leave out `source/client/graphics/`, and nothing but `:web` compiles `web/`. A rename is only checked once the application and `:web` build as well.
 - There are two kinds of tests. Unit tests (`source/unit/`) run through `dub test`: all of them, no filter, silent on success, and a failed assert traps and prints a backtrace. Behavior tests (`source/scripts/tests.d`) are scripted play sessions run by `caapi-headless tests`, so rebuild the headless configuration first; `dub test` does not. Each prints `== name` and a `session:` line, the run ends with `N passed, M failed`, and a test that runs past 120 s ends the whole run with a backtrace.
 - Every build of the root package, `dub test` included, first rebuilds all plugins into `lib/` in that build's type. `caapi` and `caapi-headless` load `lib/*.so` from their own directory at startup, so they run whatever plugins the last build left there.
-- `--worldgen` takes `terrain`, `plane <tilt in degrees>` or `structure <world>`; an unknown world name lists the valid ones.
+- `--worldgen` takes `terrain`, `plane <tilt in degrees>`, `structure <world>` or `debug <structure>`; an unknown name lists the valid ones, and a debug structure given to `structure` is refused with where it goes.
+- `./caapi --screenshot <png> <view>` runs the view script, writes the PNG to the path given and exits, so a view can be looked at without playing. `views` only runs the scripts; a view that passes there can still face a wall.
 - `caapi` reads `caapi.cfg` from the working directory and saves to `saves/<world>-<mode>.save`. User content overrides go in `settings.conf` beside the executable, keyed by mod name.
 - The `:webdrive` subpackage builds `obj/web/tool/drive`, which drives the pages in a Firefox started with `--marionette` (`drive play`, `drive check <mode>`), run from the repository root. Its screenshots go to `.firefox-check/`.
 - There is no linter or formatter configuration. CI (`.github/workflows/pages.yml`) only builds `:web` in release and publishes `caapi.html` to GitHub Pages; it runs no tests.
@@ -49,15 +51,15 @@ dub build -q -b release --compiler=ldc2 :web                                # ca
   - `content/`: the content graph, its three parsers, mod ordering and the load pipeline (`load.d`).
   - Tables built from content, each beside its `.decl` schema: `material.d`, `items.d`, `crafting.d`, `perception.d`, `look.d`, `worldgen/palette.d`, `biology/`.
   - `character/`: the character controller and its collision sweep.
-- `source/client/`: `game.d` (`Game`, the whole session), `world.d` (`LocalWorld`), `streaming.d`, `tasks.d` and `arrivals.d` (background generation), `meshing.d`, `plugins.d` (finding and loading plugins), `structures.d` and `tiles.d` (the host side of the plugin `Api`), `script.d` (`Script`), `save.d`, `hud.d`, `input.d`, `bindings.d`, `config.d`, `arguments.d`, and `graphics/` (the Vulkan renderer).
+- `source/client/`: `game.d` (`Game`, the whole session), `world.d` (`LocalWorld`), `streaming.d`, `tasks.d` and `arrivals.d` (background generation), `meshing.d`, `plugins.d` (finding and loading plugins, and the lists of worlds, debug structures, rising kinds and landmarks they register), `structures.d` and `tiles.d` (the host side of the plugin `Api`), `script.d` (`Script`), `save.d`, `hud.d`, `input.d`, `bindings.d`, `config.d`, `arguments.d`, and `graphics/` (the Vulkan renderer).
 - `source/main.d`, `source/headless.d` with `worldcheck.d`, `source/unittests.d`: the three entry points.
 - `source/scripts/`: tables of named scripts. `tests.d` (`TESTS`), `views.d` (`VIEWS`), `films.d` (`FILMS`), `drives.d` (`DRIVES`), with shared helpers in `walk.d` and `climb.d`. `claims.d` holds what the tests state about the game: `Topic`, `claim`, `link`, the ledger of a run and the writers behind `claims` and `wiki`.
 - `source/unit/`: unit tests, one module per module tested.
 - `source/shaders/`: GLSL shared by Vulkan and WebGL. `spv/` is written by glslc during the application build.
 - `source/bindings/`: C files that pull Vulkan, X11 and Linux system headers into D.
 - `plugins/api/`: the interface between engine and plugins. `api.d` (`Api`, `Registry`, `Site`, `Material`), `content.d` (`Content`, `Manifest`, `Play`), `binding.d` (content to D structs), `flags.d`.
-- `plugins/turtle/`, `plugins/carve/`: helpers compiled into the plugins that use them. `Turtle` wraps `Api` and a `Site`.
-- `plugins/box`, `buildings`, `connector`, `blocks`, `rooms`, `horospheres`: building code other plugins share, each also a mod with content. `plugins/caves`, `lattice`: worlds whose code (`caves.d`, `lattice.d`) the default world also compiles in, with the world and the mod in `plugin.d`. `plugins/base`: the base content mod. The rest (`planet`, `city`, `tower`, `library`, ...) are world plugins.
+- `plugins/turtle/`, `plugins/carve/`: helpers compiled into the plugins that use them. `Turtle` wraps `Api` and a `Site`, and `turtle.d` holds what tiles of different plugins have to agree on: `PORT`, `settled`, `strongestAround`, `strongestNear`, `Hashes`.
+- `plugins/box`, `buildings`, `connector`, `blocks`, `rooms`, `horospheres`: building code other plugins share, each also a mod with content. `plugins/caves`, `lattice`: worlds whose code (`caves.d`, `lattice.d`) the default world also compiles in, with the world and the mod in `plugin.d`. `plugins/base`: the base content mod. `plugins/planet` is the default world, the one `terrain` names; `city`, `backrooms`, `library` and `vaults` are the other world plugins. `tower`, `crown`, `palace`, `arbor`, `babel`, `road`, `trail` and `fixtures` (the rigs the tests and views name) register debug structures.
 - `web/`: `main.d` (the wasm exports, `web_*`), `renderer.d` (WebGL renderer), `glue.js` (the JS side: GL, input, storage; implements the imports listed in `imports.syms`), `play.js` and `check.js` (what drives the game page and the check page), `shell.html`, `tool/pack.d` (inlines the wasm and scripts into the pages), `tool/drive.d`.
 
 ## Architecture
@@ -88,13 +90,25 @@ Only the main thread changes the `Graph`. `graph.view` is the owning `GraphView`
 
 A chunk is generated in two parts: `ChunkParams.make` gathers what it depends on (structure, grounds, climate), then `generateVoxels` computes from the params alone. `ChunkSupply.streamed` does this in the background under a per-frame budget (`Streamer`); `ChunkSupply.onDemand` does it synchronously, which is what the headless tests use until a script calls `live()`.
 
+Under any ground the fill is soil over the climate's rock bands with ore veins, the same under a built ground as under terrain (`underAt` in `climate.d`). A ground with a crust ends there: below it nothing is generated but what tiles paint, and its underside swings with relief (`UNDERSIDE_SWING`). The chunk fast paths (`isClearOf`, `isFullOf`, the uniform and deferred fills) each ask `isBelowCrust` or `isWithinCrust`, so a new fast path has to as well.
+
 ### Plugins and structures
 
-A plugin exports one entry function, named by `ENTRY` in `plugins/api/api.d`. The number in that name is the plugin ABI version: a library without exactly that symbol is skipped. The entry gets a `Registry` and uses it to declare its mod `Manifest` and to add worlds, rising kinds and landmarks. Natively each plugin is a shared library found in `lib/` beside the executable. The wasm build links them all in statically, from the hand-kept lists `WEB_ENTRIES` and `WEB_PLUGINS` in `source/client/plugins.d`. A new plugin therefore needs a subpackage and a `preGenerateCommands` line in `dub.sdl`, and an entry in both lists.
+A plugin exports one entry function, named by `ENTRY` in `plugins/api/api.d`. The number in that name is the plugin ABI version: a library without exactly that symbol is skipped. Whatever changes the layout of `Api`, `Registry` or `Risen` raises that number, and new `Api` and `Registry` members go at the end. The entry gets a `Registry` and uses it to declare its mod `Manifest` and to add worlds, debug structures, rising kinds and landmarks. Natively each plugin is a shared library found in `lib/` beside the executable. The wasm build links them all in statically, from the hand-kept lists `WEB_ENTRIES` and `WEB_PLUGINS` in `source/client/plugins.d`. A new plugin therefore needs a subpackage and a `preGenerateCommands` line in `dub.sdl`, and an entry in both lists.
 
 Shared building code (`box`, `buildings`, ...) is a `sourceLibrary` compiled into every plugin that depends on it, next to a `<name>-mod` library holding only `plugin.d` and the mod's content. Each dependent plugin gets its own copy of that code's `__gshared` state and has to fill it by calling the library's `resolve*` from its own `Manifest.resolve` (see `plugins/tower/plugin.d`).
 
+A world (`registry.add`) is a place to play in: the world menu and `--worldgen structure` list worlds and nothing else. A debug structure (`registry.addDebug`) is one building, a piece other structures build, or a test rig; only `--worldgen debug`, the scripts (`Script.structure` takes either) and `api.build` reach it. `content-check` places both. Caves under a world are such a piece: a world that wants them calls `build("underground")`, which the `caves` plugin registers.
+
 A world is a `Structure` function called once with an `Api` (a table of function pointers) and a `Site`, a frame on the honeycomb that it moves with `forward` and `turn`. It paints boxes of cells, queues further structures with `place`, and registers tile callbacks and horosphere kinds. `StructureHost` in `source/client/structures.d` implements the `Api` for world and placed structures, recording into the graph's `Blueprint`; queued structures run as the graph grows deeper, and a node's `Building` is derived from the blueprint before its chunks generate. `source/client/tiles.d` implements the same `Api` for tile callbacks, which run in no fixed order and so may not `place`. Several calls are only allowed from the world's own structure. A refused call becomes a `StructureProblem` that stops the world from starting.
+
+Tiles are the unit everything endless is made of, and three facts about them decide how plugins share a place:
+
+- A face tile belongs to a ground kind. The one edge tile of a world runs once for the root ground and once more for each filled ground near its edge, with `Risen` (`tag`, `form`, `hasRisen`) saying which, so one callback serves the caves under every ground (`runOverGrounds` in `tiles.d`).
+- Placed structures paint first, and tile paints go over them in an order set by the tile's hash. Two tiles that could paint the same cells therefore decide from hashes alone who paints (`probeOwner`, `settled`), or keep out of each other's cells.
+- A port is how they keep out. `api.ports(odds)` rolls ports per ground vertex and `probePort` asks; a tile leaves the `PORT` cells each way around a port open from its floor down, and the cave tile sinks a stair well there. `probePort` says no at the world's root vertex, at the foot of a risen ground and where a ground rises, because routes, entrances and connectors stand there.
+
+The world's own structure also says what lies under its grounds, per ground: `KindTag.init` names the root ground and a tag names every risen ground of that kind. `api.under` changes the look and fog below a depth, `api.crust` gives the ground a bottom, both in edges. A `connector-ground` with `bridge: none` (vaults) gets no connector, and neither does anything rising from it.
 
 ### Content
 
@@ -112,7 +126,7 @@ Names are `mod:kebab-name`. `plugins/api/binding.d` fills D structs from content
 
 `Game` holds one player's whole session and `Game.step(FrameInput, dt)` advances it. `main.d`, `web/main.d` and the scripts all drive that one function; the front ends add input, rendering, saving and the HUD around it.
 
-A script is a D function `void name(ref Script world)` listed by name in a table in `source/scripts/`. `Script` (`source/client/script.d`) is its API: pick a worldgen, hold keys, `wait`, `look`, then `world.check(condition, format, ...)`. Tests, screenshot views and films are all scripts; `caapi --record <file>` writes a played session out as a script body. To add a behavior test, write the function in `tests.d` and add a `NamedScript("group/name", &fn)` row to `TESTS`.
+A script is a D function `void name(ref Script world)` listed by name in a table in `source/scripts/`. `Script` (`source/client/script.d`) is its API: pick a worldgen, hold keys, `wait`, `look`, then `world.check(condition, format, ...)`. Tests, screenshot views and films are all scripts; `caapi --record <file>` writes a played session out as a script body. To add a behavior test, write the function in `tests.d` and add a `NamedScript("group/name", &fn)` row to `TESTS`. A script that needs a place the world rolled asks the engine for it and goes there with `game.placeAt`: `walk.ensurePort`, `walk.ensureLastFlat`, `firstOf` in `views.d`.
 
 A check that states what the game does is written as a claim: `world.claim(Topic.x, "The law, as one full sentence.", condition, Measure.of("label", value), ...)`, or `world.link(Topic.from, Topic.onto, ...)` when one system acts on another. A claim fails its test the way `check` does, and every check is also kept with its measures, pass or fail. Nothing else is registered anywhere: `claims` prints the checks of a run, and `wiki` writes them as one Markdown page that is a graph. The topics are its nodes, each a section, and every `link` is an edge, listed in both sections with a link to the other. The page opens with a map (a Mermaid flowchart and a table), puts the measures of each law in a table with one row per check, and ends with the topics and tests that state nothing. All of it is computed from the run. An argument that is neither a topic nor the start of a test name is refused with the list of topics, and naming a topic runs every test, because only a run shows which tests state laws about it. A new `Topic` needs a title in `titleOf` or the build fails; the title may hold only letters and spaces, because the section link is made from it. A law may say no more than its condition checks, because the page presents it as verified.
 
@@ -167,6 +181,7 @@ These rules are taken from the code. Where a file differs from them, the file is
 
 - Stepping is exact in the step size. `advance(step)` uses the closed form (`Body.advance`, `Signaling.advance`, `groundMove`), so one long step and many short ones agree, and tests check that (`flat/timestep`, `unit/kinetics.d`).
 - What can be computed at compile time is (`rotationTable`, `halfPoints`, `channelNames`), and a `static assert` ties together tables that must agree.
+- A count of things a player holds or needs (a recipe's inputs, a yield, what a fall costs) leans to a power of three where the number is otherwise arbitrary: three wood, not four. It is a lean and not a law, and it is about items, never the world's sizes.
 
 ### Errors
 

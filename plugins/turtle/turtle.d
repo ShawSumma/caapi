@@ -11,6 +11,8 @@ enum uint MOST_ROWS = 48;
 enum Rhythm EVERY_HEIGHT = Rhythm(0, 0, 0, Repeat.always);
 enum uint PERCENT = 100;
 enum uint FACE_CORNERS = 5;
+enum uint EDGE_FACES = 4;
+enum int PORT = 4;
 enum ulong MIX = 0x2545F4914F6CDD1D;
 enum uint MIX_SHIFT = 24;
 enum size_t MOST_HASHES = 1024;
@@ -230,6 +232,21 @@ ulong strongestAround(Turtle face) {
     return strongest;
 }
 
+Turtle settled(Turtle start) {
+    Turtle least = start;
+    ulong lowest = start.probeHash(SitePart.face);
+    Turtle rolled = start;
+    foreach (_; 1 .. EDGE_FACES) {
+        rolled = rolled.rollRight();
+        ulong hash = rolled.probeHash(SitePart.face);
+        if (hash < lowest) {
+            lowest = hash;
+            least = rolled;
+        }
+    }
+    return least;
+}
+
 ulong strongestNear(Turtle face) {
     ulong strongest = strongestAround(face);
     foreach (corner; cornersOf(face)) {
@@ -385,6 +402,10 @@ struct Turtle {
 
     KindTag probeRising() const {
         return api.probeRising(api, site);
+    }
+
+    bool probePort() const {
+        return api.probePort(api, site);
     }
 
     bool build(const(char)* world) const {

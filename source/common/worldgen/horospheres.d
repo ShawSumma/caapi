@@ -17,7 +17,7 @@ import common.position : Position;
 import common.traversal : MIRRORED_ORIGINS, isListed;
 import common.view : GraphView, SlotCorner;
 import common.worldgen.blueprint : Under, floorDivision;
-import common.worldgen.climate : Climate, CubeClimate, NodeClimate, RELIEF_BOUND, RELIEF_SLACK;
+import common.worldgen.climate : Climate, CubeClimate, NodeClimate, RELIEF_BOUND, RELIEF_SLACK, UNDERSIDE_SWING;
 import common.worldgen.generation : NodeState;
 import common.worldgen.plane : Plane, PlaneMeasure, logCosh;
 import common.worldgen.structure : ClaimKey, ColumnSpot, GROUND_RING, SiteFrame, columnPoint, edgeCells, edgeLength, ensureGroundRing, ensureSiteHash, ensureSiteOrigin, forwarded, groundSite, moveToLevel, parentOnCorner, pathBetween, rootedCorner, sideAxis, sitePlacement, turnSite;
@@ -85,6 +85,7 @@ struct HorosphereKind {
     uint tag;
     Look look;
     uint under;
+    float crust = float.infinity;
 }
 
 struct Rise {
@@ -210,6 +211,7 @@ struct Ground {
     Plane surface;
     Fill fill;
     HorosphereId horosphere;
+    float crust = float.infinity;
 }
 
 struct Grounds {
@@ -283,6 +285,7 @@ struct Horospheres {
     Array!HorosphereId rising;
     Fill rootFill;
     MaybeIndex!ubyte rootKind;
+    float rootCrust = float.infinity;
     GravityPull pull;
 
     float gravitySign() const {
@@ -364,6 +367,14 @@ struct Horospheres {
             return Fill.flat;
         } else {
             return Fill.none;
+        }
+    }
+
+    float crustOf(HorosphereId id) const {
+        if (id == ROOT) {
+            return rootCrust;
+        } else {
+            return kinds.ptr[horosphere(id).kind].crust;
         }
     }
 
@@ -963,11 +974,11 @@ Grounds groundsIn(ref const Graph graph, uint slot) {
 
 Grounds groundsOf(ref const Horospheres horospheres, Plane surface, const(HorosphereRef)[] near) {
     Grounds grounds;
-    grounds.items[0] = Ground(surface, horospheres.fillOf(ROOT));
+    grounds.items[0] = Ground(surface, horospheres.fillOf(ROOT), ROOT, horospheres.crustOf(ROOT));
     grounds.count = 1;
     foreach (found; near) {
         if (!horospheres.isUpright(found.horosphere) && found.plane.distanceTo(Point!float.origin()) <= GROUND_REACH) {
-            Ground ground = Ground(found.plane, horospheres.fillOf(found.horosphere), found.horosphere);
+            Ground ground = Ground(found.plane, horospheres.fillOf(found.horosphere), found.horosphere, horospheres.crustOf(found.horosphere));
             if (grounds.count < MOST_GROUNDS) {
                 grounds.items[grounds.count] = ground;
                 grounds.count += 1;
@@ -1057,12 +1068,14 @@ const(Under)* underAt(ref const Graph graph, Position position) {
         NearGround nearest = graph.nearestGround(slot, point);
         KindTag tag = graph.horospheres.tagOf(nearest.horosphere);
         float depth = -heightAbove(graph.loadedClimateAt(slot, point).relief, nearest.altitude, graph.horospheres.fillOf(nearest.horosphere));
-        size_t index = 0;
-        while (index < unders.length && !(unders[index].ground == tag && depth > unders[index].depth)) {
-            index += 1;
+        size_t deepest = unders.length;
+        foreach (index, ref under; unders) {
+            if (under.isOver(nearest.horosphere, tag) && depth > under.depth && (deepest == unders.length || under.depth > unders[deepest].depth)) {
+                deepest = index;
+            }
         }
-        if (index < unders.length) {
-            return &unders[index];
+        if (deepest < unders.length) {
+            return &unders[deepest];
         } else {
             return null;
         }
@@ -1253,7 +1266,7 @@ float edgeLineDistance() {
     return acoshf(sqrtf(alongCorner * alongCorner - alongEdge * alongEdge));
 }
 
-bool isInBand(Plane plane, Fill fill, float relief) {
+bool isInBand(Plane plane, Fill fill, float relief, float crust) {
     float altitude = plane.distanceTo(Point!float.origin());
     float top = 0;
     float bottom = 0;
@@ -1261,18 +1274,26 @@ bool isInBand(Plane plane, Fill fill, float relief) {
         top = lowerOf(relief + RELIEF_SLACK, RELIEF_BOUND);
         bottom = higherOf(relief - RELIEF_SLACK, -RELIEF_BOUND);
     }
-    return fill != Fill.none && altitude - NODE_RADIUS < top && altitude + NODE_RADIUS > bottom;
+    float shallowest = crust + UNDERSIDE_SWING * (relief - RELIEF_SLACK);
+    float deepest = crust + UNDERSIDE_SWING * (relief + RELIEF_SLACK);
+    if (fill == Fill.none) {
+        return false;
+    } else if (altitude - NODE_RADIUS < top && altitude + NODE_RADIUS > bottom) {
+        return true;
+    } else {
+        return altitude - NODE_RADIUS < -shallowest && altitude + NODE_RADIUS > -deepest;
+    }
 }
 
 bool probeMayHoldContent(ref Graph graph, uint slot) {
     NodeState state = *graph.ensureState(slot);
     float relief = state.climate.climate().relief;
     const(HorosphereRef)[] nearby = graph.view.ensureHorospheresAt(slot);
-    if (isInBand(state.surface, graph.horospheres.fillOf(ROOT), relief)) {
+    if (isInBand(state.surface, graph.horospheres.fillOf(ROOT), relief, graph.horospheres.crustOf(ROOT))) {
         return true;
     }
     foreach (near; nearby) {
-        if (graph.horospheres.isUpright(near.horosphere) || isInBand(near.plane, graph.horospheres.fillOf(near.horosphere), relief)) {
+        if (graph.horospheres.isUpright(near.horosphere) || isInBand(near.plane, graph.horospheres.fillOf(near.horosphere), relief, graph.horospheres.crustOf(near.horosphere))) {
             return true;
         }
     }

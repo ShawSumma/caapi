@@ -4,7 +4,7 @@ import core.stdc.stdio : FILE, fclose, fopen, fprintf, stderr, stdout;
 import core.stdc.stdlib : strtof;
 import core.stdc.string : strlen;
 import base.maybe : Maybe;
-import base.names : ENUM_NAMES, enumNamed;
+import base.names : enumNamed;
 import client.plugins : registry;
 import common.worldgen.generation : PlaneWorld, STRUCTURE_NAME_CAPACITY, StructureWorld, Worldgen, WorldgenKind, degreesToRadians;
 
@@ -14,7 +14,10 @@ enum string UNKNOWN_OPTION = "unknown option";
 enum string NOT_A_NUMBER = "needs a number, got";
 enum string REPORT_UNOPENED = "cannot open the report file";
 
-enum OptionSpec WORLDGEN_OPTION = OptionSpec("--worldgen", "terrain | plane <tilt in degrees> | structure <world>", "the world to use");
+enum string DEBUG_WORD = "debug";
+immutable string[4] WORLDGEN_WORDS = ["terrain", "plane", "structure", DEBUG_WORD];
+
+enum OptionSpec WORLDGEN_OPTION = OptionSpec("--worldgen", "terrain | plane <tilt in degrees> | structure <world> | debug <structure>", "the world to use");
 enum OptionSpec OUTPUT_OPTION = OptionSpec("--out", "<file>", "where a tool writes its report (default stdout)");
 enum OptionSpec HELP_OPTION = OptionSpec("--help", "", "show this text");
 enum OptionSpec VERSION_OPTION = OptionSpec("--version", "", "show the version");
@@ -170,8 +173,10 @@ struct WorldgenArgument {
     static WorldgenArgument from(ref ArgumentCursor cursor) {
         const(char)* kindText = cursor.next();
         Maybe!WorldgenKind kind = enumNamed!WorldgenKind(sliceOf(kindText));
-        if (!kind.exists) {
-            return WorldgenArgument(StartupError(ENUM_NAMES!WorldgenKind[], "unknown worldgen", kindText), Worldgen.init);
+        if (sliceOf(kindText) == DEBUG_WORD) {
+            return WorldgenArgument.debugStructure(cursor);
+        } else if (!kind.exists) {
+            return WorldgenArgument(StartupError(WORLDGEN_WORDS[], "unknown worldgen", kindText), Worldgen.init);
         } else {
             return WorldgenArgument.ofKind(cursor, kind.value);
         }
@@ -212,12 +217,24 @@ struct WorldgenArgument {
             return WorldgenArgument(StartupError(registry().allNames(), "structure needs a world name"), Worldgen.init);
         } else {
             const(char)* text = cursor.next();
-            StructureName name = StructureName.fromText(sliceOf(text));
-            if (name.problem !is null) {
-                return WorldgenArgument(StartupError(name.choices, name.problem, text), Worldgen.init);
-            } else {
-                return WorldgenArgument(StartupError.init, Worldgen.fromStructure(name.world));
-            }
+            return WorldgenArgument.named(StructureName.ofWorld(sliceOf(text)), text);
+        }
+    }
+
+    static WorldgenArgument debugStructure(ref ArgumentCursor cursor) {
+        if (!cursor.hasMore) {
+            return WorldgenArgument(StartupError(registry().allDebugNames(), "debug needs a structure name"), Worldgen.init);
+        } else {
+            const(char)* text = cursor.next();
+            return WorldgenArgument.named(StructureName.ofDebug(sliceOf(text)), text);
+        }
+    }
+
+    static WorldgenArgument named(StructureName name, const(char)* text) {
+        if (name.problem !is null) {
+            return WorldgenArgument(StartupError(name.choices, name.problem, text), Worldgen.init);
+        } else {
+            return WorldgenArgument(StartupError.init, Worldgen.fromStructure(name.world));
         }
     }
 }
@@ -234,6 +251,24 @@ struct StructureName {
             return StructureName(StructureWorld.init, registry().allNames(), "unknown structure");
         } else {
             return StructureName(StructureWorld.fromName(text), null, null);
+        }
+    }
+
+    static StructureName ofWorld(const(char)[] text) {
+        if (text.length <= STRUCTURE_NAME_CAPACITY && registry().findWorld(text) is null && registry().findDebug(text) !is null) {
+            return StructureName(StructureWorld.init, null, "this is a debug structure, so it goes after --worldgen debug:");
+        } else if (text.length <= STRUCTURE_NAME_CAPACITY && registry().findWorld(text) is null) {
+            return StructureName(StructureWorld.init, registry().allNames(), "unknown world");
+        } else {
+            return StructureName.fromText(text);
+        }
+    }
+
+    static StructureName ofDebug(const(char)[] text) {
+        if (text.length <= STRUCTURE_NAME_CAPACITY && registry().findDebug(text) is null) {
+            return StructureName(StructureWorld.init, registry().allDebugNames(), "unknown debug structure");
+        } else {
+            return StructureName.fromText(text);
         }
     }
 }

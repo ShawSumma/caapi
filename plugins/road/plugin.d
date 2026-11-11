@@ -130,5 +130,5 @@ immutable Manifest MANIFEST = Manifest("road", FIRST_VERSION, ON_BASE[], null, &
 
 pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
     registry.declare(registry, &MANIFEST);
-    registry.add(registry, "road", &lookedWorld);
+    registry.addDebug(registry, "road", &lookedWorld);
 }

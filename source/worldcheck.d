@@ -373,6 +373,9 @@ ExitStatus checkContent(FILE* output, ubyte dimension) {
     foreach (name; registry().allNames()) {
         found = found.joined(placedBy(name, dimension, output));
     }
+    foreach (name; registry().allDebugNames()) {
+        found = found.joined(placedBy(name, dimension, output));
+    }
     Reach reach = Reach.make(found);
     reach.settle();
     uint problems = cast(uint) content().problems.length + checkReach(reach, output) + checkUses(output);

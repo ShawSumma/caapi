@@ -151,6 +151,9 @@ immutable NamedScript[] VIEWS = [
     NamedScript("backroomscourt", &foundIn!("backrooms", "base:oak-wood", 0, 0.6f, 0.35f, 55)),
     NamedScript("citycave", &foundIn!("city", "base:cave-grass", 2.3f, 0.12f, 0.45f, -10)),
     NamedScript("librarywalk", &rising!("library", 1.5f, 0, 0)),
+    NamedScript("citywell", &atPort!("city", 0.3f, 0.35f, 40)),
+    NamedScript("backroomswell", &atPort!("backrooms", 0.08f, 0.3f, 15)),
+    NamedScript("void", &voidBelow),
     NamedScript("thread", &threadView),
 ];
 
@@ -817,6 +820,31 @@ void sinkhole(ref Script view) {
         noclip(view, CAVES_RIM_BACK, Key.back);
         view.look(degrees(0), degrees(40));
     }
+    view.step();
+}
+
+void atPort(string name, float rise, float back, double pitch)(ref Script view) {
+    view.structure(name);
+    Maybe!Position port = walk.ensurePort(view);
+    view.check(port.exists, "found no port among the vertices nearest the root of %s", name.ptr);
+    if (port.exists) {
+        view.mode(MovementMode.noclip);
+        view.game.placeAt(port.value, Length(0));
+        noclip(view, rise, Key.up);
+        noclip(view, back, Key.back);
+        view.look(degrees(0), degrees(pitch));
+    }
+    view.step();
+}
+
+enum float VOID_DEPTH = 6.5f;
+enum double VOID_PITCH = -20;
+
+void voidBelow(ref Script view) {
+    view.terrain();
+    view.mode(MovementMode.noclip);
+    noclip(view, VOID_DEPTH, Key.down);
+    view.look(degrees(0), degrees(VOID_PITCH));
     view.step();
 }
 

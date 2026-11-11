@@ -2,10 +2,9 @@ module plugins.lattice.plugin;
 
 import plugins.api.api : Api, HorosphereForm, KindId, Registry, Site, SitePart, Spot, entryOf, tagNamed;
 import plugins.api.content : FIRST_VERSION, Manifest, ON_BASE;
-import plugins.lattice.lattice : Root, edge, resolveLattice, tuning;
+import plugins.lattice.lattice : LOOK, Root, edge, resolveLattice, tuning;
 import plugins.turtle.turtle : Turtle, upright;
 
-enum string LOOK = "lattice:look";
 enum uint LATTICE_TAG = tagNamed("lattice:lattice");
 immutable Spot SPAWN = Spot(21, 2, -3);
 

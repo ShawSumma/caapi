@@ -1,12 +1,11 @@
 module plugins.vaults.plugin;
 
 import core.stdc.math : cos, fabs, floor, pow, sqrt;
-import plugins.api.api : Api, HorosphereForm, KindId, KindTag, Material, Registry, Risen, RisingKind, Site, SitePart, Span, entryOf, tagNamed;
+import plugins.api.api : Api, HorosphereForm, KindId, Material, Registry, Risen, RisingKind, Site, SitePart, Span, entryOf, tagNamed;
 import plugins.api.binding : List, bound, settingsOf;
 import plugins.api.content : BASE, Content, Dependency, FIRST_VERSION, Manifest, dependencyOn;
 import plugins.carve.carve : Choice, Slab, Vec, Way, along, emit, unitOf;
-import caves = plugins.caves.caves;
-import plugins.turtle.turtle : FACE_CORNERS, PI, Turtle, cornersOf, upright;
+import plugins.turtle.turtle : FACE_CORNERS, PI, PORT, Turtle, cornersOf, upright;
 
 enum string LOOK = "vaults:look";
 
@@ -89,7 +88,6 @@ struct Tuning {
 __gshared Tuning tuning;
 
 void resolve(const(Content)* content) {
-    caves.resolveCaves(content);
     materials = content.bound!Materials("vaults:materials");
     tuning = content.settingsOf!Tuning("vaults");
 }
@@ -103,6 +101,7 @@ enum Wall : ubyte {
 enum Clearing : ubyte {
     built,
     clear,
+    port,
 }
 
 Clearing clearingAt(Turtle corner) {
@@ -110,7 +109,12 @@ Clearing clearingAt(Turtle corner) {
     if (clear) {
         return Clearing.clear;
     } else {
-        return Clearing.built;
+        bool port = corner.probePort();
+        if (port) {
+            return Clearing.port;
+        } else {
+            return Clearing.built;
+        }
     }
 }
 
@@ -331,7 +335,9 @@ Choice cellChoice(ref const Room room, uint quarter, Vec cell, Clearing clearing
     Place place = placeOf(quarter, cell);
     Palette palette = room.palette;
     double gallery = room.gallery;
-    if (place.level == FLOOR) {
+    if (clearing == Clearing.port && place.level == FLOOR && cell.x < PORT && cell.y < PORT) {
+        return Choice.keep();
+    } else if (place.level == FLOOR) {
         return floorChoice(room, place);
     } else if (place.stair >= STAIR_START && place.stair < STAIR_START + gallery - 1 && place.level < cast(int) gallery) {
         if (place.level < place.stair - STAIR_START + 1) {
@@ -339,7 +345,7 @@ Choice cellChoice(ref const Room room, uint quarter, Vec cell, Clearing clearing
         } else {
             return Choice.keep();
         }
-    } else if (clearing == Clearing.clear && cell.x < CLEAR && cell.y < CLEAR) {
+    } else if (clearing != Clearing.built && cell.x < CLEAR && cell.y < CLEAR) {
         return Choice.keep();
     } else if (room.spire == Spire.shikhara && place.radius < spireRadius(room, place)) {
         if (place.rise >= gallery + FINIAL_ABOVE_GALLERY) {
@@ -423,8 +429,7 @@ void world(const(Api)* api, Site site, const(void)* data) {
     api.look(api, kind, LOOK);
     api.worldLook(api, LOOK);
     api.fog(api, tuning.fog);
-    caves.carve(api);
-    caves.darken(api, KindTag.of(VAULT_TAG), caves.SEALED_UNDER);
+    Turtle(api, site).build("underground");
     Turtle[FACE_CORNERS] corners = cornersOf(Turtle(api, site));
     Room made = roomOf(corners);
     route(corners, made);

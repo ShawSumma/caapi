@@ -7,7 +7,7 @@ import base.array : Array;
 import base.maybe : Maybe, MaybeIndex;
 import base.numbers : RADIANS_PER_DEGREE, clamped, higherOf;
 import base.parallel : Executor;
-import base.splitmix : SplitMix;
+import base.splitmix : SplitMix, unitOf;
 import base.stdio : snprintf;
 import base.vector3 : Vec3;
 import client.game : Game;
@@ -41,7 +41,9 @@ enum string ONLY_WORLD_GIVES_KINDS = "only the world's own structure gives horos
 enum string ONLY_WORLD_SETS_LOOK = "only the world's own structure sets how it looks";
 enum string ONLY_WORLD_OPENS = "only the world's own structure opens horospheres";
 enum string ONLY_WORLD_ROOTS = "only the world's own structure gives the root its kind, and only once";
+enum string ONLY_WORLD_SHAPES_GROUND = "only the world's own structure gives a ground its crust or its ports";
 enum string NOT_AN_EDGE_CLAIM = "a site claims its vertex or face, not its edge";
+enum ulong PORT_SALT = 0x504F_5254_5F31;
 enum string UNKNOWN_KIND = "unknown kind of horosphere";
 enum double HALF_TURN = 3.141592653589793;
 enum double VERTICAL_TOLERANCE = 1e-9;
@@ -233,6 +235,29 @@ Worldgen worldgenAt(uint index) {
         return Worldgen.makeTerrain();
     } else {
         return Worldgen.fromStructure(StructureWorld.fromName(registry().allNames()[index - 1]));
+    }
+}
+
+bool probePort(ref GraphView view, Site site, HorosphereId over) {
+    double odds = view.blueprint.portOdds;
+    if (!(odds > 0)) {
+        return false;
+    } else {
+        ulong hash = view.ensureSiteHash(frameOf(site), SitePart.vertex);
+        if (!(unitOf(SplitMix(hash ^ PORT_SALT).next()) < odds) || hash == view.ensureSiteHash(startOf(view, over), SitePart.vertex)) {
+            return false;
+        } else {
+            bool rising = view.ensureRisingTag(site, over).exists;
+            return !rising;
+        }
+    }
+}
+
+SiteFrame startOf(ref GraphView view, HorosphereId over) {
+    if (over == ROOT) {
+        return rootSite(view.graph.anchorSlot);
+    } else {
+        return view.horospheres.horosphere(over).foot;
     }
 }
 
@@ -541,10 +566,42 @@ struct StructureHost {
         } else if (!chosen.exists) {
             refuse(UNKNOWN_LOOK);
         } else if (!(depth >= 0) || !(fog > 0)) {
-            refuse("a ground looks different below a depth of at least zero, with fog closing in past a distance above zero");
+            refuse("a ground looks different below a depth of at least zero edges, with fog closing in past a distance above zero");
         } else {
-            builder.graph.structures.blueprint.unders.append(Under(ground, chosen.value, cast(float) depth, cast(float) fog));
+            builder.graph.structures.blueprint.unders.append(Under(ground, chosen.value, cast(float)(depth * edgeLength(builder.graph.layout).value), cast(float) fog));
         }
+    }
+
+    void crust(KindTag ground, double edges) {
+        Horospheres* horospheres = &builder.graph.horospheres;
+        float units = cast(float)(edges * edgeLength(builder.graph.layout).value);
+        if (builder.isGrowing) {
+            refuse(ONLY_WORLD_SHAPES_GROUND);
+        } else if (!(edges > 0)) {
+            refuse("a ground's crust is thicker than zero edges");
+        } else if (!ground.exists) {
+            horospheres.rootCrust = units;
+        } else {
+            foreach (ref kind; horospheres.kinds.slice()) {
+                if (kind.tag == ground.value) {
+                    kind.crust = units;
+                }
+            }
+        }
+    }
+
+    void ports(double odds) {
+        if (builder.isGrowing) {
+            refuse(ONLY_WORLD_SHAPES_GROUND);
+        } else if (!(odds >= 0) || odds > 1) {
+            refuse("ports are a chance per vertex from 0 to 1");
+        } else {
+            builder.graph.structures.blueprint.portOdds = odds;
+        }
+    }
+
+    bool probePortAt(Site site) {
+        return builder.graph.view.probePort(site, ROOT);
     }
 
     void addRisingKinds(double odds) {
@@ -677,6 +734,9 @@ Api mainApi(StructureHost* host) {
     api.risingKinds = &mainRisingKinds;
     api.landmark = &mainLandmark;
     api.under = &mainUnder;
+    api.crust = &mainCrust;
+    api.ports = &mainPorts;
+    api.probePort = &apiPort!mainHost;
     return api;
 }
 
@@ -857,6 +917,18 @@ void mainRisingKinds(const(Api)* api, double odds) {
 
 void mainUnder(const(Api)* api, KindTag ground, const(char)[] look, double depth, double fog) {
     mainHost(api).under(ground, look, depth, fog);
+}
+
+void mainCrust(const(Api)* api, KindTag ground, double edges) {
+    mainHost(api).crust(ground, edges);
+}
+
+void mainPorts(const(Api)* api, double odds) {
+    mainHost(api).ports(odds);
+}
+
+bool apiPort(alias hostOf)(const(Api)* api, Site site) {
+    return hostOf(api).probePortAt(site);
 }
 
 bool mainLandmark(const(Api)* api, uint index, Site site) {

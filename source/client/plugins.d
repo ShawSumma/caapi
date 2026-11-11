@@ -133,6 +133,10 @@ struct Worlds {
     Structure[MAX_STRUCTURES] structures;
     uint[MAX_STRUCTURES] structureOwners;
     size_t count;
+    string[MAX_STRUCTURES] debugNames;
+    Structure[MAX_STRUCTURES] debugStructures;
+    uint[MAX_STRUCTURES] debugOwners;
+    size_t debugCount;
     string[MAX_KINDS] kindNames;
     RisingKind[MAX_KINDS] risingKinds;
     uint[MAX_KINDS] kindOwners;
@@ -158,36 +162,10 @@ struct Worlds {
     }
 
     void dropRefused() {
-        size_t kept = 0;
-        foreach (index; 0 .. count) {
-            if (!order.isRefused(structureOwners[index])) {
-                names[kept] = names[index];
-                structures[kept] = structures[index];
-                structureOwners[kept] = structureOwners[index];
-                kept += 1;
-            }
-        }
-        count = kept;
-        kept = 0;
-        foreach (index; 0 .. kindCount) {
-            if (!order.isRefused(kindOwners[index])) {
-                kindNames[kept] = kindNames[index];
-                risingKinds[kept] = risingKinds[index];
-                kindOwners[kept] = kindOwners[index];
-                kept += 1;
-            }
-        }
-        kindCount = kept;
-        kept = 0;
-        foreach (index; 0 .. landmarkCount) {
-            if (!order.isRefused(landmarkOwners[index])) {
-                landmarkNames[kept] = landmarkNames[index];
-                landmarks[kept] = landmarks[index];
-                landmarkOwners[kept] = landmarkOwners[index];
-                kept += 1;
-            }
-        }
-        landmarkCount = kept;
+        count = keptOf(order, names[0 .. count], structures[0 .. count], structureOwners[0 .. count]);
+        debugCount = keptOf(order, debugNames[0 .. debugCount], debugStructures[0 .. debugCount], debugOwners[0 .. debugCount]);
+        kindCount = keptOf(order, kindNames[0 .. kindCount], risingKinds[0 .. kindCount], kindOwners[0 .. kindCount]);
+        landmarkCount = keptOf(order, landmarkNames[0 .. landmarkCount], landmarks[0 .. landmarkCount], landmarkOwners[0 .. landmarkCount]);
     }
 
     void settle(const(char)[] overrides) {
@@ -204,13 +182,14 @@ struct Worlds {
 
     void sort() {
         sortByName(names[0 .. count], structures[0 .. count]);
+        sortByName(debugNames[0 .. debugCount], debugStructures[0 .. debugCount]);
         sortByName(kindNames[0 .. kindCount], risingKinds[0 .. kindCount]);
         sortByName(landmarkNames[0 .. landmarkCount], landmarks[0 .. landmarkCount]);
     }
 
     version (WebAssembly) {
         void gather() {
-            Registry registry = Registry(&this, &add, &addKind, &addLandmark, &declare);
+            Registry registry = Registry(&this, &add, &addKind, &addLandmark, &declare, &addDebug);
             foreach (index, entry; WEB_ENTRIES) {
                 enter(WEB_PLUGINS[index]);
                 entry(&registry);
@@ -279,7 +258,7 @@ struct Worlds {
                 if (plugin is null) {
                     fprintf(stderr, "the plugin '%s' has no '%s'; it may have been built against another version of the API\n", path.ptr, ENTRY.ptr);
                 } else {
-                    Registry registry = Registry(&this, &add, &addKind, &addLandmark, &declare);
+                    Registry registry = Registry(&this, &add, &addKind, &addLandmark, &declare, &addDebug);
                     enter(keptName(file));
                     plugin(&registry);
                 }
@@ -291,17 +270,51 @@ struct Worlds {
         return names[0 .. count];
     }
 
+    const(string)[] allDebugNames() const return {
+        return debugNames[0 .. debugCount];
+    }
+
+    Structure findWorld(const(char)[] name) const {
+        return structureNamed(names[0 .. count], structures[0 .. count], name);
+    }
+
+    Structure findDebug(const(char)[] name) const {
+        return structureNamed(debugNames[0 .. debugCount], debugStructures[0 .. debugCount], name);
+    }
+
     Structure find(const(char)[] name) const {
-        size_t index = 0;
-        while (index < count && names[index] != name) {
-            index += 1;
-        }
-        if (index < count) {
-            return structures[index];
+        Structure world = findWorld(name);
+        if (world !is null) {
+            return world;
         } else {
-            return null;
+            return findDebug(name);
         }
     }
+}
+
+Structure structureNamed(const(string)[] names, const(Structure)[] structures, const(char)[] name) {
+    size_t index = 0;
+    while (index < names.length && names[index] != name) {
+        index += 1;
+    }
+    if (index < names.length) {
+        return structures[index];
+    } else {
+        return null;
+    }
+}
+
+size_t keptOf(T)(ref ModOrder order, string[] names, T[] items, uint[] owners) {
+    size_t kept = 0;
+    foreach (index; 0 .. names.length) {
+        if (!order.isRefused(owners[index])) {
+            names[kept] = names[index];
+            items[kept] = items[index];
+            owners[kept] = owners[index];
+            kept += 1;
+        }
+    }
+    return kept;
 }
 
 void add(const(Registry)* registry, const(char)* name, Structure world) {
@@ -313,6 +326,18 @@ void add(const(Registry)* registry, const(char)* name, Structure world) {
         worlds.structures[worlds.count] = world;
         worlds.structureOwners[worlds.count] = worlds.current();
         worlds.count += 1;
+    }
+}
+
+void addDebug(const(Registry)* registry, const(char)* name, Structure structure) {
+    Worlds* worlds = cast(Worlds*) registry.host;
+    if (worlds.debugCount == MAX_STRUCTURES) {
+        fprintf(stderr, "too many debug structures, '%s' is left out (at most %zu)\n", name, MAX_STRUCTURES);
+    } else {
+        worlds.debugNames[worlds.debugCount] = cast(string) name[0 .. strlen(name)];
+        worlds.debugStructures[worlds.debugCount] = structure;
+        worlds.debugOwners[worlds.debugCount] = worlds.current();
+        worlds.debugCount += 1;
     }
 }
 

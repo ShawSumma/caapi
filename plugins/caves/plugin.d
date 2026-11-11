@@ -2,7 +2,7 @@ module plugins.caves.plugin;
 
 import plugins.api.api : Api, HorosphereForm, KindId, Registry, Site, SitePart, entryOf, tagNamed;
 import plugins.api.content : FIRST_VERSION, Manifest, ON_BASE;
-import plugins.caves.caves : Entry, Found, LOOK, NAME, Root, enter, entryNear, resolveCaves, route, tile, tuning;
+import plugins.caves.caves : Entry, Found, LOOK, NAME, Root, enter, entryNear, resolveCaves, route, tile, tuning, underlie;
 import plugins.turtle.turtle : Turtle;
 
 enum uint CAVE_TAG = tagNamed("caves:caves");
@@ -26,9 +26,14 @@ void world(const(Api)* api, Site site, const(void)* data) {
     }
 }
 
+void underground(const(Api)* api, Site site, const(void)* data) {
+    underlie(api);
+}
+
 immutable Manifest MANIFEST = Manifest(NAME, FIRST_VERSION, ON_BASE[], null, &resolveCaves, null, import("plugins/caves/settings.conf"), import("plugins/caves/caves.decl"), import("plugins/caves/caves.content"));
 
 pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
     registry.declare(registry, &MANIFEST);
     registry.add(registry, "caves", &world);
+    registry.addDebug(registry, "underground", &underground);
 }

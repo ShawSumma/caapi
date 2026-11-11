@@ -1,10 +1,10 @@
 module plugins.lattice.lattice;
 
 import core.stdc.math : fabs;
-import plugins.api.api : Api, Material, Rhythm, Risen, Site, SitePart, Span;
+import plugins.api.api : Api, KindTag, Material, Rhythm, Risen, Site, SitePart, Span;
 import plugins.api.binding : List, bound, settingsOf;
 import plugins.api.content : Content;
-import plugins.turtle.turtle : Tread, Turtle, boxOf, cornersOf, lowerOf, roll, strongestAround, treadAround, upright;
+import plugins.turtle.turtle : Drawing, Tread, Turtle, boxOf, cornersOf, lowerOf, roll, settled, strongestAround, treadAround, upright;
 
 enum int BEAM = 1;
 enum int PLATFORM = 6;
@@ -16,7 +16,8 @@ enum ulong STAIR_SALT = 0x6B43A9B5;
 enum ulong DECOR_SALT = 0x5BE0CD19;
 enum ulong FLOOR_SALT = 0x1F83D9AB;
 enum ulong GROVE_SALT = 0x3A8F05C5;
-enum uint EDGE_FACES = 4;
+enum double HANG_CLEAR = 4;
+enum string LOOK = "lattice:look";
 enum size_t MOST_FLOORS = 16;
 
 struct Materials {
@@ -247,19 +248,18 @@ void beam(Turtle start, ref const Root root) {
     }
 }
 
-Turtle settled(Turtle start) {
-    Turtle least = start;
-    ulong lowest = start.probeHash(SitePart.face);
-    Turtle rolled = start;
-    foreach (_; 1 .. EDGE_FACES) {
-        rolled = rolled.rollRight();
-        ulong hash = rolled.probeHash(SitePart.face);
-        if (hash < lowest) {
-            lowest = hash;
-            least = rolled;
-        }
+void hang(Turtle start, double crust) {
+    double edge = start.edgeCells();
+    Drawing pen = start.openPen();
+    double lower = lowerOf(pen.height(), pen.forward(edge).height());
+    if (lower < -(crust * edge + HANG_CLEAR)) {
+        Root root;
+        beam(start, root);
     }
-    return least;
+}
+
+void deepen(const(Api)* api, KindTag ground, double crust) {
+    api.under(api, ground, LOOK, crust, tuning.fog);
 }
 
 bool probeGrove(Turtle face, double share) {

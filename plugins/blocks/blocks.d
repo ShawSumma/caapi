@@ -8,7 +8,7 @@ import plugins.buildings.building : Bound, Join, Lot, Lots, Palette, STORY, Side
 import plugins.buildings.types : resolveBuildings;
 import types = plugins.buildings.types;
 import plugins.connector.connector : Connection, connect, resolveConnector;
-import plugins.turtle.turtle : FACE_CORNERS, Turtle, boxOf, cornersOf, floorDiv, lowerOf, mixed, roll, strongestAround, upright;
+import plugins.turtle.turtle : FACE_CORNERS, PORT, Turtle, boxOf, cornersOf, floorDiv, higherOf, lowerOf, mixed, roll, strongestAround, upright;
 
 enum ulong ISLAND_SALT = 0x51ED270B;
 enum ulong DROPPED_SALT = 0x2C1B3C6D;
@@ -200,6 +200,9 @@ bool probeIsland(Turtle face, ref const Root root) {
     } else {
         foreach (corner; cornersOf(face)) {
             bool rooted = probeRootVertex(corner, root);
+            if (!rooted) {
+                rooted = corner.probePort();
+            }
             if (rooted) {
                 return false;
             }
@@ -282,24 +285,35 @@ void streetTrees(Turtle edge) {
     edge.paint(materials.trunk, boxOf(Span(CURB, CURB), Span(1, 5), planted), trunk);
 }
 
+int portGap(Turtle corner) {
+    bool port = corner.probePort();
+    if (port) {
+        return PORT;
+    } else {
+        return 0;
+    }
+}
+
 void street(Turtle edge, ref const Root root) {
     Turtle finish = edge.forward(1);
     int last = edge.edgeCells() - 1;
-    edge.paint(materials.road, boxOf(ROAD, Span(-1, -1), Span(0, last)));
-    sidewalk(edge, SIDEWALK, crossingGap(edge.right(), root), crossingGap(finish.right(), root));
-    sidewalk(edge, FAR_SIDEWALK, crossingGap(edge.left(), root), crossingGap(finish.left(), root));
+    int startPort = portGap(edge);
+    int endPort = portGap(finish);
+    edge.paint(materials.road, boxOf(ROAD, Span(-1, -1), Span(startPort, last - endPort)));
+    sidewalk(edge, SIDEWALK, higherOf(startPort, crossingGap(edge.right(), root)), higherOf(endPort, crossingGap(finish.right(), root)));
+    sidewalk(edge, FAR_SIDEWALK, higherOf(startPort, crossingGap(edge.left(), root)), higherOf(endPort, crossingGap(finish.left(), root)));
     bool crossedAtStart = probeStreet(edge.right(), root);
     if (!crossedAtStart) {
         crossedAtStart = probeStreet(edge.left(), root);
     }
-    if (crossedAtStart) {
+    if (crossedAtStart && startPort == 0) {
         edge.paint(materials.marking, boxOf(ROAD, Span(-1, -1), Span(CROSSING + 1, CROSSING + 2)));
     }
     bool crossedAtEnd = probeStreet(finish.right(), root);
     if (!crossedAtEnd) {
         crossedAtEnd = probeStreet(finish.left(), root);
     }
-    if (crossedAtEnd) {
+    if (crossedAtEnd && endPort == 0) {
         edge.paint(materials.marking, boxOf(ROAD, Span(-1, -1), Span(last - CROSSING - 2, last - CROSSING - 1)));
     }
     bool trees = probeTrees(edge);
@@ -333,6 +347,16 @@ void pave(ref const Lots lots, Material material) {
     foreach (ref lot; lots.slice()) {
         Area area = groundOf(lot);
         area.tower.paint(material, boxOf(area.x, area.y, Span(-1, 0)));
+    }
+}
+
+void paveAroundPort(ref const Lots lots, Material material) {
+    foreach (ref lot; lots.slice()) {
+        Area area = groundOf(lot);
+        area.tower.paint(material, boxOf(Span(higherOf(area.x.low, PORT), area.x.high), area.y, Span(-1, 0)));
+        if (area.x.low < PORT) {
+            area.tower.paint(material, boxOf(Span(area.x.low, PORT - 1), Span(higherOf(area.y.low, PORT), area.y.high), Span(-1, 0)));
+        }
     }
 }
 
@@ -460,8 +484,15 @@ bool probeRoute(Turtle corner, ref const Lots lots, ref const Root root) {
 void lotAt(Turtle corner, ref const Lots lots, ref const Root root) {
     Turtle site = lots.items[0].site;
     bool plaza = probePlaza(corner, root);
+    bool port = false;
+    if (!plaza) {
+        port = corner.probePort();
+    }
     if (plaza) {
         pave(lots, materials.plaza);
+        plant(lots);
+    } else if (port) {
+        paveAroundPort(lots, materials.plaza);
         plant(lots);
     } else {
         bool route = probeRoute(corner, lots, root);

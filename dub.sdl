@@ -316,7 +316,6 @@ subPackage {
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
 	dependency "caapi:horospheres" version="*"
-	dependency "caapi:caves" version="*"
 }
 
 subPackage {
@@ -328,7 +327,6 @@ subPackage {
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
 	dependency "caapi:horospheres" version="*"
-	dependency "caapi:caves" version="*"
 }
 
 subPackage {
@@ -489,5 +487,4 @@ subPackage {
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
 	dependency "caapi:carve" version="*"
-	dependency "caapi:caves" version="*"
 }

@@ -147,6 +147,14 @@ struct Under {
     Look look;
     float depth = 0;
     float fog = 0;
+
+    bool isOver(HorosphereId horosphere, KindTag tag) const {
+        if (horosphere == HorosphereId.init) {
+            return !ground.exists;
+        } else {
+            return ground.exists && ground == tag;
+        }
+    }
 }
 
 struct LineRun {
@@ -317,6 +325,7 @@ struct Blueprint {
     Maybe!RouteStop entrance;
     Look look;
     Maybe!float fog;
+    double portOdds = 0;
     uint sweep;
     uint madeLive;
     uint brushCount;

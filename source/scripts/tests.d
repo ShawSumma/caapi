@@ -140,6 +140,8 @@ immutable NamedScript[] TESTS = [
     NamedScript("structure/wild", &risen!("risenwild", 2.0f, "base:concrete", "the connector's landing")),
     NamedScript("structure/caves", &structureCaves),
     NamedScript("structure/sinkhole", &structureSinkhole),
+    NamedScript("structure/well", &structureWell),
+    NamedScript("structure/void", &structureVoid),
     NamedScript("structure/vaults", &climbing!("vaults", 0.35f, SpawnCheck.checked)),
     NamedScript("content/hooks", &contentHooks),
     NamedScript("lost/thread-off", &lostThreadOff),
@@ -2118,4 +2120,48 @@ void structureSinkhole(ref Script world) {
         float fell = start - world.altitude().value;
         world.claim(Topic.structures, "A body dropped into the default world's sinkhole falls most of an edge below the ground before it lands.", world.isOnGround() && fell >= CAVES_LEAST_DESCENT, Measure.of("fell", fell), Measure.of("least expected", CAVES_LEAST_DESCENT));
     }
+}
+
+enum float WELL_ASIDE = 0.11f;
+enum float WELL_DOWN = 1.0f;
+enum float WELL_TURN = 0.36f;
+enum string WELL_STAIR = "base:limestone";
+
+void structureWell(ref Script world) {
+    world.structure("city");
+    Maybe!Position port = walk.ensurePort(world);
+    world.check(port.exists, "found no port among the vertices nearest the city's root");
+    if (!world.isFailed) {
+        world.mode(MovementMode.noclip);
+        world.game.placeAt(port.value, Length(0));
+        world.press(WELL_ASIDE / walk.NOCLIP_SPEED, Key.forward);
+        world.press(WELL_DOWN / walk.NOCLIP_SPEED, Key.down);
+        float start = world.altitude().value;
+        world.mode(MovementMode.walk);
+        world.wait(walk.LANDING_SECONDS);
+        float fell = start - world.altitude().value;
+        Maybe!Material below = walk.lookBelow(world);
+        const(char)[] name = walk.nameOf(below);
+        world.claim(Topic.structures, "Under a port in the city's streets a stair well runs down through the rock: a body let go in it most of an edge below the street drops less than one turn of the stair and lands on a tread.", world.isOnGround() && fell > 0 && fell < WELL_TURN && walk.isMaterial(below, WELL_STAIR), Measure.of("let go this far below the street", -start), Measure.of("dropped", fell), Measure.of("one turn of the stair", WELL_TURN), Measure.of("landed on", name));
+    }
+}
+
+enum float VOID_DEPTH = 6.6f;
+enum double VOID_FALL_SECONDS = 1;
+enum float VOID_LEAST_FALL = 0.2f;
+immutable string[8] LATTICE_MATERIALS = ["base:steel", "base:concrete", "base:basalt", "base:wood-planks", "base:red-sandstone", "base:marble", "base:grey-brick", "base:oak-leaves"];
+
+void structureVoid(ref Script world) {
+    world.terrain();
+    world.mode(MovementMode.noclip);
+    world.press(VOID_DEPTH / walk.NOCLIP_SPEED, Key.down);
+    float start = world.altitude().value;
+    world.mode(MovementMode.walk);
+    world.wait(VOID_FALL_SECONDS);
+    float fell = start - world.altitude().value;
+    world.claim(Topic.structures, "The default world's ground has a bottom: a body let go far enough under it is in the open and falls.", fell >= VOID_LEAST_FALL, Measure.of("let go this far below the ground", -start), Measure.of("fell in a second", fell));
+    world.wait(walk.LANDING_SECONDS);
+    Maybe!Material below = walk.lookBelow(world);
+    const(char)[] name = walk.nameOf(below);
+    world.claim(Topic.structures, "A lattice hangs in the open under the default world's ground: the body let go under spawn lands on it.", world.isOnGround() && walk.isOneOf(below, LATTICE_MATERIALS[]), Measure.of("landed this far below the ground", -world.altitude().value), Measure.of("landed on", name));
 }

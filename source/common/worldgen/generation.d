@@ -16,7 +16,7 @@ import common.neighbors : isInside;
 import common.node : ChunkLayout, Materials, Occupancy, Voxels, cellIndex;
 import common.view : GraphView;
 import common.worldgen.building : Building;
-import common.worldgen.climate : COVER_DEPTH, Climate, CubeClimate, NodeClimate, SOIL_DEPTH, WATER_LEVEL, groundAt, openAt, underAt, uniformRock;
+import common.worldgen.climate : COVER_DEPTH, Climate, CubeClimate, NodeClimate, SOIL_DEPTH, UNDERSIDE_SWING, WATER_LEVEL, groundAt, openAt, underAt, uniformRock;
 import common.worldgen.horospheres : Fill, FlatLines, Ground, Grounds, MOST_GROUNDS, ensureGrounds, ensureHorospheresAt, flatLinesNear;
 import common.worldgen.palette : Tree, hasTrees, isGroundFor, isGroundForPlant, laidBy, oreFor, palette, treeAt, treeOf;
 import common.worldgen.plane : Plane, PlaneMeasure, chunkPoint, cubePoint;
@@ -310,8 +310,16 @@ struct ChunkParams {
         }
     }
 
+    bool isBelowCrust(uint index) const {
+        return altitudes(index).high < -(ground(index).crust + UNDERSIDE_SWING * climate.highest.relief);
+    }
+
+    bool isWithinCrust(uint index) const {
+        return altitudes(index).low > -(ground(index).crust + UNDERSIDE_SWING * climate.lowest.relief);
+    }
+
     bool isClearOf(uint index) const {
-        return ground(index).fill == Fill.none || groundRange(index).low > terrainCeiling(index);
+        return ground(index).fill == Fill.none || groundRange(index).low > terrainCeiling(index) || isBelowCrust(index);
     }
 
     bool isFullOf(uint index) const {
@@ -320,9 +328,9 @@ struct ChunkParams {
             case Fill.none:
                 return false;
             case Fill.flat:
-                return highest < 0;
+                return highest < 0 && isWithinCrust(index);
             case Fill.terrain:
-                return isProvenBelowTerrain(highest) && rivalsOf(index) == 0;
+                return isProvenBelowTerrain(highest) && rivalsOf(index) == 0 && isWithinCrust(index);
         }
     }
 
@@ -471,12 +479,13 @@ struct TerrainGenerator {
     void generateTerrain(uint ground) {
         ubyte dimension = params.dimension;
         ValueRange altitudes = params.altitudes(ground);
-        if (altitudes.low <= params.terrainCeiling(ground)) {
+        if (altitudes.low <= params.terrainCeiling(ground) && !params.isBelowCrust(ground)) {
             Maybe!Material rock = params.provenUniformRock(altitudes);
             uint rivals = params.rivalsOf(ground);
-            if (rock.exists && rivals == 0) {
+            bool whole = params.isWithinCrust(ground);
+            if (rock.exists && rivals == 0 && whole) {
                 fillEmpty(rock.value);
-            } else if (params.materials == MaterialPass.deferring && !params.hasStructure && params.strokes.length == 0 && rivals == 0 && params.isProvenBelowTerrain(altitudes.high)) {
+            } else if (params.materials == MaterialPass.deferring && !params.hasStructure && params.strokes.length == 0 && rivals == 0 && whole && params.isProvenBelowTerrain(altitudes.high)) {
                 voxels = Voxels.filled(palette.standIn);
                 materials = Materials.deferred;
             } else {
@@ -549,22 +558,26 @@ struct TerrainGenerator {
         ubyte dimension = params.dimension;
         ValueRange range = params.groundRange(ground);
         Maybe!Material rock = uniformRock(-range.high, -range.low, params.climate.lowest, params.climate.highest);
-        if (range.high < 0 && -range.low < SOIL_DEPTH) {
+        bool buried = range.high < 0 && params.isWithinCrust(ground);
+        float crust = params.ground(ground).crust;
+        if (buried && -range.low < SOIL_DEPTH) {
             fillEmpty(palette.flatFill);
-        } else if (range.high < 0 && rock.exists) {
+        } else if (buried && rock.exists) {
             fillEmpty(rock.value);
-        } else if (range.high < 0 && params.materials == MaterialPass.deferring && !params.hasStructure && params.strokes.length == 0 && voxels.isFilledWith(Material.none)) {
+        } else if (buried && params.materials == MaterialPass.deferring && !params.hasStructure && params.strokes.length == 0 && voxels.isFilledWith(Material.none)) {
             voxels = Voxels.filled(palette.standIn);
             materials = Materials.deferred;
-        } else if (range.low <= 0) {
+        } else if (range.low <= 0 && !params.isBelowCrust(ground)) {
             prepareCells();
             foreach (x; 0 .. dimension) {
                 foreach (y; 0 .. dimension) {
                     foreach (z; 0 .. dimension) {
                         Point!float point = cubePoint(toNode, centerOf(x, y, z));
-                        float level = params.levelFrom(ground, surfaces[ground].distanceTo(point), point);
-                        if (level < 0) {
-                            setIfEmpty(Vec3!int(x, y, z), underAt(-level, climateOfCell(Vec3!uint(x, y, z))));
+                        float altitude = surfaces[ground].distanceTo(point);
+                        float level = params.levelFrom(ground, altitude, point);
+                        Climate here = climateOfCell(Vec3!uint(x, y, z));
+                        if (level < 0 && altitude > -(crust + UNDERSIDE_SWING * here.relief)) {
+                            setIfEmpty(Vec3!int(x, y, z), underAt(-level, here));
                         }
                     }
                 }
@@ -660,7 +673,9 @@ struct TerrainGenerator {
         Climate here = climateOfCell(cell);
         float depth = here.relief - altitude;
         Material material;
-        if (depth >= COVER_DEPTH && depth < SOIL_DEPTH) {
+        if (!(altitude > -(params.ground(ground).crust + UNDERSIDE_SWING * here.relief))) {
+            material = Material.none;
+        } else if (depth >= COVER_DEPTH && depth < SOIL_DEPTH) {
             material = groundAt(depth, riserAt(ground, cell, depth), here);
         } else if (depth >= 0.0f) {
             material = groundAt(depth, 0, here);

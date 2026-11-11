@@ -16,6 +16,7 @@ enum float COVER_DEPTH = 0.06f;
 enum float SOIL_DEPTH = 0.4f;
 enum float WATER_LEVEL = -0.6f;
 enum float WARMTH_CLASS_LIMIT = 0.35f;
+enum float UNDERSIDE_SWING = 0.5f;
 
 struct Process {
     float keep;

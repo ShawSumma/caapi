@@ -6,13 +6,15 @@ import base.numbers : higherOf, lowerOf;
 import base.units : Time;
 import client.game : Key;
 import client.script : Script, StepHook, degrees;
+import client.structures : probePort;
 import common.character.controller : Footing, MovementMode;
 import common.graph : Graph;
 import common.items : materialNames;
 import common.position : Position;
-import common.worldgen.structure : SiteFrame, sitePlacement;
+import common.worldgen.horospheres : ROOT;
+import common.worldgen.structure : SiteFrame, forwarded, moveToLevel, rootSite, siteOf, sitePlacement, turnSite;
 import geometry.lorentz : Point, Shift = Motion;
-import plugins.api.api : Material;
+import plugins.api.api : Material, Turn;
 import scripts.claims : Measure, Topic, claim;
 
 enum float SPEED = 0.225f;
@@ -37,7 +39,8 @@ enum double SETTLE_SECONDS = 0.48;
 enum double LANDING_SECONDS = 2;
 enum float LEAST_BLOCK_EDGE = 0.035f;
 enum float MOST_BLOCK_EDGE = 0.077f;
-immutable string[2] STREET_MATERIALS = ["base:basalt", "base:white-brick"];
+enum size_t MOST_PORT_SITES = 512;
+immutable string[2] STREET_MATERIALS =["base:basalt", "base:white-brick"];
 immutable string[7] TOWER_MATERIALS = ["base:concrete", "base:white-brick", "base:grey-brick", "base:sandstone", "base:wood-planks", "base:steel", "base:marble"];
 immutable string[5] BACKROOMS_FLOORS = ["base:carpet", "base:damp-carpet", "base:red-carpet", "base:concrete", "base:marble"];
 immutable string[6] BACKROOMS_CEILINGS = ["base:ceiling-tile", "base:light-panel", "base:concrete", "base:plaster", "base:white-brick", "base:sunlight"];
@@ -100,16 +103,43 @@ void spawn(ref Script world) {
     world.check(world.isOnGround(), "spawned standing on the ground");
 }
 
+Position ensureVertex(ref Graph graph, SiteFrame site) {
+    Point!float vertex = sitePlacement(site, graph.layout) * Point!float.origin();
+    return graph.ensureNormalized(Position(graph.idAt(site.node), Shift!float.shiftTo(vertex)));
+}
+
 Maybe!Position ensureLastFlat(ref Script world) {
     Graph* graph = &world.game.world.graph;
     const(SiteFrame)[] flats = graph.structures.blueprint.flats.slice();
     if (flats.length == 0) {
         return Maybe!Position.init;
     } else {
-        SiteFrame site = flats[$ - 1];
-        Point!float vertex = sitePlacement(site, graph.layout) * Point!float.origin();
-        return Maybe!Position.of(graph.ensureNormalized(Position(graph.idAt(site.node), Shift!float.shiftTo(vertex))));
+        return Maybe!Position.of((*graph).ensureVertex(flats[$ - 1]));
     }
+}
+
+Maybe!Position ensurePort(ref Script world) {
+    Graph* graph = &world.game.world.graph;
+    SiteFrame[MOST_PORT_SITES] sites;
+    sites[0] = rootSite(graph.anchorSlot);
+    size_t count = 1;
+    size_t next = 0;
+    Maybe!Position found;
+    while (!found.exists && next < count) {
+        SiteFrame site = graph.view.moveToLevel(sites[next], 0);
+        next += 1;
+        bool port = graph.view.probePort(siteOf(site), ROOT);
+        if (port) {
+            found = Maybe!Position.of((*graph).ensureVertex(site));
+        } else if (count + 3 <= MOST_PORT_SITES) {
+            SiteFrame ahead = forwarded(site, 1);
+            sites[count] = ahead;
+            sites[count + 1] = graph.view.turnSite(ahead, Turn.left);
+            sites[count + 2] = graph.view.turnSite(ahead, Turn.right);
+            count += 3;
+        }
+    }
+    return found;
 }
 
 void onSlope(ref Script world, double tilt, double heading) {

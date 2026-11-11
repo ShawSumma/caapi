@@ -115,7 +115,7 @@ immutable Manifest MANIFEST = Manifest("arbor", FIRST_VERSION, NEEDS[], null, &r
 
 pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
     registry.declare(registry, &MANIFEST);
-    registry.add(registry, "arbor", &world);
+    registry.addDebug(registry, "arbor", &world);
     RisingKind rising = RisingKind(ROOT_SHARE, HorosphereForm.upright, TREE_TAG, &tile, null, 0, LOOK);
     registry.addKind(registry, "arbor", &rising);
     registry.addLandmark(registry, "arbor", &landmark);

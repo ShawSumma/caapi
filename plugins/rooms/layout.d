@@ -176,7 +176,7 @@ Plan planOf(Turtle corner, ref const Quarter q, ref const Stair stair, ref const
     ulong face = corner.probeHash(SitePart.face);
     if (level.isMaze()) {
         return Plan.maze;
-    } else if (q.isLobby() && (floor.isTop() || q.hasShaft())) {
+    } else if (q.isLobby() && (floor.isTop() || q.hasShaft() || q.hasWell())) {
         return Plan.lobby;
     } else if (stair.isOn(floor.layer)) {
         return Plan.rooms;
@@ -204,6 +204,11 @@ void quarter(Turtle corner, ref const Root root, ref const(Biome)*[MOST_LEVELS] 
         }
         if (lobby) {
             kind = QuarterKind.lobby;
+        } else {
+            bool port = corner.probePort();
+            if (port) {
+                kind = QuarterKind.lobbyWithWell;
+            }
         }
     }
     Quarter q = Quarter(upright(corner), kind);

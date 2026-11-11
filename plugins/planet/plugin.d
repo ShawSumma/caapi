@@ -15,7 +15,11 @@ enum uint TREE_RISE = 2;
 enum int LANDMARK_RINGS = 3;
 enum int SINK_EDGES = 2;
 enum uint LIBRARY_TAG = tagNamed("library:library");
-immutable uint[3] BUILT_TAGS = [CITY_TAG, BACKROOMS_TAG, tagNamed("vaults:vaults")];
+enum uint VAULT_TAG = tagNamed("vaults:vaults");
+enum double ROOT_CRUST = 5.6;
+enum double RISEN_CRUST = 3.4;
+immutable uint[3] BUILT_TAGS = [CITY_TAG, BACKROOMS_TAG, VAULT_TAG];
+immutable uint[2] HOLLOW_TAGS = [WILD_TAG, VAULT_TAG];
 immutable Spot SPAWN = Spot(-14, 12, 0);
 immutable Connection CONNECTION = Connection.rolled();
 
@@ -114,15 +118,37 @@ void sink(const(Api)* api, Turtle at, ref const Clear clear) {
         api.flatten(api, entry.surface.frame.site);
     }
     api.tileEdges(api, &underground, &root, caves.Root.sizeof);
+    api.ports(api, caves.tuning.portOdds);
+    caves.darken(api, KindTag.init, caves.OPEN_UNDER);
     caves.darken(api, KindTag.of(WILD_TAG), caves.OPEN_UNDER);
     foreach (tag; BUILT_TAGS) {
         caves.darken(api, KindTag.of(tag), caves.SEALED_UNDER);
+    }
+    api.crust(api, KindTag.init, ROOT_CRUST);
+    lattice.deepen(api, KindTag.init, ROOT_CRUST);
+    foreach (tag; HOLLOW_TAGS) {
+        api.crust(api, KindTag.of(tag), RISEN_CRUST);
+        lattice.deepen(api, KindTag.of(tag), RISEN_CRUST);
+    }
+}
+
+double crustUnder(ref const Risen risen) {
+    if (!risen.hasRisen) {
+        return ROOT_CRUST;
+    } else if (risen.tag == KindTag.of(HOLLOW_TAGS[0]) || risen.tag == KindTag.of(HOLLOW_TAGS[1])) {
+        return RISEN_CRUST;
+    } else {
+        return 0;
     }
 }
 
 void underground(const(Api)* api, Site site, const(Risen)* risen, const(void)* data) {
     if (risen.tag != KindTag.of(LIBRARY_TAG)) {
         caves.tile(api, site, risen, data);
+    }
+    double crust = crustUnder(*risen);
+    if (crust > 0) {
+        lattice.hang(Turtle(api, site), crust);
     }
 }
 

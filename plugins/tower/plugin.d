@@ -28,6 +28,6 @@ immutable Manifest MANIFEST = Manifest("tower", FIRST_VERSION, NEEDS[], null, &b
 
 pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
     registry.declare(registry, &MANIFEST);
-    registry.add(registry, "tower", &world);
+    registry.addDebug(registry, "tower", &world);
     registry.addLandmark(registry, "tower", &landmark);
 }

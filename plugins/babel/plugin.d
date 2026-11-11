@@ -94,7 +94,7 @@ immutable Manifest MANIFEST = Manifest("babel", FIRST_VERSION, ON_BASE[], null, 
 
 pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
     registry.declare(registry, &MANIFEST);
-    registry.add(registry, "babel", &world);
+    registry.addDebug(registry, "babel", &world);
     RisingKind rising = RisingKind(COLUMN_SHARE, HorosphereForm.upright, COLUMN_TAG, &column, null, 0, LOOK);
     registry.addKind(registry, "babel", &rising);
     registry.addLandmark(registry, "babel", &landmark);

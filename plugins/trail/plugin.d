@@ -125,6 +125,6 @@ immutable Manifest MANIFEST = Manifest("trail", FIRST_VERSION, NEEDS[], null, &r
 
 pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
     registry.declare(registry, &MANIFEST);
-    registry.add(registry, "trail", &world);
+    registry.addDebug(registry, "trail", &world);
     registry.addLandmark(registry, "trail", &landmark);
 }

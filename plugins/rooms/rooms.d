@@ -55,6 +55,7 @@ enum QuarterKind : ubyte {
     plain,
     lobby,
     lobbyWithShaft,
+    lobbyWithWell,
 }
 
 enum FrameMark : ubyte {
@@ -62,6 +63,7 @@ enum FrameMark : ubyte {
     shaft,
     top,
     skirting,
+    well,
 }
 
 alias Halls = Flags!Axis;
@@ -179,6 +181,10 @@ struct Quarter {
     bool hasShaft() const {
         return kind == QuarterKind.lobbyWithShaft;
     }
+
+    bool hasWell() const {
+        return kind == QuarterKind.lobbyWithWell;
+    }
 }
 
 struct Stair {
@@ -219,6 +225,14 @@ struct Frame {
 
     bool hasShaft() const {
         return marks.has(FrameMark.shaft);
+    }
+
+    bool hasWell() const {
+        return marks.has(FrameMark.well);
+    }
+
+    bool hasPort() const {
+        return hasShaft() || hasWell();
     }
 
     bool isTop() const {
@@ -302,7 +316,7 @@ struct Pieces {
 
 Pieces outsideShaft(ref const Frame f, Region area) {
     Pieces pieces;
-    if (!f.hasShaft()) {
+    if (!f.hasPort()) {
         pieces.add(area);
     } else {
         if (area.x.high > SHAFT) {
@@ -374,6 +388,14 @@ void slab(ref const Frame f, Material material, Region area, int z) {
     }
 }
 
+void lid(ref const Frame f, Material material, Region area, int z) {
+    if (f.isTop() && f.hasWell()) {
+        f.tower.paint(material, boxOf(area.x, area.y, Span(z, z)));
+    } else {
+        slab(f, material, area, z);
+    }
+}
+
 Pieces bands(ref const Frame f) {
     Pieces list;
     if (f.halls.has(Axis.y)) {
@@ -391,13 +413,13 @@ void shell(ref const Frame f) {
     foreach (piece; outsideShaft(f, whole).slice()) {
         f.tower.paint(Material.none, boxOf(piece.x, piece.y, roomZ(f)));
     }
-    slab(f, f.biome.ceiling, whole, ceilingZ(f));
+    lid(f, f.biome.ceiling, whole, ceilingZ(f));
     foreach (band; bands(f).slice()) {
         slab(f, f.hall.floor, band, f.base);
-        slab(f, f.hall.ceiling, band, ceilingZ(f));
+        lid(f, f.hall.ceiling, band, ceilingZ(f));
     }
     if (f.isTop()) {
-        slab(f, rooms.roof, whole, ceilingZ(f) + ROOF);
+        lid(f, rooms.roof, whole, ceilingZ(f) + ROOF);
     } else if (f.hasShaft()) {
         f.tower.paint(Material.none, boxOf(Span(0, SHAFT), Span(0, SHAFT), Span(f.base, ceilingZ(f) + SEPARATION)));
     }
@@ -518,7 +540,7 @@ void hallDoors(ref Frame f, ref const Found found) {
 }
 
 bool isShaft(ref const Frame f, int x, int y) {
-    return f.hasShaft() && x <= SHAFT && y <= SHAFT;
+    return f.hasPort() && x <= SHAFT && y <= SHAFT;
 }
 
 void light(ref const Frame f, Material material, int x, int y) {
@@ -658,10 +680,14 @@ struct Maze {
 
 void maze(ref Frame f, ref const Doors[4] lines) {
     int cells = MAZE_CELLS;
-    f.tower.paint(f.biome.wall, boxOf(Span(0, f.far), Span(0, f.far), roomZ(f)));
+    foreach (piece; outsideShaft(f, Region(Span(0, f.far), Span(0, f.far))).slice()) {
+        f.tower.paint(f.biome.wall, boxOf(piece.x, piece.y, roomZ(f)));
+    }
     foreach (i; 0 .. cells) {
         foreach (j; 0 .. cells) {
-            f.tower.paint(Material.none, boxOf(mazeSpan(f, i), mazeSpan(f, j), roomZ(f)));
+            if (!f.hasWell() || i + j > 0) {
+                f.tower.paint(Material.none, boxOf(mazeSpan(f, i), mazeSpan(f, j), roomZ(f)));
+            }
         }
     }
     Maze carved;
@@ -925,6 +951,7 @@ Frame frameOf(ref const Quarter q, Halls halls, Floor floor, const(Biome)* biome
     f.halls = halls;
     f.marks.put(FrameMark.lobby, plan == Plan.lobby);
     f.marks.put(FrameMark.shaft, q.hasShaft() && !level.isMaze());
+    f.marks.put(FrameMark.well, q.hasWell());
     f.marks.put(FrameMark.top, floor.isTop());
     f.x0 = x0;
     f.y0 = y0;

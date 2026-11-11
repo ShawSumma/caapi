@@ -10,7 +10,7 @@ import base.numbers : clamped;
 import base.parallel : Executor, ParallelJob;
 import base.splitmix : SplitMix;
 import base.stdio : snprintf;
-import client.structures : BAD_PEN_DRAW, MESSAGE_CAPACITY, ONLY_WORLD_FLATTENS, ONLY_WORLD_GIVES_KINDS, ONLY_WORLD_OPENS, ONLY_WORLD_ROOTS, ONLY_WORLD_SETS_FOG, ONLY_WORLD_SETS_LOOK, ONLY_WORLD_TILES_EDGES, ONLY_WORLD_TILES_GROUND, ONLY_WORLD_TURNS_GRAVITY, PenFrame, Refusing, UNBOUNDED_PAINT, apiBuild, apiColumn, apiEdgeCells, apiFail, apiFailure, apiFill, apiForward, apiHash, apiLeaves, apiLimb, apiPaint, apiPen, apiPenForward, apiPenHeight, apiPenLift, apiPenRise, apiPenRoll, apiPenTurn, apiPick, apiRandom, apiRising, apiTurned, boxRefusal, cellBoxOf, cellLengthOf, columnOf, engineRhythm, ensureRisingTag, unitNormal;
+import client.structures : BAD_PEN_DRAW, MESSAGE_CAPACITY, ONLY_WORLD_FLATTENS, ONLY_WORLD_GIVES_KINDS, ONLY_WORLD_OPENS, ONLY_WORLD_ROOTS, ONLY_WORLD_SETS_FOG, ONLY_WORLD_SETS_LOOK, ONLY_WORLD_SHAPES_GROUND, ONLY_WORLD_TILES_EDGES, ONLY_WORLD_TILES_GROUND, ONLY_WORLD_TURNS_GRAVITY, PenFrame, Refusing, UNBOUNDED_PAINT, apiBuild, apiColumn, apiEdgeCells, apiFail, apiFailure, apiFill, apiForward, apiHash, apiLeaves, apiLimb, apiPaint, apiPen, apiPenForward, apiPenHeight, apiPenLift, apiPenRise, apiPenRoll, apiPenTurn, apiPick, apiPort, apiRandom, apiRising, apiTurned, boxRefusal, cellBoxOf, cellLengthOf, columnOf, engineRhythm, ensureRisingTag, probePort, unitNormal;
 import common.graph : Graph, NodeId;
 import common.view : GraphView;
 import common.worldgen.blueprint : Blueprint, Brush, CellBox, Cover, LevelRange, LineEdge, LineKey, LineSpec, Paint, PaintOwner, PaintResult, Rhythm, RouteStop, SiteLine, TileEdge, canonicalBox, canonicalRhythm, edgeOf, probeLineAhead;
@@ -533,6 +533,10 @@ struct TileHost {
         return (*view).ensureRisingTag(site, horosphere);
     }
 
+    bool probePortAt(Site site) {
+        return (*view).probePort(site, horosphere);
+    }
+
     void planCandidate(ref const Graph graph, GraphView* threadView, uint candidate, uint index) {
         view = threadView;
         uint tileStart = cast(uint) plan.tiles.length;
@@ -634,6 +638,9 @@ Api tileApi(TileHost* host) {
     api.risingKinds = &tileRisingKinds;
     api.landmark = &tileLandmark;
     api.under = &tileUnder;
+    api.crust = &tileCrust;
+    api.ports = &tilePorts;
+    api.probePort = &apiPort!tileHost;
     return api;
 }
 
@@ -730,6 +737,14 @@ void tileRisingKinds(const(Api)* api, double odds) {
 
 void tileUnder(const(Api)* api, KindTag ground, const(char)[] look, double depth, double fog) {
     tileHost(api).refuse(ONLY_WORLD_SETS_LOOK);
+}
+
+void tileCrust(const(Api)* api, KindTag ground, double edges) {
+    tileHost(api).refuse(ONLY_WORLD_SHAPES_GROUND);
+}
+
+void tilePorts(const(Api)* api, double odds) {
+    tileHost(api).refuse(ONLY_WORLD_SHAPES_GROUND);
 }
 
 bool tileLandmark(const(Api)* api, uint index, Site site) {
