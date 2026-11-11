@@ -74,9 +74,15 @@ struct Connection {
     }
 }
 
+enum Bridge : ubyte {
+    built,
+    none,
+}
+
 struct Ground {
     Named tag;
     int level;
+    Bridge bridge;
 }
 
 struct Pair {
@@ -360,16 +366,16 @@ void routeBack(Turtle tower, Layout layout) {
     tower.stop(-HALF_WIDTH - 1.5f, 0, base + 1);
 }
 
-int groundOf(KindTag tag) {
+Ground groundOf(KindTag tag) {
     const(Ground)[] grounds = materials.grounds.slice();
     size_t index = 0;
     while (index < grounds.length && !(tag.exists && grounds[index].tag.tag == tag.value)) {
         index += 1;
     }
     if (index < grounds.length) {
-        return grounds[index].level;
+        return grounds[index];
     } else {
-        return OPEN_GROUND;
+        return Ground(Named.init, OPEN_GROUND, Bridge.built);
     }
 }
 
@@ -388,7 +394,14 @@ Style chosenStyle(Turtle site, ref const Risen risen, uint upperTag, Connection 
 }
 
 void connect(Turtle site, ref const Risen risen, uint upperTag, Connection how) {
-    Layout layout = layoutOf(site, risen, groundOf(KindTag.of(upperTag)), groundOf(risen.lower));
+    Ground upper = groundOf(KindTag.of(upperTag));
+    Ground lower = groundOf(risen.lower);
+    if (upper.bridge == Bridge.built && lower.bridge == Bridge.built) {
+        bridge(site, risen, upperTag, how, layoutOf(site, risen, upper.level, lower.level));
+    }
+}
+
+void bridge(Turtle site, ref const Risen risen, uint upperTag, Connection how, Layout layout) {
     Style style = chosenStyle(site, risen, upperTag, how);
     Palette palette = materials.palettes.items[site.pick(materials.palettes.count)];
     if (style == Style.drift) {

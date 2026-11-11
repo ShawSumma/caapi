@@ -1,6 +1,6 @@
 module plugins.horospheres.horospheres;
 
-import plugins.api.api : Api, HorosphereForm, KindId, Risen, Site, SitePart, tagNamed;
+import plugins.api.api : Api, HorosphereForm, KindId, Risen, Site, SitePart, Tile, tagNamed;
 import plugins.api.content : Content;
 import blocks = plugins.blocks.blocks;
 import plugins.connector.connector : Connection, connect;
@@ -70,9 +70,19 @@ void treeTile(const(Api)* api, Site base, const(Risen)* risen, const(void)* data
     segment(Turtle(api, base), risen.segment, risen.ground, Trunk.bare);
 }
 
+struct Wild {
+    Tile tile;
+    const(void)* data;
+    size_t size;
+}
+
 Kinds addKinds(const(Api)* api, double odds, double treeOdds, const(Connection)* how) {
+    return addKindsOn(api, odds, treeOdds, how, Wild(&wildTile, how, Connection.sizeof));
+}
+
+Kinds addKindsOn(const(Api)* api, double odds, double treeOdds, const(Connection)* how, Wild wild) {
     Kinds kinds;
-    kinds.wild = api.horosphere(api, odds, HorosphereForm.terrain, WILD_TAG, &wildTile, how, Connection.sizeof);
+    kinds.wild = api.horosphere(api, odds, HorosphereForm.terrain, WILD_TAG, wild.tile, wild.data, wild.size);
     kinds.city = api.horosphere(api, odds, HorosphereForm.solid, CITY_TAG, &cityTile, how, Connection.sizeof);
     kinds.backrooms = api.horosphere(api, odds, HorosphereForm.solid, BACKROOMS_TAG, &backroomsTile, how, Connection.sizeof);
     kinds.tree = api.horosphere(api, treeOdds, HorosphereForm.upright, TREE_TAG, &treeTile, how, Connection.sizeof);

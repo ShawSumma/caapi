@@ -29,6 +29,11 @@ enum int PODIUM_SIZE = 2;
 enum int MURAL_HALF_WIDTH = 2;
 enum int STAIR_ROWS = 4;
 enum int STAIR_DEPTH = STAIR_ROWS + 1;
+enum int PILLAR_EVERY = 4;
+enum int PILLAR_LIGHT = 2;
+enum int POOL_RIM = 2;
+enum int COURT_TRUNK = 6;
+enum int COURT_CROWN = 2;
 enum int GRID_OFFSET = 8;
 enum int GRID_SIZE = 32;
 enum size_t MOST_ROOMS = 64;
@@ -72,6 +77,9 @@ enum Plan : ubyte {
     solid,
     rings,
     chapel,
+    pillars,
+    pool,
+    court,
 }
 
 struct Region {
@@ -799,6 +807,54 @@ void rings(ref Frame f) {
     }
 }
 
+void pillars(ref const Frame f) {
+    for (int x = f.region.x.low + 1; x < f.region.x.high; x += PILLAR_EVERY) {
+        for (int y = f.region.y.low + 1; y < f.region.y.high; y += PILLAR_EVERY) {
+            f.tower.paint(f.biome.wall, boxOf(Span(x, x), Span(y, y), roomZ(f)));
+            if (x + PILLAR_LIGHT < f.region.x.high && y + PILLAR_LIGHT < f.region.y.high) {
+                light(f, f.biome.light, x + PILLAR_LIGHT, y + PILLAR_LIGHT);
+            }
+        }
+    }
+}
+
+void pool(ref const Frame f) {
+    Span x = Span(f.region.x.low + POOL_RIM, f.region.x.high - POOL_RIM);
+    Span y = Span(f.region.y.low + POOL_RIM, f.region.y.high - POOL_RIM);
+    if (width(x) >= 2 && width(y) >= 2) {
+        f.tower.paint(rooms.water, boxOf(x, y, Span(f.base, f.base)));
+        f.tower.paint(f.biome.floor, boxOf(x, y, Span(f.base - 1, f.base - 1)));
+    }
+}
+
+void court(ref const Frame f) {
+    Span x = f.region.x;
+    Span y = f.region.y;
+    int treeX = middle(x);
+    int treeY = middle(y);
+    int top = f.base + COURT_TRUNK;
+    f.tower.paint(Material.none, boxOf(x, y, Span(ceilingZ(f), ceilingZ(f) + ROOF)));
+    f.tower.paint(rooms.lawn, boxOf(x, y, Span(f.base, f.base)));
+    f.tower.paint(rooms.leaves, boxOf(Span(treeX - COURT_CROWN, treeX + COURT_CROWN), Span(treeY - COURT_CROWN, treeY + COURT_CROWN), Span(top - 1, top + 1)));
+    f.tower.paint(rooms.trunk, boxOf(Span(treeX, treeX), Span(treeY, treeY), Span(f.base + 1, top)));
+}
+
+void opened(ref Frame f, Plan plan) {
+    if (plan == Plan.rings) {
+        rings(f);
+    }
+    Found whole;
+    whole.add(f.region);
+    furnish(f, whole);
+    if (plan == Plan.pillars) {
+        pillars(f);
+    } else if (plan == Plan.pool) {
+        pool(f);
+    } else if (plan == Plan.court) {
+        court(f);
+    }
+}
+
 void stairs(ref const Frame lower, ref const Frame upper, Stair stair, Routing routing) {
     int rise = upper.base - lower.base;
     int x0 = stair.x;
@@ -891,13 +947,10 @@ void paintFloor(ref Frame f, ref const Doors[4] lines, Plan plan) {
             light(f, f.biome.light, f.far - 2, f.far - 2);
         } else if (plan == Plan.solid) {
             f.tower.paint(f.biome.wall, boxOf(f.region.x, f.region.y, roomZ(f)));
-        } else if (plan == Plan.rings) {
-            rings(f);
-            Found whole;
-            whole.add(f.region);
-            furnish(f, whole);
         } else if (plan == Plan.chapel) {
             chapel(f);
+        } else if (plan != Plan.rooms) {
+            opened(f, plan);
         } else {
             Found found;
             split(f, f.region, forbid, found, 0);

@@ -57,7 +57,7 @@ dub build -q -b release --compiler=ldc2 :web                                # ca
 - `source/bindings/`: C files that pull Vulkan, X11 and Linux system headers into D.
 - `plugins/api/`: the interface between engine and plugins. `api.d` (`Api`, `Registry`, `Site`, `Material`), `content.d` (`Content`, `Manifest`, `Play`), `binding.d` (content to D structs), `flags.d`.
 - `plugins/turtle/`, `plugins/carve/`: helpers compiled into the plugins that use them. `Turtle` wraps `Api` and a `Site`.
-- `plugins/box`, `buildings`, `connector`, `blocks`, `rooms`, `horospheres`: building code other plugins share, each also a mod with content. `plugins/base`: the base content mod. The rest (`planet`, `city`, `tower`, `library`, ...) are world plugins.
+- `plugins/box`, `buildings`, `connector`, `blocks`, `rooms`, `horospheres`: building code other plugins share, each also a mod with content. `plugins/caves`, `lattice`: worlds whose code (`caves.d`, `lattice.d`) the default world also compiles in, with the world and the mod in `plugin.d`. `plugins/base`: the base content mod. The rest (`planet`, `city`, `tower`, `library`, ...) are world plugins.
 - `web/`: `main.d` (the wasm exports, `web_*`), `renderer.d` (WebGL renderer), `glue.js` (the JS side: GL, input, storage; implements the imports listed in `imports.syms`), `play.js` and `check.js` (what drives the game page and the check page), `shell.html`, `tool/pack.d` (inlines the wasm and scripts into the pages), `tool/drive.d`.
 
 ## Architecture

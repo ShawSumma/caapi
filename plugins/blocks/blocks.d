@@ -8,11 +8,12 @@ import plugins.buildings.building : Bound, Join, Lot, Lots, Palette, STORY, Side
 import plugins.buildings.types : resolveBuildings;
 import types = plugins.buildings.types;
 import plugins.connector.connector : Connection, connect, resolveConnector;
-import plugins.turtle.turtle : FACE_CORNERS, Turtle, boxOf, cornersOf, floorDiv, lowerOf, roll, upright;
+import plugins.turtle.turtle : FACE_CORNERS, Turtle, boxOf, cornersOf, floorDiv, lowerOf, mixed, roll, strongestAround, upright;
 
 enum ulong ISLAND_SALT = 0x51ED270B;
 enum ulong DROPPED_SALT = 0x2C1B3C6D;
 enum ulong TREES_SALT = 0x297A2D39;
+enum ulong DISTRICT_SALT = 0x7B1D0F29;
 enum uint AROUND = 4;
 enum uint MAX_INSET = 1;
 enum Span ROAD = Span(-2, 1);
@@ -28,6 +29,7 @@ enum int ROUTE_STORIES = 2;
 enum int ROUTE_BUILDING_STORIES = 4;
 enum size_t MOST_TYPES = 16;
 enum size_t MOST_LOT_RULES = 8;
+enum size_t MOST_DISTRICTS = 8;
 immutable Bound[4] RUN_BOUNDS = [Side.xLow: Bound.joined, Side.yLow: Bound.joined, Side.xHigh: Bound.lot, Side.yHigh: Bound.lot];
 immutable Bound[4] ISLAND_BOUNDS = [Side.xLow: Bound.street, Side.yLow: Bound.street, Side.xHigh: Bound.joined, Side.yHigh: Bound.joined];
 
@@ -49,9 +51,17 @@ struct LotRule {
     List!(Traits, MOST_TYPES) types;
 }
 
-struct Zoning {
+struct District {
+    double streetTrees;
+    uint parkPercent;
+    uint plazaPercent;
+    uint parkingPercent;
     List!(LotRule, MOST_LOT_RULES) rules;
     LotRule island;
+}
+
+struct Zoning {
+    List!(District, MOST_DISTRICTS) districts;
     Traits route;
 }
 
@@ -60,10 +70,6 @@ __gshared Zoning zoning;
 struct Tuning {
     double droppedStreet;
     double island;
-    double streetTrees;
-    uint parkPercent;
-    uint plazaPercent;
-    uint parkingPercent;
     uint pondPercent;
     uint fountainPercent;
     uint alleyPercent;
@@ -71,12 +77,16 @@ struct Tuning {
 
 __gshared Tuning tuning;
 
-MaybeIndex!LotRule ruleFor(uint lots) {
+const(District)* districtAt(Turtle corner) {
+    return &zoning.districts.items[mixed(strongestAround(corner), DISTRICT_SALT) % zoning.districts.count];
+}
+
+MaybeIndex!LotRule ruleFor(ref const District district, uint lots) {
     uint index = 0;
-    while (index < zoning.rules.count && zoning.rules.items[index].lots != lots) {
+    while (index < district.rules.count && district.rules.items[index].lots != lots) {
         index += 1;
     }
-    if (index < zoning.rules.count) {
+    if (index < district.rules.count) {
         return MaybeIndex!LotRule.of(index);
     } else {
         return MaybeIndex!LotRule.init;
@@ -154,6 +164,14 @@ bool probeFoot(Turtle corner, ref const Risen risen) {
     ulong own = corner.probeHash(SitePart.vertex);
     ulong foot = Turtle(corner.api, risen.foot).probeHash(SitePart.vertex);
     return own == foot;
+}
+
+bool probeTaken(Turtle corner, ref const Risen risen) {
+    bool taken = corner.probeRising().exists;
+    if (!taken && risen.hasRisen) {
+        taken = probeFoot(corner, risen);
+    }
+    return taken;
 }
 
 bool probeOwnsFoot(Turtle face, ref const Risen risen) {
@@ -238,7 +256,7 @@ bool probeStreet(Turtle edge, ref const Root root) {
 
 bool probeTrees(Turtle edge) {
     double rolled = roll(edge.probeHash(SitePart.edge), TREES_SALT);
-    return rolled < tuning.streetTrees;
+    return rolled < districtAt(edge).streetTrees;
 }
 
 int crossingGap(Turtle corner, ref const Root root) {
@@ -457,7 +475,8 @@ void lotAt(Turtle corner, ref const Lots lots, ref const Root root) {
 }
 
 void rolledLot(Turtle site, ref const Lots lots, ref const Root root) {
-    bool park = site.rollChance(tuning.parkPercent);
+    const(District)* district = districtAt(site);
+    bool park = site.rollChance(district.parkPercent);
     if (park) {
         pave(lots, materials.park);
         bool pond = site.rollChance(tuning.pondPercent);
@@ -467,7 +486,7 @@ void rolledLot(Turtle site, ref const Lots lots, ref const Root root) {
             plant(lots);
         }
     } else {
-        bool plaza = site.rollChance(tuning.plazaPercent);
+        bool plaza = site.rollChance(district.plazaPercent);
         if (plaza) {
             pave(lots, materials.plaza);
             bool fountain = site.rollChance(tuning.fountainPercent);
@@ -477,15 +496,15 @@ void rolledLot(Turtle site, ref const Lots lots, ref const Root root) {
                 plant(lots);
             }
         } else {
-            bool parked = site.rollChance(tuning.parkingPercent);
-            MaybeIndex!LotRule rule = ruleFor(cast(uint) lots.count);
+            bool parked = site.rollChance(district.parkingPercent);
+            MaybeIndex!LotRule rule = ruleFor(*district, cast(uint) lots.count);
             if (parked) {
                 parking(lots);
             } else if (!rule.exists) {
                 pave(lots, materials.plaza);
                 plant(lots);
             } else {
-                Chosen chosen = fitted(chosenFor(site, zoning.rules.items[rule.value]), site, root);
+                Chosen chosen = fitted(chosenFor(site, district.rules.items[rule.value]), site, root);
                 if (chosen.spec.stories >= 1) {
                     build(lots, chosen);
                 } else {
@@ -569,7 +588,7 @@ void island(ref const Turtle[FACE_CORNERS] corners, ref const Root root) {
         parts.add(lot);
     }
     parts.items[0].front = Side.yLow;
-    Chosen chosen = fitted(chosenFor(corners[0], zoning.island), corners[0], root);
+    Chosen chosen = fitted(chosenFor(corners[0], districtAt(corners[0]).island), corners[0], root);
     if (chosen.spec.stories >= 1) {
         build(parts, chosen);
     } else {

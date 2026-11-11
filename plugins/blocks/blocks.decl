@@ -5,9 +5,17 @@ kind blocks-lot {
     types: some -> building-type
 }
 
-kind blocks-zoning {
+kind blocks-district {
+    street-trees: number 0..1 = 0.5
+    park-percent: integer 0..100 = 6
+    plaza-percent: integer 0..100 = 5
+    parking-percent: integer 0..100 = 3
     rules: some -> blocks-lot
     island: one -> blocks-lot
+}
+
+kind blocks-zoning {
+    districts: some -> blocks-district
     route: one -> building-type
 }
 

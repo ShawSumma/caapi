@@ -22,10 +22,74 @@ connector-materials connector:materials {
 }
 
 blocks-zoning blocks:zoning {
-    rules -> [blocks:corner blocks:slab blocks:wide blocks:around]
-    island -> blocks:island
+    districts -> [blocks:midtown blocks:downtown blocks:rows blocks:works blocks:green]
     route -> buildings:tenement
 }
+
+blocks-district blocks:midtown {
+    rules -> [blocks:corner blocks:slab blocks:wide blocks:around]
+    island -> blocks:island
+}
+
+blocks-district blocks:downtown {
+    street-trees: 0.15
+    park-percent: 2
+    plaza-percent: 10
+    parking-percent: 1
+    rules -> [blocks:tower-corner blocks:tower-slab blocks:tower-wide blocks:tower-around]
+    island -> blocks:tower-island
+}
+
+blocks-district blocks:rows {
+    street-trees: 0.9
+    park-percent: 9
+    plaza-percent: 3
+    parking-percent: 0
+    rules -> [blocks:row-corner blocks:row-slab blocks:row-wide blocks:row-around]
+    island -> blocks:row-island
+}
+
+blocks-district blocks:works {
+    street-trees: 0.05
+    park-percent: 1
+    plaza-percent: 2
+    parking-percent: 14
+    rules -> [blocks:works-corner blocks:works-slab blocks:works-wide blocks:works-around]
+    island -> blocks:works-island
+}
+
+blocks-district blocks:green {
+    street-trees: 0.8
+    park-percent: 30
+    plaza-percent: 14
+    parking-percent: 0
+    rules -> [blocks:green-corner blocks:green-slab blocks:green-wide blocks:green-around]
+    island -> blocks:green-island
+}
+
+blocks-lot blocks:tower-corner { lots: 1, shape: corner, most-stories: 26, types -> [buildings:deco buildings:glass buildings:glass buildings:modern] }
+blocks-lot blocks:tower-slab { lots: 2, shape: run, most-stories: 34, types -> [buildings:deco buildings:glass buildings:glass buildings:modern] }
+blocks-lot blocks:tower-wide { lots: 3, shape: run, most-stories: 38, types -> [buildings:deco buildings:glass buildings:glass buildings:modern] }
+blocks-lot blocks:tower-around { lots: 4, shape: run, most-stories: 38, types -> [buildings:deco buildings:glass buildings:modern] }
+blocks-lot blocks:tower-island { lots: 5, shape: run, most-stories: 38, types -> [buildings:deco buildings:glass buildings:modern] }
+
+blocks-lot blocks:row-corner { lots: 1, shape: corner, most-stories: 6, types -> [buildings:rowhouse buildings:rowhouse buildings:tenement] }
+blocks-lot blocks:row-slab { lots: 2, shape: run, most-stories: 6, types -> [buildings:brownstone buildings:brownstone buildings:rowhouse buildings:tenement] }
+blocks-lot blocks:row-wide { lots: 3, shape: run, most-stories: 7, types -> [buildings:tenement buildings:tenement buildings:civic] }
+blocks-lot blocks:row-around { lots: 4, shape: run, most-stories: 7, types -> [buildings:tenement buildings:civic] }
+blocks-lot blocks:row-island { lots: 5, shape: run, most-stories: 6, types -> [buildings:civic] }
+
+blocks-lot blocks:works-corner { lots: 1, shape: corner, most-stories: 8, types -> [buildings:tenement buildings:modern] }
+blocks-lot blocks:works-slab { lots: 2, shape: run, most-stories: 6, types -> [buildings:warehouse buildings:warehouse buildings:warehouse buildings:tenement] }
+blocks-lot blocks:works-wide { lots: 3, shape: run, most-stories: 8, types -> [buildings:warehouse buildings:warehouse buildings:modern] }
+blocks-lot blocks:works-around { lots: 4, shape: run, most-stories: 10, types -> [buildings:modern buildings:tenement] }
+blocks-lot blocks:works-island { lots: 5, shape: run, most-stories: 10, types -> [buildings:modern] }
+
+blocks-lot blocks:green-corner { lots: 1, shape: corner, most-stories: 6, types -> [buildings:civic buildings:civic buildings:rowhouse] }
+blocks-lot blocks:green-slab { lots: 2, shape: run, most-stories: 5, types -> [buildings:brownstone buildings:rowhouse] }
+blocks-lot blocks:green-wide { lots: 3, shape: run, most-stories: 6, types -> [buildings:civic buildings:civic buildings:tenement] }
+blocks-lot blocks:green-around { lots: 4, shape: run, most-stories: 6, types -> [buildings:civic] }
+blocks-lot blocks:green-island { lots: 5, shape: run, most-stories: 6, types -> [buildings:civic] }
 
 blocks-lot blocks:corner {
     lots: 1

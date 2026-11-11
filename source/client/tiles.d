@@ -14,7 +14,7 @@ import client.structures : BAD_PEN_DRAW, MESSAGE_CAPACITY, ONLY_WORLD_FLATTENS, 
 import common.graph : Graph, NodeId;
 import common.view : GraphView;
 import common.worldgen.blueprint : Blueprint, Brush, CellBox, Cover, LevelRange, LineEdge, LineKey, LineSpec, Paint, PaintOwner, PaintResult, Rhythm, RouteStop, SiteLine, TileEdge, canonicalBox, canonicalRhythm, edgeOf, probeLineAhead;
-import common.worldgen.horospheres : Horosphere, HorosphereId, HorosphereRef, ROOT, RiseMeasure, ensureBalanceAlong, ensureGroundNode, ensureHorospheresAt, ensureMeasure, ensureMeasured, ensurePlaneIn, ensureSegmentSite, ensureSegmentsNear, probePaintedBy, storeMeasure;
+import common.worldgen.horospheres : Fill, Grounds, Horosphere, HorosphereId, HorosphereRef, ROOT, RiseMeasure, ensureBalanceAlong, ensureGroundNode, ensureGrounds, ensureHorospheresAt, ensureMeasure, ensureMeasured, ensurePlaneIn, ensureSegmentSite, ensureSegmentsNear, probePaintedBy, storeMeasure;
 import common.worldgen.store : NodeMark, TileKey;
 import common.worldgen.strokes : Stroke, StrokeForm;
 import common.worldgen.structure : CanonicalSite, ColumnSpot, EDGE_NODES, LineTouch, SiteFrame, SlotTouch, addPendingTouch, canonicalOf, edgeSitesOf, ensureAroundEdge, ensureGroundRing, faceSite, frameOf, seedTouch, sideAxis, siteOf, sitePlacement, turnSite, walkTouch;
@@ -387,6 +387,7 @@ void visitTilesAt(alias onTile)(ref GraphView view, ref const TileCalls calls, u
     }
     if (calls.hasEdge) {
         foreach (site; view.edgeSitesOf(slot)) {
+            view.ensureGrounds(site.node);
             onTile(view.edgeKey(site), site, ROOT, 0, TileSpan.edge);
         }
     }
@@ -395,6 +396,8 @@ void visitTilesAt(alias onTile)(ref GraphView view, ref const TileCalls calls, u
 Risen risenOf(ref const Graph graph, HorosphereId horosphere, int segment) {
     Risen risen;
     risen.segment = segment;
+    risen.tag = graph.horospheres.tagOf(horosphere);
+    risen.form = graph.horospheres.formOf(horosphere);
     if (horosphere != ROOT) {
         const(Horosphere)* found = &graph.horospheres.horosphere(horosphere);
         risen.rising = Rising.risen;
@@ -476,7 +479,22 @@ struct TileHost {
         site.node = node;
         call.tile(&api, siteOf(site), &risen, call.data.ptr);
         takeRefusal();
+        if (task.span == TileSpan.edge) {
+            runOverGrounds(graph, call, site);
+        }
         painter.finish(taskEnd);
+    }
+
+    void runOverGrounds(ref const Graph graph, const(TileCall)* call, SiteFrame site) {
+        Grounds grounds = (*view).ensureGrounds(site.node);
+        foreach (ground; grounds.items[1 .. grounds.count]) {
+            if (ground.fill != Fill.none) {
+                horosphere = ground.horosphere;
+                Risen risen = risenOf(graph, ground.horosphere, 0);
+                call.tile(&api, siteOf(site), &risen, call.data.ptr);
+                takeRefusal();
+            }
+        }
     }
 
     void paint(Site site, Material material, Box area, ApiRhythm rhythm, Cover cover) {
@@ -615,6 +633,7 @@ Api tileApi(TileHost* host) {
     api.worldLook = &tileWorldLook;
     api.risingKinds = &tileRisingKinds;
     api.landmark = &tileLandmark;
+    api.under = &tileUnder;
     return api;
 }
 
@@ -707,6 +726,10 @@ void tileWorldLook(const(Api)* api, const(char)[] look) {
 
 void tileRisingKinds(const(Api)* api, double odds) {
     tileHost(api).refuse(ONLY_WORLD_GIVES_KINDS);
+}
+
+void tileUnder(const(Api)* api, KindTag ground, const(char)[] look, double depth, double fog) {
+    tileHost(api).refuse(ONLY_WORLD_SETS_LOOK);
 }
 
 bool tileLandmark(const(Api)* api, uint index, Site site) {

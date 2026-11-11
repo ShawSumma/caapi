@@ -5,7 +5,7 @@ import plugins.api.binding : List, bound, settingsOf;
 import plugins.api.content : BASE, Content, Dependency, FIRST_VERSION, Manifest, dependencyOn;
 import blocks = plugins.blocks.blocks;
 import plugins.connector.connector : Connection, connect, resolveConnector;
-import plugins.turtle.turtle : Along, Cell, EVERY_HEIGHT, Offset, Rows, STAIR_HEADROOM, TURN_TREADS, Turtle, boxOf, cornersOf, floorDiv, floorMod, higherOf, line, lowerOf, onWedge, ringRows, roll, treadSpan, upright, wedgeRows;
+import plugins.turtle.turtle : Along, Cell, EVERY_HEIGHT, Offset, Rows, STAIR_HEADROOM, TURN_TREADS, Turtle, boxOf, cornersOf, floorDiv, floorMod, higherOf, line, lowerOf, mixed, onWedge, ringRows, roll, treadSpan, upright, wedgeRows;
 
 enum string LOOK = "library:look";
 
@@ -22,6 +22,19 @@ enum int CLEAR = 6;
 enum Cell LAMP = Cell(10, 4);
 enum Span TABLE_X = Span(3, 8);
 enum Span TABLE_Y = Span(5, 6);
+enum int BALCONY = 3;
+enum int DESK = 8;
+enum int PARTITION = 6;
+enum int STUDY_DOOR = 3;
+enum Span LOUNGE_SHELF = Span(3, 8);
+enum Span LOUNGE_TABLE_X = Span(4, 5);
+enum Span LOUNGE_TABLE_Y = Span(9, 10);
+enum ulong STUDY_SALT = 0x452821E6;
+enum ulong LOOP_SALT = 0x38D01377;
+immutable Cell[4] STUDY_DOORS = [Cell(PARTITION, 3), Cell(PARTITION, 9), Cell(3, PARTITION), Cell(9, PARTITION)];
+immutable Cell[4] STUDY_DESKS = [Cell(2, 2), Cell(8, 2), Cell(2, 8), Cell(8, 8)];
+immutable Cell[3] STUDY_LAMPS = [Cell(3, 3), Cell(3, 9), Cell(9, 9)];
+immutable int[2] LOUNGE_ROWS = [3, 6];
 enum double SHAFT_SHARE = 2;
 enum ulong KIND_SALT = 0x3B9ACA07;
 enum ulong FLOOR_SALT = 0x7F4A7C15;
@@ -50,6 +63,8 @@ struct Materials {
     Material table;
     Material stair;
     Material well;
+    Material partition;
+    Material lounge;
     List!(Material, MOST_CHOICES) floors;
     List!(Material, MOST_CHOICES) books;
 }
@@ -61,6 +76,10 @@ struct Tuning {
     double shaftOdds;
     double hallOdds;
     double stairOdds;
+    double atriumOdds;
+    double studyOdds;
+    double loungeOdds;
+    double loopOdds;
     double arcadeOdds;
     double solidOdds;
     double fog;
@@ -86,6 +105,9 @@ enum Kind : ubyte {
     gallery,
     hall,
     stair,
+    atrium,
+    studies,
+    lounge,
 }
 
 enum Wall : ubyte {
@@ -109,10 +131,7 @@ struct Quarter {
 }
 
 Clearing clearingAt(Turtle corner, ref const Risen risen) {
-    bool clear = corner.probeRising().exists;
-    if (!clear && risen.hasRisen) {
-        clear = blocks.probeFoot(corner, risen);
-    }
+    bool clear = blocks.probeTaken(corner, risen);
     if (clear) {
         return Clearing.clear;
     } else {
@@ -126,6 +145,12 @@ Kind kindOf(ulong face) {
         return Kind.hall;
     } else if (chance < tuning.hallOdds + tuning.stairOdds) {
         return Kind.stair;
+    } else if (chance < tuning.hallOdds + tuning.stairOdds + tuning.atriumOdds) {
+        return Kind.atrium;
+    } else if (chance < tuning.hallOdds + tuning.stairOdds + tuning.atriumOdds + tuning.studyOdds) {
+        return Kind.studies;
+    } else if (chance < tuning.hallOdds + tuning.stairOdds + tuning.atriumOdds + tuning.studyOdds + tuning.loungeOdds) {
+        return Kind.lounge;
     } else {
         return Kind.gallery;
     }
@@ -204,6 +229,50 @@ void floors(ref const Quarter q, Kind kind, Material material) {
     }
 }
 
+void atrium(ref const Quarter q, Material material) {
+    Span whole = Span(BOTTOM, ROOF);
+    int far = q.tower.column().high;
+    spread(q, Material.none, Span(BOTTOM + 1, ROOF - 1), EVERY_HEIGHT);
+    spread(q, material, Span(BOTTOM, BOTTOM), EVERY_HEIGHT);
+    spread(q, materials.ceiling, Span(ROOF, ROOF), EVERY_HEIGHT);
+    q.tower.paint(materials.lamp, boxOf(Span(LAMP.x, LAMP.x), Span(LAMP.y, LAMP.y), Span(ROOF, ROOF)));
+    q.tower.paint(materials.table, boxOf(Span(DESK, far), Span(DESK, far), Span(BOTTOM + 1, BOTTOM + 1)));
+    if (!q.isClear()) {
+        q.tower.paint(material, boxOf(Span(0, far), Span(0, BALCONY), whole), Rhythm(STORY, 0, 1));
+        q.tower.paint(material, boxOf(Span(0, BALCONY), Span(0, far), whole), Rhythm(STORY, 0, 1));
+    }
+}
+
+void studies(Turtle tower, ulong hash) {
+    Span whole = Span(BOTTOM, ROOF);
+    int far = tower.column().high;
+    Rhythm walls = Rhythm(STORY, 1, STORY - 2);
+    tower.paint(materials.partition, boxOf(Span(PARTITION, PARTITION), Span(1, far), whole), walls);
+    tower.paint(materials.partition, boxOf(Span(1, far), Span(PARTITION, PARTITION), whole), walls);
+    size_t closed = cast(size_t)(mixed(hash, STUDY_SALT) % STUDY_DOORS.length);
+    bool looped = roll(hash, LOOP_SALT) < tuning.loopOdds;
+    foreach (index, door; STUDY_DOORS) {
+        if (looped || index != closed) {
+            tower.paint(Material.none, boxOf(Span(door.x, door.x), Span(door.y, door.y), whole), Rhythm(STORY, 1, STUDY_DOOR));
+        }
+    }
+    foreach (desk; STUDY_DESKS) {
+        tower.paint(materials.table, boxOf(Span(desk.x, desk.x + 1), Span(desk.y, desk.y), whole), Rhythm(STORY, 1, 1));
+    }
+    foreach (lamp; STUDY_LAMPS) {
+        tower.paint(materials.lamp, boxOf(Span(lamp.x, lamp.x), Span(lamp.y, lamp.y), whole), Rhythm(STORY, CEILING_AT, 1));
+    }
+}
+
+void lounge(Turtle tower) {
+    Span whole = Span(BOTTOM, ROOF);
+    foreach (row; LOUNGE_ROWS) {
+        tower.paint(materials.frame, boxOf(LOUNGE_SHELF, Span(row, row), whole), Rhythm(STORY, 1, 1));
+        tower.paint(bookOf(tower), boxOf(LOUNGE_SHELF, Span(row, row), whole), Rhythm(STORY, 2, 1));
+    }
+    tower.paint(materials.table, boxOf(LOUNGE_TABLE_X, LOUNGE_TABLE_Y, whole), Rhythm(STORY, 1, 1));
+}
+
 void tread(Turtle tower, int x, Span y, int top) {
     tower.paint(materials.stair, boxOf(Span(x, x), y, Span(top - 1, top)));
 }
@@ -228,13 +297,21 @@ void quarter(Turtle corner, size_t index, Kind kind, Material material, ref cons
     KindTag rising = corner.probeRising();
     if (rising != KindTag.of(STACKS_TAG)) {
         Quarter q = Quarter(upright(corner), clearingAt(corner, risen));
-        floors(q, kind, material);
+        if (kind == Kind.atrium) {
+            atrium(q, material);
+        } else {
+            floors(q, kind, material);
+        }
         if (!q.isClear()) {
             wall(q.tower, Along.x, corner.probeHash(SitePart.edge));
             wall(q.tower, Along.y, corner.right().probeHash(SitePart.edge));
         }
         if (kind == Kind.stair && index == 0 && !q.isClear()) {
             stairwell(q.tower);
+        } else if (kind == Kind.studies && !q.isClear()) {
+            studies(q.tower, corner.probeHash(SitePart.vertex) ^ corner.probeHash(SitePart.face));
+        } else if (kind == Kind.lounge && !q.isClear()) {
+            lounge(q.tower);
         } else if (kind == Kind.gallery) {
             stack(q.tower, Span(3, 7), Span(CLEAR, CLEAR + 1));
             uint second = q.tower.pick(2);
@@ -251,6 +328,9 @@ void tile(const(Api)* api, Site site, const(Risen)* risen, const(void)* data) {
     ulong hash = face.probeHash(SitePart.face);
     Kind kind = kindOf(hash);
     Material material = floorOf(hash);
+    if (kind == Kind.lounge) {
+        material = materials.lounge;
+    }
     foreach (index, corner; cornersOf(face)) {
         quarter(corner, index, kind, material, *risen);
     }

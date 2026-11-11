@@ -41,6 +41,9 @@ struct Biome {
     double boxOdds;
     double skylight;
     double nowhere;
+    double pillars;
+    double pool;
+    double court;
     int boxHeight;
     Vents vents;
 }
@@ -78,6 +81,10 @@ struct Rooms {
     Material sunlight;
     Material mural;
     Material muralLine;
+    Material water;
+    Material lawn;
+    Material trunk;
+    Material leaves;
     List!(Level, MOST_LEVELS) levels;
 }
 

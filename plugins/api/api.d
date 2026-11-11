@@ -2,7 +2,7 @@ module plugins.api.api;
 
 import plugins.api.content : Manifest;
 
-enum string ENTRY = "caapi_plugin_23";
+enum string ENTRY = "caapi_plugin_24";
 
 version (WebAssembly) {
     enum string entryOf(string unit) = ENTRY ~ "_" ~ unit;
@@ -156,6 +156,8 @@ struct Risen {
     KindTag lower;
     int segment;
     Rising rising;
+    KindTag tag;
+    HorosphereForm form;
 
     bool hasRisen() const {
         return rising == Rising.risen;
@@ -220,6 +222,7 @@ struct Api {
     void function(const(Api)* api, const(char)[] look) worldLook;
     void function(const(Api)* api, double odds) risingKinds;
     bool function(const(Api)* api, uint index, Site site) landmark;
+    void function(const(Api)* api, KindTag ground, const(char)[] look, double depth, double fog) under;
 }
 
 struct Registry {

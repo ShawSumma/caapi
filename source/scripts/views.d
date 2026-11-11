@@ -145,6 +145,12 @@ immutable NamedScript[] VIEWS = [
     NamedScript("vaults", &looking!("vaults", 0, -20)),
     NamedScript("vaultsup", &rising!("vaults", 0, 0.75f, -89)),
     NamedScript("vaultsgallery", &vaultsGallery),
+    NamedScript("sinkhole", &sinkhole),
+    NamedScript("grove", &grove),
+    NamedScript("backroomspool", &foundIn!("backrooms", "base:water", 0, 0.14f, 0.12f, 60)),
+    NamedScript("backroomscourt", &foundIn!("backrooms", "base:oak-wood", 0, 0.6f, 0.35f, 55)),
+    NamedScript("citycave", &foundIn!("city", "base:cave-grass", 2.3f, 0.12f, 0.45f, -10)),
+    NamedScript("librarywalk", &rising!("library", 1.5f, 0, 0)),
     NamedScript("thread", &threadView),
 ];
 
@@ -778,6 +784,51 @@ void cavesRim(ref Script view) {
     noclip(view, CAVES_RIM_RISE, Key.up);
     noclip(view, CAVES_RIM_BACK, Key.back);
     view.look(degrees(0), degrees(40));
+    view.step();
+}
+
+void foundIn(string name, string wanted, float depth, float rise, float back, double pitch)(ref Script view) {
+    view.structure(name);
+    view.live();
+    view.mode(MovementMode.noclip);
+    if (depth > 0) {
+        noclip(view, depth, Key.down);
+    }
+    view.wait(CAVES_LOAD_SECONDS);
+    Maybe!Position found = firstOf(view, materialNamed(wanted));
+    view.check(found.exists, "found no %s among %u loaded nodes of %s", wanted.ptr, view.game.world.graph.slotCount, name.ptr);
+    if (found.exists) {
+        view.game.placeAt(view.game.world.graph.ensureNormalized(found.value), Length(0));
+        noclip(view, rise, Key.up);
+        noclip(view, back, Key.back);
+        view.look(degrees(0), degrees(pitch));
+    }
+    view.wait(SETTLE_SECONDS);
+}
+
+void sinkhole(ref Script view) {
+    view.terrain();
+    Maybe!Position rim = walk.ensureLastFlat(view);
+    view.check(rim.exists, "the default world flattened no ground, so it has no sinkhole");
+    if (rim.exists) {
+        view.mode(MovementMode.noclip);
+        view.game.placeAt(rim.value, Length(0));
+        noclip(view, CAVES_RIM_RISE, Key.up);
+        noclip(view, CAVES_RIM_BACK, Key.back);
+        view.look(degrees(0), degrees(40));
+    }
+    view.step();
+}
+
+enum double GROVE_CLIMB_SECONDS = 3;
+enum double GROVE_FLIGHT_SECONDS = 4;
+
+void grove(ref Script view) {
+    view.terrain();
+    view.look(degrees(180), degrees(0));
+    view.mode(MovementMode.fly);
+    view.press(GROVE_CLIMB_SECONDS, Key.up);
+    view.press(GROVE_FLIGHT_SECONDS, Key.forward);
     view.step();
 }
 

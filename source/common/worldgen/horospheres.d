@@ -16,7 +16,7 @@ import common.look : Look;
 import common.position : Position;
 import common.traversal : MIRRORED_ORIGINS, isListed;
 import common.view : GraphView, SlotCorner;
-import common.worldgen.blueprint : floorDivision;
+import common.worldgen.blueprint : Under, floorDivision;
 import common.worldgen.climate : Climate, CubeClimate, NodeClimate, RELIEF_BOUND, RELIEF_SLACK;
 import common.worldgen.generation : NodeState;
 import common.worldgen.plane : Plane, PlaneMeasure, logCosh;
@@ -364,6 +364,19 @@ struct Horospheres {
             return Fill.flat;
         } else {
             return Fill.none;
+        }
+    }
+
+    HorosphereForm formOf(HorosphereId id) const {
+        MaybeIndex!ubyte kind = kindOf(id);
+        if (kind.exists) {
+            return kinds.ptr[kind.value].form;
+        } else if (rootFill == Fill.terrain) {
+            return HorosphereForm.terrain;
+        } else if (rootFill == Fill.flat) {
+            return HorosphereForm.solid;
+        } else {
+            return HorosphereForm.bare;
         }
     }
 
@@ -1018,22 +1031,53 @@ const(Look)* lookOfGround(ref const Graph graph, HorosphereId horosphere) {
     }
 }
 
-const(Look)* lookAt(ref const Graph graph, Position position) {
+struct NearGround {
+    HorosphereId horosphere;
+    float altitude;
+}
+
+NearGround nearestGround(ref const Graph graph, uint slot, Point!float point) {
+    NearGround nearest = NearGround(ROOT, graph.stateAt(slot).surface.distanceTo(point));
+    foreach (near; graph.horospheres.horospheresAt(slot)) {
+        float altitude = near.plane.distanceTo(point);
+        if (!graph.horospheres.isUpright(near.horosphere) && fabsf(altitude) < fabsf(nearest.altitude)) {
+            nearest = NearGround(near.horosphere, altitude);
+        }
+    }
+    return nearest;
+}
+
+const(Under)* underAt(ref const Graph graph, Position position) {
     uint slot = graph.slotOf(position.node).value;
-    if (!graph.isGravityKnown(slot)) {
-        return &graph.structures.blueprint.look;
+    const(Under)[] unders = graph.structures.blueprint.unders.slice();
+    if (unders.length == 0 || !graph.isGravityKnown(slot)) {
+        return null;
     } else {
         Point!float point = position.local * Point!float.origin();
-        HorosphereId nearest = ROOT;
-        float least = fabsf(graph.stateAt(slot).surface.distanceTo(point));
-        foreach (near; graph.horospheres.horospheresAt(slot)) {
-            float away = fabsf(near.plane.distanceTo(point));
-            if (!graph.horospheres.isUpright(near.horosphere) && away < least) {
-                least = away;
-                nearest = near.horosphere;
-            }
+        NearGround nearest = graph.nearestGround(slot, point);
+        KindTag tag = graph.horospheres.tagOf(nearest.horosphere);
+        float depth = -heightAbove(graph.loadedClimateAt(slot, point).relief, nearest.altitude, graph.horospheres.fillOf(nearest.horosphere));
+        size_t index = 0;
+        while (index < unders.length && !(unders[index].ground == tag && depth > unders[index].depth)) {
+            index += 1;
         }
-        return graph.lookOfGround(nearest);
+        if (index < unders.length) {
+            return &unders[index];
+        } else {
+            return null;
+        }
+    }
+}
+
+const(Look)* lookAt(ref const Graph graph, Position position) {
+    uint slot = graph.slotOf(position.node).value;
+    const(Under)* under = graph.underAt(position);
+    if (under !is null) {
+        return &under.look;
+    } else if (!graph.isGravityKnown(slot)) {
+        return &graph.structures.blueprint.look;
+    } else {
+        return graph.lookOfGround(graph.nearestGround(slot, position.local * Point!float.origin()).horosphere);
     }
 }
 

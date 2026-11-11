@@ -16,7 +16,7 @@ import common.neighbors : isInside;
 import common.node : ChunkLayout, Materials, Occupancy, Voxels, cellIndex;
 import common.view : GraphView;
 import common.worldgen.building : Building;
-import common.worldgen.climate : COVER_DEPTH, Climate, CubeClimate, NodeClimate, SOIL_DEPTH, WATER_LEVEL, groundAt, openAt, uniformRock;
+import common.worldgen.climate : COVER_DEPTH, Climate, CubeClimate, NodeClimate, SOIL_DEPTH, WATER_LEVEL, groundAt, openAt, underAt, uniformRock;
 import common.worldgen.horospheres : Fill, FlatLines, Ground, Grounds, MOST_GROUNDS, ensureGrounds, ensureHorospheresAt, flatLinesNear;
 import common.worldgen.palette : Tree, hasTrees, isGroundFor, isGroundForPlant, laidBy, oreFor, palette, treeAt, treeOf;
 import common.worldgen.plane : Plane, PlaneMeasure, chunkPoint, cubePoint;
@@ -378,6 +378,7 @@ struct ChunkParams {
                     break;
                 case Fill.flat:
                     generator.generateFlat(index);
+                    generator.generateVeins();
                     break;
                 case Fill.terrain:
                     generator.generateTerrain(index);
@@ -547,16 +548,23 @@ struct TerrainGenerator {
     void generateFlat(uint ground) {
         ubyte dimension = params.dimension;
         ValueRange range = params.groundRange(ground);
-        if (range.high < 0) {
+        Maybe!Material rock = uniformRock(-range.high, -range.low, params.climate.lowest, params.climate.highest);
+        if (range.high < 0 && -range.low < SOIL_DEPTH) {
             fillEmpty(palette.flatFill);
+        } else if (range.high < 0 && rock.exists) {
+            fillEmpty(rock.value);
+        } else if (range.high < 0 && params.materials == MaterialPass.deferring && !params.hasStructure && params.strokes.length == 0 && voxels.isFilledWith(Material.none)) {
+            voxels = Voxels.filled(palette.standIn);
+            materials = Materials.deferred;
         } else if (range.low <= 0) {
             prepareCells();
             foreach (x; 0 .. dimension) {
                 foreach (y; 0 .. dimension) {
                     foreach (z; 0 .. dimension) {
                         Point!float point = cubePoint(toNode, centerOf(x, y, z));
-                        if (params.levelFrom(ground, surfaces[ground].distanceTo(point), point) < 0) {
-                            setIfEmpty(Vec3!int(x, y, z), palette.flatFill);
+                        float level = params.levelFrom(ground, surfaces[ground].distanceTo(point), point);
+                        if (level < 0) {
+                            setIfEmpty(Vec3!int(x, y, z), underAt(-level, climateOfCell(Vec3!uint(x, y, z))));
                         }
                     }
                 }

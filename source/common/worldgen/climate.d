@@ -177,6 +177,14 @@ Material groundAt(float depth, float riser, Climate climate) {
     }
 }
 
+Material underAt(float depth, Climate climate) {
+    if (depth < SOIL_DEPTH) {
+        return palette.flatFill;
+    } else {
+        return palette.rocks[rockBand(depth + climate.strata)][wetnessClass(climate.wetness)][warmthClass(climate.warmth())];
+    }
+}
+
 Material openAt(float altitude, Climate climate) {
     if (altitude >= WATER_LEVEL) {
         return Material.none;

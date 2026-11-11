@@ -16,6 +16,8 @@ library-materials library:materials {
     table -> base:oak-wood
     stair -> base:marble
     well -> base:glass
+    partition -> base:plaster
+    lounge -> base:carpet
     floors -> [base:wood-planks base:spruce-wood base:marble base:red-carpet]
     books -> [base:red-carpet base:acacia-wood base:jungle-wood base:birch-wood base:oak-wood base:carpet base:red-sandstone]
 }

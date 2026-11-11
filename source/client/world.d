@@ -18,8 +18,9 @@ import common.perception : ViewEffects;
 import common.position : Position;
 import common.raycast.graph : GraphCastHit, rayCast;
 import common.traversal : NearbyNode, NearbyScratch;
+import common.worldgen.blueprint : Under;
 import common.worldgen.generation : Worldgen;
-import common.worldgen.horospheres : lookAt;
+import common.worldgen.horospheres : lookAt, underAt;
 import geometry.cube : Cell, Direction, boundaryOf;
 import geometry.honeycomb : NODE_RADIUS;
 import geometry.lorentz : Motion, Point, Vec4;
@@ -174,8 +175,11 @@ struct LocalWorld {
     }
 
     float viewRadius() const {
+        const(Under)* under = graph.underAt(cameraPosition);
         Maybe!float fog = graph.structures.blueprint.fog;
-        if (fog.exists) {
+        if (under !is null) {
+            return lowerOf(renderRadius, under.fog);
+        } else if (fog.exists) {
             return lowerOf(renderRadius, fog.value);
         } else {
             return renderRadius;

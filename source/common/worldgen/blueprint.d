@@ -13,7 +13,7 @@ import common.worldgen.horospheres : HorosphereId;
 import common.worldgen.strokes : Stroke, StrokeRun;
 import common.worldgen.structure : AxisOrder, CanonicalSite, ClaimKey, ColumnSpot, EDGE_NODES, LineTransform, PAINT_REACH, SiteFrame, SlotTouch, addPendingTouch, canonicalOf, edgeCells, ensureAroundEdge, isEndless, seedTouch, walkTouch;
 import geometry.honeycomb : Corner, FACE_COUNT, Face;
-import plugins.api.api : Extent, MOST_MATERIALS, Material, Repeat, Span;
+import plugins.api.api : Extent, KindTag, MOST_MATERIALS, Material, Repeat, Span;
 
 enum ulong PLACED_RANK = 0;
 enum ulong TILE_RANK_BIT = 1;
@@ -140,6 +140,13 @@ struct LineEdge {
 struct RouteStop {
     SiteFrame site;
     ColumnSpot spot;
+}
+
+struct Under {
+    KindTag ground;
+    Look look;
+    float depth = 0;
+    float fog = 0;
 }
 
 struct LineRun {
@@ -301,6 +308,7 @@ struct Blueprint {
     Array!uint freeTiles;
     Array!RouteStop route;
     Array!SiteFrame flats;
+    Array!Under unders;
     Array!Material materials;
     MaybeIndex!ubyte[MOST_MATERIALS] paints;
     HashMap!(LineKey, uint) lineIndex;
@@ -624,6 +632,7 @@ struct Blueprint {
         freeTiles.release();
         route.release();
         flats.release();
+        unders.release();
         materials.release();
         lineIndex.release();
         touchedEdges.release();

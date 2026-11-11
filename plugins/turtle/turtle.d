@@ -13,6 +13,7 @@ enum uint PERCENT = 100;
 enum uint FACE_CORNERS = 5;
 enum ulong MIX = 0x2545F4914F6CDD1D;
 enum uint MIX_SHIFT = 24;
+enum size_t MOST_HASHES = 1024;
 
 ulong mixed(ulong hash, ulong salt) {
     return ((hash ^ salt) * MIX) >> MIX_SHIFT;
@@ -219,6 +220,43 @@ Turtle[FACE_CORNERS] cornersOf(Turtle face) {
         corner = corner.forward(1).right();
     }
     return corners;
+}
+
+ulong strongestAround(Turtle face) {
+    ulong strongest = face.probeHash(SitePart.face);
+    foreach (corner; cornersOf(face)) {
+        strongest = higherOf(corner.left().probeHash(SitePart.face), strongest);
+    }
+    return strongest;
+}
+
+ulong strongestNear(Turtle face) {
+    ulong strongest = strongestAround(face);
+    foreach (corner; cornersOf(face)) {
+        strongest = higherOf(strongestAround(corner.left()), strongest);
+    }
+    return strongest;
+}
+
+struct Hashes {
+    ulong[MOST_HASHES] items;
+    uint count;
+
+    bool contains(ulong hash) const {
+        uint index = 0;
+        while (index < count && items[index] != hash) {
+            index += 1;
+        }
+        return index < count;
+    }
+
+    void add(ulong hash) {
+        if (!contains(hash)) {
+            assert(count < MOST_HASHES);
+            items[count] = hash;
+            count += 1;
+        }
+    }
 }
 
 struct Turtle {

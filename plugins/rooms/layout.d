@@ -8,7 +8,7 @@ import plugins.buildings.building : SIDES, Side;
 import plugins.connector.connector : Routing;
 import plugins.rooms.levels : Biome, HallLayout, Level, MOST_LEVELS, Rooms, Tuning, rooms, tuning;
 import plugins.rooms.rooms : Axis, Doors, Floor, Frame, Halls, MAZE_CELLS, MaybeLayer, Owns, Plan, Quarter, QuarterKind, SEPARATION, Stair, WallForm, frameOf, origin, paintFloor, stairs;
-import plugins.turtle.turtle : FACE_CORNERS, Turtle, cornersOf, higherOf, mixed, roll, upright;
+import plugins.turtle.turtle : FACE_CORNERS, Turtle, cornersOf, higherOf, mixed, roll, strongestNear, upright;
 
 enum int DOOR_LOW = 3;
 enum int DOOR_HIGH = 8;
@@ -23,6 +23,7 @@ enum ulong BIOME_SALT = 0x3C6EF372;
 enum ulong HALL_SALT = 0x7F4A7C15;
 enum ulong SOLID_SALT = 0x1B873593;
 enum ulong PLAN_SALT = 0x5BD1E995;
+enum ulong FORM_SALT = 0x243F6A88;
 
 enum Shaft : ubyte {
     none,
@@ -156,9 +157,22 @@ Stair stairOf(Turtle corner, ref const Root root, ref const Halls[MOST_LEVELS] h
     }
 }
 
-Plan planOf(Turtle corner, ref const Quarter q, ref const Stair stair, ref const Floor floor, size_t index, Halls halls) {
+Plan openPlan(double chance, ref const Floor floor, ref const Biome biome) {
+    if (chance < biome.pillars) {
+        return Plan.pillars;
+    } else if (chance < biome.pillars + biome.pool) {
+        return Plan.pool;
+    } else if (floor.isTop() && chance < biome.pillars + biome.pool + biome.court) {
+        return Plan.court;
+    } else {
+        return Plan.rooms;
+    }
+}
+
+Plan planOf(Turtle corner, ref const Quarter q, ref const Stair stair, ref const Floor floor, size_t index, Halls halls, ref const Biome biome) {
     const(Level)* level = &floor.level();
-    double chance = roll(corner.probeHash(SitePart.vertex) ^ corner.probeHash(SitePart.face), PLAN_SALT + index);
+    ulong hash = corner.probeHash(SitePart.vertex) ^ corner.probeHash(SitePart.face);
+    double chance = roll(hash, PLAN_SALT + index);
     ulong face = corner.probeHash(SitePart.face);
     if (level.isMaze()) {
         return Plan.maze;
@@ -173,7 +187,7 @@ Plan planOf(Turtle corner, ref const Quarter q, ref const Stair stair, ref const
     } else if (!halls.has(Axis.x) && !halls.has(Axis.y) && chance < level.rings + level.chapel) {
         return Plan.chapel;
     } else {
-        return Plan.rooms;
+        return openPlan(roll(hash, FORM_SALT + index), floor, biome);
     }
 }
 
@@ -221,7 +235,7 @@ void quarter(Turtle corner, ref const Root root, ref const(Biome)*[MOST_LEVELS] 
             }
             doors[side] = lineDoors(lines[side].hash, index + 1, *level, passage);
         }
-        Plan plan = planOf(corner, q, stair, floor, index + 1, halls[index]);
+        Plan plan = planOf(corner, q, stair, floor, index + 1, halls[index], *biomes[index]);
         frames[index] = frameOf(q, halls[index], floor, biomes[index], stair, plan, owns);
         paintFloor(frames[index], doors, plan);
     }
@@ -240,10 +254,7 @@ void tile(const(Api)* api, Site site, const(Risen)* risen, const(void)* data) {
 
 void tileAt(Turtle face, ref const Root root) {
     Turtle[FACE_CORNERS] corners = cornersOf(face);
-    ulong strongest = face.probeHash(SitePart.face);
-    foreach (corner; corners) {
-        strongest = higherOf(corner.left().probeHash(SitePart.face), strongest);
-    }
+    ulong strongest = strongestNear(face);
     const(Biome)*[MOST_LEVELS] biomes;
     foreach (index; 0 .. floorCount()) {
         const(Level)* level = &floors[index].level();

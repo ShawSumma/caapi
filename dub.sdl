@@ -28,8 +28,8 @@ preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$D
 preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :library"
 preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :palace"
 preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :arbor"
-preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :lattice"
-preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :caves"
+preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :lattice-mod"
+preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :caves-mod"
 preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :vaults"
 
 configuration "application" {
@@ -291,6 +291,8 @@ subPackage {
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
 	dependency "caapi:horospheres" version="*"
+	dependency "caapi:caves" version="*"
+	dependency "caapi:lattice" version="*"
 }
 
 subPackage {
@@ -314,6 +316,7 @@ subPackage {
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
 	dependency "caapi:horospheres" version="*"
+	dependency "caapi:caves" version="*"
 }
 
 subPackage {
@@ -325,6 +328,7 @@ subPackage {
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
 	dependency "caapi:horospheres" version="*"
+	dependency "caapi:caves" version="*"
 }
 
 subPackage {
@@ -411,14 +415,25 @@ subPackage {
 
 subPackage {
 	name "lattice"
-	targetType "dynamicLibrary"
-	targetPath "lib"
+	targetType "sourceLibrary"
 	sourcePaths "plugins/lattice"
+	excludedSourceFiles "plugins/lattice/plugin.d"
+	importPaths "."
+	dependency "caapi:turtle" version="*"
+}
+
+subPackage {
+	name "lattice-mod"
+	targetType "dynamicLibrary"
+	targetName "caapi_lattice"
+	targetPath "lib"
+	sourcePaths
+	sourceFiles "plugins/lattice/plugin.d"
 	importPaths "."
 	stringImportPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
-	dependency "caapi:turtle" version="*"
+	dependency "caapi:lattice" version="*"
 }
 
 subPackage {
@@ -443,14 +458,25 @@ subPackage {
 
 subPackage {
 	name "caves"
-	targetType "dynamicLibrary"
-	targetPath "lib"
+	targetType "sourceLibrary"
 	sourcePaths "plugins/caves"
+	excludedSourceFiles "plugins/caves/plugin.d"
+	importPaths "."
+	dependency "caapi:carve" version="*"
+}
+
+subPackage {
+	name "caves-mod"
+	targetType "dynamicLibrary"
+	targetName "caapi_caves"
+	targetPath "lib"
+	sourcePaths
+	sourceFiles "plugins/caves/plugin.d"
 	importPaths "."
 	stringImportPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
-	dependency "caapi:carve" version="*"
+	dependency "caapi:caves" version="*"
 }
 
 subPackage {
@@ -463,4 +489,5 @@ subPackage {
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
 	dependency "caapi:carve" version="*"
+	dependency "caapi:caves" version="*"
 }

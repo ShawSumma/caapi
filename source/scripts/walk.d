@@ -7,7 +7,11 @@ import base.units : Time;
 import client.game : Key;
 import client.script : Script, StepHook, degrees;
 import common.character.controller : Footing, MovementMode;
+import common.graph : Graph;
 import common.items : materialNames;
+import common.position : Position;
+import common.worldgen.structure : SiteFrame, sitePlacement;
+import geometry.lorentz : Point, Shift = Motion;
 import plugins.api.api : Material;
 import scripts.claims : Measure, Topic, claim;
 
@@ -35,8 +39,8 @@ enum float LEAST_BLOCK_EDGE = 0.035f;
 enum float MOST_BLOCK_EDGE = 0.077f;
 immutable string[2] STREET_MATERIALS = ["base:basalt", "base:white-brick"];
 immutable string[7] TOWER_MATERIALS = ["base:concrete", "base:white-brick", "base:grey-brick", "base:sandstone", "base:wood-planks", "base:steel", "base:marble"];
-immutable string[4] BACKROOMS_FLOORS = ["base:carpet", "base:damp-carpet", "base:red-carpet", "base:concrete"];
-immutable string[3] BACKROOMS_CEILINGS = ["base:ceiling-tile", "base:light-panel", "base:concrete"];
+immutable string[5] BACKROOMS_FLOORS = ["base:carpet", "base:damp-carpet", "base:red-carpet", "base:concrete", "base:marble"];
+immutable string[6] BACKROOMS_CEILINGS = ["base:ceiling-tile", "base:light-panel", "base:concrete", "base:plaster", "base:white-brick", "base:sunlight"];
 
 struct BuildLayer {
     uint slot;
@@ -94,6 +98,18 @@ Maybe!Material lookBelow(ref Script world) {
 void spawn(ref Script world) {
     world.check(world.mode() == MovementMode.walk, "spawned walking");
     world.check(world.isOnGround(), "spawned standing on the ground");
+}
+
+Maybe!Position ensureLastFlat(ref Script world) {
+    Graph* graph = &world.game.world.graph;
+    const(SiteFrame)[] flats = graph.structures.blueprint.flats.slice();
+    if (flats.length == 0) {
+        return Maybe!Position.init;
+    } else {
+        SiteFrame site = flats[$ - 1];
+        Point!float vertex = sitePlacement(site, graph.layout) * Point!float.origin();
+        return Maybe!Position.of(graph.ensureNormalized(Position(graph.idAt(site.node), Shift!float.shiftTo(vertex))));
+    }
 }
 
 void onSlope(ref Script world, double tilt, double heading) {

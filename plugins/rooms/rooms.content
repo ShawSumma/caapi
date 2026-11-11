@@ -15,6 +15,10 @@ rooms-materials rooms:materials {
     sunlight -> base:sunlight
     mural -> base:slate
     mural-line -> base:white-brick
+    water -> base:water
+    lawn -> base:grass
+    trunk -> base:oak-wood
+    leaves -> base:oak-leaves
     levels -> [rooms:offices rooms:houses rooms:mazes]
 }
 
@@ -26,7 +30,7 @@ rooms-level rooms:offices {
     chapel: 0.04
     stairs: 0.24
     hall -> rooms:office-hall
-    biomes -> [rooms:office rooms:sodden rooms:stained]
+    biomes -> [rooms:office rooms:sodden rooms:stained rooms:archive rooms:red-room rooms:tiled rooms:open-hall rooms:atrium]
 }
 
 rooms-hall rooms:office-hall {
@@ -39,13 +43,97 @@ rooms-hall rooms:office-hall {
 rooms-level rooms:houses {
     missing: 0.03
     stairs: 0.24
-    biomes -> [rooms:parlor rooms:study rooms:attic]
+    biomes -> [rooms:parlor rooms:study rooms:attic rooms:conservatory rooms:gallery]
 }
 
 rooms-level rooms:mazes {
     room: 3
     kind: maze
-    biomes -> [rooms:bunker rooms:cellar rooms:sump]
+    biomes -> [rooms:bunker rooms:cellar rooms:sump rooms:catacomb rooms:hedge]
+}
+
+rooms-biome rooms:archive {
+    wall -> base:concrete
+    floor -> base:concrete
+    ceiling -> base:ceiling-tile
+    light -> base:light-panel
+    stair -> base:concrete
+    shelf -> base:steel
+    boxes -> base:wood-planks
+    big: 0.8
+    box-odds: 0.4
+    box-height: 4
+    pillars: 0.1
+}
+
+rooms-biome rooms:red-room {
+    wall -> base:red-carpet
+    floor -> base:red-carpet
+    ceiling -> base:plaster
+    light -> base:sunlight
+    trim -> base:spruce-wood
+    stair -> base:red-carpet
+    big: 0.5
+    open: 0.3
+    pillars: 0.35
+}
+
+rooms-biome rooms:tiled {
+    wall -> base:white-brick
+    floor -> base:marble
+    ceiling -> base:white-brick
+    light -> base:light-panel
+    damp -> base:water
+    stair -> base:marble
+    big: 0.6
+    open: 0.6
+    skylight: 0.3
+    pillars: 0.2
+    pool: 0.55
+}
+
+rooms-biome rooms:conservatory {
+    wall -> base:glass
+    floor -> base:grass
+    ceiling -> base:glass
+    light -> base:sunlight
+    trim -> base:wood-planks
+    stair -> base:wood-planks
+    room-floors -> [base:grass base:lush-grass]
+    big: 0.5
+    open: 0.4
+    pillars: 0.3
+}
+
+rooms-biome rooms:gallery {
+    wall -> base:white-brick
+    floor -> base:marble
+    ceiling -> base:plaster
+    light -> base:light-panel
+    trim -> base:slate
+    stair -> base:marble
+    room-floors -> base:marble
+    big: 0.7
+    open: 0.2
+    pillars: 0.5
+}
+
+rooms-biome rooms:catacomb {
+    wall -> base:limestone
+    floor -> base:gravel
+    ceiling -> base:limestone
+    light -> base:sunlight
+    stair -> base:limestone
+    nowhere: 0.3
+}
+
+rooms-biome rooms:hedge {
+    wall -> base:oak-leaves
+    floor -> base:grass
+    ceiling -> base:oak-leaves
+    light -> base:sunlight
+    stair -> base:wood-planks
+    nowhere: 0.1
 }
 
 rooms-biome rooms:office {
@@ -61,6 +149,33 @@ rooms-biome rooms:office {
     box-odds: 0.15
     box-height: 4
     skylight: 0.2
+    pillars: 0.08
+}
+
+rooms-biome rooms:open-hall {
+    wall -> base:wallpaper
+    floor -> base:carpet
+    ceiling -> base:ceiling-tile
+    light -> base:light-panel
+    damp -> base:damp-carpet
+    stair -> base:carpet
+    vents: some
+    big: 0.6
+    open: 0.5
+    pillars: 0.75
+}
+
+rooms-biome rooms:atrium {
+    wall -> base:white-brick
+    floor -> base:wood-planks
+    ceiling -> base:plaster
+    light -> base:sunlight
+    trim -> base:spruce-wood
+    stair -> base:wood-planks
+    big: 0.5
+    skylight: 0.5
+    pillars: 0.15
+    court: 0.7
 }
 
 rooms-biome rooms:sodden {
@@ -75,6 +190,7 @@ rooms-biome rooms:sodden {
     box-odds: 0.25
     box-height: 3
     skylight: 0.1
+    pool: 0.2
 }
 
 rooms-biome rooms:stained {

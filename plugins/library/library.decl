@@ -5,6 +5,8 @@ kind library-materials {
     table: one -> material
     stair: one -> material
     well: one -> material
+    partition: one -> material
+    lounge: one -> material
     floors: some -> material
     books: some -> material
 }

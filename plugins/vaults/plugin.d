@@ -1,10 +1,11 @@
 module plugins.vaults.plugin;
 
 import core.stdc.math : cos, fabs, floor, pow, sqrt;
-import plugins.api.api : Api, HorosphereForm, KindId, Material, Registry, Risen, Site, SitePart, Span, entryOf, tagNamed;
+import plugins.api.api : Api, HorosphereForm, KindId, KindTag, Material, Registry, Risen, RisingKind, Site, SitePart, Span, entryOf, tagNamed;
 import plugins.api.binding : List, bound, settingsOf;
-import plugins.api.content : Content, FIRST_VERSION, Manifest, ON_BASE;
+import plugins.api.content : BASE, Content, Dependency, FIRST_VERSION, Manifest, dependencyOn;
 import plugins.carve.carve : Choice, Slab, Vec, Way, along, emit, unitOf;
+import caves = plugins.caves.caves;
 import plugins.turtle.turtle : FACE_CORNERS, PI, Turtle, cornersOf, upright;
 
 enum string LOOK = "vaults:look";
@@ -59,6 +60,8 @@ enum ulong PALETTE_SALT = 0x50414C45;
 enum ulong SPIRE_SALT = 0x53504952;
 enum ulong DOOR_SALT = 0x444F4F52;
 enum size_t MOST_PALETTES = 16;
+enum double CLEAR = 8;
+enum double RISING_SHARE = 1;
 
 struct Palette {
     Material floor;
@@ -86,6 +89,7 @@ struct Tuning {
 __gshared Tuning tuning;
 
 void resolve(const(Content)* content) {
+    caves.resolveCaves(content);
     materials = content.bound!Materials("vaults:materials");
     tuning = content.settingsOf!Tuning("vaults");
 }
@@ -94,6 +98,20 @@ enum Wall : ubyte {
     door,
     arcade,
     closed,
+}
+
+enum Clearing : ubyte {
+    built,
+    clear,
+}
+
+Clearing clearingAt(Turtle corner) {
+    bool clear = corner.probeRising().exists;
+    if (clear) {
+        return Clearing.clear;
+    } else {
+        return Clearing.built;
+    }
 }
 
 enum Spire : ubyte {
@@ -309,7 +327,7 @@ Choice floorChoice(ref const Room room, ref const Place place) {
     }
 }
 
-Choice cellChoice(ref const Room room, uint quarter, Vec cell) {
+Choice cellChoice(ref const Room room, uint quarter, Vec cell, Clearing clearing) {
     Place place = placeOf(quarter, cell);
     Palette palette = room.palette;
     double gallery = room.gallery;
@@ -321,6 +339,8 @@ Choice cellChoice(ref const Room room, uint quarter, Vec cell) {
         } else {
             return Choice.keep();
         }
+    } else if (clearing == Clearing.clear && cell.x < CLEAR && cell.y < CLEAR) {
+        return Choice.keep();
     } else if (room.spire == Spire.shikhara && place.radius < spireRadius(room, place)) {
         if (place.rise >= gallery + FINIAL_ABOVE_GALLERY) {
             return Choice.of(materials.lamp);
@@ -364,8 +384,9 @@ void hall(const(Api)* api, Site face, const(Risen)* risen, const(void)* data) {
     Room made = roomOf(corners);
     foreach (index, corner; corners) {
         uint quarter = cast(uint) index;
+        Clearing clearing = clearingAt(corner);
         Choice choose(Vec cell) {
-            return cellChoice(made, quarter, cell);
+            return cellChoice(made, quarter, cell, clearing);
         }
         emit!choose(Slab(upright(corner), Span(0, QUARTER - 1), Span(0, QUARTER - 1), Span(FLOOR, TOP)));
     }
@@ -402,15 +423,20 @@ void world(const(Api)* api, Site site, const(void)* data) {
     api.look(api, kind, LOOK);
     api.worldLook(api, LOOK);
     api.fog(api, tuning.fog);
+    caves.carve(api);
+    caves.darken(api, KindTag.of(VAULT_TAG), caves.SEALED_UNDER);
     Turtle[FACE_CORNERS] corners = cornersOf(Turtle(api, site));
     Room made = roomOf(corners);
     route(corners, made);
     upright(corners[0]).entrance(QUARTER + 15.5f, CENTER - 3, 0);
 }
 
-immutable Manifest MANIFEST = Manifest("vaults", FIRST_VERSION, ON_BASE[], null, &resolve, null, import("plugins/vaults/settings.conf"), import("plugins/vaults/vaults.decl"), import("plugins/vaults/vaults.content"));
+immutable Dependency[3] NEEDS = [dependencyOn(BASE), dependencyOn("connector"), dependencyOn("caves")];
+immutable Manifest MANIFEST = Manifest("vaults", FIRST_VERSION, NEEDS[], null, &resolve, null, import("plugins/vaults/settings.conf"), import("plugins/vaults/vaults.decl"), import("plugins/vaults/vaults.content"));
 
 pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
     registry.declare(registry, &MANIFEST);
     registry.add(registry, "vaults", &world);
+    RisingKind rising = RisingKind(RISING_SHARE, HorosphereForm.solid, VAULT_TAG, &hall, null, 0, LOOK);
+    registry.addKind(registry, "vaults", &rising);
 }

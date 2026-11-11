@@ -15,6 +15,9 @@ kind rooms-biome {
     box-odds: number 0..1 = 0
     skylight: number 0..1 = 0
     nowhere: number 0..1 = 0
+    pillars: number 0..1 = 0
+    pool: number 0..1 = 0
+    court: number 0..1 = 0
     box-height: integer 0.. = 0
     vents: "none" | "some" = "none"
 }
@@ -48,5 +51,9 @@ kind rooms-materials {
     sunlight: one -> material
     mural: one -> material
     mural-line: one -> material
+    water: one -> material
+    lawn: one -> material
+    trunk: one -> material
+    leaves: one -> material
     levels: 2.. -> rooms-level
 }

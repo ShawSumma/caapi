@@ -1,5 +1,14 @@
 look vaults:look { red: 0.6, green: 0.52, blue: 0.4, tint: fog }
 
+connector-ground vaults:ground {
+    tag: "vaults:vaults"
+    bridge: none
+}
+
+connector-materials connector:materials {
+    grounds -> vaults:ground
+}
+
 vaults-materials vaults:materials {
     lamp -> base:light-panel
     palettes -> [vaults:marble vaults:dolomite vaults:sandstone vaults:diorite]

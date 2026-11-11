@@ -1,7 +1,8 @@
 module plugins.backrooms.plugin;
 
-import plugins.api.api : Api, Registry, Site, SitePart, Spot, entryOf;
-import plugins.api.content : BASE, Dependency, FIRST_VERSION, Manifest, dependencyOn;
+import plugins.api.api : Api, KindTag, Registry, Site, SitePart, Spot, entryOf;
+import plugins.api.content : BASE, Content, Dependency, FIRST_VERSION, Manifest, dependencyOn;
+import caves = plugins.caves.caves;
 import plugins.horospheres.horospheres : BACKROOMS_LOOK;
 import layout = plugins.rooms.layout;
 import plugins.rooms.levels : rooms;
@@ -14,11 +15,18 @@ void world(const(Api)* api, Site site, const(void)* data) {
     layout.Root root = layout.Root(at.probeHash(SitePart.vertex));
     api.tile(api, &layout.tile, &root, layout.Root.sizeof);
     api.worldLook(api, BACKROOMS_LOOK);
+    caves.carve(api);
+    caves.darken(api, KindTag.init, caves.SEALED_UNDER);
     upright(at).entrance(SPAWN.x, SPAWN.y, SPAWN.z + rooms.ground.level);
 }
 
-immutable Dependency[5] NEEDS = [dependencyOn(BASE), dependencyOn("connector"), dependencyOn("blocks"), dependencyOn("rooms"), dependencyOn("horospheres")];
-immutable Manifest MANIFEST = Manifest("backrooms", FIRST_VERSION, NEEDS[], null, &layout.resolveRooms);
+void resolve(const(Content)* content) {
+    layout.resolveRooms(content);
+    caves.resolveCaves(content);
+}
+
+immutable Dependency[6] NEEDS = [dependencyOn(BASE), dependencyOn("connector"), dependencyOn("blocks"), dependencyOn("rooms"), dependencyOn("horospheres"), dependencyOn("caves")];
+immutable Manifest MANIFEST = Manifest("backrooms", FIRST_VERSION, NEEDS[], null, &resolve);
 
 pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
     registry.declare(registry, &MANIFEST);

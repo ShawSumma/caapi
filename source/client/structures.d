@@ -17,7 +17,7 @@ import common.graph : Graph;
 import common.look : Look, lookNamed;
 import common.node : ChunkLayout;
 import common.view : GraphView;
-import common.worldgen.blueprint : BlueprintBuilder, CellBox, Cover, PaintOwner, PaintResult, Rhythm;
+import common.worldgen.blueprint : BlueprintBuilder, CellBox, Cover, PaintOwner, PaintResult, Rhythm, Under;
 import common.worldgen.generation : StructureWorld, Worldgen;
 import common.worldgen.horospheres : GravityPull, HorosphereId, HorosphereKind, Horospheres, LOWEST_RISE_EDGES, ROOT, Rise, ensureColumnSite, ensureRise, openHorosphere;
 import common.worldgen.plane : Plane;
@@ -534,6 +534,19 @@ struct StructureHost {
         }
     }
 
+    void under(KindTag ground, const(char)[] name, double depth, double fog) {
+        Maybe!Look chosen = lookNamed(name);
+        if (builder.isGrowing) {
+            refuse(ONLY_WORLD_SETS_LOOK);
+        } else if (!chosen.exists) {
+            refuse(UNKNOWN_LOOK);
+        } else if (!(depth >= 0) || !(fog > 0)) {
+            refuse("a ground looks different below a depth of at least zero, with fog closing in past a distance above zero");
+        } else {
+            builder.graph.structures.blueprint.unders.append(Under(ground, chosen.value, cast(float) depth, cast(float) fog));
+        }
+    }
+
     void addRisingKinds(double odds) {
         foreach (ref kind; registry().risingKinds[0 .. registry().kindCount]) {
             KindId made = horosphere(odds * kind.share, kind.form, kind.tag, kind.tile, kind.data, kind.size);
@@ -663,6 +676,7 @@ Api mainApi(StructureHost* host) {
     api.worldLook = &mainWorldLook;
     api.risingKinds = &mainRisingKinds;
     api.landmark = &mainLandmark;
+    api.under = &mainUnder;
     return api;
 }
 
@@ -839,6 +853,10 @@ void mainWorldLook(const(Api)* api, const(char)[] look) {
 
 void mainRisingKinds(const(Api)* api, double odds) {
     mainHost(api).addRisingKinds(odds);
+}
+
+void mainUnder(const(Api)* api, KindTag ground, const(char)[] look, double depth, double fog) {
+    mainHost(api).under(ground, look, depth, fog);
 }
 
 bool mainLandmark(const(Api)* api, uint index, Site site) {

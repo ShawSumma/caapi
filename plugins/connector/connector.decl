@@ -7,6 +7,7 @@ kind connector-palette {
 kind connector-ground {
     tag: text
     level: integer = 0
+    bridge: "built" | "none" = "built"
 }
 
 kind connector-pair {

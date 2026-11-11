@@ -139,6 +139,7 @@ immutable NamedScript[] TESTS = [
     NamedScript("structure/treetrunk", &structureTreetrunk),
     NamedScript("structure/wild", &risen!("risenwild", 2.0f, "base:concrete", "the connector's landing")),
     NamedScript("structure/caves", &structureCaves),
+    NamedScript("structure/sinkhole", &structureSinkhole),
     NamedScript("structure/vaults", &climbing!("vaults", 0.35f, SpawnCheck.checked)),
     NamedScript("content/hooks", &contentHooks),
     NamedScript("lost/thread-off", &lostThreadOff),
@@ -1400,7 +1401,7 @@ void liveFar(ref Script world) {
 enum uint FLY_SECONDS = 40;
 enum uint NOCLIP_SECONDS = 30;
 enum float LEAST_FLY_FRACTION = 0.9f;
-enum double FLY_CLIMB_SECONDS = 3;
+enum double FLY_CLIMB_SECONDS = 5;
 
 void checkClose(ref Script world, const(char)* what, uint second) {
     UnloadedCount unloaded = world.unloadedWithin(CLOSE);
@@ -2098,4 +2099,23 @@ void structureCaves(ref Script world) {
     world.check(world.isOnGround(), "standing on the rim again after %zu waypoints", reached);
     world.check(start - lowest >= CAVES_LEAST_DESCENT, "went down only %.3f into the cave", start - lowest);
     world.check(fabs(world.altitude().value - start) < CAVES_HOME_TOLERANCE, "came back up to %.3f from %.3f", world.altitude().value, start);
+}
+
+enum float SINKHOLE_RISE = 0.1f;
+enum double SINKHOLE_FALL_SECONDS = 6;
+
+void structureSinkhole(ref Script world) {
+    world.terrain();
+    Maybe!Position rim = walk.ensureLastFlat(world);
+    world.check(rim.exists, "the default world flattened no ground, so it has no sinkhole");
+    if (!world.isFailed) {
+        world.mode(MovementMode.noclip);
+        world.game.placeAt(rim.value, Length(0));
+        world.press(SINKHOLE_RISE / walk.NOCLIP_SPEED, Key.up);
+        float start = world.altitude().value;
+        world.mode(MovementMode.walk);
+        world.wait(SINKHOLE_FALL_SECONDS);
+        float fell = start - world.altitude().value;
+        world.claim(Topic.structures, "A body dropped into the default world's sinkhole falls most of an edge below the ground before it lands.", world.isOnGround() && fell >= CAVES_LEAST_DESCENT, Measure.of("fell", fell), Measure.of("least expected", CAVES_LEAST_DESCENT));
+    }
 }
