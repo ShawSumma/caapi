@@ -1,6 +1,13 @@
-# caapi
+# Caapi
 
-caapi is a voxel game set in hyperbolic space, and the engine under it. This is version 0.0.1: the game, its save files and the plugin interface all still change.
+Caapi is a voxel game set in hyperbolic space, and the engine under it. This is version 0.0.1: the game, its save files and the plugin interface all still change.
+
+## Credit
+
+Caapi is largely inspired by and builds on the technical work done by [hypermine](https://github.com/Ralith/hypermine), please check them out!
+
+Generative AI was used in the development of caapi. There was an interesting discussion of it in the [HyperRogue Lounge discord](https://discord.gg/qnrR4hRy7m), which I highly suggest joining if you want to find people interested in hyperbolic space.
+
 
 ## The world
 
