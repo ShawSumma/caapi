@@ -46,6 +46,7 @@ version (WebAssembly) {
     import palace = plugins.palace.plugin;
     import planet = plugins.planet.plugin;
     import road = plugins.road.plugin;
+    import skies = plugins.skies.plugin;
     import tower = plugins.tower.plugin;
     import trail = plugins.trail.plugin;
     import vaults = plugins.vaults.plugin;
@@ -57,8 +58,8 @@ version (WebAssembly) {
     import horospheresMod = plugins.horospheres.plugin;
     import roomsMod = plugins.rooms.plugin;
 
-    immutable Entry[22] WEB_ENTRIES = [&base.plugin, &blocksMod.plugin, &boxMod.plugin, &buildingsMod.plugin, &connectorMod.plugin, &horospheresMod.plugin, &roomsMod.plugin, &arbor.plugin, &babel.plugin, &backrooms.plugin, &caves.plugin, &city.plugin, &crown.plugin, &fixtures.plugin, &lattice.plugin, &library.plugin, &palace.plugin, &planet.plugin, &road.plugin, &tower.plugin, &trail.plugin, &vaults.plugin];
-    immutable string[22] WEB_PLUGINS = ["base", "blocks", "box", "buildings", "connector", "horospheres", "rooms", "arbor", "babel", "backrooms", "caves", "city", "crown", "fixtures", "lattice", "library", "palace", "planet", "road", "tower", "trail", "vaults"];
+    immutable Entry[23] WEB_ENTRIES = [&base.plugin, &blocksMod.plugin, &boxMod.plugin, &buildingsMod.plugin, &connectorMod.plugin, &horospheresMod.plugin, &roomsMod.plugin, &arbor.plugin, &babel.plugin, &backrooms.plugin, &caves.plugin, &city.plugin, &crown.plugin, &fixtures.plugin, &lattice.plugin, &library.plugin, &palace.plugin, &planet.plugin, &road.plugin, &skies.plugin, &tower.plugin, &trail.plugin, &vaults.plugin];
+    immutable string[23] WEB_PLUGINS = ["base", "blocks", "box", "buildings", "connector", "horospheres", "rooms", "arbor", "babel", "backrooms", "caves", "city", "crown", "fixtures", "lattice", "library", "palace", "planet", "road", "skies", "tower", "trail", "vaults"];
 } else version (OSX) {
     import core.sys.posix.dirent : DIR, closedir, dirent, opendir, readdir;
     import core.sys.posix.dlfcn : RTLD_NOW, dlerror, dlopen, dlsym;

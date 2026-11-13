@@ -417,6 +417,10 @@ struct Horospheres {
         return index < kinds.length;
     }
 
+    bool canRiseFrom(HorosphereId id, ubyte kind) const {
+        return kinds.ptr[kind].form != HorosphereForm.sunken || tagOf(id) == KindTag.of(kinds.ptr[kind].under);
+    }
+
     bool isBurying(HorosphereId id, Plane plane, float lowestSurface) const {
         return !isUpright(id) && !hasSunkenUnder(id) && isBuriedUnder(plane, fillOf(id), lowestSurface);
     }
@@ -812,15 +816,19 @@ Rise ensureChosenRise(ref GraphView view, uint face, Corner corner, HorosphereId
         SiteFrame site = groundSite(face, corner, view.horospheres.labelOf(horosphere));
         ulong mine = view.ensureSiteHash(site, SitePart.vertex);
         Rise rise = view.horospheres.rolled(mine);
-        SiteFrame[GROUND_EDGES] neighbors = view.ensureNeighbors(site);
-        uint edge = 0;
-        while (rise.kind.exists && edge < GROUND_EDGES && !view.probeOutranked(neighbors[edge], mine)) {
-            edge += 1;
-        }
-        if (edge == GROUND_EDGES && view.probeRiseClear(face, corner, horosphere, rise)) {
-            return rise;
-        } else {
+        if (!rise.kind.exists || !view.horospheres.canRiseFrom(horosphere, rise.kind.value)) {
             return Rise.init;
+        } else {
+            SiteFrame[GROUND_EDGES] neighbors = view.ensureNeighbors(site);
+            uint edge = 0;
+            while (edge < GROUND_EDGES && !view.probeOutranked(neighbors[edge], mine)) {
+                edge += 1;
+            }
+            if (edge == GROUND_EDGES && view.probeRiseClear(face, corner, horosphere, rise)) {
+                return rise;
+            } else {
+                return Rise.init;
+            }
         }
     }
 }
@@ -861,7 +869,7 @@ bool isRayApart(Vec4!float base, Vec4!float along, Plane plane, float separation
 
 bool probeRiseClear(ref GraphView view, uint face, Corner corner, HorosphereId horosphere, Rise rise) {
     if (view.horospheres.kinds.ptr[rise.kind.value].form == HorosphereForm.sunken) {
-        return view.horospheres.tagOf(horosphere) == KindTag.of(view.horospheres.kinds.ptr[rise.kind.value].under);
+        return view.horospheres.canRiseFrom(horosphere, rise.kind.value);
     } else {
         uint foot = view.ensureAirSideNode(face, corner, view.horospheres.labelOf(horosphere));
         if (view.horospheres.isUprightKind(rise.kind.value)) {

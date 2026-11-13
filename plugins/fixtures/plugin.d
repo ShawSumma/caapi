@@ -173,6 +173,7 @@ pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
     registry.addDebug(registry, "driftcity", &styled!(Style.drift));
     registry.addDebug(registry, "lanterncity", &styled!(Style.lantern));
     registry.addDebug(registry, "hiddenstair", &styled!(Style.hidden));
+    registry.addDebug(registry, "pairedcity", &styled!(Style.paired));
     registry.addDebug(registry, "risenwild", &risenWild);
     registry.addDebug(registry, "risenbackrooms", &risenBackrooms);
     registry.addDebug(registry, "stacked", &stacked);
@@ -186,6 +187,8 @@ pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
     registry.addDebug(registry, "tripspiral", &trip!(Style.spiral, Ground.plain, Ground.wild));
     registry.addDebug(registry, "tripdrift", &trip!(Style.drift, Ground.plain, Ground.backrooms));
     registry.addDebug(registry, "triplantern", &trip!(Style.lantern, Ground.city, Ground.city));
+    registry.addDebug(registry, "trippaired", &trip!(Style.paired, Ground.wild, Ground.backrooms));
+    registry.addDebug(registry, "trippairedwild", &trip!(Style.paired, Ground.wild, Ground.wild));
     registry.addDebug(registry, "chain", &chain);
     registry.addDebug(registry, "basement", &basement);
     registry.addDebug(registry, "backroomsstairs", &backroomsStairs);

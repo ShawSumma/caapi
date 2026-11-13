@@ -8,6 +8,7 @@ kind connector-ground {
     tag: text
     level: integer = 0
     bridge: "built" | "none" = "built"
+    dress: "masonry" | "trunk" | "stairwell" | "shelves" = "masonry"
 }
 
 kind connector-pair {
@@ -18,6 +19,7 @@ kind connector-pair {
     drift: integer 0.. = 0
     lantern: integer 0.. = 0
     hidden: integer 0.. = 0
+    paired: integer 0.. = 0
 }
 
 kind connector-materials {
@@ -29,6 +31,9 @@ kind connector-materials {
     drift: one -> connector-palette
     lantern: one -> connector-palette
     hidden: one -> connector-palette
+    trunk: one -> connector-palette
+    stairwell: one -> connector-palette
+    shelves: one -> connector-palette
     grounds: many -> connector-ground
     pairs: many -> connector-pair
 }

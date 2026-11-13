@@ -1,0 +1,12 @@
+kind skies-palette {
+    floor: one -> material
+    step: one -> material
+    accent: one -> material
+    light: one -> material
+}
+
+kind skies-materials {
+    terraces: some -> skies-palette
+    garden: some -> skies-palette
+    trellis: some -> skies-palette
+}

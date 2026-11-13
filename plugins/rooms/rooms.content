@@ -1,6 +1,7 @@
 connector-ground rooms:ground {
     tag: "horospheres:backrooms"
     level: -1
+    dress: stairwell
 }
 
 connector-materials connector:materials {

@@ -1,6 +1,7 @@
 connector-ground library:ground {
     tag: "library:library"
     level: 1
+    dress: shelves
 }
 
 connector-materials connector:materials {

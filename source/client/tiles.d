@@ -10,7 +10,7 @@ import base.numbers : clamped;
 import base.parallel : Executor, ParallelJob;
 import base.splitmix : SplitMix;
 import base.stdio : snprintf;
-import client.structures : BAD_PEN_DRAW, MESSAGE_CAPACITY, ONLY_WORLD_FLATTENS, ONLY_WORLD_GIVES_KINDS, ONLY_WORLD_OPENS, ONLY_WORLD_ROOTS, ONLY_WORLD_SETS_FOG, ONLY_WORLD_SETS_LOOK, ONLY_WORLD_SHAPES_GROUND, ONLY_WORLD_TILES_EDGES, ONLY_WORLD_TILES_GROUND, ONLY_WORLD_TURNS_GRAVITY, PenFrame, Refusing, UNBOUNDED_PAINT, apiBuild, apiColumn, apiCrust, apiEdgeCells, apiFail, apiFailure, apiFill, apiForward, apiHash, apiLeaves, apiLimb, apiPaint, apiPen, apiPenForward, apiPenHeight, apiPenLift, apiPenRise, apiPenRoll, apiPenTurn, apiPick, apiPort, apiRandom, apiRising, apiTurned, boxRefusal, cellBoxOf, cellLengthOf, columnOf, engineRhythm, ensureRisingTag, probeCrust, probePort, unitNormal;
+import client.structures : BAD_PEN_DRAW, MESSAGE_CAPACITY, ONLY_WORLD_FLATTENS, ONLY_WORLD_GIVES_KINDS, ONLY_WORLD_OPENS, ONLY_WORLD_ROOTS, ONLY_WORLD_SETS_FOG, ONLY_WORLD_SETS_LOOK, ONLY_WORLD_SHAPES_GROUND, ONLY_WORLD_TILES_EDGES, ONLY_WORLD_TILES_GROUND, ONLY_WORLD_TURNS_GRAVITY, PenFrame, Refusing, UNBOUNDED_PAINT, apiBuild, apiColumn, apiCrust, apiEdgeCells, apiFail, apiFailure, apiFill, apiForward, apiHash, apiLeaves, apiLimb, apiPaint, apiPen, apiPenForward, apiPenHeight, apiPenLift, apiPenRise, apiPenRoll, apiPenTurn, apiPick, apiPort, apiRandom, apiRelief, apiRising, apiTurned, boxRefusal, cellBoxOf, cellLengthOf, columnOf, engineRhythm, ensureRisingTag, probeCrust, probePort, probeRelief, unitNormal;
 import common.graph : Graph, NodeContent, NodeId;
 import common.view : GraphView;
 import common.worldgen.blueprint : Blueprint, Brush, CellBox, Cover, LevelRange, LineEdge, LineKey, LineSpec, Paint, PaintOwner, PaintResult, Rhythm, RouteStop, SiteLine, TileEdge, canonicalBox, canonicalRhythm, edgeOf, probeLineAhead;
@@ -579,6 +579,10 @@ struct TileHost {
         return (*view).probeCrust(site, horosphere);
     }
 
+    double probeReliefAt(Site site) {
+        return (*view).probeRelief(site, horosphere);
+    }
+
     void planCandidate(ref const Graph graph, GraphView* threadView, uint candidate, uint index) {
         view = threadView;
         uint tileStart = cast(uint) plan.tiles.length;
@@ -695,6 +699,7 @@ Api tileApi(TileHost* host) {
     api.underCrust = &tileUnderCrust;
     api.abyss = &tileAbyss;
     api.edgeCeiling = &tileEdgeCeiling;
+    api.probeRelief = &apiRelief!tileHost;
     return api;
 }
 

@@ -1,0 +1,37 @@
+look skies:terraces { red: 0.86, green: 0.8, blue: 0.9, tint: fog }
+look skies:garden { red: 0.16, green: 0.17, blue: 0.24, tint: fog }
+look skies:trellis { red: 0.62, green: 0.84, blue: 0.86, tint: fog }
+
+connector-ground skies:terraces-ground {
+    tag: "skies:terraces"
+    bridge: none
+}
+
+connector-ground skies:garden-ground {
+    tag: "skies:garden"
+    bridge: none
+}
+
+connector-ground skies:trellis-ground {
+    tag: "skies:trellis"
+    bridge: none
+}
+
+connector-materials connector:materials {
+    grounds -> [skies:terraces-ground skies:garden-ground skies:trellis-ground]
+}
+
+skies-materials skies:materials {
+    terraces -> [skies:pale skies:sand skies:slate]
+    garden -> [skies:night skies:ash skies:rust]
+    trellis -> [skies:glass skies:timber]
+}
+
+skies-palette skies:pale { floor -> base:marble, step -> base:dolomite, accent -> base:limestone, light -> base:sunlight }
+skies-palette skies:sand { floor -> base:sandstone, step -> base:red-sandstone, accent -> base:limestone, light -> base:sunlight }
+skies-palette skies:slate { floor -> base:slate, step -> base:diorite, accent -> base:marble, light -> base:light-panel }
+skies-palette skies:night { floor -> base:basalt, step -> base:marble, accent -> base:red-sandstone, light -> base:light-panel }
+skies-palette skies:ash { floor -> base:slate, step -> base:snow, accent -> base:steel, light -> base:sunlight }
+skies-palette skies:rust { floor -> base:basalt, step -> base:red-sandstone, accent -> base:glass, light -> base:light-panel }
+skies-palette skies:glass { floor -> base:glass, step -> base:wood-planks, accent -> base:steel, light -> base:sunlight }
+skies-palette skies:timber { floor -> base:glass, step -> base:spruce-wood, accent -> base:oak-wood, light -> base:light-panel }

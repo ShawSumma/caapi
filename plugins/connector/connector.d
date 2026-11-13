@@ -29,6 +29,10 @@ enum int STONE_SIDE = 2;
 enum int LANTERN_WIDEST = 11;
 enum int LANTERN_TIER = 3;
 enum int LANTERN_BAND_EVERY = 2;
+enum int CROWN_TIERS = 3;
+enum int CROWN_TIER = 3;
+enum int ROOT_FLARE = 3;
+enum Span KNOT = Span(-1, 0);
 immutable Cell[8] STONES = [Cell(-10, -1), Cell(-8, 6), Cell(-1, 8), Cell(6, 6), Cell(8, -1), Cell(6, -8), Cell(-1, -10), Cell(-8, -8)];
 immutable Cell[TURN] SEGMENTS = [
     Cell(0, 2),
@@ -47,6 +51,30 @@ enum Style : ubyte {
     drift,
     lantern,
     hidden,
+    paired,
+}
+
+enum Dress : ubyte {
+    masonry,
+    trunk,
+    stairwell,
+    shelves,
+}
+
+enum End : ubyte {
+    lower,
+    upper,
+}
+
+struct Ends {
+    Dress lower;
+    Dress upper;
+}
+
+struct Half {
+    Span z;
+    int floor;
+    End end;
 }
 
 enum Routing : ubyte {
@@ -83,6 +111,7 @@ struct Ground {
     Named tag;
     int level;
     Bridge bridge;
+    Dress dress;
 }
 
 struct Pair {
@@ -93,6 +122,7 @@ struct Pair {
     uint drift;
     uint lantern;
     uint hidden;
+    uint paired;
 
     uint shareOf(Style style) const {
         final switch (style) {
@@ -106,11 +136,13 @@ struct Pair {
                 return lantern;
             case Style.hidden:
                 return hidden;
+            case Style.paired:
+                return paired;
         }
     }
 
     uint total() const {
-        return tower + spiral + drift + lantern + hidden;
+        return tower + spiral + drift + lantern + hidden + paired;
     }
 }
 
@@ -121,7 +153,7 @@ Style styleOf(KindTag lower, uint upper, ulong vertex) {
         index += 1;
     }
     if (index == pairs.length || pairs[index].total == 0) {
-        return Style.tower;
+        return Style.paired;
     } else {
         uint roll = cast(uint)(mixed(vertex, STYLE_SALT) % pairs[index].total);
         uint below = 0;
@@ -149,6 +181,9 @@ struct Materials {
     Palette drift;
     Palette lantern;
     Palette hidden;
+    Palette trunk;
+    Palette stairwell;
+    Palette shelves;
     List!(Ground, MOST_GROUNDS) grounds;
     List!(Pair, MOST_PAIRS) pairs;
 }
@@ -260,6 +295,121 @@ void ring(Turtle tower, Material material, int half, Span z) {
     tower.paint(material, boxOf(Span(half - 1, half - 1), Span(-half, half - 1), z));
 }
 
+Half lowerHalf(Layout layout) {
+    return Half(Span(layout.base, layout.base + layout.flip), layout.base, End.lower);
+}
+
+Half upperHalf(Layout layout) {
+    return Half(Span(layout.base + layout.flip + 1, layout.base + layout.top), layout.base + layout.top, End.upper);
+}
+
+Rhythm band(Half half, int row, int span) {
+    final switch (half.end) {
+        case End.lower:
+            return Rhythm(STORY, floorMod(half.floor + row, STORY), span);
+        case End.upper:
+            return Rhythm(STORY, floorMod(half.floor - row - span + 1, STORY), span);
+    }
+}
+
+Span roomsOf(Half half) {
+    final switch (half.end) {
+        case End.lower:
+            return Span(half.z.low + 1, half.z.high);
+        case End.upper:
+            return Span(half.z.low, half.z.high - 1);
+    }
+}
+
+Span fromFlip(Half half, int offset, int count) {
+    final switch (half.end) {
+        case End.lower:
+            return Span(higherOf(half.z.low, half.z.high - offset - count + 1), half.z.high - offset);
+        case End.upper:
+            return Span(half.z.low + offset, lowerOf(half.z.high, half.z.low + offset + count - 1));
+    }
+}
+
+Span fromGround(Half half, int count) {
+    final switch (half.end) {
+        case End.lower:
+            return Span(half.z.low, lowerOf(half.z.high, half.z.low + count - 1));
+        case End.upper:
+            return Span(higherOf(half.z.low, half.z.high - count + 1), half.z.high);
+    }
+}
+
+bool isEmpty(Span span) {
+    return span.low > span.high;
+}
+
+void crown(Turtle tower, Material leaves, Half half) {
+    foreach (tier; 0 .. CROWN_TIERS) {
+        Span z = fromFlip(half, tier * CROWN_TIER, CROWN_TIER);
+        if (!isEmpty(z)) {
+            tower.fill(leaves, square(HALF_WIDTH + CROWN_TIERS - tier, z));
+        }
+    }
+}
+
+void flare(Turtle tower, Material bark, Half half) {
+    Span z = fromGround(half, ROOT_FLARE);
+    if (!isEmpty(z)) {
+        tower.fill(bark, square(HALF_WIDTH + 1, z));
+    }
+}
+
+void knots(Turtle tower, Span z, Rhythm rows) {
+    tower.paint(Material.none, boxOf(Span(-HALF_WIDTH, -HALF_WIDTH), KNOT, z), rows);
+    tower.paint(Material.none, boxOf(Span(HALF_WIDTH - 1, HALF_WIDTH - 1), KNOT, z), rows);
+    tower.paint(Material.none, boxOf(KNOT, Span(-HALF_WIDTH, -HALF_WIDTH), z), rows);
+    tower.paint(Material.none, boxOf(KNOT, Span(HALF_WIDTH - 1, HALF_WIDTH - 1), z), rows);
+}
+
+void dress(Turtle tower, Dress dress, Palette palette, Half half) {
+    final switch (dress) {
+        case Dress.masonry:
+            tower.paint(palette.wall, square(HALF_WIDTH, half.z));
+            tower.paint(palette.trim, square(HALF_WIDTH, half.z), band(half, 0, 1));
+            windows(tower, roomsOf(half), band(half, 1, 2));
+            break;
+        case Dress.trunk:
+            crown(tower, palette.trim, half);
+            flare(tower, palette.wall, half);
+            tower.paint(palette.wall, square(HALF_WIDTH, half.z));
+            knots(tower, roomsOf(half), band(half, 2, 1));
+            break;
+        case Dress.stairwell:
+            tower.paint(palette.wall, square(HALF_WIDTH, half.z));
+            tower.paint(palette.trim, square(HALF_WIDTH, half.z), band(half, STORY - 1, 1));
+            break;
+        case Dress.shelves:
+            tower.paint(palette.wall, square(HALF_WIDTH, half.z));
+            tower.paint(palette.trim, square(HALF_WIDTH, half.z), band(half, 1, 2));
+            break;
+    }
+}
+
+void paired(Turtle tower, Ends ends, Palette lower, Palette upper, Layout layout) {
+    dress(tower, ends.lower, lower, lowerHalf(layout));
+    dress(tower, ends.upper, upper, upperHalf(layout));
+    tower.paint(lower.floor, square(INNER, Span(layout.base, layout.base)));
+    tower.paint(upper.floor, square(INNER, Span(layout.base + layout.top, layout.base + layout.top)));
+}
+
+Palette dressedIn(Dress dress, Palette masonry) {
+    final switch (dress) {
+        case Dress.masonry:
+            return masonry;
+        case Dress.trunk:
+            return materials.trunk;
+        case Dress.stairwell:
+            return materials.stairwell;
+        case Dress.shelves:
+            return materials.shelves;
+    }
+}
+
 void lantern(Turtle tower, Palette palette, Layout layout) {
     int end = layout.base + layout.top;
     int tier = 0;
@@ -300,23 +450,23 @@ Turtle upperDoorFrame(Turtle tower, Layout layout) {
     return frame;
 }
 
-void helix(Turtle tower, Material material, Layout layout) {
+void helix(Turtle tower, Material lower, Material upper, Layout layout) {
     int base = layout.base;
     int top = layout.top;
     int flip = layout.flip;
     tower.paint(Material.none, cells(Span(0, CORE - 1), Span(0, CORE - 1), Span(base + 1, base + top - 1)));
-    tower.paint(material, cells(WELL, WELL, Span(base + flip + WELL_CATCH, base + flip + WELL_CATCH + 1)));
+    tower.paint(upper, cells(WELL, WELL, Span(base + flip + WELL_CATCH, base + flip + WELL_CATCH + 1)));
     foreach (index, segment; SEGMENTS) {
         int i = cast(int) index;
         Span along = Span(segment.x, segment.x + 1);
         Span across = Span(segment.y, segment.y + 1);
         int last = flip - floorMod(flip - i, TURN);
         if (last >= 0) {
-            tower.paint(material, cells(along, across, Span(base, base + last)), Rhythm(TURN, floorMod(base + i - 1, TURN), 2));
+            tower.paint(lower, cells(along, across, Span(base, base + last)), Rhythm(TURN, floorMod(base + i - 1, TURN), 2));
         }
         int first = firstUpperLayer(layout, i);
         if (first <= top) {
-            tower.paint(material, cells(along, across, Span(base + first, base + top)), Rhythm(TURN, floorMod(base + i + upperShift(layout), TURN), 2));
+            tower.paint(upper, cells(along, across, Span(base + first, base + top)), Rhythm(TURN, floorMod(base + i + upperShift(layout), TURN), 2));
         }
     }
 }
@@ -397,11 +547,11 @@ void connect(Turtle site, ref const Risen risen, uint upperTag, Connection how) 
     Ground upper = groundOf(KindTag.of(upperTag));
     Ground lower = groundOf(risen.lower);
     if (upper.bridge == Bridge.built && lower.bridge == Bridge.built) {
-        bridge(site, risen, upperTag, how, layoutOf(site, risen, upper.level, lower.level));
+        bridge(site, risen, upperTag, how, layoutOf(site, risen, upper.level, lower.level), Ends(lower.dress, upper.dress));
     }
 }
 
-void bridge(Turtle site, ref const Risen risen, uint upperTag, Connection how, Layout layout) {
+void bridge(Turtle site, ref const Risen risen, uint upperTag, Connection how, Layout layout, Ends ends) {
     Style style = chosenStyle(site, risen, upperTag, how);
     Palette palette = materials.palettes.items[site.pick(materials.palettes.count)];
     if (style == Style.drift) {
@@ -410,6 +560,11 @@ void bridge(Turtle site, ref const Risen risen, uint upperTag, Connection how, L
         palette = materials.lantern;
     } else if (style == Style.hidden) {
         palette = materials.hidden;
+    }
+    Palette above = palette;
+    if (style == Style.paired) {
+        above = dressedIn(ends.upper, materials.palettes.items[site.pick(materials.palettes.count)]);
+        palette = dressedIn(ends.lower, palette);
     }
     Turtle tower = site.pitchUp().rollRight().forward(risen.edges).pitchUp().pitchUp().rollRight();
     int plane = risen.edges * site.edgeCells();
@@ -433,8 +588,11 @@ void bridge(Turtle site, ref const Risen risen, uint upperTag, Connection how, L
             openFloors(tower, palette, layout);
             flipGallery(tower, palette.wall, layout);
             break;
+        case Style.paired:
+            paired(tower, ends, palette, above, layout);
+            break;
     }
-    helix(tower, palette.floor, layout);
+    helix(tower, palette.floor, above.floor, layout);
     if (style == Style.spiral) {
         core(tower, palette.wall, palette.trim, layout);
     } else if (style == Style.drift) {

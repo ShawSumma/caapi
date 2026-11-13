@@ -4,8 +4,8 @@ import core.stdc.math : asinh, atan2, cos, fabs, floor, sin, sqrt, tanh;
 import plugins.api.api : Api, HorosphereForm, KindTag, Material, Pen, Rhythm, Risen, Site, SitePart, Span, Spot;
 import plugins.api.binding : bound, kebabOf;
 import plugins.api.content : Content, settingAt;
-import plugins.carve.carve : Choice, Triad, Vec, WAYS, WAY_COUNT, Way, aimed, along, axisOf, between, carried, chartOf, degreesOf, dot, edgeHash, emit, fromAlong, isOwnedBy, latticeHash, minus, mixed, noiseAt, normalized, opposite, penCarried, physicalOf, plus, rejected, scaled, slabAt, squared, triadAt, unitOf, upOf;
-import plugins.turtle.turtle : Drawing, Hashes, PI, PORT, TURN_TREADS, Tread, Turtle, boxOf, settled, treadAround;
+import plugins.carve.carve : Choice, Painting, Triad, Vec, WAYS, WAY_COUNT, Way, aimed, along, axisOf, between, carried, chartOf, degreesOf, dot, edgeHash, emit, fromAlong, isOwnedBy, latticeHash, minus, mixed, noiseAt, normalized, opposite, penCarried, physicalOf, plus, rejected, scaled, slabAt, squared, triadAt, unitOf, upOf;
+import plugins.turtle.turtle : Drawing, Hashes, PI, PORT, TURN_TREADS, Tread, Turtle, boxOf, clamped, settled, treadAround;
 
 enum string NAME = "caves";
 enum string LOOK = "caves:look";
@@ -99,7 +99,16 @@ enum double SHAFT_RADIUS = 8;
 enum double WELL_RADIUS = 2.5;
 enum double TREAD_MIDDLE = SHAFT_RADIUS - 1.5;
 enum double TREAD_THICKNESS = 2;
-enum double OPENING_SKY = 8;
+enum double MOUTH_LOW = -8;
+enum double MOUTH_HIGH = 6;
+enum double MOUTH_ROOM = 3;
+enum double STONE_RING = 10.5;
+enum double STONE_REACH = 1.3;
+enum double STONE_FOOT = 3;
+enum double STONE_GATE = 0.5;
+enum uint LEAST_STONES = 3;
+enum uint STONE_CHOICES = 4;
+enum ulong STONE_SALT = 0x53_544F_4E45;
 enum double RIM_STOP = SHAFT_RADIUS + 2;
 enum double DOOR_OUT = SHAFT_RADIUS + 1.5;
 enum double CLEARANCE = 1.5;
@@ -189,6 +198,7 @@ enum Spread BEAM_HEIGHT = Spread(0, 0.5);
 enum Spread BEAM_TILT = Spread(0, 0.35);
 enum Spread BEAM_LENGTH = Spread(10, 18);
 enum Spread BEAM_WIDTH = Spread(0.9, 1.9);
+enum Spread STONE_HEIGHT = Spread(2, 5.5);
 enum Spread ICICLE_WIDTH = Spread(0.9, 1.6);
 enum uint LEAST_ARMS = 6;
 enum uint ARM_CHOICES = 4;
@@ -323,6 +333,7 @@ struct Scene {
     double domeHeight = 0;
     double bowl = 0;
     double edge = 0;
+    double mouth = 0;
     uint count;
     uint formationCount;
     Theme theme;
@@ -433,8 +444,17 @@ bool probeSunk(ref const Vertex at, ulong hash, ref const Root root) {
         return false;
     } else {
         bool rising = at.frame.probeRising().exists;
-        return !rising;
+        if (rising) {
+            return false;
+        } else {
+            double relief = at.frame.probeRelief();
+            return relief > MOUTH_LOW && relief < MOUTH_HIGH;
+        }
     }
+}
+
+double mouthOf(ref const Vertex at) {
+    return clamped(at.frame.probeRelief(), MOUTH_LOW, MOUTH_HIGH);
 }
 
 bool keeps(ref const Vertex at, ulong hash, ref const Bed bed) {
@@ -625,7 +645,9 @@ Scene sceneAt(ref const Vertex at, ref const Bed bed) {
     Scene scene;
     scene.at = at;
     scene.edge = at.frame.edgeCells();
-    if (!isSurface(at)) {
+    if (isSurface(at)) {
+        scene.mouth = mouthOf(at);
+    } else {
         scene.bowl = bowlOf(at);
     }
     scene.triad = triadAt(at.frame);
@@ -894,19 +916,45 @@ Space tubeSpace(ref const Tube tube, Vec point, Vec up, double edge) {
                     if (tube.top == Top.far) {
                         down = edge - along;
                     }
-                    double angle = atan2(across.dot(tube.turn), across.dot(tube.start));
-                    if (angle < 0) {
-                        angle += 2 * PI;
-                    }
-                    double wedge = floor(angle / (2 * PI) * TURN_TREADS);
-                    if (down >= wedge && down < wedge + TREAD_THICKNESS) {
-                        return Space.tread;
-                    } else {
-                        return Space.air;
-                    }
+                    return treadSpace(tube, across, down);
                 }
         }
     }
+}
+
+Space treadSpace(ref const Tube tube, Vec across, double down) {
+    double angle = atan2(across.dot(tube.turn), across.dot(tube.start));
+    if (angle < 0) {
+        angle += 2 * PI;
+    }
+    double wedge = floor(angle / (2 * PI) * TURN_TREADS);
+    if (down >= wedge && down < wedge + TREAD_THICKNESS) {
+        return Space.tread;
+    } else {
+        return Space.air;
+    }
+}
+
+uint shaftOf(ref const Scene scene) {
+    uint index = 0;
+    while (index < scene.count && scene.tubes[index].form != Form.shaft) {
+        index += 1;
+    }
+    return index;
+}
+
+Space mouthSpace(ref const Scene scene, Vec point, double height, double across) {
+    uint shaft = shaftOf(scene);
+    if (shaft == scene.count || across < WELL_RADIUS * WELL_RADIUS || height > scene.mouth) {
+        return Space.air;
+    } else {
+        Tube tube = scene.tubes[shaft];
+        return treadSpace(tube, point.minus(tube.axis.scaled(point.dot(tube.axis))), TURN_TREADS - height);
+    }
+}
+
+bool isOverMouth(ref const Scene scene, double height) {
+    return scene.theme == Theme.opening && height > scene.mouth;
 }
 
 Space spaceAt(ref const Scene scene, Vec point) {
@@ -915,17 +963,20 @@ Space spaceAt(ref const Scene scene, Vec point) {
     double height = raw - scene.bowl * across;
     Space found = Space.rock;
     if (scene.theme == Theme.opening) {
-        if (height > 0 && height < OPENING_SKY && across < SHAFT_RADIUS * SHAFT_RADIUS) {
-            found = Space.air;
+        if (height > 0 && height < scene.mouth + MOUTH_ROOM && across < SHAFT_RADIUS * SHAFT_RADIUS) {
+            found = mouthSpace(scene, point, height, across);
         }
     } else if (height >= 0 && across / (scene.dome * scene.dome) + height * height / (scene.domeHeight * scene.domeHeight) < 1) {
         found = Space.air;
     }
+    if (found == Space.tread) {
+        return Space.tread;
+    }
     foreach (index; 0 .. scene.count) {
         Space inside = tubeSpace(scene.tubes[index], point, scene.at.up, scene.edge);
-        if (inside == Space.tread) {
+        if (inside == Space.tread && !isOverMouth(scene, height)) {
             return Space.tread;
-        } else if (inside == Space.air) {
+        } else if (inside != Space.rock) {
             found = Space.air;
         }
     }
@@ -1013,7 +1064,47 @@ Choice choiceAt(ref const Scene scene, Vec point) {
     }
 }
 
+Choice stoneAt(ref const Scene scene, Vec point) {
+    double raw = point.dot(scene.at.up);
+    double inner = STONE_RING - STONE_REACH;
+    uint shaft = shaftOf(scene);
+    if (shaft == scene.count || point.squared - raw * raw < inner * inner) {
+        return Choice.keep();
+    } else {
+        Vec gate = scene.tubes[shaft].start;
+        uint stones = LEAST_STONES + cast(uint)(unitOf(scene.seed, STONE_SALT) * STONE_CHOICES);
+        foreach (index; 0 .. stones) {
+            ulong salt = STONE_SALT + 1 + index * SALT_STRIDE;
+            Vec side = horizontalOf(scene, salt);
+            Vec offset = point.minus(side.scaled(STONE_RING));
+            double height = offset.dot(scene.at.up);
+            double top = scene.mouth + pickIn(scene.seed, salt + 3, STONE_HEIGHT);
+            if (side.dot(gate) < STONE_GATE && offset.squared - height * height < STONE_REACH * STONE_REACH && height > scene.mouth - STONE_FOOT && height < top) {
+                if (index == 0 && height >= top - 1) {
+                    return Choice.of(rules[Theme.opening].lit);
+                } else {
+                    return Choice.of(materials.stair);
+                }
+            }
+        }
+        return Choice.keep();
+    }
+}
+
 Choice chosenAt(ref const Scene scene, Vec point) {
+    if (scene.theme != Theme.opening) {
+        return carvedAt(scene, point);
+    } else {
+        Choice stone = stoneAt(scene, point);
+        if (stone.painting == Painting.painted) {
+            return stone;
+        } else {
+            return carvedAt(scene, point);
+        }
+    }
+}
+
+Choice carvedAt(ref const Scene scene, Vec point) {
     Space here = spaceAt(scene, point);
     final switch (here) {
         case Space.tread:

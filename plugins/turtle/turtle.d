@@ -412,6 +412,10 @@ struct Turtle {
         return api.probeCrust(api, site);
     }
 
+    double probeRelief() const {
+        return api.probeRelief(api, site);
+    }
+
     bool build(const(char)* world) const {
         return api.build(api, world, site);
     }

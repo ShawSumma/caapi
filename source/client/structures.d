@@ -20,12 +20,12 @@ import common.position : Position;
 import common.view : GraphView;
 import common.worldgen.blueprint : Below, BlueprintBuilder, CellBox, Cover, PaintOwner, PaintResult, Rhythm, Under;
 import common.worldgen.generation : StructureWorld, Worldgen;
-import common.worldgen.horospheres : GravityPull, HorosphereId, HorosphereKind, Horospheres, LOWEST_RISE_EDGES, ROOT, Rise, Thickness, edgeOf, ensureColumnSite, ensureRise, ensureUndersideAt, openHorosphere;
+import common.worldgen.horospheres : Fill, GravityPull, HorosphereId, HorosphereKind, Horospheres, LOWEST_RISE_EDGES, ROOT, Rise, Thickness, edgeOf, ensureClimate, ensureColumnSite, ensureRise, ensureUndersideAt, openHorosphere;
 import common.worldgen.plane : Plane;
 import common.worldgen.store : Grower, TileKey;
 import common.worldgen.strokes : Stroke, StrokeForm;
 import common.worldgen.structure : ClaimKey, ColumnSpot, PLACE_SLACK, RootedCorner, SiteFrame, anchorBits, calmAt, edgeCells, edgeLength, ensureClaimKey, ensureSiteHash, ensureSiteOrigin, forwarded, frameOf, moveToLevel, rootSite, siteOf, sitePlacement, spreadCalm, turnSite;
-import geometry.lorentz : Motion, Vec4;
+import geometry.lorentz : Motion, Point, Vec4;
 import plugins.api.api : Api, Box, ColumnCell, HorosphereForm, KindId, KindTag, Material, Pen, Repeat, RisingKind, Site, SitePart, Span, Spot, Structure, Tile, Turn;
 import plugins.api.api : ApiRhythm = Rhythm;
 
@@ -262,6 +262,16 @@ double probeCrust(ref GraphView view, Site site, HorosphereId over) {
         SiteFrame frame = frameOf(site);
         Position at = view.ensureNormalized(Position(view.idAt(frame.node), sitePlacement(frame, view.layout)));
         return view.ensureUndersideAt(over, at) / view.edgeOf();
+    }
+}
+
+double probeRelief(ref GraphView view, Site site, HorosphereId over) {
+    if (view.horospheres.fillOf(over) != Fill.terrain) {
+        return 0;
+    } else {
+        SiteFrame frame = frameOf(site);
+        Position at = view.ensureNormalized(Position(view.idAt(frame.node), sitePlacement(frame, view.layout)));
+        return view.ensureClimate(view.slotOf(at.node).value, at.local * Point!float.origin()).relief / cellLengthOf(view.layout);
     }
 }
 
@@ -617,6 +627,10 @@ struct StructureHost {
         return builder.graph.view.probeCrust(site, ROOT);
     }
 
+    double probeReliefAt(Site site) {
+        return builder.graph.view.probeRelief(site, ROOT);
+    }
+
     void abyss(KindTag ground, double edges) {
         Horospheres* horospheres = &builder.graph.horospheres;
         float units = cast(float)(edges * edgeLength(builder.graph.layout).value);
@@ -791,6 +805,7 @@ Api mainApi(StructureHost* host) {
     api.underCrust = &mainUnderCrust;
     api.abyss = &mainAbyss;
     api.edgeCeiling = &mainEdgeCeiling;
+    api.probeRelief = &apiRelief!mainHost;
     return api;
 }
 
@@ -1003,6 +1018,10 @@ bool apiPort(alias hostOf)(const(Api)* api, Site site) {
 
 double apiCrust(alias hostOf)(const(Api)* api, Site site) {
     return hostOf(api).probeCrustAt(site);
+}
+
+double apiRelief(alias hostOf)(const(Api)* api, Site site) {
+    return hostOf(api).probeReliefAt(site);
 }
 
 bool mainLandmark(const(Api)* api, uint index, Site site) {

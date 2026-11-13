@@ -31,6 +31,7 @@ preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$D
 preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :lattice-mod"
 preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :caves-mod"
 preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :vaults"
+preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :skies"
 
 configuration "application" {
 	targetName "caapi"
@@ -487,4 +488,16 @@ subPackage {
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
 	dependency "caapi:carve" version="*"
+}
+
+subPackage {
+	name "skies"
+	targetType "dynamicLibrary"
+	targetPath "lib"
+	sourcePaths "plugins/skies"
+	importPaths "."
+	stringImportPaths "."
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	libs "m"
+	dependency "caapi:blocks" version="*"
 }
