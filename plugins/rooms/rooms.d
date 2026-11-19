@@ -13,7 +13,7 @@ enum int MAZE_PITCH = 3;
 enum int MAZE_WIDTH = 2;
 enum int DOOR_WIDTH = 2;
 enum int MOST_DOOR_HEIGHT = 3;
-enum int MIN_ROOM = 3;
+enum int LEAST_ROOM = 3;
 enum int LOBBY = 5;
 enum int SHAFT = 3;
 enum int LIGHT_FROM = 2;
@@ -64,6 +64,12 @@ enum FrameMark : ubyte {
     top,
     skirting,
     well,
+    wellDoor,
+}
+
+enum WellDoor : ubyte {
+    elsewhere,
+    here,
 }
 
 alias Halls = Flags!Axis;
@@ -82,6 +88,15 @@ enum Plan : ubyte {
     pillars,
     pool,
     court,
+}
+
+struct Laid {
+    Plan plan;
+    int pillarEvery;
+
+    static Laid of(Plan plan) {
+        return Laid(plan, PILLAR_EVERY);
+    }
 }
 
 struct Region {
@@ -173,6 +188,7 @@ struct Floor {
 struct Quarter {
     Turtle tower;
     QuarterKind kind;
+    WellDoor door;
 
     bool isLobby() const {
         return kind != QuarterKind.plain;
@@ -209,6 +225,7 @@ struct Frame {
     int doorHeight;
     int hallWidth;
     int far;
+    int pillarEvery;
     const(Biome)* biome;
     Hall hall;
     Halls halls;
@@ -241,6 +258,10 @@ struct Frame {
 
     bool hasSkirting() const {
         return marks.has(FrameMark.skirting);
+    }
+
+    bool hasWellDoor() const {
+        return marks.has(FrameMark.wellDoor);
     }
 }
 
@@ -448,7 +469,24 @@ Doors wallDoors(ref const Frame f, Axis axis, Doors doors) {
     }
 }
 
-Forbid walls(ref Frame f, ref const Doors[4] lines) {
+Material frameMaterial(ref const Frame f) {
+    if (f.biome.trim != Material.none) {
+        return f.biome.trim;
+    } else {
+        return f.biome.stair;
+    }
+}
+
+void threshold(ref const Frame f, Axis axis, int at, int door) {
+    Material frame = frameMaterial(f);
+    Span opening = Span(f.base + 1, f.base + f.doorHeight);
+    int lintel = f.base + f.doorHeight + 1;
+    f.tower.paint(frame, line(axis, at, Span(door - 1, door - 1), opening));
+    f.tower.paint(frame, line(axis, at, Span(door + DOOR_WIDTH, door + DOOR_WIDTH), opening));
+    f.tower.paint(frame, line(axis, at, Span(door - 1, door + DOOR_WIDTH), Span(lintel, lintel)));
+}
+
+Forbid walls(ref Frame f, ref const Doors[4] lines, Owns borders) {
     int fromX = hallEdge(f, Axis.x);
     int fromY = hallEdge(f, Axis.y);
     PlannedWall[4] sides;
@@ -464,6 +502,9 @@ Forbid walls(ref Frame f, ref const Doors[4] lines) {
             foreach (door; planned.doors.slice()) {
                 forbid.mark(other(planned.axis), door);
                 forbid.mark(other(planned.axis), door + 1);
+                if (borders.has(side)) {
+                    threshold(f, planned.axis, planned.at, door);
+                }
             }
         }
     }
@@ -474,12 +515,12 @@ void split(ref Frame f, Region region, Forbid forbid, ref Found found, int depth
     Axis[2] axes;
     uint axisCount = 0;
     foreach (axis; AXES) {
-        if (width(region.span(axis)) >= 2 * MIN_ROOM + 1) {
+        if (width(region.span(axis)) >= 2 * LEAST_ROOM + 1) {
             axes[axisCount] = axis;
             axisCount += 1;
         }
     }
-    bool big = rollChance(f,f.biome.big * lowerOf(depth, 1));
+    bool big = rollChance(f, f.biome.big * lowerOf(depth, 1));
     if (big || axisCount == 0) {
         found.add(region);
     } else {
@@ -492,7 +533,7 @@ void split(ref Frame f, Region region, Forbid forbid, ref Found found, int depth
         Span span = region.span(axis);
         int[GRID_SIZE] candidates;
         uint candidateCount = 0;
-        foreach (at; span.low + MIN_ROOM .. span.high - MIN_ROOM + 1) {
+        foreach (at; span.low + LEAST_ROOM .. span.high - LEAST_ROOM + 1) {
             if (!forbid.has(axis, at)) {
                 candidates[candidateCount] = at;
                 candidateCount += 1;
@@ -504,7 +545,7 @@ void split(ref Frame f, Region region, Forbid forbid, ref Found found, int depth
             int at = candidates[f.tower.pick(candidateCount)];
             Span along = region.span(other(axis));
             Forbid inner = forbid;
-            bool open = rollChance(f,f.biome.open);
+            bool open = rollChance(f, f.biome.open);
             if (!open) {
                 int door = f.tower.pickBetween(along.low, along.high - DOOR_WIDTH + 1);
                 int[1] doors = [door];
@@ -525,13 +566,13 @@ void split(ref Frame f, Region region, Forbid forbid, ref Found found, int depth
 void hallDoors(ref Frame f, ref const Found found) {
     foreach (room; found.slice()) {
         if (f.halls.has(Axis.y) && room.y.low == f.y0) {
-            bool door = rollChance(f,f.biome.hallDoors);
+            bool door = rollChance(f, f.biome.hallDoors);
             if (door) {
                 doorway(f, Axis.y, f.hallWidth, f.tower.pickBetween(room.x.low, room.x.high - DOOR_WIDTH + 1));
             }
         }
         if (f.halls.has(Axis.x) && room.x.low == f.x0) {
-            bool door = rollChance(f,f.biome.hallDoors);
+            bool door = rollChance(f, f.biome.hallDoors);
             if (door) {
                 doorway(f, Axis.x, f.hallWidth, f.tower.pickBetween(room.y.low, room.y.high - DOOR_WIDTH + 1));
             }
@@ -559,7 +600,7 @@ void skylight(ref const Frame f, int x, int y) {
 void lamp(ref const Frame f, Material material, double odds, int x, int y) {
     bool open = false;
     if (f.isTop()) {
-        open = rollChance(f,odds);
+        open = rollChance(f, odds);
     }
     if (open) {
         skylight(f, x, y);
@@ -577,6 +618,10 @@ Span sideSpan(Region room, Side side) {
 }
 
 void boxes(ref const Frame f, Region room) {
+    stack(f, room, f.biome.boxes, 2, lowerOf(f.biome.boxHeight, f.room));
+}
+
+void stack(ref const Frame f, Region room, Material material, int least, int most) {
     Side side = SIDES[f.tower.pick(SIDES.length)];
     Span span = sideSpan(room, side);
     if (width(span) >= LEAST_ATTACHED_WALL) {
@@ -593,9 +638,9 @@ void boxes(ref const Frame f, Region room) {
             cells[step] = Cell(x, y);
         }
         if (!f.nearDoors[cells[0].x, cells[0].y] && !f.nearDoors[cells[1].x, cells[1].y]) {
-            int top = f.base + f.tower.pickBetween(2, lowerOf(f.biome.boxHeight, f.room));
+            int top = f.base + f.tower.pickBetween(least, most);
             foreach (cell; cells) {
-                f.tower.paint(f.biome.boxes, boxOf(Span(cell.x, cell.x), Span(cell.y, cell.y), Span(f.base + 1, top)));
+                f.tower.paint(material, boxOf(Span(cell.x, cell.x), Span(cell.y, cell.y), Span(f.base + 1, top)));
             }
         }
     }
@@ -628,9 +673,15 @@ void furnish(ref Frame f, ref const Found found) {
             shelves(f, room);
         }
         if (f.biome.boxes != Material.none) {
-            bool boxed = rollChance(f,f.biome.boxOdds);
+            bool boxed = rollChance(f, f.biome.boxOdds);
             if (boxed) {
                 boxes(f, room);
+            }
+        }
+        foreach (ref use; f.biome.uses.slice()) {
+            bool stocked = rollChance(f, use.odds);
+            if (stocked) {
+                stack(f, room, use.material, use.height, lowerOf(use.height, f.room));
             }
         }
     }
@@ -756,7 +807,7 @@ void maze(ref Frame f, ref const Doors[4] lines) {
                 light(f, f.biome.light, x.low, y.low);
             }
             if (carved.exits[mazeKey(i, j)] == 1) {
-                bool nowhere = rollChance(f,f.biome.nowhere);
+                bool nowhere = rollChance(f, f.biome.nowhere);
                 if (nowhere) {
                     foreach (step; 1 .. NOWHERE_STEPS + 1) {
                         f.tower.paint(f.biome.stair, boxOf(Span(x.low + step - 1, x.low + step - 1), y, Span(f.base + 1, f.base + step)));
@@ -834,8 +885,8 @@ void rings(ref Frame f) {
 }
 
 void pillars(ref const Frame f) {
-    for (int x = f.region.x.low + 1; x < f.region.x.high; x += PILLAR_EVERY) {
-        for (int y = f.region.y.low + 1; y < f.region.y.high; y += PILLAR_EVERY) {
+    for (int x = f.region.x.low + 1; x < f.region.x.high; x += f.pillarEvery) {
+        for (int y = f.region.y.low + 1; y < f.region.y.high; y += f.pillarEvery) {
             f.tower.paint(f.biome.wall, boxOf(Span(x, x), Span(y, y), roomZ(f)));
             if (x + PILLAR_LIGHT < f.region.x.high && y + PILLAR_LIGHT < f.region.y.high) {
                 light(f, f.biome.light, x + PILLAR_LIGHT, y + PILLAR_LIGHT);
@@ -930,7 +981,7 @@ void stairs(ref const Frame lower, ref const Frame upper, Stair stair, Routing r
     }
 }
 
-Frame frameOf(ref const Quarter q, Halls halls, Floor floor, const(Biome)* biome, ref const Stair stair, Plan plan, Owns owns) {
+Frame frameOf(ref const Quarter q, Halls halls, Floor floor, const(Biome)* biome, ref const Stair stair, Laid laid, Owns owns) {
     const(Level)* level = &floor.level();
     int far = q.tower.column().high;
     int x0 = origin(halls, Axis.x, *level);
@@ -946,12 +997,14 @@ Frame frameOf(ref const Quarter q, Halls halls, Floor floor, const(Biome)* biome
     f.doorHeight = lowerOf(MOST_DOOR_HEIGHT, level.room);
     f.hallWidth = level.hallWidth;
     f.far = far;
+    f.pillarEvery = laid.pillarEvery;
     f.biome = biome;
     f.hall = level.hall;
     f.halls = halls;
-    f.marks.put(FrameMark.lobby, plan == Plan.lobby);
+    f.marks.put(FrameMark.lobby, laid.plan == Plan.lobby);
     f.marks.put(FrameMark.shaft, q.hasShaft() && !level.isMaze());
     f.marks.put(FrameMark.well, q.hasWell());
+    f.marks.put(FrameMark.wellDoor, q.door == WellDoor.here);
     f.marks.put(FrameMark.top, floor.isTop());
     f.x0 = x0;
     f.y0 = y0;
@@ -964,14 +1017,30 @@ Frame frameOf(ref const Quarter q, Halls halls, Floor floor, const(Biome)* biome
     return f;
 }
 
-void paintFloor(ref Frame f, ref const Doors[4] lines, Plan plan) {
+void stairwell(ref const Frame f) {
+    int wall = SHAFT + 1;
+    Span side = Span(0, wall);
+    f.tower.paint(f.biome.wall, line(Axis.x, wall, side, roomZ(f)));
+    f.tower.paint(f.biome.wall, line(Axis.y, wall, side, roomZ(f)));
+    if (f.hasWellDoor()) {
+        Span door = Span(1, DOOR_WIDTH);
+        int lintel = f.base + f.doorHeight + 1;
+        f.tower.paint(Material.none, line(Axis.x, wall, door, Span(f.base + 1, f.base + f.doorHeight)));
+        f.tower.paint(rooms.sign, line(Axis.x, wall, door, Span(lintel, lintel)));
+    }
+}
+
+void paintFloor(ref Frame f, ref const Doors[4] lines, Plan plan, Owns borders) {
     shell(f);
     if (plan == Plan.maze) {
         maze(f, lines);
     } else {
-        Forbid forbid = walls(f, lines);
+        Forbid forbid = walls(f, lines, borders);
         if (plan == Plan.lobby) {
             light(f, f.biome.light, f.far - 2, f.far - 2);
+            if (f.hasWell()) {
+                stairwell(f);
+            }
         } else if (plan == Plan.solid) {
             f.tower.paint(f.biome.wall, boxOf(f.region.x, f.region.y, roomZ(f)));
         } else if (plan == Plan.chapel) {

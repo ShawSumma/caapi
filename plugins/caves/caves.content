@@ -2,6 +2,228 @@ look caves:look { red: 0.035, green: 0.04, blue: 0.05, tint: fog }
 
 caves-materials caves:materials {
     stair -> base:limestone
+    lining -> base:grey-brick
+    drain -> base:spruce-wood
+    wells ->[caves:city-well caves:backrooms-well caves:vaults-well]
+    opening -> caves:opening
+    open -> caves:open-stack
+    sealed -> caves:sealed-stack
+    stacks -> [caves:city-stack caves:backrooms-stack caves:vaults-stack caves:wild-stack]
+}
+
+caves-stack caves:city-stack {
+    ground: "horospheres:city"
+    layers -> [caves:city-culvert caves:city-cistern caves:city-slag]
+}
+
+caves-layer caves:city-culvert { theme -> caves:culvert }
+caves-layer caves:city-cistern { from: 2.9, theme -> caves:cistern }
+caves-layer caves:city-slag { from: 3.9, theme -> caves:slag }
+
+caves-theme caves:culvert {
+    floor-threshold: 0.45
+    patched -> base:wet-concrete
+    elsewhere -> base:gravel
+    ceiling-odds: 0.05
+    vein-odds: 0.08
+    lit -> base:light-panel
+    veined -> base:grey-brick
+    beam -> base:steel
+    formations: beams
+}
+
+caves-theme caves:cistern {
+    floor-threshold: 0.4
+    patched -> base:water
+    elsewhere -> base:wet-concrete
+    ceiling-odds: 0.04
+    vein-odds: 0.06
+    lit -> base:light-panel
+    veined -> base:tide-stone
+    standing -> base:grey-brick
+    formations: pillars
+}
+
+caves-theme caves:slag {
+    floor-threshold: 0.55
+    patched -> base:lava
+    elsewhere -> base:gravel
+    ceiling-odds: 0.05
+    vein-odds: 0.15
+    lit -> base:sunlight
+    veined -> base:ember-stone
+    hanging -> base:steel
+    standing -> base:basalt
+    formations: columns
+}
+
+caves-stack caves:backrooms-stack {
+    ground: "horospheres:backrooms"
+    layers -> [caves:backrooms-damp caves:backrooms-flooded caves:backrooms-boiler]
+}
+
+caves-layer caves:backrooms-damp { theme -> caves:damp }
+caves-layer caves:backrooms-flooded { from: 2.9, theme -> caves:flooded }
+caves-layer caves:backrooms-boiler { from: 3.9, theme -> caves:boiler }
+
+caves-theme caves:damp {
+    floor-threshold: 0.4
+    patched -> base:damp-carpet
+    elsewhere -> base:wet-concrete
+    ceiling-odds: 0.3
+    patchiness: 1
+    vein-odds: 0.3
+    lit -> base:light-panel
+    veined -> base:ceiling-tile
+    standing -> base:concrete
+    formations: pillars
+}
+
+caves-theme caves:flooded {
+    floor-threshold: 0.35
+    patched -> base:water
+    elsewhere -> base:carpet
+    ceiling-odds: 0.12
+    vein-odds: 0.2
+    lit -> base:light-panel
+    veined -> base:stained-wallpaper
+    standing -> base:plaster
+    formations: pillars
+}
+
+caves-theme caves:boiler {
+    floor-threshold: 0.6
+    patched -> base:lava
+    elsewhere -> base:concrete
+    ceiling-odds: 0.04
+    vein-odds: 0.1
+    lit -> base:sunlight
+    veined -> base:mist-stone
+    beam -> base:steel
+    formations: beams
+}
+
+caves-stack caves:vaults-stack {
+    ground: "vaults:vaults"
+    layers -> [caves:vaults-crypt caves:vaults-reliquary caves:vaults-drowned]
+}
+
+caves-layer caves:vaults-crypt { theme -> caves:crypt }
+caves-layer caves:vaults-reliquary { from: 2.9, theme -> caves:reliquary }
+caves-layer caves:vaults-drowned { from: 3.9, theme -> caves:drowned }
+
+caves-theme caves:crypt {
+    floor-threshold: 0.5
+    patched -> base:marble
+    elsewhere -> base:sandstone
+    ceiling-odds: 0.04
+    vein-odds: 0.08
+    lit -> base:sunlight
+    veined -> base:mist-stone
+    standing -> base:marble
+    formations: pillars
+}
+
+caves-theme caves:reliquary {
+    floor-threshold: 0.45
+    patched -> base:red-sandstone
+    elsewhere -> base:marble
+    ceiling-odds: 0.05
+    vein-odds: 0.1
+    lit -> base:sunlight
+    veined -> base:mist-stone
+    hanging -> base:limestone
+    chandelier -> base:glass
+    formations: chandelier
+}
+
+caves-theme caves:drowned {
+    floor-threshold: 0.4
+    patched -> base:water
+    elsewhere -> base:marble
+    ceiling-odds: 0.03
+    vein-odds: 0.1
+    lit -> base:light-panel
+    veined -> base:tide-stone
+    hanging -> base:marble
+    standing -> base:red-sandstone
+    formations: columns
+}
+
+caves-stack caves:wild-stack {
+    ground: "horospheres:wild"
+    over: risen
+    layers -> [caves:wild-rooted caves:wild-fungal]
+}
+
+caves-layer caves:wild-rooted { theme -> caves:rooted }
+caves-layer caves:wild-fungal { from: 1.6, theme -> caves:fungal }
+
+caves-theme caves:rooted {
+    floor-threshold: 0.4
+    patched -> base:moss
+    elsewhere -> base:dirt
+    ceiling-odds: 0.02
+    lit -> base:light-panel
+    hanging -> base:oak-wood
+    standing -> base:mushroom-stem
+    formations: roots
+    dome: 10.8
+}
+
+caves-theme caves:fungal {
+    floor-threshold: 0.45
+    patched -> base:cave-grass
+    elsewhere -> base:mud
+    ceiling-odds: 0.15
+    patchiness: 1
+    vein-odds: 0.1
+    lit -> base:light-panel
+    veined -> base:mushroom-cap
+    hanging -> base:flower-stem
+    standing -> base:mushroom-stem
+    formations: roots
+}
+
+caves-stack caves:open-stack {
+    layers -> [caves:open-frost caves:open-glow caves:open-gypsum caves:open-crystal caves:open-ember]
+}
+
+caves-layer caves:open-frost { theme -> caves:frost }
+caves-layer caves:open-glow { from: 1.3, theme -> caves:glow }
+caves-layer caves:open-gypsum { from: 2.3, theme -> caves:gypsum }
+caves-layer caves:open-crystal { from: 3.3, theme -> caves:crystal }
+caves-layer caves:open-ember { from: 4.3, theme -> caves:ember }
+
+caves-stack caves:sealed-stack {
+    layers -> [caves:kept-frost caves:kept-glow caves:kept-gypsum caves:kept-crystal caves:kept-ember]
+}
+
+caves-layer caves:kept-frost { theme -> caves:sealed-frost }
+caves-layer caves:kept-glow { from: 1.3, theme -> caves:sealed-glow }
+caves-layer caves:kept-gypsum { from: 2.3, theme -> caves:sealed-gypsum }
+caves-layer caves:kept-crystal { from: 3.3, theme -> caves:sealed-crystal }
+caves-layer caves:kept-ember { from: 4.3, theme -> caves:sealed-ember }
+
+caves-well caves:city-well {
+    ground: "horospheres:city"
+    stair -> base:steel
+    lining -> base:concrete
+    lining-below: 12
+}
+
+caves-well caves:backrooms-well {
+    ground: "horospheres:backrooms"
+    stair -> base:concrete
+    lining -> base:wet-concrete
+    lining-below: 31
+}
+
+caves-well caves:vaults-well {
+    ground: "vaults:vaults"
+    stair -> base:marble
+    lining -> base:sandstone
+    lining-below: 10
 }
 
 caves-theme caves:opening {
@@ -10,12 +232,75 @@ caves-theme caves:opening {
     lit -> base:light-panel
 }
 
+caves-theme caves:sealed-frost {
+    floor-threshold: -1
+    patched -> base:ice-slush
+    ceiling-odds: 0.04
+    vein-odds: 0.06
+    lit -> base:light-panel
+    veined -> base:mist-stone
+    hanging -> base:ice
+    formations: icicles
+    dome: 10.8
+}
+
+caves-theme caves:sealed-glow {
+    floor-threshold: 0.3
+    patched -> base:cave-grass
+    elsewhere -> base:moss
+    ceiling-odds: 0.35
+    patchiness: 1
+    vein-odds: 0.08
+    lit -> base:light-panel
+    veined -> base:tide-stone
+    hanging -> base:tide-stone
+    standing -> base:tide-stone
+    formations: dripstone
+}
+
+caves-theme caves:sealed-gypsum {
+    floor-threshold: 0.3
+    patched -> base:silty-loam
+    ceiling-odds: 0.06
+    vein-odds: 0.06
+    lit -> base:light-panel
+    veined -> base:mist-stone
+    hanging -> base:mist-stone
+    chandelier -> base:snow
+    formations: chandelier
+}
+
+caves-theme caves:sealed-crystal {
+    floor-threshold: 0.5
+    patched -> base:silt
+    ceiling-odds: 0.03
+    vein-odds: 0.05
+    lit -> base:tide-light
+    veined -> base:tide-stone
+    beam -> base:glass
+    formations: beams
+}
+
+caves-theme caves:sealed-ember {
+    floor-threshold: 0.5
+    patched -> base:lava
+    ceiling-odds: 0.06
+    vein-odds: 0.2
+    lit -> base:ember-light
+    veined -> base:ember-stone
+    hanging -> base:ember-stone
+    standing -> base:ember-stone
+    formations: columns
+}
+
 caves-theme caves:frost {
     floor-threshold: -1
     patched -> base:ice-slush
     ceiling-odds: 0.015
     lit -> base:light-panel
     hanging -> base:ice
+    formations: icicles
+    dome: 10.8
 }
 
 caves-theme caves:glow {
@@ -27,6 +312,7 @@ caves-theme caves:glow {
     lit -> base:light-panel
     hanging -> base:tide-stone
     standing -> base:dolomite
+    formations: dripstone
 }
 
 caves-theme caves:gypsum {
@@ -36,6 +322,7 @@ caves-theme caves:gypsum {
     lit -> base:light-panel
     hanging -> base:marble
     chandelier -> base:snow
+    formations: chandelier
 }
 
 caves-theme caves:crystal {
@@ -44,6 +331,7 @@ caves-theme caves:crystal {
     ceiling-odds: 0.012
     lit -> base:tide-light
     beam -> base:glass
+    formations: beams
 }
 
 caves-theme caves:ember {
@@ -55,4 +343,5 @@ caves-theme caves:ember {
     veined -> base:ember-stone
     hanging -> base:ember-stone
     standing -> base:basalt
+    formations: columns
 }

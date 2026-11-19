@@ -64,7 +64,7 @@ bool probeRegionClear(ref Graph graph, Position position, float distance) {
 }
 
 Position findSpawnPosition(ref Graph graph, float bodyReach) {
-    float rootAltitude = graph.horospheres.gravitySign() * graph.ensureState(graph.slotOf(ROOT_NODE).value).surface.distanceTo(Point!float.origin());
+    float rootAltitude = graph.horospheres.gravitySign() * graph.ensureState(graph.slotOf(ROOT_NODE).value).surface.height;
     Vec3!float up = graph.ensureGravityAt(Position.origin()).up;
     float altitude = bodyReach;
     Position candidate = graph.ensurePositionAtRise(up, altitude - rootAltitude);

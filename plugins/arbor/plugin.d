@@ -1,6 +1,6 @@
 module plugins.arbor.plugin;
 
-import plugins.api.api : Api, HorosphereForm, KindId, Material, Registry, Risen, RisingKind, Site, Span, Spot, entryOf;
+import plugins.api.api : Api, HorosphereForm, KindId, Material, Registry, Risen, RisingKind, Site, Span, Spot, entryOf, typedTile;
 import plugins.api.binding : bound;
 import plugins.api.content : BASE, Content, Dependency, FIRST_VERSION, Manifest, dependencyOn;
 import plugins.horospheres.horospheres : TREE_TAG;
@@ -20,6 +20,7 @@ enum int DECK_EVERY = 3;
 enum int ROUTE_TURNS = 4;
 enum int LANTERN_EVERY = 6;
 enum int LANTERN_HEIGHT = 2;
+enum int BENCH_TREAD = LANTERN_EVERY / 2;
 enum uint TREE_EDGES = 2;
 enum double ROOT_SHARE = 0.1;
 immutable Spot SPAWN = Spot(6, 0, 0);
@@ -30,6 +31,7 @@ struct Materials {
     Material post;
     Material lantern;
     Material lawn;
+    Material bench;
 }
 
 __gshared Materials materials;
@@ -69,6 +71,10 @@ void deck(Turtle tower) {
         int y = cast(int) at.y;
         tower.fill(materials.lantern, boxOf(Span(x, x), Span(y, y), Span(2, LANTERN_HEIGHT)));
     }
+    Offset bench = onWedge(BENCH_TREAD, RAIL_IN);
+    int benchX = cast(int) bench.x;
+    int benchY = cast(int) bench.y;
+    tower.paint(materials.bench, boxOf(Span(benchX, benchX), Span(benchY, benchY), Span(1, 1)));
 }
 
 void tile(const(Api)* api, Site base, const(Risen)* risen, const(void)* data) {
@@ -103,7 +109,7 @@ void landmark(const(Api)* api, Site at, const(void)* data) {
 
 void world(const(Api)* api, Site at, const(void)* data) {
     plant(api, at);
-    api.tile(api, &lawn, &materials.lawn, Material.sizeof);
+    api.tile(api, &typedTile!(lawn, Material), &materials.lawn, Material.sizeof);
     api.worldLook(api, LOOK);
     Turtle tower = Turtle(api, at).columnSite();
     route(tower);

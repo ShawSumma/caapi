@@ -6,7 +6,7 @@ Sources: the rebuilt `wiki.md` (the systems as they are, and what no test states
 
 Each section uses the same labels:
 
-- **Exists** is what the game does today, from `wiki.md`.
+- **Exists** is what the game does today. These lines were first taken from `wiki.md`, a generated page that is no longer kept in the tree; `caapi-headless wiki` writes it again from the behavior tests.
 - **Numbers** are worked out from the game's own settings. The arithmetic was run. None of it has been tested in the game.
 - **Ideas** are proposals.
 - **Borrowed** is something another game or a real practice already worked out, with a link.
@@ -165,9 +165,9 @@ The crafting ladder (wood, stone, copper, iron) is the least "caapi" part. It is
 
 ### Down: geology
 
-**Exists.** Rock bands by depth, shifted by strata. Ores form only in certain rocks, which puts sulfur at about 0.4 to 1.2 down, copper at 1.2 to 2.6 and iron below 2.6. A vein is a ball of radius 2 voxels, in 8 percent of chunks. Pickaxe tiers gate the harder stones and ores, and a block that needs a better tool "does not crack however long you hold". The caves change theme with depth: frost, dripstone, gypsum, crystal, then basalt columns (the ember theme). Lava, snow and ice are blocks.
+**Exists.** Rock bands by depth, shifted by strata. Ores form only in certain rocks, which puts sulfur at about 0.4 to 1.2 down, copper at 1.2 to 2.6 and iron below 2.6. A vein is a ball of radius 2 voxels, in 8 percent of chunks. Pickaxe tiers gate the harder stones and ores, and a block that needs a better tool "does not crack however long you hold". Under the default world's own ground the caves change theme with depth: frost, dripstone, gypsum, crystal, then basalt columns (the ember theme). Lava, snow and ice are blocks.
 
-The caves are no longer a world apart. They lie under the default world: sinkholes open them on wild ground, and under the city, the backrooms and the vaults they are sealed and reached by wells. Built ground is soil over the same rock bands and veins as wild ground, where it used to be dirt all the way down. The ground also ends. Under the default world's wild ground the rock stops 5.6 edges down (5.94 units), a little below the deepest cave, and a lattice hangs in the open below it. The details are in [Worlds](#worlds-one-default-world-that-holds-the-others).
+The caves are no longer a world apart. They lie under the default world: sinkholes open them on wild ground, and under the city, the backrooms and the vaults they are sealed and reached by wells. Chambers hang in trees under their sinkholes, and an edge between two open chambers of different trees is a passage half the time, so the trees join. Counted by `cave-census`: in the caves world nine tenths of the cave air near the root is one connected space (half without those passages); under the default world near spawn the caves are still a few separate trees. What a cave is depends on the ground over it: each ground names a stack of themes by depth in the caves' content. Under the city it is culverts with steel pipes, then cisterns, then slag; under the backrooms damp carpet and ceiling tile, then flooded rooms, then a boiler room; under the vaults a crypt, a reliquary, then drowned halls; under wild ground that rose, roots and fungus. Built ground is soil over the same rock bands and veins as wild ground, where it used to be dirt all the way down. The ground also ends. Under the default world's wild ground the rock stops 5.6 edges down (5.94 units), a little below the deepest cave, and a lattice hangs in the open below it. The details are in [Worlds](#worlds-one-default-world-that-holds-the-others).
 
 **Numbers.** The deep is big (table above). The copper band has 3 to 46 times a tile's area under each tile, and the iron bands have more. Sideways travel down there is 7 times longer at 2.6 and 45 times longer at 4.5.
 
@@ -201,7 +201,7 @@ The caves are no longer a world apart. They lie under the default world: sinkhol
 
 ### Up: gravity and grounds
 
-**Exists.** Gravity pulls toward the nearest ground, and the pull turns smoothly as you climb between grounds. Risen grounds (wild, city, backrooms, library) are joined by connector buildings in four styles, about 2.05 up. The lift signal lowers gravity (gain -0.8) and raises the jump (+0.8). The lattice inverts gravity. Giant trees and Babel rise as upright grounds. Vaults rise as a ground too, and nothing is built up to them: a ground can be marked as having no bridge, and then neither it nor anything rising from it gets a connector. Groves of lattice frames stand on some wild ground, about two edges tall.
+**Exists.** Gravity pulls toward the nearest ground, and the pull turns smoothly as you climb between grounds. Risen grounds (wild, city, backrooms, library, and the three abstract ones: terraces, garden, trellis) are joined to the ground under them by connector buildings, two to four edges up. A connector has six styles (tower, spiral, drift, lantern, paired, hidden), and which one stands is rolled per pair of grounds from shares in content. The lift signal lowers gravity (gain -0.8) and raises the jump (+0.8). The lattice inverts gravity. Giant trees and Babel rise as upright grounds. Vaults rise as a ground too, and the only way up to them is the hidden style, a stair of mist stone that is there for a dosed body alone: a ground says in content whether its bridge is built, hidden or none, and nothing rises by a connector from a ground whose bridge is not built.
 
 **Numbers**
 
@@ -214,11 +214,11 @@ The caves are no longer a world apart. They lie under the default world: sinkhol
 
 - **Lift as a way up that skips the stairs.** Dosed enough, you can jump onto a risen ground or float between two of them. Halfway between two grounds the pull changes sides, so there is a weightless band to exploit.
 - **Launch towers.** Build up to just under the band, dose, and jump the rest. Coming down is the problem: the dose wears off with rebound, and rebound on lift is weight. Plan the way down before the way up.
-- **Grounds with no stair.** Risen grounds you can only reach while dosed: no connector, just a gap that lift crosses. The vaults are the first: the owner asked that the more abstract structures have no bridges to them. Today nothing reaches them at all, so the way there is still to be chosen (see [Decisions waiting](#decisions-waiting)).
+- **Grounds with no stair.** Risen grounds you can only reach while dosed: no connector, just a gap that lift crosses. The vaults are the first: the owner asked that the more abstract structures have no bridges to them. They are reached by the hidden stair, which a dose of mist shows; a gap that only lift crosses is still an idea.
 - **Gravity conveyors.** Things fall up there too. Thrown blocks already fall toward the nearest ground. Items, water and echoes could follow the same rule, so a drop from a risen ground carries cargo down by itself.
 - **Sling lines.** By the game's own law a level throw from a height can stay up. Tower to tower, with something at the far end to catch, is long-range transport with no road. One echo throwing to another is also what the Last Clockwinder's clones do.
 - **The connector is a port.** Two grounds are only close at the connector, so everything that passes between them wants to be there. Put the hub at the foot of the stair.
-- **Up as an economy.** Risen grounds have their own climate and air (relief raises ash, lowers warmth), so they grow different plants. They are the places to farm what will not grow below.
+- **Up as an economy.** Risen grounds have their own climate and air (relief raises ash, lowers warmth), so they grow different plants. They are the places to farm what will not grow below. Measured on 2026-11-18: climbing does not change the air. A node's air comes from its climate, which follows the land (relief, strata), so a bench on an arbor deck 3.4 over the ground had mutation odds of 0.066 where the foot of the tree had 0.095. If height is to matter, the air (or the bench) has to read the body's height over its ground, the way warmth already falls with relief.
 - **A pit of climates.** Warmth is heat minus 0.3 x relief, per cell. If a plant read the height it actually stands at, a terraced pit would be a row of climates a few steps apart: dig down for warm, build up for cold. A breeding station made of earthworks.
 - **Build wide up high.** Decks have room that footprints do not. The arbor's decks and Babel's floors could flare, and a base could grow the way the arbor does.
 - **Show which ground has you.** In the band the pull turns over, and a player needs to read it at a glance: a tint for the pulling ground, a shadow that falls toward it, mist lights along the band.
@@ -235,15 +235,15 @@ The caves are no longer a world apart. They lie under the default world: sinkhol
 
 ### In: perception and hidden families
 
-**Exists.** Three hidden families, mist, ember and tide. Each is revealed when its channel rises above 0.6, and fades again below 0.4. Revealed blocks are solid, except while you are inside them. Only mist has anything that reveals it: the mist signal (gain 2) and the mist-sight preset. The strange stones and lights break by hand, so the player can already carry them and build with them. In the base mapping, mist drives reveal and a color turn, sway drives warp, field of view and afterimage, and lift drives gravity and jump. Two plants hold a signal down instead of pushing it up: thornbush closes mist and moss dulls.
+**Exists.** Three hidden families, mist, ember and tide. Each family is its own sense: a mod that defines a hidden family gets a level for it in perception, and the family is revealed when that level rises above 0.6 and fades again below 0.4. Revealed blocks are solid, except while you are inside them. Each family has something that reveals it, and all three keys are `signal-drive` nodes in pharmacology's content. Mist shows when the mist signal is up (gain 2), and to the mist-sight preset. Tide shows when the mist signal is below rest (gain -2): a dose that opens sway pushes mist down far enough, and so does withdrawal: once three minutes of mist doses stop, tide's level climbs past the line, highest about 160 seconds later. Ember shows when mist and lift are both up (a drive may name a second signal with `also`, and then follows the lower of the two; gain 1): the test dose that shows mist leaves ember under the line, and a compound that drives the first trigger fully passes it. What a player can pick and eat, measured on nine wild strains of each at spawn: some ferns and some flowers show mist, some flowers show ember and no fern alone does, and some mushroom caps show tide while no thornbush, moss or fern does. The strange stones and lights break by hand, so the player can already carry them and build with them. In the base mapping, mist drives reveal and a color turn, sway drives warp, field of view and afterimage, and lift drives gravity and jump. Two plants hold a signal down instead of pushing it up: thornbush closes mist and moss dulls.
 
 From the review: ember and tide are "the most obvious open door".
 
-**Ideas for what reveals them**, built on the signaling that exists:
+**Ideas for what reveals them**, built on the signaling that exists. The first and the third are built as far as the keys go (see **Exists**); where the stones sit is not.
 
-- **Tide is revealed by rebound.** Signals adapt over about 100 seconds, so stopping a dose leaves a signal below rest. Tide shows when a signal is pushed negative. Withdrawal becomes a way to see, and the adaptation that is now only a nuisance becomes a mechanic. Tide stones sit by water and lake beds.
-- **Thornbush is already a tide key.** If tide shows when a signal is below rest, thornbush does it directly and rebound does it for free. The driest plant shows the water.
-- **Ember is revealed by two signals at once.** The third messenger follows both triggers and is raised by the other two. Ember shows when mist and lift are both high, which only a designed compound or two well-timed doses can do. Ember stones sit in the deep caves' ember theme and in ash-heavy high ground.
+- **Tide is revealed by rebound.** Signals adapt over about 100 seconds, so stopping a dose leaves a signal below rest. Tide shows when a signal is pushed negative. Withdrawal becomes a way to see, and the adaptation that is now only a nuisance becomes a mechanic. Built for the mist signal. Tide stone already veins the cave layers that are floored with water (the city's cistern, the vaults' drowned halls) and the sealed glow layer. Still an idea: tide stones by the water on the surface.
+- **Thornbush is already a tide key.** If tide shows when a signal is below rest, thornbush does it directly and rebound does it for free. The driest plant shows the water. Measured and false as tuned: a wild thornbush eaten alone never shows tide (`biology/wild-tide`); filling the lock without turning it holds mist at rest and does not push it below. Opening sway does, in some mushroom caps. Thornbush could still matter as the thing that cuts a mist dose short, and so brings the rebound sooner; not measured.
+- **Ember is revealed by two signals at once.** The third messenger follows both triggers and is raised by the other two. Ember shows when mist and lift are both high, which only a designed compound or two well-timed doses can do. Built as the lower of mist and lift. Ember stone already veins the deepest cave layers (ember, and the city's slag). Still an idea: ember stones in ash-heavy high ground.
 - **Leaving a place can be the dose.** If strong air acted on the body without a collector, living in a mire-rich swamp would adapt you to it, and walking out would leave a rebound. Tide stones by the water would show as you leave. Nothing has to explain it.
 
 **Ideas for what the families are for**
@@ -316,15 +316,14 @@ From the review: ember and tide are "the most obvious open door".
 
 **Exists.** From the code and its tests.
 
-- **Seven worlds.** `planet`, `city`, `backrooms`, `library`, `vaults`, `caves` and `lattice`. `planet` is the default world and the only one that holds others: its root is wild ground, and city, backrooms, library, vaults and more wild ground rise from it.
+- **Ten worlds.** `planet`, `city`, `backrooms`, `library`, `vaults`, `caves`, `lattice`, and three abstract ones on a bare ground, `terraces`, `garden` and `trellis`. The garden's quarters hold either a form (monolith, arch, cube, flight, pillars, spire) or a kerbed bed of one wild plant (flower, fern, moss or thornbush). `planet` is the default world and the only one that holds others: its root is wild ground, and city, backrooms, library, vaults, the three abstract grounds and more wild ground rise from it.
 - **Single buildings are debug structures, not worlds.** `tower`, `crown`, `palace`, `arbor`, `babel`, `road`, `trail` and the test rigs are reached by `--worldgen debug <name>` and by the tests, and the world menu does not list them. The default world still stands `arbor`, `babel`, `crown`, `palace`, `tower` and `trail` once each around spawn, and builds the road through it.
-- **Caves under everything.** On wild ground they open as sinkholes, at 2 in 100 vertices, with one forced near spawn. Under the city, the backrooms and the vaults they are sealed and begin about two edges down. The library has its stacks below it and gets none. A single-structure world gets caves only if it asks for them.
-- **Ports and wells.** A port is a ground vertex, 3 in 100 of them, where the street, the floor or the hall leaves a hole 8 cells square. A spiral stair runs from it two edges down to a cave that is always open. In the backrooms the well's column is left open on every level it passes, so it should also be a second way between levels; that is read from the code, and only the top level has been looked at. No port sits where a world starts, where a connector lands, or where a ground rises.
+- **Caves under everything.** On wild ground they open as sinkholes, at 6 in 100 vertices where the vertex under it holds a chamber, with one forced near spawn and one beside each landmark. Under the city, the backrooms and the vaults they are sealed and begin about two edges down. Each of those grounds, and wild ground that rose, has a cave stack of its own (see [Down](#down-geology)). The library has its stacks below it and gets none. A single-structure world gets caves only if it asks for them.
+- **Ports and wells.** A port is a ground vertex where the street, the floor or the hall leaves a hole 8 cells square: 3 in 100 vertices on most grounds, by a flat roll; in the city only in works districts (15 in 100 vertices there), under a kerb and a steel frame; in the backrooms only where the lowest level is sump or cellar (9 and 6 in 100 vertices there); in the vaults only where the hall holds a spire (5 in 100 vertices there). A stair runs down from it to where the rock ends under it, or as deep as the caves go where the rock goes deeper, and ends in a chamber or on a landing hung in the open. In the backrooms the well's column is left open on every level it passes, so it should also be a second way between levels; that is read from the code, and only the top level has been looked at. No port sits where a world starts, where a connector lands, or where a ground rises.
 - **The ground has an underside, and under the default world's root it varies.** The rock is between two edges thick and 5.6, by a slow field read where the rock is, so under a roof of about two edges the deep is great masses of rock with open void between them; thin and thick places both lie right under spawn. Under risen wild ground and under vaults it is 3.4 edges everywhere. City and backrooms are rock all the way. Below the underside it is open, and the lattice hangs there. The look and the fog change on the way down: cave dark below half an edge under wild ground and below 1.5 edges under built ground, lattice dark below the underside.
-- **Groves.** On 15 in 100 clusters of wild faces a frame of lattice poles and girders stands on the ground, with its poles sunk an edge into it.
 - **City districts.** Five of them (midtown, downtown, rows, works, green), each a cluster of faces with its own lots, street trees, parks and parking.
 - **Backrooms subtypes.** A biome is picked per region of faces two rings wide, and per level, and it sets more than the wallpaper: pillar halls, pools, and courtyards open to the sky, beside the rooms, rings, chapels and mazes there were. Eight office biomes, five house biomes, five maze biomes.
-- **Library rooms.** Atriums, study rooms and lounges among the shelves.
+- **Library rooms.** Atriums, study rooms and lounges among the shelves. A study's carrels hold stations: on a desk, a press in 3 of 27 carrels and a lab in 1 of 27, and they work where they stand. A third of the reading halls' tables end in a bench. Three faces in a hundred are staff rooms: steel lockers under a band of wallpaper, a counter with a sink, and a workbench, on a concrete floor under ceiling tile. A reading room, a meeting room and an office each have a pamphlet on the table, which is read where it lies (see [Crafting and learning](#crafting-and-learning)).
 
 **From the owner**, in the conversation that made these changes:
 
@@ -344,15 +343,15 @@ From the review: ember and tide are "the most obvious open door".
 **Ideas**
 
 - **A test for places.** "No boring areas" could stand beside the seven tests: is there a stretch of this place, in any direction including down, with nothing in it to find?
-- **A port is dressed by its ground.** Today every port is the same bare hole with a stone stair. A manhole in the city, a stairwell door in the backrooms, a broken inlay in a vault floor.
-- **A port you can predict.** Today a port is a flat roll. It could follow something the ground already shows (the `works` district, the `sump` biome, a vault with a spire), so that a player who knows the rule knows where to look.
+- **A port is dressed by its ground.** The city's port is a kerbed pit under a steel frame, and the vaults' has a broken rim of inlay with rubble beside it. The backrooms' is still a bare hole. The stair down a well is steel under a risen city, concrete under risen backrooms and marble under the vaults, and limestone elsewhere. Still to do: a stairwell door in the backrooms, and a lining for the well's walls.
+- **A port you can predict.** A port follows something the ground already shows, so that a player who knows the rule knows where to look: the `works` district in the city, the `sump` and `cellar` biomes in the backrooms, a hall with a spire in the vaults. On wild ground and anywhere else it is still a flat roll.
 - **The underside can be read.** From the void, the ground overhead could show what stands on it: roots, footings, the bottoms of wells.
 - **A grove is a sign.** Grove poles already go an edge into the ground. If the void's poles came up through the rock to meet them, a grove on the surface would mark a way down.
 - **A fall has to end somewhere.** Under the root nothing catches a body but the lattice itself. What a fall costs is the first thing to decide about the void.
 - **Whatever is next.** Candidates for the void world after the lattice: the flat sheet, a sky with fixed stars, a ground hung upside down from the crust, a sea.
 - **Debug structures still carry lessons.** The crown's loop that leaves the ground, the arbor's wide decks. The arbor and Babel have a home already: they rise all over the default world as kinds, each at about 15 in 10,000 ground vertices. The crown, the tower, the palace, the road and the trail stand only once, at spawn, and need one.
 
-**Open.** The choices this left were put to the owner and answered: see [Decisions waiting](#decisions-waiting). None of the answers is built yet.
+**Open.** The choices this left were put to the owner and answered: see [Decisions waiting](#decisions-waiting). How far each answer is built is in `plan.md`.
 
 ## The living chain
 
@@ -374,7 +373,7 @@ The chain from climate to movement is the model for everything else, and the fir
 
 ### Plants and breeding
 
-**Exists.** Four plants, each thriving in one climate. Every living block carries four genes: one builds the compound's scaffold, two encode enzymes, and one is kept for form. Genes drift from cell to cell, so the same plant makes different compounds in different places. A planted plant ripens in 60 seconds and yields 1 + round(2 x fit). At the bench a cross takes each gene from one parent, with mutation odds of 0.05, plus 0.3 x the ash in the air, plus 0.3 with sulfur.
+**Exists.** Four plants, each thriving in one climate. Every living block carries four genes: one builds the compound's scaffold, two encode enzymes, and one is kept for form. Genes drift from cell to cell, so the same plant makes different compounds in different places. A planted plant ripens in 60 seconds and yields 1 + round(2 x fit). At the bench a cross takes each gene from one parent, with mutation odds of 0.05, plus 0.3 x the ash in the air, plus 0.3 with sulfur. Unidentified plants of one species share a stack, and a stack of several strains is drawn as a bundle: a mark per strain in its slot, and a tooltip that lists each strain with its mark, a strip of its genes and its count, so strains can be told apart by look before anything says what they make.
 
 **Numbers.** Yield comes in three bands, and a player can feel all three.
 
@@ -420,7 +419,7 @@ In climate terms: fern is rich where wetness is above 0.22 and barren below -0.3
 
 ### Compounds: one chemistry for everything
 
-**Exists.** A compound is a 3 x 3 x 3 grid of fragments, each with any mix of three properties: bulky, charged, polar. The whole molecule can also be conjugated. A press turns a living block into extract and four extract into a dose. Six lab reactions change a dose, each acting on "the first cell it finds" across 24 orientations. A dose is swallowed, inhaled or injected. An assay kit shows which receptors a compound binds.
+**Exists.** A compound is a 3 x 3 x 3 grid of fragments, each with any mix of three properties: bulky, charged, polar. The whole molecule can also be conjugated. A press turns a living block into one extract and three extract into a dose; both numbers are fields of the pressings in content. Six lab reactions change a dose, each acting on "the first cell it finds" across 24 orientations. A dose is swallowed, inhaled or injected. An assay kit shows which receptors a compound binds.
 
 **Ideas**
 
@@ -465,7 +464,9 @@ In climate terms: fern is rich where wetness is above 0.22 and barren below -0.3
 
 ## Crafting and learning
 
-**Exists.** Crafting is a queue of at most 16 steps. Work for a station moves only while you are within 0.6 of one you have opened. Recipes take groups: any wood, any stone, masonry, cloth. Five insights (charring, sifting, quenching, salvage, strangeness) are learned by breaking a block or finishing work at a station, and each unlocks recipes. Two of them double a yield: charring gives twice the bars, and quenching gives twice the glass.
+**Exists.** Crafting is a queue with no size, made of jobs: what a job needs leaves the inventory when it is queued, and cancelling any step gives the whole job back, with a note when some of it no longer fits. One click queues one of a recipe, a secondary click three, a quick click as many as can be paid for. The queue is kept in the save, the lab's and the press's work included. Work for a station moves only while you are within 0.6 of one you have opened. Recipes take groups: any wood, any stone, masonry, cloth. Seven insights (charring, sifting, quenching and salvage from the game; strangeness, meltwater and pulping from pharmacology) are noticed by breaking a block or finishing work at a station, and the journal keeps them. Three are noticed by seeing: the first time mist, tide or ember shows, the journal says what was seen. Nine more are rumors, noticed by reading: a pamphlet lies on a table in the library's reading rooms, meeting rooms and offices, using it puts one rumor in the journal (which one is a function of where the pamphlet lies), and a pamphlet whose rumor is already known says so. A rumor is a true sentence about the world (five legs and a quarter turn, where the ores lie, fern and thornbush sharing a lock, what shows tide and what shows ember) and, like every insight, unlocks nothing. An insight unlocks nothing: every recipe can be made from the start by a player who knows it. The recipes the insights describe still differ in yield: charcoal worked through ore gives three bars for three ore, and quenching gives three glass.
+
+From the owner, on the first build, where an insight locked its recipes: "having things be locked until you notice is *not* at all what I asked for either. It was designed after outer wilds, so the impl failed badly".
 
 **Ideas**
 
@@ -606,15 +607,15 @@ From the review: "Logistics in a space where parallel routes diverge and loops c
 **Exists.** The game already has rates that ask for ratios:
 
 - Plants ripen in 60 seconds and yield 1 to 3, depending on climate fit.
-- A press takes 4 extract per dose, and extract comes 1 per block pressed.
+- A press takes 3 extract per dose, and extract comes 1 per block pressed.
 - A collector gathers at 0.02 per second times the gas level, and holds 120 seconds' worth.
 - The body clears at 0.02 plus 0.01 per polar fragment, plus 0.1 once conjugated, and adapts over about 100 seconds.
 
 **Numbers**
 
-- One dose is four plants and 10 seconds of press time: four pressings of 2 seconds and one more to make the dose.
-- So one press makes at most 6 doses a minute, and eats 24 plants a minute doing it.
-- A rich plot gives 2 spare plants a minute and a fair plot gives 1. A press running flat out is fed by 12 rich plots or 24 fair ones. One dose a minute needs 2 rich plots or 4 fair ones.
+- One dose is three plants and 8 seconds of press time: three pressings of 2 seconds and one more to make the dose.
+- So one press makes at most 7.5 doses a minute, and eats 22.5 plants a minute doing it.
+- A rich plot gives 2 spare plants a minute and a fair plot gives 1. A press running flat out is fed by 11.25 rich plots or 22.5 fair ones, so twelve rich plots keep one busy. One dose a minute needs 1.5 rich plots or 3 fair ones.
 
 Keeping a signal at a level is a control problem: tolerance pulls it down, so a steady dose is not enough. An automated drip (an echo, or a device) that holds you at a level is a real design target. So is a garden sized to feed a press that feeds that drip.
 
@@ -656,7 +657,7 @@ The riskiest place is the lab and the binding: a molecule in 24 orientations aga
 The insights journal already works like Outer Wilds' ship log: something noticed, a sentence about it, recipes unlocked. Grow it:
 
 - Entries that link: the journal shows that two notices are related, and a "?" where a link is suspected but not found.
-- Rumors before facts: a hint about tide in the library, an observation about ember stones in the deep caves, confirmed later by seeing them.
+- Rumors before facts: a hint about tide in the library, an observation about ember stones in the deep caves, confirmed later by seeing them. Built as far as the hints: the library's pamphlets hold rumors, two of them about tide and ember (see [Crafting and learning](#crafting-and-learning)). Nothing yet marks a rumor as confirmed.
 - Notices from things you did, not only things you broke. A dose that revealed something. A cross that mutated. A loop that came back turned.
 - A mark on any entry that still has more to give.
 
@@ -703,11 +704,11 @@ Design content as tables whose empty cells a player can predict: plants by recep
 
 Outer Wilds runs on places that tell you something. The built worlds are already places:
 
-- The library: books are blocks today. A few shelves could hold readable notes, a ship log left by someone else.
+- The library: books are blocks, and its pamphlets are read (built: each holds one rumor). Still an idea: shelves that hold notes, a ship log left by someone else.
 - The caves change with depth, and each theme is a chapter: frost, dripstone, gypsum, crystal, ember.
 - The strange stones' insight already says they "still carry charge and bulk". That is a hint pointing at chemistry; there should be more like it, pointing at ember and tide.
 - The hidden connector style, built of mist stone, has no weight in the base content today. It could become the way into a place that is only reached by changing yourself. The vaults are now such a place in waiting: they rise with no bridge at all.
-- The library now has rooms (atriums, study rooms, lounges), and the things in them are plain blocks. What a player can do with them is undecided.
+- The library now has rooms (atriums, study rooms, lounges). Some of what stands in them works where it stands: presses, labs, benches, a catalog, pamphlets. The rest is plain blocks.
 
 ## A lonely world that fills with you
 
@@ -781,7 +782,7 @@ Every item here comes from an idea above. None is decided.
 **Places**
 
 - A launch tower. A sling line. A ring garden.
-- A risen ground with no stair. (The vaults are one now. The way onto it is not built.)
+- A risen ground with no stair. (The vaults are one now, reached by the hidden stair of mist stone.)
 - A dressed port for each built ground. A way from the caves into the void. A floor for the void.
 - The void world after the lattice.
 - The place where the sky is even.
@@ -875,7 +876,7 @@ Named in this file from general knowledge, and not looked up for it: Mohs's hard
 
 ## Decisions waiting
 
-Choices left open by joining the worlds. A reviewer drew them up from the code and this file, and the owner answered them. "Built now" says what the game does today, and "Answer" is the owner's, in their words where they wrote some. What waits is the building: where an answer differs from "Built now", nothing has been done about it yet.
+Choices left open by joining the worlds. A reviewer drew them up from the code and this file, and the owner answered them. "Built now" says what the game did when the question was asked, and "Answer" is the owner's, in their words where they wrote some. Most of the answers have been built since; which, and how far, is the status table in `plan.md` (section 9).
 
 1. **Under the default world's root, does the void replace the deep or lie below it?** (a) A thin crust about two edges down, with the lattice close and the deep geology moved elsewhere. (b) A full-depth crust, with the lattice as the very bottom. (c) Shields and windows: clusters of faces roll thick or thin. (d) No void under the root, only under risen grounds. Built now: (b), at 5.6 edges. Answer: (c), shields and windows. Since built, in a first form: a thickness between two edges and 5.6 that varies in space, which gives masses of rock under a thin roof and not shafts with walls. The owner keeps it: "I'm fine with masses, it feels more geological to me."
 2. **What happens to a player who steps off the lattice into the void?** (a) You land somewhere deeper, and lose only the way back. (b) You fall back up onto the crust's underside. (c) The thread winds you back to your last bead. (d) The fall is real unless you stop it. Built now: nothing catches a body but the lattice. Answer: (d), with a way back. "The fall is real but we plan for a mechanism to get back. Like a respawn, with keepinventory-style things. Maybe 1/3 of items you have 3 or more of are lost."

@@ -15,10 +15,13 @@ import geometry.honeycomb : FACE_COUNT, FACE_DISTANCE, Face, NODE_RADIUS, mirror
 import geometry.lorentz : Motion, Point, Vec4;
 
 enum size_t EXPAND_BATCH = 256;
+enum double PAINT_MILLISECONDS = 2.0;
 version (WebAssembly) {
     enum size_t PAINT_BATCH = 16;
+    enum double LOADING_PAINT_MILLISECONDS = PAINT_MILLISECONDS;
 } else {
     enum size_t PAINT_BATCH = 64;
+    enum double LOADING_PAINT_MILLISECONDS = 4.0;
 }
 enum size_t DERIVE_BATCH = 64;
 enum double SHELL_FLOOR = 0.01;
@@ -387,22 +390,28 @@ struct NearbyScratch {
         }
     }
 
-    void paintUnknownAhead(ref Graph graph, Executor executor) {
+    void paintUnknownAhead(ref Graph graph, Executor executor, double paintAllowance) {
         candidates.clear();
-        size_t index = unknownHead;
-        while (index < serial.unknown.length && candidates.length < PAINT_BATCH) {
-            uint slot = nodes.ptr[serial.unknown.ptr[index]].slot;
-            graph.ensureDepthAt(slot);
-            if (!isUnknownReady(graph, index)) {
-                candidates.append(slot);
-            }
-            index += 1;
-        }
-        graph.paintAhead(candidates.slice(), executor);
+        size_t index = collectUnpainted(graph, candidates);
+        graph.paintAhead(candidates.slice(), executor, paintAllowance);
         paintedHead = unknownHead + 1;
         while (paintedHead < index && isUnknownReady(graph, paintedHead)) {
             paintedHead += 1;
         }
+    }
+
+    size_t collectUnpainted(ref Graph graph, ref Array!uint into) const {
+        size_t first = into.length;
+        size_t index = unknownHead;
+        while (index < serial.unknown.length && into.length - first < PAINT_BATCH) {
+            uint slot = nodes.ptr[serial.unknown.ptr[index]].slot;
+            graph.ensureDepthAt(slot);
+            if (!isUnknownReady(graph, index)) {
+                into.append(slot);
+            }
+            index += 1;
+        }
+        return index;
     }
 
     bool isUnknownReady(ref const Graph graph, size_t index) const {
@@ -495,14 +504,14 @@ struct NearbyScratch {
         }
     }
 
-    void advance(ref Graph graph, Deadline deadline, Executor executor) {
+    void advance(ref Graph graph, Deadline deadline, Executor executor, double paintAllowance) {
         while (outputs.length < executor.workers) {
             outputs.append(ExpandOutput.init);
         }
         paintsThisAdvance = 0;
         while (!isKeeping() && isBuilding()) {
             if (hasSerialWork()) {
-                Drain drained = drainSerial(graph, deadline, executor);
+                Drain drained = drainSerial(graph, deadline, executor, paintAllowance);
                 if (drained == Drain.stalled) {
                     return;
                 }
@@ -533,7 +542,7 @@ struct NearbyScratch {
         }
     }
 
-    Drain drainSerial(ref Graph graph, Deadline deadline, Executor executor) {
+    Drain drainSerial(ref Graph graph, Deadline deadline, Executor executor, double paintAllowance) {
         double now = nowMilliseconds();
         while (hasSerialWork() && !deadline.hasPassed(now)) {
             if (missingHead < serial.missing.length) {
@@ -548,7 +557,7 @@ struct NearbyScratch {
                 return Drain.stalled;
             } else if (unknownHead >= paintedHead) {
                 double start = nowMilliseconds();
-                paintUnknownAhead(graph, executor);
+                paintUnknownAhead(graph, executor, paintAllowance);
                 paintingMs = nowMilliseconds() - start;
                 paintsThisAdvance += 1;
             } else {
@@ -740,7 +749,7 @@ struct NearbyScratch {
 
     NearbyNode[] collectAll(ref Graph graph, Position start, float distance) {
         begin(graph, start, distance, distance + NODE_RADIUS);
-        advance(graph, Deadline.init, Executor.init);
+        advance(graph, Deadline.init, Executor.init, PAINT_MILLISECONDS);
         return nodes.slice();
     }
 }

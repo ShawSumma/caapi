@@ -1,3 +1,23 @@
+kind library-piece {
+    material: optional -> material
+    x: integer 1..7
+    y: integer 1..7
+    z: integer 0..4 = 1
+    wide: integer 1..7 = 1
+    deep: integer 1..7 = 1
+    tall: integer 1..4 = 1
+}
+
+kind library-room {
+    weight: number 0.. = 1
+    level: "main" | "basement"
+    wall: one -> material
+    floor: optional -> material
+    light: optional -> material
+    stair: "none" | "down" = "none"
+    pieces: many -> library-piece
+}
+
 kind library-materials {
     frame: one -> material
     ceiling: one -> material
@@ -7,6 +27,18 @@ kind library-materials {
     well: one -> material
     partition: one -> material
     lounge: one -> material
+    press: one -> material
+    lab: one -> material
+    bench: one -> material
+    locker: one -> material
+    sink: one -> material
+    workbench: one -> material
+    staff-floor: one -> material
+    staff-ceiling: one -> material
+    staff-wall: one -> material
+    catalog: one -> material
+    pipe: one -> material
     floors: some -> material
     books: some -> material
+    rooms: some -> library-room
 }

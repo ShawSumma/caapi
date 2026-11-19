@@ -11,17 +11,24 @@ import common.view : GraphView;
 import common.worldgen.blueprint : Blueprint, LineEdge, PaintOwner, Painted, TileRecord;
 import common.worldgen.building : Building;
 import common.worldgen.horospheres : HorosphereId, ROOT;
-import common.worldgen.strokes : Stroke, Strokes;
+import common.worldgen.strokes : Stroke, StrokeReached, Strokes;
 import common.worldgen.structure : LineTouch;
 import geometry.honeycomb : CORNER_COUNT, FACE_COUNT;
 import plugins.api.flags : Flags;
 
 enum uint TILE_IDLE_SWEEPS = 60;
 
+enum AheadPass : ubyte {
+    none,
+    finished,
+}
+
 struct Grower {
     void function(void* context, ref Graph graph, int through) grow;
     void function(void* context, ref Graph graph, uint slot) cover;
-    void function(void* context, ref Graph graph, const(uint)[] candidates, Executor executor) paintAhead;
+    void function(void* context, ref Graph graph, const(uint)[] candidates, Executor executor, double allowance) paintAhead;
+    void function(void* context, ref Graph graph, const(uint)[] candidates, Executor executor) startAhead;
+    AheadPass function(void* context, ref Graph graph, Executor executor, double allowance) finishAhead;
     void function(void* context) release;
     void* context;
 }
@@ -242,6 +249,11 @@ struct StructureStore {
     void addStroke(ref GraphView view, PaintOwner owner, uint node, Stroke stroke) {
         uint run = blueprint.addStroke(owner, view.idAt(node), stroke);
         strokes.add(view, owner, run, node, stroke, blueprint.paintedBy(owner).reached);
+    }
+
+    void addReachedStroke(PaintOwner owner, NodeId node, Stroke stroke, const(StrokeReached)[] nodes) {
+        uint run = blueprint.addStroke(owner, node, stroke);
+        strokes.addReached(owner, run, nodes, blueprint.paintedBy(owner).reached);
     }
 
     void release() {

@@ -1,0 +1,30 @@
+terrain base:terrain {
+    world: "planet"
+}
+
+planet-grounds planet:grounds {
+    grounds -> [planet:wild-ground planet:city-ground planet:backrooms-ground planet:vaults-ground]
+}
+
+planet-ground planet:wild-ground { tag: "horospheres:wild", under: open, crust: risen }
+planet-ground planet:city-ground { tag: "horospheres:city", under: sealed }
+planet-ground planet:backrooms-ground { tag: "horospheres:backrooms", under: sealed }
+planet-ground planet:vaults-ground { tag: "vaults:vaults", under: sealed, crust: risen }
+
+planet-voids planet:voids {
+    everywhere: "lattice:colossus"
+    layers -> [planet:lattice-void planet:drift-void planet:branch-void]
+}
+
+planet-void planet:lattice-void { until: 3, world: "lattice:hang", look: "lattice:look", fog: 3.5 }
+planet-void planet:drift-void { until: 5, world: "lattice:drift", over: "lattice:stars", look: "planet:drift", fog: 3 }
+planet-void planet:branch-void { until: 100, world: "lattice:branch", over: "lattice:stars", look: "planet:branch", fog: 2.5 }
+
+look planet:drift { red: 0.04, green: 0.05, blue: 0.16, tint: fog }
+look planet:branch { red: 0.13, green: 0.04, blue: 0.06, tint: fog }
+
+planet-fixtures planet:fixtures {
+    watch-fire -> base:lava
+    trail -> base:gravel
+    cairn -> base:andesite
+}

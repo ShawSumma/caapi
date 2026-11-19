@@ -1,0 +1,472 @@
+material base:dirt { break-seconds: 0.7 }
+material base:sand { break-seconds: 0.7 }
+material base:red-sand { break-seconds: 0.7 }
+material base:silt { break-seconds: 0.7 }
+material base:clay { break-seconds: 0.7 }
+material base:mud { break-seconds: 0.7 }
+material base:sandy-loam { break-seconds: 0.7 }
+material base:silty-loam { break-seconds: 0.7 }
+material base:clay-loam { break-seconds: 0.7 }
+material base:gravel { break-seconds: 0.7 }
+material base:grass { break-seconds: 0.7 }
+material base:lush-grass { break-seconds: 0.7 }
+material base:coarse-grass { break-seconds: 0.7 }
+material base:tan-grass { break-seconds: 0.7 }
+material base:mud-grass { break-seconds: 0.7 }
+material base:cave-grass { break-seconds: 0.7 }
+material base:snow { break-seconds: 0.3 }
+material base:ice { break-seconds: 3, mining-tier: 1 }
+material base:ice-slush { break-seconds: 0.3 }
+material base:limestone { break-seconds: 3, mining-tier: 1 }
+material base:dolomite { break-seconds: 3, mining-tier: 1 }
+material base:shale { break-seconds: 3, mining-tier: 1 }
+material base:slate { break-seconds: 3, mining-tier: 1 }
+material base:sandstone { break-seconds: 3, mining-tier: 1 }
+material base:red-sandstone { break-seconds: 3, mining-tier: 1 }
+material base:marble { break-seconds: 3, mining-tier: 1 }
+material base:granite { break-seconds: 3, mining-tier: 1 }
+material base:diorite { break-seconds: 3, mining-tier: 1 }
+material base:andesite { break-seconds: 3, mining-tier: 1 }
+material base:gabbro { break-seconds: 3, mining-tier: 1 }
+material base:basalt { break-seconds: 3, mining-tier: 1 }
+material base:olivine { break-seconds: 3, mining-tier: 1 }
+material base:water { break-seconds: 0.7 }
+material base:lava { break-seconds: 4.5 }
+material base:oak-leaves { break-seconds: 0.3 }
+material base:birch-leaves { break-seconds: 0.3 }
+material base:spruce-leaves { break-seconds: 0.3 }
+material base:grey-brick { break-seconds: 3, mining-tier: 1 }
+material base:white-brick { break-seconds: 3, mining-tier: 1 }
+material base:concrete { break-seconds: 3, mining-tier: 1 }
+material base:steel { break-seconds: 4.5, mining-tier: 4 }
+material base:glass { break-seconds: 0.3 }
+material base:jungle-leaves { break-seconds: 0.3 }
+material base:acacia-leaves { break-seconds: 0.3 }
+material base:cherry-leaves { break-seconds: 0.3 }
+material base:maple-leaves { break-seconds: 0.3 }
+material base:willow-leaves { break-seconds: 0.3 }
+material base:wallpaper { break-seconds: 0.7 }
+material base:stained-wallpaper { break-seconds: 0.7 }
+material base:carpet { break-seconds: 0.7 }
+material base:damp-carpet { break-seconds: 0.7 }
+material base:ceiling-tile { break-seconds: 0.7 }
+material base:light-panel { break-seconds: 4.5 }
+material base:red-carpet { break-seconds: 0.7 }
+material base:sunlight { break-seconds: 4.5 }
+material base:plaster { break-seconds: 3, mining-tier: 1 }
+material base:wet-concrete { break-seconds: 3, mining-tier: 1 }
+material base:iron-ore { break-seconds: 4.5, mining-tier: 3 }
+material base:copper-ore { break-seconds: 4.5, mining-tier: 2 }
+material base:sulfur { break-seconds: 4.5, mining-tier: 2 }
+material base:fern { break-seconds: 0.3 }
+material base:flower { break-seconds: 0.3 }
+material base:thornbush { break-seconds: 0.3 }
+material base:moss { break-seconds: 0.3 }
+material base:mushroom-stem { break-seconds: 0.7 }
+material base:mushroom-cap { break-seconds: 0.3 }
+material base:flower-stem { break-seconds: 0.7 }
+material base:petals { break-seconds: 0.3 }
+material base:pollen { break-seconds: 0.3 }
+
+material game:beacon {
+    red: 120
+    green: 230
+    blue: 255
+    glows: 1
+    fills -> game:beacon-role
+}
+
+material game:workbench {
+    red: 160
+    green: 120
+    blue: 70
+    grain: 0.08
+}
+
+material game:furnace {
+    red: 95
+    green: 90
+    blue: 88
+    grain: 0.15
+    mining-tier: 1
+}
+
+material game:anvil {
+    red: 70
+    green: 72
+    blue: 80
+    grain: 0.05
+    mining-tier: 1
+}
+
+material game:pamphlet {
+    red: 232
+    green: 224
+    blue: 196
+    grain: 0.04
+    break-seconds: 0.3
+}
+
+ware game:copper-bar {
+    red: 200
+    green: 120
+    blue: 70
+}
+
+ware game:iron-bar {
+    red: 175
+    green: 175
+    blue: 180
+}
+
+ware game:charcoal {
+    red: 45
+    green: 40
+    blue: 38
+}
+
+station game:workbench-station {
+    placed-as -> game:workbench
+}
+
+station game:furnace-station {
+    placed-as -> game:furnace
+}
+
+station game:anvil-station {
+    placed-as -> game:anvil
+}
+
+group game:woods {
+    label: "wood"
+    member -> [base:oak-wood base:birch-wood base:spruce-wood base:jungle-wood base:acacia-wood base:mushroom-stem base:flower-stem]
+}
+
+group game:sands {
+    label: "sand"
+    member -> [base:sand base:red-sand base:sandstone base:red-sandstone]
+}
+
+group game:stones {
+    label: "stone"
+    member -> [base:limestone base:dolomite base:shale base:slate base:sandstone base:red-sandstone base:marble base:granite base:diorite base:andesite base:gabbro base:basalt base:olivine]
+}
+
+group game:clays {
+    label: "clay"
+    member -> [base:clay base:clay-loam base:mud]
+}
+
+group game:sandy-soils {
+    label: "sandy soil"
+    member -> [base:sandy-loam base:gravel base:dirt base:grass base:lush-grass base:coarse-grass base:tan-grass base:mud-grass base:cave-grass]
+}
+
+group game:silty-soils {
+    label: "silty soil"
+    member -> [base:silt base:silty-loam base:clay-loam base:mud base:dirt base:grass base:lush-grass base:coarse-grass base:tan-grass base:mud-grass base:cave-grass]
+}
+
+group game:siftable {
+    label: "soil"
+    member -> [base:sandy-loam base:gravel base:dirt base:silt base:silty-loam base:clay-loam base:mud base:grass base:lush-grass base:coarse-grass base:tan-grass base:mud-grass base:cave-grass]
+}
+
+group game:fine-soils {
+    label: "fine soil"
+    member -> [base:silt base:silty-loam base:sandy-loam]
+}
+
+group game:waters {
+    label: "water or ice"
+    member -> [base:snow base:ice base:ice-slush base:water]
+}
+
+group game:masonry {
+    label: "masonry"
+    member -> [base:grey-brick base:white-brick base:concrete base:wet-concrete base:plaster base:ceiling-tile]
+}
+
+group game:cloth {
+    label: "cloth"
+    member -> [base:wallpaper base:stained-wallpaper base:carpet base:damp-carpet base:red-carpet game:pamphlet]
+}
+
+group game:lamps {
+    label: "lamp"
+    member -> [base:light-panel base:sunlight]
+}
+
+group game:built-materials {
+    label: "built material"
+    member -> [base:grey-brick base:white-brick base:concrete base:wet-concrete base:plaster base:ceiling-tile base:wallpaper base:stained-wallpaper base:carpet base:damp-carpet base:red-carpet base:light-panel base:sunlight base:steel]
+}
+
+upgrade game:wooden-pickaxe {
+    title: "wooden pickaxe"
+    mining-tier: 1
+}
+
+upgrade game:stone-pickaxe {
+    title: "stone pickaxe"
+    mining-tier: 2
+}
+
+upgrade game:copper-pickaxe {
+    title: "copper pickaxe"
+    mining-tier: 3
+}
+
+upgrade game:iron-pickaxe {
+    title: "iron pickaxe"
+    mining-tier: 4
+}
+
+insight game:charring {
+    title: "charring"
+    notice: "Wood left in the furnace's heat turns to charcoal, and charcoal worked through ore gives back more metal."
+    noticed-working -> game:furnace-station
+}
+
+insight game:sifting {
+    title: "sifting"
+    notice: "Loam, grass and dirt are sand and clay held together; sifted, they come apart, and the finest of them melts to glass."
+    noticed-breaking -> game:siftable
+}
+
+insight game:quenching {
+    title: "quenching"
+    notice: "Water poured over hot sand sets more glass, and lava cools to glass."
+    noticed-breaking -> game:waters
+}
+
+insight game:salvage {
+    title: "salvage"
+    notice: "What others built can be taken apart: masonry stacks into a furnace, cloth chars, lamps keep their glass and steel gives back its iron."
+    noticed-breaking -> game:built-materials
+}
+
+insight game:rumor-quarter-turn {
+    title: "a rumor: the quarter turn"
+    notice: "Walk five equal lengths, turning right after each, and you stand where you began, facing the way you set out. Only the compass disagrees, by a quarter turn."
+    noticed-reading -> game:pamphlet
+}
+
+insight game:rumor-panels {
+    title: "a rumor: the light panels"
+    notice: "The panels that light these rooms are mostly glass. A furnace would give it back."
+    noticed-reading -> game:pamphlet
+}
+
+insight game:rumor-bindings {
+    title: "a rumor: bound in cloth"
+    notice: "Many of the books here are bound in cloth, and cloth chars in a furnace like wood."
+    noticed-reading -> game:pamphlet
+}
+
+insight game:rumor-ores {
+    title: "a rumor: where the ores keep"
+    notice: "Copper keeps to marble and slate; iron to the hard rocks further down; sulfur to the pale layered stone near the top."
+    noticed-reading -> game:pamphlet
+}
+
+insight game:rumor-charcoal {
+    title: "a rumor: ore and charcoal"
+    notice: "Ore smelted alone gives back less metal than ore worked with charcoal."
+    noticed-reading -> game:pamphlet
+}
+
+recipe game:planks {
+    seconds: 0.5
+    at -> crafting:hand
+    produces -> base:wood-planks { yield: 3 }
+    consumes -> game:woods
+}
+
+recipe game:make-workbench {
+    seconds: 1.5
+    at -> crafting:hand
+    produces -> game:workbench
+    consumes -> base:wood-planks { count: 9 }
+}
+
+recipe game:make-wooden-pickaxe {
+    seconds: 1.5
+    at -> game:workbench-station
+    produces -> game:wooden-pickaxe
+    consumes -> base:wood-planks { count: 3 }
+}
+
+recipe game:make-stone-pickaxe {
+    seconds: 2
+    at -> game:workbench-station
+    produces -> game:stone-pickaxe
+    consumes -> base:wood-planks { count: 2 }
+    consumes -> game:stones { count: 3 }
+}
+
+recipe game:make-furnace {
+    seconds: 3
+    at -> game:workbench-station
+    produces -> game:furnace
+    consumes -> game:stones { count: 9 }
+}
+
+recipe game:make-anvil {
+    seconds: 3
+    at -> game:workbench-station
+    produces -> game:anvil
+    consumes -> game:stones { count: 3 }
+    consumes -> game:copper-bar { count: 3 }
+}
+
+recipe game:smelt-glass {
+    at -> game:furnace-station
+    produces -> base:glass
+    consumes -> game:sands { count: 3 }
+}
+
+recipe game:smelt-copper {
+    seconds: 2
+    at -> game:furnace-station
+    produces -> game:copper-bar
+    consumes -> base:copper-ore { count: 3 }
+}
+
+recipe game:smelt-iron {
+    seconds: 3
+    at -> game:furnace-station
+    produces -> game:iron-bar
+    consumes -> base:iron-ore { count: 3 }
+}
+
+recipe game:make-copper-pickaxe {
+    seconds: 3
+    at -> game:anvil-station
+    produces -> game:copper-pickaxe
+    consumes -> base:wood-planks { count: 2 }
+    consumes -> game:copper-bar { count: 3 }
+}
+
+recipe game:make-iron-pickaxe {
+    seconds: 4
+    at -> game:anvil-station
+    produces -> game:iron-pickaxe
+    consumes -> base:wood-planks { count: 2 }
+    consumes -> game:iron-bar { count: 3 }
+}
+
+recipe game:make-beacon {
+    seconds: 2
+    at -> game:anvil-station
+    produces -> game:beacon
+    consumes -> base:glass
+    consumes -> game:copper-bar
+}
+
+recipe game:fire-brick {
+    seconds: 2
+    at -> game:furnace-station
+    produces -> base:grey-brick
+    consumes -> game:clays { count: 3 }
+}
+
+recipe game:char-wood {
+    seconds: 2
+    at -> game:furnace-station
+    produces -> game:charcoal { yield: 3 }
+    consumes -> game:woods
+}
+
+recipe game:reduce-iron {
+    seconds: 3
+    at -> game:furnace-station
+    produces -> game:iron-bar { yield: 3 }
+    consumes -> base:iron-ore { count: 3 }
+    consumes -> game:charcoal
+}
+
+recipe game:reduce-copper {
+    seconds: 2
+    at -> game:furnace-station
+    produces -> game:copper-bar { yield: 3 }
+    consumes -> base:copper-ore { count: 3 }
+    consumes -> game:charcoal
+}
+
+recipe game:sift-sand {
+    seconds: 2
+    at -> game:workbench-station
+    produces -> base:sand
+    consumes -> game:sandy-soils { count: 3 }
+}
+
+recipe game:sift-clay {
+    seconds: 2
+    at -> game:workbench-station
+    produces -> base:clay
+    consumes -> game:silty-soils { count: 3 }
+}
+
+recipe game:melt-fine-soil {
+    seconds: 1.5
+    at -> game:furnace-station
+    produces -> base:glass
+    consumes -> game:fine-soils { count: 3 }
+}
+
+recipe game:quench-glass {
+    at -> game:furnace-station
+    produces -> base:glass { yield: 3 }
+    consumes -> game:sands { count: 3 }
+    consumes -> game:waters
+}
+
+recipe game:cool-lava {
+    at -> game:furnace-station
+    produces -> base:glass
+    consumes -> base:lava
+}
+
+recipe game:masonry-furnace {
+    seconds: 3
+    at -> game:workbench-station
+    produces -> game:furnace
+    consumes -> game:masonry { count: 9 }
+}
+
+recipe game:char-cloth {
+    seconds: 1.5
+    at -> game:furnace-station
+    produces -> game:charcoal
+    consumes -> game:cloth { count: 3 }
+}
+
+recipe game:strip-lamp {
+    at -> game:furnace-station
+    produces -> base:glass { yield: 3 }
+    consumes -> game:lamps
+}
+
+recipe game:lamp-beacon {
+    seconds: 2
+    at -> game:anvil-station
+    produces -> game:beacon
+    consumes -> game:lamps
+    consumes -> game:copper-bar
+}
+
+recipe game:melt-steel {
+    seconds: 2
+    at -> game:anvil-station
+    produces -> game:iron-bar { yield: 3 }
+    consumes -> base:steel
+}
+
+recipe game:steel-anvil {
+    seconds: 3
+    at -> game:workbench-station
+    produces -> game:anvil
+    consumes -> game:stones { count: 3 }
+    consumes -> base:steel
+}

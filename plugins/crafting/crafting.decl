@@ -1,0 +1,51 @@
+type item = material | ware
+
+kind ware {
+    red: integer 0..255 = 0
+    green: integer 0..255 = 0
+    blue: integer 0..255 = 0
+}
+
+kind station {
+    placed-as: optional -> material
+}
+
+extend group {
+    label: text?
+    member: many -> ware
+}
+
+kind upgrade {
+    title: text
+}
+
+kind role {
+}
+
+extend material {
+    fills: optional -> role
+}
+
+extend ware {
+    fills: optional -> role
+}
+
+kind insight {
+    title: text
+    notice: text
+    noticed-working: optional -> station
+    noticed-breaking: optional -> item | group
+    noticed-reading: optional -> item | group
+    noticed-revealing: optional -> hidden-family
+}
+
+kind recipe {
+    seconds: number 0.. = 1
+    at: optional -> station
+    produces: one -> item | upgrade {
+        yield: integer 1.. = 1
+    }
+    consumes: 1..2 -> item | group {
+        count: integer 1.. = 1
+    }
+}

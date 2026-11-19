@@ -4,27 +4,30 @@ look skies:trellis { red: 0.62, green: 0.84, blue: 0.86, tint: fog }
 
 connector-ground skies:terraces-ground {
     tag: "skies:terraces"
-    bridge: none
 }
 
 connector-ground skies:garden-ground {
     tag: "skies:garden"
-    bridge: none
 }
 
 connector-ground skies:trellis-ground {
     tag: "skies:trellis"
-    bridge: none
 }
+
+connector-pair skies:wild-terraces { lower: "horospheres:wild", upper: "skies:terraces", spiral: 20, drift: 40, lantern: 40 }
+connector-pair skies:wild-garden { lower: "horospheres:wild", upper: "skies:garden", spiral: 10, drift: 30, lantern: 60 }
+connector-pair skies:wild-trellis { lower: "horospheres:wild", upper: "skies:trellis", spiral: 40, drift: 30, lantern: 30 }
 
 connector-materials connector:materials {
     grounds -> [skies:terraces-ground skies:garden-ground skies:trellis-ground]
+    pairs -> [skies:wild-terraces skies:wild-garden skies:wild-trellis]
 }
 
 skies-materials skies:materials {
     terraces -> [skies:pale skies:sand skies:slate]
     garden -> [skies:night skies:ash skies:rust]
     trellis -> [skies:glass skies:timber]
+    beds -> [base:flower base:fern base:moss base:thornbush]
 }
 
 skies-palette skies:pale { floor -> base:marble, step -> base:dolomite, accent -> base:limestone, light -> base:sunlight }

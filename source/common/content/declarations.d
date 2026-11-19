@@ -109,6 +109,14 @@ struct Declarations {
         }
     }
 
+    bool isAdmitted(uint kind, uint edge, uint target) const {
+        uint index = 0;
+        while (index < edges.length && !(edges.ptr[index].kind == kind && edges.ptr[index].edge == edge && admits(edges.ptr[index].firstTarget, edges.ptr[index].targetCount, target, 0))) {
+            index += 1;
+        }
+        return index < edges.length;
+    }
+
     bool admits(uint firstTarget, uint targetCount, uint kind, uint depth) const {
         foreach (target; pool.slice()[firstTarget .. firstTarget + targetCount]) {
             if (target == kind) {
@@ -424,7 +432,7 @@ struct Checking {
             report(record.owner, printed(buffer[], "'%.*s' has a %.*s edge, which a %.*s does not declare", cast(int) from.length, from.ptr, cast(int) kind.length, kind.ptr, cast(int) fromKindName.length, fromKindName.ptr));
             record.standing = Standing.removed;
             return true;
-        } else if (!declarations.admits(declarations.edges.ptr[decl.value].firstTarget, declarations.edges.ptr[decl.value].targetCount, toKind, 0)) {
+        } else if (!declarations.isAdmitted(fromKind, record.kind, toKind)) {
             const(char)[] toKindName = spelled(toKind);
             report(record.owner, printed(buffer[], "a %.*s edge runs from '%.*s' to '%.*s', a %.*s, which it does not allow", cast(int) kind.length, kind.ptr, cast(int) from.length, from.ptr, cast(int) to.length, to.ptr, cast(int) toKindName.length, toKindName.ptr));
             record.standing = Standing.removed;

@@ -1,0 +1,64 @@
+kind receptor-half {
+    cells: text
+    expression: number 0.. = 1
+}
+
+kind enzyme {
+    operation: "oxidize" | "conjugate" | "cleave" | "attach"
+    wants: text
+    expression: number 0.. = 1
+}
+
+kind starter-dose {
+    half: one -> receptor-half
+    skips: "brake" | "trigger"
+    route: "ingested" | "inhaled" | "injected"
+    amount: number 0..
+}
+
+kind starter-body {
+    halves: some -> receptor-half
+    enzymes: many -> enzyme
+    doses: many -> starter-dose
+}
+
+kind chemistry {
+    targets: 1..2 -> receptor-half
+    skips: "brake" | "trigger"
+}
+
+extend material {
+    living: integer 0..1 = 0
+    plant: integer 0..1 = 0
+    thrives: "mild" | "cold" | "wet" | "arid" = "mild"
+    makes: optional -> chemistry
+}
+
+extend upgrade {
+    assays: integer 0..1 = 0
+}
+
+kind signal-drive {
+    signal: "mist" | "sway" | "lift"
+    also: "mist" | "sway" | "lift"?
+    gain: number
+    drives: one -> channel | hidden-family
+}
+
+kind synthesis {
+    title: text
+    operation: "extract" | "press" | "oxidize" | "conjugate" | "cleave" | "attach"
+    fragment: "polar" | "charged" | "bulky"?
+    seconds: number 0.. = 1
+    extract: number 0.. = 1
+    at: optional -> station
+    reagent: optional -> ware
+}
+
+kind dose-route {
+    title: text
+    route: "ingested" | "inhaled" | "injected"
+    needs-device: optional -> ware {
+        uses: integer 0.. = 0
+    }
+}

@@ -1,9 +1,10 @@
 module plugins.connector.connector;
 
-import plugins.api.api : Box, KindTag, Material, Rhythm, Risen, SitePart, Span;
+import core.stdc.math : cos, floor, sin, sqrt;
+import plugins.api.api : Api, Box, KindTag, Material, Rhythm, Risen, Site, SitePart, Span, dataOf;
 import plugins.api.binding : List, Named, bound;
 import plugins.api.content : Content;
-import plugins.turtle.turtle : Cell, Turtle, boxOf, floorMod, higherOf, lowerOf, mixed;
+import plugins.turtle.turtle : Cell, EVERY_HEIGHT, FULL_TURN, GOLDEN_ANGLE, HALF_TURN, PI, Rows, TURN_TREADS, Turtle, boxOf, cornersOf, discRows, floorMod, higherOf, lowerOf, mixed, ringRows, wedgeRows;
 
 enum int STORY = 4;
 enum int HALF_WIDTH = 4;
@@ -29,9 +30,42 @@ enum int STONE_SIDE = 2;
 enum int LANTERN_WIDEST = 11;
 enum int LANTERN_TIER = 3;
 enum int LANTERN_BAND_EVERY = 2;
-enum int CROWN_TIERS = 3;
-enum int CROWN_TIER = 3;
-enum int ROOT_FLARE = 3;
+enum int TRUNK_HALF = HALF_WIDTH + 1;
+enum Span TRUNK_COLUMN = Span(-TRUNK_HALF - 1, TRUNK_HALF);
+enum double TRUNK_RADIUS = 5.5;
+enum double FURROW_DEPTH = 1;
+enum int FURROW_EVERY = 9;
+enum int FURROW_SPAN = 6;
+immutable uint[5] FURROWS = [1, 6, 11, 15, 20];
+enum int APPROACH = 6;
+enum int BOUGH_FIRST = 12;
+enum int BOUGH_EVERY = 6;
+enum double BOUGH_OUT = 4.5;
+enum int BOUGH_STEPS = 4;
+enum double BOUGH_RADIUS = 1.6;
+enum double BOUGH_TIP = 1.1;
+enum double BOUGH_WANDER = 9;
+enum int TWIG_LEAVES = 2;
+enum int TIP_LEAVES = 3;
+enum int CROWN_LEAST = 14;
+enum int CROWN_DEPTH = 7;
+enum int CROWN_RADIUS = 9;
+enum int CROWN_TALL = 6;
+enum uint CROWN_LOBES = 6;
+enum double LOBE_OUT = 6;
+enum int LOBE_DEPTH = 9;
+enum double LOBE_SWAY = 3;
+enum int LOBE_LEAST = 4;
+enum uint LOBE_CHOICES = 2;
+enum int LOBE_TALL = 3;
+enum uint ROOT_COUNT = 6;
+enum int ROOT_HEIGHT = 3;
+enum double ROOT_OUT = 5;
+enum double ROOT_STEP = 1.2;
+enum int ROOT_STEPS = 3;
+enum double ROOT_RADIUS = 1.9;
+enum double ROOT_TAPER = 0.4;
+enum double ROOT_WANDER = 30;
 enum Span KNOT = Span(-1, 0);
 immutable Cell[8] STONES = [Cell(-10, -1), Cell(-8, 6), Cell(-1, 8), Cell(6, 6), Cell(8, -1), Cell(6, -8), Cell(-1, -10), Cell(-8, -8)];
 immutable Cell[TURN] SEGMENTS = [
@@ -66,9 +100,16 @@ enum End : ubyte {
     upper,
 }
 
+enum Relief : ubyte {
+    flat,
+    rough,
+}
+
 struct Ends {
     Dress lower;
     Dress upper;
+    Relief lowerRelief;
+    Relief upperRelief;
 }
 
 struct Half {
@@ -104,6 +145,7 @@ struct Connection {
 
 enum Bridge : ubyte {
     built,
+    hidden,
     none,
 }
 
@@ -112,6 +154,7 @@ struct Ground {
     int level;
     Bridge bridge;
     Dress dress;
+    Relief relief;
 }
 
 struct Pair {
@@ -177,6 +220,7 @@ struct Materials {
     Material window;
     Material stone;
     Material light;
+    Material knot;
     List!(Palette, MOST_PALETTES) palettes;
     Palette drift;
     Palette lantern;
@@ -262,6 +306,8 @@ void flipGallery(Turtle tower, Material material, Layout layout) {
 void spiral(Turtle tower, Palette palette, Layout layout) {
     openFloors(tower, palette, layout);
     posts(tower, palette, layout);
+    Span rising = Span(layout.base + STORY, layout.base + layout.top - 1);
+    ring(tower, palette.trim, HALF_WIDTH, rising, Rhythm(2 * STORY, floorMod(layout.base, 2 * STORY), 1));
     flipGallery(tower, palette.trim, layout);
 }
 
@@ -288,11 +334,11 @@ int lanternHalf(Layout layout, int z) {
     return HALF_WIDTH + (LANTERN_WIDEST - HALF_WIDTH) * (reach - lowerOf(reach, away)) / higherOf(reach, 1);
 }
 
-void ring(Turtle tower, Material material, int half, Span z) {
-    tower.paint(material, boxOf(Span(-half, half - 1), Span(-half, -half), z));
-    tower.paint(material, boxOf(Span(-half, half - 1), Span(half - 1, half - 1), z));
-    tower.paint(material, boxOf(Span(-half, -half), Span(-half, half - 1), z));
-    tower.paint(material, boxOf(Span(half - 1, half - 1), Span(-half, half - 1), z));
+void ring(Turtle tower, Material material, int half, Span z, Rhythm rows = EVERY_HEIGHT) {
+    tower.paint(material, boxOf(Span(-half, half - 1), Span(-half, -half), z), rows);
+    tower.paint(material, boxOf(Span(-half, half - 1), Span(half - 1, half - 1), z), rows);
+    tower.paint(material, boxOf(Span(-half, -half), Span(-half, half - 1), z), rows);
+    tower.paint(material, boxOf(Span(half - 1, half - 1), Span(-half, half - 1), z), rows);
 }
 
 Half lowerHalf(Layout layout) {
@@ -321,49 +367,137 @@ Span roomsOf(Half half) {
     }
 }
 
-Span fromFlip(Half half, int offset, int count) {
+int lengthOf(Half half) {
+    return half.z.high - half.z.low;
+}
+
+Span levels(Half half, int from, int to) {
     final switch (half.end) {
         case End.lower:
-            return Span(higherOf(half.z.low, half.z.high - offset - count + 1), half.z.high - offset);
+            return Span(higherOf(half.z.low, half.floor + from), lowerOf(half.z.high, half.floor + to));
         case End.upper:
-            return Span(half.z.low + offset, lowerOf(half.z.high, half.z.low + offset + count - 1));
+            return Span(higherOf(half.z.low, half.floor - to), lowerOf(half.z.high, half.floor - from));
     }
 }
 
-Span fromGround(Half half, int count) {
-    final switch (half.end) {
-        case End.lower:
-            return Span(half.z.low, lowerOf(half.z.high, half.z.low + count - 1));
-        case End.upper:
-            return Span(higherOf(half.z.low, half.z.high - count + 1), half.z.high);
+struct Aside {
+    double x = 0;
+    double y = 0;
+}
+
+Aside asideAt(double around, double reach) {
+    double angle = around * PI / HALF_TURN;
+    return Aside(reach * cos(angle), reach * sin(angle));
+}
+
+void disc(Turtle tower, Material material, Half half, Aside centre, double radius, int from, int to) {
+    Span z = levels(half, from, to);
+    if (z.low <= z.high) {
+        Rows rows = discRows(tower.column(), centre.x, centre.y, radius);
+        tower.fillRows(material, rows, z);
     }
 }
 
-bool isEmpty(Span span) {
-    return span.low > span.high;
+int widthAt(int radius, int tall, int above) {
+    double share = above / (tall + 0.5);
+    return cast(int) floor(radius * sqrt(1 - share * share) + 0.5);
 }
 
-void crown(Turtle tower, Material leaves, Half half) {
-    foreach (tier; 0 .. CROWN_TIERS) {
-        Span z = fromFlip(half, tier * CROWN_TIER, CROWN_TIER);
-        if (!isEmpty(z)) {
-            tower.fill(leaves, square(HALF_WIDTH + CROWN_TIERS - tier, z));
+void blob(Turtle tower, Material material, Half half, Aside centre, int middle, int radius, int tall) {
+    int from = -tall;
+    while (from <= tall) {
+        int wide = widthAt(radius, tall, from);
+        int to = from;
+        while (to < tall && widthAt(radius, tall, to + 1) == wide) {
+            to += 1;
+        }
+        if (wide > 0) {
+            disc(tower, material, half, centre, wide, middle + from, middle + to);
+        }
+        from = to + 1;
+    }
+}
+
+void trunk(Turtle tower, Material bark, Half half) {
+    Rows body = ringRows(TRUNK_COLUMN, 0, TRUNK_RADIUS);
+    tower.paintRows(bark, body, half.z);
+    Rows[TURN_TREADS] wedges = wedgeRows(TRUNK_COLUMN, TRUNK_RADIUS - FURROW_DEPTH, TRUNK_RADIUS);
+    foreach (index, wedge; FURROWS) {
+        tower.paintRows(materials.knot, wedges[wedge], half.z, Rhythm(FURROW_EVERY, floorMod(half.floor + 5 * cast(int) index, FURROW_EVERY), FURROW_SPAN));
+    }
+}
+
+void roots(Turtle tower, Material bark, Half half) {
+    double first = tower.rollUnit() * FULL_TURN;
+    foreach (root; 0 .. ROOT_COUNT) {
+        double around = first + root * FULL_TURN / ROOT_COUNT + (tower.rollUnit() - 0.5) * ROOT_WANDER;
+        foreach (step; 0 .. ROOT_STEPS) {
+            disc(tower, bark, half, asideAt(around, ROOT_OUT + step * ROOT_STEP), ROOT_RADIUS - step * ROOT_TAPER, 0, ROOT_HEIGHT - step);
         }
     }
 }
 
-void flare(Turtle tower, Material bark, Half half) {
-    Span z = fromGround(half, ROOT_FLARE);
-    if (!isEmpty(z)) {
-        tower.fill(bark, square(HALF_WIDTH + 1, z));
+void bough(Turtle tower, Palette palette, Half half, double around, int away) {
+    foreach (step; 0 .. BOUGH_STEPS) {
+        double radius = BOUGH_RADIUS;
+        if (step >= BOUGH_STEPS / 2) {
+            radius = BOUGH_TIP;
+        }
+        disc(tower, palette.wall, half, asideAt(around + step * BOUGH_WANDER, BOUGH_OUT + step), radius, away + step, away + step + 1);
+    }
+    blob(tower, palette.trim, half, asideAt(around + BOUGH_WANDER, BOUGH_OUT + BOUGH_STEPS / 2), away + BOUGH_STEPS / 2 + 1, TWIG_LEAVES, 1);
+    blob(tower, palette.trim, half, asideAt(around + BOUGH_STEPS * BOUGH_WANDER, BOUGH_OUT + BOUGH_STEPS), away + BOUGH_STEPS + 1, TIP_LEAVES, 2);
+}
+
+void boughs(Turtle tower, Palette palette, Half half) {
+    int length = lengthOf(half);
+    double around = tower.rollUnit() * FULL_TURN;
+    int away = BOUGH_FIRST;
+    while (away + CROWN_DEPTH < length) {
+        bough(tower, palette, half, around, away);
+        around += GOLDEN_ANGLE;
+        away += BOUGH_EVERY;
+    }
+}
+
+void crown(Turtle tower, Material leaves, Half half) {
+    int length = lengthOf(half);
+    if (length >= CROWN_LEAST) {
+        blob(tower, leaves, half, Aside.init, length - CROWN_DEPTH, CROWN_RADIUS, CROWN_TALL);
+        double first = tower.rollUnit() * FULL_TURN;
+        foreach (lobe; 0 .. CROWN_LOBES) {
+            double around = first + lobe * FULL_TURN / CROWN_LOBES;
+            int sway = cast(int) floor((tower.rollUnit() - 0.5) * 2 * LOBE_SWAY);
+            int radius = LOBE_LEAST + cast(int) tower.pick(LOBE_CHOICES);
+            blob(tower, leaves, half, asideAt(around, LOBE_OUT), length - LOBE_DEPTH + sway, radius, LOBE_TALL);
+        }
     }
 }
 
 void knots(Turtle tower, Span z, Rhythm rows) {
-    tower.paint(Material.none, boxOf(Span(-HALF_WIDTH, -HALF_WIDTH), KNOT, z), rows);
-    tower.paint(Material.none, boxOf(Span(HALF_WIDTH - 1, HALF_WIDTH - 1), KNOT, z), rows);
-    tower.paint(Material.none, boxOf(KNOT, Span(-HALF_WIDTH, -HALF_WIDTH), z), rows);
-    tower.paint(Material.none, boxOf(KNOT, Span(HALF_WIDTH - 1, HALF_WIDTH - 1), z), rows);
+    tower.paint(Material.none, boxOf(KNOT, Span(-TRUNK_HALF, -HALF_WIDTH), z), rows);
+    tower.paint(Material.none, boxOf(KNOT, Span(HALF_WIDTH - 1, TRUNK_HALF - 1), z), rows);
+}
+
+void lamp(Turtle tower, Half half) {
+    if (half.end == End.lower) {
+        int over = half.floor + DOOR_TOP + 1;
+        tower.paint(materials.light, boxOf(Span(-TRUNK_HALF, -TRUNK_HALF), DOOR, Span(over, over)));
+    }
+}
+
+void approach(Turtle door, int floor, End end) {
+    foreach (away; 1 .. APPROACH + 1) {
+        Span x = Span(-HALF_WIDTH - APRON - away, -HALF_WIDTH - APRON - away);
+        final switch (end) {
+            case End.lower:
+                door.paint(Material.none, boxOf(x, APRON_WIDTH, Span(floor + away + 1, floor + away + DOOR_TOP)));
+                break;
+            case End.upper:
+                door.paint(Material.none, boxOf(x, APRON_WIDTH, Span(floor - away - DOOR_TOP, floor - away - 1)));
+                break;
+        }
+    }
 }
 
 void dress(Turtle tower, Dress dress, Palette palette, Half half) {
@@ -375,9 +509,11 @@ void dress(Turtle tower, Dress dress, Palette palette, Half half) {
             break;
         case Dress.trunk:
             crown(tower, palette.trim, half);
-            flare(tower, palette.wall, half);
-            tower.paint(palette.wall, square(HALF_WIDTH, half.z));
-            knots(tower, roomsOf(half), band(half, 2, 1));
+            boughs(tower, palette, half);
+            roots(tower, palette.wall, half);
+            trunk(tower, palette.wall, half);
+            knots(tower, roomsOf(half), band(half, 1, 2));
+            lamp(tower, half);
             break;
         case Dress.stairwell:
             tower.paint(palette.wall, square(HALF_WIDTH, half.z));
@@ -471,10 +607,10 @@ void helix(Turtle tower, Material lower, Material upper, Layout layout) {
     }
 }
 
-void doorway(Turtle tower, int floor, Span room) {
+void doorway(Turtle tower, int floor, Span room, Material landing) {
     Span apron = Span(-HALF_WIDTH - APRON, -HALF_WIDTH - 1);
     tower.paint(Material.none, boxOf(Span(-HALF_WIDTH, -HALF_WIDTH), DOOR, room));
-    tower.paint(materials.landing, boxOf(apron, APRON_WIDTH, Span(floor, floor)));
+    tower.paint(landing, boxOf(apron, APRON_WIDTH, Span(floor, floor)));
     tower.paint(Material.none, boxOf(apron, APRON_WIDTH, room));
 }
 
@@ -546,9 +682,27 @@ Style chosenStyle(Turtle site, ref const Risen risen, uint upperTag, Connection 
 void connect(Turtle site, ref const Risen risen, uint upperTag, Connection how) {
     Ground upper = groundOf(KindTag.of(upperTag));
     Ground lower = groundOf(risen.lower);
-    if (upper.bridge == Bridge.built && lower.bridge == Bridge.built) {
-        bridge(site, risen, upperTag, how, layoutOf(site, risen, upper.level, lower.level), Ends(lower.dress, upper.dress));
+    Connection chosen = how;
+    if (upper.bridge == Bridge.hidden) {
+        chosen = Connection.forced(Style.hidden, how.routing);
     }
+    if (upper.bridge != Bridge.none && lower.bridge == Bridge.built) {
+        bridge(site, risen, upperTag, chosen, layoutOf(site, risen, upper.level, lower.level), Ends(lower.dress, upper.dress, lower.relief, upper.relief));
+    }
+}
+
+bool probeOwnsFoot(Turtle face, ref const Risen risen) {
+    ulong foot = Turtle(face.api, risen.foot).probeHash(SitePart.vertex);
+    foreach (corner; cornersOf(face)) {
+        if (corner.probeHash(SitePart.vertex) == foot && corner.probeOwns(SitePart.vertex)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void footTile(const(Api)* api, Site foot, const(Risen)* risen, const(void)* data) {
+    connect(Turtle(api, foot), *risen, risen.tag.value, dataOf!Connection(data));
 }
 
 void bridge(Turtle site, ref const Risen risen, uint upperTag, Connection how, Layout layout, Ends ends) {
@@ -600,8 +754,18 @@ void bridge(Turtle site, ref const Risen risen, uint upperTag, Connection how, L
     } else if (style == Style.hidden) {
         core(tower, palette.trim, palette.trim, layout);
     }
-    doorway(tower, layout.base, Span(layout.base + 1, layout.base + DOOR_TOP));
-    doorway(upperDoorFrame(tower, layout), layout.base + layout.top, Span(layout.base + layout.top - DOOR_TOP, layout.base + layout.top - 1));
+    Material landing = materials.landing;
+    if (style == Style.hidden) {
+        landing = palette.floor;
+    }
+    doorway(tower, layout.base, Span(layout.base + 1, layout.base + DOOR_TOP), landing);
+    doorway(upperDoorFrame(tower, layout), layout.base + layout.top, Span(layout.base + layout.top - DOOR_TOP, layout.base + layout.top - 1), landing);
+    if (ends.lowerRelief == Relief.rough) {
+        approach(tower, layout.base, End.lower);
+    }
+    if (ends.upperRelief == Relief.rough) {
+        approach(upperDoorFrame(tower, layout), layout.base + layout.top, End.upper);
+    }
     if (how.routing != Routing.unrouted) {
         route(tower, layout);
     }

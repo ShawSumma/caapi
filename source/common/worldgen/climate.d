@@ -5,46 +5,34 @@ import base.numbers : higherOf, lowerOf;
 import base.splitmix : SplitMix;
 import base.vector3 : Vec3;
 import common.view : GraphView;
-import common.worldgen.palette : laidBy, palette;
+import common.worldgen.palette : DRIFT_COUNT, Drift, laidBy, palette;
 import geometry.honeycomb : Corner, Face, faces;
 import plugins.api.api : Material;
 
-enum float RUGGED_THRESHOLD = 0.4f;
-enum float MOUNTAIN_HEIGHT = 2.5f;
-enum float LAPSE_RATE = 0.3f;
-enum float COVER_DEPTH = 0.06f;
-enum float SOIL_DEPTH = 0.4f;
-enum float WATER_LEVEL = -0.6f;
-enum float WARMTH_CLASS_LIMIT = 0.35f;
 enum float UNDERSIDE_SWING = 0.5f;
+enum float SLACK_SPREADS = 4;
 
-struct Process {
-    float keep;
-    float spread;
-    ulong salt;
-}
+immutable ulong[DRIFT_COUNT] DRIFT_SALTS = [0x51ED2701, 0x7A3D9C11, 0x2B992DD3, 0x6C8E9CF5, 0x3C6EF372, 0x1F83D9AB, 0x5D1E7A3B];
 
-immutable Process BROAD_RELIEF = Process(0.92f, 0.25f, 0x51ED2701);
-immutable Process LOCAL_RELIEF = Process(0.5f, 0.25f, 0x7A3D9C11);
-immutable Process HEAT = Process(0.94f, 0.3f, 0x2B992DD3);
-immutable Process WETNESS = Process(0.94f, 0.3f, 0x6C8E9CF5);
-immutable Process STRATA = Process(0.8f, 0.25f, 0x3C6EF372);
-immutable Process RUGGEDNESS = Process(0.9f, 0.2f, 0x1F83D9AB);
-immutable Process SHIELD = Process(0.9f, 0.2f, 0x5D1E7A3B);
-immutable float[3] ROCK_BAND_DEPTHS = [1.2f, 2.6f, 4.5f];
-immutable float[2] WETNESS_CLASS_LIMITS = [-0.2f, 0.3f];
-
-float boundOf(Process process) {
-    return process.spread / (1 - process.keep);
+float boundOf(Drift drift) {
+    return palette.shape.spread[drift] / (1 - palette.shape.keep[drift]);
 }
 
 float mountainOf(float ruggedness) {
-    return MOUNTAIN_HEIGHT * higherOf(0, ruggedness - RUGGED_THRESHOLD);
+    return palette.shape.mountainHeight * higherOf(0, ruggedness - palette.shape.ruggedThreshold);
 }
 
-enum float RELIEF_BOUND = boundOf(BROAD_RELIEF) + boundOf(LOCAL_RELIEF) + MOUNTAIN_HEIGHT * (boundOf(RUGGEDNESS) - RUGGED_THRESHOLD);
-enum float RELIEF_SLACK = 4 * (BROAD_RELIEF.spread + LOCAL_RELIEF.spread + MOUNTAIN_HEIGHT * RUGGEDNESS.spread);
-enum float SHIELD_SLACK = 4 * SHIELD.spread;
+float reliefBound() {
+    return boundOf(Drift.broad) + boundOf(Drift.local) + palette.shape.mountainHeight * (boundOf(Drift.ruggedness) - palette.shape.ruggedThreshold);
+}
+
+float reliefSlack() {
+    return SLACK_SPREADS * (palette.shape.spread[Drift.broad] + palette.shape.spread[Drift.local] + palette.shape.mountainHeight * palette.shape.spread[Drift.ruggedness]);
+}
+
+float shieldSlack() {
+    return SLACK_SPREADS * palette.shape.spread[Drift.shield];
+}
 
 struct NodeClimate {
     float broad = 0;
@@ -67,7 +55,7 @@ struct NodeClimate {
             mean.ruggedness += parent.ruggedness / parents.length;
             mean.shield += parent.shield / parents.length;
         }
-        return NodeClimate(stepped(mean.broad, BROAD_RELIEF, spice), stepped(mean.local, LOCAL_RELIEF, spice), stepped(mean.heat, HEAT, spice), stepped(mean.wetness, WETNESS, spice), stepped(mean.strata, STRATA, spice), stepped(mean.ruggedness, RUGGEDNESS, spice), stepped(mean.shield, SHIELD, spice));
+        return NodeClimate(stepped(mean.broad, Drift.broad, spice), stepped(mean.local, Drift.local, spice), stepped(mean.heat, Drift.heat, spice), stepped(mean.wetness, Drift.wetness, spice), stepped(mean.strata, Drift.strata, spice), stepped(mean.ruggedness, Drift.ruggedness, spice), stepped(mean.shield, Drift.shield, spice));
     }
 
     Climate climate() const {
@@ -75,8 +63,8 @@ struct NodeClimate {
     }
 }
 
-float stepped(float mean, Process process, ulong spice) {
-    return process.keep * mean + process.spread * noiseOf(spice ^ process.salt);
+float stepped(float mean, Drift drift, ulong spice) {
+    return palette.shape.keep[drift] * mean + palette.shape.spread[drift] * noiseOf(spice ^ DRIFT_SALTS[drift]);
 }
 
 float noiseOf(ulong seed) {
@@ -103,7 +91,7 @@ struct Climate {
     }
 
     float warmth() const {
-        return heat - LAPSE_RATE * relief;
+        return heat - palette.shape.lapseRate * relief;
     }
 }
 
@@ -174,9 +162,9 @@ struct CubeClimate {
 
 Material groundAt(float depth, float riser, Climate climate) {
     float warmth = climate.warmth();
-    if (depth < higherOf(COVER_DEPTH, lowerOf(riser, SOIL_DEPTH))) {
+    if (depth < higherOf(palette.shape.coverDepth, lowerOf(riser, palette.shape.soilDepth))) {
         return palette.cover.slice().laidBy(warmth, climate.wetness, climate.relief);
-    } else if (depth < SOIL_DEPTH) {
+    } else if (depth < palette.shape.soilDepth) {
         return palette.soil.slice().laidBy(warmth, climate.wetness, climate.relief);
     } else {
         return palette.rocks[rockBand(depth + climate.strata)][wetnessClass(climate.wetness)][warmthClass(warmth)];
@@ -184,7 +172,7 @@ Material groundAt(float depth, float riser, Climate climate) {
 }
 
 Material underAt(float depth, Climate climate) {
-    if (depth < SOIL_DEPTH) {
+    if (depth < palette.shape.soilDepth) {
         return palette.flatFill;
     } else {
         return palette.rocks[rockBand(depth + climate.strata)][wetnessClass(climate.wetness)][warmthClass(climate.warmth())];
@@ -192,7 +180,7 @@ Material underAt(float depth, Climate climate) {
 }
 
 Material openAt(float altitude, Climate climate) {
-    if (altitude >= WATER_LEVEL) {
+    if (altitude >= palette.shape.waterLevel) {
         return Material.none;
     } else {
         return palette.fluids.slice().laidBy(climate.warmth(), climate.wetness, climate.relief);
@@ -201,7 +189,7 @@ Material openAt(float altitude, Climate climate) {
 
 uint rockBand(float depth) {
     uint band = 0;
-    while (band < ROCK_BAND_DEPTHS.length && depth >= ROCK_BAND_DEPTHS[band]) {
+    while (band < palette.shape.rockBandDepths.length && depth >= palette.shape.rockBandDepths[band]) {
         band += 1;
     }
     return band;
@@ -209,14 +197,14 @@ uint rockBand(float depth) {
 
 uint wetnessClass(float wetness) {
     uint index = 0;
-    while (index < WETNESS_CLASS_LIMITS.length && wetness >= WETNESS_CLASS_LIMITS[index]) {
+    while (index < palette.shape.wetnessClassLimits.length && wetness >= palette.shape.wetnessClassLimits[index]) {
         index += 1;
     }
     return index;
 }
 
 uint warmthClass(float warmth) {
-    if (warmth >= WARMTH_CLASS_LIMIT) {
+    if (warmth >= palette.shape.warmthClassLimit) {
         return 1;
     } else {
         return 0;
@@ -224,9 +212,9 @@ uint warmthClass(float warmth) {
 }
 
 Maybe!Material uniformRock(float shallowest, float deepest, Climate lowest, Climate highest) {
-    float coldest = lowest.heat - LAPSE_RATE * highest.relief;
-    float warmest = highest.heat - LAPSE_RATE * lowest.relief;
-    if (shallowest >= SOIL_DEPTH && rockBand(shallowest + lowest.strata) == rockBand(deepest + highest.strata) && wetnessClass(lowest.wetness) == wetnessClass(highest.wetness) && warmthClass(coldest) == warmthClass(warmest)) {
+    float coldest = lowest.heat - palette.shape.lapseRate * highest.relief;
+    float warmest = highest.heat - palette.shape.lapseRate * lowest.relief;
+    if (shallowest >= palette.shape.soilDepth && rockBand(shallowest + lowest.strata) == rockBand(deepest + highest.strata) && wetnessClass(lowest.wetness) == wetnessClass(highest.wetness) && warmthClass(coldest) == warmthClass(warmest)) {
         return Maybe!Material.of(palette.rocks[rockBand(shallowest + lowest.strata)][wetnessClass(lowest.wetness)][warmthClass(coldest)]);
     } else {
         return Maybe!Material.init;

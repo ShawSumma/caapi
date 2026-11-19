@@ -226,25 +226,38 @@ struct WorkerPool {
             parallel.finish();
             runs += 1;
         } else {
-            if (!parallel.deadline.isBounded) {
-                parallel.grain = grainFor(parallel.count, participants());
-            }
-            atomicStore(job, cast(size_t) parallel);
-            call((parallel.count + parallel.grain - 1) / parallel.grain - 1);
-            parallel.work(MAIN_WORKER);
-            atomicStore(job, 0);
-            double start = nowMilliseconds();
-            atomicStore(joiners, 1);
-            uint inside = atomicLoad(active);
-            while (inside != 0) {
-                waitWhile(active, inside);
-                inside = atomicLoad(active);
-            }
-            atomicStore(joiners, 0);
-            parallel.finish();
-            runs += 1;
-            waitedMs += nowMilliseconds() - start;
+            open(parallel, 1);
+            join(parallel);
         }
+    }
+
+    void start(ParallelJob* parallel) {
+        open(parallel, 0);
+    }
+
+    void open(ParallelJob* parallel, size_t taken) {
+        assert(atomicLoad(job) == 0);
+        if (!parallel.deadline.isBounded) {
+            parallel.grain = grainFor(parallel.count, participants());
+        }
+        atomicStore(job, cast(size_t) parallel);
+        call((parallel.count + parallel.grain - 1) / parallel.grain - taken);
+    }
+
+    void join(ParallelJob* parallel) {
+        parallel.work(MAIN_WORKER);
+        atomicStore(job, 0);
+        double start = nowMilliseconds();
+        atomicStore(joiners, 1);
+        uint inside = atomicLoad(active);
+        while (inside != 0) {
+            waitWhile(active, inside);
+            inside = atomicLoad(active);
+        }
+        atomicStore(joiners, 0);
+        parallel.finish();
+        runs += 1;
+        waitedMs += nowMilliseconds() - start;
     }
 
     void release() {
@@ -292,6 +305,21 @@ struct Executor {
             job.finish();
         } else {
             pool.run(job);
+        }
+    }
+
+    void start(ParallelJob* job) {
+        if (pool !is null) {
+            pool.start(job);
+        }
+    }
+
+    void join(ParallelJob* job) {
+        if (pool is null) {
+            job.work(MAIN_WORKER);
+            job.finish();
+        } else {
+            pool.join(job);
         }
     }
 }

@@ -9,4 +9,5 @@ kind skies-materials {
     terraces: some -> skies-palette
     garden: some -> skies-palette
     trellis: some -> skies-palette
+    beds: some -> material
 }

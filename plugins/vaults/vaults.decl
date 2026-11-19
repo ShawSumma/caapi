@@ -9,5 +9,8 @@ kind vaults-palette {
 
 kind vaults-materials {
     lamp: one -> material
+    water: one -> material
+    brazier: one -> material
+    runner: one -> material
     palettes: some -> vaults-palette
 }

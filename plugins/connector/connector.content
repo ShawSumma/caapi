@@ -3,7 +3,8 @@ connector-materials connector:materials {
     window -> base:glass
     stone -> base:marble
     light -> base:sunlight
-    palettes -> [connector:brick connector:sandstone connector:steel connector:grey]
+    knot -> base:spruce-wood
+    palettes ->[connector:brick connector:sandstone connector:steel connector:grey]
     drift -> connector:drift
     lantern -> connector:lantern
     hidden -> connector:hidden
@@ -17,6 +18,7 @@ connector-materials connector:materials {
 connector-ground connector:wild {
     tag: "horospheres:wild"
     dress: trunk
+    relief: rough
 }
 
 connector-pair connector:wild-wild { lower: "horospheres:wild", upper: "horospheres:wild", tower: 39, spiral: 44, drift: 11, lantern: 6, paired: 250 }

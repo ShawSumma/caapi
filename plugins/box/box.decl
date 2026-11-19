@@ -7,4 +7,6 @@ kind box-palette {
 kind box-palettes {
     palettes: some -> box-palette
     timber: one -> box-palette
+    bench: one -> material
+    lamp: one -> material
 }

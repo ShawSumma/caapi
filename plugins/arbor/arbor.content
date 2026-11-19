@@ -6,4 +6,5 @@ arbor-materials arbor:materials {
     post -> base:spruce-wood
     lantern -> base:light-panel
     lawn -> base:grass
+    bench -> pharmacology:bench
 }

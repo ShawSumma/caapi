@@ -7,19 +7,71 @@ import base.maybe : Maybe;
 import base.names : ENUM_NAMES;
 import base.stdio : printed;
 import base.units : Time;
-import client.bindings : Action, Bindings, Rules;
-import client.config : ClientConfig;
-import client.game : Click, Game, Key, KeyStroke, MOST_STEP_SECONDS, Saving, Screen, UiAction, UiKind, creativeInventory, frameInputOf;
-import client.hud : FrameMeter, Hud, MouseCapture, STATUS_CAPACITY, statusLine;
-import client.input : BUTTON_NAME_CAPACITY, Controls, Request, buttonName;
-import client.plugins : gatherWorlds, worldCount, worldNameAt;
-import client.save : SaveData, Writer, applyEdits, applyState, readGame, writeGame;
-import client.structures : StructureProblem, WorldStep, growthProblem, placeStructure, steppedWorld, worldgenAt;
-import common.crafting : IdSet;
-import common.inventory : Cycle;
+import app.linked : LINKED;
+import client.plugins : Linked, gatherWorlds, worldCount, worldNameAt;
+import client.structures : StructureProblem, WorldStep, growthProblem;
 import common.settings : CHUNK_DIMENSION;
 import plugins.api.flags : Flags;
+import arbor = plugins.arbor.plugin;
+import babel = plugins.babel.plugin;
+import backrooms = plugins.backrooms.plugin;
+import base = plugins.base.plugin;
+import blocks = plugins.blocks.plugin;
+import box = plugins.box.plugin;
+import buildings = plugins.buildings.plugin;
+import caves = plugins.caves.plugin;
+import city = plugins.city.plugin;
+import connector = plugins.connector.plugin;
+import plugins.crafting.crafting : IdSet;
+import plugins.crafting.inventory : Cycle;
+import crown = plugins.crown.plugin;
+import fixtures = plugins.fixtures.plugin;
+import plugins.game.bindings : Bindings, Bound, Rules;
+import plugins.game.config : ClientConfig;
+import plugins.game.game : Click, Game, Key, KeyStroke, MOST_STEP_SECONDS, PickKind, Saving, Screen, UiAction, UiKind, WorldPick, creativeInventory, frameInputOf;
+import plugins.game.hud : FrameMeter, Hud, MouseCapture, STATUS_CAPACITY, statusLine;
+import plugins.game.input : BUTTON_NAME_CAPACITY, Controls, Request, buttonName;
+import plugins.game.restart : placeStructure, stepped, worldgenOf;
+import plugins.game.save : SaveData, Writer, applyEdits, applyState, readGame, writeGame;
+import horospheres = plugins.horospheres.plugin;
+import lattice = plugins.lattice.plugin;
+import library = plugins.library.plugin;
+import palace = plugins.palace.plugin;
+import planet = plugins.planet.plugin;
+import road = plugins.road.plugin;
+import rooms = plugins.rooms.plugin;
+import skies = plugins.skies.plugin;
+import tower = plugins.tower.plugin;
+import trail = plugins.trail.plugin;
+import vaults = plugins.vaults.plugin;
 import web.renderer : WebRenderer;
+
+immutable Linked[23] WORLD_PLUGINS = [
+    Linked("base", &base.plugin),
+    Linked("blocks", &blocks.plugin),
+    Linked("box", &box.plugin),
+    Linked("buildings", &buildings.plugin),
+    Linked("connector", &connector.plugin),
+    Linked("horospheres", &horospheres.plugin),
+    Linked("rooms", &rooms.plugin),
+    Linked("arbor", &arbor.plugin),
+    Linked("babel", &babel.plugin),
+    Linked("backrooms", &backrooms.plugin),
+    Linked("caves", &caves.plugin),
+    Linked("city", &city.plugin),
+    Linked("crown", &crown.plugin),
+    Linked("fixtures", &fixtures.plugin),
+    Linked("lattice", &lattice.plugin),
+    Linked("library", &library.plugin),
+    Linked("palace", &palace.plugin),
+    Linked("planet", &planet.plugin),
+    Linked("road", &road.plugin),
+    Linked("skies", &skies.plugin),
+    Linked("tower", &tower.plugin),
+    Linked("trail", &trail.plugin),
+    Linked("vaults", &vaults.plugin),
+];
+immutable Linked[LINKED.length + WORLD_PLUGINS.length] WEB_PLUGINS = LINKED[] ~ WORLD_PLUGINS[];
 
 enum double FRAME_WORK_MILLISECONDS = 13.0;
 enum double LEAST_TASK_MILLISECONDS = 2.0;
@@ -82,7 +134,7 @@ struct Session {
     char[NAME_CAPACITY] name = 0;
     char[STORE_KEY_CAPACITY] saveKey = 0;
     size_t saveKeyLength;
-    uint worldIndex;
+    WorldPick current;
     Flags!SessionMark marks;
     MouseCapture mouse;
     Rules rules;
@@ -100,8 +152,8 @@ struct Session {
         rules = chosen;
         renderer.setup(CHUNK_DIMENSION, width, height);
         loadConfig();
-        worldIndex = storedWorld();
-        game = Game.make(worldgenAt(worldIndex), config.reach);
+        current = WorldPick(storedWorld(), PickKind.world);
+        game = Game.make(worldgenOf(current), config.reach);
         game.comfort = config.comfort;
         game.thread.spacing = config.threadSpacing;
         game.thread.most = config.threadBeads;
@@ -150,6 +202,8 @@ struct Session {
         if (bytes.exists) {
             config = ClientConfig.fromText(cast(const(char)[]) bytes.value.slice());
             bytes.value.release();
+        } else {
+            config = ClientConfig.make();
         }
         controls.bindings = config.bindings;
     }
@@ -168,7 +222,16 @@ struct Session {
     }
 
     Saved loadEdits(ref SaveData saved) {
-        saveKeyLength = saveKeyOf(worldIndex, saveKey[]).length;
+        if (current.kind == PickKind.scene) {
+            saving = Saving.scene;
+            return Saved.absent;
+        } else {
+            return loadWorldEdits(saved);
+        }
+    }
+
+    Saved loadWorldEdits(ref SaveData saved) {
+        saveKeyLength = saveKeyOf(current.index, saveKey[]).length;
         saving = Saving.enabled;
         Maybe!(Array!ubyte) bytes = readStored(saveKey[0 .. saveKeyLength]);
         if (!bytes.exists) {
@@ -282,7 +345,7 @@ struct Session {
 
     void listWorlds() {
         char[STORE_KEY_CAPACITY] key;
-        game.worlds.current = worldIndex;
+        game.worlds.current = current;
         game.worlds.saving = saving;
         game.worlds.saved = IdSet.init;
         foreach (index; 0 .. worldCount()) {
@@ -295,13 +358,15 @@ struct Session {
 
     void switchWorld(WorldStep direction) {
         writeSave();
-        enterWorld(steppedWorld(worldIndex, direction));
+        enter(stepped(current, direction));
     }
 
-    void enterWorld(uint index) {
-        worldIndex = index;
-        writeStored(WORLD_KEY, cast(const(ubyte)[]) worldNameAt(index));
-        game.rebuildWorld(worldgenAt(index));
+    void enter(WorldPick pick) {
+        current = pick;
+        if (pick.kind == PickKind.world) {
+            writeStored(WORLD_KEY, cast(const(ubyte)[]) worldNameAt(pick.index));
+        }
+        game.rebuildWorld(worldgenOf(pick));
         game.startOver();
         startInventory();
         SaveData saved;
@@ -317,8 +382,8 @@ struct Session {
         char[STORE_KEY_CAPACITY] key;
         const(char)[] stored = saveKeyOf(index, key[]);
         web_store_remove(stored.ptr, cast(uint) stored.length);
-        if (index == worldIndex) {
-            enterWorld(index);
+        if (current == WorldPick(index, PickKind.world)) {
+            enter(current);
         }
         listWorlds();
     }
@@ -345,13 +410,16 @@ struct Session {
         } else if (pressed == WHEEL_AHEAD) {
             hud.wheel(Cycle.ahead);
         } else if (action.exists && action.value.kind == UiKind.rebind) {
-            controls.awaiting = Maybe!Action.of(cast(Action) action.value.index);
+            controls.awaiting = Maybe!Bound.of(Bound(cast(ubyte) action.value.index));
         } else if (action.exists && action.value.kind == UiKind.resetBindings) {
             controls.bindings = Bindings.defaults();
             saveConfig();
         } else if (action.exists && action.value.kind == UiKind.playWorld) {
             writeSave();
-            enterWorld(action.value.index);
+            enter(WorldPick(action.value.index, PickKind.world));
+        } else if (action.exists && action.value.kind == UiKind.playScene) {
+            writeSave();
+            enter(WorldPick(action.value.index, PickKind.scene));
         } else if (action.exists && action.value.kind == UiKind.deleteWorld) {
             deleteWorld(action.value.index);
         } else if (!action.exists && game.screen == Screen.menu) {
@@ -381,7 +449,7 @@ struct Session {
     void capture(MouseCapture state) {
         mouse = state;
         if (state == MouseCapture.released && game.screen == Screen.none) {
-            controls.letGoAll();
+            controls.letGoAll(game);
         } else if (state == MouseCapture.captured && game.screen == Screen.menu) {
             game.closeScreen();
         }
@@ -400,7 +468,7 @@ uint flagOf(bool condition) {
 }
 
 extern (C) void web_start(uint width, uint height, float renderRadius, uint creative) {
-    gatherWorlds();
+    gatherWorlds(WEB_PLUGINS[]);
     session = cast(Session*) calloc(1, Session.sizeof);
     *session = Session.init;
     Rules rules = Rules.survival;
@@ -461,7 +529,7 @@ extern (C) void web_capture(uint state) {
 }
 
 extern (C) void web_blur() {
-    session.controls.letGoAll();
+    session.controls.letGoAll(session.game);
 }
 
 extern (C) void web_save() {

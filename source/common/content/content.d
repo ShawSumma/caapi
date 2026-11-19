@@ -10,11 +10,24 @@ import common.content.graph : ContentGraph, ENGINE_OWNER, PROBLEM_CAPACITY, Phas
 import common.content.mods : ModOrder, Reason, Refusal, refusedDependencyOf;
 import common.content.settings : MOD_KIND, parseOverrides, parseSettings;
 import common.perception : CHANNEL_NAMES;
-import plugins.api.content : Content, ContentRef, EdgeView, FieldShape, Happening, Holder, Hook, Manifest, Misfit, Need, Play;
+import plugins.api.content : Content, ContentRef, EdgeView, FieldShape, Happening, Holder, Hook, Manifest, Misfit, Need;
 
 enum string AIR = "engine:air";
-enum string HAND = "engine:hand";
-enum string ENGINE_DECLARATIONS = "content/engine.decl";
+enum string ENGINE_SOURCE = "common/content/content.d";
+enum string ENGINE_DECLARATIONS = `
+kind mod open {
+}
+
+kind channel {
+}
+
+kind look {
+    red: number 0..1 = 0
+    green: number 0..1 = 0
+    blue: number 0..1 = 0
+    tint: "sky" | "fog" = "sky"
+}
+`;
 enum string USER_OWNER = "user settings";
 enum string USER_SETTINGS = "settings.conf";
 
@@ -202,17 +215,16 @@ const(char)[] keptText(const(char)[] text) {
     return contentGraph.textOf(contentGraph.intern(text));
 }
 
-void fire(const(Play)* play, Happening happening) {
+void fire(const(void)* host, Happening happening) {
     foreach (hook; hooks.slice()) {
-        hook(play, happening);
+        hook(host, happening);
     }
 }
 
 void defineEngine() {
     contentGraph.ownedBy(ENGINE_OWNER);
-    declare(contentGraph, import(ENGINE_DECLARATIONS), ENGINE_DECLARATIONS);
+    declare(contentGraph, ENGINE_DECLARATIONS, ENGINE_SOURCE);
     contentGraph.defineNode("material", AIR);
-    contentGraph.defineNode("station", HAND);
     foreach (name; CHANNEL_NAMES) {
         contentGraph.defineNode("channel", name);
     }

@@ -1,10 +1,10 @@
 module plugins.skies.plugin;
 
-import plugins.api.api : Api, Box, HorosphereForm, KindId, Material, Registry, Risen, RisingKind, Site, SitePart, Span, Spot, entryOf, tagNamed;
+import plugins.api.api : Api, Box, HorosphereForm, KindId, Material, Registry, Risen, RisingKind, Site, SitePart, Span, Spot, entryOf, tagNamed, typedTile;
 import plugins.api.binding : List, bound, settingsOf;
 import plugins.api.content : BASE, Content, Dependency, FIRST_VERSION, Manifest, dependencyOn;
 import blocks = plugins.blocks.blocks;
-import plugins.connector.connector : Connection, connect, resolveConnector;
+import plugins.connector.connector : Connection, footTile, resolveConnector;
 import plugins.turtle.turtle : Along, Turtle, boxOf, cornersOf, line, mixed, roll, strongestAround, upright;
 
 enum uint TERRACES_TAG = tagNamed("skies:terraces");
@@ -13,7 +13,7 @@ enum uint TRELLIS_TAG = tagNamed("skies:trellis");
 enum string TERRACES_LOOK = "skies:terraces";
 enum string GARDEN_LOOK = "skies:garden";
 enum string TRELLIS_LOOK = "skies:trellis";
-enum double RISING_SHARE = 0;
+enum double RISING_SHARE = 1.0 / 3;
 enum int FLOOR = -1;
 enum int LEAST_STEPS = 3;
 enum uint STEP_CHOICES = 6;
@@ -45,6 +45,8 @@ enum int SPIRE_PLINTH = 2;
 enum int SPIRE_RISE = 3;
 enum int DECK = 8;
 enum int STAIR_START = 2;
+enum double REACH_ABOVE = SPIRE_PLINTH + 2 * (SPIRE_RISE + SIZE_CHOICES - 1) + 2;
+enum double REACH_BELOW = LEAST_STEPS + STEP_CHOICES;
 enum ulong PALETTE_SALT = 0x50414C45;
 enum ulong SHAPE_SALT = 0x53484150;
 enum ulong STEPS_SALT = 0x53544550;
@@ -56,7 +58,10 @@ enum ulong PLANK_SALT = 0x504C414E;
 enum ulong DECK_SALT = 0x4445434B;
 enum ulong STAIR_SALT = 0x53544149;
 enum ulong LANTERN_SALT = 0x4C414E54;
+enum ulong BED_SALT = 0x42454453;
+enum int BED_KERB = 2;
 enum size_t MOST_PALETTES = 8;
+enum size_t MOST_BEDS = 8;
 immutable Spot SPAWN = Spot(27.5f, 6, 0);
 
 struct Palette {
@@ -70,6 +75,7 @@ struct Materials {
     List!(Palette, MOST_PALETTES) terraces;
     List!(Palette, MOST_PALETTES) garden;
     List!(Palette, MOST_PALETTES) trellis;
+    List!(Material, MOST_BEDS) beds;
 }
 
 __gshared Materials materials;
@@ -80,6 +86,7 @@ struct Tuning {
     double pitShare;
     double beaconOdds;
     double formShare;
+    double bedShare;
     double plankShare;
     double deckShare;
     double stairOdds;
@@ -95,11 +102,11 @@ void resolve(const(Content)* content) {
 }
 
 struct Root {
-    Connection how;
     ulong plain;
 }
 
-immutable Root RISING = Root(Connection.rolled(), 0);
+immutable Root RISING = Root(0);
+immutable Connection ROLLED = Connection.rolled();
 
 enum Terrace : ubyte {
     plaza,
@@ -138,15 +145,6 @@ bool probeOpen(Turtle face, ref const Risen risen) {
         }
     }
     return true;
-}
-
-void foot(const(Api)* api, Turtle face, const(Risen)* risen, uint tag, ref const Root root) {
-    if (risen.hasRisen) {
-        bool owner = blocks.probeOwnsFoot(face, *risen);
-        if (owner) {
-            connect(Turtle(api, risen.foot), *risen, tag, root.how);
-        }
-    }
 }
 
 Material banded(Palette palette, int step) {
@@ -192,12 +190,11 @@ void pit(Turtle quarter, Palette palette, int steps) {
     quarter.paint(palette.light, bay(far, far, level(-steps - 1)));
 }
 
-void terraces(const(Api)* api, Site site, const(Risen)* risen, const(void)* data) {
-    const(Root)* root = cast(const(Root)*) data;
+void terraces(const(Api)* api, Site site, ref const Risen risen, ref const Root root) {
     Turtle face = Turtle(api, site);
     ulong hash = face.probeHash(SitePart.face);
     Palette palette = paletteOf(materials.terraces, face);
-    Terrace shape = terraceOf(face, hash, *risen, *root);
+    Terrace shape = terraceOf(face, hash, risen, root);
     int steps = LEAST_STEPS + cast(int)(mixed(hash, STEPS_SALT) % STEP_CHOICES);
     int beacon = 0;
     if (roll(hash, BEACON_SALT) < tuning.beaconOdds) {
@@ -217,7 +214,6 @@ void terraces(const(Api)* api, Site site, const(Risen)* risen, const(void)* data
                 break;
         }
     }
-    foot(api, face, risen, TERRACES_TAG, *root);
 }
 
 void monolith(Turtle quarter, Palette palette, int tall) {
@@ -296,8 +292,7 @@ void form(Turtle quarter, Palette palette, ulong spot) {
     }
 }
 
-void garden(const(Api)* api, Site site, const(Risen)* risen, const(void)* data) {
-    const(Root)* root = cast(const(Root)*) data;
+void garden(const(Api)* api, Site site, ref const Risen risen, ref const Root root) {
     Turtle face = Turtle(api, site);
     ulong hash = face.probeHash(SitePart.face);
     Palette palette = paletteOf(materials.garden, face);
@@ -305,12 +300,19 @@ void garden(const(Api)* api, Site site, const(Risen)* risen, const(void)* data) 
         Turtle quarter = upright(corner);
         quarter.paint(palette.floor, bay(0, quarter.column().high, level(FLOOR)));
         ulong spot = corner.probeHash(SitePart.vertex) ^ hash;
-        bool taken = blocks.probeTaken(corner, *risen);
+        bool taken = blocks.probeTaken(corner, risen);
         if (!taken && hash != root.plain && roll(spot, FORM_SALT) < tuning.formShare) {
             form(quarter, palette, spot);
+        } else if (!taken && hash != root.plain && roll(spot, BED_SALT) < tuning.bedShare) {
+            bed(quarter, palette, materials.beds.items[mixed(spot, BED_SALT) % materials.beds.count]);
         }
     }
-    foot(api, face, risen, GARDEN_TAG, *root);
+}
+
+void bed(Turtle quarter, Palette palette, Material plant) {
+    int far = quarter.column().high - BED_KERB;
+    quarter.paint(palette.step, bay(BED_KERB, far, level(0)));
+    quarter.paint(plant, bay(BED_KERB + 1, far - 1, level(0)));
 }
 
 void catwalk(Turtle quarter, Palette palette, Along along, ulong hash) {
@@ -325,8 +327,7 @@ void catwalk(Turtle quarter, Palette palette, Along along, ulong hash) {
     }
 }
 
-void trellis(const(Api)* api, Site site, const(Risen)* risen, const(void)* data) {
-    const(Root)* root = cast(const(Root)*) data;
+void trellis(const(Api)* api, Site site, ref const Risen risen, ref const Root root) {
     Turtle face = Turtle(api, site);
     ulong hash = face.probeHash(SitePart.face);
     Palette palette = paletteOf(materials.trellis, face);
@@ -342,7 +343,7 @@ void trellis(const(Api)* api, Site site, const(Risen)* risen, const(void)* data)
         quarter.paint(floor, bay(1, far, level(FLOOR)));
         quarter.paint(palette.accent, line(Along.x, Span(0, far), level(FLOOR)));
         quarter.paint(palette.accent, line(Along.y, Span(1, far), level(FLOOR)));
-        bool taken = blocks.probeTaken(corner, *risen);
+        bool taken = blocks.probeTaken(corner, risen);
         if (!taken) {
             quarter.paint(palette.accent, boxOf(level(0), level(0), Span(0, DECK - 1)));
             if (roll(vertex, LANTERN_SALT) < tuning.lanternOdds) {
@@ -355,13 +356,12 @@ void trellis(const(Api)* api, Site site, const(Risen)* risen, const(void)* data)
             }
         }
     }
-    foot(api, face, risen, TRELLIS_TAG, *root);
 }
 
 void world(alias tile, uint tag, string look)(const(Api)* api, Site site, const(void)* data) {
     Turtle at = Turtle(api, site);
-    Root root = Root(Connection.rolled(), at.probeHash(SitePart.face));
-    KindId kind = api.horosphere(api, 0, HorosphereForm.bare, tag, &tile, &root, Root.sizeof);
+    Root root = Root(at.probeHash(SitePart.face));
+    KindId kind = api.horosphere(api, 0, HorosphereForm.bare, tag, &typedTile!(tile, Root), &root, Root.sizeof);
     api.rooted(api, kind);
     api.look(api, kind, look);
     api.worldLook(api, look);
@@ -377,10 +377,10 @@ pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
     registry.add(registry, "terraces", &world!(terraces, TERRACES_TAG, TERRACES_LOOK));
     registry.add(registry, "garden", &world!(garden, GARDEN_TAG, GARDEN_LOOK));
     registry.add(registry, "trellis", &world!(trellis, TRELLIS_TAG, TRELLIS_LOOK));
-    RisingKind risingTerraces = RisingKind(RISING_SHARE, HorosphereForm.bare, TERRACES_TAG, &terraces, &RISING, Root.sizeof, TERRACES_LOOK);
+    RisingKind risingTerraces = RisingKind(RISING_SHARE, HorosphereForm.bare, TERRACES_TAG, &typedTile!(terraces, Root), &RISING, Root.sizeof, TERRACES_LOOK, 0, null, null, REACH_ABOVE, REACH_BELOW, &footTile, &ROLLED, Connection.sizeof);
     registry.addKind(registry, "zenith-terraces", &risingTerraces);
-    RisingKind risingGarden = RisingKind(RISING_SHARE, HorosphereForm.bare, GARDEN_TAG, &garden, &RISING, Root.sizeof, GARDEN_LOOK);
+    RisingKind risingGarden = RisingKind(RISING_SHARE, HorosphereForm.bare, GARDEN_TAG, &typedTile!(garden, Root), &RISING, Root.sizeof, GARDEN_LOOK, 0, null, null, REACH_ABOVE, REACH_BELOW, &footTile, &ROLLED, Connection.sizeof);
     registry.addKind(registry, "zenith-garden", &risingGarden);
-    RisingKind risingTrellis = RisingKind(RISING_SHARE, HorosphereForm.bare, TRELLIS_TAG, &trellis, &RISING, Root.sizeof, TRELLIS_LOOK);
+    RisingKind risingTrellis = RisingKind(RISING_SHARE, HorosphereForm.bare, TRELLIS_TAG, &typedTile!(trellis, Root), &RISING, Root.sizeof, TRELLIS_LOOK, 0, null, null, REACH_ABOVE, REACH_BELOW, &footTile, &ROLLED, Connection.sizeof);
     registry.addKind(registry, "zenith-trellis", &risingTrellis);
 }

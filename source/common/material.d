@@ -6,19 +6,36 @@ import base.murmur : murmurHash3;
 import base.stdio : printed;
 import common.content.declarations : declare;
 import common.content.graph : ContentGraph, ENGINE_OWNER, PROBLEM_CAPACITY;
-import common.items : materialNames;
-import common.perception : CHANNEL_NAMES, Channel;
 import plugins.api.api : MOST_MATERIALS, Material;
 import plugins.api.content : ContentRef, Holder;
 
 enum string MATERIAL_KIND = "material";
 enum string FAMILY_KIND = "hidden-family";
-enum string CHANNEL_KIND = "channel";
+enum uint MOST_FAMILIES = 8;
 
-enum string MATERIAL_DECLARATIONS = "material.decl";
+enum string MATERIAL_SOURCE = "common/material.d";
+enum string MATERIAL_DECLARATIONS = `
+kind hidden-family {
+}
+
+kind material {
+    red: integer 0..255 = 0
+    green: integer 0..255 = 0
+    blue: integer 0..255 = 0
+    grain: number 0.. = 0
+    see-through: integer 0..1 = 0
+    glows: integer 0..1 = 0
+    fluid: integer 0..1 = 0
+    hidden-in: optional -> hidden-family
+}
+
+kind group {
+    member: many -> material
+}
+`;
 
 void declareMaterials(ref ContentGraph graph) {
-    declare(graph, import(MATERIAL_DECLARATIONS), MATERIAL_DECLARATIONS);
+    declare(graph, MATERIAL_DECLARATIONS, MATERIAL_SOURCE);
 }
 
 Material materialOfNode(ref const ContentGraph graph, uint node) {
@@ -45,11 +62,9 @@ struct MaterialSet {
 struct Family {
     const(char)[] name;
     MaterialSet members;
-    Channel channel;
 }
 
-__gshared Array!float breakSeconds;
-__gshared Array!uint miningTiers;
+__gshared Array!(const(char)[]) materialNames;
 __gshared Array!ByteColor materialColors;
 __gshared Array!float grains;
 __gshared Array!ulong nameHashes;
@@ -59,8 +74,6 @@ __gshared MaterialSet seeThrough;
 __gshared MaterialSet glowing;
 __gshared MaterialSet hidden;
 __gshared MaterialSet plainSolid;
-__gshared MaterialSet living;
-__gshared MaterialSet plants;
 __gshared MaterialSet fluids;
 
 bool has(MaterialSet set, Material material) {
@@ -139,14 +152,6 @@ bool isGlowing(Material material) {
     return glowing.has(material);
 }
 
-bool isPlant(Material material) {
-    return plants.has(material);
-}
-
-bool isLiving(Material material) {
-    return living.has(material);
-}
-
 MaterialSet withTrait(MaterialSet set, ref const ContentGraph graph, ContentRef at, Material material, string trait) {
     if (graph.number(at, trait) != 0) {
         return set.including(material);
@@ -163,25 +168,21 @@ void addMaterial(ref ContentGraph graph, uint node) {
     ContentRef at = ContentRef(node, Holder.node);
     Material material = materialOfNode(graph, node);
     materialNames.append(graph.nameOf(node));
-    breakSeconds.append(cast(float) graph.number(at, "break-seconds"));
-    miningTiers.append(cast(uint) graph.number(at, "mining-tier"));
     materialColors.append(ByteColor(channelOf(graph, at, "red"), channelOf(graph, at, "green"), channelOf(graph, at, "blue")));
     grains.append(cast(float) graph.number(at, "grain"));
     nameHashes.append(murmurHash3(cast(const(ubyte)[]) graph.nameOf(node)).first);
     familyOfMaterial.append(MaybeIndex!uint.init);
     seeThrough = seeThrough.withTrait(graph, at, material, "see-through");
     glowing = glowing.withTrait(graph, at, material, "glows");
-    living = living.withTrait(graph, at, material, "living");
-    plants = plants.withTrait(graph, at, material, "plant");
     fluids = fluids.withTrait(graph, at, material, "fluid");
 }
 
-MaybeIndex!uint channelNamed(const(char)[] name) {
+MaybeIndex!uint familyNamed(const(char)[] name) {
     uint index = 0;
-    while (index < CHANNEL_NAMES.length && CHANNEL_NAMES[index] != name) {
+    while (index < families.length && families.ptr[index].name != name) {
         index += 1;
     }
-    if (index < CHANNEL_NAMES.length) {
+    if (index < families.length) {
         return MaybeIndex!uint.of(index);
     } else {
         return MaybeIndex!uint.init;
@@ -189,18 +190,12 @@ MaybeIndex!uint channelNamed(const(char)[] name) {
 }
 
 void addFamily(ref ContentGraph graph, uint node) {
-    MaybeIndex!uint channel;
-    foreach (edge; graph.edgesFrom(node)) {
-        if (graph.isEdgeKind(edge, "revealed-by") && graph.isKind(graph.edges.ptr[edge].to, CHANNEL_KIND)) {
-            channel = channelNamed(graph.nameOf(graph.edges.ptr[edge].to));
-        }
-    }
-    if (!channel.exists) {
+    if (families.length == MOST_FAMILIES) {
         char[PROBLEM_CAPACITY] buffer;
         const(char)[] name = graph.nameOf(node);
-        graph.report(graph.nodes.ptr[node].owner, printed(buffer[], "the hidden family '%.*s' is revealed by no channel perception has", cast(int) name.length, name.ptr));
+        graph.report(graph.nodes.ptr[node].owner, printed(buffer[], "the hidden family '%.*s' is one more than the %u a body can sense", cast(int) name.length, name.ptr, MOST_FAMILIES));
     } else {
-        families.append(Family(graph.nameOf(node), MaterialSet.init, cast(Channel) channel.value));
+        families.append(Family(graph.nameOf(node), MaterialSet.init));
     }
 }
 
@@ -208,14 +203,11 @@ void joinFamily(ref ContentGraph graph, uint node) {
     foreach (edge; graph.edgesFrom(node)) {
         uint family = graph.edges.ptr[edge].to;
         if (graph.isEdgeKind(edge, "hidden-in") && graph.isKind(family, FAMILY_KIND)) {
-            uint index = 0;
-            while (index < families.length && families.ptr[index].name != graph.nameOf(family)) {
-                index += 1;
-            }
-            if (index < families.length) {
+            MaybeIndex!uint index = familyNamed(graph.nameOf(family));
+            if (index.exists) {
                 Material material = materialOfNode(graph, node);
-                families.ptr[index].members = families.ptr[index].members.including(material);
-                familyOfMaterial.ptr[material.id] = MaybeIndex!uint.of(index);
+                families.ptr[index.value].members = families.ptr[index.value].members.including(material);
+                familyOfMaterial.ptr[material.id] = index;
                 hidden = hidden.including(material);
             }
         }

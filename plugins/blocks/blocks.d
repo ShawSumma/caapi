@@ -5,17 +5,61 @@ import plugins.api.binding : List, bound, settingsOf;
 import plugins.api.content : Content;
 import plugins.api.flags : Flags;
 import plugins.buildings.building : Bound, Join, Lot, Lots, Palette, STORY, Side, Spec, Traits;
-import plugins.buildings.types : resolveBuildings;
 import types = plugins.buildings.types;
-import plugins.connector.connector : Connection, connect, resolveConnector;
-import plugins.turtle.turtle : FACE_CORNERS, PORT, Turtle, boxOf, cornersOf, floorDiv, higherOf, lowerOf, mixed, roll, strongestAround, upright;
+import plugins.connector.connector : Connection, connect, probeOwnsFoot, resolveConnector;
+import plugins.turtle.turtle : Cell, FACE_CORNERS, Flight, PORT, Tread, Turtle, WELL_TREADS, boxOf, cornersOf, flightAt, floorDiv, floorMod, higherOf, lowerOf, mixed, ownerAround, roll, strongestAround, upright, wellTreadAt, wound;
 
 enum ulong ISLAND_SALT = 0x51ED270B;
 enum ulong DROPPED_SALT = 0x2C1B3C6D;
 enum ulong TREES_SALT = 0x297A2D39;
 enum ulong DISTRICT_SALT = 0x7B1D0F29;
+enum ulong DEPTH_SALT = 0x44455054;
+enum ulong STATION_SALT = 0x53544154;
+enum ulong BAND_SALT = 0x42414E44;
+enum ulong CORNER_SALT = 0x434F524E;
+enum double CORNER_ODDS = 0.5;
+enum int DEEP_BED = -12;
+enum int SHALLOW_BED = -8;
+enum int CROSSED_TOP = SHALLOW_BED - 1;
+enum int LEVEL = 6;
+enum int DEEP_PLATFORM = 1;
+enum int SHALLOW_PLATFORM = 2;
+enum int UNDER_STREET = -2;
+enum int MEZZANINE_FLOOR = -6;
+enum int SHELL_END = PORT + 1;
+enum int DOOR_Z = SHELL_END - 1;
+enum Span DOOR = Span(-1, 0);
+enum int DOOR_HEIGHT = 4;
+enum Span TRACK = Span(-2, 1);
+enum Span BORE = Span(-3, 2);
+enum Span BORE_SHELL = Span(-4, 3);
+enum Span STATION_WALLS = Span(-6, 5);
+enum Span HALL = Span(-5, 4);
+enum Span STATION_ALONG = Span(6, 17);
+enum Span MEZZANINE_ALONG = Span(8, 15);
+enum Span MEZZANINE_LAMPS = Span(11, 12);
+enum Span TRACK_LAMPS = Span(-1, 0);
+enum Span ENTRANCE = Span(2, 3);
+enum int ENTRANCE_TOP = 3;
+enum int POST_TOP = 3;
+enum Span MEZZANINE_STAIR = Span(3, 4);
+enum int MEZZANINE_STEPS = 4;
+enum int MEZZANINE_STAIR_TOP = 11;
+immutable int[2] PILLARS = [7, 10];
+immutable Span[2] PLATFORMS = [Span(2, 4), Span(-5, -3)];
+immutable Span[2] RIMS = [Span(2, 2), Span(-3, -3)];
+immutable Span[2] WALLS = [Span(5, 5), Span(-6, -6)];
+enum int PILLAR = 3;
+enum int LAMP_EVERY = 3;
+enum Span BORE_LAMP = Span(11, 12);
+enum Span TRANSFER = Span(3, 4);
+enum int TRANSFER_TOP = 3;
+enum int TRANSFER_STEPS = SHALLOW_BED - DEEP_BED;
+enum int TRANSFER_LANDING = 2;
+enum int HEADROOM = 4;
+enum size_t MOST_BANDS = 8;
 enum uint AROUND = 4;
-enum uint MAX_INSET = 1;
+enum uint MOST_INSET = 1;
 enum Span ROAD = Span(-2, 1);
 enum Span SIDEWALK = Span(2, 3);
 enum Span FAR_SIDEWALK = Span(-4, -3);
@@ -25,6 +69,7 @@ enum int TREE_SPACING = 8;
 enum int CURB = SIDEWALK.low;
 enum int PARKING_SPACING = 3;
 enum int CROWN_ROOM = 10;
+enum int PORT_FRAME = 6;
 enum int ROUTE_STORIES = 2;
 enum int ROUTE_BUILDING_STORIES = 4;
 enum size_t MOST_TYPES = 16;
@@ -53,6 +98,7 @@ struct LotRule {
 
 struct District {
     double streetTrees;
+    double ports;
     uint parkPercent;
     uint plazaPercent;
     uint parkingPercent;
@@ -73,6 +119,8 @@ struct Tuning {
     uint pondPercent;
     uint fountainPercent;
     uint alleyPercent;
+    double stationOdds;
+    double deepOdds;
 }
 
 __gshared Tuning tuning;
@@ -105,12 +153,29 @@ struct Materials {
     Material lot;
     Material plaza;
     Material park;
+    Material kerb;
+    Material frame;
+    Material tunnel;
+    Material tunnelLight;
+    Material boreLight;
+    Material ballast;
+    Material rail;
+    Material platform;
+    Material platformEdge;
+    Material stationWall;
+    Material stationCeiling;
+    Material pillar;
+    Material mezzanine;
+    Material railing;
+    Material entrance;
+    Material transfer;
+    List!(Material, MOST_BANDS) bands;
 }
 
 __gshared Materials materials;
 
 void resolveBlocks(const(Content)* content) {
-    resolveBuildings(content);
+    types.resolveBuildings(content);
     resolveConnector(content);
     materials = content.bound!Materials("blocks:materials");
     zoning = content.bound!Zoning("blocks:zoning");
@@ -160,6 +225,18 @@ bool probeOwner(ref const Turtle[AROUND] quarters) {
     return true;
 }
 
+double mostPortShare() {
+    double most = 0;
+    foreach (ref district; zoning.districts.items[0 .. zoning.districts.count]) {
+        most = higherOf(most, district.ports);
+    }
+    return most;
+}
+
+bool portAt(const(Api)* api, Site vertex, double rolled, const(void)* data) {
+    return rolled < districtAt(ownerAround(Turtle(api, vertex))).ports;
+}
+
 bool probeFoot(Turtle corner, ref const Risen risen) {
     ulong own = corner.probeHash(SitePart.vertex);
     ulong foot = Turtle(corner.api, risen.foot).probeHash(SitePart.vertex);
@@ -172,20 +249,6 @@ bool probeTaken(Turtle corner, ref const Risen risen) {
         taken = probeFoot(corner, risen);
     }
     return taken;
-}
-
-bool probeOwnsFoot(Turtle face, ref const Risen risen) {
-    foreach (corner; cornersOf(face)) {
-        Turtle[AROUND] quarters = quartersOf(corner);
-        bool foot = probeFoot(corner, risen);
-        if (foot) {
-            bool owner = probeOwner(quarters);
-            if (owner) {
-                return true;
-            }
-        }
-    }
-    return false;
 }
 
 bool probeRootVertex(Turtle site, ref const Root root) {
@@ -262,15 +325,6 @@ bool probeTrees(Turtle edge) {
     return rolled < districtAt(edge).streetTrees;
 }
 
-int crossingGap(Turtle corner, ref const Root root) {
-    bool paved = probeStreet(corner, root);
-    if (paved) {
-        return CROSSING + 1;
-    } else {
-        return 0;
-    }
-}
-
 void sidewalk(Turtle edge, Span x, int startGap, int endGap) {
     edge.paint(materials.sidewalk, boxOf(x, Span(-1, 0), Span(startGap, edge.edgeCells() - 1 - endGap)));
 }
@@ -285,41 +339,422 @@ void streetTrees(Turtle edge) {
     edge.paint(materials.trunk, boxOf(Span(CURB, CURB), Span(1, 5), planted), trunk);
 }
 
-int portGap(Turtle corner) {
-    bool port = corner.probePort();
-    if (port) {
-        return PORT;
+enum Depth : ubyte {
+    deep,
+    shallow,
+}
+
+enum Stop : ubyte {
+    passing,
+    station,
+}
+
+enum EndMark : ubyte {
+    port,
+    taken,
+    right,
+    left,
+    onward,
+}
+
+struct End {
+    Turtle frame;
+    Flags!EndMark marks;
+    Depth across;
+
+    bool isCrossed() const {
+        return marks.has(EndMark.right) || marks.has(EndMark.left);
+    }
+
+    bool isClosed() const {
+        return marks.has(EndMark.port) || marks.has(EndMark.taken);
+    }
+
+    bool isTransfer(Depth depth) const {
+        return !isClosed() && isCrossed() && across != depth;
+    }
+}
+
+End endAt(Turtle frame, ref const Root root) {
+    End end;
+    end.frame = frame;
+    end.marks.put(EndMark.port, frame.probePort());
+    end.marks.put(EndMark.taken, probeTaken(frame, root.risen));
+    end.marks.put(EndMark.right, probeStreet(frame.right(), root));
+    end.marks.put(EndMark.left, probeStreet(frame.left(), root));
+    end.marks.put(EndMark.onward, probeStreet(frame.forward(-1), root));
+    end.across = depthOf(frame.right());
+    return end;
+}
+
+int gapAt(ref const End end, EndMark mark, int gap) {
+    if (end.marks.has(mark)) {
+        return gap;
     } else {
         return 0;
     }
 }
 
+Turtle reversed(Turtle edge) {
+    return edge.forward(1).right().right();
+}
+
 void street(Turtle edge, ref const Root root) {
-    Turtle finish = edge.forward(1);
+    End start = endAt(edge, root);
+    End finish = endAt(reversed(edge), root);
     int last = edge.edgeCells() - 1;
-    int startPort = portGap(edge);
-    int endPort = portGap(finish);
+    int startPort = gapAt(start, EndMark.port, PORT);
+    int endPort = gapAt(finish, EndMark.port, PORT);
     edge.paint(materials.road, boxOf(ROAD, Span(-1, -1), Span(startPort, last - endPort)));
-    sidewalk(edge, SIDEWALK, higherOf(startPort, crossingGap(edge.right(), root)), higherOf(endPort, crossingGap(finish.right(), root)));
-    sidewalk(edge, FAR_SIDEWALK, higherOf(startPort, crossingGap(edge.left(), root)), higherOf(endPort, crossingGap(finish.left(), root)));
-    bool crossedAtStart = probeStreet(edge.right(), root);
-    if (!crossedAtStart) {
-        crossedAtStart = probeStreet(edge.left(), root);
-    }
-    if (crossedAtStart && startPort == 0) {
+    sidewalk(edge, SIDEWALK, higherOf(startPort, gapAt(start, EndMark.right, CROSSING + 1)), higherOf(endPort, gapAt(finish, EndMark.left, CROSSING + 1)));
+    sidewalk(edge, FAR_SIDEWALK, higherOf(startPort, gapAt(start, EndMark.left, CROSSING + 1)), higherOf(endPort, gapAt(finish, EndMark.right, CROSSING + 1)));
+    if (start.isCrossed() && startPort == 0) {
         edge.paint(materials.marking, boxOf(ROAD, Span(-1, -1), Span(CROSSING + 1, CROSSING + 2)));
     }
-    bool crossedAtEnd = probeStreet(finish.right(), root);
-    if (!crossedAtEnd) {
-        crossedAtEnd = probeStreet(finish.left(), root);
-    }
-    if (crossedAtEnd && endPort == 0) {
+    if (finish.isCrossed() && endPort == 0) {
         edge.paint(materials.marking, boxOf(ROAD, Span(-1, -1), Span(last - CROSSING - 2, last - CROSSING - 1)));
     }
     bool trees = probeTrees(edge);
     if (trees) {
         streetTrees(edge);
     }
+    subway(edge, start, finish);
+}
+
+Depth depthOf(Turtle edge) {
+    if (roll(edge.probeHash(SitePart.line), DEPTH_SALT) < tuning.deepOdds) {
+        return Depth.deep;
+    } else {
+        return Depth.shallow;
+    }
+}
+
+Stop stopOf(Turtle edge) {
+    if (roll(edge.probeHash(SitePart.edge), STATION_SALT) < tuning.stationOdds) {
+        return Stop.station;
+    } else {
+        return Stop.passing;
+    }
+}
+
+int bedOf(Depth depth) {
+    final switch (depth) {
+        case Depth.deep:
+            return DEEP_BED;
+        case Depth.shallow:
+            return SHALLOW_BED;
+    }
+}
+
+int hallTopOf(Depth depth) {
+    final switch (depth) {
+        case Depth.deep:
+            return UNDER_STREET - 1;
+        case Depth.shallow:
+            return UNDER_STREET;
+    }
+}
+
+int pillarTopOf(Depth depth, int z) {
+    final switch (depth) {
+        case Depth.deep:
+            if (z >= MEZZANINE_ALONG.low && z <= MEZZANINE_ALONG.high) {
+                return MEZZANINE_FLOOR - 1;
+            } else {
+                return hallTopOf(depth);
+            }
+        case Depth.shallow:
+            return hallTopOf(depth);
+    }
+}
+
+int platformRiseOf(Depth depth) {
+    final switch (depth) {
+        case Depth.deep:
+            return DEEP_PLATFORM;
+        case Depth.shallow:
+            return SHALLOW_PLATFORM;
+    }
+}
+
+int arrivalOf(Depth depth) {
+    final switch (depth) {
+        case Depth.deep:
+            return MEZZANINE_FLOOR + 1;
+        case Depth.shallow:
+            return SHALLOW_BED + SHALLOW_PLATFORM + 1;
+    }
+}
+
+int clearingAt(ref const End end) {
+    if (end.isClosed()) {
+        return SHELL_END;
+    } else {
+        return 0;
+    }
+}
+
+int topNear(ref const End end, Depth depth, int top) {
+    if (depth == Depth.deep && end.isCrossed() && end.across == Depth.shallow) {
+        return CROSSED_TOP;
+    } else {
+        return top;
+    }
+}
+
+void clearBore(Turtle edge, Span along, int bed, int top) {
+    if (along.low <= along.high) {
+        edge.paint(Material.none, boxOf(BORE, Span(bed + 1, top), along));
+    }
+}
+
+bool isContinued(ref const End end) {
+    return end.marks.has(EndMark.onward) && !end.isClosed() && !end.isCrossed() && stopOf(end.frame.forward(-1)) == Stop.station;
+}
+
+Span stationOf(ref const End start, ref const End finish, int last) {
+    Span walls = STATION_ALONG;
+    if (isContinued(start)) {
+        walls.low = 0;
+    }
+    if (isContinued(finish)) {
+        walls.high = last;
+    }
+    return walls;
+}
+
+Span insideOf(Span walls, int last) {
+    Span inside = Span(walls.low + 1, walls.high - 1);
+    if (walls.low == 0) {
+        inside.low = 0;
+    }
+    if (walls.high == last) {
+        inside.high = last;
+    }
+    return inside;
+}
+
+void subway(Turtle edge, ref const End start, ref const End finish) {
+    Depth depth = depthOf(edge);
+    Stop stop = stopOf(edge);
+    int bed = bedOf(depth);
+    int last = edge.edgeCells() - 1;
+    Span along = Span(clearingAt(start), last - clearingAt(finish));
+    Span walls = Span(higherOf(along.low, SHELL_END), lowerOf(along.high, last - SHELL_END));
+    Span station = stationOf(start, finish, last);
+    edge.paint(materials.tunnel, boxOf(BORE_SHELL, Span(bed, lowerOf(bed + LEVEL, UNDER_STREET)), walls));
+    final switch (stop) {
+        case Stop.passing:
+            break;
+        case Stop.station:
+            hall(edge, depth, station, insideOf(station, last));
+            break;
+    }
+    int top = lowerOf(bed + LEVEL - 1, UNDER_STREET);
+    clearBore(edge, Span(along.low, SHELL_END - 1), bed, topNear(start, depth, top));
+    clearBore(edge, walls, bed, top);
+    clearBore(edge, Span(last - SHELL_END + 1, along.high), bed, topNear(finish, depth, top));
+    edge.paint(materials.ballast, boxOf(BORE, Span(bed, bed), along));
+    edge.paint(materials.rail, boxOf(Span(TRACK.low, TRACK.low), Span(bed + 1, bed + 1), along));
+    edge.paint(materials.rail, boxOf(Span(TRACK.high, TRACK.high), Span(bed + 1, bed + 1), along));
+    final switch (stop) {
+        case Stop.passing:
+            edge.paint(materials.boreLight, boxOf(TRACK_LAMPS, Span(top, top), BORE_LAMP));
+            lineEnd(start, depth);
+            lineEnd(finish, depth);
+            break;
+        case Stop.station:
+            fittings(edge, depth, insideOf(station, last), materials.bands.items[mixed(edge.probeHash(SitePart.line), BAND_SALT) % materials.bands.count]);
+            stationEnd(start, depth);
+            stationEnd(finish, depth);
+            break;
+    }
+}
+
+void hall(Turtle edge, Depth depth, Span walls, Span inside) {
+    int bed = bedOf(depth);
+    edge.paint(materials.stationWall, boxOf(STATION_WALLS, Span(bed, UNDER_STREET), walls));
+    edge.paint(Material.none, boxOf(HALL, Span(bed + 1, hallTopOf(depth)), inside));
+}
+
+void fittings(Turtle edge, Depth depth, Span inside, Material band) {
+    int bed = bedOf(depth);
+    int platform = bed + platformRiseOf(depth);
+    foreach (side; PLATFORMS) {
+        edge.paint(materials.platform, boxOf(side, Span(bed, platform), inside));
+    }
+    foreach (rim; RIMS) {
+        edge.paint(materials.platformEdge, boxOf(rim, Span(platform, platform), inside));
+    }
+    final switch (depth) {
+        case Depth.deep:
+            foreach (wall; WALLS) {
+                edge.paint(band, boxOf(wall, Span(bed + 4, bed + 4), inside));
+                edge.paint(band, boxOf(wall, Span(MEZZANINE_FLOOR + 2, MEZZANINE_FLOOR + 2), inside));
+            }
+            edge.paint(materials.stationCeiling, boxOf(HALL, Span(UNDER_STREET, UNDER_STREET), inside));
+            edge.paint(materials.tunnelLight, boxOf(TRACK_LAMPS, Span(UNDER_STREET, UNDER_STREET), inside), Rhythm(LAMP_EVERY, inside.low, 1));
+            edge.paint(materials.mezzanine, boxOf(HALL, Span(MEZZANINE_FLOOR, MEZZANINE_FLOOR), MEZZANINE_ALONG));
+            edge.paint(materials.tunnelLight, boxOf(TRACK_LAMPS, Span(MEZZANINE_FLOOR, MEZZANINE_FLOOR), MEZZANINE_LAMPS));
+            break;
+        case Depth.shallow:
+            foreach (wall; WALLS) {
+                edge.paint(band, boxOf(wall, Span(platform + 2, platform + 2), inside));
+                edge.paint(materials.tunnelLight, boxOf(wall, Span(UNDER_STREET, UNDER_STREET), inside), Rhythm(LAMP_EVERY, inside.low, 1));
+            }
+            break;
+    }
+    stationHalf(edge, depth);
+    stationHalf(reversed(edge), depth);
+}
+
+void stationHalf(Turtle frame, Depth depth) {
+    int bed = bedOf(depth);
+    foreach (z; PILLARS) {
+        frame.paint(materials.pillar, boxOf(Span(PILLAR, PILLAR), Span(bed + platformRiseOf(depth) + 1, pillarTopOf(depth, z)), Span(z, z)));
+    }
+    final switch (depth) {
+        case Depth.deep:
+            Span opening = Span(MEZZANINE_STAIR_TOP + 1, MEZZANINE_STAIR_TOP + MEZZANINE_STEPS);
+            frame.paint(Material.none, boxOf(MEZZANINE_STAIR, Span(MEZZANINE_FLOOR, MEZZANINE_FLOOR), opening));
+            foreach (step; 1 .. MEZZANINE_STEPS + 1) {
+                int z = MEZZANINE_STAIR_TOP + step;
+                frame.paint(materials.platform, boxOf(MEZZANINE_STAIR, Span(bed + 2, MEZZANINE_FLOOR - step), Span(z, z)));
+            }
+            frame.paint(materials.railing, boxOf(Span(MEZZANINE_STAIR.low - 1, MEZZANINE_STAIR.low - 1), Span(MEZZANINE_FLOOR + 1, MEZZANINE_FLOOR + 1), opening));
+            break;
+        case Depth.shallow:
+            break;
+    }
+}
+
+bool isStationBeside(ref const End end) {
+    return (end.marks.has(EndMark.right) && stopOf(end.frame.right()) == Stop.station) || (end.marks.has(EndMark.left) && stopOf(end.frame.left()) == Stop.station);
+}
+
+bool isCornerYielded(ref const End end, Depth depth) {
+    if (!end.isCrossed() || end.across != depth || !isStationBeside(end)) {
+        return false;
+    } else {
+        ulong own = end.frame.probeHash(SitePart.line);
+        ulong across = end.frame.right().probeHash(SitePart.line);
+        if (roll(end.frame.probeHash(SitePart.vertex), CORNER_SALT) < CORNER_ODDS) {
+            return own > across;
+        } else {
+            return own < across;
+        }
+    }
+}
+
+void stationEnd(ref const End end, Depth depth) {
+    if (!end.isClosed() && !end.isTransfer(depth) && !isCornerYielded(end, depth)) {
+        entrance(end.frame, depth);
+    }
+}
+
+void entrance(Turtle frame, Depth depth) {
+    int arrival = arrivalOf(depth);
+    int steps = 1 - arrival;
+    foreach (step; 1 .. steps + 1) {
+        int z = ENTRANCE_TOP + step;
+        frame.paint(materials.platform, boxOf(ENTRANCE, Span(arrival - 1, -step), Span(z, z)));
+        frame.paint(Material.none, boxOf(ENTRANCE, Span(1 - step, 0), Span(z, z)));
+    }
+    int beyond = ENTRANCE_TOP + steps + 1;
+    frame.paint(materials.entrance, boxOf(Span(ENTRANCE.low - 1, ENTRANCE.low - 1), Span(0, 0), Span(ENTRANCE_TOP + 1, beyond - 1)));
+    frame.paint(materials.entrance, boxOf(Span(ENTRANCE.high + 1, ENTRANCE.high + 1), Span(1, 1), Span(ENTRANCE_TOP, beyond)));
+    frame.paint(materials.entrance, boxOf(ENTRANCE, Span(1, 1), Span(beyond, beyond)));
+    frame.paint(materials.entrance, boxOf(Span(ENTRANCE.high + 1, ENTRANCE.high + 1), Span(1, POST_TOP - 1), Span(ENTRANCE_TOP, ENTRANCE_TOP)));
+    frame.paint(materials.tunnelLight, boxOf(Span(ENTRANCE.high + 1, ENTRANCE.high + 1), Span(POST_TOP, POST_TOP), Span(ENTRANCE_TOP, ENTRANCE_TOP)));
+}
+
+Cell doorCellOf(Turtle down, ulong street) {
+    if (down.right().probeHash(SitePart.edge) == street) {
+        return Cell(PORT - 1, 0);
+    } else if (down.left().probeHash(SitePart.edge) == street) {
+        return Cell(-PORT, -1);
+    } else if (down.pitchUp().probeHash(SitePart.edge) == street) {
+        return Cell(-1, PORT - 1);
+    } else {
+        return Cell(0, -PORT);
+    }
+}
+
+bool isIn(Tread tread, Cell cell) {
+    return cell.x >= tread.x.low && cell.x <= tread.x.high && cell.y >= tread.y.low && cell.y <= tread.y.high;
+}
+
+int treadFacing(Flight flight, Cell cell) {
+    int index = 0;
+    while (index < WELL_TREADS && !isIn(wound(wellTreadAt(index), flight.winding), cell)) {
+        index += 1;
+    }
+    return index;
+}
+
+int doorFloorOf(int tread, int bore) {
+    int below = floorMod(tread + bore, WELL_TREADS);
+    if (bore - below >= DEEP_BED) {
+        return bore - below;
+    } else {
+        return bore + WELL_TREADS - below;
+    }
+}
+
+void wellDoor(Turtle frame, Depth depth) {
+    int bore = bedOf(depth) + 1;
+    Flight flight = flightAt(frame.pitchDown());
+    int door = doorFloorOf(treadFacing(flight, doorCellOf(flight.frame, frame.probeHash(SitePart.edge))), bore);
+    frame.paint(Material.none, boxOf(DOOR, Span(door, door + DOOR_HEIGHT - 1), Span(DOOR_Z, DOOR_Z)));
+    int step = 1;
+    int floor = door;
+    while (floor != bore) {
+        if (floor > bore) {
+            floor -= 1;
+        } else {
+            floor += 1;
+        }
+        int z = DOOR_Z + step;
+        if (floor > bore) {
+            frame.paint(materials.platform, boxOf(DOOR, Span(bore, floor - 1), Span(z, z)));
+        }
+        frame.paint(Material.none, boxOf(DOOR, Span(floor, floor + DOOR_HEIGHT - 1), Span(z, z)));
+        step += 1;
+    }
+}
+
+void lineEnd(ref const End end, Depth depth) {
+    if (end.isTransfer(depth)) {
+        final switch (depth) {
+            case Depth.deep:
+                transfer(end.frame);
+                break;
+            case Depth.shallow:
+                break;
+        }
+    } else if (end.marks.has(EndMark.port)) {
+        wellDoor(end.frame, depth);
+    } else if (!end.isClosed() && !end.isCrossed() && !end.marks.has(EndMark.onward)) {
+        int bed = bedOf(depth);
+        end.frame.paint(materials.pillar, boxOf(TRACK, Span(bed + 1, bed + 2), Span(1, 1)));
+    }
+}
+
+void transfer(Turtle frame) {
+    int bottom = TRANSFER_TOP + TRANSFER_STEPS;
+    frame.paint(materials.stationWall, boxOf(Span(TRANSFER.low, TRANSFER.high + 1), Span(DEEP_BED, UNDER_STREET), Span(TRANSFER_TOP, bottom + TRANSFER_LANDING + 1)));
+    frame.paint(materials.tunnelLight, boxOf(Span(TRANSFER.high + 1, TRANSFER.high + 1), Span(SHALLOW_BED - 1, SHALLOW_BED - 1), Span(bottom - 2, bottom - 2)));
+    frame.paint(materials.transfer, boxOf(TRANSFER, Span(SHALLOW_BED, SHALLOW_BED), Span(0, TRANSFER_TOP)));
+    frame.paint(Material.none, boxOf(TRANSFER, Span(SHALLOW_BED + 1, SHALLOW_BED + HEADROOM), Span(0, TRANSFER_TOP)));
+    foreach (step; 1 .. TRANSFER_STEPS + 1) {
+        int z = TRANSFER_TOP + step;
+        int top = SHALLOW_BED - step;
+        if (top > DEEP_BED) {
+            frame.paint(materials.transfer, boxOf(TRANSFER, Span(DEEP_BED + 1, top), Span(z, z)));
+        }
+        frame.paint(Material.none, boxOf(TRANSFER, Span(top + 1, top + HEADROOM), Span(z, z)));
+    }
+    frame.paint(Material.none, boxOf(TRANSFER, Span(DEEP_BED + 1, DEEP_BED + HEADROOM), Span(bottom + 1, bottom + TRANSFER_LANDING)));
 }
 
 void tree(Turtle tower, int x, int y) {
@@ -357,6 +792,17 @@ void paveAroundPort(ref const Lots lots, Material material) {
         if (area.x.low < PORT) {
             area.tower.paint(material, boxOf(Span(area.x.low, PORT - 1), Span(higherOf(area.y.low, PORT), area.y.high), Span(-1, 0)));
         }
+    }
+}
+
+void portFrame(ref const Lots lots) {
+    foreach (ref lot; lots.slice()) {
+        Turtle tower = upright(lot.site);
+        tower.paint(materials.kerb, boxOf(Span(PORT, PORT), Span(0, PORT), Span(1, 1)));
+        tower.paint(materials.kerb, boxOf(Span(0, PORT - 1), Span(PORT, PORT), Span(1, 1)));
+        tower.paint(materials.frame, boxOf(Span(PORT, PORT), Span(PORT, PORT), Span(1, PORT_FRAME)));
+        tower.paint(materials.frame, boxOf(Span(PORT, PORT), Span(0, PORT), Span(PORT_FRAME, PORT_FRAME)));
+        tower.paint(materials.frame, boxOf(Span(0, PORT - 1), Span(PORT, PORT), Span(PORT_FRAME, PORT_FRAME)));
     }
 }
 
@@ -427,14 +873,14 @@ Chosen chosenFor(Turtle site, ref const LotRule rule) {
     int count = site.pickBetween(range.low, most);
     int gap = 0;
     if (rule.shape == LotShape.run) {
-        bool alley = site.rollChance(tuning.alleyPercent);
+        bool alley = site.rollPercent(tuning.alleyPercent);
         if (alley) {
             gap = 1;
         }
     }
     int front = FRONT;
     if (rule.shape == LotShape.run) {
-        front = FRONT + cast(int) site.pick(MAX_INSET + 1);
+        front = FRONT + cast(int) site.pick(MOST_INSET + 1);
     }
     const(Palette)[] options = traits.palettes.slice();
     Spec spec = {stories: count, palette: options[site.pick(cast(uint) options.length)], front: front, gap: gap};
@@ -494,6 +940,7 @@ void lotAt(Turtle corner, ref const Lots lots, ref const Root root) {
     } else if (port) {
         paveAroundPort(lots, materials.plaza);
         plant(lots);
+        portFrame(lots);
     } else {
         bool route = probeRoute(corner, lots, root);
         if (route) {
@@ -507,27 +954,27 @@ void lotAt(Turtle corner, ref const Lots lots, ref const Root root) {
 
 void rolledLot(Turtle site, ref const Lots lots, ref const Root root) {
     const(District)* district = districtAt(site);
-    bool park = site.rollChance(district.parkPercent);
+    bool park = site.rollPercent(district.parkPercent);
     if (park) {
         pave(lots, materials.park);
-        bool pond = site.rollChance(tuning.pondPercent);
+        bool pond = site.rollPercent(tuning.pondPercent);
         if (pond) {
             ponds(lots);
         } else {
             plant(lots);
         }
     } else {
-        bool plaza = site.rollChance(district.plazaPercent);
+        bool plaza = site.rollPercent(district.plazaPercent);
         if (plaza) {
             pave(lots, materials.plaza);
-            bool fountain = site.rollChance(tuning.fountainPercent);
+            bool fountain = site.rollPercent(tuning.fountainPercent);
             if (fountain) {
                 fountains(lots);
             } else {
                 plant(lots);
             }
         } else {
-            bool parked = site.rollChance(district.parkingPercent);
+            bool parked = site.rollPercent(district.parkingPercent);
             MaybeIndex!LotRule rule = ruleFor(*district, cast(uint) lots.count);
             if (parked) {
                 parking(lots);
@@ -636,8 +1083,8 @@ Root risenRootAt(Turtle foot, ref const Risen risen, uint tag, Connection how) {
     return Root(foot.probeHash(SitePart.vertex), foot.probeHash(SitePart.face), risen, how, tag);
 }
 
-void tile(const(Api)* api, Site site, const(Risen)* risen, const(void)* data) {
-    tileAt(Turtle(api, site), *cast(const(Root)*) data);
+void tile(const(Api)* api, Site site, ref const Risen risen, ref const Root root) {
+    tileAt(Turtle(api, site), root);
 }
 
 void tileAt(Turtle face, ref const Root root) {

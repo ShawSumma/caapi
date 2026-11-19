@@ -1,9 +1,9 @@
 module plugins.city.plugin;
 
-import plugins.api.api : Api, Registry, Site, Spot, entryOf;
+import plugins.api.api : Api, HorosphereForm, KindId, KindTag, Registry, Site, Spot, entryOf, typedTile;
 import plugins.api.content : BASE, Dependency, FIRST_VERSION, Manifest, dependencyOn;
 import blocks = plugins.blocks.blocks;
-import plugins.horospheres.horospheres : CITY_LOOK;
+import plugins.horospheres.horospheres : CITY_LOOK, CITY_TAG;
 import plugins.turtle.turtle : Turtle;
 
 immutable Spot SPAWN = Spot(6, 0, -0.5);
@@ -11,7 +11,9 @@ immutable Spot SPAWN = Spot(6, 0, -0.5);
 void world(const(Api)* api, Site site, const(void)* data) {
     Turtle at = Turtle(api, site);
     blocks.Root root = blocks.rootAt(at);
-    api.tile(api, &blocks.tile, &root, blocks.Root.sizeof);
+    KindId kind = api.horosphere(api, 0, HorosphereForm.solid, CITY_TAG, &typedTile!(blocks.tile, blocks.Root), &root, blocks.Root.sizeof);
+    api.rooted(api, kind);
+    api.portRule(api, KindTag.of(CITY_TAG), blocks.mostPortShare(), &blocks.portAt, null, 0);
     api.worldLook(api, CITY_LOOK);
     at.build("underground");
     at.right().entrance(SPAWN.x, SPAWN.y, SPAWN.z);

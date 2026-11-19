@@ -1,10 +1,11 @@
 module plugins.library.plugin;
 
-import plugins.api.api : Api, HorosphereForm, KindId, KindTag, Material, Registry, Rhythm, Risen, RisingKind, Site, SitePart, Span, Spot, entryOf, tagNamed;
+import core.stdc.math : ceil;
+import plugins.api.api : Api, HorosphereForm, KindId, KindTag, Material, MaybeIndex, Registry, Rhythm, Risen, RisingKind, Site, SitePart, Span, Spot, entryOf, tagNamed;
 import plugins.api.binding : List, bound, settingsOf;
 import plugins.api.content : BASE, Content, Dependency, FIRST_VERSION, Manifest, dependencyOn;
 import blocks = plugins.blocks.blocks;
-import plugins.connector.connector : Connection, connect, resolveConnector;
+import plugins.connector.connector : Connection, HALF_WIDTH, Routing, Style, footTile, resolveConnector;
 import plugins.turtle.turtle : Along, Cell, EVERY_HEIGHT, Offset, Rows, STAIR_HEADROOM, TURN_TREADS, Turtle, boxOf, cornersOf, floorDiv, floorMod, higherOf, line, lowerOf, mixed, onWedge, ringRows, roll, treadSpan, upright, wedgeRows;
 
 enum string LOOK = "library:look";
@@ -29,8 +30,18 @@ enum int STUDY_DOOR = 3;
 enum Span LOUNGE_SHELF = Span(3, 8);
 enum Span LOUNGE_TABLE_X = Span(4, 5);
 enum Span LOUNGE_TABLE_Y = Span(9, 10);
+enum Span LOCKERS_X = Span(3, 8);
+enum int LOCKERS_Y = 1;
+enum int LOCKER_HEIGHT = 2;
+enum int COUNTER_X = 1;
+enum Span COUNTER_Y = Span(4, 8);
+enum int SINK_Y = 6;
 enum ulong STUDY_SALT = 0x452821E6;
 enum ulong LOOP_SALT = 0x38D01377;
+enum ulong STATION_SALT = 0x5851F42D;
+enum ulong BENCH_SALT = 0x2545F491;
+enum int STORIES = (ROOF - BOTTOM + 1) / STORY;
+enum int HALL_STORIES = (ROOF - BOTTOM + 1) / HALL_STORY;
 immutable Cell[4] STUDY_DOORS = [Cell(PARTITION, 3), Cell(PARTITION, 9), Cell(3, PARTITION), Cell(9, PARTITION)];
 immutable Cell[4] STUDY_DESKS = [Cell(2, 2), Cell(8, 2), Cell(2, 8), Cell(8, 8)];
 immutable Cell[3] STUDY_LAMPS = [Cell(3, 3), Cell(3, 9), Cell(9, 9)];
@@ -54,7 +65,58 @@ enum double ROUTE_RADIUS = 7;
 enum int TOP_TREAD = STORY;
 enum int ROUTE_TREADS = 20 * TURN_TREADS;
 enum int LAMP_SPOT = 6;
+enum double WALLED_PAST_CRUST = 0.5;
 immutable Spot SPAWN = Spot(10, 7, 1);
+
+enum int MAIN_STORY = -BOTTOM / STORY;
+enum int ROOM_WALL = 8;
+enum Span ROOM = Span(1, ROOM_WALL - 1);
+enum Span ROOM_DOOR = Span(4, 5);
+enum int ROOM_DOOR_TOP = 3;
+enum int ROOM_HEADROOM = STORY - 2;
+enum Cell ROOM_LAMP = Cell(4, 4);
+enum int DESCENT_FROM = 2;
+enum Span DESCENT_Y = Span(2, 3);
+enum Span BASEMENT_ROW = Span(3, 4);
+enum int PIPE_BELOW_CEILING = 1;
+immutable int[2] PIPE_ROWS = [2, 7];
+enum size_t MOST_ROOMS = 24;
+enum size_t MOST_PIECES = 12;
+enum uint PICK_STEPS = 1000;
+enum ulong ROOM_SALT = 0x6C62272E;
+enum ulong ROOM_PICK_SALT = 0x07BB0142;
+enum ulong ROOM_LOOP_SALT = 0x62B82175;
+enum ulong ROOM_DOOR_SALT = 0x6A5D39EA;
+
+enum Level : ubyte {
+    main,
+    basement,
+}
+
+enum Descent : ubyte {
+    none,
+    down,
+}
+
+struct Piece {
+    Material material;
+    int x;
+    int y;
+    int z;
+    int wide;
+    int deep;
+    int tall;
+}
+
+struct Room {
+    double weight;
+    Level level;
+    Material wall;
+    Material floor;
+    Material light;
+    Descent stair;
+    List!(Piece, MOST_PIECES) pieces;
+}
 
 struct Materials {
     Material frame;
@@ -65,8 +127,20 @@ struct Materials {
     Material well;
     Material partition;
     Material lounge;
+    Material press;
+    Material lab;
+    Material bench;
+    Material locker;
+    Material sink;
+    Material workbench;
+    Material staffFloor;
+    Material staffCeiling;
+    Material staffWall;
+    Material catalog;
+    Material pipe;
     List!(Material, MOST_CHOICES) floors;
     List!(Material, MOST_CHOICES) books;
+    List!(Room, MOST_ROOMS) rooms;
 }
 
 __gshared Materials materials;
@@ -79,10 +153,19 @@ struct Tuning {
     double atriumOdds;
     double studyOdds;
     double loungeOdds;
+    double staffOdds;
     double loopOdds;
     double arcadeOdds;
     double solidOdds;
+    double stationLots;
+    double pressLots;
+    double labLots;
+    double benchLots;
     double fog;
+    int spiralBelow;
+    double roomOdds;
+    double basementRoomOdds;
+    double roomLoopOdds;
 }
 
 __gshared Tuning tuning;
@@ -108,6 +191,7 @@ enum Kind : ubyte {
     atrium,
     studies,
     lounge,
+    staff,
 }
 
 enum Wall : ubyte {
@@ -151,6 +235,8 @@ Kind kindOf(ulong face) {
         return Kind.studies;
     } else if (chance < tuning.hallOdds + tuning.stairOdds + tuning.atriumOdds + tuning.studyOdds + tuning.loungeOdds) {
         return Kind.lounge;
+    } else if (chance < tuning.hallOdds + tuning.stairOdds + tuning.atriumOdds + tuning.studyOdds + tuning.loungeOdds + tuning.staffOdds) {
+        return Kind.staff;
     } else {
         return Kind.gallery;
     }
@@ -177,59 +263,205 @@ void spread(ref const Quarter q, Material material, Span z, Rhythm rhythm) {
         }
         if (z.high > 0) {
             Span open = Span(higherOf(z.low, 1), z.high);
-            q.tower.paint(material, boxOf(Span(CLEAR, far), Span(0, far), open), rhythm);
-            q.tower.paint(material, boxOf(Span(0, CLEAR - 1), Span(CLEAR, far), open), rhythm);
+            q.tower.paint(material, boxOf(Span(HALF_WIDTH, far), Span(0, far), open), rhythm);
+            q.tower.paint(material, boxOf(Span(0, HALF_WIDTH - 1), Span(HALF_WIDTH, far), open), rhythm);
         }
     }
 }
 
-void shelves(Turtle tower, Along direction, Span span) {
-    Span rooms = Span(BOTTOM + 1, ROOF - 1);
-    tower.paint(materials.frame, line(direction, span, rooms));
+void shelves(Turtle tower, Along direction, Span span, Span z) {
+    tower.paint(materials.frame, line(direction, span, z));
     foreach (along; span.low .. span.high + 1) {
         foreach (row; WALL_BOOKS) {
-            tower.paint(bookOf(tower), line(direction, Span(along, along), rooms), row);
+            tower.paint(bookOf(tower), line(direction, Span(along, along), z), row);
         }
     }
 }
 
 void wall(Turtle tower, Along direction, ulong edge) {
     int far = tower.column().high;
+    Span rooms = Span(BOTTOM + 1, ROOF - 1);
     final switch (wallOf(edge)) {
         case Wall.door:
-            shelves(tower, direction, Span(0, far - DOOR));
+            shelves(tower, direction, Span(0, far - DOOR), rooms);
             break;
         case Wall.arcade:
-            shelves(tower, direction, Span(0, PIER - 1));
+            shelves(tower, direction, Span(0, PIER - 1), rooms);
             break;
         case Wall.solid:
-            shelves(tower, direction, Span(0, far));
+            shelves(tower, direction, Span(0, far), rooms);
             break;
     }
 }
 
-void stack(Turtle tower, Span x, Span y) {
-    Span rooms = Span(BOTTOM + 1, ROOF - 1);
-    tower.paint(materials.frame, boxOf(x, y, rooms), Rhythm(STORY, 1, 3));
-    tower.paint(bookOf(tower), boxOf(x, y, rooms), Rhythm(STORY, 2, 1));
+void closeEdge(Turtle tower, Along direction, ulong edge, Span z) {
+    if (wallOf(edge) == Wall.arcade) {
+        shelves(tower, direction, Span(PIER, ROOM_WALL), z);
+    }
 }
 
-void floors(ref const Quarter q, Kind kind, Material material) {
+void stack(Turtle tower, Span x, Span y, Span z) {
+    tower.paint(materials.frame, boxOf(x, y, z), Rhythm(STORY, 1, 3));
+    tower.paint(bookOf(tower), boxOf(x, y, z), Rhythm(STORY, 2, 1));
+}
+
+bool isEligible(ref const Room room, Level level, int story) {
+    return room.level == level && (room.stair == Descent.none || story > 0);
+}
+
+Level levelOf(int story) {
+    if (story < MAIN_STORY) {
+        return Level.basement;
+    } else {
+        return Level.main;
+    }
+}
+
+double roomOddsOf(Level level) {
+    final switch (level) {
+        case Level.main:
+            return tuning.roomOdds;
+        case Level.basement:
+            return tuning.basementRoomOdds;
+    }
+}
+
+MaybeIndex!Room roomAt(ulong hash, int story) {
+    Level level = levelOf(story);
+    const(Room)[] rooms = materials.rooms.slice();
+    double total = 0;
+    foreach (ref room; rooms) {
+        if (isEligible(room, level, story)) {
+            total += room.weight;
+        }
+    }
+    if (!(roll(hash, ROOM_SALT) < roomOddsOf(level)) || !(total > 0)) {
+        return MaybeIndex!Room.init;
+    } else {
+        double left = (mixed(hash, ROOM_PICK_SALT) % PICK_STEPS) / cast(double) PICK_STEPS * total;
+        uint index = 0;
+        while (index < rooms.length && !(isEligible(rooms[index], level, story) && left < rooms[index].weight)) {
+            if (isEligible(rooms[index], level, story)) {
+                left -= rooms[index].weight;
+            }
+            index += 1;
+        }
+        if (index < rooms.length) {
+            return MaybeIndex!Room.of(index);
+        } else {
+            return MaybeIndex!Room.init;
+        }
+    }
+}
+
+void descend(Turtle tower, int floor) {
+    int below = floor - STORY;
+    foreach (step; 0 .. STORY - 1) {
+        int x = DESCENT_FROM + step;
+        int top = floor - 1 - step;
+        tower.paint(Material.none, boxOf(Span(x, x), DESCENT_Y, Span(top + 1, top + ROOM_HEADROOM)));
+        tower.paint(materials.stair, boxOf(Span(x, x), DESCENT_Y, Span(below + 1, top)));
+    }
+    int landing = DESCENT_FROM + STORY - 1;
+    tower.paint(Material.none, boxOf(Span(landing, landing), DESCENT_Y, Span(below + 1, below + ROOM_HEADROOM)));
+}
+
+void room(Turtle tower, ref const Room made, int story, ulong hash, ulong edgeX, ulong edgeY) {
+    int floor = BOTTOM + story * STORY;
+    Span inside = Span(floor + 1, floor + ROOM_HEADROOM);
+    Span inner = Span(ROOM_WALL, ROOM_WALL);
+    tower.paint(Material.none, boxOf(ROOM, ROOM, inside));
+    if (made.floor != Material.none) {
+        tower.paint(made.floor, boxOf(ROOM, ROOM, Span(floor, floor)));
+    }
+    tower.paint(made.wall, boxOf(inner, Span(0, ROOM_WALL), inside));
+    tower.paint(made.wall, boxOf(Span(0, ROOM_WALL - 1), inner, inside));
+    closeEdge(tower, Along.x, edgeX, inside);
+    closeEdge(tower, Along.y, edgeY, inside);
+    Span door = Span(floor + 1, floor + ROOM_DOOR_TOP);
+    ulong first = mixed(hash, ROOM_DOOR_SALT) % 2;
+    bool looped = roll(hash, ROOM_LOOP_SALT) < tuning.roomLoopOdds;
+    if (looped || first == 0) {
+        tower.paint(Material.none, boxOf(inner, ROOM_DOOR, door));
+    }
+    if (looped || first == 1) {
+        tower.paint(Material.none, boxOf(ROOM_DOOR, inner, door));
+    }
+    foreach (ref piece; made.pieces.slice()) {
+        Material material = piece.material;
+        if (material == Material.none) {
+            material = bookOf(tower);
+        }
+        Span x = Span(piece.x, lowerOf(piece.x + piece.wide - 1, ROOM.high));
+        Span y = Span(piece.y, lowerOf(piece.y + piece.deep - 1, ROOM.high));
+        Span z = Span(floor + piece.z, lowerOf(floor + piece.z + piece.tall - 1, floor + ROOM_HEADROOM));
+        tower.paint(material, boxOf(x, y, z));
+    }
+    if (made.light != Material.none) {
+        tower.paint(made.light, boxOf(Span(ROOM_LAMP.x, ROOM_LAMP.x), Span(ROOM_LAMP.y, ROOM_LAMP.y), Span(floor + CEILING_AT, floor + CEILING_AT)));
+    }
+    if (made.stair == Descent.down) {
+        descend(tower, floor);
+    }
+}
+
+void divide(Turtle tower, Turtle corner) {
+    ulong hash = quarterHash(corner);
+    ulong edgeX = corner.probeHash(SitePart.edge);
+    ulong edgeY = corner.right().probeHash(SitePart.edge);
+    foreach (story; 0 .. STORIES) {
+        ulong own = mixed(hash, ROOM_SALT + story);
+        MaybeIndex!Room chosen = roomAt(own, story);
+        if (chosen.exists) {
+            room(tower, materials.rooms.items[chosen.value], story, own, edgeX, edgeY);
+        }
+    }
+}
+
+void basement(Turtle tower) {
+    int far = tower.column().high;
+    Span below = Span(BOTTOM, BOTTOM + MAIN_STORY * STORY - 1);
+    stack(tower, Span(3, 7), BASEMENT_ROW, below);
+    foreach (row; PIPE_ROWS) {
+        tower.paint(materials.pipe, boxOf(Span(1, far), Span(row, row), below), Rhythm(STORY, CEILING_AT - PIPE_BELOW_CEILING, 1));
+    }
+}
+
+bool hasRooms(Kind kind, size_t index) {
+    return kind == Kind.gallery || (kind == Kind.stair && index != 0);
+}
+
+ulong quarterHash(Turtle corner) {
+    return corner.probeHash(SitePart.vertex) ^ corner.probeHash(SitePart.face);
+}
+
+void floors(ref const Quarter q, Kind kind, Material material, Turtle corner) {
     Span whole = Span(BOTTOM, ROOF);
     int story = STORY;
     if (kind == Kind.hall) {
         story = HALL_STORY;
     }
+    Material ceiling = materials.ceiling;
+    if (kind == Kind.staff) {
+        ceiling = materials.staffCeiling;
+    }
     spread(q, Material.none, Span(BOTTOM + 1, ROOF - 1), EVERY_HEIGHT);
     spread(q, material, whole, Rhythm(story, 0, 1));
-    spread(q, materials.ceiling, whole, Rhythm(story, story - 1, 1));
+    spread(q, ceiling, whole, Rhythm(story, story - 1, 1));
     q.tower.paint(materials.lamp, boxOf(Span(LAMP.x, LAMP.x), Span(LAMP.y, LAMP.y), whole), Rhythm(story, story - 1, 1));
     if (kind == Kind.hall) {
         q.tower.paint(materials.table, boxOf(TABLE_X, TABLE_Y, whole), Rhythm(HALL_STORY, 1, 1));
+        ulong hash = quarterHash(corner);
+        foreach (floor; 0 .. HALL_STORIES) {
+            if (mixed(mixed(hash, BENCH_SALT), floor) % cast(ulong) tuning.stationLots < tuning.benchLots) {
+                int level = BOTTOM + floor * HALL_STORY + 1;
+                q.tower.paint(materials.bench, boxOf(Span(TABLE_X.high, TABLE_X.high), Span(TABLE_Y.low, TABLE_Y.low), Span(level, level)));
+            }
+        }
     }
 }
 
-void atrium(ref const Quarter q, Material material) {
+void atrium(ref const Quarter q, Material material, size_t index) {
     Span whole = Span(BOTTOM, ROOF);
     int far = q.tower.column().high;
     spread(q, Material.none, Span(BOTTOM + 1, ROOF - 1), EVERY_HEIGHT);
@@ -237,9 +469,23 @@ void atrium(ref const Quarter q, Material material) {
     spread(q, materials.ceiling, Span(ROOF, ROOF), EVERY_HEIGHT);
     q.tower.paint(materials.lamp, boxOf(Span(LAMP.x, LAMP.x), Span(LAMP.y, LAMP.y), Span(ROOF, ROOF)));
     q.tower.paint(materials.table, boxOf(Span(DESK, far), Span(DESK, far), Span(BOTTOM + 1, BOTTOM + 1)));
+    if (index == 0) {
+        q.tower.paint(materials.catalog, boxOf(Span(DESK, DESK), Span(DESK, DESK), Span(BOTTOM + 1, BOTTOM + 1)));
+    }
     if (!q.isClear()) {
         q.tower.paint(material, boxOf(Span(0, far), Span(0, BALCONY), whole), Rhythm(STORY, 0, 1));
         q.tower.paint(material, boxOf(Span(0, BALCONY), Span(0, far), whole), Rhythm(STORY, 0, 1));
+    }
+}
+
+Material stationOf(ulong hash, size_t place) {
+    ulong lot = mixed(hash, place) % cast(ulong) tuning.stationLots;
+    if (lot < tuning.labLots) {
+        return materials.lab;
+    } else if (lot < tuning.labLots + tuning.pressLots) {
+        return materials.press;
+    } else {
+        return Material.none;
     }
 }
 
@@ -256,8 +502,15 @@ void studies(Turtle tower, ulong hash) {
             tower.paint(Material.none, boxOf(Span(door.x, door.x), Span(door.y, door.y), whole), Rhythm(STORY, 1, STUDY_DOOR));
         }
     }
-    foreach (desk; STUDY_DESKS) {
+    foreach (carrel, desk; STUDY_DESKS) {
         tower.paint(materials.table, boxOf(Span(desk.x, desk.x + 1), Span(desk.y, desk.y), whole), Rhythm(STORY, 1, 1));
+        foreach (story; 0 .. STORIES) {
+            Material station = stationOf(mixed(hash, STATION_SALT), story * STUDY_DESKS.length + carrel);
+            if (station != Material.none) {
+                int level = BOTTOM + story * STORY + 1;
+                tower.paint(station, boxOf(Span(desk.x, desk.x), Span(desk.y, desk.y), Span(level, level)));
+            }
+        }
     }
     foreach (lamp; STUDY_LAMPS) {
         tower.paint(materials.lamp, boxOf(Span(lamp.x, lamp.x), Span(lamp.y, lamp.y), whole), Rhythm(STORY, CEILING_AT, 1));
@@ -271,6 +524,15 @@ void lounge(Turtle tower) {
         tower.paint(bookOf(tower), boxOf(LOUNGE_SHELF, Span(row, row), whole), Rhythm(STORY, 2, 1));
     }
     tower.paint(materials.table, boxOf(LOUNGE_TABLE_X, LOUNGE_TABLE_Y, whole), Rhythm(STORY, 1, 1));
+}
+
+void staff(Turtle tower) {
+    Span whole = Span(BOTTOM, ROOF);
+    tower.paint(materials.staffWall, boxOf(LOCKERS_X, Span(LOCKERS_Y, LOCKERS_Y), whole), Rhythm(STORY, 1, STORY - 2));
+    tower.paint(materials.locker, boxOf(LOCKERS_X, Span(LOCKERS_Y, LOCKERS_Y), whole), Rhythm(STORY, 1, LOCKER_HEIGHT));
+    tower.paint(materials.table, boxOf(Span(COUNTER_X, COUNTER_X), COUNTER_Y, whole), Rhythm(STORY, 1, 1));
+    tower.paint(materials.sink, boxOf(Span(COUNTER_X, COUNTER_X), Span(SINK_Y, SINK_Y), whole), Rhythm(STORY, 1, 1));
+    tower.paint(materials.workbench, boxOf(Span(COUNTER_X, COUNTER_X), Span(COUNTER_Y.high, COUNTER_Y.high), whole), Rhythm(STORY, 1, 1));
 }
 
 void tread(Turtle tower, int x, Span y, int top) {
@@ -298,9 +560,9 @@ void quarter(Turtle corner, size_t index, Kind kind, Material material, ref cons
     if (rising != KindTag.of(STACKS_TAG)) {
         Quarter q = Quarter(upright(corner), clearingAt(corner, risen));
         if (kind == Kind.atrium) {
-            atrium(q, material);
+            atrium(q, material, index);
         } else {
-            floors(q, kind, material);
+            floors(q, kind, material, corner);
         }
         if (!q.isClear()) {
             wall(q.tower, Along.x, corner.probeHash(SitePart.edge));
@@ -309,36 +571,38 @@ void quarter(Turtle corner, size_t index, Kind kind, Material material, ref cons
         if (kind == Kind.stair && index == 0 && !q.isClear()) {
             stairwell(q.tower);
         } else if (kind == Kind.studies && !q.isClear()) {
-            studies(q.tower, corner.probeHash(SitePart.vertex) ^ corner.probeHash(SitePart.face));
+            studies(q.tower, quarterHash(corner));
         } else if (kind == Kind.lounge && !q.isClear()) {
             lounge(q.tower);
+        } else if (kind == Kind.staff && !q.isClear()) {
+            staff(q.tower);
         } else if (kind == Kind.gallery) {
-            stack(q.tower, Span(3, 7), Span(CLEAR, CLEAR + 1));
+            Span stories = Span(BOTTOM + 1, ROOF - 1);
+            stack(q.tower, Span(3, 7), Span(CLEAR, CLEAR + 1), stories);
             uint second = q.tower.pick(2);
             if (second == 0) {
-                stack(q.tower, Span(3, 7), Span(CLEAR + 3, CLEAR + 4));
+                stack(q.tower, Span(3, 7), Span(CLEAR + 3, CLEAR + 4), stories);
             }
+        }
+        if (hasRooms(kind, index) && !q.isClear()) {
+            basement(q.tower);
+            divide(q.tower, corner);
         }
     }
 }
 
 void tile(const(Api)* api, Site site, const(Risen)* risen, const(void)* data) {
     Turtle face = Turtle(api, site);
-    Connection connection = *cast(const(Connection)*) data;
     ulong hash = face.probeHash(SitePart.face);
     Kind kind = kindOf(hash);
     Material material = floorOf(hash);
     if (kind == Kind.lounge) {
         material = materials.lounge;
+    } else if (kind == Kind.staff) {
+        material = materials.staffFloor;
     }
     foreach (index, corner; cornersOf(face)) {
         quarter(corner, index, kind, material, *risen);
-    }
-    if (risen.hasRisen) {
-        bool owner = blocks.probeOwnsFoot(face, *risen);
-        if (owner) {
-            connect(Turtle(api, risen.foot), *risen, LIBRARY_TAG, connection);
-        }
     }
 }
 
@@ -377,13 +641,36 @@ void descent(Turtle tower, int lastTread) {
     }
 }
 
+struct Ends {
+    int walls;
+    int landing;
+}
+
+Ends endsOf(Turtle foot, int length) {
+    double crust = foot.probeCrust();
+    if (!(crust < double.infinity)) {
+        return Ends(int.min, int.min);
+    } else {
+        int walls = -cast(int) ceil((crust + WALLED_PAST_CRUST) * length);
+        return Ends(walls, (floorDiv(walls, length) - tuning.spiralBelow) * length);
+    }
+}
+
 void shaft(const(Api)* api, Site base, const(Risen)* risen, const(void)* data) {
     Turtle tower = Turtle(api, base);
     int length = tower.edgeCells();
     int bottom = risen.segment * length;
+    Turtle foot = Turtle(api, risen.foot);
+    Ends ends = endsOf(foot, length);
+    if (bottom >= ends.landing) {
+        stacksDown(tower, risen.segment, length, ends, floorOf(foot.probeHash(SitePart.vertex)));
+    }
+}
+
+void stacksDown(Turtle tower, int segment, int length, Ends ends, Material floor) {
+    int bottom = segment * length;
     int top = lowerOf(ROOF, bottom + length - 1);
-    Material floor = floorOf(Turtle(api, risen.foot).probeHash(SitePart.vertex));
-    Span deep = Span(bottom, lowerOf(BOTTOM - 1, top));
+    Span deep = Span(higherOf(bottom, ends.walls), lowerOf(BOTTOM - 1, top));
     Span slab = Span(higherOf(BOTTOM, bottom), top);
     if (deep.low <= deep.high) {
         Span z = Span(deep.low - bottom, deep.high - bottom);
@@ -394,12 +681,16 @@ void shaft(const(Api)* api, Site base, const(Risen)* risen, const(void)* data) {
         stories(tower, EVERYWHERE, Span(slab.low - bottom, slab.high - bottom), floor);
     }
     int lastTread = TURN_TREADS - 1;
-    if (risen.segment == 0) {
+    if (segment == 0) {
         lastTread = TOP_TREAD;
         Rows cap = ringRows(tower.column(), 0, WELL);
         tower.paintRows(materials.ceiling, cap, Span(ROOF, ROOF));
     }
     descent(tower, lastTread);
+    if (bottom == ends.landing) {
+        Rows landing = ringRows(tower.column(), 0, STAIR_OUT);
+        tower.paintRows(floor, landing, Span(0, 0));
+    }
 }
 
 void route(Turtle tower) {
@@ -412,10 +703,10 @@ void route(Turtle tower) {
 
 void world(const(Api)* api, Site site, const(void)* data) {
     Turtle at = Turtle(api, site);
-    Connection connection = Connection.rolled();
-    KindId kind = api.horosphere(api, tuning.riseOdds, HorosphereForm.solid, LIBRARY_TAG, &tile, &connection, Connection.sizeof);
+    KindId kind = api.horosphere(api, tuning.riseOdds, HorosphereForm.solid, LIBRARY_TAG, &tile, null, 0);
     api.rooted(api, kind);
     api.look(api, kind, LOOK);
+    api.tileReach(api, KindTag.of(LIBRARY_TAG), ROOF + 1, -BOTTOM);
     KindId stacks = api.sunken(api, tuning.shaftOdds, LIBRARY_TAG, STACKS_TAG, &shaft, null, 0);
     api.openHorosphere(api, site, stacks, 2);
     api.fog(api, tuning.fog);
@@ -424,13 +715,25 @@ void world(const(Api)* api, Site site, const(void)* data) {
     tower.entrance(SPAWN.x, SPAWN.y, SPAWN.z);
 }
 
+immutable Connection RIG = Connection.forced(Style.paired, Routing.routed);
+enum uint RIG_EDGES = 2;
+
+void risenLibrary(const(Api)* api, Site site, const(void)* data) {
+    KindId kind = api.horosphere(api, 0, HorosphereForm.solid, LIBRARY_TAG, &tile, null, 0);
+    api.foot(api, LIBRARY_TAG, &footTile, &RIG, Connection.sizeof);
+    api.look(api, kind, LOOK);
+    api.tileReach(api, KindTag.of(LIBRARY_TAG), ROOF + 1, -BOTTOM);
+    api.openHorosphere(api, site, kind, RIG_EDGES);
+}
+
 immutable Dependency[2] NEEDS = [dependencyOn(BASE), dependencyOn("connector")];
 immutable Manifest MANIFEST = Manifest("library", FIRST_VERSION, NEEDS[], null, &resolve, null, import("plugins/library/settings.conf"), import("plugins/library/library.decl"), import("plugins/library/library.content"));
 
 pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
     registry.declare(registry, &MANIFEST);
     registry.add(registry, "library", &world);
-    RisingKind rising = RisingKind(1, HorosphereForm.solid, LIBRARY_TAG, &tile, &ROLLED, Connection.sizeof, LOOK);
+    registry.addDebug(registry, "risenlibrary", &risenLibrary);
+    RisingKind rising = RisingKind(1, HorosphereForm.solid, LIBRARY_TAG, &tile, null, 0, LOOK, 0, null, null, ROOF + 1, -BOTTOM, &footTile, &ROLLED, Connection.sizeof);
     registry.addKind(registry, "library", &rising);
     RisingKind stacks = RisingKind(SHAFT_SHARE, HorosphereForm.sunken, STACKS_TAG, &shaft, null, 0, LOOK, LIBRARY_TAG);
     registry.addKind(registry, "librarystacks", &stacks);

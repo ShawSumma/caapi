@@ -13,6 +13,7 @@ void landmark(const(Api)* api, Site site, const(void)* data) {
     box.Palette palette = box.palette(tower);
     int top = box.top(tower, HEIGHT_EDGES);
     box.tower(tower, top, palette);
+    box.buttresses(tower, top, palette);
     box.door(tower);
     box.stairRoute(tower, 0, top);
 }

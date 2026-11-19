@@ -4,7 +4,7 @@ license "MIT"
 targetType "executable"
 sourcePaths "source"
 importPaths "source"
-stringImportPaths "source/fonts" "source/common"
+stringImportPaths "source/fonts" "."
 dependency "caapi:api" version="*"
 
 dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
@@ -26,7 +26,7 @@ preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$D
 preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :fixtures"
 preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :babel"
 preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :library"
-preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :palace"
+preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :palace-mod"
 preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :arbor"
 preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :lattice-mod"
 preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$DUB_BUILD_TYPE :caves-mod"
@@ -35,8 +35,9 @@ preGenerateCommands "$DUB build -q --root=$PACKAGE_DIR --compiler=$DC --build=$D
 
 configuration "application" {
 	targetName "caapi"
-	mainSourceFile "source/main.d"
-	excludedSourceFiles "source/headless.d" "source/worldcheck.d" "source/unittests.d" "source/unit/*"
+	sourcePaths "plugins/crafting" "plugins/pharmacology" "plugins/game" "app"
+	mainSourceFile "app/main.d"
+	excludedSourceFiles "app/headless.d" "app/worldcheck.d"
 	stringImportPaths "source/shaders/spv"
 	libs "vulkan" "X11" ":libXi.so.6" platform="linux"
 	lflags "--export-dynamic" platform="linux"
@@ -63,17 +64,9 @@ configuration "application" {
 
 configuration "headless" {
 	targetName "caapi-headless"
-	mainSourceFile "source/headless.d"
-	excludedSourceFiles "source/main.d" "source/unittests.d" "source/unit/*" "source/bindings/platform.c" "source/client/cocoa.d" "source/client/graphics/*" "source/client/graphics/voxels/*"
-	lflags "--export-dynamic" platform="linux"
-}
-
-configuration "unittest" {
-	targetName "caapi-unittest"
-	mainSourceFile "source/unittests.d"
-	excludedSourceFiles "source/main.d" "source/headless.d" "source/worldcheck.d" "source/bindings/platform.c" "source/client/cocoa.d" "source/client/graphics/*" "source/client/graphics/voxels/*" "source/client/script.d" "source/client/drive.d" "source/client/structures.d" "source/client/tiles.d" "source/scripts/*"
-	sourceFiles "plugins/base/plugin.d"
-	stringImportPaths "."
+	sourcePaths "plugins/crafting" "plugins/pharmacology" "plugins/game" "app"
+	mainSourceFile "app/headless.d"
+	excludedSourceFiles "app/main.d" "source/bindings/platform.c" "source/client/cocoa.d" "source/client/graphics/*" "source/client/graphics/voxels/*"
 	lflags "--export-dynamic" platform="linux"
 }
 
@@ -92,7 +85,7 @@ subPackage {
 	sourcePaths "web"
 	excludedSourceFiles "web/tool/*"
 	importPaths "." "source"
-	stringImportPaths "source/shaders" "source/fonts" "source/common" "."
+	stringImportPaths "source/shaders" "source/fonts" "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on" "-i" "--fvisibility=hidden" "--mattr=+bulk-memory,+nontrapping-fptoint,+sign-ext,+mutable-globals,+simd128"
 	lflags "--no-entry" "--stack-first" "-z" "stack-size=33554432" "--max-memory=4294901760" "--allow-undefined-file=web/imports.syms" "--export=_initialize" "--export=web_start" "--export=web_frame" "--export=web_resize" "--export=web_key_down" "--export=web_key_up" "--export=web_button" "--export=web_button_up" "--export=web_motion" "--export=web_pointer" "--export=web_capture" "--export=web_name_buffer" "--export=web_takes_keys" "--export=web_wants_lock" "--export=web_save" "--export=web_blur" "/usr/lib/wasm32-wasi/crt1-reactor.o" "-L/usr/lib/wasm32-wasi" "-lc" "-lm"
 	extraDependencyFiles "web/glue.js" "web/play.js" "web/check.js" "web/shell.html" "web/imports.syms" "web/tool/pack.d" "web/tool/base64.d" "web/tool/files.d"
@@ -292,8 +285,10 @@ subPackage {
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
 	dependency "caapi:horospheres" version="*"
+	dependency "caapi:box" version="*"
 	dependency "caapi:caves" version="*"
 	dependency "caapi:lattice" version="*"
+	dependency "caapi:palace" version="*"
 }
 
 subPackage {
@@ -390,14 +385,25 @@ subPackage {
 
 subPackage {
 	name "palace"
-	targetType "dynamicLibrary"
-	targetPath "lib"
+	targetType "sourceLibrary"
 	sourcePaths "plugins/palace"
+	excludedSourceFiles "plugins/palace/plugin.d"
+	importPaths "."
+	dependency "caapi:turtle" version="*"
+}
+
+subPackage {
+	name "palace-mod"
+	targetType "dynamicLibrary"
+	targetName "caapi_palace"
+	targetPath "lib"
+	sourcePaths
+	sourceFiles "plugins/palace/plugin.d"
 	importPaths "."
 	stringImportPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
-	dependency "caapi:turtle" version="*"
+	dependency "caapi:palace" version="*"
 }
 
 subPackage {
@@ -488,6 +494,7 @@ subPackage {
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
 	libs "m"
 	dependency "caapi:carve" version="*"
+	dependency "caapi:connector" version="*"
 }
 
 subPackage {

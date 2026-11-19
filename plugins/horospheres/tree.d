@@ -4,7 +4,7 @@ import core.stdc.math : ceil, exp;
 import plugins.api.api : Material;
 import plugins.api.binding : bound;
 import plugins.api.content : Content;
-import plugins.turtle.turtle : Drawing, Turtle, clamped, higherOf;
+import plugins.turtle.turtle : Drawing, FULL_TURN, GOLDEN_ANGLE, QUARTER_TURN, Turtle, clamped, higherOf;
 
 struct Materials {
     Material bark;
@@ -17,7 +17,6 @@ void resolveTree(const(Content)* content) {
     materials = content.bound!Materials("horospheres:tree");
 }
 
-enum double GOLDEN_ANGLE = 137.5;
 enum double STEP = 3;
 enum double THINNEST = 0.7;
 
@@ -49,8 +48,6 @@ immutable LeafSize TWIG_LEAVES = LeafSize(3, 4);
 immutable LeafSize TIP_LEAVES = LeafSize(3.5, 5);
 enum uint MOST_CHILDREN = 8;
 
-enum double FULL_TURN = 360;
-enum double QUARTER_TURN = 90;
 enum double LIMB_DRIFT = 15;
 
 enum Trunk : ubyte {

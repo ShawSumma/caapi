@@ -1,6 +1,8 @@
 box-palettes box:palettes {
     palettes -> [box:concrete box:brick box:sandstone box:grey]
     timber -> box:timber
+    bench -> game:workbench
+    lamp -> base:sunlight
 }
 
 box-palette box:concrete { wall -> base:concrete, floor -> base:concrete, trim -> base:steel }

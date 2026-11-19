@@ -1,11 +1,12 @@
 module plugins.vaults.plugin;
 
 import core.stdc.math : cos, fabs, floor, pow, sqrt;
-import plugins.api.api : Api, HorosphereForm, KindId, Material, Registry, Risen, RisingKind, Site, SitePart, Span, entryOf, tagNamed;
+import plugins.api.api : Api, HorosphereForm, KindId, KindTag, Material, Registry, Risen, RisingKind, Site, SitePart, Span, entryOf, tagNamed;
 import plugins.api.binding : List, bound, settingsOf;
 import plugins.api.content : BASE, Content, Dependency, FIRST_VERSION, Manifest, dependencyOn;
-import plugins.carve.carve : Choice, Slab, Vec, Way, along, emit, unitOf;
-import plugins.turtle.turtle : FACE_CORNERS, PI, PORT, Turtle, cornersOf, upright;
+import plugins.carve.carve : Choice, Slab, Vec, Way, along, emit;
+import plugins.connector.connector : Connection, Routing, Style, footTile, resolveConnector;
+import plugins.turtle.turtle : FACE_CORNERS, PI, PORT, Turtle, clamped, cornersOf, floorMod, ownerAround, unitOf, upright;
 
 enum string LOOK = "vaults:look";
 
@@ -60,7 +61,25 @@ enum ulong SPIRE_SALT = 0x53504952;
 enum ulong DOOR_SALT = 0x444F4F52;
 enum size_t MOST_PALETTES = 16;
 enum double CLEAR = 8;
+enum int RIM_GAP = 3;
 enum double RISING_SHARE = 1;
+enum int CRYPT_DEPTH = 7;
+enum int CRYPT_BELOW = CRYPT_DEPTH + 2;
+enum int CRYPT_WALL = 4;
+enum int CRYPT_STAIR = 3;
+enum int CRYPT_NICHE_EVERY = 4;
+enum uint CRYPT_QUARTER = 2;
+enum ulong CRYPT_SALT = 0x43525950;
+enum ulong PASSAGE_SALT = 0x50415353;
+enum int PASSAGE_FLOOR = 9;
+enum int PASSAGE_HEIGHT = 4;
+enum double PASSAGE_HALF = 2;
+enum int LEDGE = 2;
+enum double CISTERN_PATH = 1.5;
+enum int COLUMN_EVERY = 4;
+enum int COLUMN_AT = 2;
+enum double DAIS = 3;
+enum double BRAZIER = 1;
 
 struct Palette {
     Material floor;
@@ -73,6 +92,9 @@ struct Palette {
 
 struct Materials {
     Material lamp;
+    Material water;
+    Material brazier;
+    Material runner;
     List!(Palette, MOST_PALETTES) palettes;
 }
 
@@ -83,11 +105,16 @@ struct Tuning {
     double doorOdds;
     double arcadeOdds;
     double spireOdds;
+    double portShare;
+    double cryptOdds;
+    double cisternOdds;
+    double passageOdds;
 }
 
 __gshared Tuning tuning;
 
 void resolve(const(Content)* content) {
+    resolveConnector(content);
     materials = content.bound!Materials("vaults:materials");
     tuning = content.settingsOf!Tuning("vaults");
 }
@@ -102,6 +129,18 @@ enum Clearing : ubyte {
     built,
     clear,
     port,
+}
+
+double portShare() {
+    return tuning.portShare;
+}
+
+bool portAt(const(Api)* api, Site vertex, double rolled, const(void)* data) {
+    ulong[FACE_CORNERS] hashes;
+    foreach (index, around; cornersOf(ownerAround(Turtle(api, vertex)))) {
+        hashes[index] = around.probeHash(SitePart.vertex);
+    }
+    return drifted(hashes, SPIRE_SALT) > tuning.spireOdds;
 }
 
 Clearing clearingAt(Turtle corner) {
@@ -123,9 +162,15 @@ enum Spire : ubyte {
     shikhara,
 }
 
+enum Passage : ubyte {
+    closed,
+    open,
+}
+
 struct Room {
     Palette palette;
     Wall[FACE_CORNERS] walls;
+    Passage[FACE_CORNERS] passages;
     double gallery = 0;
     double wallTop = 0;
     double tier = 0;
@@ -133,6 +178,13 @@ struct Room {
     double period = 0;
     uint tiers;
     Spire spire;
+    Under under;
+}
+
+enum Under : ubyte {
+    crypt,
+    cistern,
+    undercroft,
 }
 
 struct Place {
@@ -152,14 +204,7 @@ double drifted(ref const ulong[FACE_CORNERS] corners, ulong salt) {
     foreach (hash; corners) {
         total += unitOf(hash, salt);
     }
-    double share = 0.5 + (total / FACE_CORNERS - 0.5) * STRETCH;
-    if (share < 0) {
-        return 0;
-    } else if (share > 1) {
-        return 1;
-    } else {
-        return share;
-    }
+    return clamped(0.5 + (total / FACE_CORNERS - 0.5) * STRETCH, 0.0, 1.0);
 }
 
 uint pickOf(double share, size_t count) {
@@ -187,14 +232,16 @@ Room roomOf(ref const Turtle[FACE_CORNERS] corners) {
     Room room;
     foreach (index, corner; corners) {
         hashes[index] = corner.probeHash(SitePart.vertex);
-        room.walls[index] = wallOf(along(upright(corner), Way.xPlus).probeHash(SitePart.edge));
+        ulong edge = along(upright(corner), Way.xPlus).probeHash(SitePart.edge);
+        room.walls[index] = wallOf(edge);
+        room.passages[index] = passageOf(edge);
     }
     room.walls[0] = Wall.closed;
     room.gallery = LEAST_GALLERY + floor(GALLERY_SPREAD * drifted(hashes, GALLERY_SALT) + 0.5);
     room.wallTop = room.gallery + VAULT_ABOVE_GALLERY + floor(WALL_SPREAD * drifted(hashes, WALL_SALT) + 0.5);
     double headroom = TOP + 1 - room.wallTop;
     room.tier = LOW_TIER;
-    if (headroom >= ROOMY_TIERS &&drifted(hashes, TIER_SALT) > 0.5) {
+    if (headroom >= ROOMY_TIERS && drifted(hashes, TIER_SALT) > 0.5) {
         room.tier = HIGH_TIER;
     }
     uint tiers = cast(uint) floor(headroom / room.tier);
@@ -209,7 +256,27 @@ Room roomOf(ref const Turtle[FACE_CORNERS] corners) {
     if (drifted(hashes, SPIRE_SALT) > tuning.spireOdds) {
         room.spire = Spire.shikhara;
     }
+    double under = unitOf(hashes[0] ^ hashes[1], CRYPT_SALT);
+    if (under < tuning.cryptOdds) {
+        room.under = Under.crypt;
+    } else if (under < tuning.cryptOdds + tuning.cisternOdds) {
+        room.under = Under.cistern;
+    } else {
+        room.under = Under.undercroft;
+    }
     return room;
+}
+
+Passage passageOf(ulong edge) {
+    if (unitOf(edge, PASSAGE_SALT) < tuning.passageOdds) {
+        return Passage.open;
+    } else {
+        return Passage.closed;
+    }
+}
+
+bool isPassage(ref const Room room, ref const Place place) {
+    return room.passages[place.edge] == Passage.open && CENTER - place.along < PASSAGE_HALF && place.level >= PASSAGE_FLOOR && place.level <= PASSAGE_FLOOR + PASSAGE_HEIGHT;
 }
 
 Place placeOf(uint quarter, Vec cell) {
@@ -331,14 +398,132 @@ Choice floorChoice(ref const Room room, ref const Place place) {
     }
 }
 
+bool isRim(Vec cell) {
+    int x = cast(int) floor(cell.x);
+    int y = cast(int) floor(cell.y);
+    return (x == PORT || y == PORT) && x <= PORT && y <= PORT && (x + y) % RIM_GAP != 0;
+}
+
+bool isRubble(Vec cell) {
+    int x = cast(int) floor(cell.x);
+    int y = cast(int) floor(cell.y);
+    return (x == PORT + 1 && y == 1) || (x == 1 && y == PORT + 2) || (x == PORT + 2 && y == PORT + 1);
+}
+
+bool isCryptStair(uint quarter, Vec cell) {
+    return quarter == CRYPT_QUARTER && cell.y >= BAND && cell.y < BAND + 2 && cell.x >= CRYPT_STAIR && cell.x < CRYPT_STAIR + CRYPT_DEPTH;
+}
+
+Choice underChoice(ref const Room room, uint quarter, ref const Place place, Vec cell, Clearing clearing) {
+    Palette palette = room.palette;
+    int bottom = FLOOR - CRYPT_DEPTH - 1;
+    if (clearing != Clearing.built) {
+        return Choice.keep();
+    } else if (place.level == bottom) {
+        return floorChoice(room, place);
+    } else if (isCryptStair(quarter, cell)) {
+        int step = cast(int) floor(cell.x) - CRYPT_STAIR;
+        if (place.level <= FLOOR - 1 - step) {
+            return Choice.of(palette.inlay);
+        } else {
+            return Choice.of(Material.none);
+        }
+    } else {
+        final switch (room.under) {
+            case Under.crypt:
+                return cryptChoice(room, place);
+            case Under.cistern:
+                return cisternChoice(room, place, cell);
+            case Under.undercroft:
+                return undercroftChoice(room, place, cell);
+        }
+    }
+}
+
+Choice cryptChoice(ref const Room room, ref const Place place) {
+    Palette palette = room.palette;
+    int bottom = FLOOR - CRYPT_DEPTH - 1;
+    bool niche = floorMod(cast(int) floor(place.along), CRYPT_NICHE_EVERY) >= 1 && floorMod(cast(int) floor(place.along), CRYPT_NICHE_EVERY) <= 2 && place.level >= bottom + 2 && place.level <= bottom + 4;
+    if (place.wall >= CRYPT_WALL + 1) {
+        if (place.radius < 1 && place.level == FLOOR - 1) {
+            return Choice.of(materials.lamp);
+        } else {
+            return Choice.of(Material.none);
+        }
+    } else if (place.wall >= CRYPT_WALL - 1 && niche) {
+        return Choice.of(Material.none);
+    } else if (place.wall >= CRYPT_WALL - 1) {
+        return Choice.of(palette.wall);
+    } else {
+        return Choice.keep();
+    }
+}
+
+bool isColumn(Vec cell) {
+    return floorMod(cast(int) floor(cell.x), COLUMN_EVERY) == COLUMN_AT && floorMod(cast(int) floor(cell.y), COLUMN_EVERY) == COLUMN_AT;
+}
+
+Choice cisternChoice(ref const Room room, ref const Place place, Vec cell) {
+    Palette palette = room.palette;
+    int water = FLOOR - CRYPT_DEPTH;
+    bool path = place.wall < CRYPT_WALL + 1 + LEDGE || place.u < CISTERN_PATH || place.v < CISTERN_PATH;
+    if (place.wall >= CRYPT_WALL + 1 + LEDGE && isColumn(cell)) {
+        if (place.level == FLOOR - 1) {
+            return Choice.of(materials.lamp);
+        } else {
+            return Choice.of(palette.accent);
+        }
+    } else if (place.wall >= CRYPT_WALL + 1 && place.level == water && path) {
+        return Choice.of(palette.inlay);
+    } else if (place.wall >= CRYPT_WALL + 1 && place.level == water) {
+        return Choice.of(materials.water);
+    } else if (place.wall >= CRYPT_WALL + 1) {
+        return Choice.of(Material.none);
+    } else if (place.wall >= CRYPT_WALL - 1) {
+        return Choice.of(palette.wall);
+    } else {
+        return Choice.keep();
+    }
+}
+
+Choice undercroftChoice(ref const Room room, ref const Place place, Vec cell) {
+    Palette palette = room.palette;
+    int bottom = FLOOR - CRYPT_DEPTH - 1;
+    if (place.wall >= CRYPT_WALL + 1 + LEDGE && isColumn(cell)) {
+        if (place.level == FLOOR - 1) {
+            return Choice.of(materials.lamp);
+        } else {
+            return Choice.of(palette.rib);
+        }
+    } else if (place.radius < BRAZIER && place.level == bottom + 2) {
+        return Choice.of(materials.brazier);
+    } else if (place.radius < DAIS && place.level == bottom + 1) {
+        return Choice.of(palette.accent);
+    } else if (place.wall >= CRYPT_WALL + 1) {
+        return Choice.of(Material.none);
+    } else if (place.wall >= CRYPT_WALL - 1) {
+        return Choice.of(palette.wall);
+    } else {
+        return Choice.keep();
+    }
+}
+
 Choice cellChoice(ref const Room room, uint quarter, Vec cell, Clearing clearing) {
     Place place = placeOf(quarter, cell);
     Palette palette = room.palette;
     double gallery = room.gallery;
-    if (clearing == Clearing.port && place.level == FLOOR && cell.x < PORT && cell.y < PORT) {
+    if (place.level < FLOOR) {
+        return underChoice(room, quarter, place, cell, clearing);
+    } else if (clearing == Clearing.port && place.level == FLOOR && cell.x < PORT && cell.y < PORT) {
         return Choice.keep();
+    } else if (place.level == FLOOR && clearing == Clearing.built && isCryptStair(quarter, cell) && cell.x < CRYPT_STAIR + 2) {
+        return Choice.of(Material.none);
     } else if (place.level == FLOOR) {
         return floorChoice(room, place);
+    } else if (clearing == Clearing.port && place.level == 0 && isRim(cell)) {
+        return Choice.of(palette.inlay);
+    } else if (clearing == Clearing.port && place.level == 0 && isRubble(cell)) {
+        return Choice.of(palette.wall);
     } else if (place.stair >= STAIR_START && place.stair < STAIR_START + gallery - 1 && place.level < cast(int) gallery) {
         if (place.level < place.stair - STAIR_START + 1) {
             return Choice.of(palette.inlay);
@@ -347,6 +532,12 @@ Choice cellChoice(ref const Room room, uint quarter, Vec cell, Clearing clearing
         }
     } else if (clearing != Clearing.built && cell.x < CLEAR && cell.y < CLEAR) {
         return Choice.keep();
+    } else if (place.wall < WALL && isPassage(room, place)) {
+        if (place.level == PASSAGE_FLOOR) {
+            return Choice.of(materials.runner);
+        } else {
+            return Choice.of(Material.none);
+        }
     } else if (room.spire == Spire.shikhara && place.radius < spireRadius(room, place)) {
         if (place.rise >= gallery + FINIAL_ABOVE_GALLERY) {
             return Choice.of(materials.lamp);
@@ -394,7 +585,7 @@ void hall(const(Api)* api, Site face, const(Risen)* risen, const(void)* data) {
         Choice choose(Vec cell) {
             return cellChoice(made, quarter, cell, clearing);
         }
-        emit!choose(Slab(upright(corner), Span(0, QUARTER - 1), Span(0, QUARTER - 1), Span(FLOOR, TOP)));
+        emit!choose(Slab(upright(corner), Span(0, QUARTER - 1), Span(0, QUARTER - 1), Span(FLOOR - CRYPT_DEPTH - 1, TOP)));
     }
 }
 
@@ -427,6 +618,8 @@ void world(const(Api)* api, Site site, const(void)* data) {
     KindId kind = api.horosphere(api, 0, HorosphereForm.solid, VAULT_TAG, &hall, null, 0);
     api.rooted(api, kind);
     api.look(api, kind, LOOK);
+    api.portRule(api, KindTag.of(VAULT_TAG), tuning.portShare, &portAt, null, 0);
+    api.tileReach(api, KindTag.of(VAULT_TAG), TOP + 1, CRYPT_BELOW);
     api.worldLook(api, LOOK);
     api.fog(api, tuning.fog);
     Turtle(api, site).build("underground");
@@ -436,12 +629,24 @@ void world(const(Api)* api, Site site, const(void)* data) {
     upright(corners[0]).entrance(QUARTER + 15.5f, CENTER - 3, 0);
 }
 
+immutable Connection ROUTED = Connection.forced(Style.hidden, Routing.routed);
+enum uint RIG_EDGES = 2;
+
+void risenVaults(const(Api)* api, Site site, const(void)* data) {
+    KindId kind = api.horosphere(api, 0, HorosphereForm.solid, VAULT_TAG, &hall, null, 0);
+    api.foot(api, VAULT_TAG, &footTile, &ROUTED, Connection.sizeof);
+    api.look(api, kind, LOOK);
+    api.tileReach(api, KindTag.of(VAULT_TAG), TOP + 1, CRYPT_BELOW);
+    api.openHorosphere(api, site, kind, RIG_EDGES);
+}
+
 immutable Dependency[3] NEEDS = [dependencyOn(BASE), dependencyOn("connector"), dependencyOn("caves")];
 immutable Manifest MANIFEST = Manifest("vaults", FIRST_VERSION, NEEDS[], null, &resolve, null, import("plugins/vaults/settings.conf"), import("plugins/vaults/vaults.decl"), import("plugins/vaults/vaults.content"));
 
 pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
     registry.declare(registry, &MANIFEST);
     registry.add(registry, "vaults", &world);
-    RisingKind rising = RisingKind(RISING_SHARE, HorosphereForm.solid, VAULT_TAG, &hall, null, 0, LOOK);
+    registry.addDebug(registry, "risenvaults", &risenVaults);
+    RisingKind rising = RisingKind(RISING_SHARE, HorosphereForm.solid, VAULT_TAG, &hall, null, 0, LOOK, 0, &portShare, &portAt, TOP + 1, CRYPT_BELOW, &footTile, null, 0);
     registry.addKind(registry, "vaults", &rising);
 }

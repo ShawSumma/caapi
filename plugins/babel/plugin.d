@@ -1,6 +1,6 @@
 module plugins.babel.plugin;
 
-import plugins.api.api : Api, HorosphereForm, KindId, Material, Registry, Rhythm, Risen, RisingKind, Site, Span, Spot, entryOf, tagNamed;
+import plugins.api.api : Api, HorosphereForm, KindId, Material, Registry, Rhythm, Risen, RisingKind, Site, Span, Spot, entryOf, tagNamed, typedTile;
 import plugins.api.binding : bound;
 import plugins.api.content : Content, FIRST_VERSION, Manifest, ON_BASE;
 import plugins.turtle.turtle : Tread, Turtle, boxOf, floorMod, higherOf, lawn, middle, treadAround;
@@ -27,6 +27,7 @@ struct Materials {
     Material light;
     Material plaza;
     Material lawn;
+    Material reading;
 }
 
 __gshared Materials materials;
@@ -43,6 +44,9 @@ void core(Turtle tower, Span rising, int lifted) {
     tower.paint(Material.none, boxOf(room, room, rising), Rhythm(TREADS, floorMod(2 - lifted, TREADS), TREADS - 1));
     tower.paint(materials.light, boxOf(Span(-1, 0), Span(-1, 0), rising), Rhythm(TREADS, floorMod(-lifted, TREADS), 1));
     tower.paint(Material.none, boxOf(Span(0, 1), Span(CORE - 1, CORE - 1), rising), Rhythm(TREADS, floorMod(2 - lifted, TREADS), 3));
+    Span corner = Span(-CORE + 1, -CORE + 1);
+    tower.paint(materials.step, boxOf(corner, corner, rising), Rhythm(TREADS, floorMod(2 - lifted, TREADS), 1));
+    tower.paint(materials.reading, boxOf(corner, corner, rising), Rhythm(TREADS, floorMod(3 - lifted, TREADS), 1));
 }
 
 void stair(Turtle tower, Span rising, int lifted) {
@@ -83,7 +87,7 @@ void landmark(const(Api)* api, Site site, const(void)* data) {
 
 void world(const(Api)* api, Site site, const(void)* data) {
     landmark(api, site, data);
-    api.tile(api, &lawn, &materials.lawn, Material.sizeof);
+    api.tile(api, &typedTile!(lawn, Material), &materials.lawn, Material.sizeof);
     api.worldLook(api, LOOK);
     Turtle tower = Turtle(api, site).columnSite();
     route(tower);

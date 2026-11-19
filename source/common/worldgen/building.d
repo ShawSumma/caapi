@@ -217,7 +217,7 @@ struct Building {
         if (chunkPaints !is null && chunkPaints[corner] !is null) {
             paint = chunkPaints[corner][cells.cellIndex(cell)];
         }
-        if (!paint.material.exists || (paint.cover == Cover.intoAir && existing != Material.none)) {
+        if (!paint.material.exists || (paint.cover == Cover.intoAir && existing != Material.none) || (paint.cover == Cover.intoSolid && existing == Material.none)) {
             return existing;
         } else {
             return materials.ptr[paint.material.value];

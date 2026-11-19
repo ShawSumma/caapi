@@ -8,8 +8,8 @@ import base.stdio : printed;
 import base.units : Angle, Length, Ratio, Time;
 import common.color : ColorTurn, TURN_PLANES;
 import common.content.declarations : declare;
-import common.content.graph : ContentGraph, PROBLEM_CAPACITY, targetOf;
-import common.material : MaterialSet, families, joined, plainSolid, within, without;
+import common.content.graph : ContentGraph, PROBLEM_CAPACITY;
+import common.material : MOST_FAMILIES, MaterialSet, families, familyNamed, joined, plainSolid, within, without;
 import common.settings : CharacterConfig;
 import plugins.api.binding : kebabOf;
 import plugins.api.content : ContentRef, Holder;
@@ -37,9 +37,6 @@ enum Channel : ubyte {
     colorTurn3,
     colorTurn4,
     colorTurn5,
-    revealMist,
-    revealEmber,
-    revealTide,
     afterimage,
     fineDetail,
     coarseDetail,
@@ -48,6 +45,26 @@ enum Channel : ubyte {
 static assert(Channel.colorTurn5 - Channel.colorTurn0 + 1 == TURN_PLANES);
 
 enum uint CHANNEL_COUNT = Channel.max + 1;
+
+enum SenseKind : ubyte {
+    channel,
+    family,
+}
+
+struct Sense {
+    SenseKind kind;
+    ubyte index;
+
+    static Sense of(Channel channel) {
+        return Sense(SenseKind.channel, channel);
+    }
+
+    static Sense ofFamily(uint family) {
+        return Sense(SenseKind.family, cast(ubyte) family);
+    }
+}
+
+enum uint MOST_SENSES = CHANNEL_COUNT + MOST_FAMILIES;
 
 string[CHANNEL_COUNT] channelNames() {
     string[CHANNEL_COUNT] names;
@@ -61,6 +78,7 @@ immutable string[CHANNEL_COUNT] CHANNEL_NAMES = channelNames();
 
 struct Perception {
     Ratio[CHANNEL_COUNT] level;
+    Ratio[MOST_FAMILIES] reveal;
 }
 
 struct ViewEffects {
@@ -80,8 +98,8 @@ struct Reveal {
     MaterialSet touchable;
 
     void update(ref const Perception perception) {
-        foreach (ref family; families.slice()) {
-            float level = perception.level[family.channel].value;
+        foreach (index, ref family; families.slice()) {
+            float level = perception.reveal[index].value;
             if (level > REVEAL_ON_LEVEL) {
                 revealed = revealed.joined(family.members);
             } else if (level < REVEAL_OFF_LEVEL) {
@@ -92,81 +110,72 @@ struct Reveal {
     }
 }
 
-struct SignalDrive {
-    uint signal;
-    Channel channel;
-    float gain;
-}
-
 struct NamedPreset {
     const(char)[] name;
     Perception perception;
 }
 
-immutable string[3] SIGNAL_NAMES = ["mist", "sway", "lift"];
-
 enum string PLAIN_PRESET = "plain";
 enum string PRESET_KIND = "perception-preset";
-enum string DRIVE_KIND = "signal-drive";
-enum string PERCEPTION_DECLARATIONS = "perception.decl";
+enum string PERCEPTION_SOURCE = "common/perception.d";
+enum string PERCEPTION_DECLARATIONS = `
+kind perception-preset {
+    sets: many -> channel | hidden-family {
+        level: number
+    }
+}
+`;
 
 __gshared Array!NamedPreset presets;
-__gshared Array!SignalDrive drives;
 
 void declarePerception(ref ContentGraph graph) {
-    declare(graph, import(PERCEPTION_DECLARATIONS), PERCEPTION_DECLARATIONS);
+    declare(graph, PERCEPTION_DECLARATIONS, PERCEPTION_SOURCE);
 }
 
-Maybe!Channel channelNamed(const(char)[] name) {
+Maybe!Sense senseNamed(const(char)[] name) {
     uint index = 0;
     while (index < CHANNEL_COUNT && CHANNEL_NAMES[index] != name) {
         index += 1;
     }
+    MaybeIndex!uint family = familyNamed(name);
     if (index < CHANNEL_COUNT) {
-        return Maybe!Channel.of(cast(Channel) index);
+        return Maybe!Sense.of(Sense.of(cast(Channel) index));
+    } else if (family.exists) {
+        return Maybe!Sense.of(Sense.ofFamily(family.value));
     } else {
-        return Maybe!Channel.init;
+        return Maybe!Sense.init;
     }
 }
 
-uint signalNamed(const(char)[] name) {
-    uint index = 0;
-    while (index < SIGNAL_NAMES.length && SIGNAL_NAMES[index] != name) {
-        index += 1;
+const(char)[] nameOf(Sense sense) {
+    final switch (sense.kind) {
+        case SenseKind.channel:
+            return CHANNEL_NAMES[sense.index];
+        case SenseKind.family:
+            return families.ptr[sense.index].name;
     }
-    return index;
 }
 
-void reportUnread(ref ContentGraph graph, uint owner, const(char)[] channel) {
+void reportUnread(ref ContentGraph graph, uint owner, const(char)[] sense) {
     char[PROBLEM_CAPACITY] buffer;
-    graph.report(owner, printed(buffer[], "names the channel '%.*s', which no engine system reads", cast(int) channel.length, channel.ptr));
+    graph.report(owner, printed(buffer[], "names the sense '%.*s', which no engine system reads", cast(int) sense.length, sense.ptr));
 }
 
 void buildPerception(ref ContentGraph graph) {
     presets.clear();
-    drives.clear();
     presets.append(NamedPreset(PLAIN_PRESET, Perception.init));
     foreach (node; 0 .. cast(uint) graph.nodes.length) {
         if (graph.isKind(node, PRESET_KIND)) {
             Perception made;
             foreach (edge; graph.edgesFrom(node)) {
-                Maybe!Channel channel = channelNamed(graph.nameOf(graph.edges.ptr[edge].to));
-                if (!channel.exists) {
+                Maybe!Sense sense = senseNamed(graph.nameOf(graph.edges.ptr[edge].to));
+                if (!sense.exists) {
                     reportUnread(graph, graph.edges.ptr[edge].owner, graph.nameOf(graph.edges.ptr[edge].to));
                 } else {
-                    made = made.leveled(channel.value, Ratio(graph.number(ContentRef(edge, Holder.edge), "level")));
+                    made = made.leveled(sense.value, Ratio(graph.number(ContentRef(edge, Holder.edge), "level")));
                 }
             }
             presets.append(NamedPreset(graph.nameOf(node), made));
-        } else if (graph.isKind(node, DRIVE_KIND)) {
-            ContentRef at = ContentRef(node, Holder.node);
-            const(char)[] target = graph.nameOf(targetOf(graph, node, "drives").value);
-            Maybe!Channel channel = channelNamed(target);
-            if (!channel.exists) {
-                reportUnread(graph, graph.nodes.ptr[node].owner, target);
-            } else {
-                drives.append(SignalDrive(signalNamed(graph.textAt(at, "signal")), channel.value, graph.number(at, "gain")));
-            }
         }
     }
 }
@@ -183,17 +192,25 @@ MaybeIndex!uint presetNamed(const(char)[] name) {
     }
 }
 
-Perception felt(Perception base, const(Ratio)[] signals) {
-    Perception made = base;
-    foreach (drive; drives.slice()) {
-        made.level[drive.channel] = made.level[drive.channel] + signals[drive.signal] * drive.gain;
+Ratio levelOf(ref const Perception perception, Sense sense) {
+    final switch (sense.kind) {
+        case SenseKind.channel:
+            return perception.level[sense.index];
+        case SenseKind.family:
+            return perception.reveal[sense.index];
     }
-    return made;
 }
 
-Perception leveled(Perception perception, Channel channel, Ratio level) {
+Perception leveled(Perception perception, Sense sense, Ratio level) {
     Perception made = perception;
-    made.level[channel] = level;
+    final switch (sense.kind) {
+        case SenseKind.channel:
+            made.level[sense.index] = level;
+            break;
+        case SenseKind.family:
+            made.reveal[sense.index] = level;
+            break;
+    }
     return made;
 }
 

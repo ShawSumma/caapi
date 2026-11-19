@@ -10,4 +10,25 @@ lattice-materials lattice:materials {
     hut -> base:wood-planks
     roof -> base:red-sandstone
     floors -> [base:wood-planks base:marble base:grey-brick]
+    island -> base:andesite
+    turf -> base:grass
+    soil -> base:dirt
+    bridge -> base:wood-planks
+    colossus -> base:gabbro
+    limb -> base:marble
+    weaves -> [lattice:plain lattice:sparse lattice:heavy lattice:ruined lattice:doubled lattice:regular]
+    star -> base:light-panel
+    deck -> base:wood-planks
+    rafter -> base:spruce-wood
+    shelf -> base:spruce-wood
+    shelf-decks -> [base:wood-planks base:marble base:red-carpet]
+    books -> [base:red-carpet base:acacia-wood base:jungle-wood base:birch-wood base:oak-wood base:carpet base:red-sandstone]
+    rocks -> [base:andesite base:basalt base:gabbro base:granite base:slate base:diorite]
 }
+
+lattice-weave lattice:plain { }
+lattice-weave lattice:sparse { keep: 0.55, platform-odds: 0.2, stair-odds: 0.3 }
+lattice-weave lattice:heavy { beam: 2, platform-odds: 0.06, stair-odds: 0.1 }
+lattice-weave lattice:ruined { broken: 0.4, keep: 0.8, platform-odds: 0.05 }
+lattice-weave lattice:doubled { doubled: 0.7, platform-odds: 0.08 }
+lattice-weave lattice:regular { regular: regular, platform-odds: 0, stair-odds: 0 }

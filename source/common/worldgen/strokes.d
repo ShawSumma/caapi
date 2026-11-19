@@ -131,23 +131,16 @@ struct StrokeReach {
     uint run;
 }
 
-struct Strokes {
-    HashMap!(NodeId, uint) lists;
-    Array!(Array!StrokeReach) reaches;
-    Array!uint freeLists;
+struct StrokeReached {
+    NodeId node;
+    Motion!double motion;
+}
+
+struct StrokeWalk {
     Array!StrokeVisit visits;
     Array!NodeId seen;
 
-    const(StrokeReach)[] reachesAt(NodeId id) const {
-        const(uint)* found = lists.find(id);
-        if (found is null) {
-            return null;
-        } else {
-            return reaches.ptr[*found].slice();
-        }
-    }
-
-    void add(ref GraphView view, PaintOwner owner, uint run, uint node, Stroke stroke, ref Array!NodeId reached) {
+    void reach(ref GraphView view, uint node, Stroke stroke, ref Array!StrokeReached reached) {
         visits.clear();
         seen.clear();
         visits.append(view.ensureContaining(node, stroke.middle()));
@@ -159,7 +152,7 @@ struct Strokes {
             next += 1;
             Stroke moved = stroke.moved(visit.motion);
             if (moved.nearest(Vec4!float.origin()).coshDistance <= within) {
-                note(view.idAt(visit.slot), StrokeReach(visit.motion, owner, run), reached);
+                reached.append(StrokeReached(view.idAt(visit.slot), visit.motion));
                 foreach (index; 0 .. FACE_COUNT) {
                     Face side = cast(Face) index;
                     if (moved.nearest(MIRRORED_ORIGINS[index]).coshDistance <= within + FRAME_SLACK) {
@@ -180,6 +173,40 @@ struct Strokes {
             index += 1;
         }
         return index < seen.length;
+    }
+
+    void release() {
+        visits.release();
+        seen.release();
+    }
+}
+
+struct Strokes {
+    HashMap!(NodeId, uint) lists;
+    Array!(Array!StrokeReach) reaches;
+    Array!uint freeLists;
+    Array!StrokeReached found;
+    StrokeWalk walk;
+
+    const(StrokeReach)[] reachesAt(NodeId id) const {
+        const(uint)* found = lists.find(id);
+        if (found is null) {
+            return null;
+        } else {
+            return reaches.ptr[*found].slice();
+        }
+    }
+
+    void add(ref GraphView view, PaintOwner owner, uint run, uint node, Stroke stroke, ref Array!NodeId reached) {
+        found.clear();
+        walk.reach(view, node, stroke, found);
+        addReached(owner, run, found.slice(), reached);
+    }
+
+    void addReached(PaintOwner owner, uint run, const(StrokeReached)[] nodes, ref Array!NodeId reached) {
+        foreach (ref node; nodes) {
+            note(node.node, StrokeReach(node.motion, owner, run), reached);
+        }
     }
 
     void note(NodeId id, StrokeReach reach, ref Array!NodeId reached) {
@@ -236,8 +263,8 @@ struct Strokes {
         lists.release();
         reaches.release();
         freeLists.release();
-        visits.release();
-        seen.release();
+        found.release();
+        walk.release();
     }
 }
 

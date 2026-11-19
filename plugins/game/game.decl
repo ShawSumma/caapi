@@ -1,0 +1,8 @@
+extend material {
+    break-seconds: number 0.. = 1.5
+    mining-tier: integer 0.. = 0
+}
+
+extend upgrade {
+    mining-tier: integer 0.. = 0
+}

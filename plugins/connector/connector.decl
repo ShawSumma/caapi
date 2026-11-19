@@ -7,8 +7,9 @@ kind connector-palette {
 kind connector-ground {
     tag: text
     level: integer = 0
-    bridge: "built" | "none" = "built"
+    bridge: "built" | "hidden" | "none" = "built"
     dress: "masonry" | "trunk" | "stairwell" | "shelves" = "masonry"
+    relief: "flat" | "rough" = "flat"
 }
 
 kind connector-pair {
@@ -27,6 +28,7 @@ kind connector-materials {
     window: one -> material
     stone: one -> material
     light: one -> material
+    knot: one -> material
     palettes: some -> connector-palette
     drift: one -> connector-palette
     lantern: one -> connector-palette

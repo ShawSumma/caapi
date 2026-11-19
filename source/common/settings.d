@@ -8,21 +8,21 @@ enum ubyte CHUNK_DIMENSION = 12;
 
 struct CharacterConfig {
     MaterialSet solid;
-    Speed noclipSpeed = Speed(0.6f);
-    Speed flySpeed = Speed(0.4f);
-    Speed walkSpeed = Speed(0.225f);
-    Rate walkResponse = Rate(12.1f);
-    Acceleration steering = Acceleration(0.4f);
-    Acceleration gravity = Acceleration(1.6f);
-    AngularSpeed upTurnRate = AngularSpeed(4.0f);
-    Ratio leastTurningGravity = Ratio(0.1f);
-    Length jumpHeight = Length(0.085f);
-    Blocks stepHeight = Blocks(1);
-    Ratio footFriction = Ratio(1.75f);
-    Length skin = Length(0.0005f);
-    Length radius = Length(0.0125f);
-    Length height = Length(0.09f);
-    Length eyeHeight = Length(0.075f);
+    Speed noclipSpeed;
+    Speed flySpeed;
+    Speed walkSpeed;
+    Rate walkResponse;
+    Acceleration steering;
+    Acceleration gravity;
+    AngularSpeed upTurnRate;
+    Ratio leastTurningGravity;
+    Length jumpHeight;
+    Blocks stepHeight;
+    Ratio footFriction;
+    Length skin;
+    Length radius;
+    Length height;
+    Length eyeHeight;
 
     Speed jumpSpeed() const {
         return Speed(sqrtf((gravity * jumpHeight * 2.0f).value));

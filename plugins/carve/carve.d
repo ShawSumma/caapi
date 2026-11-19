@@ -2,20 +2,15 @@ module plugins.carve.carve;
 
 import core.stdc.math : asin, floor, sin, sqrt;
 import plugins.api.api : Material, SitePart, Span;
-import plugins.turtle.turtle : Drawing, MIX, PI, Turtle, boxOf;
+import plugins.turtle.turtle : Drawing, HALF_TURN, MIX, PI, QUARTER_TURN, Turtle, UNIT_SHIFT, UNIT_STEPS, boxOf, hashed;
 
 enum uint WAY_COUNT = 6;
 enum double RADIANS_PER_DEGREE = PI / 180;
-enum double QUARTER_TURN = 90;
-enum double HALF_TURN = 180;
 enum uint MOST_ROW = 24;
 enum uint MOST_RUNS = MOST_ROW * MOST_ROW;
-enum uint UNIT_STEPS = 1 << 24;
-enum uint UNIT_SHIFT = 40;
 enum ulong LATTICE_X = MIX;
 enum ulong LATTICE_Y = MIX * MIX;
 enum ulong LATTICE_Z = MIX * MIX * MIX;
-enum uint FOLD_SHIFT = 31;
 
 struct Vec {
     double x = 0;
@@ -61,22 +56,6 @@ Vec mixed(Vec a, Vec b, double share) {
 
 Vec combined(Vec a, Vec b, Vec c, Vec weights) {
     return a.scaled(weights.x).plus(b.scaled(weights.y)).plus(c.scaled(weights.z));
-}
-
-ulong hashed(ulong hash, ulong salt) {
-    ulong value = (hash ^ salt) * MIX;
-    value ^= value >> FOLD_SHIFT;
-    value *= MIX;
-    value ^= value >> FOLD_SHIFT;
-    return value;
-}
-
-double unitOf(ulong hash, ulong salt) {
-    return (hashed(hash, salt) >> UNIT_SHIFT) / cast(double) UNIT_STEPS;
-}
-
-double between(ulong hash, ulong salt, double low, double high) {
-    return low + (high - low) * unitOf(hash, salt);
 }
 
 ulong latticeHash(ulong seed, long x, long y, long z) {
@@ -350,6 +329,7 @@ Vec centerOf(int x, int y, int z) {
 enum Painting : ubyte {
     kept,
     painted,
+    dressed,
 }
 
 struct Choice {
@@ -363,13 +343,17 @@ struct Choice {
     static Choice of(Material material) {
         return Choice(material, Painting.painted);
     }
+
+    static Choice dress(Material material) {
+        return Choice(material, Painting.dressed);
+    }
 }
 
 struct Run {
     Span x;
     int y;
     int zLow;
-    Material material;
+    Choice choice;
 }
 
 struct Runs {
@@ -387,8 +371,99 @@ bool isBefore(ref const Run a, ref const Run b) {
     return a.y < b.y || (a.y == b.y && a.x.low < b.x.low);
 }
 
-void flush(Turtle frame, ref const Run run, int zHigh) {
-    frame.paint(run.material, boxOf(run.x, Span(run.y, run.y), Span(run.zLow, zHigh)));
+struct Block {
+    Span x;
+    Span y;
+    int zLow;
+    Choice choice;
+}
+
+struct Blocks {
+    Block[MOST_RUNS] items;
+    uint count;
+
+    void add(Block block) {
+        assert(count < MOST_RUNS);
+        items[count] = block;
+        count += 1;
+    }
+}
+
+bool isExtendedBy(ref const Block block, ref const Run run) {
+    return block.x.low == run.x.low && block.x.high == run.x.high && block.zLow == run.zLow && isSame(block.choice, run.choice);
+}
+
+struct Closing {
+    Blocks[2] rows;
+    Turtle frame;
+    uint above;
+    uint cursor;
+    int row;
+    int zHigh;
+
+    void begin(int high) {
+        rows[0].count = 0;
+        rows[1].count = 0;
+        cursor = 0;
+        zHigh = high;
+    }
+
+    void close(ref const Run run) {
+        if (run.y != row) {
+            startRow(run.y);
+        }
+        Blocks* over = &rows[above];
+        Blocks* beside = &rows[1 - above];
+        while (cursor < over.count && over.items[cursor].x.low < run.x.low) {
+            paint(over.items[cursor]);
+            cursor += 1;
+        }
+        if (cursor < over.count && isExtendedBy(over.items[cursor], run)) {
+            Block grown = over.items[cursor];
+            grown.y.high = run.y;
+            beside.add(grown);
+            cursor += 1;
+        } else {
+            beside.add(Block(run.x, Span(run.y, run.y), run.zLow, run.choice));
+        }
+    }
+
+    void startRow(int y) {
+        paintFrom(rows[above], cursor);
+        rows[above].count = 0;
+        if (y == row + 1) {
+            above = 1 - above;
+        } else {
+            paintFrom(rows[1 - above], 0);
+            rows[1 - above].count = 0;
+        }
+        cursor = 0;
+        row = y;
+    }
+
+    void end() {
+        paintFrom(rows[above], cursor);
+        paintFrom(rows[1 - above], 0);
+    }
+
+    void paintFrom(ref const Blocks blocks, uint first) {
+        foreach (ref block; blocks.items[first .. blocks.count]) {
+            paint(block);
+        }
+    }
+
+    void paint(ref const Block block) {
+        final switch (block.choice.painting) {
+            case Painting.kept:
+                break;
+            case Painting.painted:
+                frame.paint(block.choice.material, boxOf(block.x, block.y, Span(block.zLow, zHigh)));
+                break;
+            case Painting.dressed:
+                frame.replace(block.choice.material, boxOf(block.x, block.y, Span(block.zLow, zHigh)));
+                break;
+        }
+    }
 }
 
 void emit(alias choose)(Slab slab) {
@@ -397,6 +472,8 @@ void emit(alias choose)(Slab slab) {
     Runs open;
     Runs fresh;
     Runs next;
+    Closing closing;
+    closing.frame = slab.frame;
     Choice[MOST_ROW] row;
     foreach (z; slab.z.low .. slab.z.high + 1) {
         fresh.count = 0;
@@ -410,24 +487,25 @@ void emit(alias choose)(Slab slab) {
                 while (end + 1 < width && isSame(row[end + 1], row[start])) {
                     end += 1;
                 }
-                if (row[start].painting == Painting.painted) {
-                    fresh.add(Run(Span(slab.x.low + start, slab.x.low + end), y, z, row[start].material));
+                if (row[start].painting != Painting.kept) {
+                    fresh.add(Run(Span(slab.x.low + start, slab.x.low + end), y, z, row[start]));
                 }
                 start = end + 1;
             }
         }
         next.count = 0;
         uint index = 0;
+        closing.begin(z - 1);
         foreach (made; fresh.items[0 .. fresh.count]) {
             while (index < open.count && isBefore(open.items[index], made)) {
-                flush(slab.frame, open.items[index], z - 1);
+                closing.close(open.items[index]);
                 index += 1;
             }
             if (index < open.count && open.items[index].y == made.y && open.items[index].x.low == made.x.low) {
-                if (open.items[index].x.high == made.x.high && open.items[index].material == made.material) {
+                if (open.items[index].x.high == made.x.high && isSame(open.items[index].choice, made.choice)) {
                     next.add(open.items[index]);
                 } else {
-                    flush(slab.frame, open.items[index], z - 1);
+                    closing.close(open.items[index]);
                     next.add(made);
                 }
                 index += 1;
@@ -436,17 +514,20 @@ void emit(alias choose)(Slab slab) {
             }
         }
         while (index < open.count) {
-            flush(slab.frame, open.items[index], z - 1);
+            closing.close(open.items[index]);
             index += 1;
         }
+        closing.end();
         foreach (kept; 0 .. next.count) {
             open.items[kept] = next.items[kept];
         }
         open.count = next.count;
     }
+    closing.begin(slab.z.high);
     foreach (left; open.items[0 .. open.count]) {
-        flush(slab.frame, left, slab.z.high);
+        closing.close(left);
     }
+    closing.end();
 }
 
 bool isSame(Choice a, Choice b) {

@@ -4,6 +4,10 @@ import core.stdc.math : atan2, cos, sin;
 import plugins.api.api : Api, Box, ColumnCell, Extent, KindTag, Material, Pen, Repeat, Rhythm, Risen, Site, SitePart, Span, Spot, Structure, Turn;
 
 enum double PI = 3.14159265358979323846;
+enum double GOLDEN_ANGLE = 137.5;
+enum double QUARTER_TURN = 90;
+enum double HALF_TURN = 180;
+enum double FULL_TURN = 360;
 enum int TURN_TREADS = 24;
 enum int STAIR_HEADROOM = 4;
 enum int TREAD_THICKNESS = 2;
@@ -15,6 +19,9 @@ enum uint EDGE_FACES = 4;
 enum int PORT = 4;
 enum ulong MIX = 0x2545F4914F6CDD1D;
 enum uint MIX_SHIFT = 24;
+enum uint UNIT_STEPS = 1 << 24;
+enum uint UNIT_SHIFT = 40;
+enum uint FOLD_SHIFT = 31;
 enum size_t MOST_HASHES = 1024;
 
 ulong mixed(ulong hash, ulong salt) {
@@ -23,6 +30,27 @@ ulong mixed(ulong hash, ulong salt) {
 
 double roll(ulong hash, ulong salt) {
     return (mixed(hash, salt) % PERCENT) / cast(double) PERCENT;
+}
+
+ulong hashed(ulong hash, ulong salt) {
+    ulong value = (hash ^ salt) * MIX;
+    value ^= value >> FOLD_SHIFT;
+    value *= MIX;
+    value ^= value >> FOLD_SHIFT;
+    return value;
+}
+
+double unitOf(ulong hash, ulong salt) {
+    return (hashed(hash, salt) >> UNIT_SHIFT) / cast(double) UNIT_STEPS;
+}
+
+double between(ulong hash, ulong salt, double low, double high) {
+    return low + (high - low) * unitOf(hash, salt);
+}
+
+enum Found : ubyte {
+    none,
+    some,
 }
 
 struct Cell {
@@ -157,6 +185,20 @@ Rows ringRows(Span column, double inner, double outer) {
     return rows;
 }
 
+Rows discRows(Span column, double centreX, double centreY, double radius) {
+    Rows rows;
+    foreach (y; column.low .. column.high + 1) {
+        foreach (x; column.low .. column.high + 1) {
+            double across = x + 0.5 - centreX;
+            double along = y + 0.5 - centreY;
+            if (across * across + along * along < radius * radius) {
+                rows.add(x, y);
+            }
+        }
+    }
+    return rows;
+}
+
 Rows[TURN_TREADS] wedgeRows(Span column, double inner, double outer) {
     Rows[TURN_TREADS] wedges;
     foreach (y; column.low .. column.high + 1) {
@@ -193,8 +235,8 @@ void grass(Turtle face, Material material) {
     }
 }
 
-void lawn(const(Api)* api, Site face, const(Risen)* risen, const(void)* data) {
-    grass(Turtle(api, face), *cast(const(Material)*) data);
+void lawn(const(Api)* api, Site face, ref const Risen risen, ref const Material material) {
+    grass(Turtle(api, face), material);
 }
 
 uint wedgeAt(int cellX, int cellY) {
@@ -245,6 +287,70 @@ Turtle settled(Turtle start) {
         }
     }
     return least;
+}
+
+enum int WELL_TREADS = 8;
+
+Tread wellTreadAt(int index) {
+    return treadAround(1, PORT - 1, 1, index);
+}
+
+enum Winding : ubyte {
+    straight,
+    mirrored,
+}
+
+struct Flight {
+    Turtle frame;
+    Winding winding;
+}
+
+Flight flightAt(Turtle foot) {
+    Turtle[EDGE_FACES] rolls;
+    ulong[EDGE_FACES] hashes;
+    Turtle rolled = foot;
+    foreach (index; 0 .. EDGE_FACES) {
+        rolls[index] = rolled;
+        hashes[index] = rolled.probeHash(SitePart.face);
+        rolled = rolled.rollRight();
+    }
+    uint least = 0;
+    foreach (index; 1 .. EDGE_FACES) {
+        if (hashes[index] < hashes[least]) {
+            least = index;
+        }
+    }
+    uint next = (least + 1) % EDGE_FACES;
+    uint previous = (least + EDGE_FACES - 1) % EDGE_FACES;
+    if (hashes[next] < hashes[previous]) {
+        return Flight(rolls[least], Winding.mirrored);
+    } else {
+        return Flight(rolls[least], Winding.straight);
+    }
+}
+
+Tread wound(Tread tread, Winding winding) {
+    final switch (winding) {
+        case Winding.straight:
+            return tread;
+        case Winding.mirrored:
+            return Tread(tread.x, negated(tread.y));
+    }
+}
+
+Turtle ownerAround(Turtle corner) {
+    Turtle owner = corner;
+    Turtle quarter = corner;
+    ulong least = corner.probeHash(SitePart.face);
+    foreach (_; 1 .. EDGE_FACES) {
+        quarter = quarter.right();
+        ulong hash = quarter.probeHash(SitePart.face);
+        if (hash < least) {
+            least = hash;
+            owner = quarter;
+        }
+    }
+    return owner;
 }
 
 ulong strongestNear(Turtle face) {
@@ -332,7 +438,7 @@ struct Turtle {
         return low + cast(int) pick(high - low + 1);
     }
 
-    bool rollChance(uint percent) const {
+    bool rollPercent(uint percent) const {
         return api.pick(api, PERCENT) < percent;
     }
 
@@ -350,6 +456,10 @@ struct Turtle {
 
     void fill(Material material, Box area, Rhythm rhythm = EVERY_HEIGHT) const {
         api.fill(api, site, material, area, rhythm);
+    }
+
+    void replace(Material material, Box area, Rhythm rhythm = EVERY_HEIGHT) const {
+        api.replace(api, site, material, area, rhythm);
     }
 
     void paintRows(Material material, ref const Rows rows, Span z, Rhythm rhythm = EVERY_HEIGHT) const {
@@ -408,6 +518,10 @@ struct Turtle {
         return api.probePort(api, site);
     }
 
+    bool probeOwns(SitePart part) const {
+        return api.probeOwns(api, site, part);
+    }
+
     double probeCrust() const {
         return api.probeCrust(api, site);
     }
@@ -423,6 +537,15 @@ struct Turtle {
     Drawing openPen() const {
         return Drawing(api, api.openPen(api, site));
     }
+}
+
+struct Lie {
+    double near = 0;
+    double far = 0;
+}
+
+Lie lieOf(Turtle edge) {
+    return Lie(edge.openPen().height(), edge.openPen().forward(edge.edgeCells()).height());
 }
 
 struct Drawing {

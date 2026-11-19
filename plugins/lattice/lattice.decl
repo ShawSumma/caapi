@@ -8,4 +8,28 @@ kind lattice-materials {
     hut: one -> material
     roof: one -> material
     floors: some -> material
+    island: one -> material
+    turf: one -> material
+    soil: one -> material
+    bridge: one -> material
+    colossus: one -> material
+    limb: one -> material
+    weaves: some -> lattice-weave
+    star: one -> material
+    deck: one -> material
+    rafter: one -> material
+    shelf: one -> material
+    shelf-decks: some -> material
+    books: some -> material
+    rocks: some -> material
+}
+
+kind lattice-weave {
+    beam: integer 1..3 = 1
+    keep: number 0..1 = 1
+    broken: number 0..1 = 0
+    doubled: number 0..1 = 0
+    platform-odds: number 0..1 = 0.12
+    stair-odds: number 0..1 = 0.2
+    regular: "rolled" | "regular" = "rolled"
 }

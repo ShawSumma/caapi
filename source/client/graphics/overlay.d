@@ -5,7 +5,7 @@ import bindings.platform : VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_B
 import base.maybe : Maybe;
 import client.graphics.matrices : MATRIX_FLOATS, flatten;
 import client.graphics.pipeline : Blend, Culling, Depth, GpuBuffer, Outputs, PipelineSettings, QUEUE_FAMILY_IGNORED, WHOLE_SIZE, bindDeviceLocalImage, bufferWrite, createGraphicsPipeline, createPipelineLayout, createSetLayout, createShader, expectSuccess, imageWrite, layoutBinding;
-import client.hud : HudVertex, MOST_VERTICES, Marker;
+import client.drawing : HudVertex, MOST_VERTICES, Marker;
 import client.text : ATLAS_HEIGHT, ATLAS_WIDTH, GlyphAtlas;
 
 enum string HUD_VERT_SPV = import("hud.vert.spv");

@@ -7,4 +7,5 @@ babel-materials babel:materials {
     light -> base:light-panel
     plaza -> base:granite
     lawn -> base:grass
+    reading -> game:pamphlet
 }

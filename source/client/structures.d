@@ -10,9 +10,8 @@ import base.parallel : Executor;
 import base.splitmix : SplitMix, unitOf;
 import base.stdio : snprintf;
 import base.vector3 : Vec3;
-import client.game : Game;
 import client.plugins : registry, worldCount;
-import client.tiles : TileCall, TileCalls, TileSpan, TileWork, isTiledBy, visitTilesAt;
+import client.tiles : FootCall, PortCall, TileCall, TileCalls, TileSpan, TileWork, isTiledBy, visitTilesAt;
 import common.graph : Graph;
 import common.look : Look, lookNamed;
 import common.node : ChunkLayout;
@@ -20,13 +19,14 @@ import common.position : Position;
 import common.view : GraphView;
 import common.worldgen.blueprint : Below, BlueprintBuilder, CellBox, Cover, PaintOwner, PaintResult, Rhythm, Under;
 import common.worldgen.generation : StructureWorld, Worldgen;
-import common.worldgen.horospheres : Fill, GravityPull, HorosphereId, HorosphereKind, Horospheres, LOWEST_RISE_EDGES, ROOT, Rise, Thickness, edgeOf, ensureClimate, ensureColumnSite, ensureRise, ensureUndersideAt, openHorosphere;
+import common.worldgen.horospheres : Fill, GravityPull, HorosphereId, HorosphereKind, Horospheres, LOWEST_RISE_EDGES, ROOT, Rise, Thickness, TileReach, edgeOf, ensureClimate, ensureColumnSite, ensurePlaneIn, ensureRise, ensureUndersideAt, openHorosphere;
 import common.worldgen.plane : Plane;
-import common.worldgen.store : Grower, TileKey;
+import common.worldgen.store : AheadPass, Grower, TileKey;
 import common.worldgen.strokes : Stroke, StrokeForm;
 import common.worldgen.structure : ClaimKey, ColumnSpot, PLACE_SLACK, RootedCorner, SiteFrame, anchorBits, calmAt, edgeCells, edgeLength, ensureClaimKey, ensureSiteHash, ensureSiteOrigin, forwarded, frameOf, moveToLevel, rootSite, siteOf, sitePlacement, spreadCalm, turnSite;
+import geometry.honeycomb : Face;
 import geometry.lorentz : Motion, Point, Vec4;
-import plugins.api.api : Api, Box, ColumnCell, HorosphereForm, KindId, KindTag, Material, Pen, Repeat, RisingKind, Site, SitePart, Span, Spot, Structure, Tile, Turn;
+import plugins.api.api : Api, Box, ColumnCell, HorosphereForm, KindId, KindTag, Material, Pen, PortRule, Repeat, RisingKind, Site, SitePart, Span, Spot, Structure, Tile, Turn, VoidEdge;
 import plugins.api.api : ApiRhythm = Rhythm;
 
 enum size_t MESSAGE_CAPACITY = 1024;
@@ -35,6 +35,7 @@ enum string UNKNOWN_LOOK = "names a look that no mod defines";
 enum string BAD_PEN_DRAW = "a pen draws a length of at least zero with radii above zero";
 enum string ONLY_WORLD_TILES_GROUND = "only the world's own structure tiles the ground, and only once";
 enum string ONLY_WORLD_TILES_EDGES = "only the world's own structure tiles the edges, and only once";
+enum string ONLY_WORLD_TILES_VERTICES = "only the world's own structure tiles the vertices, and only once";
 enum string ONLY_WORLD_FLATTENS = "only the world's own structure flattens the ground";
 enum string ONLY_WORLD_TURNS_GRAVITY = "only the world's own structure turns gravity around";
 enum string ONLY_WORLD_SETS_FOG = "only the world's own structure sets the fog";
@@ -42,9 +43,10 @@ enum string ONLY_WORLD_GIVES_KINDS = "only the world's own structure gives horos
 enum string ONLY_WORLD_SETS_LOOK = "only the world's own structure sets how it looks";
 enum string ONLY_WORLD_OPENS = "only the world's own structure opens horospheres";
 enum string ONLY_WORLD_ROOTS = "only the world's own structure gives the root its kind, and only once";
-enum string ONLY_WORLD_SHAPES_GROUND = "only the world's own structure gives a ground its crust, its bottom or its ports";
+enum string ONLY_WORLD_SHAPES_GROUND = "only the world's own structure gives a ground its crust, its bottom, its ports or its tile's reach";
 enum string BOTTOM_UNDER_CRUST = "a ground's bottom lies below the whole of its crust: give the ground a crust first, thinner than the bottom is deep";
 enum string NOT_AN_EDGE_CLAIM = "a site claims its vertex or face, not its edge";
+enum string RULE_CANNOT_ROLL = "a port rule cannot roll: whoever asks must get the same answer, so decide from site:hash";
 enum ulong PORT_SALT = 0x504F_5254_5F31;
 enum string UNKNOWN_KIND = "unknown kind of horosphere";
 enum double HALF_TURN = 3.141592653589793;
@@ -52,6 +54,8 @@ enum double VERTICAL_TOLERANCE = 1e-9;
 enum Vec3!double ACROSS = Vec3!double(1, 0, 0);
 enum Vec3!double UP = Vec3!double(0, 1, 0);
 enum Vec3!double AHEAD = Vec3!double(0, 0, 1);
+immutable Turn[4] GROUNDING_TURNS = [Turn.pitchDown, Turn.pitchUp, Turn.rollLeft, Turn.rollRight];
+enum uint FACES_AROUND = 4;
 
 struct StructureProblem {
     char[MESSAGE_CAPACITY] text = 0;
@@ -240,18 +244,73 @@ Worldgen worldgenAt(uint index) {
     }
 }
 
-bool probePort(ref GraphView view, Site site, HorosphereId over) {
-    double odds = view.blueprint.portOdds;
+bool isAlongFace(Plane ground, Face face) {
+    Plane snapped = ground.snappedToFaces();
+    return snapped == Plane.ofFace(face) || snapped == -Plane.ofFace(face);
+}
+
+Site groundedSite(ref GraphView view, Site site, HorosphereId over) {
+    SiteFrame frame = view.moveToLevel(frameOf(site), 0);
+    Plane ground = view.ensurePlaneIn(over, frame.node);
+    SiteFrame lying = frame;
+    foreach (turn; GROUNDING_TURNS) {
+        if (!isAlongFace(ground, lying.ySide)) {
+            SiteFrame turned = view.turnSite(frame, turn);
+            if (isAlongFace(ground, turned.ySide)) {
+                lying = turned;
+            }
+        }
+    }
+    return siteOf(lying);
+}
+
+double portOddsOf(ref GraphView view, ref const TileCalls calls, MaybeIndex!uint call) {
+    if (call.exists) {
+        return calls.ports.ptr[call.value].most;
+    } else {
+        return view.blueprint.portOdds;
+    }
+}
+
+bool probeRuledPort(ref GraphView view, ref const TileCalls calls, MaybeIndex!uint call, const(Api)* api, Site site, HorosphereId over, double rolled) {
+    if (!call.exists) {
+        return true;
+    } else {
+        const(PortCall)* ruled = &calls.ports.ptr[call.value];
+        return ruled.rule(api, groundedSite(view, site, over), rolled, ruled.data.ptr);
+    }
+}
+
+bool probePort(ref GraphView view, ref const TileCalls calls, const(Api)* api, Site site, HorosphereId over) {
+    MaybeIndex!uint call = calls.portCallOf(view.horospheres.tagOf(over));
+    double odds = portOddsOf(view, calls, call);
     if (!(odds > 0)) {
         return false;
     } else {
         ulong hash = view.ensureSiteHash(frameOf(site), SitePart.vertex);
-        if (!(unitOf(SplitMix(hash ^ PORT_SALT).next()) < odds) || hash == view.ensureSiteHash(startOf(view, over), SitePart.vertex)) {
+        double rolled = unitOf(SplitMix(hash ^ PORT_SALT).next());
+        if (!(rolled < odds) || hash == view.ensureSiteHash(startOf(view, over), SitePart.vertex)) {
             return false;
         } else {
-            bool rising = view.ensureRisingTag(site, over).exists;
-            return !rising;
+            bool ruled = probeRuledPort(view, calls, call, api, site, over, rolled);
+            if (!ruled) {
+                return false;
+            } else {
+                bool rising = view.ensureRisingTag(site, over).exists;
+                return !rising;
+            }
         }
+    }
+}
+
+bool probeWorldPort(ref Graph graph, Site site) {
+    if (graph.structures.grower.context is null) {
+        return false;
+    } else {
+        StructureHost* host = cast(StructureHost*) graph.structures.grower.context;
+        bool port = host.probePortAt(site);
+        host.takeRefusal();
+        return port;
     }
 }
 
@@ -304,6 +363,7 @@ struct StructureHost {
     StructureWorld name;
     uint key;
     uint nextKey;
+    uint rules;
     StructureProblem problem;
 
     mixin Refusing;
@@ -322,7 +382,7 @@ struct StructureHost {
                 return true;
             }
         }
-        return calls.root.tile !is null || calls.edge.tile !is null;
+        return calls.root.tile !is null || calls.vertex.tile !is null || calls.hasEdge || calls.feet.length > 0;
     }
 
     void build(SiteFrame root) {
@@ -398,15 +458,33 @@ struct StructureHost {
         }
     }
 
-    void paintAhead(ref Graph graph, const(uint)[] candidates, Executor chosen) {
+    void paintAhead(ref Graph graph, const(uint)[] candidates, Executor chosen, double allowance) {
         executor = chosen;
         builder.graph = &graph;
         if (!problem.isPresent && hasCover()) {
-            tiles.paintAhead(graph, candidates, executor);
+            tiles.paintAhead(graph, candidates, executor, allowance);
             if (tiles.hasFailed) {
                 fail(tiles.failure.ptr);
             }
         }
+    }
+
+    void startAhead(ref Graph graph, const(uint)[] candidates, Executor chosen) {
+        executor = chosen;
+        builder.graph = &graph;
+        if (!problem.isPresent && hasCover()) {
+            tiles.startAhead(graph, candidates, executor);
+        }
+    }
+
+    AheadPass finishAhead(ref Graph graph, Executor chosen, double allowance) {
+        executor = chosen;
+        builder.graph = &graph;
+        AheadPass pass = tiles.finishAhead(graph, executor, allowance);
+        if (tiles.hasFailed) {
+            fail(tiles.failure.ptr);
+        }
+        return pass;
     }
 
     void enqueue(QueuedStructure queued) {
@@ -490,11 +568,21 @@ struct StructureHost {
         }
     }
 
+    void tileVertices(Tile tile, const(void)* data, size_t size) {
+        if (builder.isGrowing || calls.vertex.tile !is null) {
+            refuse(ONLY_WORLD_TILES_VERTICES);
+        } else if (tile is null) {
+            refuse("a vertex tile is a function");
+        } else {
+            calls.vertex = TileCall(tile, copied(data, size));
+        }
+    }
+
     void tileEdges(Tile tile, const(void)* data, size_t size) {
-        if (builder.isGrowing || calls.hasEdge) {
+        if (builder.isGrowing) {
             refuse(ONLY_WORLD_TILES_EDGES);
         } else {
-            calls.edge = TileCall(tile, copied(data, size));
+            calls.edges.append(TileCall(tile, copied(data, size)));
         }
     }
 
@@ -543,6 +631,15 @@ struct StructureHost {
     }
 
     KindId horosphere(double odds, HorosphereForm form, uint tag, Tile tile, const(void)* data, size_t size) {
+        if (form == HorosphereForm.hanging) {
+            refuse("a hanging kind says how many edges it hangs under its ground, so it is given with hanging");
+            return KindId.init;
+        } else {
+            return addKind(odds, form, tag, tile, data, size);
+        }
+    }
+
+    KindId addKind(double odds, HorosphereForm form, uint tag, Tile tile, const(void)* data, size_t size) {
         Horospheres* horospheres = &builder.graph.horospheres;
         if (builder.isGrowing) {
             refuse(ONLY_WORLD_GIVES_KINDS);
@@ -566,6 +663,20 @@ struct StructureHost {
             builder.graph.horospheres.kinds.ptr[made.value].under = under;
         }
         return made;
+    }
+
+    KindId hanging(double odds, uint under, uint edges, uint tag, Tile tile, const(void)* data, size_t size) {
+        if (edges < LOWEST_RISE_EDGES || edges > ubyte.max) {
+            refuse("a ground hangs at least two edges under the ground it hangs from");
+            return KindId.init;
+        } else {
+            KindId made = addKind(odds, HorosphereForm.hanging, tag, tile, data, size);
+            if (refusal is null) {
+                builder.graph.horospheres.kinds.ptr[made.value].under = under;
+                builder.graph.horospheres.kinds.ptr[made.value].hang = cast(ubyte) edges;
+            }
+            return made;
+        }
     }
 
     void look(KindId kind, const(char)[] name) {
@@ -643,8 +754,8 @@ struct StructureHost {
         } else if (!ground.exists) {
             horospheres.rootAbyss = Maybe!float.of(units);
         } else {
-            foreach (ref kind; horospheres.kinds.slice()) {
-                if (kind.tag == ground.value && !kind.crust.isShallowerThan(units)) {
+            foreach (index, ref kind; horospheres.kinds.slice()) {
+                if (kind.tag == ground.value && horospheres.fillOfKind(cast(ubyte) index) != Fill.none && !kind.crust.isShallowerThan(units)) {
                     refuse(BOTTOM_UNDER_CRUST);
                 } else if (kind.tag == ground.value) {
                     kind.abyss = Maybe!float.of(units);
@@ -664,7 +775,54 @@ struct StructureHost {
     }
 
     bool probePortAt(Site site) {
-        return builder.graph.view.probePort(site, ROOT);
+        rules += 1;
+        bool port = builder.graph.view.probePort(calls, &api, site, ROOT);
+        rules -= 1;
+        return port;
+    }
+
+    void portRule(KindTag ground, double most, PortRule rule, const(void)* data, size_t size) {
+        if (builder.isGrowing) {
+            refuse(ONLY_WORLD_SHAPES_GROUND);
+        } else if (!(most >= 0) || most > 1) {
+            refuse("a port rule takes at most a share of the vertices from 0 to 1");
+        } else if (calls.portCallOf(ground).exists) {
+            refuse("a ground has one rule for its ports");
+        } else {
+            calls.ports.append(PortCall(ground, most, rule, copied(data, size)));
+        }
+    }
+
+    void foot(uint tag, Tile tile, const(void)* data, size_t size) {
+        if (builder.isGrowing) {
+            refuse(ONLY_WORLD_GIVES_KINDS);
+        } else if (tile is null) {
+            refuse("a foot tile is a function");
+        } else if (calls.footCallOf(KindTag.of(tag)).exists) {
+            refuse("a ground has one foot tile");
+        } else {
+            calls.feet.append(FootCall(tag, TileCall(tile, copied(data, size))));
+        }
+    }
+
+    void tileReach(KindTag ground, double above, double below) {
+        Horospheres* horospheres = &builder.graph.horospheres;
+        TileReach reach = TileReach(cast(float)(above * cellLength()), cast(float)(below * cellLength()));
+        if (builder.isGrowing) {
+            refuse(ONLY_WORLD_SHAPES_GROUND);
+        } else if (!(above >= 0) || !(below >= 0)) {
+            refuse("a ground's tile reaches at least zero cells above its ground and at least zero below it");
+        } else if (!ground.exists) {
+            horospheres.rootReach = reach;
+        } else {
+            foreach (index, ref kind; horospheres.kinds.slice()) {
+                if (kind.tag == ground.value && horospheres.isUprightKind(cast(ubyte) index)) {
+                    refuse("an upright horosphere's tiles follow its column, so they have no reach above a ground to give");
+                } else if (kind.tag == ground.value) {
+                    kind.reach = reach;
+                }
+            }
+        }
     }
 
     void addRisingKinds(double odds) {
@@ -673,6 +831,15 @@ struct StructureHost {
             if (refusal is null) {
                 builder.graph.horospheres.kinds.ptr[made.value].under = kind.under;
                 look(made, kind.look);
+                if (kind.ports !is null) {
+                    portRule(KindTag.of(kind.tag), kind.mostPorts(), kind.ports, null, 0);
+                }
+                if (kind.above < double.infinity || kind.below < double.infinity) {
+                    tileReach(KindTag.of(kind.tag), kind.above, kind.below);
+                }
+                if (kind.foot !is null) {
+                    foot(kind.tag, kind.foot, kind.footData, kind.footSize);
+                }
             }
         }
     }
@@ -704,6 +871,8 @@ struct StructureHost {
             refuse(UNKNOWN_KIND);
         } else if (horospheres.isUprightKind(cast(ubyte) kind.value)) {
             refuse("the root is a plane, so it cannot be an upright kind");
+        } else if (horospheres.kinds.ptr[kind.value].form == HorosphereForm.hanging) {
+            refuse("the root hangs from no ground, so it cannot be a hanging kind");
         } else {
             horospheres.rootKind = MaybeIndex!ubyte.of(cast(ubyte) kind.value);
         }
@@ -806,7 +975,35 @@ Api mainApi(StructureHost* host) {
     api.abyss = &mainAbyss;
     api.edgeCeiling = &mainEdgeCeiling;
     api.probeRelief = &apiRelief!mainHost;
+    api.replace = &apiReplace!mainHost;
+    api.portRule = &mainPortRule;
+    api.tileReach = &mainTileReach;
+    api.hanging = &mainHanging;
+    api.probeOwns = &apiOwns!mainHost;
+    api.paintVoid = &apiVoid;
+    api.foot = &mainFoot;
+    api.tileVertices = &mainTileVertices;
     return api;
+}
+
+void mainFoot(const(Api)* api, uint tag, Tile tile, const(void)* data, size_t size) {
+    mainHost(api).foot(tag, tile, data, size);
+}
+
+void mainTileVertices(const(Api)* api, Tile tile, const(void)* data, size_t size) {
+    mainHost(api).tileVertices(tile, data, size);
+}
+
+KindId mainHanging(const(Api)* api, double odds, uint under, uint edges, uint tag, Tile tile, const(void)* data, size_t size) {
+    return mainHost(api).hanging(odds, under, edges, tag, tile, data, size);
+}
+
+void mainTileReach(const(Api)* api, KindTag ground, double above, double below) {
+    mainHost(api).tileReach(ground, above, below);
+}
+
+void mainPortRule(const(Api)* api, KindTag ground, double most, PortRule rule, const(void)* data, size_t size) {
+    mainHost(api).portRule(ground, most, rule, data, size);
 }
 
 void mainEdgeCeiling(const(Api)* api, double cells) {
@@ -835,6 +1032,40 @@ ulong apiHash(alias hostOf)(const(Api)* api, Site site, SitePart part) {
     return hostOf(api).hostView.ensureSiteHash(frameOf(site), part);
 }
 
+bool apiOwns(alias hostOf)(const(Api)* api, Site site, SitePart part) {
+    final switch (part) {
+        case SitePart.vertex:
+            return isLeastAround(hostOf(api).hostView, frameOf(site), Turn.right);
+        case SitePart.edge:
+            return isLeastAround(hostOf(api).hostView, frameOf(site), Turn.rollRight);
+        case SitePart.face:
+        case SitePart.line:
+            hostOf(api).refuse("a face or a line is not shared among faces: ask who owns a vertex or an edge");
+            return false;
+    }
+}
+
+bool apiVoid(const(Api)* api, uint world, Site edge, double near, double far, double abyss) {
+    VoidEdge found = registry().findVoid(world);
+    if (found is null) {
+        return false;
+    } else {
+        found(api, edge, near, far, abyss);
+        return true;
+    }
+}
+
+bool isLeastAround(ref GraphView view, SiteFrame frame, Turn turn) {
+    ulong own = view.ensureSiteHash(frame, SitePart.face);
+    SiteFrame other = view.turnSite(frame, turn);
+    uint index = 1;
+    while (index < FACES_AROUND && own <= view.ensureSiteHash(other, SitePart.face)) {
+        other = view.turnSite(other, turn);
+        index += 1;
+    }
+    return index == FACES_AROUND;
+}
+
 Span apiColumn(alias hostOf)(const(Api)* api) {
     return hostOf(api).column();
 }
@@ -844,11 +1075,21 @@ int apiEdgeCells(alias hostOf)(const(Api)* api) {
 }
 
 uint apiPick(alias hostOf)(const(Api)* api, uint count) {
-    return cast(uint)(hostOf(api).random.next() % count);
+    if (hostOf(api).rules > 0) {
+        hostOf(api).refuse(RULE_CANNOT_ROLL);
+        return 0;
+    } else {
+        return cast(uint)(hostOf(api).random.next() % count);
+    }
 }
 
 double apiRandom(alias hostOf)(const(Api)* api) {
-    return hostOf(api).random.unit();
+    if (hostOf(api).rules > 0) {
+        hostOf(api).refuse(RULE_CANNOT_ROLL);
+        return 0;
+    } else {
+        return hostOf(api).random.unit();
+    }
 }
 
 void apiPaint(alias hostOf)(const(Api)* api, Site site, Material material, Box area, ApiRhythm rhythm) {
@@ -857,6 +1098,10 @@ void apiPaint(alias hostOf)(const(Api)* api, Site site, Material material, Box a
 
 void apiFill(alias hostOf)(const(Api)* api, Site site, Material material, Box area, ApiRhythm rhythm) {
     hostOf(api).paint(site, material, area, rhythm, Cover.intoAir);
+}
+
+void apiReplace(alias hostOf)(const(Api)* api, Site site, Material material, Box area, ApiRhythm rhythm) {
+    hostOf(api).paint(site, material, area, rhythm, Cover.intoSolid);
 }
 
 KindTag apiRising(alias hostOf)(const(Api)* api, Site site) {
@@ -1044,7 +1289,7 @@ StructureProblem placeWorldStructure(ref Graph graph) {
         if (problem.isPresent || !(host.nextKey < host.queue.length || host.hasCover())) {
             releaseStructureHost(host);
         } else {
-            graph.structures.grower = Grower(&growStructures, &coverStructures, &paintStructuresAhead, &releaseStructureHost, host);
+            graph.structures.grower = Grower(&growStructures, &coverStructures, &paintStructuresAhead, &startStructuresAhead, &finishStructuresAhead, &releaseStructureHost, host);
         }
         return problem;
     }
@@ -1058,8 +1303,16 @@ void coverStructures(void* context, ref Graph graph, uint slot) {
     (cast(StructureHost*) context).cover(graph, slot);
 }
 
-void paintStructuresAhead(void* context, ref Graph graph, const(uint)[] candidates, Executor executor) {
-    (cast(StructureHost*) context).paintAhead(graph, candidates, executor);
+void paintStructuresAhead(void* context, ref Graph graph, const(uint)[] candidates, Executor executor, double allowance) {
+    (cast(StructureHost*) context).paintAhead(graph, candidates, executor, allowance);
+}
+
+void startStructuresAhead(void* context, ref Graph graph, const(uint)[] candidates, Executor executor) {
+    (cast(StructureHost*) context).startAhead(graph, candidates, executor);
+}
+
+AheadPass finishStructuresAhead(void* context, ref Graph graph, Executor executor, double allowance) {
+    return (cast(StructureHost*) context).finishAhead(graph, executor, allowance);
 }
 
 void releaseStructureHost(void* context) {
@@ -1088,19 +1341,4 @@ StructureProblem growthProblem(ref const Graph graph) {
     } else {
         return (cast(const(StructureHost)*) graph.structures.grower.context).problem;
     }
-}
-
-StructureProblem placeStructure(ref Game game) {
-    StructureProblem problem = placeWorldStructure(game.world.graph);
-    if (problem.isPresent) {
-        return problem;
-    } else {
-        game.placeAtSpawn();
-        return growthProblem(game.world.graph);
-    }
-}
-
-StructureProblem restartGame(ref Game game, Worldgen worldgen) {
-    game.rebuildWorld(worldgen);
-    return placeStructure(game);
 }

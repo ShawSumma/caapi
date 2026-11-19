@@ -9,15 +9,26 @@ kind rooms-biome {
     shelf: optional -> material
     boxes: optional -> material
     room-floors: many -> material
+    uses: many -> rooms-use
     big: number 0..1 = 0.25
     open: number 0..1 = 0
     hall-doors: number 0..1 = 0.35
     box-odds: number 0..1 = 0
     skylight: number 0..1 = 0
     nowhere: number 0..1 = 0
-    pillars: number 0..1 = 0
-    pool: number 0..1 = 0
-    court: number 0..1 = 0
+    plans: many -> rooms-plan {
+        weight: number 0..
+    }
+    well: number 0..1 = 0
+    grandeur-above: number 0..1 = 0
+    grandeur-below: number 0..1 = 1
+    wetness-above: number 0..1 = 0
+    wetness-below: number 0..1 = 1
+    age-above: number 0..1 = 0
+    age-below: number 0..1 = 1
+    darkness-above: number 0..1 = 0
+    darkness-below: number 0..1 = 1
+    weight: number 0.. = 1
     box-height: integer 0.. = 0
     vents: "none" | "some" = "none"
 }
@@ -27,6 +38,22 @@ kind rooms-hall {
     ceiling: one -> material
     light: one -> material
     skylight: number 0..1 = 0
+}
+
+kind rooms-plan {
+    plan: "rooms" | "pillars" | "pool" | "court"
+    pillar-every: integer 2..8 = 4
+}
+
+kind rooms-use {
+    material: one -> material
+    odds: number 0..1
+    height: integer 1..4 = 1
+}
+
+kind rooms-rare {
+    plan: "rings" | "chapel" | "pillars" | "pool" | "court"
+    one-in: integer 1.. = 27
 }
 
 kind rooms-level {
@@ -41,6 +68,7 @@ kind rooms-level {
     stairs: number 0..1 = 0
     hall: optional -> rooms-hall
     biomes: some -> rooms-biome
+    rare: many -> rooms-rare
 }
 
 kind rooms-materials {
@@ -55,5 +83,6 @@ kind rooms-materials {
     lawn: one -> material
     trunk: one -> material
     leaves: one -> material
+    sign: one -> material
     levels: 2.. -> rooms-level
 }

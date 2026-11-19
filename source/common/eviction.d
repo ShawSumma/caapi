@@ -162,8 +162,7 @@ bool areFaceNeighborsSettled(ref const Graph graph, ChunkSlot chunk) {
 
 bool isSettled(ref const Graph graph, Maybe!ChunkSlot chunk) {
     if (chunk.exists) {
-        ChunkState state = graph.chunks.at(chunk.value).state;
-        return state == ChunkState.populated || state == ChunkState.dropped;
+        return isResident(graph.chunks.at(chunk.value).state);
     } else {
         return false;
     }
@@ -194,35 +193,27 @@ struct Unloaded {
     MaybeIndex!uint block;
 }
 
+bool hasResidentChunk(ref const Graph graph, uint slot) {
+    uint corner = 0;
+    while (corner < CORNER_COUNT && !isResident(graph.chunks.at(ChunkSlot(slot, cast(Corner) corner)).state)) {
+        corner += 1;
+    }
+    return corner < CORNER_COUNT;
+}
+
+bool isResident(ChunkState state) {
+    return state == ChunkState.populated || state == ChunkState.dropped;
+}
+
 void unloadNode(ref Graph graph, uint slot, ref Array!Unloaded unloaded) {
-    uint held = 0;
-    if (graph.chunks.has(slot)) {
-        uint released = 0;
-        foreach (corner; 0 .. CORNER_COUNT) {
-            Chunk* chunk = graph.chunks.existing(ChunkSlot(slot, cast(Corner) corner));
-            if (chunk.state == ChunkState.populated || chunk.state == ChunkState.dropped) {
-                chunk.releaseVoxels();
-                *chunk = Chunk.init;
-                released += 1;
-            }
-            if (chunk.state != ChunkState.fresh) {
-                held += 1;
-            }
-        }
-        if (released > 0) {
+    if (!graph.chunks.has(slot)) {
+        graph.structures.releaseBuilding(slot);
+        graph.horospheres.forget(slot);
+    } else if (!graph.hasPinnedChunk(slot)) {
+        if (graph.hasResidentChunk(slot)) {
             unloaded.append(Unloaded(slot, graph.chunks.blockOf(slot)));
         }
-        if (held == 0) {
-            graph.chunks.releaseBlock(slot);
-        } else if (released > 0) {
-            foreach (corner; 0 .. CORNER_COUNT) {
-                if (graph.chunks.at(ChunkSlot(slot, cast(Corner) corner)).state == ChunkState.populated) {
-                    graph.markChanged(ChunkSlot(slot, cast(Corner) corner));
-                }
-            }
-        }
-    }
-    if (held == 0) {
+        graph.chunks.releaseBlock(slot);
         graph.structures.releaseBuilding(slot);
         graph.horospheres.forget(slot);
     }

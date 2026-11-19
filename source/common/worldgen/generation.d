@@ -1,7 +1,6 @@
 module common.worldgen.generation;
 
 import core.stdc.math : asinhf, atanf, cosf, coshf, fabsf, sinh, sinhf, tanf;
-import core.stdc.stdlib : abs;
 import core.stdc.string : memcpy;
 import base.array : Array;
 import base.flags : Readiness;
@@ -10,15 +9,15 @@ import base.murmur : murmurHash3;
 import base.numbers : RADIANS_PER_DEGREE, clamped, higherOf, lowerOf;
 import base.splitmix : SplitMix;
 import base.vector3 : Vec3;
-import common.biology.wild : WildGenes, inheritedGenes;
 import common.graph : Graph, MOST_PARENTS, NodeId, ParentList;
 import common.neighbors : isInside;
 import common.node : ChunkLayout, Materials, Occupancy, Voxels, cellIndex;
 import common.view : GraphView;
 import common.worldgen.building : Building;
-import common.worldgen.climate : COVER_DEPTH, Climate, CubeClimate, NodeClimate, SOIL_DEPTH, UNDERSIDE_SWING, WATER_LEVEL, groundAt, openAt, underAt, uniformRock;
-import common.worldgen.horospheres : Fill, FlatLines, Ground, Grounds, MOST_GROUNDS, crustAt, ensureGrounds, ensureHorospheresAt, flatLinesNear, undersideOf;
-import common.worldgen.palette : Tree, hasTrees, isGroundFor, isGroundForPlant, laidBy, oreFor, palette, treeAt, treeOf;
+import common.worldgen.climate : Climate, CubeClimate, NodeClimate, UNDERSIDE_SWING, groundAt, openAt, underAt, uniformRock;
+import common.worldgen.horospheres : Fill, FlatLines, Ground, Grounds, MOST_FLAT_LINES, MOST_GROUNDS, MeasuredLine, crustAt, ensureGrounds, ensureHorospheresAt, flatLinesNear, reliefShareAway, undersideOf;
+import common.worldgen.lineage : Lineage, inherited;
+import common.worldgen.palette : Shape, Tree, hasTrees, isGroundFor, isGroundForPlant, laidBy, oreFor, palette, treeAt, treeOf;
 import common.worldgen.plane : Plane, PlaneMeasure, chunkPoint, cubePoint;
 import common.worldgen.store : Standing;
 import common.worldgen.strokes : Stroke, StrokeForm;
@@ -26,7 +25,7 @@ import common.worldgen.structure : calmAt, firstSideAmong, ringFaces;
 import geometry.cube : CELL_STEPS;
 import geometry.honeycomb : CUBE_GRID_RADIUS, CUBE_RADIUS, Corner, FACE_COUNT, Face, cubeCenter, cubeToNode;
 import geometry.lorentz : Mat4, Point, Vec4;
-import plugins.api.api : Material;
+import plugins.api.api : Material, Part;
 
 enum WorldgenKind : ubyte {
     terrain,
@@ -35,31 +34,14 @@ enum WorldgenKind : ubyte {
 }
 
 enum size_t STRUCTURE_NAME_CAPACITY = 256;
-enum string TERRAIN_STRUCTURE = "planet";
-enum float BASE_TREE_DENSITY = 0.05f;
-enum float WETNESS_PER_TREE_DENSITY = 4.0f;
-enum float LEAST_TREE_DENSITY = 0.01f;
-enum float MOST_TREE_DENSITY = 0.3f;
 enum ubyte LEAST_TREE_DIMENSION = 4;
-enum int CANOPY_RADIUS = 2;
-enum int CANOPY_CORNER_SPAN = 3;
-enum int SPRUCE_LOWEST_LEAVES = 2;
 enum uint CHUNK_ROLL_SHIFT = 32;
 enum float RISER_MARGIN = 1.2f;
 enum float CLEAR_MARGIN = 1e-3f;
 enum uint BASE_GROUND = 0;
 enum ulong VEIN_SALT = 0x5EA1_0E5D_7A11_C0DE;
-enum float VEIN_ODDS = 0.08f;
-enum int VEIN_RADIUS = 2;
-enum float VEIN_FILL = 0.7f;
 enum ulong PLANT_SALT = 0x91A7_5EED;
-enum int CAP_CROWN = 4;
-enum int CAP_SPREAD = 9;
-enum int CAP_RIM = 10;
-enum int BLOOM_SPREAD = 5;
-enum int BLOOM_CUP = 2;
-enum int BLOOM_TIPS = 4;
-enum float PLANT_DENSITY = 0.02f;
+enum float UNKNOWN_SHARE = -1;
 
 struct PlaneWorld {
     float tiltRadians;
@@ -111,14 +93,21 @@ struct Worldgen {
     }
 
     bool hasStructure() const {
-        return kind != WorldgenKind.plane;
+        final switch (kind) {
+            case WorldgenKind.terrain:
+                return palette.world.length > 0;
+            case WorldgenKind.plane:
+                return false;
+            case WorldgenKind.structure:
+                return true;
+        }
     }
 
     const(char)[] structureName() const return {
         if (kind == WorldgenKind.structure) {
             return structure.name();
         } else {
-            return TERRAIN_STRUCTURE;
+            return palette.world;
         }
     }
 
@@ -140,25 +129,11 @@ float degreesToRadians(float degrees) {
     return cast(float)(degrees * RADIANS_PER_DEGREE);
 }
 
-enum TreeShape : ubyte {
-    round,
-    cone,
-    broad,
-    weeping,
-    tall,
-    flat,
-    bush,
-    bare,
-    column,
-    cap,
-    bloom,
-}
-
 struct NodeState {
     Plane surface;
-    Plane reference;
+    Maybe!Plane reference;
     NodeClimate climate;
-    WildGenes wild;
+    Lineage lineage;
 
     static NodeState fromParents(ref GraphView view, uint slot) {
         NodeState state = NodeState.uncalmed(view, slot);
@@ -170,21 +145,28 @@ struct NodeState {
         ParentList parents = view.parents(slot);
         if (parents.count == 0) {
             const(char)[] name = view.worldgen.structureName();
-            return NodeState(Plane.ofFace(Face.first), Plane.ofFace(firstSideAmong(ringFaces(Face.first))), NodeClimate.init, WildGenes.ofRoot(murmurHash3(cast(const(ubyte)[]) name).first));
+            Maybe!Plane reference;
+            if (view.worldgen.groundTiltRadians() != 0) {
+                reference = Maybe!Plane.of(Plane.ofFace(firstSideAmong(ringFaces(Face.first))));
+            }
+            return NodeState(Plane.ofFace(Face.first), reference, NodeClimate.init, Lineage.ofRoot(murmurHash3(cast(const(ubyte)[]) name).first));
         } else {
             NodeClimate[MOST_PARENTS] climates;
-            WildGenes[MOST_PARENTS] wilds;
+            Lineage[MOST_PARENTS] lineages;
             foreach (index, link; parents.links[0 .. parents.count]) {
                 NodeState parent = view.ensureState(link.slot);
                 climates[index] = parent.climate;
-                wilds[index] = parent.wild;
+                lineages[index] = parent.lineage;
             }
             NodeState first = view.ensureState(parents.links[0].slot);
             Face side = parents.links[0].side;
             Plane surface = first.surface.reflectAcross(side).snappedToFaces();
-            Plane reference = first.reference.reflectAcross(side).snappedToFaces();
+            Maybe!Plane reference;
+            if (first.reference.exists) {
+                reference = Maybe!Plane.of(first.reference.value.reflectAcross(side).snappedToFaces());
+            }
             ulong spice = view.idAt(slot).spice();
-            return NodeState(surface, reference, NodeClimate.fromParents(climates[0 .. parents.count], spice), inheritedGenes(wilds[0 .. parents.count], spice));
+            return NodeState(surface, reference, NodeClimate.fromParents(climates[0 .. parents.count], spice), inherited(lineages[0 .. parents.count], spice));
         }
     }
 }
@@ -215,7 +197,7 @@ struct ChunkParams {
     Grounds grounds;
     FlatLines flats;
     CubeClimate climate;
-    Plane reference;
+    Maybe!Plane reference;
     float slopeTangent;
     float slopeSecant;
     ChunkLayout layout;
@@ -285,7 +267,7 @@ struct ChunkParams {
         if (!isTilted(index)) {
             return height;
         } else {
-            float across = asinhf(sinhf(reference.distanceTo(point)) / coshf(height));
+            float across = asinhf(sinhf(reference.value.distanceTo(point)) / coshf(height));
             return atanf(sinhf(height)) + slopeTangent * across;
         }
     }
@@ -303,8 +285,8 @@ struct ChunkParams {
     float terrainCeiling(uint index) const {
         if (ground(index).fill == Fill.flat) {
             return 0;
-        } else if (climate.lowest.relief < WATER_LEVEL) {
-            return higherOf(climate.highest.relief, WATER_LEVEL);
+        } else if (climate.lowest.relief < palette.shape.waterLevel) {
+            return higherOf(climate.highest.relief, palette.shape.waterLevel);
         } else {
             return climate.highest.relief;
         }
@@ -407,6 +389,7 @@ struct ChunkParams {
         generator.generateStrokes();
         generator.generateStructure();
         generator.voxels.compress(dimension);
+        generator.shares.release();
         return GeneratedVoxels(generator.voxels, generator.materials);
     }
 }
@@ -457,6 +440,8 @@ struct TerrainGenerator {
     Readiness cells;
     Mat4!float toNode;
     PlaneMeasure[MOST_GROUNDS] surfaces;
+    MeasuredLine[MOST_FLAT_LINES] flats;
+    Array!float shares;
     float[ubyte.max] centers;
 
     void prepareCells() {
@@ -465,10 +450,34 @@ struct TerrainGenerator {
             foreach (index; 0 .. params.grounds.count) {
                 surfaces[index] = params.ground(index).surface.measure();
             }
+            foreach (index; 0 .. params.flats.count) {
+                flats[index] = MeasuredLine.of(params.flats.lines[index]);
+            }
+            if (params.flats.count > 0) {
+                shares.resize(cast(size_t) params.dimension * params.dimension * params.dimension);
+                shares.slice()[] = UNKNOWN_SHARE;
+            }
             foreach (cell; 0 .. params.dimension) {
                 centers[cell] = params.layout.cellCenterAlong(cell);
             }
             cells = Readiness.ready;
+        }
+    }
+
+    float reliefShareAt(Vec3!uint cell) {
+        if (params.flats.count == 0) {
+            return 1;
+        } else {
+            size_t index = cellIndex(params.dimension, cell.x, cell.y, cell.z);
+            if (shares.ptr[index] == UNKNOWN_SHARE) {
+                Point!float point = cubePoint(toNode, centerOf(cell.x, cell.y, cell.z));
+                float share = 1;
+                foreach (ref line; flats[0 .. params.flats.count]) {
+                    share = lowerOf(share, reliefShareAway(line.distanceTo(point)));
+                }
+                shares.ptr[index] = share;
+            }
+            return shares.ptr[index];
         }
     }
 
@@ -498,7 +507,7 @@ struct TerrainGenerator {
                 materials = Materials.deferred;
             } else {
                 prepareCells();
-                double sinhClear = sinh(higherOf(params.climate.highest.relief, WATER_LEVEL) + CLEAR_MARGIN);
+                double sinhClear = sinh(higherOf(params.climate.highest.relief, palette.shape.waterLevel) + CLEAR_MARGIN);
                 foreach (x; 0 .. dimension) {
                     foreach (y; 0 .. dimension) {
                         foreach (z; 0 .. dimension) {
@@ -523,20 +532,21 @@ struct TerrainGenerator {
     void generateVeins() {
         if (materials != Materials.deferred && !voxels.isFilledWith(Material.none)) {
             SplitMix veins = SplitMix(params.nodeSpice ^ (cast(ulong) params.chunk << CHUNK_ROLL_SHIFT) ^ VEIN_SALT);
-            if (veins.roll() < VEIN_ODDS) {
+            int radius = palette.shape.veinRadius;
+            if (veins.roll() < palette.shape.veinOdds) {
                 ubyte dimension = params.dimension;
                 Vec3!int center = Vec3!int(cast(int)(veins.next() % dimension), cast(int)(veins.next() % dimension), cast(int)(veins.next() % dimension));
                 Material rock = voxels.at(cellIndex(dimension, center.x, center.y, center.z));
                 Material ore = oreFor(rock);
                 if (ore != Material.none) {
-                    foreach (x; higherOf(center.x - VEIN_RADIUS, 0) .. lowerOf(center.x + VEIN_RADIUS + 1, cast(int) dimension)) {
-                        foreach (y; higherOf(center.y - VEIN_RADIUS, 0) .. lowerOf(center.y + VEIN_RADIUS + 1, cast(int) dimension)) {
-                            foreach (z; higherOf(center.z - VEIN_RADIUS, 0) .. lowerOf(center.z + VEIN_RADIUS + 1, cast(int) dimension)) {
+                    foreach (x; higherOf(center.x - radius, 0) .. lowerOf(center.x + radius + 1, cast(int) dimension)) {
+                        foreach (y; higherOf(center.y - radius, 0) .. lowerOf(center.y + radius + 1, cast(int) dimension)) {
+                            foreach (z; higherOf(center.z - radius, 0) .. lowerOf(center.z + radius + 1, cast(int) dimension)) {
                                 size_t index = cellIndex(dimension, x, y, z);
                                 int dx = x - center.x;
                                 int dy = y - center.y;
                                 int dz = z - center.z;
-                                if (dx * dx + dy * dy + dz * dz <= VEIN_RADIUS * VEIN_RADIUS && voxels.at(index) == rock && SplitMix(params.nodeSpice ^ VEIN_SALT ^ (cast(ulong) params.chunk << CHUNK_ROLL_SHIFT) ^ index).roll() < VEIN_FILL) {
+                                if (dx * dx + dy * dy + dz * dz <= radius * radius && voxels.at(index) == rock && SplitMix(params.nodeSpice ^ VEIN_SALT ^ (cast(ulong) params.chunk << CHUNK_ROLL_SHIFT) ^ index).roll() < palette.shape.veinFill) {
                                     voxels.toDense(dimension)[index] = ore;
                                 }
                             }
@@ -567,7 +577,7 @@ struct TerrainGenerator {
         ValueRange range = params.groundRange(ground);
         Maybe!Material rock = uniformRock(-range.high, -range.low, params.climate.lowest, params.climate.highest);
         bool buried = range.high < 0 && params.isWithinCrust(ground);
-        if (buried && -range.low < SOIL_DEPTH) {
+        if (buried && -range.low < palette.shape.soilDepth) {
             fillEmpty(palette.flatFill);
         } else if (buried && rock.exists) {
             fillEmpty(rock.value);
@@ -651,18 +661,17 @@ struct TerrainGenerator {
         return SplitMix(params.nodeSpice ^ (cast(ulong) params.chunk << CHUNK_ROLL_SHIFT) ^ index).roll();
     }
 
-    Climate climateOfCell(Vec3!uint cell) const {
-        Vec3!float center = centerOf(cell.x, cell.y, cell.z);
-        Climate here = params.climate.at(center);
-        here.relief = here.relief * params.flats.reliefShareAt(cubePoint(toNode, center));
+    Climate climateOfCell(Vec3!uint cell) {
+        Climate here = params.climate.at(centerOf(cell.x, cell.y, cell.z));
+        here.relief = here.relief * reliefShareAt(cell);
         return here;
     }
 
-    float depthAt(uint ground, Vec3!uint cell) const {
+    float depthAt(uint ground, Vec3!uint cell) {
         return climateOfCell(cell).relief - surfaces[ground].distanceTo(cubePoint(toNode, centerOf(cell.x, cell.y, cell.z)));
     }
 
-    float riserAt(uint ground, Vec3!uint cell, float depth) const {
+    float riserAt(uint ground, Vec3!uint cell, float depth) {
         float most = 0;
         foreach (axis; 0 .. 3) {
             Vec3!uint beside = cell;
@@ -682,7 +691,7 @@ struct TerrainGenerator {
         Material material;
         if (!(altitude > -undersideOf(params.ground(ground).crust, here))) {
             material = Material.none;
-        } else if (depth >= COVER_DEPTH && depth < SOIL_DEPTH) {
+        } else if (depth >= palette.shape.coverDepth && depth < palette.shape.soilDepth) {
             material = groundAt(depth, riserAt(ground, cell, depth), here);
         } else if (depth >= 0.0f) {
             material = groundAt(depth, 0, here);
@@ -698,7 +707,8 @@ struct TerrainGenerator {
         ubyte dimension = params.dimension;
         if (!voxels.isUniform() && dimension > LEAST_TREE_DIMENSION && hasTrees()) {
             Climate mean = params.climate.mean();
-            float density = clamped(BASE_TREE_DENSITY + mean.wetness / WETNESS_PER_TREE_DENSITY, LEAST_TREE_DENSITY, MOST_TREE_DENSITY);
+            Shape shape = palette.shape;
+            float density = clamped(shape.baseTreeDensity + mean.wetness / shape.wetnessPerTreeDensity, shape.leastTreeDensity, shape.mostTreeDensity);
             uint interior = dimension - 2;
             uint candidateCount = cast(uint)(cast(float)(interior * interior * interior) * density);
             foreach (_; 0 .. candidateCount) {
@@ -717,12 +727,12 @@ struct TerrainGenerator {
             Climate mean = params.climate.mean();
             Material plant = palette.plants.slice().laidBy(mean.warmth(), mean.wetness, mean.relief);
             uint interior = dimension - 2;
-            uint candidateCount = cast(uint)(cast(float)(interior * interior * interior) * PLANT_DENSITY);
+            uint candidateCount = cast(uint)(cast(float)(interior * interior * interior) * palette.shape.plantDensity);
             SplitMix plants = SplitMix(params.nodeSpice ^ (cast(ulong) params.chunk << CHUNK_ROLL_SHIFT) ^ PLANT_SALT);
             prepareCells();
             foreach (_; 0 .. candidateCount) {
                 Vec3!int base = Vec3!int(cast(int)(1 + plants.next() % interior), cast(int)(1 + plants.next() % interior), cast(int)(1 + plants.next() % interior));
-                if (voxels.at(cellIndex(dimension, base.x, base.y, base.z)) == Material.none && params.flats.reliefShareAt(cubePoint(toNode, centerOf(base.x, base.y, base.z))) > 0) {
+                if (voxels.at(cellIndex(dimension, base.x, base.y, base.z)) == Material.none && reliefShareAt(Vec3!uint(base.x, base.y, base.z)) > 0) {
                     Vec3!int up = CELL_STEPS[params.ground(ground).surface.risingNeighbor(params.chunk, params.layout, base)];
                     Material below = voxels.at(cellIndex(dimension, base.x - up.x, base.y - up.y, base.z - up.z));
                     if (voxels.at(cellIndex(dimension, base.x + up.x, base.y + up.y, base.z + up.z)) == Material.none && isGroundForPlant(plant, below)) {
@@ -736,13 +746,13 @@ struct TerrainGenerator {
     void placeTree(uint ground, Vec3!int base, uint kind) {
         ubyte dimension = params.dimension;
         prepareCells();
-        if (voxels.at(cellIndex(dimension, base.x, base.y, base.z)) == Material.none && params.flats.reliefShareAt(cubePoint(toNode, centerOf(base.x, base.y, base.z))) > 0) {
+        if (voxels.at(cellIndex(dimension, base.x, base.y, base.z)) == Material.none && reliefShareAt(Vec3!uint(base.x, base.y, base.z)) > 0) {
             int upDirection = params.ground(ground).surface.risingNeighbor(params.chunk, params.layout, base);
             Vec3!int up = CELL_STEPS[upDirection];
             if (voxels.at(cellIndex(dimension, base.x + up.x, base.y + up.y, base.z + up.z)) == Material.none && isGroundFor(kind, voxels.at(cellIndex(dimension, base.x - up.x, base.y - up.y, base.z - up.z)))) {
                 Tree species = treeOf(kind);
                 ulong roll = rng.next();
-                TreeFrame frame = TreeFrame.fromUp(base, upDirection, cast(int)(species.minTrunk + roll % species.trunkChoices), species.shape, species.reach);
+                TreeFrame frame = TreeFrame.fromUp(base, upDirection, cast(int)(species.minTrunk + roll % species.trunkChoices), species.form.above, species.reach);
                 if (frame.fitsWithin(dimension)) {
                     growTree(frame, species);
                 }
@@ -752,29 +762,13 @@ struct TerrainGenerator {
 
     void growTree(TreeFrame frame, ref const Tree species) {
         int reach = frame.reach;
+        Material[Part.max + 1] grown = [Part.none: Material.none, Part.wood: species.wood, Part.heart: species.heart, Part.leaves: species.leaves];
         foreach (level; 0 .. frame.top + 1) {
             foreach (i; -reach .. reach + 1) {
                 foreach (j; -reach .. reach + 1) {
-                    if (isWood(species.shape, frame.trunk, level, i, j)) {
-                        setIfEmpty(frame.cell(level, i, j), species.wood);
-                    }
-                }
-            }
-        }
-        foreach (level; 0 .. frame.top + 1) {
-            foreach (i; -reach .. reach + 1) {
-                foreach (j; -reach .. reach + 1) {
-                    if (species.heart != Material.none && isHeart(species.shape, frame.trunk, level, i, j)) {
-                        setIfEmpty(frame.cell(level, i, j), species.heart);
-                    }
-                }
-            }
-        }
-        foreach (level; 0 .. frame.top + 1) {
-            foreach (i; -reach .. reach + 1) {
-                foreach (j; -reach .. reach + 1) {
-                    if (species.leaves != Material.none && isLeaf(species.shape, frame.trunk, level, i, j)) {
-                        setIfEmpty(frame.cell(level, i, j), species.leaves);
+                    Material material = grown[species.form.shape(frame.trunk, level, i, j)];
+                    if (material != Material.none) {
+                        setIfEmpty(frame.cell(level, i, j), material);
                     }
                 }
             }
@@ -798,9 +792,9 @@ struct TreeFrame {
     int top;
     int reach;
 
-    static TreeFrame fromUp(Vec3!int base, int upDirection, int trunk, TreeShape shape, int reach) {
+    static TreeFrame fromUp(Vec3!int base, int upDirection, int trunk, int above, int reach) {
         size_t axis = upDirection / 2;
-        return TreeFrame(base, CELL_STEPS[upDirection], (axis + 1) % 3, (axis + 2) % 3, trunk, trunk + aboveTrunk(shape), reach);
+        return TreeFrame(base, CELL_STEPS[upDirection], (axis + 1) % 3, (axis + 2) % 3, trunk, trunk + above, reach);
     }
 
     Vec3!int cell(int level, int i, int j) const {
@@ -813,166 +807,4 @@ struct TreeFrame {
     bool fitsWithin(ubyte dimension) const {
         return isInside(dimension, cell(0, -reach, -reach)) && isInside(dimension, cell(top, reach, reach));
     }
-}
-
-int aboveTrunk(TreeShape shape) {
-    final switch (shape) {
-        case TreeShape.round:
-        case TreeShape.broad:
-        case TreeShape.flat:
-        case TreeShape.bush:
-        case TreeShape.cap:
-        case TreeShape.bloom:
-            return 1;
-        case TreeShape.cone:
-        case TreeShape.weeping:
-        case TreeShape.tall:
-        case TreeShape.bare:
-            return 0;
-        case TreeShape.column:
-            return -1;
-    }
-}
-
-bool isInTrunk(int trunk, int level, int i, int j) {
-    return i == 0 && j == 0 && level < trunk;
-}
-
-bool isWood(TreeShape shape, int trunk, int level, int i, int j) {
-    final switch (shape) {
-        case TreeShape.round:
-        case TreeShape.cone:
-        case TreeShape.broad:
-        case TreeShape.weeping:
-        case TreeShape.tall:
-        case TreeShape.bush:
-        case TreeShape.cap:
-        case TreeShape.bloom:
-            return isInTrunk(trunk, level, i, j);
-        case TreeShape.flat:
-            return isInTrunk(trunk, level, i, j) || (level == trunk - 1 && i == 1 && j == 0) || (level == trunk && i == 1 && j == 1);
-        case TreeShape.bare:
-            return isInTrunk(trunk, level, i, j) || (level == trunk - 2 && i == 0 && j == 1) || (level == trunk - 1 && i == -1 && j == 0) || (level == trunk && i == 1 && j == 0);
-        case TreeShape.column:
-            return isInTrunk(trunk, level, i, j) || (i == 1 && j == 0 && level >= 1 && level <= 2 && level < trunk - 1) || (i == -1 && j == 0 && level >= 2 && level <= 3 && level < trunk - 1);
-    }
-}
-
-bool isInCanopy(int spread, int span) {
-    return spread <= CANOPY_RADIUS && span <= CANOPY_CORNER_SPAN;
-}
-
-bool isLeaf(TreeShape shape, int trunk, int level, int i, int j) {
-    int spread = chebyshevLength(i, j);
-    int span = abs(i) + abs(j);
-    int squared = i * i + j * j;
-    final switch (shape) {
-        case TreeShape.round:
-            return roundLeaf(trunk, level, spread, span);
-        case TreeShape.cone:
-            return spruceLeaf(trunk, level, spread, span);
-        case TreeShape.broad:
-            return broadLeaf(trunk, level, squared);
-        case TreeShape.weeping:
-            return weepingLeaf(trunk, level, spread, squared, i + j);
-        case TreeShape.tall:
-            return tallLeaf(trunk, level, squared);
-        case TreeShape.flat:
-            return (level == trunk && squared <= 10) || (level == trunk + 1 && squared <= 4);
-        case TreeShape.bush:
-            return (level == 0 && span <= 1) || (level == 1 && squared <= 2);
-        case TreeShape.cap:
-            return capLeaf(trunk, level, squared);
-        case TreeShape.bloom:
-            return bloomPetal(trunk, level, squared);
-        case TreeShape.bare:
-        case TreeShape.column:
-            return false;
-    }
-}
-
-bool isHeart(TreeShape shape, int trunk, int level, int i, int j) {
-    return shape == TreeShape.bloom && i == 0 && j == 0 && (level == trunk || level == trunk + 1);
-}
-
-bool capLeaf(int trunk, int level, int squared) {
-    if (level == trunk + 1) {
-        return squared <= CAP_CROWN;
-    } else if (level == trunk) {
-        return squared <= CAP_SPREAD;
-    } else if (level == trunk - 1) {
-        return squared > CAP_CROWN + 1 && squared <= CAP_RIM;
-    } else {
-        return false;
-    }
-}
-
-bool bloomPetal(int trunk, int level, int squared) {
-    if (level == trunk) {
-        return squared > 0 && squared <= BLOOM_SPREAD;
-    } else if (level == trunk - 1) {
-        return squared > 0 && squared <= BLOOM_CUP;
-    } else if (level == trunk + 1) {
-        return squared == BLOOM_TIPS;
-    } else {
-        return false;
-    }
-}
-
-bool roundLeaf(int trunk, int level, int spread, int span) {
-    if (level == trunk - 2 || level == trunk - 1) {
-        return isInCanopy(spread, span);
-    } else if (level == trunk) {
-        return spread <= 1;
-    } else if (level == trunk + 1) {
-        return span <= 1;
-    } else {
-        return false;
-    }
-}
-
-bool broadLeaf(int trunk, int level, int squared) {
-    if (level == trunk - 3 || level == trunk) {
-        return squared <= 5;
-    } else if (level == trunk - 2 || level == trunk - 1) {
-        return squared <= 10;
-    } else if (level == trunk + 1) {
-        return squared <= 2;
-    } else {
-        return false;
-    }
-}
-
-bool weepingLeaf(int trunk, int level, int spread, int squared, int parity) {
-    if (level == trunk - 1 || level == trunk) {
-        return squared <= 5 - (level - trunk + 1) * 3;
-    } else {
-        return level >= 1 && level < trunk - 1 && spread == CANOPY_RADIUS && (parity & 1) == 0;
-    }
-}
-
-bool tallLeaf(int trunk, int level, int squared) {
-    if (level == trunk - 2 || level == trunk - 1) {
-        return squared <= 5;
-    } else if (level == trunk) {
-        return squared <= 2;
-    } else {
-        return level == trunk / 2 && squared == 1;
-    }
-}
-
-bool spruceLeaf(int trunk, int level, int spread, int span) {
-    if (level == trunk) {
-        return span == 0;
-    } else if (level > trunk || level < SPRUCE_LOWEST_LEAVES) {
-        return false;
-    } else if ((trunk - level) % 2 == 0) {
-        return isInCanopy(spread, span);
-    } else {
-        return span <= 1;
-    }
-}
-
-int chebyshevLength(int i, int j) {
-    return higherOf(abs(i), abs(j));
 }

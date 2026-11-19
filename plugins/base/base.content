@@ -3,7 +3,6 @@ material base:dirt {
     green: 85
     blue: 58
     grain: 0.13
-    break-seconds: 0.7
 }
 
 material base:sand {
@@ -11,7 +10,6 @@ material base:sand {
     green: 203
     blue: 150
     grain: 0.05
-    break-seconds: 0.7
 }
 
 material base:red-sand {
@@ -19,7 +17,6 @@ material base:red-sand {
     green: 100
     blue: 60
     grain: 0.06
-    break-seconds: 0.7
 }
 
 material base:silt {
@@ -27,7 +24,6 @@ material base:silt {
     green: 140
     blue: 110
     grain: 0.08
-    break-seconds: 0.7
 }
 
 material base:clay {
@@ -35,7 +31,6 @@ material base:clay {
     green: 110
     blue: 80
     grain: 0.08
-    break-seconds: 0.7
 }
 
 material base:mud {
@@ -43,7 +38,6 @@ material base:mud {
     green: 70
     blue: 50
     grain: 0.1
-    break-seconds: 0.7
 }
 
 material base:sandy-loam {
@@ -51,7 +45,6 @@ material base:sandy-loam {
     green: 120
     blue: 80
     grain: 0.1
-    break-seconds: 0.7
 }
 
 material base:silty-loam {
@@ -59,7 +52,6 @@ material base:silty-loam {
     green: 105
     blue: 75
     grain: 0.1
-    break-seconds: 0.7
 }
 
 material base:clay-loam {
@@ -67,7 +59,6 @@ material base:clay-loam {
     green: 90
     blue: 65
     grain: 0.1
-    break-seconds: 0.7
 }
 
 material base:gravel {
@@ -75,7 +66,6 @@ material base:gravel {
     green: 130
     blue: 125
     grain: 0.22
-    break-seconds: 0.7
 }
 
 material base:grass {
@@ -83,7 +73,6 @@ material base:grass {
     green: 140
     blue: 50
     grain: 0.12
-    break-seconds: 0.7
 }
 
 material base:lush-grass {
@@ -91,7 +80,6 @@ material base:lush-grass {
     green: 150
     blue: 50
     grain: 0.12
-    break-seconds: 0.7
 }
 
 material base:coarse-grass {
@@ -99,7 +87,6 @@ material base:coarse-grass {
     green: 130
     blue: 60
     grain: 0.14
-    break-seconds: 0.7
 }
 
 material base:tan-grass {
@@ -107,7 +94,6 @@ material base:tan-grass {
     green: 160
     blue: 90
     grain: 0.12
-    break-seconds: 0.7
 }
 
 material base:mud-grass {
@@ -115,7 +101,6 @@ material base:mud-grass {
     green: 110
     blue: 50
     grain: 0.12
-    break-seconds: 0.7
 }
 
 material base:cave-grass {
@@ -123,7 +108,6 @@ material base:cave-grass {
     green: 100
     blue: 80
     grain: 0.12
-    break-seconds: 0.7
 }
 
 material base:snow {
@@ -131,7 +115,6 @@ material base:snow {
     green: 248
     blue: 250
     grain: 0.02
-    break-seconds: 0.3
 }
 
 material base:ice {
@@ -139,8 +122,6 @@ material base:ice {
     green: 215
     blue: 240
     grain: 0.03
-    break-seconds: 3
-    mining-tier: 1
 }
 
 material base:ice-slush {
@@ -148,7 +129,6 @@ material base:ice-slush {
     green: 220
     blue: 230
     grain: 0.04
-    break-seconds: 0.3
 }
 
 material base:limestone {
@@ -156,8 +136,6 @@ material base:limestone {
     green: 195
     blue: 175
     grain: 0.08
-    break-seconds: 3
-    mining-tier: 1
 }
 
 material base:dolomite {
@@ -165,8 +143,6 @@ material base:dolomite {
     green: 205
     blue: 190
     grain: 0.08
-    break-seconds: 3
-    mining-tier: 1
 }
 
 material base:shale {
@@ -174,8 +150,6 @@ material base:shale {
     green: 95
     blue: 100
     grain: 0.1
-    break-seconds: 3
-    mining-tier: 1
 }
 
 material base:slate {
@@ -183,8 +157,6 @@ material base:slate {
     green: 80
     blue: 90
     grain: 0.1
-    break-seconds: 3
-    mining-tier: 1
 }
 
 material base:sandstone {
@@ -192,8 +164,6 @@ material base:sandstone {
     green: 175
     blue: 125
     grain: 0.08
-    break-seconds: 3
-    mining-tier: 1
 }
 
 material base:red-sandstone {
@@ -201,8 +171,6 @@ material base:red-sandstone {
     green: 80
     blue: 55
     grain: 0.09
-    break-seconds: 3
-    mining-tier: 1
 }
 
 material base:marble {
@@ -210,8 +178,6 @@ material base:marble {
     green: 235
     blue: 230
     grain: 0.04
-    break-seconds: 3
-    mining-tier: 1
 }
 
 material base:granite {
@@ -219,8 +185,6 @@ material base:granite {
     green: 150
     blue: 145
     grain: 0.14
-    break-seconds: 3
-    mining-tier: 1
 }
 
 material base:diorite {
@@ -228,8 +192,6 @@ material base:diorite {
     green: 200
     blue: 195
     grain: 0.14
-    break-seconds: 3
-    mining-tier: 1
 }
 
 material base:andesite {
@@ -237,8 +199,6 @@ material base:andesite {
     green: 130
     blue: 130
     grain: 0.1
-    break-seconds: 3
-    mining-tier: 1
 }
 
 material base:gabbro {
@@ -246,8 +206,6 @@ material base:gabbro {
     green: 60
     blue: 60
     grain: 0.14
-    break-seconds: 3
-    mining-tier: 1
 }
 
 material base:basalt {
@@ -255,8 +213,6 @@ material base:basalt {
     green: 50
     blue: 55
     grain: 0.1
-    break-seconds: 3
-    mining-tier: 1
 }
 
 material base:olivine {
@@ -264,8 +220,6 @@ material base:olivine {
     green: 130
     blue: 60
     grain: 0.14
-    break-seconds: 3
-    mining-tier: 1
 }
 
 material base:water {
@@ -273,7 +227,6 @@ material base:water {
     green: 90
     blue: 170
     grain: 0.04
-    break-seconds: 0.7
     fluid: 1
 }
 
@@ -282,7 +235,6 @@ material base:lava {
     green: 80
     blue: 20
     grain: 0.3
-    break-seconds: 4.5
     glows: 1
     fluid: 1
 }
@@ -299,8 +251,6 @@ material base:oak-leaves {
     green: 120
     blue: 40
     grain: 0.1
-    break-seconds: 0.3
-    living: 1
 }
 
 material base:birch-wood {
@@ -315,8 +265,6 @@ material base:birch-leaves {
     green: 175
     blue: 70
     grain: 0.1
-    break-seconds: 0.3
-    living: 1
 }
 
 material base:spruce-wood {
@@ -331,8 +279,6 @@ material base:spruce-leaves {
     green: 85
     blue: 55
     grain: 0.1
-    break-seconds: 0.3
-    living: 1
 }
 
 material base:wood-planks {
@@ -347,8 +293,6 @@ material base:grey-brick {
     green: 130
     blue: 135
     grain: 0.07
-    break-seconds: 3
-    mining-tier: 1
 }
 
 material base:white-brick {
@@ -356,8 +300,6 @@ material base:white-brick {
     green: 220
     blue: 215
     grain: 0.05
-    break-seconds: 3
-    mining-tier: 1
 }
 
 material base:concrete {
@@ -365,8 +307,6 @@ material base:concrete {
     green: 160
     blue: 155
     grain: 0.05
-    break-seconds: 3
-    mining-tier: 1
 }
 
 material base:steel {
@@ -374,15 +314,12 @@ material base:steel {
     green: 120
     blue: 130
     grain: 0.03
-    break-seconds: 4.5
-    mining-tier: 4
 }
 
 material base:glass {
     red: 165
     green: 205
     blue: 225
-    break-seconds: 0.3
     see-through: 1
 }
 
@@ -398,8 +335,6 @@ material base:jungle-leaves {
     green: 125
     blue: 35
     grain: 0.1
-    break-seconds: 0.3
-    living: 1
 }
 
 material base:acacia-wood {
@@ -414,8 +349,6 @@ material base:acacia-leaves {
     green: 145
     blue: 50
     grain: 0.1
-    break-seconds: 0.3
-    living: 1
 }
 
 material base:cherry-leaves {
@@ -423,8 +356,6 @@ material base:cherry-leaves {
     green: 165
     blue: 195
     grain: 0.08
-    break-seconds: 0.3
-    living: 1
 }
 
 material base:maple-leaves {
@@ -432,8 +363,6 @@ material base:maple-leaves {
     green: 95
     blue: 40
     grain: 0.1
-    break-seconds: 0.3
-    living: 1
 }
 
 material base:willow-leaves {
@@ -441,8 +370,6 @@ material base:willow-leaves {
     green: 175
     blue: 75
     grain: 0.1
-    break-seconds: 0.3
-    living: 1
 }
 
 material base:cactus {
@@ -450,8 +377,6 @@ material base:cactus {
     green: 130
     blue: 60
     grain: 0.08
-    living: 1
-    makes -> base:swayer
 }
 
 material base:wallpaper {
@@ -459,7 +384,6 @@ material base:wallpaper {
     green: 197
     blue: 124
     grain: 0.025
-    break-seconds: 0.7
 }
 
 material base:stained-wallpaper {
@@ -467,7 +391,6 @@ material base:stained-wallpaper {
     green: 168
     blue: 98
     grain: 0.05
-    break-seconds: 0.7
 }
 
 material base:carpet {
@@ -475,7 +398,6 @@ material base:carpet {
     green: 148
     blue: 92
     grain: 0.07
-    break-seconds: 0.7
 }
 
 material base:damp-carpet {
@@ -483,7 +405,6 @@ material base:damp-carpet {
     green: 118
     blue: 72
     grain: 0.09
-    break-seconds: 0.7
 }
 
 material base:ceiling-tile {
@@ -491,14 +412,12 @@ material base:ceiling-tile {
     green: 218
     blue: 194
     grain: 0.02
-    break-seconds: 0.7
 }
 
 material base:light-panel {
     red: 252
     green: 250
     blue: 236
-    break-seconds: 4.5
     glows: 1
 }
 
@@ -507,14 +426,12 @@ material base:red-carpet {
     green: 36
     blue: 40
     grain: 0.07
-    break-seconds: 0.7
 }
 
 material base:sunlight {
     red: 252
     green: 236
     blue: 168
-    break-seconds: 4.5
     glows: 1
 }
 
@@ -523,8 +440,6 @@ material base:plaster {
     green: 208
     blue: 186
     grain: 0.025
-    break-seconds: 3
-    mining-tier: 1
 }
 
 material base:wet-concrete {
@@ -532,8 +447,6 @@ material base:wet-concrete {
     green: 118
     blue: 112
     grain: 0.07
-    break-seconds: 3
-    mining-tier: 1
 }
 
 material base:mist-stone {
@@ -584,21 +497,11 @@ material base:tide-light {
     hidden-in -> base:tide
 }
 
-material base:beacon {
-    red: 120
-    green: 230
-    blue: 255
-    glows: 1
-    fills -> engine:beacon
-}
-
 material base:iron-ore {
     red: 140
     green: 96
     blue: 80
     grain: 0.25
-    break-seconds: 4.5
-    mining-tier: 3
     vein-in -> [base:granite base:diorite base:andesite base:gabbro base:basalt base:olivine]
 }
 
@@ -607,8 +510,6 @@ material base:copper-ore {
     green: 150
     blue: 120
     grain: 0.25
-    break-seconds: 4.5
-    mining-tier: 2
     vein-in -> [base:marble base:slate]
 }
 
@@ -617,9 +518,6 @@ material base:sulfur {
     green: 210
     blue: 70
     grain: 0.2
-    break-seconds: 4.5
-    mining-tier: 2
-    fills -> engine:mutagen
     vein-in -> [base:limestone base:dolomite base:shale base:sandstone base:red-sandstone]
 }
 
@@ -628,11 +526,6 @@ material base:fern {
     green: 140
     blue: 70
     grain: 0.15
-    break-seconds: 0.3
-    living: 1
-    plant: 1
-    thrives: "wet"
-    makes -> base:mist-opening
     grows-on -> base:plant-ground
 }
 
@@ -641,10 +534,6 @@ material base:flower {
     green: 120
     blue: 200
     grain: 0.15
-    break-seconds: 0.3
-    living: 1
-    plant: 1
-    makes -> base:lifting
     grows-on -> base:plant-ground
 }
 
@@ -653,11 +542,6 @@ material base:thornbush {
     green: 130
     blue: 70
     grain: 0.15
-    break-seconds: 0.3
-    living: 1
-    plant: 1
-    thrives: "arid"
-    makes -> base:mist-closing
     grows-on -> [base:sand base:red-sand base:plant-ground]
 }
 
@@ -666,66 +550,7 @@ material base:moss {
     green: 150
     blue: 90
     grain: 0.15
-    break-seconds: 0.3
-    living: 1
-    plant: 1
-    thrives: "cold"
-    makes -> base:dulling
     grows-on -> [base:plant-ground base:snow base:gravel]
-}
-
-material base:collector {
-    red: 170
-    green: 175
-    blue: 190
-    grain: 0.04
-    fills -> engine:collector
-}
-
-material base:bench {
-    red: 150
-    green: 110
-    blue: 80
-    grain: 0.08
-    fills -> engine:bench
-}
-
-material base:workbench {
-    red: 160
-    green: 120
-    blue: 70
-    grain: 0.08
-}
-
-material base:furnace {
-    red: 95
-    green: 90
-    blue: 88
-    grain: 0.15
-    mining-tier: 1
-}
-
-material base:anvil {
-    red: 70
-    green: 72
-    blue: 80
-    grain: 0.05
-    mining-tier: 1
-}
-
-material base:press {
-    red: 130
-    green: 100
-    blue: 70
-    grain: 0.08
-}
-
-material base:lab {
-    red: 205
-    green: 215
-    blue: 220
-    grain: 0.03
-    mining-tier: 3
 }
 
 material base:mushroom-stem {
@@ -733,7 +558,6 @@ material base:mushroom-stem {
     green: 215
     blue: 195
     grain: 0.06
-    break-seconds: 0.7
 }
 
 material base:mushroom-cap {
@@ -741,9 +565,6 @@ material base:mushroom-cap {
     green: 60
     blue: 55
     grain: 0.1
-    break-seconds: 0.3
-    living: 1
-    makes -> base:swayer
 }
 
 material base:flower-stem {
@@ -751,7 +572,6 @@ material base:flower-stem {
     green: 150
     blue: 60
     grain: 0.08
-    break-seconds: 0.7
 }
 
 material base:petals {
@@ -759,9 +579,6 @@ material base:petals {
     green: 140
     blue: 200
     grain: 0.06
-    break-seconds: 0.3
-    living: 1
-    makes -> base:lifting
 }
 
 material base:pollen {
@@ -769,687 +586,19 @@ material base:pollen {
     green: 205
     blue: 60
     grain: 0.15
-    break-seconds: 0.3
-    living: 1
-    makes -> base:lifting
 }
 
 hidden-family base:mist {
-    revealed-by -> engine:reveal-mist
 }
 
 hidden-family base:ember {
-    revealed-by -> engine:reveal-ember
 }
 
 hidden-family base:tide {
-    revealed-by -> engine:reveal-tide
-}
-
-ware base:copper-bar {
-    red: 200
-    green: 120
-    blue: 70
-}
-
-ware base:iron-bar {
-    red: 175
-    green: 175
-    blue: 180
-}
-
-ware base:oxidizer {
-    red: 230
-    green: 220
-    blue: 90
-}
-
-ware base:conjugant {
-    red: 120
-    green: 190
-    blue: 120
-}
-
-ware base:cleaver {
-    red: 170
-    green: 90
-    blue: 90
-}
-
-ware base:polar-graft {
-    red: 90
-    green: 150
-    blue: 230
-}
-
-ware base:charged-graft {
-    red: 230
-    green: 120
-    blue: 60
-}
-
-ware base:bulky-graft {
-    red: 140
-    green: 110
-    blue: 90
-}
-
-ware base:inhaler {
-    red: 190
-    green: 210
-    blue: 230
-}
-
-ware base:syringe {
-    red: 220
-    green: 230
-    blue: 235
-}
-
-ware base:charcoal {
-    red: 45
-    green: 40
-    blue: 38
-}
-
-station base:workbench-station {
-    placed-as -> base:workbench
-}
-
-station base:furnace-station {
-    placed-as -> base:furnace
-}
-
-station base:anvil-station {
-    placed-as -> base:anvil
-}
-
-station base:press-station {
-    placed-as -> base:press
-}
-
-station base:lab-station {
-    placed-as -> base:lab
-}
-
-group base:woods {
-    label: "wood"
-    member -> [base:oak-wood base:birch-wood base:spruce-wood base:jungle-wood base:acacia-wood base:mushroom-stem base:flower-stem]
-}
-
-group base:sands {
-    label: "sand"
-    member -> [base:sand base:red-sand base:sandstone base:red-sandstone]
-}
-
-group base:stones {
-    label: "stone"
-    member -> [base:limestone base:dolomite base:shale base:slate base:sandstone base:red-sandstone base:marble base:granite base:diorite base:andesite base:gabbro base:basalt base:olivine]
-}
-
-group base:leaves {
-    label: "leaves"
-    member -> [base:oak-leaves base:birch-leaves base:spruce-leaves base:jungle-leaves base:acacia-leaves base:cherry-leaves base:maple-leaves base:willow-leaves base:mushroom-cap base:petals]
-}
-
-group base:clays {
-    label: "clay"
-    member -> [base:clay base:clay-loam base:mud]
-}
-
-group base:sandy-soils {
-    label: "sandy soil"
-    member -> [base:sandy-loam base:gravel base:dirt base:grass base:lush-grass base:coarse-grass base:tan-grass base:mud-grass base:cave-grass]
-}
-
-group base:silty-soils {
-    label: "silty soil"
-    member -> [base:silt base:silty-loam base:clay-loam base:mud base:dirt base:grass base:lush-grass base:coarse-grass base:tan-grass base:mud-grass base:cave-grass]
-}
-
-group base:siftable {
-    label: "soil"
-    member -> [base:sandy-loam base:gravel base:dirt base:silt base:silty-loam base:clay-loam base:mud base:grass base:lush-grass base:coarse-grass base:tan-grass base:mud-grass base:cave-grass]
-}
-
-group base:fine-soils {
-    label: "fine soil"
-    member -> [base:silt base:silty-loam base:sandy-loam]
-}
-
-group base:waters {
-    label: "water or ice"
-    member -> [base:snow base:ice base:ice-slush base:water]
-}
-
-group base:rubble {
-    label: "gravel or lava"
-    member -> [base:gravel base:lava]
-}
-
-group base:masonry {
-    label: "masonry"
-    member -> [base:grey-brick base:white-brick base:concrete base:wet-concrete base:plaster base:ceiling-tile]
-}
-
-group base:cloth {
-    label: "cloth"
-    member -> [base:wallpaper base:stained-wallpaper base:carpet base:damp-carpet base:red-carpet]
-}
-
-group base:lamps {
-    label: "lamp"
-    member -> [base:light-panel base:sunlight]
-}
-
-group base:built-materials {
-    label: "built material"
-    member -> [base:grey-brick base:white-brick base:concrete base:wet-concrete base:plaster base:ceiling-tile base:wallpaper base:stained-wallpaper base:carpet base:damp-carpet base:red-carpet base:light-panel base:sunlight base:steel]
-}
-
-group base:strange-stones {
-    label: "strange stone"
-    member -> [base:mist-stone base:mist-light base:ember-stone base:ember-light base:tide-stone base:tide-light]
 }
 
 group base:plant-ground {
-    label: "ground plants take to"
     member -> [base:dirt base:grass base:mud-grass base:lush-grass base:tan-grass base:coarse-grass]
-}
-
-upgrade base:wooden-pickaxe {
-    title: "wooden pickaxe"
-    effect: "mining"
-    mining-tier: 1
-}
-
-upgrade base:stone-pickaxe {
-    title: "stone pickaxe"
-    effect: "mining"
-    mining-tier: 2
-}
-
-upgrade base:copper-pickaxe {
-    title: "copper pickaxe"
-    effect: "mining"
-    mining-tier: 3
-}
-
-upgrade base:iron-pickaxe {
-    title: "iron pickaxe"
-    effect: "mining"
-    mining-tier: 4
-}
-
-upgrade base:assay-kit {
-    title: "assay kit"
-    effect: "assay"
-}
-
-insight base:charring {
-    title: "charring"
-    notice: "Wood left in the furnace's heat turns to charcoal, and charcoal worked through ore gives back more metal."
-    noticed-working -> base:furnace-station
-}
-
-insight base:sifting {
-    title: "sifting"
-    notice: "Loam, grass and dirt are sand and clay held together; sifted, they come apart, and the finest of them melts to glass."
-    noticed-breaking -> base:siftable
-}
-
-insight base:quenching {
-    title: "quenching"
-    notice: "Water poured over hot sand sets more glass, lava cools to glass, and melted ice carries a polar graft."
-    noticed-breaking -> base:waters
-}
-
-insight base:salvage {
-    title: "salvage"
-    notice: "What others built can be taken apart: masonry crushes to grit, cloth chars or pulps, lamps keep their glass and steel gives back its iron."
-    noticed-breaking -> base:built-materials
-}
-
-insight base:strangeness {
-    title: "strangeness"
-    notice: "Blocks that only appear to an altered eye still carry charge and bulk."
-    noticed-breaking -> base:strange-stones
-}
-
-recipe base:planks {
-    seconds: 0.5
-    at -> engine:hand
-    produces -> base:wood-planks { yield: 4 }
-    consumes -> base:woods
-}
-
-recipe base:make-workbench {
-    seconds: 1.5
-    at -> engine:hand
-    produces -> base:workbench
-    consumes -> base:wood-planks { count: 6 }
-}
-
-recipe base:make-wooden-pickaxe {
-    seconds: 1.5
-    at -> base:workbench-station
-    produces -> base:wooden-pickaxe
-    consumes -> base:wood-planks { count: 3 }
-}
-
-recipe base:make-stone-pickaxe {
-    seconds: 2
-    at -> base:workbench-station
-    produces -> base:stone-pickaxe
-    consumes -> base:wood-planks { count: 2 }
-    consumes -> base:stones { count: 3 }
-}
-
-recipe base:make-furnace {
-    seconds: 3
-    at -> base:workbench-station
-    produces -> base:furnace
-    consumes -> base:stones { count: 8 }
-}
-
-recipe base:make-press {
-    seconds: 2
-    at -> base:workbench-station
-    produces -> base:press
-    consumes -> base:wood-planks { count: 4 }
-    consumes -> base:stones { count: 2 }
-}
-
-recipe base:make-anvil {
-    seconds: 3
-    at -> base:workbench-station
-    produces -> base:anvil
-    consumes -> base:stones { count: 4 }
-    consumes -> base:copper-bar { count: 3 }
-}
-
-recipe base:make-bench {
-    seconds: 2
-    at -> base:workbench-station
-    produces -> base:bench
-    consumes -> base:wood-planks { count: 4 }
-    consumes -> base:glass { count: 2 }
-}
-
-recipe base:make-inhaler {
-    seconds: 1.5
-    at -> base:workbench-station
-    produces -> base:inhaler
-    consumes -> base:glass { count: 2 }
-    consumes -> base:wood-planks
-}
-
-recipe base:smelt-glass {
-    at -> base:furnace-station
-    produces -> base:glass
-    consumes -> base:sands { count: 2 }
-}
-
-recipe base:smelt-copper {
-    seconds: 2
-    at -> base:furnace-station
-    produces -> base:copper-bar
-    consumes -> base:copper-ore { count: 2 }
-}
-
-recipe base:smelt-iron {
-    seconds: 3
-    at -> base:furnace-station
-    produces -> base:iron-bar
-    consumes -> base:iron-ore { count: 2 }
-}
-
-recipe base:make-copper-pickaxe {
-    seconds: 3
-    at -> base:anvil-station
-    produces -> base:copper-pickaxe
-    consumes -> base:wood-planks { count: 2 }
-    consumes -> base:copper-bar { count: 3 }
-}
-
-recipe base:make-iron-pickaxe {
-    seconds: 4
-    at -> base:anvil-station
-    produces -> base:iron-pickaxe
-    consumes -> base:wood-planks { count: 2 }
-    consumes -> base:iron-bar { count: 3 }
-}
-
-recipe base:make-collector {
-    seconds: 2
-    at -> base:anvil-station
-    produces -> base:collector
-    consumes -> base:glass { count: 2 }
-    consumes -> base:copper-bar { count: 2 }
-}
-
-recipe base:make-beacon {
-    seconds: 2
-    at -> base:anvil-station
-    produces -> base:beacon
-    consumes -> base:glass
-    consumes -> base:copper-bar
-}
-
-recipe base:make-lab {
-    seconds: 4
-    at -> base:anvil-station
-    produces -> base:lab
-    consumes -> base:iron-bar { count: 4 }
-    consumes -> base:glass { count: 4 }
-}
-
-recipe base:make-syringe {
-    seconds: 2
-    at -> base:anvil-station
-    produces -> base:syringe
-    consumes -> base:glass
-    consumes -> base:iron-bar
-}
-
-recipe base:make-assay-kit {
-    seconds: 3
-    at -> base:lab-station
-    produces -> base:assay-kit
-    consumes -> base:glass { count: 2 }
-    consumes -> base:copper-bar { count: 2 }
-}
-
-recipe base:make-oxidizer {
-    seconds: 1.5
-    at -> base:lab-station
-    produces -> base:oxidizer { yield: 2 }
-    consumes -> base:sulfur
-}
-
-recipe base:make-conjugant {
-    seconds: 1.5
-    at -> base:lab-station
-    produces -> base:conjugant { yield: 2 }
-    consumes -> base:leaves { count: 2 }
-}
-
-recipe base:make-cleaver {
-    seconds: 2
-    at -> base:lab-station
-    produces -> base:cleaver
-    consumes -> base:iron-bar
-    consumes -> base:sulfur
-}
-
-recipe base:make-polar-graft {
-    seconds: 1.5
-    at -> base:lab-station
-    produces -> base:polar-graft
-    consumes -> base:clays { count: 2 }
-}
-
-recipe base:make-charged-graft {
-    seconds: 1.5
-    at -> base:lab-station
-    produces -> base:charged-graft
-    consumes -> base:copper-ore
-}
-
-recipe base:make-bulky-graft {
-    seconds: 1.5
-    at -> base:lab-station
-    produces -> base:bulky-graft
-    consumes -> base:stones { count: 2 }
-}
-
-recipe base:fire-brick {
-    seconds: 2
-    at -> base:furnace-station
-    produces -> base:grey-brick
-    consumes -> base:clays { count: 2 }
-}
-
-recipe base:crush-rubble {
-    seconds: 1.5
-    at -> base:lab-station
-    produces -> base:bulky-graft
-    consumes -> base:rubble { count: 2 }
-}
-
-recipe base:char-wood {
-    seconds: 2
-    at -> base:furnace-station
-    produces -> base:charcoal { yield: 2 }
-    consumes -> base:woods
-    learned-by -> base:charring
-}
-
-recipe base:reduce-iron {
-    seconds: 3
-    at -> base:furnace-station
-    produces -> base:iron-bar { yield: 2 }
-    consumes -> base:iron-ore { count: 2 }
-    consumes -> base:charcoal
-    learned-by -> base:charring
-}
-
-recipe base:reduce-copper {
-    seconds: 2
-    at -> base:furnace-station
-    produces -> base:copper-bar { yield: 2 }
-    consumes -> base:copper-ore { count: 2 }
-    consumes -> base:charcoal
-    learned-by -> base:charring
-}
-
-recipe base:sift-sand {
-    seconds: 2
-    at -> base:workbench-station
-    produces -> base:sand
-    consumes -> base:sandy-soils { count: 4 }
-    learned-by -> base:sifting
-}
-
-recipe base:sift-clay {
-    seconds: 2
-    at -> base:workbench-station
-    produces -> base:clay
-    consumes -> base:silty-soils { count: 4 }
-    learned-by -> base:sifting
-}
-
-recipe base:melt-fine-soil {
-    seconds: 1.5
-    at -> base:furnace-station
-    produces -> base:glass
-    consumes -> base:fine-soils { count: 3 }
-    learned-by -> base:sifting
-}
-
-recipe base:quench-glass {
-    at -> base:furnace-station
-    produces -> base:glass { yield: 2 }
-    consumes -> base:sands { count: 2 }
-    consumes -> base:waters
-    learned-by -> base:quenching
-}
-
-recipe base:melt-ice {
-    seconds: 1.5
-    at -> base:lab-station
-    produces -> base:polar-graft
-    consumes -> base:waters { count: 2 }
-    learned-by -> base:quenching
-}
-
-recipe base:cool-lava {
-    at -> base:furnace-station
-    produces -> base:glass
-    consumes -> base:lava
-    learned-by -> base:quenching
-}
-
-recipe base:crush-masonry {
-    at -> base:lab-station
-    produces -> base:bulky-graft
-    consumes -> base:masonry
-    learned-by -> base:salvage
-}
-
-recipe base:masonry-furnace {
-    seconds: 3
-    at -> base:workbench-station
-    produces -> base:furnace
-    consumes -> base:masonry { count: 6 }
-    learned-by -> base:salvage
-}
-
-recipe base:char-cloth {
-    seconds: 1.5
-    at -> base:furnace-station
-    produces -> base:charcoal
-    consumes -> base:cloth { count: 2 }
-    learned-by -> base:salvage
-}
-
-recipe base:pulp-cloth {
-    seconds: 1.5
-    at -> base:lab-station
-    produces -> base:conjugant
-    consumes -> base:cloth { count: 2 }
-    learned-by -> base:salvage
-}
-
-recipe base:strip-lamp {
-    at -> base:furnace-station
-    produces -> base:glass { yield: 2 }
-    consumes -> base:lamps
-    learned-by -> base:salvage
-}
-
-recipe base:lamp-beacon {
-    seconds: 2
-    at -> base:anvil-station
-    produces -> base:beacon
-    consumes -> base:lamps
-    consumes -> base:copper-bar
-    learned-by -> base:salvage
-}
-
-recipe base:melt-steel {
-    seconds: 2
-    at -> base:anvil-station
-    produces -> base:iron-bar { yield: 2 }
-    consumes -> base:steel
-    learned-by -> base:salvage
-}
-
-recipe base:steel-anvil {
-    seconds: 3
-    at -> base:workbench-station
-    produces -> base:anvil
-    consumes -> base:stones { count: 4 }
-    consumes -> base:steel
-    learned-by -> base:salvage
-}
-
-recipe base:strange-charge {
-    seconds: 2
-    at -> base:lab-station
-    produces -> base:charged-graft
-    consumes -> base:strange-stones { count: 2 }
-    learned-by -> base:strangeness
-}
-
-recipe base:strange-bulk {
-    seconds: 2
-    at -> base:lab-station
-    produces -> base:bulky-graft
-    consumes -> base:strange-stones { count: 2 }
-    learned-by -> base:strangeness
-}
-
-synthesis base:press-extract {
-    title: "press for extract"
-    operation: "extract"
-    seconds: 2
-    at -> base:press-station
-}
-
-synthesis base:press-dose {
-    title: "press a dose"
-    operation: "press"
-    seconds: 2
-    at -> base:press-station
-}
-
-synthesis base:oxidize {
-    title: "oxidize"
-    operation: "oxidize"
-    seconds: 3
-    at -> base:lab-station
-    reagent -> base:oxidizer
-}
-
-synthesis base:conjugate {
-    title: "conjugate"
-    operation: "conjugate"
-    seconds: 3
-    at -> base:lab-station
-    reagent -> base:conjugant
-}
-
-synthesis base:cleave {
-    title: "cleave"
-    operation: "cleave"
-    seconds: 4
-    at -> base:lab-station
-    reagent -> base:cleaver
-}
-
-synthesis base:graft-polar {
-    title: "graft polar"
-    operation: "attach"
-    seconds: 4
-    fragment: "polar"
-    at -> base:lab-station
-    reagent -> base:polar-graft
-}
-
-synthesis base:graft-charged {
-    title: "graft charged"
-    operation: "attach"
-    seconds: 4
-    fragment: "charged"
-    at -> base:lab-station
-    reagent -> base:charged-graft
-}
-
-synthesis base:graft-bulky {
-    title: "graft bulky"
-    operation: "attach"
-    seconds: 4
-    fragment: "bulky"
-    at -> base:lab-station
-    reagent -> base:bulky-graft
-}
-
-dose-route base:swallow {
-    title: "swallow"
-    route: "ingested"
-}
-
-dose-route base:inhale {
-    title: "inhale (needs an inhaler)"
-    route: "inhaled"
-    needs-device -> base:inhaler
-}
-
-dose-route base:inject {
-    title: "inject (uses a syringe)"
-    route: "injected"
-    needs-device -> base:syringe { uses: 1 }
 }
 
 cover-rule base:snow-cover {
@@ -2035,7 +1184,7 @@ perception-preset base:turned {
 }
 
 perception-preset base:mist-sight {
-    sets -> engine:reveal-mist { level: 1 }
+    sets -> base:mist { level: 1 }
 }
 
 perception-preset base:afterimage {
@@ -2051,48 +1200,42 @@ perception-preset base:soft {
     sets -> engine:coarse-detail { level: -1 }
 }
 
-starter-body base:starter {
-    halves -> [base:receptor-a base:receptor-b base:receptor-c]
-    enzymes -> [base:oxidase base:conjugase]
-    doses -> [base:swallowed-dose base:inhaled-dose base:injected-dose]
-}
-
-receptor-half base:receptor-a {
-    cells: "wall open-polar wall trigger-0 open-bulky trigger-0 wall open-charged wall open-polar wall trigger-0 wall"
-}
-
-receptor-half base:receptor-b {
-    cells: "wall open-charged wall trigger-1 open-polar+bulky trigger-1 wall open-bulky wall wall open-charged wall trigger-1"
-}
-
-receptor-half base:receptor-c {
-    cells: "wall open-bulky+charged wall brake open-polar wall wall open-bulky wall open-charged wall wall brake"
-    expression: 0.5
-}
-
-enzyme base:oxidase { operation: oxidize, wants: "bulky+charged" }
-enzyme base:conjugase { operation: conjugate, wants: "polar+charged" }
-
-chemistry base:mist-opening { targets -> base:receptor-a, skips: brake }
-chemistry base:mist-closing { targets -> base:receptor-a, skips: trigger }
-chemistry base:swayer { targets -> base:receptor-b, skips: brake }
-chemistry base:lifting { targets -> [base:receptor-a base:receptor-b], skips: brake }
-chemistry base:dulling { targets -> base:receptor-c, skips: trigger }
-
-starter-dose base:swallowed-dose { half -> base:receptor-a, skips: brake, route: ingested, amount: 2 }
-starter-dose base:inhaled-dose { half -> base:receptor-b, skips: brake, route: inhaled, amount: 2 }
-starter-dose base:injected-dose { half -> base:receptor-c, skips: trigger, route: injected, amount: 2 }
-
-signal-drive base:mist-reveals { signal: mist, gain: 2, drives -> engine:reveal-mist }
-signal-drive base:mist-turns { signal: mist, gain: 1.2, drives -> engine:color-turn-0 }
-signal-drive base:sway-warps { signal: sway, gain: 0.15, drives -> engine:warp }
-signal-drive base:sway-widens { signal: sway, gain: 0.6, drives -> engine:field-of-view }
-signal-drive base:sway-lingers { signal: sway, gain: 1, drives -> engine:afterimage }
-signal-drive base:lift-lightens { signal: lift, gain: -0.8, drives -> engine:gravity }
-signal-drive base:lift-raises { signal: lift, gain: 0.8, drives -> engine:jump-height }
-
 terrain base:terrain {
     flat-fill -> base:dirt
     stand-in -> base:dirt
+    broad-keep: 0.92
+    broad-spread: 0.25
+    local-keep: 0.5
+    local-spread: 0.25
+    heat-keep: 0.94
+    heat-spread: 0.3
+    wetness-keep: 0.94
+    wetness-spread: 0.3
+    strata-keep: 0.8
+    strata-spread: 0.25
+    ruggedness-keep: 0.9
+    ruggedness-spread: 0.2
+    shield-keep: 0.9
+    shield-spread: 0.2
+    rugged-threshold: 0.4
+    mountain-height: 2.5
+    lapse-rate: 0.3
+    cover-depth: 0.06
+    soil-depth: 0.4
+    water-level: -0.6
+    warmth-class-limit: 0.35
+    rock-band-1: 1.2
+    rock-band-2: 2.6
+    rock-band-3: 4.5
+    wetness-limit-1: -0.2
+    wetness-limit-2: 0.3
+    base-tree-density: 0.05
+    wetness-per-tree-density: 4
+    least-tree-density: 0.01
+    most-tree-density: 0.3
+    plant-density: 0.02
+    vein-odds: 0.08
+    vein-fill: 0.7
+    vein-radius: 2
 }
 

@@ -1,0 +1,28 @@
+kind planet-void {
+    until: number
+    world: text
+    over: text?
+    look: text?
+    fog: number 0.. = 3.5
+}
+
+kind planet-voids {
+    layers: some -> planet-void
+    everywhere: text?
+}
+
+kind planet-ground {
+    tag: text
+    under: "open" | "sealed"
+    crust: "none" | "risen" = "none"
+}
+
+kind planet-grounds {
+    grounds: some -> planet-ground
+}
+
+kind planet-fixtures {
+    watch-fire: one -> material
+    trail: one -> material
+    cairn: one -> material
+}

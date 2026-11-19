@@ -5,4 +5,5 @@ kind babel-materials {
     light: one -> material
     plaza: one -> material
     lawn: one -> material
+    reading: one -> material
 }

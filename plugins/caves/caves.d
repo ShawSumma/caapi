@@ -1,11 +1,11 @@
 module plugins.caves.caves;
 
-import core.stdc.math : asinh, atan2, cos, fabs, floor, sin, sqrt, tanh;
-import plugins.api.api : Api, HorosphereForm, KindTag, Material, Pen, Rhythm, Risen, Site, SitePart, Span, Spot;
-import plugins.api.binding : bound, kebabOf;
-import plugins.api.content : Content, settingAt;
-import plugins.carve.carve : Choice, Painting, Triad, Vec, WAYS, WAY_COUNT, Way, aimed, along, axisOf, between, carried, chartOf, degreesOf, dot, edgeHash, emit, fromAlong, isOwnedBy, latticeHash, minus, mixed, noiseAt, normalized, opposite, penCarried, physicalOf, plus, rejected, scaled, slabAt, squared, triadAt, unitOf, upOf;
-import plugins.turtle.turtle : Drawing, Hashes, PI, PORT, TURN_TREADS, Tread, Turtle, boxOf, clamped, settled, treadAround;
+import core.stdc.math : asinh, atan2, ceil, cos, fabs, floor, sin, sqrt, tanh;
+import plugins.api.api : Api, HorosphereForm, KindTag, Material, Pen, Rhythm, Risen, Rising, Site, SitePart, Span, Spot;
+import plugins.api.binding : List, Named, bound, settingsOf;
+import plugins.api.content : Content;
+import plugins.carve.carve : Choice, Painting, Triad, Vec, WAYS, WAY_COUNT, Way, aimed, along, axisOf, carried, chartOf, degreesOf, dot, edgeHash, emit, fromAlong, isOwnedBy, latticeHash, minus, mixed, noiseAt, normalized, opposite, penCarried, physicalOf, plus, rejected, scaled, slabAt, squared, triadAt, upOf;
+import plugins.turtle.turtle : Drawing, Flight, Found, Hashes, Lie, PI, PORT, TURN_TREADS, Tread, Turtle, WELL_TREADS, Winding, between, boxOf, clamped, flightAt, floorMod, higherOf, lieOf, middle, settled, treadAround, unitOf, wellTreadAt, wound;
 
 enum string NAME = "caves";
 enum string LOOK = "caves:look";
@@ -15,36 +15,60 @@ enum double RISEN_DEPTH = 3;
 enum double OPEN_UNDER = 0.5;
 enum double SEALED_UNDER = 1.5;
 enum int WELL_EDGES = 2;
-enum int WELL_TREADS = 8;
+enum int MOST_WELL_EDGES = 5;
+enum int LANDING_HALF = 6;
 enum double WELL_SLACK = 0.02;
 enum double VERTICAL_SLACK = 0.5;
-enum double MIN_CLIMB = 1.37;
+enum double LEAST_CLIMB = 1.37;
 enum double WALKABLE_RISE = 47.3;
 enum double STEEP_RISE = 65;
 enum double RISE_STEP = 0.25;
-enum double MAX_DEPTH = 5.2;
+enum double MOST_DEPTH = 5.2;
 enum double ROCK_MARGIN = 0.5;
 enum double FIRST_BAND = 1.6;
+enum double HALL_DEPTH = 1.95;
 enum uint BAND_COUNT = 5;
 enum uint MOST_KNOWN = 256;
-enum uint MOST_CHAIN = 128;
 enum uint MOST_ENTRY_TRIES = 12;
 enum uint MOST_FORMATIONS = 16;
 enum uint MOST_STOPS = 96;
+enum uint MOST_DESCENT = 512;
+enum size_t MOST_WELLS = 8;
+enum size_t MOST_LAYERS = 8;
+enum size_t MOST_STACKS = 16;
 enum uint CHANDELIER_ATTEMPTS = 4;
 enum ulong CHANDELIER_SALT_STEP = 256;
 struct Tuning {
     double[BAND_COUNT] keepOdds;
-    double[BAND_COUNT] radii;
-    double[BAND_COUNT] domeBase;
+    double[BAND_COUNT] tubeRadii;
+    double[BAND_COUNT] domeSizes;
     double fog;
     double rootOdds;
     double headOdds;
+    double hallOdds;
+    double drainOdds;
+    double breachOdds;
+    double drainStairOdds;
     double portOdds;
     double chamberOdds;
+    double squareWellOdds;
+    double crossOdds;
+    double galleryOdds;
+    double mouthOdds;
 }
 
 __gshared Tuning tuning;
+
+enum Formations : ubyte {
+    none,
+    icicles,
+    dripstone,
+    chandelier,
+    beams,
+    columns,
+    pillars,
+    roots,
+}
 
 struct Rules {
     double floorThreshold;
@@ -59,35 +83,91 @@ struct Rules {
     Material standing;
     Material chandelier;
     Material beam;
+    Formations formations;
+    double dome = 0;
+}
+
+struct Layer {
+    double from = 0;
+    Rules theme;
+}
+
+enum Over : ubyte {
+    anywhere,
+    risen,
+}
+
+struct Stack {
+    Named ground;
+    Over over;
+    List!(Layer, MOST_LAYERS) layers;
+
+    bool isUnder(KindTag tag, Rising rising) const {
+        return KindTag.of(ground.tag) == tag && (over == Over.anywhere || rising == Rising.risen);
+    }
+}
+
+struct Well {
+    Named ground;
+    Material stair;
+    Material lining;
+    int liningBelow;
 }
 
 struct Materials {
     Material stair;
+    Material lining;
+    Material drain;
+    List!(Well, MOST_WELLS) wells;
+    Rules opening;
+    Stack open;
+    Stack sealed;
+    List!(Stack, MOST_STACKS) stacks;
 }
 
-__gshared Rules[THEME_COUNT] rules;
+const(Stack)* stackUnder(KindTag ground, Rising rising, Mouth mouth) {
+    uint index = 0;
+    while (index < materials.stacks.count && !materials.stacks.items[index].isUnder(ground, rising)) {
+        index += 1;
+    }
+    if (index < materials.stacks.count) {
+        return &materials.stacks.items[index];
+    } else if (mouth == Mouth.sealed) {
+        return &materials.sealed;
+    } else {
+        return &materials.open;
+    }
+}
+
+const(Rules)* themeIn(ref const Stack stack, double depth) {
+    uint index = 0;
+    while (index + 1 < stack.layers.count && depth >= stack.layers.items[index + 1].from) {
+        index += 1;
+    }
+    return &stack.layers.items[index].theme;
+}
+
+Well wellUnder(KindTag ground) {
+    uint index = 0;
+    while (index < materials.wells.count && KindTag.of(materials.wells.items[index].ground.tag) != ground) {
+        index += 1;
+    }
+    if (index < materials.wells.count) {
+        return materials.wells.items[index];
+    } else {
+        return Well(Named.init, materials.stair, materials.lining, 0);
+    }
+}
+
 __gshared Materials materials;
 
 void resolveCaves(const(Content)* content) {
-    static foreach (member; __traits(allMembers, Theme)) {
-        rules[__traits(getMember, Theme, member)] = content.bound!Rules(NAME ~ ":" ~ kebabOf!member);
-    }
     materials = content.bound!Materials(NAME ~ ":materials");
-    tuning.fog = content.setting(content, NAME, "fog");
-    tuning.rootOdds = content.setting(content, NAME, "root-odds");
-    tuning.headOdds = content.setting(content, NAME, "head-odds");
-    tuning.portOdds = content.setting(content, NAME, "port-odds");
-    tuning.chamberOdds = content.setting(content, NAME, "chamber-odds");
-    foreach (band; 0 .. BAND_COUNT) {
-        tuning.keepOdds[band] = content.settingAt(NAME, "keep-odds", band);
-        tuning.radii[band] = content.settingAt(NAME, "tube-radii", band);
-        tuning.domeBase[band] = content.settingAt(NAME, "dome-sizes", band);
-    }
+    tuning = content.settingsOf!Tuning(NAME);
 }
 enum double LEAST_RADIUS = 3.5;
 enum double MOST_RADIUS = 10.5;
 enum double MOST_DOME = 11.2;
-enum double ENTRY_DOME = 10.8;
 enum double TUBE_HEIGHT = 1.15;
 enum double LEAST_BULGE = -1;
 enum double MOST_BULGE = 2.5;
@@ -102,6 +182,7 @@ enum double TREAD_THICKNESS = 2;
 enum double MOUTH_LOW = -8;
 enum double MOUTH_HIGH = 6;
 enum double MOUTH_ROOM = 3;
+enum double SKIN = 1.5;
 enum double STONE_RING = 10.5;
 enum double STONE_REACH = 1.3;
 enum double STONE_FOOT = 3;
@@ -116,25 +197,38 @@ enum double COLUMN_STEP = 1;
 enum double LEAST_TIP_HEIGHT = 2.5;
 enum double BEAM_FLOOR = 4.2;
 enum double NOISE_SCALE = 4.5;
-enum double FROST_DEPTH = 1.3;
-enum double GLOW_DEPTH = 2.3;
-enum double GYPSUM_DEPTH = 3.3;
-enum double CRYSTAL_DEPTH = 4.3;
 enum ulong ROOT_SALT = 0x52_4F4F_54;
 enum ulong HEAD_SALT = 0x48_4541_44;
+enum ulong HALL_SALT = 0x48_414C_4C;
+enum ulong DRAIN_SALT = 0x44_5241_494E;
+enum ulong BREACH_SALT = 0x42_5245_4143;
+enum ulong CROSS_SALT = 0x43_524F_5353;
+enum ulong GALLERY_SALT = 0x47_414C_4C59;
+enum ulong MOUTH_SALT = 0x4D_4F55_5448;
+enum double GALLERY_GRADE = 0.5;
+enum Span GALLERY_WIDE = Span(-3, 2);
+enum Span GALLERY_NARROW = Span(-2, 1);
+enum double BREACH_BAND = 0.25;
+enum double DRAIN_CLEAR = 0;
+enum int DRAIN_SHORT = 3;
+enum int CHUTE_HALF = 3;
 enum ulong KEEP_SALT = 0x4B_4545_50;
 enum ulong BULGE_SALT = 0x42_554C_47;
 enum ulong DOME_SALT = 0x44_4F4D_45;
 enum ulong FORM_SALT = 0x46_4F52_4D;
 enum ulong CELL_SALT = 0x43_454C_4C;
 enum ulong FLOOR_SALT = 0x46_4C4F_52;
+enum ulong WELL_SALT = 0x57_454C_4C;
+enum double WELL_LOWEST = -1;
+enum double WELL_HIGHEST = MOUTH_HIGH;
+enum int WELL_ROOM = 3;
+enum int SQUARE_INNER = 2;
+enum int SQUARE_SIDES = 2;
+enum int SQUARE_TREADS = 4 * (SQUARE_SIDES + 1);
 enum double RING_STOP = SHAFT_RADIUS + 1.5;
 immutable int[3] TUBE_STOPS = [13, 17, 21];
-
-enum Found : ubyte {
-    none,
-    some,
-}
+immutable int[2] LINING_SIDES = [-PORT - 1, PORT];
+static assert(MOST_WELL_EDGES == cast(int) MOST_DEPTH);
 
 enum Openness : ubyte {
     closed,
@@ -157,13 +251,9 @@ enum Space : ubyte {
     tread,
 }
 
-enum Theme : ubyte {
-    opening,
-    frost,
-    glow,
-    gypsum,
-    crystal,
-    ember,
+enum Place : ubyte {
+    mouth,
+    chamber,
 }
 
 enum Shape : ubyte {
@@ -171,7 +261,27 @@ enum Shape : ubyte {
     beam,
 }
 
-enum uint THEME_COUNT = Theme.max + 1;
+enum WellShape : ubyte {
+    spiral,
+    square,
+}
+
+enum Bottom : ubyte {
+    chamber,
+    landing,
+}
+
+struct WellDepth {
+    int edges;
+    Bottom bottom;
+}
+
+struct WellPass {
+    Way up;
+    int depth;
+    WellDepth well;
+    Found found;
+}
 
 struct Spread {
     double low;
@@ -182,7 +292,7 @@ Choice choiceOf(Material material) {
     if (material == Material.none) {
         return Choice.keep();
     } else {
-        return Choice.of(material);
+        return Choice.dress(material);
     }
 }
 
@@ -199,6 +309,9 @@ enum Spread BEAM_TILT = Spread(0, 0.35);
 enum Spread BEAM_LENGTH = Spread(10, 18);
 enum Spread BEAM_WIDTH = Spread(0.9, 1.9);
 enum Spread STONE_HEIGHT = Spread(2, 5.5);
+enum Spread MARKER_HEIGHT = Spread(7, 9);
+enum double STONE_TOP = 11.5;
+enum double MARKER_LIT = 2;
 enum Spread ICICLE_WIDTH = Spread(0.9, 1.6);
 enum uint LEAST_ARMS = 6;
 enum uint ARM_CHOICES = 4;
@@ -213,6 +326,13 @@ enum uint GLOW_STANDING = 3;
 enum uint GYPSUM_HANGING = 3;
 enum uint EMBER_STANDING = 4;
 enum uint EMBER_HANGING = 3;
+enum uint PILLARS = 6;
+enum uint ROOTS_HANGING = 7;
+enum uint ROOTS_STANDING = 3;
+enum double ROOT_LENGTH = 8;
+enum Spread ROOT_WIDTH = Spread(0.7, 1.2);
+enum double STALK_LENGTH = 5;
+enum double STALK_WIDTH = 1.4;
 enum double ICICLE_LENGTH = 5;
 enum double DRIPSTONE_LENGTH = 4;
 enum double DRIPSTONE_WIDTH = 1.3;
@@ -234,6 +354,7 @@ double pickIn(ulong hash, ulong salt, Spread spread) {
 struct Root {
     ulong spawn;
     Hashes blocked;
+    Hashes forced;
 }
 
 enum Mouth : ubyte {
@@ -244,12 +365,13 @@ enum Mouth : ubyte {
 
 struct Bed {
     const(Root)* root;
+    const(Stack)* stack;
     double top = 0;
-    double bottom = MAX_DEPTH;
+    double bottom = MOST_DEPTH;
     Mouth mouth;
 
     static Bed ofSurface(const(Root)* root) {
-        return Bed(root, 0, MAX_DEPTH, Mouth.open);
+        return Bed(root, stackUnder(KindTag.init, Rising.root, Mouth.open), 0, MOST_DEPTH, Mouth.open);
     }
 
     static Bed ofGround(const(Root)* root, ref const Risen risen) {
@@ -264,6 +386,7 @@ struct Bed {
         if (risen.hasRisen) {
             bed.bottom = RISEN_DEPTH;
         }
+        bed.stack = stackUnder(risen.tag, risen.rising, bed.mouth);
         return bed;
     }
 }
@@ -279,10 +402,6 @@ struct Vertex {
 struct Parent {
     Way way;
     Found found;
-
-    bool isWay(Way other) const {
-        return found == Found.some && way == other;
-    }
 }
 
 struct Known {
@@ -309,6 +428,7 @@ struct Tube {
     Vec turn;
     double radius = 0;
     double bulge = 0;
+    double reach = 0;
     Form form;
     Top top;
 }
@@ -327,21 +447,30 @@ struct Scene {
     Triad triad;
     Tube[WAY_COUNT] tubes;
     Formation[MOST_FORMATIONS] formations;
-    Parent well;
+    WellPass well;
     ulong seed;
     double dome = 0;
     double domeHeight = 0;
     double bowl = 0;
     double edge = 0;
     double mouth = 0;
+    double low = 0;
+    double high = 0;
+    double wide = 0;
+    double beams = 0;
     uint count;
     uint formationCount;
-    Theme theme;
+    Place place;
+    const(Rules)* rule;
 
     void add(Formation formation) {
         if (formationCount < MOST_FORMATIONS) {
             formations[formationCount] = formation;
             formationCount += 1;
+            double far = sqrt(formation.base.squared) + formation.length + formation.width + SKIN;
+            if (formation.shape == Shape.beam && far > beams) {
+                beams = far;
+            }
         }
     }
 }
@@ -388,37 +517,55 @@ uint bandOf(double depth) {
     }
 }
 
-Theme themeOf(ref const Vertex at) {
-    double depth = depthOf(at);
+Place placeOf(ref const Vertex at) {
     if (isSurface(at)) {
-        return Theme.opening;
-    } else if (depth < FROST_DEPTH) {
-        return Theme.frost;
-    } else if (depth < GLOW_DEPTH) {
-        return Theme.glow;
-    } else if (depth < GYPSUM_DEPTH) {
-        return Theme.gypsum;
-    } else if (depth < CRYSTAL_DEPTH) {
-        return Theme.crystal;
+        return Place.mouth;
     } else {
-        return Theme.ember;
+        return Place.chamber;
     }
 }
 
-Parent parentOf(ref const Vertex at) {
-    Parent walkable;
+const(Rules)* themeOf(ref const Vertex at, ref const Bed bed) {
+    final switch (placeOf(at)) {
+        case Place.mouth:
+            return &materials.opening;
+        case Place.chamber:
+            return themeIn(*bed.stack, depthOf(at));
+    }
+}
+
+struct Ways {
+    Way[WAY_COUNT] items;
+    uint count;
+
+    bool has(Way way) const {
+        uint index = 0;
+        while (index < count && items[index] != way) {
+            index += 1;
+        }
+        return index < count;
+    }
+}
+
+Ways waysUpOf(ref const Vertex at) {
+    Ways walkable;
     ulong walkableHash = ulong.max;
     Parent steep;
     double steepRise = -1;
     ulong steepHash = ulong.max;
+    bool shallow = depthOf(at) < FIRST_BAND;
     foreach (way; WAYS) {
-        if (at.climbs[way] > MIN_CLIMB) {
+        if (at.climbs[way] > LEAST_CLIMB) {
             double rise = riseOf(at, way);
             ulong hash = edgeHash(at.frame, way);
-            if (rise <= WALKABLE_RISE) {
+            if (rise <= WALKABLE_RISE && !shallow) {
+                walkable.items[walkable.count] = way;
+                walkable.count += 1;
+            } else if (rise <= WALKABLE_RISE) {
                 if (hash < walkableHash) {
                     walkableHash = hash;
-                    walkable = Parent(way, Found.some);
+                    walkable.items[0] = way;
+                    walkable.count = 1;
                 }
             } else {
                 double stepped = floor(rise / RISE_STEP);
@@ -430,15 +577,34 @@ Parent parentOf(ref const Vertex at) {
             }
         }
     }
-    if (walkable.found == Found.some) {
-        return walkable;
+    if (walkable.count == 0 && steep.found == Found.some) {
+        walkable.items[0] = steep.way;
+        walkable.count = 1;
+    }
+    return walkable;
+}
+
+bool isRolledMouth(ulong hash, ref const Root root) {
+    return hash == root.spawn || root.forced.contains(hash) || unitOf(hash, ROOT_SALT) < tuning.rootOdds;
+}
+
+bool isHall(ref const Vertex at, ulong hash, ref const Bed bed) {
+    return bed.mouth == Mouth.open && depthOf(at) >= HALL_DEPTH && (unitOf(hash, HALL_SALT) < tuning.hallOdds || isOverVoid(at));
+}
+
+bool isOverVoid(ref const Vertex at) {
+    Way down = downOf(at);
+    double edge = at.frame.edgeCells();
+    if (!(at.climbs[down] < VERTICAL_SLACK - edge)) {
+        return false;
     } else {
-        return steep;
+        return at.height + at.climbs[down] < -(along(at.frame, down).forward(1).probeCrust() * edge + DRAIN_CLEAR);
     }
 }
 
-bool probeSunk(ref const Vertex at, ulong hash, ref const Root root) {
-    if (hash == root.spawn) {
+bool probeSunk(ref const Vertex at, ulong hash, ref const Bed bed) {
+    const(Root)* root = bed.root;
+    if (hash == root.spawn || root.forced.contains(hash)) {
         return true;
     } else if (root.blocked.contains(hash) || !(unitOf(hash, ROOT_SALT) < tuning.rootOdds)) {
         return false;
@@ -448,7 +614,12 @@ bool probeSunk(ref const Vertex at, ulong hash, ref const Root root) {
             return false;
         } else {
             double relief = at.frame.probeRelief();
-            return relief > MOUTH_LOW && relief < MOUTH_HIGH;
+            if (relief > MOUTH_LOW && relief < MOUTH_HIGH) {
+                Vertex bottom = neighborOf(at, downOf(at));
+                return keeps(bottom, bottom.frame.probeHash(SitePart.vertex), bed);
+            } else {
+                return false;
+            }
         }
     }
 }
@@ -457,19 +628,81 @@ double mouthOf(ref const Vertex at) {
     return clamped(at.frame.probeRelief(), MOUTH_LOW, MOUTH_HIGH);
 }
 
-bool keeps(ref const Vertex at, ulong hash, ref const Bed bed) {
+bool isRolledKept(ref const Vertex at, ulong hash, ref const Bed bed) {
     double depth = depthOf(at);
-    return depth <= bed.bottom && depth >= bed.top && unitOf(hash, KEEP_SALT) < tuning.keepOdds[bandOf(depth)] && depth <= at.frame.probeCrust() - ROCK_MARGIN;
+    return depth <= bed.bottom && depth >= bed.top && unitOf(hash, KEEP_SALT) < tuning.keepOdds[bandOf(depth)];
+}
+
+bool keepsInRock(ref const Vertex at, ulong hash, ref const Bed bed) {
+    return isRolledKept(at, hash, bed) && depthOf(at) <= at.frame.probeCrust() - ROCK_MARGIN;
+}
+
+bool isUnderKept(ref const Vertex at, ref const Bed bed) {
+    Ways ups = waysUpOf(at);
+    uint index = 0;
+    while (index < ups.count && !isAboveKept(at, ups.items[index], bed)) {
+        index += 1;
+    }
+    return index < ups.count;
+}
+
+bool isAboveKept(ref const Vertex at, Way way, ref const Bed bed) {
+    Vertex above = neighborOf(at, way);
+    return keepsInRock(above, above.frame.probeHash(SitePart.vertex), bed);
+}
+
+bool keeps(ref const Vertex at, ulong hash, ref const Bed bed) {
+    if (!isRolledKept(at, hash, bed)) {
+        return false;
+    } else {
+        double depth = depthOf(at);
+        double crust = at.frame.probeCrust();
+        if (depth <= crust - ROCK_MARGIN) {
+            return true;
+        } else if (bed.mouth == Mouth.open && depth <= crust + BREACH_BAND && unitOf(hash, BREACH_SALT) < tuning.breachOdds) {
+            return isUnderKept(at, bed);
+        } else {
+            return false;
+        }
+    }
 }
 
 bool isAboveBed(ref const Vertex at, ref const Bed bed) {
     return bed.mouth == Mouth.sealed && depthOf(at) < bed.top;
 }
 
-Parent probeWell(ref const Vertex at, ref const Bed bed) {
+bool isWellMouth(Turtle vertex, ref const Bed bed) {
+    bool port = vertex.probePort();
+    if (!port) {
+        return false;
+    } else if (bed.mouth == Mouth.sealed) {
+        return true;
+    } else {
+        double relief = vertex.probeRelief();
+        return relief > WELL_LOWEST && relief < WELL_HIGHEST;
+    }
+}
+
+WellDepth wellDepthOf(Turtle mouth, ref const Bed bed) {
+    int deepest = cast(int) floor(bed.bottom);
+    double crust = mouth.probeCrust();
+    if (crust <= deepest) {
+        return WellDepth(higherOf(WELL_EDGES, cast(int) ceil(crust)), Bottom.landing);
+    } else {
+        return WellDepth(deepest, Bottom.chamber);
+    }
+}
+
+bool isOnPlane(Turtle vertex) {
+    return fabs(vertex.openPen().height()) < WELL_SLACK * vertex.edgeCells();
+}
+
+WellPass probeWell(ref const Vertex at, ref const Bed bed) {
     double edge = at.frame.edgeCells();
-    if (bed.mouth != Mouth.sealed || fabs(depthOf(at) - WELL_EDGES) > WELL_SLACK) {
-        return Parent.init;
+    double depth = depthOf(at);
+    int level = cast(int) floor(depth + 0.5);
+    if (bed.mouth == Mouth.none || level < 1 || level > MOST_WELL_EDGES || fabs(depth - level) > WELL_SLACK) {
+        return WellPass.init;
     } else {
         Parent up;
         foreach (way; WAYS) {
@@ -478,82 +711,97 @@ Parent probeWell(ref const Vertex at, ref const Bed bed) {
             }
         }
         if (up.found == Found.none) {
-            return up;
+            return WellPass.init;
         } else {
-            bool port = along(at.frame, up.way).forward(WELL_EDGES).probePort();
-            if (port) {
-                return up;
+            Turtle mouth = along(at.frame, up.way).forward(level);
+            if (!isOnPlane(mouth) || !isWellMouth(mouth, bed)) {
+                return WellPass.init;
             } else {
-                return Parent.init;
+                WellDepth well = wellDepthOf(mouth, bed);
+                if (level > well.edges) {
+                    return WellPass.init;
+                } else {
+                    return WellPass(up.way, level, well, Found.some);
+                }
             }
         }
     }
 }
 
-Parent linkedParentOf(ref const Vertex at, ref const Bed bed) {
-    Parent parent = parentOf(at);
-    if (parent.found == Found.none) {
-        return parent;
+bool isOpenedBy(WellPass pass, ref const Bed bed) {
+    if (pass.found == Found.none) {
+        return false;
+    } else if (pass.depth == pass.well.edges) {
+        return pass.well.bottom == Bottom.chamber;
     } else {
-        Vertex above = neighborOf(at, parent.way);
-        if (isAboveBed(above, bed)) {
-            return Parent.init;
-        } else {
-            return parent;
-        }
+        return bed.mouth == Mouth.sealed && pass.depth >= bed.top;
     }
 }
 
-Openness opennessOf(ref const Vertex start, ref const Bed bed, ref Memo memo) {
-    ulong[MOST_CHAIN] chain;
-    uint length = 0;
-    Vertex at = start;
-    Openness result = Openness.closed;
-    Found decided = Found.none;
-    while (decided == Found.none) {
-        ulong hash = at.frame.probeHash(SitePart.vertex);
-        uint index = 0;
-        while (index < memo.count && memo.items[index].hash != hash) {
-            index += 1;
-        }
-        decided = Found.some;
-        if (index < memo.count) {
-            result = memo.items[index].openness;
-        } else {
-            if (length < MOST_CHAIN) {
-                chain[length] = hash;
-                length += 1;
-            }
-            if (isSurface(at)) {
-                if (bed.mouth == Mouth.open) {
-                    bool sunk = probeSunk(at, hash, *bed.root);
-                    if (sunk) {
-                        result = Openness.open;
-                    }
-                }
-            } else if (at.height < 0) {
-                Parent well = probeWell(at, bed);
-                if (well.found == Found.some) {
-                    result = Openness.open;
-                } else if (keeps(at, hash, bed)) {
-                    Parent parent = parentOf(at);
-                    if (parent.found == Found.some) {
-                        Vertex above = neighborOf(at, parent.way);
-                        if (!isAboveBed(above, bed)) {
-                            at = above;
-                            decided = Found.none;
-                        } else if (unitOf(hash, HEAD_SALT) < tuning.headOdds) {
-                            result = Openness.open;
-                        }
-                    }
-                }
-            }
-        }
+bool isAlongWell(ref const WellPass pass, Way way) {
+    return pass.found == Found.some && (way == pass.up || (way == opposite(pass.up) && pass.depth < pass.well.edges));
+}
+
+bool isOpenWell(ref const Vertex at, ref const Bed bed) {
+    return bed.mouth == Mouth.open && isOpenedBy(probeWell(at, bed), bed);
+}
+
+bool holds(ref const Vertex at, ref const Bed bed) {
+    return keeps(at, at.frame.probeHash(SitePart.vertex), bed) || isOpenWell(at, bed);
+}
+
+Openness opennessOf(ref const Vertex at, ref const Bed bed, ref Memo memo) {
+    ulong hash = at.frame.probeHash(SitePart.vertex);
+    uint index = 0;
+    while (index < memo.count && memo.items[index].hash != hash) {
+        index += 1;
     }
-    foreach (hash; chain[0 .. length]) {
+    if (index < memo.count) {
+        return memo.items[index].openness;
+    } else {
+        Openness result = judgedOpenness(at, hash, bed, memo);
         memo.note(hash, result);
+        return result;
     }
-    return result;
+}
+
+Openness judgedOpenness(ref const Vertex at, ulong hash, ref const Bed bed, ref Memo memo) {
+    if (isSurface(at)) {
+        if (bed.mouth == Mouth.open && probeSunk(at, hash, bed)) {
+            return Openness.open;
+        } else {
+            return Openness.closed;
+        }
+    } else if (!(at.height < 0)) {
+        return Openness.closed;
+    } else if (isOpenedBy(probeWell(at, bed), bed)) {
+        return Openness.open;
+    } else if (!keeps(at, hash, bed)) {
+        return Openness.closed;
+    } else if (isHall(at, hash, bed)) {
+        return Openness.open;
+    } else {
+        return opennessUnder(at, hash, bed, memo);
+    }
+}
+
+Openness opennessUnder(ref const Vertex at, ulong hash, ref const Bed bed, ref Memo memo) {
+    Ways ups = waysUpOf(at);
+    foreach (way; ups.items[0 .. ups.count]) {
+        Vertex above = neighborOf(at, way);
+        if (isAboveBed(above, bed)) {
+            if (unitOf(hash, HEAD_SALT) < tuning.headOdds) {
+                return Openness.open;
+            }
+        } else if (opennessOf(above, bed, memo) == Openness.open && !isOpenWell(above, bed)) {
+            return Openness.open;
+        }
+    }
+    return Openness.closed;
+}
+
+bool isCrossing(ref const Vertex at, ref const Vertex to, Way way, ref const Bed bed) {
+    return !isSurface(at) && unitOf(edgeHash(at.frame, way), CROSS_SALT) < tuning.crossOdds && !isSurface(to) && to.height < 0 && !isAboveBed(to, bed) && !isOpenWell(to, bed) && !isOpenWell(at, bed);
 }
 
 double radiusOf(ref const Vertex near, ref const Vertex far) {
@@ -561,7 +809,7 @@ double radiusOf(ref const Vertex near, ref const Vertex far) {
     if (depthOf(far) > depth) {
         depth = depthOf(far);
     }
-    return tuning.radii[bandOf(depth)];
+    return tuning.tubeRadii[bandOf(depth)];
 }
 
 Tube tubeTo(ref const Vertex at, ref const Vertex to, Way way) {
@@ -591,6 +839,7 @@ Tube tubeTo(ref const Vertex at, ref const Vertex to, Way way) {
     if (at.height > to.height) {
         tube.top = Top.near;
     }
+    tube.reach = TUBE_HEIGHT * (tube.radius + fabs(tube.bulge)) + SKIN;
     return tube;
 }
 
@@ -623,14 +872,17 @@ Helix helixOf(Turtle shaft) {
     return Helix(PENTAGON_DIRECTIONS[least], PENTAGON_DIRECTIONS[turn]);
 }
 
-bool isLinked(ref const Vertex at, Parent parent, ref const Vertex to, Way way, ref const Bed bed) {
-    if (parent.isWay(way)) {
-        return true;
+bool isLinked(ref const Vertex at, ref const Vertex to, Way way, ref const Bed bed, ref Memo memo) {
+    return isTreeLinked(at, to, way, bed, memo) || (isCrossing(at, to, way, bed) && opennessOf(to, bed, memo) == Openness.open);
+}
+
+bool isTreeLinked(ref const Vertex at, ref const Vertex to, Way way, ref const Bed bed, ref Memo memo) {
+    if (to.height > at.height) {
+        return !isSurface(at) && waysUpOf(at).has(way) && !isAboveBed(to, bed) && opennessOf(to, bed, memo) == Openness.open;
     } else if (isSurface(to) || !(to.height < at.height)) {
         return false;
     } else {
-        Parent back = parentOf(to);
-        return back.isWay(opposite(way)) && keeps(to, to.frame.probeHash(SitePart.vertex), bed);
+        return waysUpOf(to).has(opposite(way)) && holds(to, bed) && (!isOpenWell(at, bed) || opennessOf(to, bed, memo) == Openness.open);
     }
 }
 
@@ -641,7 +893,7 @@ double bowlOf(ref const Vertex at) {
     return fabs(tanh(depth)) / 2 * depth / at.height;
 }
 
-Scene sceneAt(ref const Vertex at, ref const Bed bed) {
+Scene sceneAt(ref const Vertex at, ref const Bed bed, ref Memo memo) {
     Scene scene;
     scene.at = at;
     scene.edge = at.frame.edgeCells();
@@ -652,17 +904,16 @@ Scene sceneAt(ref const Vertex at, ref const Bed bed) {
     }
     scene.triad = triadAt(at.frame);
     scene.seed = at.frame.probeHash(SitePart.vertex);
-    scene.theme = themeOf(at);
-    Parent parent;
+    scene.place = placeOf(at);
+    scene.rule = themeOf(at, bed);
     if (!isSurface(at)) {
-        parent = linkedParentOf(at, bed);
         scene.well = probeWell(at, bed);
     }
     double widest = 0;
     uint shafts = 0;
     foreach (way; WAYS) {
         Vertex to = neighborOf(at, way);
-        if (isLinked(at, parent, to, way, bed)) {
+        if (!isAlongWell(scene.well, way) && isLinked(at, to, way, bed, memo)) {
             Tube tube = tubeTo(at, to, way);
             if (tube.form == Form.shaft) {
                 shafts += 1;
@@ -673,14 +924,14 @@ Scene sceneAt(ref const Vertex at, ref const Bed bed) {
             scene.count += 1;
         }
     }
-    if (scene.theme != Theme.opening) {
+    if (scene.place == Place.chamber) {
         uint band = bandOf(depthOf(at));
         double dome = widest + JUNCTION_MARGIN;
-        if (scene.count >= 3 || unitOf(scene.seed, DOME_SALT) < tuning.chamberOdds) {
-            dome = tuning.domeBase[band] + between(scene.seed, DOME_SALT + 1, -DOME_SPREAD, DOME_SPREAD);
+        if (scene.count >= 3 || unitOf(scene.seed, DOME_SALT) < tuning.chamberOdds || isOpenedBy(scene.well, bed)) {
+            dome = tuning.domeSizes[band] + between(scene.seed, DOME_SALT + 1, -DOME_SPREAD, DOME_SPREAD);
         }
-        if (scene.theme == Theme.frost) {
-            dome = ENTRY_DOME;
+        if (scene.rule.dome > 0) {
+            dome = scene.rule.dome;
         }
         if (dome < widest + JUNCTION_MARGIN) {
             dome = widest + JUNCTION_MARGIN;
@@ -694,7 +945,14 @@ Scene sceneAt(ref const Vertex at, ref const Bed bed) {
         if (scene.domeHeight > highest) {
             scene.domeHeight = highest;
         }
+        scene.low = -SKIN;
+        scene.high = MOST_DOME + SKIN;
+        scene.wide = (dome + SKIN) * (dome + SKIN);
         addFormations(scene);
+    } else {
+        scene.low = MOUTH_LOW - STONE_FOOT - SKIN;
+        scene.high = STONE_TOP + SKIN;
+        scene.wide = (STONE_RING + STONE_REACH + SKIN) * (STONE_RING + STONE_REACH + SKIN);
     }
     return scene;
 }
@@ -798,7 +1056,7 @@ void chandelier(ref Scene scene, ulong salt) {
                 length = lowest / sinking;
             }
             if (length > 1) {
-                scene.add(Formation(hub, direction, length, pickIn(scene.seed, armSalt + 5, ARM_WIDTH), rules[scene.theme].chandelier, Shape.cone));
+                scene.add(Formation(hub, direction, length, pickIn(scene.seed, armSalt + 5, ARM_WIDTH), scene.rule.chandelier, Shape.cone));
             }
         }
     }
@@ -812,21 +1070,21 @@ void crystal(ref Scene scene, ulong salt) {
     Vec base = floorAt(scene, side.scaled(scene.dome * BEAM_ROOT)).plus(scene.at.up.scaled(height));
     Vec direction = side.scaled(-1).plus(across.scaled(BEAM_SKEW)).plus(scene.at.up.scaled(tilt)).normalized;
     double length = pickIn(scene.seed, salt + 5, BEAM_LENGTH);
-    scene.add(Formation(base, direction, length, pickIn(scene.seed, salt + 6, BEAM_WIDTH), rules[scene.theme].beam, Shape.beam));
+    scene.add(Formation(base, direction, length, pickIn(scene.seed, salt + 6, BEAM_WIDTH), scene.rule.beam, Shape.beam));
 }
 
 void addFormations(ref Scene scene) {
-    Rules rule = rules[scene.theme];
-    final switch (scene.theme) {
-        case Theme.opening:
+    Rules rule = *scene.rule;
+    final switch (rule.formations) {
+        case Formations.none:
             break;
-        case Theme.frost:
+        case Formations.icicles:
             foreach (index; 0 .. ICICLES) {
                 ulong salt = FORM_SALT + index * SALT_STRIDE;
                 hang(scene, salt, rule.hanging, ICICLE_LENGTH, pickIn(scene.seed, salt + 5, ICICLE_WIDTH));
             }
             break;
-        case Theme.glow:
+        case Formations.dripstone:
             foreach (index; 0 .. GLOW_HANGING) {
                 hang(scene, FORM_SALT + index * SALT_STRIDE, rule.hanging, DRIPSTONE_LENGTH, DRIPSTONE_WIDTH);
             }
@@ -834,7 +1092,7 @@ void addFormations(ref Scene scene) {
                 stand(scene, FORM_SALT + index * SALT_STRIDE, rule.standing, DRIPSTONE_LENGTH, PILLAR_WIDTH);
             }
             break;
-        case Theme.gypsum:
+        case Formations.chandelier:
             uint attempt = 0;
             uint before = scene.formationCount;
             while (attempt < CHANDELIER_ATTEMPTS && scene.formationCount == before) {
@@ -845,18 +1103,32 @@ void addFormations(ref Scene scene) {
                 hang(scene, FORM_SALT + MARBLE_SALT + index * SALT_STRIDE, rule.hanging, MARBLE_LENGTH, MARBLE_WIDTH);
             }
             break;
-        case Theme.crystal:
+        case Formations.beams:
             uint beams = LEAST_BEAMS + cast(uint)(unitOf(scene.seed, FORM_SALT) * BEAM_CHOICES);
             foreach (index; 0 .. beams) {
                 crystal(scene, FORM_SALT + BEAM_SALT + index * BEAM_STRIDE);
             }
             break;
-        case Theme.ember:
+        case Formations.columns:
             foreach (index; 0 .. EMBER_STANDING) {
                 stand(scene, FORM_SALT + index * SALT_STRIDE, rule.standing, BASALT_LENGTH, BASALT_WIDTH);
             }
             foreach (index; EMBER_STANDING .. EMBER_STANDING + EMBER_HANGING) {
                 hang(scene, FORM_SALT + index * SALT_STRIDE, rule.hanging, DRIPSTONE_LENGTH, DRIPSTONE_WIDTH);
+            }
+            break;
+        case Formations.pillars:
+            foreach (index; 0 .. PILLARS) {
+                stand(scene, FORM_SALT + index * SALT_STRIDE, rule.standing, MOST_DOME, PILLAR_WIDTH);
+            }
+            break;
+        case Formations.roots:
+            foreach (index; 0 .. ROOTS_HANGING) {
+                ulong salt = FORM_SALT + index * SALT_STRIDE;
+                hang(scene, salt, rule.hanging, ROOT_LENGTH, pickIn(scene.seed, salt + 5, ROOT_WIDTH));
+            }
+            foreach (index; ROOTS_HANGING .. ROOTS_HANGING + ROOTS_STANDING) {
+                stand(scene, FORM_SALT + index * SALT_STRIDE, rule.standing, STALK_LENGTH, STALK_WIDTH);
             }
             break;
     }
@@ -892,7 +1164,10 @@ Space tubeSpace(ref const Tube tube, Vec point, Vec up, double edge) {
         final switch (tube.form) {
             case Form.passage:
                 double share = along / edge;
-                double height = floorHeight(tube, point, up, edge);
+                double height = -1;
+                if (across.squared < tube.reach * tube.reach) {
+                    height = floorHeight(tube, point, up, edge);
+                }
                 if (height < 0) {
                     return Space.rock;
                 } else {
@@ -954,7 +1229,7 @@ Space mouthSpace(ref const Scene scene, Vec point, double height, double across)
 }
 
 bool isOverMouth(ref const Scene scene, double height) {
-    return scene.theme == Theme.opening && height > scene.mouth;
+    return scene.place == Place.mouth && height > scene.mouth;
 }
 
 Space spaceAt(ref const Scene scene, Vec point) {
@@ -962,7 +1237,7 @@ Space spaceAt(ref const Scene scene, Vec point) {
     double across = point.squared - raw * raw;
     double height = raw - scene.bowl * across;
     Space found = Space.rock;
-    if (scene.theme == Theme.opening) {
+    if (scene.place == Place.mouth) {
         if (height > 0 && height < scene.mouth + MOUTH_ROOM && across < SHAFT_RADIUS * SHAFT_RADIUS) {
             found = mouthSpace(scene, point, height, across);
         }
@@ -972,15 +1247,20 @@ Space spaceAt(ref const Scene scene, Vec point) {
     if (found == Space.tread) {
         return Space.tread;
     }
+    Found ramped = Found.none;
     foreach (index; 0 .. scene.count) {
-        Space inside = tubeSpace(scene.tubes[index], point, scene.at.up, scene.edge);
+        Tube tube = scene.tubes[index];
+        Space inside = tubeSpace(tube, point, scene.at.up, scene.edge);
         if (inside == Space.tread && !isOverMouth(scene, height)) {
             return Space.tread;
         } else if (inside != Space.rock) {
             found = Space.air;
+            if (tube.form == Form.passage && tube.top == Top.far) {
+                ramped = Found.some;
+            }
         }
     }
-    if (found == Space.air && isUnderRamp(scene, point)) {
+    if (found == Space.air && ramped == Found.none && isUnderRamp(scene, point)) {
         return Space.rock;
     } else {
         return found;
@@ -1024,7 +1304,7 @@ double cellRoll(ref const Scene scene, Vec point) {
 }
 
 Choice floorChoice(ref const Scene scene, Vec point) {
-    Rules rule = rules[scene.theme];
+    Rules rule = *scene.rule;
     if (patchAt(scene, point) > rule.floorThreshold) {
         return choiceOf(rule.patched);
     } else {
@@ -1033,13 +1313,13 @@ Choice floorChoice(ref const Scene scene, Vec point) {
 }
 
 Choice ceilingChoice(ref const Scene scene, Vec point) {
-    Rules rule = rules[scene.theme];
+    Rules rule = *scene.rule;
     double odds = rule.ceilingOdds * (1 - rule.patchiness + rule.patchiness * patchAt(scene, point));
     double roll = cellRoll(scene, point);
     if (roll < odds) {
-        return Choice.of(rule.lit);
+        return Choice.dress(rule.lit);
     } else if (roll < odds + rule.veinOdds) {
-        return Choice.of(rule.veined);
+        return Choice.dress(rule.veined);
     } else {
         return Choice.keep();
     }
@@ -1049,15 +1329,36 @@ bool isInWell(ref const Scene scene, Vec point) {
     if (scene.well.found == Found.none) {
         return false;
     } else {
-        Vec axis = axisOf(scene.well.way);
+        Vec axis = axisOf(scene.well.up);
         double height = point.dot(axis);
         Vec side = point.minus(axis.scaled(height));
-        return height > 0 && fabs(side.x) < PORT && fabs(side.y) < PORT && fabs(side.z) < PORT;
+        return (height > 0 || scene.well.depth < scene.well.well.edges) && fabs(side.x) < PORT && fabs(side.y) < PORT && fabs(side.z) < PORT;
+    }
+}
+
+bool isNear(ref const Tube tube, Vec point, double far) {
+    double along = point.dot(tube.axis);
+    return along > -SKIN && far - along * along < tube.reach * tube.reach;
+}
+
+bool isBeyond(ref const Scene scene, Vec point) {
+    double far = point.squared;
+    double raw = point.dot(scene.at.up);
+    if (raw > scene.low && raw < scene.high && far - raw * raw < scene.wide) {
+        return false;
+    } else if (far < scene.beams * scene.beams) {
+        return false;
+    } else {
+        uint index = 0;
+        while (index < scene.count && !isNear(scene.tubes[index], point, far)) {
+            index += 1;
+        }
+        return index == scene.count;
     }
 }
 
 Choice choiceAt(ref const Scene scene, Vec point) {
-    if (isInWell(scene, point)) {
+    if (isBeyond(scene, point) || isInWell(scene, point)) {
         return Choice.keep();
     } else {
         return chosenAt(scene, point);
@@ -1078,10 +1379,14 @@ Choice stoneAt(ref const Scene scene, Vec point) {
             Vec side = horizontalOf(scene, salt);
             Vec offset = point.minus(side.scaled(STONE_RING));
             double height = offset.dot(scene.at.up);
-            double top = scene.mouth + pickIn(scene.seed, salt + 3, STONE_HEIGHT);
+            Spread tall = STONE_HEIGHT;
+            if (index == 0) {
+                tall = MARKER_HEIGHT;
+            }
+            double top = clamped(scene.mouth + pickIn(scene.seed, salt + 3, tall), scene.mouth, STONE_TOP);
             if (side.dot(gate) < STONE_GATE && offset.squared - height * height < STONE_REACH * STONE_REACH && height > scene.mouth - STONE_FOOT && height < top) {
-                if (index == 0 && height >= top - 1) {
-                    return Choice.of(rules[Theme.opening].lit);
+                if (height >= top - 1 || (index == 0 && height >= top - MARKER_LIT)) {
+                    return Choice.of(materials.opening.lit);
                 } else {
                     return Choice.of(materials.stair);
                 }
@@ -1092,15 +1397,16 @@ Choice stoneAt(ref const Scene scene, Vec point) {
 }
 
 Choice chosenAt(ref const Scene scene, Vec point) {
-    if (scene.theme != Theme.opening) {
-        return carvedAt(scene, point);
-    } else {
-        Choice stone = stoneAt(scene, point);
-        if (stone.painting == Painting.painted) {
-            return stone;
-        } else {
+    final switch (scene.place) {
+        case Place.chamber:
             return carvedAt(scene, point);
-        }
+        case Place.mouth:
+            Choice stone = stoneAt(scene, point);
+            if (stone.painting == Painting.painted) {
+                return stone;
+            } else {
+                return carvedAt(scene, point);
+            }
     }
 }
 
@@ -1112,14 +1418,14 @@ Choice carvedAt(ref const Scene scene, Vec point) {
         case Space.air:
             foreach (index; 0 .. scene.formationCount) {
                 if (isInside(scene.formations[index], point)) {
-                    return Choice.of(scene.formations[index].material);
+                    return Choice.dress(scene.formations[index].material);
                 }
             }
             return Choice.of(Material.none);
         case Space.rock:
             foreach (index; 0 .. scene.formationCount) {
                 if (scene.formations[index].shape == Shape.beam && isInside(scene.formations[index], point)) {
-                    return Choice.of(scene.formations[index].material);
+                    return Choice.dress(scene.formations[index].material);
                 }
             }
             if (spaceAt(scene, point.plus(scene.at.up)) == Space.air) {
@@ -1141,7 +1447,7 @@ void paintEnd(Turtle frame, Way own, ref const Bed bed, ref Memo memo) {
         if (isOwnedBy(triad, own)) {
             Vertex at = vertexAt(frame, pen);
             if (opennessOf(at, bed, memo) == Openness.open) {
-                Scene scene = sceneAt(at, bed);
+                Scene scene = sceneAt(at, bed, memo);
                 Choice choose(Vec point) {
                     return choiceAt(scene, point);
                 }
@@ -1159,17 +1465,103 @@ void tile(const(Api)* api, Site site, const(Risen)* risen, const(void)* data) {
         paintEnd(start, Way.zPlus, bed, memo);
         paintEnd(start.forward(1), Way.zMinus, bed, memo);
     }
-    if (bed.mouth == Mouth.sealed) {
-        well(Turtle(api, site));
+    if (bed.mouth != Mouth.none) {
+        Turtle start = Turtle(api, site);
+        Lie lie = lieOf(start);
+        Well kind = wellUnder(risen.tag);
+        Found sunk = well(start, lie, kind, bed);
+        if (bed.mouth == Mouth.open) {
+            Memo memo;
+            if (sunk == Found.none) {
+                drain(start, lie, bed, memo, materials.drain);
+            }
+            gallery(start, lie);
+            mouth(start, lie, bed, memo);
+            wellMouth(start, lie, kind, bed);
+        }
     }
 }
 
-void well(Turtle start) {
+bool isGalleryEnd(Turtle vertex, double height) {
+    double edge = vertex.edgeCells();
+    double depth = -height / edge;
+    double crust = vertex.probeCrust();
+    return crust < double.infinity && depth >= HALL_DEPTH && depth <= crust - ROCK_MARGIN;
+}
+
+void gallery(Turtle start, Lie lie) {
     double edge = start.edgeCells();
-    Drawing pen = start.openPen();
-    double near = pen.height();
-    double far = pen.forward(edge).height();
-    if (fabs(fabs(far - near) - edge) < VERTICAL_SLACK) {
+    if (unitOf(start.probeHash(SitePart.line), GALLERY_SALT) < tuning.galleryOdds && fabs(lie.far - lie.near) < GALLERY_GRADE * edge && isGalleryEnd(start, lie.near) && isGalleryEnd(start.forward(1), lie.far)) {
+        tunnel(start);
+    }
+}
+
+void mouth(Turtle start, Lie lie, ref const Bed bed, ref Memo memo) {
+    double edge = start.edgeCells();
+    Turtle end = start.forward(1);
+    if (unitOf(start.probeHash(SitePart.edge), MOUTH_SALT) < tuning.mouthOdds && fabs(lie.far - lie.near) < GALLERY_GRADE * edge && (isMouthFrom(start, end, lie.far, bed, memo) || isMouthFrom(end, start, lie.near, bed, memo))) {
+        tunnel(start);
+    }
+}
+
+bool isMouthFrom(Turtle chamber, Turtle open, double openHeight, ref const Bed bed, ref Memo memo) {
+    if (!isInOpen(open, openHeight)) {
+        return false;
+    } else {
+        Vertex at = vertexAt(chamber, chamber.openPen());
+        return opennessOf(at, bed, memo) == Openness.open;
+    }
+}
+
+void tunnel(Turtle start) {
+    Span along = Span(0, start.edgeCells() - 1);
+    start.replace(Material.none, boxOf(GALLERY_WIDE, GALLERY_NARROW, along));
+    start.replace(Material.none, boxOf(GALLERY_NARROW, GALLERY_WIDE, along));
+}
+
+bool isInOpen(Turtle vertex, double height) {
+    double edge = vertex.edgeCells();
+    return height < -(vertex.probeCrust() * edge + DRAIN_CLEAR);
+}
+
+void drain(Turtle start, Lie lie, ref const Bed bed, ref Memo memo, Material stair) {
+    double edge = start.edgeCells();
+    double near = lie.near;
+    double far = lie.far;
+    if (fabs(fabs(far - near) - edge) < VERTICAL_SLACK && near < -SURFACE_BAND && far < -SURFACE_BAND) {
+        Turtle top = start;
+        Turtle bottom = start.forward(1);
+        double topHeight = near;
+        double bottomHeight = far;
+        if (far > near) {
+            top = start.forward(1).pitchUp().pitchUp();
+            bottom = start;
+            topHeight = far;
+            bottomHeight = near;
+        }
+        ulong hash = start.probeHash(SitePart.edge);
+        if (unitOf(hash, DRAIN_SALT) < tuning.drainOdds && isInOpen(bottom, bottomHeight)) {
+            Vertex upper = vertexAt(top, top.openPen());
+            if (opennessOf(upper, bed, memo) == Openness.open) {
+                if (unitOf(hash, DRAIN_SALT + 1) < tuning.drainStairOdds) {
+                    stairDown(Flight(top, Winding.straight), 0, stair, WellShape.spiral);
+                } else {
+                    Span chute = Span(-CHUTE_HALF, CHUTE_HALF - 1);
+                    top.paint(Material.none, boxOf(chute, chute, Span(0, cast(int) edge - DRAIN_SHORT)));
+                }
+                landing(top, stair);
+            }
+        }
+    }
+}
+
+Found well(Turtle start, Lie lie, ref const Well kind, ref const Bed bed) {
+    double edge = start.edgeCells();
+    double near = lie.near;
+    double far = lie.far;
+    if (!(fabs(fabs(far - near) - edge) < VERTICAL_SLACK)) {
+        return Found.none;
+    } else {
         Turtle down = start;
         double top = near;
         if (far > near) {
@@ -1177,25 +1569,145 @@ void well(Turtle start) {
             top = far;
         }
         int above = cast(int) floor(-top / edge + 0.5);
-        if (above >= 0 && above < WELL_EDGES) {
+        if (above < 0 || above >= MOST_WELL_EDGES || fabs(top + above * edge) > WELL_SLACK * edge) {
+            return Found.none;
+        } else {
             Turtle mouth = down.forward(-above);
-            bool port = mouth.probePort();
-            if (port) {
-                stairDown(settled(mouth).forward(above));
+            if (!isOnPlane(mouth) || !isWellMouth(mouth, bed)) {
+                return Found.none;
+            } else {
+                WellDepth depth = wellDepthOf(mouth, bed);
+                if (above >= depth.edges) {
+                    return Found.none;
+                } else {
+                    sink(mouth, above, depth, kind, bed);
+                    return Found.some;
+                }
             }
         }
     }
 }
 
-void stairDown(Turtle top) {
+void sink(Turtle mouth, int above, WellDepth depth, ref const Well kind, ref const Bed bed) {
+    Flight flight = flightAt(mouth);
+    WellShape shape = shapeOf(mouth, bed);
+    Material stair = stairOf(kind, shape);
+    Turtle top = flight.frame.forward(above);
+    stairDown(flight, above, stair, shape);
+    lining(top, kind, liningOf(kind, bed, above, top.edgeCells()));
+    if (above == depth.edges - 1 && depth.bottom == Bottom.landing) {
+        landing(top, stair);
+    }
+}
+
+void landing(Turtle top, Material stair) {
+    int last = top.edgeCells() - 1;
+    Span deck = Span(-LANDING_HALF, LANDING_HALF - 1);
+    top.paint(stair, boxOf(deck, deck, Span(last, last)));
+}
+
+void wellMouth(Turtle start, Lie lie, ref const Well kind, ref const Bed bed) {
+    double edge = start.edgeCells();
+    double near = lie.near;
+    double far = lie.far;
+    if (fabs(fabs(far - near) - edge) < VERTICAL_SLACK) {
+        Turtle up = start;
+        double low = near;
+        if (far < near) {
+            up = start.forward(1).pitchUp().pitchUp();
+            low = far;
+        }
+        if (fabs(low) < WELL_SLACK * edge && isWellMouth(up, bed)) {
+            int ground = cast(int) ceil(up.probeRelief());
+            Turtle column = settled(up);
+            Span port = Span(-PORT, PORT - 1);
+            column.paint(Material.none, boxOf(port, port, Span(0, ground + WELL_ROOM)));
+            lining(column, kind, Span(0, ground - 1));
+        }
+    }
+}
+
+Span liningOf(ref const Well kind, ref const Bed bed, int above, int edge) {
+    if (above >= WELL_EDGES || (bed.mouth == Mouth.open && above > 0)) {
+        return Span(0, -1);
+    } else {
+        return Span(higherOf(0, kind.liningBelow - above * edge), edge - 1);
+    }
+}
+
+WellShape shapeOf(Turtle mouth, ref const Bed bed) {
+    if (bed.mouth == Mouth.open && unitOf(mouth.probeHash(SitePart.vertex), WELL_SALT) < tuning.squareWellOdds) {
+        return WellShape.square;
+    } else {
+        return WellShape.spiral;
+    }
+}
+
+Material stairOf(ref const Well kind, WellShape shape) {
+    final switch (shape) {
+        case WellShape.spiral:
+            return kind.stair;
+        case WellShape.square:
+            return materials.drain;
+    }
+}
+
+void lining(Turtle top, ref const Well kind, Span z) {
+    if (z.low <= z.high) {
+        Span across = Span(-PORT - 1, PORT);
+        foreach (side; LINING_SIDES) {
+            Span wall = Span(side, side);
+            top.replace(kind.lining, boxOf(wall, across, z));
+            top.replace(kind.lining, boxOf(across, wall, z));
+        }
+    }
+}
+
+void stairDown(Flight flight, int above, Material stair, WellShape shape) {
+    Turtle top = flight.frame.forward(above);
+    int edge = top.edgeCells();
+    int descended = above * edge;
     Span port = Span(-PORT, PORT - 1);
-    Span newel = Span(-1, 0);
-    Span whole = Span(0, top.edgeCells() - 1);
+    Span whole = Span(0, edge - 1);
     top.paint(Material.none, boxOf(port, port, whole));
-    top.paint(materials.stair, boxOf(newel, newel, whole));
-    foreach (index; 0 .. WELL_TREADS) {
-        Tread tread = treadAround(1, PORT - 1, 1, index);
-        top.paint(materials.stair, boxOf(tread.x, tread.y, whole), Rhythm(WELL_TREADS, index, 1));
+    final switch (shape) {
+        case WellShape.spiral:
+            Span newel = Span(-1, 0);
+            top.paint(stair, boxOf(newel, newel, whole));
+            break;
+        case WellShape.square:
+            break;
+    }
+    int treads = treadsOf(shape);
+    foreach (index; 0 .. treads) {
+        Tread tread = wound(treadOf(shape, index), flight.winding);
+        top.paint(stair, boxOf(tread.x, tread.y, whole), Rhythm(treads, floorMod(index - descended, treads), 1));
+    }
+}
+
+int treadsOf(WellShape shape) {
+    final switch (shape) {
+        case WellShape.spiral:
+            return WELL_TREADS;
+        case WellShape.square:
+            return SQUARE_TREADS;
+    }
+}
+
+Tread treadOf(WellShape shape, int index) {
+    final switch (shape) {
+        case WellShape.spiral:
+            return wellTreadAt(index);
+        case WellShape.square:
+            return treadAround(SQUARE_INNER, PORT - SQUARE_INNER, SQUARE_SIDES, index);
+    }
+}
+
+void flightStops(Turtle mouth, WellShape shape, int edges) {
+    Flight flight = flightAt(mouth);
+    foreach (step; 0 .. edges * mouth.edgeCells()) {
+        Tread tread = wound(treadOf(shape, step), flight.winding);
+        flight.frame.stop(middle(tread.x), middle(tread.y), step);
     }
 }
 
@@ -1218,7 +1730,7 @@ void underlie(const(Api)* api) {
 struct Entry {
     Vertex surface;
     Way down;
-    Way branch;
+    Ways branches;
     Found found;
 }
 
@@ -1233,17 +1745,24 @@ Way downOf(ref const Vertex at) {
 }
 
 Entry entryAt(Turtle frame) {
+    Vertex surface = vertexAt(frame, frame.openPen());
+    return entryUnder(surface);
+}
+
+Entry entryUnder(ref const Vertex surface) {
     Entry entry;
-    entry.surface = vertexAt(frame, frame.openPen());
+    entry.surface = surface;
     entry.down = downOf(entry.surface);
     Vertex bottom = neighborOf(entry.surface, entry.down);
-    if (parentOf(bottom).isWay(opposite(entry.down))) {
+    if (waysUpOf(bottom).has(opposite(entry.down))) {
         Bed bed = Bed.ofSurface(null);
+        Memo memo;
         foreach (way; WAYS) {
-            if (entry.found == Found.none && way != entry.down && way != opposite(entry.down)) {
+            if (way != entry.down && way != opposite(entry.down)) {
                 Vertex child = neighborOf(bottom, way);
-                if (isLinked(bottom, Parent(opposite(entry.down), Found.some), child, way, bed)) {
-                    entry.branch = way;
+                if (child.height < bottom.height && isTreeLinked(bottom, child, way, bed, memo)) {
+                    entry.branches.items[entry.branches.count] = way;
+                    entry.branches.count += 1;
                     entry.found = Found.some;
                 }
             }
@@ -1312,6 +1831,18 @@ Vec toAlong(Way way, Vec chart) {
     return Vec(chart.dot(x), chart.dot(y), chart.dot(z));
 }
 
+double sweepTo(Helix helix, double from, Way down, Way way) {
+    Vec branch = toAlong(down, axisOf(way));
+    double sweep = atan2(branch.dot(helix.turn), branch.dot(helix.start)) - from;
+    if (sweep > PI) {
+        return sweep - 2 * PI;
+    } else if (sweep < -PI) {
+        return sweep + 2 * PI;
+    } else {
+        return sweep;
+    }
+}
+
 void route(ref const Entry entry) {
     Turtle shaft = along(entry.surface.frame, entry.down);
     Helix helix = helixOf(shaft);
@@ -1323,24 +1854,23 @@ void route(ref const Entry entry) {
         Vec at = onCircle(helix, TREAD_MIDDLE, wedgeAngle(tread));
         stops.add(shaft, at.x, at.y, tread);
     }
-    Vec branch = toAlong(entry.down, axisOf(entry.branch));
     Vec outward = onCircle(helix, RING_STOP, wedgeAngle(TURN_TREADS - 1));
     stops.add(shaft, outward.x, outward.y, edge);
     double from = atan2(outward.dot(helix.turn), outward.dot(helix.start));
-    double to = atan2(branch.dot(helix.turn), branch.dot(helix.start));
-    double sweep = to - from;
-    if (sweep > PI) {
-        sweep -= 2 * PI;
-    } else if (sweep < -PI) {
-        sweep += 2 * PI;
+    Way branch = entry.branches.items[0];
+    foreach (way; entry.branches.items[1 .. entry.branches.count]) {
+        if (fabs(sweepTo(helix, from, entry.down, way)) < fabs(sweepTo(helix, from, entry.down, branch))) {
+            branch = way;
+        }
     }
+    double sweep = sweepTo(helix, from, entry.down, branch);
     uint arcStops = 1 + cast(uint)(fabs(sweep) * RING_STOP / 2);
     foreach (index; 1 .. arcStops + 1) {
         Vec arc = onCircle(helix, RING_STOP, from + sweep * index / arcStops);
         stops.add(shaft, arc.x, arc.y, edge);
     }
     Turtle bottom = carried(entry.surface.frame, entry.down);
-    Turtle tube = along(bottom, entry.branch);
+    Turtle tube = along(bottom, branch);
     foreach (cell; TUBE_STOPS) {
         stops.add(tube, 0, 0, cell);
     }
@@ -1351,6 +1881,91 @@ void route(ref const Entry entry) {
     foreach_reverse (index; 0 .. stops.count - 1) {
         Stop stop = stops.items[index];
         stop.site.stop(stop.spot.x, stop.spot.y, stop.spot.z);
+    }
+}
+
+struct Descent {
+    Vertex at;
+    uint parent;
+    Way way;
+}
+
+bool hasChuteBelow(ref const Vertex at, ref const Bed bed, ref Memo memo) {
+    Turtle down = along(at.frame, downOf(at));
+    Lie lie = lieOf(down);
+    double edge = down.edgeCells();
+    ulong hash = down.probeHash(SitePart.edge);
+    if (!(fabs(fabs(lie.far - lie.near) - edge) < VERTICAL_SLACK && lie.near < -SURFACE_BAND && lie.far < -SURFACE_BAND && lie.far < lie.near)) {
+        return false;
+    } else if (!(unitOf(hash, DRAIN_SALT) < tuning.drainOdds) || unitOf(hash, DRAIN_SALT + 1) < tuning.drainStairOdds) {
+        return false;
+    } else {
+        return isInOpen(down.forward(1), lie.far) && keeps(at, at.frame.probeHash(SitePart.vertex), bed) && probeWell(at, bed).found == Found.none && opennessOf(at, bed, memo) == Openness.open;
+    }
+}
+
+void linkStops(ref const Vertex upper, ref const Vertex lower, Way way, bool first) {
+    Turtle link = along(upper.frame, way);
+    Tube tube = tubeTo(upper, lower, way);
+    final switch (tube.form) {
+        case Form.passage:
+            foreach (cell; TUBE_STOPS) {
+                link.stop(0, 0, cell);
+            }
+            break;
+        case Form.shaft:
+            Helix helix = helixOf(link);
+            if (first) {
+                Vec rim = onCircle(helix, RIM_STOP, wedgeAngle(0));
+                link.stop(rim.x, rim.y, 0);
+            }
+            foreach (tread; 0 .. TURN_TREADS) {
+                Vec on = onCircle(helix, TREAD_MIDDLE, wedgeAngle(tread));
+                link.stop(on.x, on.y, tread);
+            }
+            break;
+    }
+}
+
+Found routeToDrain(ref const Entry entry, ref const Root root) {
+    Bed bed = Bed.ofSurface(&root);
+    Memo memo;
+    Descent[MOST_DESCENT] reached;
+    reached[0] = Descent(neighborOf(entry.surface, entry.down), 0, entry.down);
+    if (!probeSunk(entry.surface, entry.surface.frame.probeHash(SitePart.vertex), bed) || isOverVoid(reached[0].at)) {
+        return Found.none;
+    }
+    uint count = 1;
+    uint next = 0;
+    while (next < count && !hasChuteBelow(reached[next].at, bed, memo)) {
+        foreach (way; WAYS) {
+            Vertex child = neighborOf(reached[next].at, way);
+            if (count < MOST_DESCENT && child.height < reached[next].at.height && isTreeLinked(reached[next].at, child, way, bed, memo) && (!isOverVoid(child) || hasChuteBelow(child, bed, memo))) {
+                reached[count] = Descent(child, next, way);
+                count += 1;
+            }
+        }
+        next += 1;
+    }
+    if (!(next < count && next > 0)) {
+        return Found.none;
+    } else {
+        uint[MOST_DESCENT] path;
+        uint steps = 0;
+        uint at = next;
+        while (at != 0) {
+            path[steps] = at;
+            steps += 1;
+            at = reached[at].parent;
+        }
+        foreach_reverse (index; 0 .. steps) {
+            Descent step = reached[path[index]];
+            linkStops(reached[step.parent].at, step.at, step.way, index == steps - 1);
+        }
+        Turtle chute = along(reached[next].at.frame, downOf(reached[next].at));
+        chute.stop(0, 0, 0);
+        chute.stop(0, 0, chute.edgeCells() - 1);
+        return Found.some;
     }
 }
 

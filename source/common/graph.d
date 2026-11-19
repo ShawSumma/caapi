@@ -18,7 +18,7 @@ import common.worldgen.blueprint : Blueprint;
 import common.worldgen.building : Building, BuildingPlan;
 import common.worldgen.generation : NodeState, Worldgen;
 import common.worldgen.horospheres : Fill, Horospheres;
-import common.worldgen.store : NodeMark, StructureStore, unpin;
+import common.worldgen.store : AheadPass, NodeMark, StructureStore, unpin;
 import common.worldgen.structure : PAINT_REACH, ensureAnchorSlot, finalizeStructure;
 import geometry.honeycomb : BEYOND_TOLERANCE, FACE_COUNT, Face, adjacentFaces, faceBit, mirror, normal;
 import geometry.lorentz : Point;
@@ -50,6 +50,14 @@ enum NodeContent : ubyte {
     deep,
 }
 
+enum Exposure : ubyte {
+    unjudged,
+    unburied,
+    mixed,
+    buried,
+    clear,
+}
+
 enum SlotUse : ubyte {
     free,
     live,
@@ -63,6 +71,7 @@ struct Node {
     ushort liveChildren;
     ushort references;
     NodeContent content;
+    Exposure exposure;
     Readiness state;
     SlotUse use;
 
@@ -392,9 +401,23 @@ struct Graph {
         structures.at(slot).marks.set(NodeMark.finished);
     }
 
-    void paintAhead(const(uint)[] candidates, Executor executor) {
+    void paintAhead(const(uint)[] candidates, Executor executor, double allowance) {
         if (structures.grower.paintAhead !is null && candidates.length > 0) {
-            structures.grower.paintAhead(structures.grower.context, this, candidates, executor);
+            structures.grower.paintAhead(structures.grower.context, this, candidates, executor, allowance);
+        }
+    }
+
+    void startAhead(const(uint)[] candidates, Executor executor) {
+        if (structures.grower.startAhead !is null && candidates.length > 0) {
+            structures.grower.startAhead(structures.grower.context, this, candidates, executor);
+        }
+    }
+
+    AheadPass finishAhead(Executor executor, double allowance) {
+        if (structures.grower.finishAhead !is null) {
+            return structures.grower.finishAhead(structures.grower.context, this, executor, allowance);
+        } else {
+            return AheadPass.none;
         }
     }
 

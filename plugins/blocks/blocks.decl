@@ -7,6 +7,7 @@ kind blocks-lot {
 
 kind blocks-district {
     street-trees: number 0..1 = 0.5
+    ports: number 0..1 = 0
     park-percent: integer 0..100 = 6
     plaza-percent: integer 0..100 = 5
     parking-percent: integer 0..100 = 3
@@ -31,4 +32,21 @@ kind blocks-materials {
     lot: one -> material
     plaza: one -> material
     park: one -> material
+    kerb: one -> material
+    frame: one -> material
+    tunnel: one -> material
+    tunnel-light: one -> material
+    bore-light: one -> material
+    ballast: one -> material
+    rail: one -> material
+    platform: one -> material
+    platform-edge: one -> material
+    station-wall: one -> material
+    station-ceiling: one -> material
+    pillar: one -> material
+    mezzanine: one -> material
+    railing: one -> material
+    entrance: one -> material
+    transfer: one -> material
+    bands: some -> material
 }

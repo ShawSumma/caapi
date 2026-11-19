@@ -20,7 +20,47 @@ rooms-materials rooms:materials {
     lawn -> base:grass
     trunk -> base:oak-wood
     leaves -> base:oak-leaves
-    levels -> [rooms:offices rooms:houses rooms:mazes]
+    sign -> base:sunlight
+    levels -> [rooms:offices rooms:houses rooms:mazes rooms:works]
+}
+
+rooms-level rooms:works {
+    room: 3
+    kind: maze
+    biomes -> [rooms:boiler rooms:pipeworks rooms:cistern]
+}
+
+rooms-biome rooms:boiler {
+    wall -> base:grey-brick
+    floor -> base:concrete
+    ceiling -> base:steel
+    light -> base:sunlight
+    stair -> base:steel
+    nowhere: 0.15
+    well: 0.03
+    wetness-below: 0.5
+}
+
+rooms-biome rooms:pipeworks {
+    wall -> base:steel
+    floor -> base:concrete
+    ceiling -> base:steel
+    light -> base:light-panel
+    stair -> base:steel
+    nowhere: 0.1
+    wetness-above: 0.5
+    wetness-below: 0.67
+}
+
+rooms-biome rooms:cistern {
+    wall -> base:wet-concrete
+    floor -> base:water
+    ceiling -> base:wet-concrete
+    light -> base:light-panel
+    stair -> base:wet-concrete
+    nowhere: 0.3
+    well: 0.09
+    wetness-above: 0.67
 }
 
 rooms-level rooms:offices {
@@ -32,6 +72,64 @@ rooms-level rooms:offices {
     stairs: 0.24
     hall -> rooms:office-hall
     biomes -> [rooms:office rooms:sodden rooms:stained rooms:archive rooms:red-room rooms:tiled rooms:open-hall rooms:atrium]
+    rare -> [rooms:garden-hall rooms:drowned-hall]
+}
+
+rooms-plan rooms:plain-rooms {
+    plan: rooms
+}
+
+rooms-plan rooms:pillar-hall {
+    plan: pillars
+}
+
+rooms-plan rooms:wide-pillars {
+    plan: pillars
+    pillar-every: 6
+}
+
+rooms-plan rooms:pool-room {
+    plan: pool
+}
+
+rooms-plan rooms:courtyard {
+    plan: court
+}
+
+rooms-use rooms:pallets {
+    material -> base:wood-planks
+    odds: 0.15
+}
+
+rooms-use rooms:lamps {
+    material -> base:light-panel
+    odds: 0.05
+}
+
+rooms-use rooms:steel {
+    material -> base:steel
+    odds: 0.08
+    height: 2
+}
+
+rooms-rare rooms:garden-hall {
+    plan: court
+    one-in: 27
+}
+
+rooms-rare rooms:drowned-hall {
+    plan: pool
+    one-in: 27
+}
+
+rooms-rare rooms:pillared-hall {
+    plan: pillars
+    one-in: 27
+}
+
+rooms-rare rooms:ringed-hall {
+    plan: rings
+    one-in: 81
 }
 
 rooms-hall rooms:office-hall {
@@ -45,6 +143,7 @@ rooms-level rooms:houses {
     missing: 0.03
     stairs: 0.24
     biomes -> [rooms:parlor rooms:study rooms:attic rooms:conservatory rooms:gallery]
+    rare -> [rooms:pillared-hall rooms:ringed-hall]
 }
 
 rooms-level rooms:mazes {
@@ -61,10 +160,15 @@ rooms-biome rooms:archive {
     stair -> base:concrete
     shelf -> base:steel
     boxes -> base:wood-planks
+    uses -> [rooms:steel rooms:pallets]
     big: 0.8
     box-odds: 0.4
     box-height: 4
-    pillars: 0.1
+    plans -> rooms:pillar-hall { weight: 0.1 }
+    plans -> rooms:plain-rooms { weight: 0.9 }
+    grandeur-above: 0.5
+    age-above: 0.5
+    darkness-above: 0.5
 }
 
 rooms-biome rooms:red-room {
@@ -76,7 +180,11 @@ rooms-biome rooms:red-room {
     stair -> base:red-carpet
     big: 0.5
     open: 0.3
-    pillars: 0.35
+    plans -> rooms:pillar-hall { weight: 0.35 }
+    plans -> rooms:plain-rooms { weight: 0.65 }
+    grandeur-above: 0.5
+    age-below: 0.5
+    darkness-above: 0.5
 }
 
 rooms-biome rooms:tiled {
@@ -89,8 +197,12 @@ rooms-biome rooms:tiled {
     big: 0.6
     open: 0.6
     skylight: 0.3
-    pillars: 0.2
-    pool: 0.55
+    plans -> rooms:pillar-hall { weight: 0.2 }
+    plans -> rooms:pool-room { weight: 0.55 }
+    plans -> rooms:plain-rooms { weight: 0.25 }
+    grandeur-below: 0.5
+    wetness-above: 0.5
+    age-below: 0.5
 }
 
 rooms-biome rooms:conservatory {
@@ -103,7 +215,11 @@ rooms-biome rooms:conservatory {
     room-floors -> [base:grass base:lush-grass]
     big: 0.5
     open: 0.4
-    pillars: 0.3
+    plans -> rooms:pillar-hall { weight: 0.3 }
+    plans -> rooms:plain-rooms { weight: 0.7 }
+    grandeur-above: 0.4
+    wetness-above: 0.5
+    darkness-below: 0.67
 }
 
 rooms-biome rooms:gallery {
@@ -116,7 +232,11 @@ rooms-biome rooms:gallery {
     room-floors -> base:marble
     big: 0.7
     open: 0.2
-    pillars: 0.5
+    plans -> rooms:wide-pillars { weight: 0.5 }
+    plans -> rooms:plain-rooms { weight: 0.5 }
+    grandeur-above: 0.4
+    wetness-below: 0.5
+    darkness-below: 0.67
 }
 
 rooms-biome rooms:catacomb {
@@ -126,6 +246,9 @@ rooms-biome rooms:catacomb {
     light -> base:sunlight
     stair -> base:limestone
     nowhere: 0.3
+    wetness-below: 0.67
+    age-above: 0.4
+    darkness-above: 0.5
 }
 
 rooms-biome rooms:hedge {
@@ -135,6 +258,9 @@ rooms-biome rooms:hedge {
     light -> base:sunlight
     stair -> base:wood-planks
     nowhere: 0.1
+    wetness-below: 0.67
+    age-above: 0.4
+    darkness-below: 0.5
 }
 
 rooms-biome rooms:office {
@@ -146,11 +272,16 @@ rooms-biome rooms:office {
     damp -> base:damp-carpet
     stair -> base:carpet
     boxes -> base:wallpaper
+    uses -> rooms:lamps
     vents: some
     box-odds: 0.15
     box-height: 4
     skylight: 0.2
-    pillars: 0.08
+    plans -> rooms:pillar-hall { weight: 0.08 }
+    plans -> rooms:plain-rooms { weight: 0.92 }
+    grandeur-below: 0.5
+    wetness-below: 0.5
+    age-below: 0.5
 }
 
 rooms-biome rooms:open-hall {
@@ -163,7 +294,11 @@ rooms-biome rooms:open-hall {
     vents: some
     big: 0.6
     open: 0.5
-    pillars: 0.75
+    plans -> rooms:pillar-hall { weight: 0.75 }
+    plans -> rooms:plain-rooms { weight: 0.25 }
+    grandeur-above: 0.5
+    wetness-below: 0.5
+    darkness-below: 0.5
 }
 
 rooms-biome rooms:atrium {
@@ -175,8 +310,12 @@ rooms-biome rooms:atrium {
     stair -> base:wood-planks
     big: 0.5
     skylight: 0.5
-    pillars: 0.15
-    court: 0.7
+    plans -> rooms:pillar-hall { weight: 0.15 }
+    plans -> rooms:courtyard { weight: 0.7 }
+    plans -> rooms:plain-rooms { weight: 0.15 }
+    grandeur-above: 0.5
+    wetness-above: 0.5
+    darkness-below: 0.5
 }
 
 rooms-biome rooms:sodden {
@@ -191,7 +330,11 @@ rooms-biome rooms:sodden {
     box-odds: 0.25
     box-height: 3
     skylight: 0.1
-    pool: 0.2
+    plans -> rooms:pool-room { weight: 0.2 }
+    plans -> rooms:plain-rooms { weight: 0.8 }
+    grandeur-below: 0.5
+    wetness-above: 0.5
+    age-above: 0.5
 }
 
 rooms-biome rooms:stained {
@@ -203,6 +346,9 @@ rooms-biome rooms:stained {
     stair -> base:carpet
     vents: some
     skylight: 0.15
+    grandeur-below: 0.5
+    wetness-below: 0.5
+    age-above: 0.5
 }
 
 rooms-biome rooms:parlor {
@@ -214,6 +360,8 @@ rooms-biome rooms:parlor {
     stair -> base:wood-planks
     room-floors -> [base:wood-planks base:wood-planks base:carpet]
     big: 0.35
+    grandeur-below: 0.4
+    age-below: 0.5
 }
 
 rooms-biome rooms:study {
@@ -226,6 +374,8 @@ rooms-biome rooms:study {
     shelf -> base:spruce-wood
     room-floors -> [base:wood-planks base:spruce-wood]
     big: 0.3
+    grandeur-above: 0.4
+    darkness-above: 0.67
 }
 
 rooms-biome rooms:attic {
@@ -237,7 +387,10 @@ rooms-biome rooms:attic {
     damp -> base:damp-carpet
     stair -> base:spruce-wood
     room-floors -> [base:spruce-wood base:carpet base:damp-carpet]
+    uses -> rooms:pallets
     big: 0.4
+    grandeur-below: 0.4
+    age-above: 0.5
 }
 
 rooms-biome rooms:bunker {
@@ -247,6 +400,8 @@ rooms-biome rooms:bunker {
     light -> base:light-panel
     stair -> base:concrete
     nowhere: 0.15
+    wetness-below: 0.5
+    age-below: 0.4
 }
 
 rooms-biome rooms:cellar {
@@ -256,6 +411,9 @@ rooms-biome rooms:cellar {
     light -> base:light-panel
     stair -> base:concrete
     nowhere: 0.2
+    well: 0.06
+    wetness-above: 0.5
+    age-below: 0.4
 }
 
 rooms-biome rooms:sump {
@@ -264,4 +422,7 @@ rooms-biome rooms:sump {
     ceiling -> base:wet-concrete
     stair -> base:wet-concrete
     nowhere: 0.25
+    well: 0.09
+    wetness-above: 0.67
+    age-above: 0.4
 }

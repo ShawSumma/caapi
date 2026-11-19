@@ -10,6 +10,23 @@ blocks-materials blocks:materials {
     lot -> base:concrete
     plaza -> base:granite
     park -> base:grass
+    kerb -> base:concrete
+    frame -> base:steel
+    tunnel -> base:wet-concrete
+    tunnel-light -> base:light-panel
+    bore-light -> base:sunlight
+    ballast -> base:gravel
+    rail -> base:steel
+    platform -> base:concrete
+    platform-edge -> base:pollen
+    station-wall -> base:white-brick
+    station-ceiling -> base:plaster
+    pillar -> base:steel
+    mezzanine -> base:ceiling-tile
+    railing -> base:steel
+    entrance -> base:steel
+    transfer -> base:acacia-wood
+    bands -> [base:red-carpet base:slate base:red-sandstone base:sandstone base:spruce-wood]
 }
 
 connector-ground blocks:ground {
@@ -51,6 +68,7 @@ blocks-district blocks:rows {
 
 blocks-district blocks:works {
     street-trees: 0.05
+    ports: 0.15
     park-percent: 1
     plaza-percent: 2
     parking-percent: 14

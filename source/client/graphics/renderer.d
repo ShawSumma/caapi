@@ -5,7 +5,7 @@ import bindings.platform : VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_HOST_
 import base.array : Array;
 import base.clock : Deadline, MILLISECONDS_PER_SECOND, NANOSECONDS_PER_MILLISECOND, nowMilliseconds;
 import base.maybe : Maybe;
-import base.numbers : lowerOf;
+import base.numbers : higherOf, lowerOf;
 import base.parallel : ParallelJob;
 import base.units : Time;
 import client.graphics.base : SwapchainState;
@@ -15,7 +15,7 @@ import client.graphics.fog : FogPipeline;
 import client.graphics.highlight : HighlightPipeline;
 import client.graphics.overlay : HudPipeline, MarkerPipeline;
 import client.graphics.post : PostChain;
-import client.hud : HudVertex, Marker;
+import client.drawing : HudVertex, Marker;
 import client.text : GlyphAtlas;
 import client.graphics.pipeline : GpuBuffer, QUEUE_FAMILY_IGNORED, VULKAN_TRUE, expectSuccess;
 import client.graphics.uniforms : CommonUniforms, HighlightTarget, LinearColor, PostSettings, commonUniforms, findHighlightTarget, perceivedFog, postSettings, unseenMaterials;
@@ -33,6 +33,7 @@ import plugins.api.flags : Flags;
 enum float CLEAR_DEPTH = 0.0f;
 enum ulong NO_TIMEOUT = ulong.max;
 enum double MESH_BUDGET_MILLISECONDS = 2.0;
+enum double LEAST_MESH_BUDGET_MILLISECONDS = 0.25;
 enum uint PIXEL_BYTES = 4;
 enum uint OFFSCREEN_IMAGE = 0;
 enum uint TIMESTAMP_COUNT = 3;
@@ -241,6 +242,7 @@ struct Renderer {
         hud.upload(hudVertices);
         updateChunks(world);
         frameTimes.chunkUpdateMs = nowMilliseconds() - updateStart;
+        world.planAhead();
         Maybe!HighlightTarget target = findHighlightTarget(world);
         PostSettings settings = postSettings(world, frameTime(updateStart));
         if (swapchain.isOffscreen) {
@@ -292,7 +294,8 @@ struct Renderer {
     void meshChanged(ref LocalWorld world) {
         if (world.graph.chunks.hasChanges()) {
             meshes.batch.prepare(world.graph, world.streamer.workerCount + 1, meshes.dimension);
-            ParallelJob job = ParallelJob(&meshJob, &meshes.batch, Deadline.at(nowMilliseconds() + MESH_BUDGET_MILLISECONDS), world.graph.chunks.pending().length);
+            double budget = higherOf(MESH_BUDGET_MILLISECONDS - world.stepOverrun, LEAST_MESH_BUDGET_MILLISECONDS);
+            ParallelJob job = ParallelJob(&meshJob, &meshes.batch, Deadline.at(nowMilliseconds() + budget), world.graph.chunks.pending().length);
             world.streamer.runParallel(&job);
             foreach (_; 0 .. job.count) {
                 world.graph.chunks.takeChanged();

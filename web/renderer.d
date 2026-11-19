@@ -12,7 +12,7 @@ import client.graphics.uniforms : CommonUniforms, HighlightTarget, LinearColor, 
 import common.material : MaterialSet, glowing, seeThrough;
 import client.graphics.voxels.drawlist : CubeFrame, DrawList, DrawableRecord, ListedNode, cubeFrameTable;
 import client.graphics.voxels.textures : TEXTURE_MIPS, TEXTURE_SIZE, makeTexturePixels, textureLayers;
-import client.hud : HudVertex, Marker;
+import client.drawing : HudVertex, Marker;
 import client.meshing : Quad, meshJob;
 import client.text : ATLAS_HEIGHT, ATLAS_WIDTH, GlyphAtlas;
 import client.world : LocalWorld;

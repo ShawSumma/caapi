@@ -21,6 +21,7 @@ enum ulong TILE_RANK_BIT = 1;
 enum Cover : ubyte {
     over,
     intoAir,
+    intoSolid,
 }
 
 struct Paint {
@@ -297,6 +298,7 @@ enum PaintResult : ubyte {
     painted,
     endless,
     behind,
+    beyond,
 }
 
 enum LineLife : ubyte {

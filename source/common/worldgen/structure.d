@@ -30,6 +30,8 @@ enum float FLAT_RADIUS = 1.8f;
 enum float FLAT_BLEND = 1.4f;
 enum uint FLAT_DEPTH_SPAN = 8;
 enum float CALM_SLACK = 0.05f;
+enum uint SEEDED_PARTS = 3;
+enum ulong LINE_SALT = 0x4C494E45;
 
 struct LineTouch {
     int level;
@@ -122,7 +124,7 @@ struct ClaimKey {
     SitePart part;
 
     size_t toHash() const {
-        return (cast(size_t) slot * CORNER_COUNT + feature) * (SitePart.max + 1) + part;
+        return (cast(size_t) slot * CORNER_COUNT + feature) * SEEDED_PARTS + part;
     }
 }
 
@@ -406,7 +408,7 @@ ClaimKey ensureSiteFace(ref GraphView view, SiteFrame site) {
 }
 
 ClaimKey ensureClaimKey(ref GraphView view, SiteFrame site, SitePart part) {
-    assert(part != SitePart.edge);
+    assert(part != SitePart.edge && part != SitePart.line);
     if (part == SitePart.vertex) {
         return view.ensureSiteOrigin(site).key;
     } else {
@@ -425,12 +427,24 @@ ulong ensureSiteHash(ref GraphView view, SiteFrame site, SitePart part) {
         case SitePart.edge:
             seed = view.ensureEdgeSeed(site);
             break;
+        case SitePart.line:
+            seed = view.ensureLineSeed(site);
+            break;
     }
     return SplitMix(seed).next();
 }
 
 ulong mixedSeed(ulong spice, uint feature, SitePart part) {
-    return spice ^ ((cast(ulong) feature * (SitePart.max + 1) + part + 1) * FIBONACCI_MULTIPLIER);
+    return spice ^ ((cast(ulong) feature * SEEDED_PARTS + part + 1) * FIBONACCI_MULTIPLIER);
+}
+
+uint lineFeature(ref const LineSpec line) {
+    return (line.lower * FACE_COUNT + line.xSide) * FACE_COUNT + line.ySide;
+}
+
+ulong ensureLineSeed(ref GraphView view, SiteFrame site) {
+    LineSpec line = view.canonicalOf(site).line;
+    return mixedSeed(view.idAt(line.node.value).spice() ^ LINE_SALT, lineFeature(line), SitePart.line);
 }
 
 ulong ensureEdgeSeed(ref GraphView view, SiteFrame site) {
@@ -440,8 +454,7 @@ ulong ensureEdgeSeed(ref GraphView view, SiteFrame site) {
     CellBox edge = canonicalBox(CellBox.make(0, 0, 0, 0, 0, cells - 1), canonical.transform, dimension);
     ulong level = cast(uint) floorDivision(edge.low.z, cells);
     LineSpec line = canonical.line;
-    uint feature = (line.lower * FACE_COUNT + line.xSide) * FACE_COUNT + line.ySide;
-    return mixedSeed(view.idAt(line.node.value).spice() ^ (level * LEVEL_MULTIPLIER), feature, SitePart.edge);
+    return mixedSeed(view.idAt(line.node.value).spice() ^ (level * LEVEL_MULTIPLIER), lineFeature(line), SitePart.edge);
 }
 
 uint[GROUND_RING] ensureGroundRing(ref GraphView view, uint sky, Face label) {

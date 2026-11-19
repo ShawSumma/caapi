@@ -264,7 +264,7 @@ struct MeshBatch {
     void requeueWaiting(ref Graph target) {
         foreach (worker; workers.slice()) {
             foreach (slot; worker.waiting.slice()) {
-                target.markChanged(slot);
+                target.chunks.queue(slot);
             }
             foreach (slot; worker.dropped.slice()) {
                 Chunk* chunk = target.chunks.existing(slot);

@@ -3,8 +3,8 @@ module common.edits;
 import base.array : Array;
 import base.hashmap : HashMap;
 import base.units : Time;
-import common.biology.wild : WildGenes;
 import common.node : Chunk, ChunkId;
+import common.worldgen.lineage : Lineage;
 import plugins.api.api : Material;
 
 struct CellEdit {
@@ -12,18 +12,15 @@ struct CellEdit {
     Material material;
 }
 
-enum RecordKind : ubyte {
-    beacon,
-    collector,
-    planted,
-    placedLiving,
+struct RecordTag {
+    ubyte id;
 }
 
 struct BlockRecord {
-    WildGenes genes;
+    Lineage lineage;
     Time placed;
     uint cell;
-    RecordKind kind;
+    RecordTag tag;
 }
 
 struct ChunkEdits {

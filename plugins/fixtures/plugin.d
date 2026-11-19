@@ -1,14 +1,14 @@
 module plugins.fixtures.plugin;
 
-import plugins.api.api : Api, HorosphereForm, KindId, KindTag, Registry, Site, SitePart, Spot, entryOf;
+import plugins.api.api : Api, HorosphereForm, KindId, KindTag, Registry, Site, SitePart, Spot, entryOf, typedTile;
+import plugins.api.binding : bound;
 import plugins.api.content : BASE, Content, Dependency, FIRST_VERSION, Manifest, dependencyOn;
 import box = plugins.box.box;
-import plugins.api.binding : bound;
 import plugins.buildings.building : Bound, Lot, Lots, Side, Spec, Traits;
 import plugins.buildings.types : build;
 import plugins.connector.connector : Connection, Routing, Style;
-import layout = plugins.rooms.layout;
 import plugins.horospheres.horospheres : CITY_TAG, Kinds, addKinds, cityTile, resolveHorospheres;
+import layout = plugins.rooms.layout;
 import plugins.rooms.rooms : MaybeLayer;
 import plugins.turtle.turtle : Turtle, cornersOf;
 
@@ -86,7 +86,7 @@ void trip(Style style, Ground lower, Ground upper)(const(Api)* api, Site site, c
 
 void chain(const(Api)* api, Site site, const(void)* data) {
     Kinds kinds = addKinds(api, 0, 0, &UNROUTED);
-    KindId upper = api.horosphere(api, 0, HorosphereForm.solid, CITY_TAG, &cityTile, &ROUTED, Connection.sizeof);
+    KindId upper = api.horosphere(api, 0, HorosphereForm.solid, CITY_TAG, &typedTile!(cityTile, Connection), &ROUTED, Connection.sizeof);
     api.openHorosphere(api, site, kinds.city, RISE_EDGES);
     Turtle along = Turtle(api, site).pitchUp().forward(RISE_EDGES).pitchUp().forward(CHAIN_EDGES);
     api.openHorosphere(api, along.site, upper, RISE_EDGES);
@@ -98,7 +98,7 @@ void forcedStair(const(Api)* api, Site site, uint upper) {
     Turtle stairs = at.forward(1).right();
     layout.ForcedStair forced = layout.ForcedStair(stairs.probeHash(SitePart.vertex), stairs.probeHash(SitePart.face), MaybeLayer.of(upper));
     layout.Root root = layout.Root(at.probeHash(SitePart.vertex), layout.Shaft.none, Routing.routed, forced);
-    api.tile(api, &layout.tile, &root, layout.Root.sizeof);
+    api.tile(api, &typedTile!(layout.tile, layout.Root), &root, layout.Root.sizeof);
 }
 
 void basement(const(Api)* api, Site site, const(void)* data) {

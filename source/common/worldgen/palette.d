@@ -7,8 +7,7 @@ import base.stdio : printed;
 import common.content.declarations : declare;
 import common.content.graph : ContentGraph, PROBLEM_CAPACITY, targetOf;
 import common.material : MaterialSet, has, including, materialCount, materialOfNode;
-import common.worldgen.generation : TreeShape;
-import plugins.api.api : Material;
+import plugins.api.api : Form, Material, Part;
 import plugins.api.content : ContentRef, Holder;
 
 enum string MATERIAL = "material";
@@ -76,15 +75,59 @@ struct Tree {
     Material wood;
     Material leaves;
     Material heart;
-    TreeShape shape;
+    Form form;
     ubyte minTrunk;
     ubyte trunkChoices;
     ubyte reach;
 }
 
+struct NamedForm {
+    const(char)[] name;
+    Form form;
+}
+
+Part shapeless(int trunk, int level, int across, int along) {
+    return Part.none;
+}
+
 enum Layer : ubyte {
     missing,
     laid,
+}
+
+enum Drift : ubyte {
+    broad,
+    local,
+    heat,
+    wetness,
+    strata,
+    ruggedness,
+    shield,
+}
+
+enum uint DRIFT_COUNT = Drift.max + 1;
+immutable string[DRIFT_COUNT] DRIFT_NAMES = ["broad", "local", "heat", "wetness", "strata", "ruggedness", "shield"];
+
+struct Shape {
+    float[DRIFT_COUNT] keep = 0;
+    float[DRIFT_COUNT] spread = 0;
+    float ruggedThreshold = 0;
+    float mountainHeight = 0;
+    float lapseRate = 0;
+    float coverDepth = 0;
+    float soilDepth = 0;
+    float waterLevel = 0;
+    float warmthClassLimit = 0;
+    float[ROCK_BANDS - 1] rockBandDepths = 0;
+    float[WETNESS_CLASSES - 1] wetnessClassLimits = 0;
+    float baseTreeDensity = 0;
+    float wetnessPerTreeDensity = 0;
+    float leastTreeDensity = 0;
+    float mostTreeDensity = 0;
+    float plantDensity = 0;
+    float veinOdds = 0;
+    float veinFill = 0;
+    int veinRadius;
 }
 
 struct Palette {
@@ -101,6 +144,8 @@ struct Palette {
     Layer[WARMTH_CLASSES][WETNESS_CLASSES][ROCK_BANDS] layers;
     Material flatFill;
     Material standIn;
+    const(char)[] world;
+    Shape shape;
 }
 
 __gshared Palette palette;
@@ -152,10 +197,97 @@ Material oreFor(Material rock) {
     return palette.ores.ptr[rock.id];
 }
 
-enum string PALETTE_DECLARATIONS = "worldgen/palette.decl";
+enum string PALETTE_SOURCE = "common/worldgen/palette.d";
+enum string CLIME_FIELDS = `
+    warmth-above: number?
+    warmth-below: number?
+    wetness-above: number?
+    wetness-below: number?
+    relief-above: number?
+    relief-below: number?
+    order: number = 0
+    lays: one -> material
+`;
+enum string PALETTE_DECLARATIONS = "kind cover-rule {" ~ CLIME_FIELDS ~ "}\nkind soil-rule {" ~ CLIME_FIELDS ~ "}\nkind fluid-rule {" ~ CLIME_FIELDS ~ "}\nkind plant-rule {" ~ CLIME_FIELDS ~ "}\n" ~ `
+kind tree-rule {
+    warmth-above: number?
+    warmth-below: number?
+    wetness-above: number?
+    wetness-below: number?
+    order: number = 0
+    one-in: integer 1..?
+    draw: "roll" | "choice"?
+    picks: some -> tree
+}
+
+kind rock-layer {
+    band: integer 0..3
+    wetness-class: integer 0..2
+    warmth-class: integer 0..1
+    lays: one -> material
+}
+
+kind tree {
+    shape: text
+    trunk: integer 0..255 = 0
+    trunk-choices: integer 1..255 = 1
+    reach: integer 0..255 = 1
+    wood: one -> material
+    leaves: optional -> material
+    heart: optional -> material
+    grows-on: many -> material | group
+}
+
+kind terrain {
+    flat-fill: one -> material
+    stand-in: one -> material
+    world: text?
+    broad-keep: number 0..1
+    broad-spread: number 0..
+    local-keep: number 0..1
+    local-spread: number 0..
+    heat-keep: number 0..1
+    heat-spread: number 0..
+    wetness-keep: number 0..1
+    wetness-spread: number 0..
+    strata-keep: number 0..1
+    strata-spread: number 0..
+    ruggedness-keep: number 0..1
+    ruggedness-spread: number 0..
+    shield-keep: number 0..1
+    shield-spread: number 0..
+    rugged-threshold: number
+    mountain-height: number 0..
+    lapse-rate: number
+    cover-depth: number 0..
+    soil-depth: number 0..
+    water-level: number
+    warmth-class-limit: number
+    rock-band-1: number 0..
+    rock-band-2: number 0..
+    rock-band-3: number 0..
+    wetness-limit-1: number
+    wetness-limit-2: number
+    base-tree-density: number 0..1
+    wetness-per-tree-density: number
+    least-tree-density: number 0..1
+    most-tree-density: number 0..1
+    plant-density: number 0..1
+    vein-odds: number 0..1
+    vein-fill: number 0..1
+    vein-radius: integer 0..
+}
+
+extend material {
+    grows-on: many -> material | group
+    vein-in: many -> material
+}
+`;
+
+static assert(ROCK_BANDS == 4 && WETNESS_CLASSES == 3 && WARMTH_CLASSES == 2);
 
 void declarePalette(ref ContentGraph graph) {
-    declare(graph, import(PALETTE_DECLARATIONS), PALETTE_DECLARATIONS);
+    declare(graph, PALETTE_DECLARATIONS, PALETTE_SOURCE);
 }
 
 Material materialAlong(ref const ContentGraph graph, uint node, const(char)[] kind) {
@@ -210,10 +342,25 @@ MaterialSet groundOf(ref const ContentGraph graph, uint node) {
     return ground;
 }
 
-Tree treeNodeOf(ref ContentGraph graph, uint node) {
+Form formOf(ref ContentGraph graph, uint node, const(NamedForm)[] forms) {
+    const(char)[] shape = graph.textAt(ContentRef(node, Holder.node), "shape");
+    uint index = 0;
+    while (index < forms.length && forms[index].name != shape) {
+        index += 1;
+    }
+    if (index < forms.length) {
+        return forms[index].form;
+    } else {
+        char[PROBLEM_CAPACITY] buffer;
+        const(char)[] name = graph.nameOf(node);
+        graph.report(graph.nodes.ptr[node].owner, printed(buffer[], "the tree '%.*s' has the shape '%.*s', which no plugin registers", cast(int) name.length, name.ptr, cast(int) shape.length, shape.ptr));
+        return Form(&shapeless, 0);
+    }
+}
+
+Tree treeNodeOf(ref ContentGraph graph, uint node, const(NamedForm)[] forms) {
     ContentRef at = ContentRef(node, Holder.node);
-    TreeShape shape = enumNamed!TreeShape(graph.textAt(at, "shape")).value;
-    return Tree(groundOf(graph, node), materialAlong(graph, node, "wood"), materialAlong(graph, node, "leaves"), materialAlong(graph, node, "heart"), shape, cast(ubyte) graph.number(at, "trunk"), cast(ubyte) graph.number(at, "trunk-choices"), cast(ubyte) graph.number(at, "reach"));
+    return Tree(groundOf(graph, node), materialAlong(graph, node, "wood"), materialAlong(graph, node, "leaves"), materialAlong(graph, node, "heart"), formOf(graph, node, forms),cast(ubyte) graph.number(at, "trunk"), cast(ubyte) graph.number(at, "trunk-choices"), cast(ubyte) graph.number(at, "reach"));
 }
 
 Draw drawOf(ref ContentGraph graph, uint node) {
@@ -263,13 +410,47 @@ void addMaterialTerrain(ref ContentGraph graph, uint node) {
     }
 }
 
+float numberAt(ref const ContentGraph graph, ContentRef at, const(char)[] key) {
+    return cast(float) graph.number(at, key);
+}
+
+Shape shapeOf(ref const ContentGraph graph, ContentRef at) {
+    Shape shape;
+    foreach (drift, name; DRIFT_NAMES) {
+        char[PROBLEM_CAPACITY] buffer;
+        shape.keep[drift] = numberAt(graph, at, printed(buffer[], "%.*s-keep", cast(int) name.length, name.ptr));
+        shape.spread[drift] = numberAt(graph, at, printed(buffer[], "%.*s-spread", cast(int) name.length, name.ptr));
+    }
+    shape.ruggedThreshold = numberAt(graph, at, "rugged-threshold");
+    shape.mountainHeight = numberAt(graph, at, "mountain-height");
+    shape.lapseRate = numberAt(graph, at, "lapse-rate");
+    shape.coverDepth = numberAt(graph, at, "cover-depth");
+    shape.soilDepth = numberAt(graph, at, "soil-depth");
+    shape.waterLevel = numberAt(graph, at, "water-level");
+    shape.warmthClassLimit = numberAt(graph, at, "warmth-class-limit");
+    shape.rockBandDepths = [numberAt(graph, at, "rock-band-1"), numberAt(graph, at, "rock-band-2"), numberAt(graph, at, "rock-band-3")];
+    shape.wetnessClassLimits = [numberAt(graph, at, "wetness-limit-1"), numberAt(graph, at, "wetness-limit-2")];
+    shape.baseTreeDensity = numberAt(graph, at, "base-tree-density");
+    shape.wetnessPerTreeDensity = numberAt(graph, at, "wetness-per-tree-density");
+    shape.leastTreeDensity = numberAt(graph, at, "least-tree-density");
+    shape.mostTreeDensity = numberAt(graph, at, "most-tree-density");
+    shape.plantDensity = numberAt(graph, at, "plant-density");
+    shape.veinOdds = numberAt(graph, at, "vein-odds");
+    shape.veinFill = numberAt(graph, at, "vein-fill");
+    shape.veinRadius = cast(int) graph.number(at, "vein-radius");
+    return shape;
+}
+
 uint addTerrain(ref ContentGraph graph, uint node, uint terrains) {
+    ContentRef at = ContentRef(node, Holder.node);
     palette.flatFill = materialAlong(graph, node, "flat-fill");
     palette.standIn = materialAlong(graph, node, "stand-in");
+    palette.world = graph.textAt(at, "world");
+    palette.shape = shapeOf(graph, at);
     return terrains + 1;
 }
 
-void buildPalette(ref ContentGraph graph, uint owner) {
+void buildPalette(ref ContentGraph graph, uint owner, const(NamedForm)[] forms) {
     palette.plantGrounds.resize(materialCount());
     palette.ores.resize(materialCount());
     foreach (index; 0 .. materialCount()) {
@@ -291,7 +472,7 @@ void buildPalette(ref ContentGraph graph, uint owner) {
         } else if (graph.isKind(index, "rock-layer")) {
             addRockLayer(graph, index);
         } else if (graph.isKind(index, TREE)) {
-            palette.trees.append(treeNodeOf(graph, index));
+            palette.trees.append(treeNodeOf(graph, index, forms));
         } else if (graph.isKind(index, MATERIAL)) {
             addMaterialTerrain(graph, index);
         } else if (graph.isKind(index, "terrain")) {

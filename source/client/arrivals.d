@@ -153,7 +153,7 @@ void settle(ref Graph graph, GenResult arrival, ref IntegrationOutput output) {
             } else {
                 ChunkState state = other.loadState();
                 if (state == ChunkState.populated) {
-                    if (arrival.kind == GenKind.fresh) {
+                    if (arrival.kind == GenKind.fresh || other.voxels.isUniform()) {
                         queueMesh(graph, neighbor.value, output);
                     }
                     if (other.hasDeferredMaterials && graph.isBorderingVoid(neighbor.value)) {

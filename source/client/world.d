@@ -1,6 +1,6 @@
 module client.world;
 
-import core.stdc.math : coshf, expf, logf, powf;
+import core.stdc.math : coshf, expf, logf, powf, tanhf;
 import base.array : Array;
 import base.clock : Deadline, PhaseTimes, nowMilliseconds, threadCpuMilliseconds;
 import base.maybe : Maybe, MaybeIndex;
@@ -17,10 +17,11 @@ import common.node : Chunk, ChunkId, ChunkSlot, ChunkState, cellIndex;
 import common.perception : ViewEffects;
 import common.position : Position;
 import common.raycast.graph : GraphCastHit, rayCast;
-import common.traversal : NearbyNode, NearbyScratch;
+import common.traversal : LOADING_PAINT_MILLISECONDS, NearbyNode, NearbyScratch, PAINT_MILLISECONDS;
 import common.worldgen.blueprint : Under;
 import common.worldgen.generation : Worldgen;
 import common.worldgen.horospheres : lookAt, underAt;
+import common.worldgen.store : AheadPass;
 import geometry.cube : Cell, Direction, boundaryOf;
 import geometry.honeycomb : NODE_RADIUS;
 import geometry.lorentz : Motion, Point, Vec4;
@@ -45,15 +46,19 @@ enum float CAMERA_REACH = 2.0f;
 enum double STEP_BUDGET_MILLISECONDS = 8.0;
 enum double LEAST_STEP_BUDGET = 4.0;
 enum double MOST_STEP_BUDGET = 13.0;
+enum double MOST_SETTLED_STEP_BUDGET = 8.0;
 enum double IDLE_TARGET_MILLISECONDS = 3.0;
 enum double BUDGET_GAIN = 0.25;
+enum double BUDGET_LOSS = 1.0;
 enum double NEARBY_SHARE = 0.5;
 enum double NEARBY_LEAST_MILLISECONDS = 1.0;
 enum double STREAMER_LEAST_MILLISECONDS = 1.0;
 version (WebAssembly) {
     enum size_t STRUCTURE_CANDIDATES = 16;
+    enum size_t LOADING_CANDIDATES = 16;
 } else {
     enum size_t STRUCTURE_CANDIDATES = 256;
+    enum size_t LOADING_CANDIDATES = 512;
 }
 enum double RECOVERY_BUDGET_MILLISECONDS = 8.0;
 enum float FOG_COLOR_RATE = 1.5f;
@@ -68,6 +73,17 @@ enum NearbyStage : ubyte {
     initial,
     published,
     rebuilding,
+}
+
+enum Arrival : ubyte {
+    loading,
+    settled,
+}
+
+enum Ahead : ubyte {
+    idle,
+    started,
+    finished,
 }
 
 struct NearbyStats {
@@ -110,6 +126,8 @@ struct LocalWorld {
     double rebuildTravel = 0;
     double startTravel = 0;
     double stepBudget = STEP_BUDGET_MILLISECONDS;
+    double stepOverrun = 0;
+    double aheadMilliseconds = 0;
     float renderRadius;
     float radiusCut = 0;
     float publishedCut = 0;
@@ -123,6 +141,8 @@ struct LocalWorld {
     StepPhases phases;
     NearbyStats nearbyStats;
     NearbyStage nearbyStage;
+    Arrival arrival;
+    Ahead ahead;
 
     static LocalWorld make(ubyte dimension, Worldgen worldgen, float tanhReach) {
         LocalWorld world;
@@ -136,6 +156,7 @@ struct LocalWorld {
     }
 
     void release() {
+        joinAhead();
         streamer.release();
         nearby[0].release();
         nearby[1].release();
@@ -213,13 +234,61 @@ struct LocalWorld {
     }
 
     void paceBy(double idleMilliseconds) {
-        stepBudget = clamped(stepBudget + BUDGET_GAIN * (idleMilliseconds - IDLE_TARGET_MILLISECONDS), LEAST_STEP_BUDGET, MOST_STEP_BUDGET);
+        double spare = idleMilliseconds - IDLE_TARGET_MILLISECONDS;
+        stepBudget = clamped(stepBudget + gainOn(spare) * spare, LEAST_STEP_BUDGET, mostStepBudget());
+    }
+
+    double mostStepBudget() const {
+        if (arrival == Arrival.settled) {
+            return MOST_SETTLED_STEP_BUDGET;
+        } else {
+            return MOST_STEP_BUDGET;
+        }
+    }
+
+    double gainOn(double spare) const {
+        if (spare < 0 && arrival == Arrival.settled) {
+            return BUDGET_LOSS;
+        } else {
+            return BUDGET_GAIN;
+        }
+    }
+
+    void planAhead() {
+        if (ahead == Ahead.idle) {
+            candidates.clear();
+            const(NearbyScratch)* next = &nearby[1 - published];
+            if (nearby[published].isBuilding()) {
+                nearby[published].collectUnpainted(graph, candidates);
+            } else if (next.isBuilding() && !next.isKeeping()) {
+                next.collectUnpainted(graph, candidates);
+            }
+            streamer.collectUnstructured(graph, cachedNodes, candidates, candidates.length + paintCandidates());
+            graph.startAhead(candidates.slice(), streamer.executor());
+            ahead = Ahead.started;
+        }
+    }
+
+    void joinAhead() {
+        if (ahead == Ahead.started) {
+            double start = nowMilliseconds();
+            AheadPass pass = graph.finishAhead(streamer.executor(), paintAllowance());
+            aheadMilliseconds = nowMilliseconds() - start;
+            if (pass == AheadPass.finished) {
+                ahead = Ahead.finished;
+            } else {
+                ahead = Ahead.idle;
+            }
+        }
     }
 
     void update(Pacing pacing) {
+        joinAhead();
         double start = nowMilliseconds();
-        double end = start + stepBudget - phases.evict.lastMs;
-        paintAhead();
+        double end = start + stepBudget - phases.evict.lastMs - aheadMilliseconds;
+        if (ahead == Ahead.idle) {
+            paintAhead();
+        }
         double painted = nowMilliseconds();
         double paintedCpu = threadCpuMilliseconds();
         Deadline deadline = phaseDeadline(pacing, higherOf(end - phases.streamer.lastMs, painted + (end - painted) * NEARBY_SHARE), NEARBY_LEAST_MILLISECONDS);
@@ -239,19 +308,50 @@ struct LocalWorld {
         double streamed = nowMilliseconds();
         double streamedCpu = threadCpuMilliseconds();
         evict();
-        phases.paint.add(painted - start);
+        if (isWorldgenSettled()) {
+            arrival = Arrival.settled;
+        }
+        double ended = nowMilliseconds();
+        phases.paint.add(painted - start + aheadMilliseconds);
         phases.nearby.add(found - painted);
         phases.streamer.add(streamed - found);
-        phases.evict.add(nowMilliseconds() - streamed);
+        phases.evict.add(ended - streamed);
         phases.nearbyCpu.add(foundCpu - paintedCpu);
         phases.streamerCpu.add(streamedCpu - foundCpu);
+        stepOverrun = overrunOf(ended - start + aheadMilliseconds);
+        ahead = Ahead.idle;
+        aheadMilliseconds = 0;
+    }
+
+    double overrunOf(double stepMilliseconds) const {
+        if (arrival == Arrival.settled) {
+            return higherOf(stepMilliseconds - MOST_SETTLED_STEP_BUDGET, 0.0);
+        } else {
+            return 0;
+        }
+    }
+
+    size_t paintCandidates() const {
+        if (nearbyStage == NearbyStage.initial) {
+            return LOADING_CANDIDATES;
+        } else {
+            return STRUCTURE_CANDIDATES;
+        }
+    }
+
+    double paintAllowance() const {
+        if (nearbyStage == NearbyStage.initial) {
+            return LOADING_PAINT_MILLISECONDS;
+        } else {
+            return PAINT_MILLISECONDS;
+        }
     }
 
     void paintAhead() {
         if (graph.structures.grower.paintAhead !is null) {
             candidates.clear();
-            streamer.collectUnstructured(graph, cachedNodes, candidates, STRUCTURE_CANDIDATES);
-            graph.paintAhead(candidates.slice(), streamer.executor());
+            streamer.collectUnstructured(graph, cachedNodes, candidates, paintCandidates());
+            graph.paintAhead(candidates.slice(), streamer.executor(), paintAllowance());
         }
     }
 
@@ -299,7 +399,7 @@ struct LocalWorld {
             streamer.travel += TELEPORT_TRAVEL;
             startTravel = streamer.travel;
         }
-        current.advance(graph, deadline, streamer.executor());
+        current.advance(graph, deadline, streamer.executor(), paintAllowance());
         if (!current.isBuilding()) {
             nearbyStage = NearbyStage.published;
         }
@@ -313,7 +413,7 @@ struct LocalWorld {
             next.begin(graph, cameraPosition, rebuildDistance(), FULL_RADIUS);
             pendingPoint = cameraPosition.local * Point!float.origin();
             pendingCut = radiusCut;
-            next.advance(graph, Deadline.at(start + RECOVERY_BUDGET_MILLISECONDS), streamer.executor());
+            next.advance(graph, Deadline.at(start + RECOVERY_BUDGET_MILLISECONDS), streamer.executor(), paintAllowance());
         }
         nearbyStats.recoveries += 1;
         nearbyStats.recoveryMilliseconds += nowMilliseconds() - start;
@@ -330,7 +430,7 @@ struct LocalWorld {
         if ((current.isBuilding() || nearbyStage == NearbyStage.rebuilding) && streamer.travel - startTravel > REBUILD_ABANDON_TRAVEL) {
             abandonRebuild(deadline);
         } else if (current.isBuilding()) {
-            current.advance(graph, deadline, streamer.executor());
+            current.advance(graph, deadline, streamer.executor(), paintAllowance());
             cachedNodes = current.nodes.slice();
         } else {
             double traveled = streamer.travel - rebuildTravel;
@@ -346,7 +446,7 @@ struct LocalWorld {
             if (nearbyStage == NearbyStage.rebuilding) {
                 nearbyStats.pendingFrames += 1;
                 next.continueKeeping(*current, deadline, streamer.executor());
-                next.advance(graph, deadline, streamer.executor());
+                next.advance(graph, deadline, streamer.executor(), paintAllowance());
                 if (!next.isBuilding()) {
                     publishOrRestart();
                 }
@@ -363,7 +463,7 @@ struct LocalWorld {
         pendingCut = radiusCut;
         rebuildTravel = streamer.travel;
         startTravel = streamer.travel;
-        next.advance(graph, deadline, streamer.executor());
+        next.advance(graph, deadline, streamer.executor(), paintAllowance());
         nearbyStats.abandons += 1;
         publish(pendingPoint);
     }
@@ -452,6 +552,11 @@ struct LocalWorld {
     bool isEmptyAt(Placement placement) const {
         const(Chunk)* chunk = graph.chunks.at(ChunkSlot(graph.slotOf(placement.chunk.node).value, placement.chunk.corner));
         return chunk.state == ChunkState.populated && chunk.voxels.at(cellIndex(graph.layout.dimension, placement.coords.x, placement.coords.y, placement.coords.z)) == Material.none;
+    }
+
+    bool isClearAhead(float distance) const {
+        Ray ray = Ray(Point!float.origin(), Vec4!float([CAMERA_FORWARD.x, CAMERA_FORWARD.y, CAMERA_FORWARD.z, 0]).toNormal());
+        return !graph.rayCast(cameraPosition, ray, tanhf(distance), view.visible).exists;
     }
 
     Maybe!Material targetMaterial() const {

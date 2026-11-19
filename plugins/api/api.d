@@ -2,7 +2,7 @@ module plugins.api.api;
 
 import plugins.api.content : Manifest;
 
-enum string ENTRY = "caapi_plugin_29";
+enum string ENTRY = "caapi_plugin_40";
 
 version (WebAssembly) {
     enum string entryOf(string unit) = ENTRY ~ "_" ~ unit;
@@ -31,6 +31,7 @@ enum SitePart : ubyte {
     vertex,
     face,
     edge,
+    line,
 }
 
 enum HorosphereForm : ubyte {
@@ -39,6 +40,7 @@ enum HorosphereForm : ubyte {
     bare,
     upright,
     sunken,
+    hanging,
 }
 
 struct MaybeIndex(Indexed) {
@@ -164,8 +166,23 @@ struct Risen {
     }
 }
 
+ref const(T) dataOf(T)(const(void)* data) {
+    static immutable T blank = T.init;
+    if (data is null) {
+        return blank;
+    } else {
+        return *cast(const(T)*) data;
+    }
+}
+
 alias Structure = void function(const(Api)* api, Site site, const(void)* data);
 alias Tile = void function(const(Api)* api, Site face, const(Risen)* risen, const(void)* data);
+
+void typedTile(alias paint, T)(const(Api)* api, Site face, const(Risen)* risen, const(void)* data) {
+    paint(api, face, *risen, dataOf!T(data));
+}
+alias PortRule = bool function(const(Api)* api, Site vertex, double rolled, const(void)* data);
+alias VoidEdge = void function(const(Api)* api, Site edge, double near, double far, double abyss);
 
 struct RisingKind {
     double share;
@@ -176,6 +193,13 @@ struct RisingKind {
     size_t size;
     const(char)[] look;
     uint under;
+    double function() mostPorts;
+    PortRule ports;
+    double above = double.infinity;
+    double below = double.infinity;
+    Tile foot;
+    const(void)* footData;
+    size_t footSize;
 }
 
 struct Api {
@@ -232,6 +256,28 @@ struct Api {
     void function(const(Api)* api, KindTag ground, double edges) abyss;
     void function(const(Api)* api, double cells) edgeCeiling;
     double function(const(Api)* api, Site site) probeRelief;
+    void function(const(Api)* api, Site site, Material material, Box box, Rhythm rhythm) replace;
+    void function(const(Api)* api, KindTag ground, double most, PortRule rule, const(void)* data, size_t size) portRule;
+    void function(const(Api)* api, KindTag ground, double above, double below) tileReach;
+    KindId function(const(Api)* api, double odds, uint under, uint edges, uint tag, Tile tile, const(void)* data, size_t size) hanging;
+    bool function(const(Api)* api, Site site, SitePart part) probeOwns;
+    bool function(const(Api)* api, uint world, Site edge, double near, double far, double abyss) paintVoid;
+    void function(const(Api)* api, uint tag, Tile tile, const(void)* data, size_t size) foot;
+    void function(const(Api)* api, Tile tile, const(void)* data, size_t size) tileVertices;
+}
+
+enum Part : ubyte {
+    none,
+    wood,
+    heart,
+    leaves,
+}
+
+alias Shape = Part function(int trunk, int level, int across, int along);
+
+struct Form {
+    Shape shape;
+    int above;
 }
 
 struct Registry {
@@ -241,6 +287,8 @@ struct Registry {
     void function(const(Registry)* registry, const(char)* name, Structure landmark) addLandmark;
     void function(const(Registry)* registry, const(Manifest)* manifest) declare;
     void function(const(Registry)* registry, const(char)* name, Structure structure) addDebug;
+    void function(const(Registry)* registry, const(char)* name, const(Form)* form) addForm;
+    void function(const(Registry)* registry, const(char)* name, VoidEdge edge) addVoid;
 }
 
 alias Entry = void function(const(Registry)* registry);

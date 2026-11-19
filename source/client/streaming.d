@@ -15,10 +15,10 @@ import client.arrivals : Integrator;
 import client.tasks : BuildingRequest, BuildingResult, GenKind, GenRequest, GenResult, TaskQueues, takeTask, workerThreadCount;
 import common.character.features : RequiredChunks, visitCells;
 import common.eviction : KEEP_RADIUS, Unloaded;
-import common.graph : Graph, NodeContent;
+import common.graph : Exposure, Graph, NodeContent;
 import common.node : Chunk, ChunkSlot, ChunkState, Materials, Occupancy, Voxels;
 import common.position : Position;
-import common.traversal : NearbyNode, NearbyScratch, ensureDepthAt;
+import common.traversal : NearbyNode, NearbyScratch, PAINT_MILLISECONDS, ensureDepthAt;
 import common.view : GraphView;
 import common.worldgen.generation : ChunkParams, ChunkStructure, GeneratedVoxels;
 import common.worldgen.horospheres : probeBuried, probeClear;
@@ -28,6 +28,7 @@ import geometry.lorentz : Motion, Point;
 import plugins.api.api : Material;
 
 enum size_t LOOKAHEAD_PER_CANDIDATE = 8;
+enum size_t PAINTED_PER_BATCH = 256;
 version (WebAssembly) {
     enum Maybe!uint MOST_SCANNED_PER_FRAME = Maybe!uint.init;
     enum size_t SCAN_WINDOW = 256;
@@ -180,12 +181,6 @@ void computeParams(void* context, size_t index, uint worker) {
     }
 }
 
-enum Exposure : ubyte {
-    mixed,
-    buried,
-    clear,
-}
-
 struct ScanFacts {
     uint freshInRange;
     uint droppedInRange;
@@ -198,15 +193,18 @@ struct ScanFacts {
 
 Exposure exposureOf(Graph* graph, uint slot, uint worker) {
     NodeContent content = graph.nodeAt(slot).content;
+    Exposure judged = graph.nodeAt(slot).exposure;
     if (content == NodeContent.deep) {
         return Exposure.mixed;
+    } else if (judged != Exposure.unjudged && judged != Exposure.unburied) {
+        return judged;
     } else {
         GraphView* view = &graph.threadViews[worker];
-        bool buried = (content == NodeContent.unknown || content == NodeContent.shallow) && (*view).probeBuried(slot);
+        bool buried = judged == Exposure.unjudged && (content == NodeContent.unknown || content == NodeContent.shallow) && (*view).probeBuried(slot);
         bool clear = !buried && (*view).probeClear(slot);
         if (view.isBlocked) {
             view.forget();
-            return Exposure.mixed;
+            return Exposure.unjudged;
         } else if (buried) {
             return Exposure.buried;
         } else if (clear) {
@@ -281,7 +279,7 @@ struct ExposureJob {
 void judgeExposure(void* context, size_t item, uint worker) {
     ExposureJob* job = cast(ExposureJob*) context;
     NearbyNode nearbyNode = job.nodes[job.indices[item]];
-    job.exposures[item] = Exposure.mixed;
+    job.exposures[item] = Exposure.unjudged;
     if (job.streamer.isScanPending(nearbyNode.slot) && scanFacts(*job.graph, nearbyNode, job.range).freshInRange != 0) {
         job.exposures[item] = exposureOf(job.graph, nearbyNode.slot, worker);
     }
@@ -324,6 +322,7 @@ struct Streamer {
     Array!ScanFacts facts;
     Array!NextScan rescanAt;
     Array!uint waiting;
+    Array!uint unpainted;
     Array!uint nearCamera;
     Array!Exposure exposures;
     RequiredChunks around;
@@ -565,10 +564,7 @@ struct Streamer {
         if (deadline.hasPassed(start) || scanCursor >= nearby.length) {
             return scanCursor;
         } else {
-            graph.threadViews.begin(graph, pool.participants());
-            size_t reached = scanWindows(graph, nearby, range, budget, deadline);
-            graph.threadViews.finish(graph);
-            return reached;
+            return scanWindows(graph, nearby, range, budget, deadline);
         }
     }
 
@@ -582,11 +578,15 @@ struct Streamer {
                 facts.resize(end - first);
                 ScanJob context = ScanJob(&graph, &this, nearby.ptr + first, facts.ptr, range);
                 ParallelJob job = ParallelJob(&gatherScanFacts, &context, Deadline.init,end - first);
+                graph.threadViews.begin(graph, pool.participants());
                 pool.run(&job);
+                graph.threadViews.finish(graph);
+                keepExposures(graph, nearby[first .. end]);
             }
             while (index < end) {
                 if (isScanPending(nearby[index].slot)) {
                     scanned += 1;
+                    paintFrom(graph, nearby[first .. end], index - first, deadline);
                     ScanEnd stopped = scanAt(graph, nearby, index, facts.ptr[index - first], range, budget, Urgency.normal);
                     if (stopped == ScanEnd.interrupted) {
                         return index;
@@ -602,6 +602,35 @@ struct Streamer {
             }
         }
         return index;
+    }
+
+    void paintFrom(ref Graph graph, const(NearbyNode)[] window, size_t from, Deadline deadline) {
+        if (isUnpainted(graph, window[from].slot, facts.ptr[from])) {
+            double now = nowMilliseconds();
+            if (!deadline.hasPassed(now + PAINT_MILLISECONDS)) {
+                unpainted.clear();
+                size_t ahead = from;
+                while (ahead < window.length && unpainted.length < PAINTED_PER_BATCH) {
+                    if (isScanPending(window[ahead].slot) && isUnpainted(graph, window[ahead].slot, facts.ptr[ahead])) {
+                        unpainted.append(window[ahead].slot);
+                    }
+                    ahead += 1;
+                }
+                graph.paintAhead(unpainted.slice(), executor(), PAINT_MILLISECONDS);
+            }
+        }
+    }
+
+    bool isUnpainted(ref const Graph graph, uint slot, ref const ScanFacts found) const {
+        return found.freshInRange != 0 && found.exposure != Exposure.buried && !graph.isFinished(slot) && !graph.structures.at(slot).isCovered;
+    }
+
+    void keepExposures(ref Graph graph, const(NearbyNode)[] nodes) {
+        foreach (offset, ref node; nodes) {
+            if (isScanPending(node.slot) && facts.ptr[offset].freshInRange != 0 && facts.ptr[offset].exposure != Exposure.unjudged) {
+                graph.nodeAt(node.slot).exposure = facts.ptr[offset].exposure;
+            }
+        }
     }
 
     bool hasPendingAmong(const(NearbyNode)[] nodes) const {
@@ -669,6 +698,11 @@ struct Streamer {
             ParallelJob job = ParallelJob(&judgeExposure, &context, Deadline.init, nearCamera.length - first);
             pool.run(&job);
             graph.threadViews.finish(graph);
+            foreach (item, judged; exposures.slice()) {
+                if (judged != Exposure.unjudged) {
+                    graph.nodeAt(nearby[nearCamera.ptr[first + item]].slot).exposure = judged;
+                }
+            }
         }
         while (nearHead < nearCamera.length) {
             uint index = nearCamera.ptr[nearHead];
@@ -919,6 +953,7 @@ struct Streamer {
         around.release();
         rescanAt.release();
         waiting.release();
+        unpainted.release();
     }
 }
 

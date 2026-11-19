@@ -73,25 +73,9 @@ enum Misfit : ubyte {
     overflow,
 }
 
-enum Event : ubyte {
-    broke,
-    placed,
-    crafted,
-    dosed,
-    woke,
-}
-
 struct Happening {
     const(char)[] subject;
-    Event event;
-}
-
-struct Play {
-    void* host;
-    const(Content)* content;
-    void function(const(Play)* play, const(char)[] item, uint count) give;
-    void function(const(Play)* play, const(char)[] insight) learn;
-    void function(const(Play)* play, const(char)[] text) note;
+    const(char)[] event;
 }
 
 enum size_t SETTING_KEY_CAPACITY = 64;
@@ -133,7 +117,7 @@ immutable Dependency[1] ON_BASE = [dependencyOn(BASE)];
 
 alias Define = void function(const(Content)* content);
 alias Resolve = void function(const(Content)* content);
-alias Hook = void function(const(Play)* play, Happening happening);
+alias Hook = void function(const(void)* host, Happening happening);
 
 struct Manifest {
     const(char)[] name;

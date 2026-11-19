@@ -11,8 +11,35 @@ kind caves-theme {
     standing: optional -> material
     chandelier: optional -> material
     beam: optional -> material
+    formations: "none" | "icicles" | "dripstone" | "chandelier" | "beams" | "columns" | "pillars" | "roots" = "none"
+    dome: number 0.. = 0
+}
+
+kind caves-layer {
+    from: number 0.. = 0
+    theme: one -> caves-theme
+}
+
+kind caves-stack {
+    ground: text?
+    over: "anywhere" | "risen" = "anywhere"
+    layers: some -> caves-layer
+}
+
+kind caves-well {
+    ground: text
+    stair: one -> material
+    lining: one -> material
+    lining-below: integer 0.. = 0
 }
 
 kind caves-materials {
     stair: one -> material
+    lining: one -> material
+    drain: one -> material
+    wells: many -> caves-well
+    opening: one -> caves-theme
+    open: one -> caves-stack
+    sealed: one -> caves-stack
+    stacks: many -> caves-stack
 }

@@ -9,7 +9,8 @@ import base.array : Array;
 import common.content.content : USER_SETTINGS;
 import common.content.load : loadContent;
 import common.content.mods : ModOrder, describe, orderMods;
-import plugins.api.api : ENTRY, Entry, Registry, RisingKind, Structure;
+import common.worldgen.palette : NamedForm;
+import plugins.api.api : ENTRY, Entry, Form, Registry, RisingKind, Structure, VoidEdge, tagNamed;
 import plugins.api.content : Manifest;
 
 enum size_t MAX_PLUGINS = 64;
@@ -17,6 +18,8 @@ enum size_t MESSAGE_CAPACITY = 256;
 enum size_t MAX_STRUCTURES = 64;
 enum size_t MAX_KINDS = 32;
 enum size_t MAX_LANDMARKS = 32;
+enum size_t MAX_FORMS = 32;
+enum size_t MAX_VOIDS = 32;
 enum size_t PATH_CAPACITY = 4096;
 enum string PLUGIN_DIRECTORY = "lib";
 enum size_t READ_CHUNK = 4096;
@@ -33,33 +36,25 @@ const(char)[] worldNameAt(uint index) {
     }
 }
 
-version (WebAssembly) {
-    import arbor = plugins.arbor.plugin;
-    import babel = plugins.babel.plugin;
-    import backrooms = plugins.backrooms.plugin;
-    import caves = plugins.caves.plugin;
-    import city = plugins.city.plugin;
-    import crown = plugins.crown.plugin;
-    import fixtures = plugins.fixtures.plugin;
-    import lattice = plugins.lattice.plugin;
-    import library = plugins.library.plugin;
-    import palace = plugins.palace.plugin;
-    import planet = plugins.planet.plugin;
-    import road = plugins.road.plugin;
-    import skies = plugins.skies.plugin;
-    import tower = plugins.tower.plugin;
-    import trail = plugins.trail.plugin;
-    import vaults = plugins.vaults.plugin;
-    import base = plugins.base.plugin;
-    import blocksMod = plugins.blocks.plugin;
-    import boxMod = plugins.box.plugin;
-    import buildingsMod = plugins.buildings.plugin;
-    import connectorMod = plugins.connector.plugin;
-    import horospheresMod = plugins.horospheres.plugin;
-    import roomsMod = plugins.rooms.plugin;
+uint sceneCount() {
+    return cast(uint) registry().allDebugNames().length;
+}
 
-    immutable Entry[23] WEB_ENTRIES = [&base.plugin, &blocksMod.plugin, &boxMod.plugin, &buildingsMod.plugin, &connectorMod.plugin, &horospheresMod.plugin, &roomsMod.plugin, &arbor.plugin, &babel.plugin, &backrooms.plugin, &caves.plugin, &city.plugin, &crown.plugin, &fixtures.plugin, &lattice.plugin, &library.plugin, &palace.plugin, &planet.plugin, &road.plugin, &skies.plugin, &tower.plugin, &trail.plugin, &vaults.plugin];
-    immutable string[23] WEB_PLUGINS = ["base", "blocks", "box", "buildings", "connector", "horospheres", "rooms", "arbor", "babel", "backrooms", "caves", "city", "crown", "fixtures", "lattice", "library", "palace", "planet", "road", "skies", "tower", "trail", "vaults"];
+const(char)[] sceneNameAt(uint index) {
+    return registry().allDebugNames()[index];
+}
+
+struct NamedVoid {
+    uint tag;
+    VoidEdge edge;
+}
+
+struct Linked {
+    string name;
+    Entry entry;
+}
+
+version (WebAssembly) {
 } else version (OSX) {
     import core.sys.posix.dirent : DIR, closedir, dirent, opendir, readdir;
     import core.sys.posix.dlfcn : RTLD_NOW, dlerror, dlopen, dlsym;
@@ -146,6 +141,12 @@ struct Worlds {
     Structure[MAX_LANDMARKS] landmarks;
     uint[MAX_LANDMARKS] landmarkOwners;
     size_t landmarkCount;
+    NamedForm[MAX_FORMS] forms;
+    size_t formCount;
+    string[MAX_VOIDS] voidNames;
+    NamedVoid[MAX_VOIDS] voids;
+    uint[MAX_VOIDS] voidOwners;
+    size_t voidCount;
     Manifest[MAX_PLUGINS] manifests;
     const(char)[][MAX_PLUGINS] files;
     size_t pluginCount;
@@ -167,11 +168,12 @@ struct Worlds {
         debugCount = keptOf(order, debugNames[0 .. debugCount], debugStructures[0 .. debugCount], debugOwners[0 .. debugCount]);
         kindCount = keptOf(order, kindNames[0 .. kindCount], risingKinds[0 .. kindCount], kindOwners[0 .. kindCount]);
         landmarkCount = keptOf(order, landmarkNames[0 .. landmarkCount], landmarks[0 .. landmarkCount], landmarkOwners[0 .. landmarkCount]);
+        voidCount = keptOf(order, voidNames[0 .. voidCount], voids[0 .. voidCount], voidOwners[0 .. voidCount]);
     }
 
     void settle(const(char)[] overrides) {
         order = orderMods(manifests[0 .. pluginCount]);
-        loadContent(manifests[0 .. pluginCount], order, overrides);
+        loadContent(manifests[0 .. pluginCount], order, overrides, forms[0 .. formCount]);
         foreach (refusal; order.refused.slice()) {
             char[MESSAGE_CAPACITY] buffer;
             const(char)[] message = describe(manifests[0 .. pluginCount], refusal, buffer[]);
@@ -188,25 +190,32 @@ struct Worlds {
         sortByName(landmarkNames[0 .. landmarkCount], landmarks[0 .. landmarkCount]);
     }
 
+    void enterLinked(const(Linked)[] linked) {
+        Registry registry = Registry(&this, &add, &addKind, &addLandmark, &declare, &addDebug, &addForm, &addVoid);
+        foreach (ref plugin; linked) {
+            enter(plugin.name);
+            plugin.entry(&registry);
+        }
+    }
+
     version (WebAssembly) {
-        void gather() {
-            Registry registry = Registry(&this, &add, &addKind, &addLandmark, &declare, &addDebug);
-            foreach (index, entry; WEB_ENTRIES) {
-                enter(WEB_PLUGINS[index]);
-                entry(&registry);
-            }
+        void gather(const(Linked)[] linked) {
+            enterLinked(linked);
             settle(null);
             sort();
         }
     } else {
-        void gather() {
+        void gather(const(Linked)[] linked) {
             char[PATH_CAPACITY] directory = 0;
             size_t length = executablePath(directory);
             while (length > 0 && directory[length - 1] != '/') {
                 length -= 1;
             }
+            enterLinked(linked);
             if (length == 0) {
-                fprintf(stderr, "cannot find the executable's own path, so no plugins are loaded\n");
+                fprintf(stderr, "cannot find the executable's own path, so only the linked plugins are loaded\n");
+                settle(null);
+                sort();
             } else {
                 snprintf(directory.ptr + length, directory.length - length, "%s", USER_SETTINGS.ptr);
                 Array!char overrides;
@@ -259,7 +268,7 @@ struct Worlds {
                 if (plugin is null) {
                     fprintf(stderr, "the plugin '%s' has no '%s'; it may have been built against another version of the API\n", path.ptr, ENTRY.ptr);
                 } else {
-                    Registry registry = Registry(&this, &add, &addKind, &addLandmark, &declare, &addDebug);
+                    Registry registry = Registry(&this, &add, &addKind, &addLandmark, &declare, &addDebug, &addForm, &addVoid);
                     enter(keptName(file));
                     plugin(&registry);
                 }
@@ -281,6 +290,18 @@ struct Worlds {
 
     Structure findDebug(const(char)[] name) const {
         return structureNamed(debugNames[0 .. debugCount], debugStructures[0 .. debugCount], name);
+    }
+
+    VoidEdge findVoid(uint tag) const {
+        size_t index = 0;
+        while (index < voidCount && voids[index].tag != tag) {
+            index += 1;
+        }
+        if (index < voidCount) {
+            return voids[index].edge;
+        } else {
+            return null;
+        }
     }
 
     Structure find(const(char)[] name) const {
@@ -366,6 +387,28 @@ void addLandmark(const(Registry)* registry, const(char)* name, Structure landmar
     }
 }
 
+void addForm(const(Registry)* registry, const(char)* name, const(Form)* form) {
+    Worlds* worlds = cast(Worlds*) registry.host;
+    if (worlds.formCount == MAX_FORMS) {
+        fprintf(stderr, "too many tree forms, '%s' is left out (at most %zu)\n", name, MAX_FORMS);
+    } else {
+        worlds.forms[worlds.formCount] = NamedForm(name[0 .. strlen(name)], *form);
+        worlds.formCount += 1;
+    }
+}
+
+void addVoid(const(Registry)* registry, const(char)* name, VoidEdge edge) {
+    Worlds* worlds = cast(Worlds*) registry.host;
+    if (worlds.voidCount == MAX_VOIDS) {
+        fprintf(stderr, "too many void worlds, '%s' is left out (at most %zu)\n", name, MAX_VOIDS);
+    } else {
+        worlds.voidNames[worlds.voidCount] = cast(string) name[0 .. strlen(name)];
+        worlds.voids[worlds.voidCount] = NamedVoid(tagNamed(name[0 .. strlen(name)]), edge);
+        worlds.voidOwners[worlds.voidCount] = worlds.current();
+        worlds.voidCount += 1;
+    }
+}
+
 void declare(const(Registry)* registry, const(Manifest)* manifest) {
     Worlds* worlds = cast(Worlds*) registry.host;
     worlds.manifests[worlds.current()] = *manifest;
@@ -381,8 +424,8 @@ const(char)[] keptName(const(char)[] file) {
 __gshared Worlds gathered;
 __gshared Readiness gatheredState;
 
-void gatherWorlds() {
-    gathered.gather();
+void gatherWorlds(const(Linked)[] linked) {
+    gathered.gather(linked);
     gatheredState = Readiness.ready;
 }
 

@@ -1,0 +1,505 @@
+material base:oak-leaves { living: 1 }
+material base:birch-leaves { living: 1 }
+material base:spruce-leaves { living: 1 }
+material base:jungle-leaves { living: 1 }
+material base:acacia-leaves { living: 1 }
+material base:cherry-leaves { living: 1 }
+material base:maple-leaves { living: 1 }
+material base:willow-leaves { living: 1 }
+
+material base:cactus {
+    living: 1
+    makes -> pharmacology:swayer
+}
+
+material base:fern {
+    living: 1
+    plant: 1
+    thrives: "wet"
+    makes -> pharmacology:mist-opening
+}
+
+material base:flower {
+    living: 1
+    plant: 1
+    makes -> pharmacology:lifting
+}
+
+material base:thornbush {
+    living: 1
+    plant: 1
+    thrives: "arid"
+    makes -> pharmacology:mist-closing
+}
+
+material base:moss {
+    living: 1
+    plant: 1
+    thrives: "cold"
+    makes -> pharmacology:dulling
+}
+
+material base:mushroom-cap {
+    living: 1
+    makes -> pharmacology:swayer
+}
+
+material base:petals {
+    living: 1
+    makes -> pharmacology:lifting
+}
+
+material base:pollen {
+    living: 1
+    makes -> pharmacology:lifting
+}
+
+material base:sulfur { fills -> pharmacology:mutagen }
+
+material pharmacology:collector {
+    red: 170
+    green: 175
+    blue: 190
+    grain: 0.04
+    fills -> pharmacology:collector-role
+}
+
+material pharmacology:bench {
+    red: 150
+    green: 110
+    blue: 80
+    grain: 0.08
+    fills -> pharmacology:bench-role
+}
+
+material pharmacology:catalog {
+    red: 120
+    green: 70
+    blue: 45
+    grain: 0.06
+    fills -> pharmacology:catalog-role
+}
+
+material pharmacology:press {
+    red: 130
+    green: 100
+    blue: 70
+    grain: 0.08
+}
+
+material pharmacology:lab {
+    red: 205
+    green: 215
+    blue: 220
+    grain: 0.03
+    mining-tier: 3
+}
+
+ware pharmacology:oxidizer {
+    red: 230
+    green: 220
+    blue: 90
+}
+
+ware pharmacology:conjugant {
+    red: 120
+    green: 190
+    blue: 120
+}
+
+ware pharmacology:cleaver {
+    red: 170
+    green: 90
+    blue: 90
+}
+
+ware pharmacology:polar-graft {
+    red: 90
+    green: 150
+    blue: 230
+}
+
+ware pharmacology:charged-graft {
+    red: 230
+    green: 120
+    blue: 60
+}
+
+ware pharmacology:bulky-graft {
+    red: 140
+    green: 110
+    blue: 90
+}
+
+ware pharmacology:inhaler {
+    red: 190
+    green: 210
+    blue: 230
+}
+
+ware pharmacology:syringe {
+    red: 220
+    green: 230
+    blue: 235
+}
+
+station pharmacology:press-station {
+    placed-as -> pharmacology:press
+}
+
+station pharmacology:lab-station {
+    placed-as -> pharmacology:lab
+}
+
+group pharmacology:leaves {
+    label: "leaves"
+    member -> [base:oak-leaves base:birch-leaves base:spruce-leaves base:jungle-leaves base:acacia-leaves base:cherry-leaves base:maple-leaves base:willow-leaves base:mushroom-cap base:petals]
+}
+
+group pharmacology:rubble {
+    label: "gravel or lava"
+    member -> [base:gravel base:lava]
+}
+
+group pharmacology:strange-stones {
+    label: "strange stone"
+    member -> [base:mist-stone base:mist-light base:ember-stone base:ember-light base:tide-stone base:tide-light]
+}
+
+upgrade pharmacology:assay-kit {
+    title: "assay kit"
+    assays: 1
+}
+
+insight pharmacology:strangeness {
+    title: "strangeness"
+    notice: "Blocks that only appear to an altered eye still carry charge and bulk."
+    noticed-breaking -> pharmacology:strange-stones
+}
+
+insight pharmacology:meltwater {
+    title: "meltwater"
+    notice: "Melted ice, snow and water carry a polar graft."
+    noticed-breaking -> game:waters
+}
+
+insight pharmacology:pulping {
+    title: "pulping"
+    notice: "A lab finds grafts in what others built: masonry crushes to a bulky graft and cloth pulps to conjugant."
+    noticed-breaking -> game:built-materials
+}
+
+insight pharmacology:seen-mist {
+    title: "the mist"
+    notice: "While the mist signal is up, pale stones stand where there was air. They hold you once you are out of them, and they are gone again when it falls."
+    noticed-revealing -> base:mist
+}
+
+insight pharmacology:seen-tide {
+    title: "the tide"
+    notice: "With the mist signal held below rest, teal stones show. Whatever takes the mist down shows them, a sway or the minutes after a long mist."
+    noticed-revealing -> base:tide
+}
+
+insight pharmacology:seen-ember {
+    title: "ember"
+    notice: "With the mist up and the body lifted at once, warm red stones show. Neither alone is enough."
+    noticed-revealing -> base:ember
+}
+
+insight pharmacology:rumor-lock {
+    title: "a rumor: fern and thornbush"
+    notice: "The fern of wet ground opens something in the eye. The thornbush of dry sand sits in the same lock and does not turn it."
+    noticed-reading -> game:pamphlet
+}
+
+insight pharmacology:rumor-ash {
+    title: "a rumor: ash and sulfur"
+    notice: "Seeds crossed where the air is thick with ash come out stranger, and stranger still with sulfur in the pocket."
+    noticed-reading -> game:pamphlet
+}
+
+insight pharmacology:rumor-tide {
+    title: "a rumor: the tide"
+    notice: "There are stones only a falling eye sees. Some mushrooms set you swaying hard enough to show them, and so do the minutes after a long mist has left you."
+    noticed-reading -> game:pamphlet
+}
+
+insight pharmacology:rumor-ember {
+    title: "a rumor: ember"
+    notice: "The fern opens the mist. The flower opens it and lifts you at once, and an eye that is lifted while it sees the mist sees the ember stones too."
+    noticed-reading -> game:pamphlet
+}
+
+recipe pharmacology:make-press {
+    seconds: 2
+    at -> game:workbench-station
+    produces -> pharmacology:press
+    consumes -> base:wood-planks { count: 3 }
+    consumes -> game:stones { count: 3 }
+}
+
+recipe pharmacology:make-bench {
+    seconds: 2
+    at -> game:workbench-station
+    produces -> pharmacology:bench
+    consumes -> base:wood-planks { count: 3 }
+    consumes -> base:glass { count: 3 }
+}
+
+recipe pharmacology:make-catalog {
+    seconds: 3
+    at -> game:workbench-station
+    produces -> pharmacology:catalog
+    consumes -> base:wood-planks { count: 9 }
+    consumes -> base:glass { count: 3 }
+}
+
+recipe pharmacology:make-inhaler {
+    seconds: 1.5
+    at -> game:workbench-station
+    produces -> pharmacology:inhaler
+    consumes -> base:glass { count: 3 }
+    consumes -> base:wood-planks
+}
+
+recipe pharmacology:make-collector {
+    seconds: 2
+    at -> game:anvil-station
+    produces -> pharmacology:collector
+    consumes -> base:glass { count: 3 }
+    consumes -> game:copper-bar { count: 3 }
+}
+
+recipe pharmacology:make-lab {
+    seconds: 4
+    at -> game:anvil-station
+    produces -> pharmacology:lab
+    consumes -> game:iron-bar { count: 3 }
+    consumes -> base:glass { count: 3 }
+}
+
+recipe pharmacology:make-syringe {
+    seconds: 2
+    at -> game:anvil-station
+    produces -> pharmacology:syringe
+    consumes -> base:glass
+    consumes -> game:iron-bar
+}
+
+recipe pharmacology:make-assay-kit {
+    seconds: 3
+    at -> pharmacology:lab-station
+    produces -> pharmacology:assay-kit
+    consumes -> base:glass { count: 3 }
+    consumes -> game:copper-bar { count: 3 }
+}
+
+recipe pharmacology:make-oxidizer {
+    seconds: 1.5
+    at -> pharmacology:lab-station
+    produces -> pharmacology:oxidizer { yield: 3 }
+    consumes -> base:sulfur
+}
+
+recipe pharmacology:make-conjugant {
+    seconds: 1.5
+    at -> pharmacology:lab-station
+    produces -> pharmacology:conjugant { yield: 3 }
+    consumes -> pharmacology:leaves { count: 3 }
+}
+
+recipe pharmacology:make-cleaver {
+    seconds: 2
+    at -> pharmacology:lab-station
+    produces -> pharmacology:cleaver
+    consumes -> game:iron-bar
+    consumes -> base:sulfur
+}
+
+recipe pharmacology:make-polar-graft {
+    seconds: 1.5
+    at -> pharmacology:lab-station
+    produces -> pharmacology:polar-graft
+    consumes -> game:clays { count: 3 }
+}
+
+recipe pharmacology:make-charged-graft {
+    seconds: 1.5
+    at -> pharmacology:lab-station
+    produces -> pharmacology:charged-graft
+    consumes -> base:copper-ore
+}
+
+recipe pharmacology:make-bulky-graft {
+    seconds: 1.5
+    at -> pharmacology:lab-station
+    produces -> pharmacology:bulky-graft
+    consumes -> game:stones { count: 3 }
+}
+
+recipe pharmacology:crush-rubble {
+    seconds: 1.5
+    at -> pharmacology:lab-station
+    produces -> pharmacology:bulky-graft
+    consumes -> pharmacology:rubble { count: 3 }
+}
+
+recipe pharmacology:melt-ice {
+    seconds: 1.5
+    at -> pharmacology:lab-station
+    produces -> pharmacology:polar-graft
+    consumes -> game:waters { count: 3 }
+}
+
+recipe pharmacology:crush-masonry {
+    at -> pharmacology:lab-station
+    produces -> pharmacology:bulky-graft
+    consumes -> game:masonry
+}
+
+recipe pharmacology:pulp-cloth {
+    seconds: 1.5
+    at -> pharmacology:lab-station
+    produces -> pharmacology:conjugant
+    consumes -> game:cloth { count: 3 }
+}
+
+recipe pharmacology:strange-charge {
+    seconds: 2
+    at -> pharmacology:lab-station
+    produces -> pharmacology:charged-graft
+    consumes -> pharmacology:strange-stones { count: 3 }
+}
+
+recipe pharmacology:strange-bulk {
+    seconds: 2
+    at -> pharmacology:lab-station
+    produces -> pharmacology:bulky-graft
+    consumes -> pharmacology:strange-stones { count: 3 }
+}
+
+synthesis pharmacology:press-extract {
+    title: "press for extract"
+    operation: "extract"
+    seconds: 2
+    at -> pharmacology:press-station
+}
+
+synthesis pharmacology:press-dose {
+    title: "press a dose"
+    operation: "press"
+    seconds: 2
+    extract: 3
+    at -> pharmacology:press-station
+}
+
+synthesis pharmacology:oxidize {
+    title: "oxidize"
+    operation: "oxidize"
+    seconds: 3
+    at -> pharmacology:lab-station
+    reagent -> pharmacology:oxidizer
+}
+
+synthesis pharmacology:conjugate {
+    title: "conjugate"
+    operation: "conjugate"
+    seconds: 3
+    at -> pharmacology:lab-station
+    reagent -> pharmacology:conjugant
+}
+
+synthesis pharmacology:cleave {
+    title: "cleave"
+    operation: "cleave"
+    seconds: 4
+    at -> pharmacology:lab-station
+    reagent -> pharmacology:cleaver
+}
+
+synthesis pharmacology:graft-polar {
+    title: "graft polar"
+    operation: "attach"
+    seconds: 4
+    fragment: "polar"
+    at -> pharmacology:lab-station
+    reagent -> pharmacology:polar-graft
+}
+
+synthesis pharmacology:graft-charged {
+    title: "graft charged"
+    operation: "attach"
+    seconds: 4
+    fragment: "charged"
+    at -> pharmacology:lab-station
+    reagent -> pharmacology:charged-graft
+}
+
+synthesis pharmacology:graft-bulky {
+    title: "graft bulky"
+    operation: "attach"
+    seconds: 4
+    fragment: "bulky"
+    at -> pharmacology:lab-station
+    reagent -> pharmacology:bulky-graft
+}
+
+dose-route pharmacology:swallow {
+    title: "swallow"
+    route: "ingested"
+}
+
+dose-route pharmacology:inhale {
+    title: "inhale (needs an inhaler)"
+    route: "inhaled"
+    needs-device -> pharmacology:inhaler
+}
+
+dose-route pharmacology:inject {
+    title: "inject (uses a syringe)"
+    route: "injected"
+    needs-device -> pharmacology:syringe { uses: 1 }
+}
+
+starter-body pharmacology:starter {
+    halves -> [pharmacology:receptor-a pharmacology:receptor-b pharmacology:receptor-c]
+    enzymes -> [pharmacology:oxidase pharmacology:conjugase]
+    doses -> [pharmacology:swallowed-dose pharmacology:inhaled-dose pharmacology:injected-dose]
+}
+
+receptor-half pharmacology:receptor-a {
+    cells: "wall open-polar wall trigger-0 open-bulky trigger-0 wall open-charged wall open-polar wall trigger-0 wall"
+}
+
+receptor-half pharmacology:receptor-b {
+    cells: "wall open-charged wall trigger-1 open-polar+bulky trigger-1 wall open-bulky wall wall open-charged wall trigger-1"
+}
+
+receptor-half pharmacology:receptor-c {
+    cells: "wall open-bulky+charged wall brake open-polar wall wall open-bulky wall open-charged wall wall brake"
+    expression: 0.5
+}
+
+enzyme pharmacology:oxidase { operation: oxidize, wants: "bulky+charged" }
+enzyme pharmacology:conjugase { operation: conjugate, wants: "polar+charged" }
+
+chemistry pharmacology:mist-opening { targets -> pharmacology:receptor-a, skips: brake }
+chemistry pharmacology:mist-closing { targets -> pharmacology:receptor-a, skips: trigger }
+chemistry pharmacology:swayer { targets -> pharmacology:receptor-b, skips: brake }
+chemistry pharmacology:lifting { targets -> [pharmacology:receptor-a pharmacology:receptor-b], skips: brake }
+chemistry pharmacology:dulling { targets -> pharmacology:receptor-c, skips: trigger }
+
+starter-dose pharmacology:swallowed-dose { half -> pharmacology:receptor-a, skips: brake, route: ingested, amount: 2 }
+starter-dose pharmacology:inhaled-dose { half -> pharmacology:receptor-b, skips: brake, route: inhaled, amount: 2 }
+starter-dose pharmacology:injected-dose { half -> pharmacology:receptor-c, skips: trigger, route: injected, amount: 2 }
+
+signal-drive pharmacology:mist-reveals { signal: mist, gain: 2, drives -> base:mist }
+signal-drive pharmacology:tide-shows { signal: mist, gain: -2, drives -> base:tide }
+signal-drive pharmacology:ember-shows { signal: mist, also: lift, gain: 1, drives -> base:ember }
+signal-drive pharmacology:mist-turns { signal: mist, gain: 1.2, drives -> engine:color-turn-0 }
+signal-drive pharmacology:sway-warps { signal: sway, gain: 0.15, drives -> engine:warp }
+signal-drive pharmacology:sway-widens { signal: sway, gain: 0.6, drives -> engine:field-of-view }
+signal-drive pharmacology:sway-lingers { signal: sway, gain: 1, drives -> engine:afterimage }
+signal-drive pharmacology:lift-lightens { signal: lift, gain: -0.8, drives -> engine:gravity }
+signal-drive pharmacology:lift-raises { signal: lift, gain: 0.8, drives -> engine:jump-height }

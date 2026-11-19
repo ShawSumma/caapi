@@ -139,7 +139,7 @@ struct HashTable(K, V) {
     }
 
     void clear() {
-        if (capacity > 0) {
+        if (used > 0) {
             memset(controls, EMPTY, capacity);
         }
         used = 0;

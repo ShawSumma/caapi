@@ -17,6 +17,8 @@ enum float ROUTE_LANE = 0.5f;
 enum Rhythm FLOORS = Rhythm(STORY, 0, 1);
 enum Rhythm ROOMS = Rhythm(STORY, 1, STORY - 1);
 enum Rhythm WINDOW_ROW = Rhythm(STORY, STORY / 2, 1);
+enum Rhythm SILL_ROW = Rhythm(STORY, STORY / 2 - 1, 1);
+enum int PINNACLE = 3;
 enum int LOW = -HALF_WIDTH;
 enum int HIGH = HALF_WIDTH - 1;
 enum int HUT_STORIES = 2;
@@ -32,6 +34,8 @@ struct Palette {
 struct Palettes {
     List!(Palette, MOST_PALETTES) palettes;
     Palette timber;
+    Material bench;
+    Material lamp;
 }
 
 __gshared Palettes palettes;
@@ -59,8 +63,8 @@ int lane(int story) {
     }
 }
 
-void shell(Turtle tower, int top, Palette palette) {
-    tower.paint(palette.wall, boxOf(Span(LOW, HIGH), Span(LOW, HIGH), Span(-FOUNDATION, top)));
+void shell(Turtle tower, int top, Palette palette, int foundation) {
+    tower.paint(palette.wall, boxOf(Span(LOW, HIGH), Span(LOW, HIGH), Span(-foundation, top)));
     tower.paint(palette.trim, boxOf(Span(LOW, HIGH), Span(LOW, HIGH), Span(0, top)), FLOORS);
     foreach (x; SIDES) {
         foreach (y; SIDES) {
@@ -107,21 +111,74 @@ void merlons(Turtle tower, int z, Palette palette) {
     }
 }
 
-void tower(Turtle at, int top, Palette palette) {
-    shell(at, top, palette);
+void sills(Turtle tower, int top, Palette palette) {
+    foreach (start; WINDOW_STARTS) {
+        Span window = Span(start, start + WINDOW_WIDTH - 1);
+        tower.fill(palette.trim, boxOf(Span(LOW - 1, LOW - 1), window, Span(0, top - 1)), SILL_ROW);
+        tower.fill(palette.trim, boxOf(Span(HIGH + 1, HIGH + 1), window, Span(0, top - 1)), SILL_ROW);
+        tower.fill(palette.trim, boxOf(window, Span(LOW - 1, LOW - 1), Span(0, top - 1)), SILL_ROW);
+        tower.fill(palette.trim, boxOf(window, Span(HIGH + 1, HIGH + 1), Span(0, top - 1)), SILL_ROW);
+    }
+}
+
+void ledge(Turtle tower, Material material, int jut, Span z) {
+    tower.fill(material, boxOf(Span(LOW - jut, HIGH + jut), Span(LOW - jut, LOW - 1), z));
+    tower.fill(material, boxOf(Span(LOW - jut, HIGH + jut), Span(HIGH + 1, HIGH + jut), z));
+    tower.fill(material, boxOf(Span(LOW - jut, LOW - 1), Span(LOW, HIGH), z));
+    tower.fill(material, boxOf(Span(HIGH + 1, HIGH + jut), Span(LOW, HIGH), z));
+}
+
+void pinnacles(Turtle tower, int z, Palette palette) {
+    foreach (x; SIDES) {
+        foreach (y; SIDES) {
+            tower.paint(palette.trim, boxOf(Span(x, x), Span(y, y), Span(z, z + PINNACLE - 1)));
+        }
+    }
+}
+
+void buttresses(Turtle tower, int top, Palette palette, int foundation = FOUNDATION) {
+    immutable Span[2] corners = [Span(LOW - 1, LOW), Span(HIGH, HIGH + 1)];
+    foreach (x; corners) {
+        foreach (y; corners) {
+            tower.fill(palette.trim, boxOf(x, y, Span(-foundation, top / 2)));
+        }
+    }
+    ledge(tower, palette.wall, 1, Span(-foundation, 0));
+}
+
+void roof(Turtle tower, int z, Palette palette) {
+    foreach (step; 0 .. HALF_WIDTH + 1) {
+        int half = HALF_WIDTH + 1 - step;
+        tower.paint(palette.trim, boxOf(Span(-half, half - 1), Span(-half, half - 1), Span(z + step, z + step)));
+    }
+}
+
+void storeys(Turtle at, int top, Palette palette, int foundation) {
+    shell(at, top, palette, foundation);
     floors(at, top, palette);
     windows(at, top);
+    sills(at, top, palette);
     stairs(at, top, palette);
+}
+
+void tower(Turtle at, int top, Palette palette, int foundation = FOUNDATION) {
+    storeys(at, top, palette, foundation);
+    ledge(at, palette.trim, 1, Span(top, top));
     merlons(at, top + 1, palette);
+    pinnacles(at, top + 1, palette);
 }
 
 void door(Turtle tower) {
     tower.paint(Material.none, boxOf(Span(LOW, LOW), Span(-1, 0), Span(1, DOOR)));
+    tower.paint(Material.none, boxOf(Span(LOW - 1, LOW - 1), Span(-1, 0), Span(0, DOOR)));
 }
 
 void hut(Turtle at) {
-    tower(at, HUT_TOP, palettes.timber);
+    storeys(at, HUT_TOP, palettes.timber, FOUNDATION);
+    roof(at, HUT_TOP + 1, palettes.timber);
     door(at);
+    at.paint(palettes.bench, boxOf(Span(HIGH - 1, HIGH - 1), Span(0, 0), Span(1, 1)));
+    at.paint(palettes.lamp, boxOf(Span(HIGH - 1, HIGH - 1), Span(-1, -1), Span(DOOR, DOOR)));
 }
 
 void stairRoute(Turtle tower, int firstFloor, int top) {
