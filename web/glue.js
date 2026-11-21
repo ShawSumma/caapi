@@ -46,6 +46,7 @@ const MATERIAL_WORDS = 8;
 const CIOVEC_WORDS = 2;
 const WASI_ERRNO_SUCCESS = 0;
 const WASI_ERRNO_BADF = 8;
+const NANOSECONDS_PER_MILLISECOND = 1e6;
 
 const gameOn = (canvas, gl, showStatus, showFailure) => {
     let memory = null;
@@ -457,8 +458,18 @@ const gameOn = (canvas, gl, showStatus, showFailure) => {
     };
     const fd_close = (descriptor) => WASI_ERRNO_BADF;
     const fd_seek = (descriptor, offset, whence, position) => WASI_ERRNO_BADF;
+    const fd_prestat_get = (descriptor, prestat) => WASI_ERRNO_BADF;
+    const fd_prestat_dir_name = (descriptor, path, pathLength) => WASI_ERRNO_BADF;
+    const proc_exit = (code) => {
+        throw new Error("the game exited with code " + code);
+    };
+    const clock_time_get = (id, precision, time) => {
+        const nanoseconds = BigInt(Math.round((performance.timeOrigin + performance.now()) * NANOSECONDS_PER_MILLISECOND));
+        new DataView(memory.buffer).setBigUint64(time, nanoseconds, true);
+        return WASI_ERRNO_SUCCESS;
+    };
 
-    const imports = {env: {web_now, web_status, web_fail, web_free_pointer, web_store_size, web_store_read, web_store_write, web_store_remove, web_gl_program, web_gl_setup, web_gl_grow_faces, web_gl_upload_faces, web_gl_begin, web_gl_voxels, web_gl_highlight, web_gl_marker, web_gl_finish, web_gl_atlas}, wasi_snapshot_preview1: {fd_write, fd_close, fd_seek}};
+    const imports = {env: {web_now, web_status, web_fail, web_free_pointer, web_store_size, web_store_read, web_store_write, web_store_remove, web_gl_program, web_gl_setup, web_gl_grow_faces, web_gl_upload_faces, web_gl_begin, web_gl_voxels, web_gl_highlight, web_gl_marker, web_gl_finish, web_gl_atlas}, wasi_snapshot_preview1: {fd_write, fd_close, fd_seek, fd_prestat_get, fd_prestat_dir_name, proc_exit, clock_time_get}};
     const game = {gl, imports, makeTargets, exports: null};
     game.name = (text) => {
         refreshViews();

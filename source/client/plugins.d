@@ -56,6 +56,7 @@ struct Linked {
 
 version (WebAssembly) {
 } else version (OSX) {
+    import core.stdc.stdio : FILE, fclose, fopen, fread;
     import core.sys.posix.dirent : DIR, closedir, dirent, opendir, readdir;
     import core.sys.posix.dlfcn : RTLD_NOW, dlerror, dlopen, dlsym;
     import core.sys.posix.stdlib : realpath;

@@ -29,13 +29,13 @@ import common.perception : Perception, REVEAL_ON_LEVEL, effectiveFor, levelOf, s
 import common.position : Position;
 import common.settings : CharacterConfig;
 import common.worldgen.generation : Worldgen;
-import common.worldgen.horospheres : HorosphereId, ROOT, edgeOf, ensureGravityAt, ensurePlaneHeight, ensureUndersideAt, isBelowAbyss;
+import common.worldgen.horospheres : CornerKey, Horosphere, HorosphereId, HorosphereStage, Horospheres, ROOT, edgeOf, ensureGravityAt, ensurePlaneHeight, ensureUndersideAt, isBelowAbyss;
 import common.worldgen.lineage : LINEAGE_SEEDS, Lineage;
 import common.worldgen.structure : ColumnSpot, SiteFrame, columnPoint, edgeCells, edgeSitesOf, ensureSiteHash, forwarded, moveToLevel, nodeToNode, rootSite, sitePlacement, turnSite;
 import geometry.cube : Cell;
 import geometry.honeycomb : CORNER_COUNT, Corner, Face;
 import geometry.lorentz : Point, Shift = Motion, Vec4;
-import plugins.api.api : Material, SitePart, Turn;
+import plugins.api.api : Material, SitePart, Turn, tagNamed;
 import plugins.api.content : Happening;
 import plugins.crafting.crafting : Insight, Recipe, Station, Upgrade, insights, recipes, stations;
 import plugins.crafting.inventory : HOTBAR_SLOTS, Inventory, SLOT_COUNT, STACK_LIMIT, Sorting, Stack, isSameKind;
@@ -170,6 +170,8 @@ immutable NamedScript[] TESTS = [
     NamedScript("structure/stacked", &risen!("stacked", 1.5f, "base:concrete", "the connector's landing")),
     NamedScript("structure/stackedrooms", &risen!("stackedrooms", 1.5f, "base:concrete", "the connector's landing")),
     NamedScript("structure/stairs", &climbing!("tower", 2.5f, SpawnCheck.skipped)),
+    NamedScript("structure/grove", &climbing!("grove", 0.6f, SpawnCheck.skipped)),
+    NamedScript("structure/planetgrove", &structurePlanetGrove),
     NamedScript("structure/tower", &structureTower),
     NamedScript("structure/trail", &structureTrail),
     NamedScript("structure/tripcity", &roundTrip!("tripcity")),
@@ -226,6 +228,8 @@ immutable NamedScript[] TESTS = [
     NamedScript("structure/subwaywell", &structureSubwayWell),
     NamedScript("structure/subwaythrough", &structureSubwayThrough),
     NamedScript("structure/subwayunder", &structureSubwayUnder),
+    NamedScript("structure/subwayabandoned", &structureSubwayAbandoned),
+    NamedScript("structure/streets", &structureStreets),
     NamedScript("structure/watchtower", &structureWatchtower),
     NamedScript("structure/sealedair", &structureSealedAir),
     NamedScript("structure/librarycatalog", &structureLibraryCatalog),
@@ -994,6 +998,201 @@ void structureShallowPlatform(ref Script world) {
         world.wait(walk.SETTLE_SECONDS);
         Maybe!Material below = walk.lookBelow(world);
         world.claim(Topic.structures, "A shallow subway platform stands two cells over the ballast with at least four cells clear over it under the street, and a body set on it stands and walks its length.", headroom >= LEAST_HEADROOM && rise == PLATFORM_RISE && stood && reached == stops.count && world.isOnGround() && walk.isOneOf(below, PLATFORM_MATERIALS[]), Measure.of("cells clear over the platform", headroom), Measure.of("platform over the ballast (cells)", rise), Measure.of("walked", world.traveled().value - start), Measure.of("standing on", walk.nameOf(below)));
+    }
+}
+
+enum string GROVE_STEP = "base:spruce-wood";
+enum uint GROVE_TREADS = 15;
+enum float TREAD_BELOW = 0.5f;
+enum float TREAD_REACH = 0.1f;
+
+void structurePlanetGrove(ref Script world) {
+    world.terrain();
+    Graph* graph = &world.game.world.graph;
+    Material step = materialNamed(GROVE_STEP);
+    size_t stops = graph.structures.blueprint.route.length;
+    uint treads = 0;
+    foreach (index; 0 .. stops) {
+        SiteFrame site = graph.structures.blueprint.route.ptr[index].site;
+        ColumnSpot spot = graph.structures.blueprint.route.ptr[index].spot;
+        Position under = walk.columnPosition(world, site, spot.x, spot.y, spot.z - TREAD_BELOW);
+        world.game.generateWithin(under, Length(TREAD_REACH));
+        Maybe!Material held = walk.generatedAt(world, under);
+        if (held.exists && held.value == step) {
+            treads += 1;
+        }
+    }
+    world.claim(Topic.structures, "The default world raises a grove of treehouses among its landmarks, and its route climbs the grove's spiral stair: at least as many of its stops stand on spruce treads as the stair has treads below the deck.", treads >= GROVE_TREADS, Measure.of("route stops", stops), Measure.of("stops on a spruce tread", treads), Measure.of("treads below the deck", GROVE_TREADS));
+}
+
+enum string HALL_LAMP = "base:light-panel";
+enum int HALL_LOW_X = -6;
+enum int HALL_HIGH_X = 5;
+enum int HALL_TOP = -2;
+enum int HALL_FIRST_Z = 6;
+enum int HALL_LAST_Z = 17;
+
+struct HallCount {
+    uint cells;
+    uint seen;
+    uint lamps;
+}
+
+HallCount hallLamps(ref Script world, walk.Sided end, int bed) {
+    Material lamp = materialNamed(HALL_LAMP);
+    HallCount hall;
+    foreach (z; HALL_FIRST_Z .. HALL_LAST_Z + 1) {
+        foreach (x; HALL_LOW_X .. HALL_HIGH_X + 1) {
+            foreach (y; bed .. HALL_TOP + 1) {
+                Maybe!Material held = walk.generatedAt(world, walk.cellPosition(world, end.site, walk.mirroredCell(end.mirror, x), y, z));
+                hall.cells += 1;
+                if (held.exists) {
+                    hall.seen += 1;
+                    if (held.value == lamp) {
+                        hall.lamps += 1;
+                    }
+                }
+            }
+        }
+    }
+    return hall;
+}
+
+void structureSubwayAbandoned(ref Script world) {
+    world.structure("city");
+    Maybe!(walk.Sided) found = walk.ensureSided!(walk.isAbandonedStation)(world);
+    world.check(found.exists, "no station of an abandoned line lies near the city's start");
+    if (!world.isFailed) {
+        walk.Sided end = found.value;
+        int bed = walk.SHALLOW_BALLAST;
+        if (walk.isStation(world, end, walk.DEEP_RIM)) {
+            bed = walk.LOWEST_BORE;
+        }
+        world.game.generateWithin(end.spot(world, 0, bed, walk.SUBWAY_MIDDLE), Length(walk.SIDED_REACH));
+        HallCount hall = hallLamps(world, end, bed);
+        uint entrances = 0;
+        if (walk.isEntrance(world, end)) {
+            entrances = 1;
+        }
+        world.claim(Topic.structures, "A station on an abandoned subway line is dark and shut: no lamp hangs in its hall and no stair comes down to it from the street.", hall.seen == hall.cells && hall.lamps == 0 && entrances == 0, Measure.of("cells of the hall seen", hall.seen), Measure.of("cells of the hall", hall.cells), Measure.of("lamps", hall.lamps), Measure.of("entrances at its end", entrances));
+    }
+}
+
+enum uint SURVEYED_CITIES = 3;
+enum size_t STREET_VERTICES = 48;
+enum double STREETS_LOAD_SECONDS = 12;
+enum int STREET_REACH = 10;
+enum float PAVED_DEPTH = 1;
+enum float LEAST_UNDER_DEPTH = 2;
+enum float MOST_UNDER_DEPTH = 4;
+immutable float[2] STREET_OFFSETS = [6.5f, -6.5f];
+enum uint CITY_GROUND = tagNamed("horospheres:city");
+
+struct StreetSurvey {
+    uint columns;
+    uint paved;
+    uint holed;
+}
+
+void surveyColumn(ref Script world, HorosphereId city, SiteFrame up, float x, float y, ref StreetSurvey survey) {
+    Graph* graph = &world.game.world.graph;
+    float cell = graph.view.edgeOf() / edgeCells(graph.layout.dimension);
+    uint paved = 0;
+    uint holes = 0;
+    foreach (z; -STREET_REACH .. STREET_REACH + 1) {
+        Position at = walk.columnPosition(world, up, x, y, z + 0.5f);
+        Maybe!Material held = walk.generatedAt(world, at);
+        float depth = -graph.view.ensurePlaneHeight(city, at) / cell;
+        if (held.exists && depth > 0 && depth <= PAVED_DEPTH && held.value != Material.none) {
+            paved += 1;
+        } else if (held.exists && depth >= LEAST_UNDER_DEPTH && depth <= MOST_UNDER_DEPTH && held.value == Material.none) {
+            holes += 1;
+        }
+    }
+    survey.columns += 1;
+    if (paved > 0) {
+        survey.paved += 1;
+        if (holes > 0) {
+            survey.holed += 1;
+        }
+    }
+}
+
+StreetSurvey surveyStreets(ref Script world, HorosphereId city, SiteFrame foot) {
+    Graph* graph = &world.game.world.graph;
+    SiteFrame[STREET_VERTICES] sites;
+    sites[0] = foot;
+    size_t count = 1;
+    size_t next = 0;
+    StreetSurvey survey;
+    while (next < count) {
+        SiteFrame site = graph.view.moveToLevel(sites[next], 0);
+        next += 1;
+        SiteFrame up = graph.view.turnSite(site, Turn.pitchUp);
+        foreach (x; STREET_OFFSETS) {
+            foreach (y; STREET_OFFSETS) {
+                surveyColumn(world, city, up, x, y, survey);
+            }
+        }
+        if (count + 3 <= STREET_VERTICES) {
+            SiteFrame ahead = forwarded(site, 1);
+            sites[count] = ahead;
+            sites[count + 1] = graph.view.turnSite(ahead, Turn.left);
+            sites[count + 2] = graph.view.turnSite(ahead, Turn.right);
+            count += 3;
+        }
+    }
+    return survey;
+}
+
+bool isSurveyed(const(CornerKey)[] surveyed, CornerKey key) {
+    size_t index = 0;
+    while (index < surveyed.length && surveyed[index] != key) {
+        index += 1;
+    }
+    return index < surveyed.length;
+}
+
+bool isUnsurveyedCity(ref const Horospheres horospheres, uint index, const(CornerKey)[] surveyed) {
+    const(Horosphere)* ground = &horospheres.horospheres.ptr[index];
+    return ground.stage != HorosphereStage.free && horospheres.kinds.ptr[ground.kind].tag == CITY_GROUND && !isSurveyed(surveyed, ground.key);
+}
+
+MaybeIndex!uint unsurveyedCity(ref const Horospheres horospheres, const(CornerKey)[] surveyed) {
+    uint index = 0;
+    while (index < horospheres.horospheres.length && !isUnsurveyedCity(horospheres, index, surveyed)) {
+        index += 1;
+    }
+    if (index < horospheres.horospheres.length) {
+        return MaybeIndex!uint.of(index);
+    } else {
+        return MaybeIndex!uint.init;
+    }
+}
+
+void structureStreets(ref Script world) {
+    world.terrain();
+    world.live();
+    world.mode(MovementMode.noclip);
+    world.wait(STREETS_LOAD_SECONDS);
+    const(Horospheres)* horospheres = &world.game.world.graph.horospheres;
+    CornerKey[SURVEYED_CITIES] surveyed;
+    uint cities = 0;
+    MaybeIndex!uint next = unsurveyedCity(*horospheres, surveyed[0 .. cities]);
+    world.check(next.exists, "no city rose within %.0f seconds of loading around the default world's spawn", STREETS_LOAD_SECONDS);
+    while (!world.isFailed && cities < SURVEYED_CITIES && next.exists) {
+        CornerKey key = horospheres.horospheres.ptr[next.value].key;
+        world.game.placeAt(walk.ensureVertex(world.game.world.graph, horospheres.horospheres.ptr[next.value].foot), Length(0));
+        world.wait(STREETS_LOAD_SECONDS);
+        Horosphere city = horospheres.horospheres.ptr[next.value];
+        world.check(city.stage != HorosphereStage.free && city.key == key, "a city was let go while the camera stood on it");
+        if (!world.isFailed) {
+            StreetSurvey survey = surveyStreets(world, HorosphereId.ofIndex(next.value), city.foot);
+            world.claim(Topic.structures, "Wherever a city risen over the default world's ground is paved, there is ground under the paving.", survey.paved > 0 && survey.holed == 0, Measure.of("city", cities), Measure.of("columns surveyed", survey.columns), Measure.of("paved", survey.paved), Measure.of("paved over open air", survey.holed));
+        }
+        surveyed[cities] = key;
+        cities += 1;
+        next = unsurveyedCity(*horospheres, surveyed[0 .. cities]);
     }
 }
 

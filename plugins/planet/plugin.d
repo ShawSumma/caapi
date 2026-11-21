@@ -10,6 +10,7 @@ import plugins.connector.connector : Connection;
 import plugins.horospheres.horospheres : Kinds, WILD_LOOK, WILD_TAG, addKinds, resolveHorospheres;
 import lattice = plugins.lattice.lattice;
 import palace = plugins.palace.palace;
+import plugins.planet.grove : grove, resolveGrove, stairEntrance, stairRoute;
 import plugins.turtle.turtle : Cell, FACE_CORNERS, Found, Hashes, Lie, Turtle, boxOf, cornersOf, higherOf, lieOf, lowerOf, mixed, roll, upright;
 
 enum ulong LAYER_SALT = 0x4C41_5952;
@@ -781,6 +782,7 @@ void resolve(const(Content)* content) {
     caves.resolveCaves(content);
     lattice.resolveLattice(content);
     palace.resolvePalace(content);
+    resolveGrove(content);
     tuning = content.settingsOf!Tuning("planet");
     fixtures = content.bound!Fixtures("planet:fixtures");
     voidLayers = content.bound!Voids("planet:voids");
@@ -789,7 +791,21 @@ void resolve(const(Content)* content) {
 
 immutable Manifest MANIFEST = Manifest("planet", FIRST_VERSION, NEEDS[], null, &resolve, null, import("plugins/planet/settings.conf"), import("plugins/planet/planet.decl"), import("plugins/planet/planet.content"));
 
+void groveLandmark(const(Api)* api, Site site, const(void)* data) {
+    Turtle at = Turtle(api, site);
+    grove(at);
+    stairRoute(at);
+}
+
+void groveRig(const(Api)* api, Site site, const(void)* data) {
+    groveLandmark(api, site, data);
+    stairEntrance(Turtle(api, site));
+    api.worldLook(api, WILD_LOOK);
+}
+
 pragma(mangle, entryOf!__MODULE__) void plugin(const(Registry)* registry) {
     registry.declare(registry, &MANIFEST);
     registry.add(registry, "planet", &world);
+    registry.addDebug(registry, "grove", &groveRig);
+    registry.addLandmark(registry, "grove", &groveLandmark);
 }

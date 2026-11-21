@@ -1,13 +1,13 @@
 module plugins.blocks.blocks;
 
-import plugins.api.api : Api, Material, MaybeIndex, Rhythm, Risen, Site, SitePart, Span;
+import plugins.api.api : Api, Box, Material, MaybeIndex, Rhythm, Risen, Site, SitePart, Span;
 import plugins.api.binding : List, bound, settingsOf;
 import plugins.api.content : Content;
 import plugins.api.flags : Flags;
 import plugins.buildings.building : Bound, Join, Lot, Lots, Palette, STORY, Side, Spec, Traits;
 import types = plugins.buildings.types;
 import plugins.connector.connector : Connection, connect, probeOwnsFoot, resolveConnector;
-import plugins.turtle.turtle : Cell, FACE_CORNERS, Flight, PORT, Tread, Turtle, WELL_TREADS, boxOf, cornersOf, flightAt, floorDiv, floorMod, higherOf, lowerOf, mixed, ownerAround, roll, strongestAround, upright, wellTreadAt, wound;
+import plugins.turtle.turtle : Cell, EVERY_HEIGHT, FACE_CORNERS, Flight, PORT, Tread, Turtle, WELL_TREADS, boxOf, cornersOf, flightAt, floorDiv, floorMod, higherOf, lowerOf, mixed, ownerAround, roll, strongestAround, upright, wellTreadAt, wound;
 
 enum ulong ISLAND_SALT = 0x51ED270B;
 enum ulong DROPPED_SALT = 0x2C1B3C6D;
@@ -15,8 +15,16 @@ enum ulong TREES_SALT = 0x297A2D39;
 enum ulong DISTRICT_SALT = 0x7B1D0F29;
 enum ulong DEPTH_SALT = 0x44455054;
 enum ulong STATION_SALT = 0x53544154;
-enum ulong BAND_SALT = 0x42414E44;
+enum ulong PALETTE_SALT = 0x50414C54;
 enum ulong CORNER_SALT = 0x434F524E;
+enum ulong ABANDONED_SALT = 0x41424E44;
+enum ulong SIGNAL_SALT = 0x5349474E;
+enum ulong NICHE_SALT = 0x4E494348;
+enum ulong GRAFFITI_SALT = 0x47524146;
+enum ulong FLOOD_SALT = 0x464C4F4F;
+enum ulong TRAIN_SALT = 0x5452414E;
+enum ulong TABLET_SALT = 0x5441424C;
+enum ulong RUBBLE_SALT = 0x5255424C;
 enum double CORNER_ODDS = 0.5;
 enum int DEEP_BED = -12;
 enum int SHALLOW_BED = -8;
@@ -57,7 +65,24 @@ enum int TRANSFER_TOP = 3;
 enum int TRANSFER_STEPS = SHALLOW_BED - DEEP_BED;
 enum int TRANSFER_LANDING = 2;
 enum int HEADROOM = 4;
-enum size_t MOST_BANDS = 8;
+enum double STOP_SHARE = 0.5;
+enum int SIGNAL_RISE = 3;
+enum Span NICHE_ALONG = Span(15, 16);
+enum int NICHE_DEPTH = 2;
+enum int NICHE_HEIGHT = 3;
+enum int GRAFFITI_LENGTH = 3;
+enum Span CAR = Span(7, 16);
+enum Span CAR_WINDOWS = Span(8, 15);
+enum int CAR_FLOOR = 2;
+enum int CAR_ROOF = 4;
+enum Span BENCH_ALONG = Span(8, 9);
+enum int BIN_ALONG = 11;
+enum Span TABLET_ALONG = Span(7, 10);
+enum int TABLET_RISE = 1;
+enum int LETTER_EVERY = 2;
+enum int RUBBLE_PILES = 3;
+enum size_t MOST_PALETTES = 8;
+enum size_t MOST_MARKS = 8;
 enum uint AROUND = 4;
 enum uint MOST_INSET = 1;
 enum Span ROAD = Span(-2, 1);
@@ -121,6 +146,10 @@ struct Tuning {
     uint alleyPercent;
     double stationOdds;
     double deepOdds;
+    double abandonedOdds;
+    double nicheOdds;
+    double floodOdds;
+    double trainOdds;
 }
 
 __gshared Tuning tuning;
@@ -169,7 +198,23 @@ struct Materials {
     Material railing;
     Material entrance;
     Material transfer;
-    List!(Material, MOST_BANDS) bands;
+    Material stop;
+    Material go;
+    Material car;
+    Material window;
+    Material bench;
+    Material tablet;
+    Material letter;
+    Material rubble;
+    List!(Material, MOST_MARKS) graffiti;
+    List!(StationPalette, MOST_PALETTES) palettes;
+    StationPalette abandoned;
+}
+
+struct StationPalette {
+    Material wall;
+    Material band;
+    Material trim;
 }
 
 __gshared Materials materials;
@@ -349,6 +394,11 @@ enum Stop : ubyte {
     station,
 }
 
+enum Upkeep : ubyte {
+    kept,
+    abandoned,
+}
+
 enum EndMark : ubyte {
     port,
     taken,
@@ -415,7 +465,7 @@ void street(Turtle edge, ref const Root root) {
         edge.paint(materials.marking, boxOf(ROAD, Span(-1, -1), Span(last - CROSSING - 2, last - CROSSING - 1)));
     }
     bool trees = probeTrees(edge);
-    if (trees) {
+    if (trees && stopOf(edge) == Stop.passing) {
         streetTrees(edge);
     }
     subway(edge, start, finish);
@@ -435,6 +485,45 @@ Stop stopOf(Turtle edge) {
     } else {
         return Stop.passing;
     }
+}
+
+Upkeep upkeepOf(Turtle edge) {
+    if (roll(edge.probeHash(SitePart.line), ABANDONED_SALT) < tuning.abandonedOdds) {
+        return Upkeep.abandoned;
+    } else {
+        return Upkeep.kept;
+    }
+}
+
+StationPalette paletteOf(Turtle edge, Upkeep upkeep) {
+    final switch (upkeep) {
+        case Upkeep.kept:
+            return materials.palettes.items[mixed(edge.probeHash(SitePart.line), PALETTE_SALT) % materials.palettes.count];
+        case Upkeep.abandoned:
+            return materials.abandoned;
+    }
+}
+
+void lit(Turtle frame, Upkeep upkeep, Material light, Box area, Rhythm rhythm = EVERY_HEIGHT) {
+    final switch (upkeep) {
+        case Upkeep.kept:
+            frame.paint(light, area, rhythm);
+            break;
+        case Upkeep.abandoned:
+            break;
+    }
+}
+
+int pickIn(ulong rolled, Span span) {
+    return span.low + cast(int)(rolled % cast(ulong)(span.high - span.low + 1));
+}
+
+void graffiti(Turtle frame, ulong hash, int wall, Span height, Span along) {
+    ulong rolled = mixed(hash, GRAFFITI_SALT);
+    Material color = materials.graffiti.items[(rolled >> 16) % materials.graffiti.count];
+    int y = pickIn(rolled >> 8, height);
+    int z = pickIn(rolled, Span(along.low, along.high - GRAFFITI_LENGTH + 1));
+    frame.paint(color, boxOf(Span(wall, wall), Span(y, y), Span(z, z + GRAFFITI_LENGTH - 1)));
 }
 
 int bedOf(Depth depth) {
@@ -537,6 +626,8 @@ Span insideOf(Span walls, int last) {
 void subway(Turtle edge, ref const End start, ref const End finish) {
     Depth depth = depthOf(edge);
     Stop stop = stopOf(edge);
+    Upkeep upkeep = upkeepOf(edge);
+    StationPalette palette = paletteOf(edge, upkeep);
     int bed = bedOf(depth);
     int last = edge.edgeCells() - 1;
     Span along = Span(clearingAt(start), last - clearingAt(finish));
@@ -547,7 +638,7 @@ void subway(Turtle edge, ref const End start, ref const End finish) {
         case Stop.passing:
             break;
         case Stop.station:
-            hall(edge, depth, station, insideOf(station, last));
+            hall(edge, depth, station, insideOf(station, last), palette.wall);
             break;
     }
     int top = lowerOf(bed + LEVEL - 1, UNDER_STREET);
@@ -559,25 +650,65 @@ void subway(Turtle edge, ref const End start, ref const End finish) {
     edge.paint(materials.rail, boxOf(Span(TRACK.high, TRACK.high), Span(bed + 1, bed + 1), along));
     final switch (stop) {
         case Stop.passing:
-            edge.paint(materials.boreLight, boxOf(TRACK_LAMPS, Span(top, top), BORE_LAMP));
+            bore(edge, depth, walls, upkeep);
             lineEnd(start, depth);
             lineEnd(finish, depth);
             break;
         case Stop.station:
-            fittings(edge, depth, insideOf(station, last), materials.bands.items[mixed(edge.probeHash(SitePart.line), BAND_SALT) % materials.bands.count]);
-            stationEnd(start, depth);
-            stationEnd(finish, depth);
+            fittings(edge, depth, insideOf(station, last), palette, upkeep);
+            stationEnd(start, depth, upkeep);
+            stationEnd(finish, depth, upkeep);
             break;
     }
 }
 
-void hall(Turtle edge, Depth depth, Span walls, Span inside) {
+void bore(Turtle edge, Depth depth, Span walls, Upkeep upkeep) {
     int bed = bedOf(depth);
-    edge.paint(materials.stationWall, boxOf(STATION_WALLS, Span(bed, UNDER_STREET), walls));
+    int top = lowerOf(bed + LEVEL - 1, UNDER_STREET);
+    ulong hash = edge.probeHash(SitePart.edge);
+    lit(edge, upkeep, materials.boreLight, boxOf(TRACK_LAMPS, Span(top, top), BORE_LAMP));
+    Turtle[2] sides = [edge, reversed(edge)];
+    foreach (frame; sides) {
+        ulong side = mixed(hash, frame.probeHash(SitePart.vertex));
+        graffiti(frame, side, BORE_SHELL.high, Span(bed + 1, top), walls);
+        Material signal = materials.go;
+        if (roll(side, SIGNAL_SALT) < STOP_SHARE) {
+            signal = materials.stop;
+        }
+        frame.paint(signal, boxOf(Span(BORE_SHELL.high, BORE_SHELL.high), Span(bed + SIGNAL_RISE, bed + SIGNAL_RISE), Span(walls.low + 1, walls.low + 1)));
+        if (roll(side, NICHE_SALT) < tuning.nicheOdds) {
+            niche(frame, bed, upkeep);
+        }
+    }
+    if (roll(hash, FLOOD_SALT) < tuning.floodOdds) {
+        edge.paint(materials.water, boxOf(Span(TRACK.low + 1, TRACK.high - 1), Span(bed + 1, bed + 1), walls));
+    } else if (roll(hash, TRAIN_SALT) < tuning.trainOdds) {
+        car(edge, bed);
+    }
+}
+
+void niche(Turtle frame, int bed, Upkeep upkeep) {
+    Span deep = Span(BORE_SHELL.high, BORE_SHELL.high + NICHE_DEPTH - 1);
+    frame.paint(materials.tunnel, boxOf(deep, Span(bed, bed), NICHE_ALONG));
+    frame.paint(Material.none, boxOf(deep, Span(bed + 1, bed + NICHE_HEIGHT), NICHE_ALONG));
+    lit(frame, upkeep, materials.tunnelLight, boxOf(Span(deep.high, deep.high), Span(bed + NICHE_HEIGHT + 1, bed + NICHE_HEIGHT + 1), Span(NICHE_ALONG.low, NICHE_ALONG.low)));
+}
+
+void car(Turtle edge, int bed) {
+    Span windows = Span(bed + CAR_FLOOR + 1, bed + CAR_ROOF - 1);
+    edge.paint(materials.car, boxOf(TRACK, Span(bed + CAR_FLOOR, bed + CAR_ROOF), CAR));
+    edge.paint(materials.window, boxOf(Span(TRACK.low, TRACK.low), windows, CAR_WINDOWS));
+    edge.paint(materials.window, boxOf(Span(TRACK.high, TRACK.high), windows, CAR_WINDOWS));
+    edge.paint(Material.none, boxOf(Span(TRACK.low + 1, TRACK.high - 1), windows, Span(CAR.low + 1, CAR.high - 1)));
+}
+
+void hall(Turtle edge, Depth depth, Span walls, Span inside, Material wall) {
+    int bed = bedOf(depth);
+    edge.paint(wall, boxOf(STATION_WALLS, Span(bed, UNDER_STREET), walls));
     edge.paint(Material.none, boxOf(HALL, Span(bed + 1, hallTopOf(depth)), inside));
 }
 
-void fittings(Turtle edge, Depth depth, Span inside, Material band) {
+void fittings(Turtle edge, Depth depth, Span inside, StationPalette palette, Upkeep upkeep) {
     int bed = bedOf(depth);
     int platform = bed + platformRiseOf(depth);
     foreach (side; PLATFORMS) {
@@ -589,29 +720,62 @@ void fittings(Turtle edge, Depth depth, Span inside, Material band) {
     final switch (depth) {
         case Depth.deep:
             foreach (wall; WALLS) {
-                edge.paint(band, boxOf(wall, Span(bed + 4, bed + 4), inside));
-                edge.paint(band, boxOf(wall, Span(MEZZANINE_FLOOR + 2, MEZZANINE_FLOOR + 2), inside));
+                edge.paint(palette.band, boxOf(wall, Span(bed + 4, bed + 4), inside));
+                edge.paint(palette.band, boxOf(wall, Span(MEZZANINE_FLOOR + 2, MEZZANINE_FLOOR + 2), inside));
             }
             edge.paint(materials.stationCeiling, boxOf(HALL, Span(UNDER_STREET, UNDER_STREET), inside));
-            edge.paint(materials.tunnelLight, boxOf(TRACK_LAMPS, Span(UNDER_STREET, UNDER_STREET), inside), Rhythm(LAMP_EVERY, inside.low, 1));
+            lit(edge, upkeep, materials.tunnelLight, boxOf(TRACK_LAMPS, Span(UNDER_STREET, UNDER_STREET), inside), Rhythm(LAMP_EVERY, inside.low, 1));
             edge.paint(materials.mezzanine, boxOf(HALL, Span(MEZZANINE_FLOOR, MEZZANINE_FLOOR), MEZZANINE_ALONG));
-            edge.paint(materials.tunnelLight, boxOf(TRACK_LAMPS, Span(MEZZANINE_FLOOR, MEZZANINE_FLOOR), MEZZANINE_LAMPS));
+            lit(edge, upkeep, materials.tunnelLight, boxOf(TRACK_LAMPS, Span(MEZZANINE_FLOOR, MEZZANINE_FLOOR), MEZZANINE_LAMPS));
             break;
         case Depth.shallow:
             foreach (wall; WALLS) {
-                edge.paint(band, boxOf(wall, Span(platform + 2, platform + 2), inside));
-                edge.paint(materials.tunnelLight, boxOf(wall, Span(UNDER_STREET, UNDER_STREET), inside), Rhythm(LAMP_EVERY, inside.low, 1));
+                edge.paint(palette.band, boxOf(wall, Span(platform + 2, platform + 2), inside));
+                lit(edge, upkeep, materials.tunnelLight, boxOf(wall, Span(UNDER_STREET, UNDER_STREET), inside), Rhythm(LAMP_EVERY, inside.low, 1));
             }
             break;
     }
-    stationHalf(edge, depth);
-    stationHalf(reversed(edge), depth);
+    stationHalf(edge, depth, palette, upkeep);
+    stationHalf(reversed(edge), depth, palette, upkeep);
 }
 
-void stationHalf(Turtle frame, Depth depth) {
+void furnish(Turtle frame, Depth depth, StationPalette palette) {
+    int standing = bedOf(depth) + platformRiseOf(depth) + 1;
+    frame.paint(materials.bench, boxOf(Span(PILLAR, PILLAR), Span(standing, standing), BENCH_ALONG));
+    frame.paint(palette.trim, boxOf(Span(PILLAR, PILLAR), Span(standing, standing), Span(BIN_ALONG, BIN_ALONG)));
+    int wall = WALLS[0].low;
+    Span rows = Span(standing + TABLET_RISE, standing + TABLET_RISE + 1);
+    frame.paint(materials.tablet, boxOf(Span(wall, wall), rows, TABLET_ALONG));
+    ulong rolled = mixed(frame.probeHash(SitePart.edge), TABLET_SALT);
+    int y = pickIn(rolled >> 8, rows);
+    frame.paint(materials.letter, boxOf(Span(wall, wall), Span(y, y), TABLET_ALONG), Rhythm(LETTER_EVERY, pickIn(rolled, Span(0, LETTER_EVERY - 1)), 1));
+}
+
+void litter(Turtle frame, Depth depth) {
+    int standing = bedOf(depth) + platformRiseOf(depth) + 1;
+    ulong hash = frame.probeHash(SitePart.vertex);
+    Span inside = Span(STATION_ALONG.low + 1, STATION_ALONG.high - 1);
+    foreach (pile; 0 .. RUBBLE_PILES) {
+        ulong rolled = mixed(hash, RUBBLE_SALT + pile);
+        int x = pickIn(rolled >> 8, Span(PLATFORMS[0].low, PILLAR));
+        int z = pickIn(rolled, inside);
+        frame.paint(materials.rubble, boxOf(Span(x, x), Span(standing, standing), Span(z, z)));
+    }
+    graffiti(frame, hash, WALLS[0].low, Span(standing, standing + TABLET_RISE + 1), inside);
+}
+
+void stationHalf(Turtle frame, Depth depth, StationPalette palette, Upkeep upkeep) {
     int bed = bedOf(depth);
+    final switch (upkeep) {
+        case Upkeep.kept:
+            furnish(frame, depth, palette);
+            break;
+        case Upkeep.abandoned:
+            litter(frame, depth);
+            break;
+    }
     foreach (z; PILLARS) {
-        frame.paint(materials.pillar, boxOf(Span(PILLAR, PILLAR), Span(bed + platformRiseOf(depth) + 1, pillarTopOf(depth, z)), Span(z, z)));
+        frame.paint(palette.trim, boxOf(Span(PILLAR, PILLAR), Span(bed + platformRiseOf(depth) + 1, pillarTopOf(depth, z)), Span(z, z)));
     }
     final switch (depth) {
         case Depth.deep:
@@ -628,8 +792,12 @@ void stationHalf(Turtle frame, Depth depth) {
     }
 }
 
+bool isOpenStation(Turtle edge) {
+    return stopOf(edge) == Stop.station && upkeepOf(edge) == Upkeep.kept;
+}
+
 bool isStationBeside(ref const End end) {
-    return (end.marks.has(EndMark.right) && stopOf(end.frame.right()) == Stop.station) || (end.marks.has(EndMark.left) && stopOf(end.frame.left()) == Stop.station);
+    return (end.marks.has(EndMark.right) && isOpenStation(end.frame.right())) || (end.marks.has(EndMark.left) && isOpenStation(end.frame.left()));
 }
 
 bool isCornerYielded(ref const End end, Depth depth) {
@@ -646,9 +814,15 @@ bool isCornerYielded(ref const End end, Depth depth) {
     }
 }
 
-void stationEnd(ref const End end, Depth depth) {
-    if (!end.isClosed() && !end.isTransfer(depth) && !isCornerYielded(end, depth)) {
-        entrance(end.frame, depth);
+void stationEnd(ref const End end, Depth depth, Upkeep upkeep) {
+    final switch (upkeep) {
+        case Upkeep.kept:
+            if (!end.isClosed() && !end.isTransfer(depth) && !isCornerYielded(end, depth)) {
+                entrance(end.frame, depth);
+            }
+            break;
+        case Upkeep.abandoned:
+            break;
     }
 }
 

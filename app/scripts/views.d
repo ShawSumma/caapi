@@ -193,6 +193,10 @@ immutable NamedScript[] VIEWS = [
     NamedScript("subwaywell", &sidedView!(walk.isWellDoor, 0, -6, 12, 0, -10, 3, 15)),
     NamedScript("subwaycontinued", &sidedView!(walk.isContinuedStation, 0, -5, 6.5f, 0, -5, -10, 15)),
     NamedScript("subwaycrossing", &backedFrom!("city", "base:acacia-wood", 6, 0.08f, 0.1f, 20)),
+    NamedScript("subwayabandoned", &sidedView!(walk.isAbandonedStation, -0.5f, -6, 3, -0.5f, -7, 20, 0)),
+    NamedScript("subwaytrain", &sidedView!(walk.isDeepParkedCar, 2.5f, -8.5f, 4, 0, -9, 16, 5)),
+    NamedScript("grove", &grove),
+    NamedScript("grovestair", &alongRoute!("grove", 10, 10)),
     NamedScript("watchtower", &landmarkFound!("base:lava", 8, 0.9f, 0.1f, 5)),
     NamedScript("towerfoot", &backedOut!("tower", 0.3f, -25)),
     NamedScript("hamletfoot", &backedOut!("hamlet", 0.2f, -8)),
@@ -950,6 +954,19 @@ void showcase(float height, double yaw, double pitch)(ref Script view) {
     view.mode(MovementMode.noclip);
     view.enterStructure(Length(height));
     view.look(degrees(yaw), degrees(pitch));
+    view.step();
+}
+
+enum float GROVE_BACK = 0.45f;
+enum float GROVE_RISE = 0.4f;
+enum double GROVE_PITCH = 20;
+
+void grove(ref Script view) {
+    view.structure("grove");
+    view.mode(MovementMode.noclip);
+    noclip(view, GROVE_BACK, Key.back);
+    noclip(view, GROVE_RISE, Key.up);
+    view.look(degrees(0), degrees(GROVE_PITCH));
     view.step();
 }
 

@@ -79,6 +79,12 @@ enum int DOOR_Z = 4;
 enum int DOOR_RUN = 5;
 enum int DEEP_RIM = -11;
 enum int SHALLOW_RIM = -6;
+enum string SUBWAY_ABANDONED_WALL = "base:wet-concrete";
+enum string SUBWAY_WINDOW = "base:glass";
+enum int SUBWAY_WALL_X = 5;
+enum int SUBWAY_WALL_Y = -2;
+enum int SUBWAY_WINDOW_X = -2;
+enum int SUBWAY_WINDOW_RISE = 3;
 immutable string[2] STREET_MATERIALS =["base:basalt", "base:white-brick"];
 immutable string[7] TOWER_MATERIALS = ["base:concrete", "base:white-brick", "base:grey-brick", "base:sandstone", "base:wood-planks", "base:steel", "base:marble"];
 immutable string[5] BACKROOMS_FLOORS = ["base:carpet", "base:damp-carpet", "base:red-carpet", "base:concrete", "base:marble"];
@@ -492,6 +498,14 @@ bool isDeepEntrance(ref Script world, Sided end) {
 
 bool isShallowStation(ref Script world, Sided end) {
     return isStation(world, end, SHALLOW_RIM);
+}
+
+bool isAbandonedStation(ref Script world, Sided end) {
+    return (isStation(world, end, DEEP_RIM) || isStation(world, end, SHALLOW_RIM)) && end.holds(world, SUBWAY_WALL_X, SUBWAY_WALL_Y, SUBWAY_MIDDLE, SUBWAY_ABANDONED_WALL);
+}
+
+bool isDeepParkedCar(ref Script world, Sided end) {
+    return end.holds(world, SUBWAY_WINDOW_X, LOWEST_BORE + SUBWAY_WINDOW_RISE, SUBWAY_MIDDLE, SUBWAY_WINDOW);
 }
 
 bool isTransfer(ref Script world, Sided end) {

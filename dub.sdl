@@ -86,8 +86,8 @@ subPackage {
 	excludedSourceFiles "web/tool/*"
 	importPaths "." "source"
 	stringImportPaths "source/shaders" "source/fonts" "."
-	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on" "-i" "--fvisibility=hidden" "--mattr=+bulk-memory,+nontrapping-fptoint,+sign-ext,+mutable-globals,+simd128"
-	lflags "--no-entry" "--stack-first" "-z" "stack-size=33554432" "--max-memory=4294901760" "--allow-undefined-file=web/imports.syms" "--export=_initialize" "--export=web_start" "--export=web_frame" "--export=web_resize" "--export=web_key_down" "--export=web_key_up" "--export=web_button" "--export=web_button_up" "--export=web_motion" "--export=web_pointer" "--export=web_capture" "--export=web_name_buffer" "--export=web_takes_keys" "--export=web_wants_lock" "--export=web_save" "--export=web_blur" "/usr/lib/wasm32-wasi/crt1-reactor.o" "-L/usr/lib/wasm32-wasi" "-lc" "-lm"
+	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on" "-i" "--fvisibility=hidden" "--mattr=+bulk-memory,+nontrapping-fptoint,+sign-ext,+mutable-globals,+simd128" "--gcc=clang" "-Xcc=--target=wasm32-wasip1" "-Xcc=-nostdlib"
+	lflags "--no-entry" "--stack-first" "-z" "stack-size=33554432" "--max-memory=4294901760" "--allow-undefined-file=web/imports.syms" "--export=_initialize" "--export=web_start" "--export=web_frame" "--export=web_resize" "--export=web_key_down" "--export=web_key_up" "--export=web_button" "--export=web_button_up" "--export=web_motion" "--export=web_pointer" "--export=web_capture" "--export=web_name_buffer" "--export=web_takes_keys" "--export=web_wants_lock" "--export=web_save" "--export=web_blur" "-L/usr/lib/wasm32-wasi" "-L/opt/homebrew/opt/wasi-libc/share/wasi-sysroot/lib/wasm32-wasip1" "-l:crt1-reactor.o" "-lc" "-lm"
 	extraDependencyFiles "web/glue.js" "web/play.js" "web/check.js" "web/shell.html" "web/imports.syms" "web/tool/pack.d" "web/tool/base64.d" "web/tool/files.d"
 	postBuildCommands "$DUB run -q --root=$PACKAGE_DIR --compiler=$DC :webpack"
 }
@@ -196,6 +196,7 @@ subPackage {
 	importPaths "."
 	stringImportPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	lflags "-Wl,-unexported_symbol,__D*" platform="osx"
 	dependency "caapi:api" version="*"
 }
 
@@ -209,6 +210,7 @@ subPackage {
 	importPaths "."
 	stringImportPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	lflags "-Wl,-unexported_symbol,__D*" platform="osx"
 	dependency "caapi:api" version="*"
 }
 
@@ -222,6 +224,7 @@ subPackage {
 	importPaths "."
 	stringImportPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	lflags "-Wl,-unexported_symbol,__D*" platform="osx"
 	dependency "caapi:api" version="*"
 }
 
@@ -235,6 +238,7 @@ subPackage {
 	importPaths "."
 	stringImportPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	lflags "-Wl,-unexported_symbol,__D*" platform="osx"
 	dependency "caapi:api" version="*"
 }
 
@@ -248,6 +252,7 @@ subPackage {
 	importPaths "."
 	stringImportPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	lflags "-Wl,-unexported_symbol,__D*" platform="osx"
 	dependency "caapi:api" version="*"
 }
 
@@ -261,6 +266,7 @@ subPackage {
 	importPaths "."
 	stringImportPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	lflags "-Wl,-unexported_symbol,__D*" platform="osx"
 	dependency "caapi:api" version="*"
 }
 
@@ -272,6 +278,7 @@ subPackage {
 	importPaths "."
 	stringImportPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	lflags "-Wl,-unexported_symbol,__D*" platform="osx"
 	dependency "caapi:api" version="*"
 }
 
@@ -283,6 +290,7 @@ subPackage {
 	importPaths "."
 	stringImportPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	lflags "-Wl,-unexported_symbol,__D*" platform="osx"
 	libs "m"
 	dependency "caapi:horospheres" version="*"
 	dependency "caapi:box" version="*"
@@ -299,6 +307,7 @@ subPackage {
 	importPaths "."
 	stringImportPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	lflags "-Wl,-unexported_symbol,__D*" platform="osx"
 	libs "m"
 	dependency "caapi:turtle" version="*"
 }
@@ -310,6 +319,7 @@ subPackage {
 	sourcePaths "plugins/city"
 	importPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	lflags "-Wl,-unexported_symbol,__D*" platform="osx"
 	libs "m"
 	dependency "caapi:horospheres" version="*"
 }
@@ -321,6 +331,7 @@ subPackage {
 	sourcePaths "plugins/backrooms"
 	importPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	lflags "-Wl,-unexported_symbol,__D*" platform="osx"
 	libs "m"
 	dependency "caapi:horospheres" version="*"
 }
@@ -332,6 +343,7 @@ subPackage {
 	sourcePaths "plugins/tower"
 	importPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	lflags "-Wl,-unexported_symbol,__D*" platform="osx"
 	libs "m"
 	dependency "caapi:box" version="*"
 }
@@ -343,6 +355,7 @@ subPackage {
 	sourcePaths "plugins/crown"
 	importPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	lflags "-Wl,-unexported_symbol,__D*" platform="osx"
 	libs "m"
 	dependency "caapi:box" version="*"
 }
@@ -355,6 +368,7 @@ subPackage {
 	importPaths "."
 	stringImportPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	lflags "-Wl,-unexported_symbol,__D*" platform="osx"
 	libs "m"
 	dependency "caapi:box" version="*"
 }
@@ -367,6 +381,7 @@ subPackage {
 	importPaths "."
 	stringImportPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	lflags "-Wl,-unexported_symbol,__D*" platform="osx"
 	libs "m"
 	dependency "caapi:connector" version="*"
 }
@@ -379,6 +394,7 @@ subPackage {
 	importPaths "."
 	stringImportPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	lflags "-Wl,-unexported_symbol,__D*" platform="osx"
 	libs "m"
 	dependency "caapi:blocks" version="*"
 }
@@ -402,6 +418,7 @@ subPackage {
 	importPaths "."
 	stringImportPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	lflags "-Wl,-unexported_symbol,__D*" platform="osx"
 	libs "m"
 	dependency "caapi:palace" version="*"
 }
@@ -414,6 +431,7 @@ subPackage {
 	importPaths "."
 	stringImportPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	lflags "-Wl,-unexported_symbol,__D*" platform="osx"
 	libs "m"
 	dependency "caapi:horospheres" version="*"
 }
@@ -437,6 +455,7 @@ subPackage {
 	importPaths "."
 	stringImportPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	lflags "-Wl,-unexported_symbol,__D*" platform="osx"
 	libs "m"
 	dependency "caapi:lattice" version="*"
 }
@@ -448,6 +467,7 @@ subPackage {
 	sourcePaths "plugins/fixtures"
 	importPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	lflags "-Wl,-unexported_symbol,__D*" platform="osx"
 	libs "m"
 	dependency "caapi:horospheres" version="*"
 	dependency "caapi:box" version="*"
@@ -480,6 +500,7 @@ subPackage {
 	importPaths "."
 	stringImportPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	lflags "-Wl,-unexported_symbol,__D*" platform="osx"
 	libs "m"
 	dependency "caapi:caves" version="*"
 }
@@ -492,6 +513,7 @@ subPackage {
 	importPaths "."
 	stringImportPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	lflags "-Wl,-unexported_symbol,__D*" platform="osx"
 	libs "m"
 	dependency "caapi:carve" version="*"
 	dependency "caapi:connector" version="*"
@@ -505,6 +527,7 @@ subPackage {
 	importPaths "."
 	stringImportPaths "."
 	dflags "-betterC" "-checkaction=halt" "--enable-asserts" "--boundscheck=on"
+	lflags "-Wl,-unexported_symbol,__D*" platform="osx"
 	libs "m"
 	dependency "caapi:blocks" version="*"
 }

@@ -20,6 +20,12 @@ kind blocks-zoning {
     route: one -> building-type
 }
 
+kind subway-palette {
+    wall: one -> material
+    band: one -> material
+    trim: one -> material
+}
+
 kind blocks-materials {
     road: one -> material
     sidewalk: one -> material
@@ -48,5 +54,15 @@ kind blocks-materials {
     railing: one -> material
     entrance: one -> material
     transfer: one -> material
-    bands: some -> material
+    stop: one -> material
+    go: one -> material
+    car: one -> material
+    window: one -> material
+    bench: one -> material
+    tablet: one -> material
+    letter: one -> material
+    rubble: one -> material
+    graffiti: some -> material
+    palettes: some -> subway-palette
+    abandoned: one -> subway-palette
 }

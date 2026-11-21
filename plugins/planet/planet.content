@@ -28,3 +28,16 @@ planet-fixtures planet:fixtures {
     trail -> base:gravel
     cairn -> base:andesite
 }
+
+grove-materials planet:grove {
+    trunk -> base:oak-wood
+    deck -> base:wood-planks
+    step -> base:spruce-wood
+    rail -> base:spruce-wood
+    vine -> base:oak-leaves
+    lantern -> base:light-panel
+    chain -> base:steel
+    hut -> base:birch-wood
+    roof -> base:red-sandstone
+    leaves -> base:oak-leaves
+}

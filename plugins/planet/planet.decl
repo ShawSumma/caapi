@@ -26,3 +26,16 @@ kind planet-fixtures {
     trail: one -> material
     cairn: one -> material
 }
+
+kind grove-materials {
+    trunk: one -> material
+    deck: one -> material
+    step: one -> material
+    rail: one -> material
+    vine: one -> material
+    lantern: one -> material
+    chain: one -> material
+    hut: one -> material
+    roof: one -> material
+    leaves: one -> material
+}

@@ -26,8 +26,25 @@ blocks-materials blocks:materials {
     railing -> base:steel
     entrance -> base:steel
     transfer -> base:acacia-wood
-    bands -> [base:red-carpet base:slate base:red-sandstone base:sandstone base:spruce-wood]
+    stop -> base:lava
+    go -> base:sunlight
+    car -> base:steel
+    window -> base:glass
+    bench -> base:wood-planks
+    tablet -> base:slate
+    letter -> base:white-brick
+    rubble -> base:gravel
+    graffiti -> [base:red-sandstone base:clay base:slate base:dolomite]
+    palettes -> [blocks:local blocks:express blocks:uptown blocks:terminal blocks:crosstown]
+    abandoned -> blocks:abandoned
 }
+
+subway-palette blocks:local { wall -> base:white-brick, band -> base:red-sandstone, trim -> base:steel }
+subway-palette blocks:express { wall -> base:white-brick, band -> base:slate, trim -> base:steel }
+subway-palette blocks:uptown { wall -> base:white-brick, band -> base:clay, trim -> base:basalt }
+subway-palette blocks:terminal { wall -> base:marble, band -> base:dolomite, trim -> base:sandstone }
+subway-palette blocks:crosstown { wall -> base:limestone, band -> base:grey-brick, trim -> base:steel }
+subway-palette blocks:abandoned { wall -> base:wet-concrete, band -> base:grey-brick, trim -> base:basalt }
 
 connector-ground blocks:ground {
     tag: "horospheres:city"

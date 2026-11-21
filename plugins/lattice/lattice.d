@@ -38,6 +38,7 @@ enum size_t MOST_WEAVES = 16;
 enum double HANG_CLEAR = 4;
 enum string LOOK = "lattice:look";
 enum size_t MOST_FLOORS = 16;
+enum Span HUT = Span(-5, 4);
 enum ulong STAR_SALT = 0x53544152;
 enum ulong STAR_ACROSS_SALT = 0x53544158;
 enum ulong STAR_SIDE_SALT = 0x53544159;
@@ -281,23 +282,51 @@ void platform(ref const End end, ref const Root root) {
     }
 }
 
+enum Decor : ubyte {
+    none,
+    lantern,
+    tree,
+    hut,
+}
+
+Decor decorOf(ulong vertex) {
+    double choice = roll(vertex, DECOR_SALT);
+    if (choice < tuning.lanternOdds) {
+        return Decor.lantern;
+    } else if (choice < tuning.treeOdds) {
+        return Decor.tree;
+    } else if (choice < tuning.hutOdds) {
+        return Decor.hut;
+    } else {
+        return Decor.none;
+    }
+}
+
 void decorate(ref const End end) {
-    double choice = roll(end.vertex, DECOR_SALT);
     Turtle frame = end.frame;
     int sign = end.sign;
-    if (choice < tuning.lanternOdds) {
-        frame.paint(materials.lantern, boxOf(Span(-2, 1), Span(-2, 1), near(sign, 3, 4)));
-    } else if (choice < tuning.treeOdds) {
-        frame.fill(materials.leaves, boxOf(Span(-4, 3), Span(-4, 3), near(sign, 3, 6)));
-        frame.fill(materials.leaves, boxOf(Span(-2, 1), Span(-2, 1), near(sign, 7, 8)));
-    } else if (choice < tuning.hutOdds) {
-        Span walls = near(sign, 1, 5);
-        frame.paint(materials.hut, boxOf(Span(-5, 4), Span(-5, -5), walls));
-        frame.paint(materials.hut, boxOf(Span(-5, 4), Span(4, 4), walls));
-        frame.paint(materials.hut, boxOf(Span(-5, -5), Span(-4, 3), walls));
-        frame.paint(materials.hut, boxOf(Span(4, 4), Span(-4, 3), walls));
-        frame.paint(Material.none, boxOf(Span(4, 4), Span(-1, 0), near(sign, 1, 3)));
-        frame.paint(materials.roof, boxOf(Span(-6, 5), Span(-6, 5), near(sign, 6, 6)));
+    final switch (decorOf(end.vertex)) {
+        case Decor.lantern:
+            frame.paint(materials.lantern, boxOf(Span(-2, 1), Span(-2, 1), near(sign, 3, 4)));
+            break;
+        case Decor.tree:
+            frame.fill(materials.leaves, boxOf(Span(-4, 3), Span(-4, 3), near(sign, 3, 6)));
+            frame.fill(materials.leaves, boxOf(Span(-2, 1), Span(-2, 1), near(sign, 7, 8)));
+            break;
+        case Decor.hut:
+            Span walls = near(sign, 1, 5);
+            Span inside = Span(HUT.low + 1, HUT.high - 1);
+            frame.paint(materials.hut, boxOf(HUT, HUT, near(sign, 0, 0)));
+            frame.paint(Material.none, boxOf(inside, inside, walls));
+            frame.paint(materials.hut, boxOf(HUT, Span(HUT.low, HUT.low), walls));
+            frame.paint(materials.hut, boxOf(HUT, Span(HUT.high, HUT.high), walls));
+            frame.paint(materials.hut, boxOf(Span(HUT.low, HUT.low), inside, walls));
+            frame.paint(materials.hut, boxOf(Span(HUT.high, HUT.high), inside, walls));
+            frame.paint(Material.none, boxOf(Span(HUT.high, HUT.high), Span(-1, 0), near(sign, 1, 3)));
+            frame.paint(materials.roof, boxOf(Span(HUT.low - 1, HUT.high + 1), Span(HUT.low - 1, HUT.high + 1), near(sign, 6, 6)));
+            break;
+        case Decor.none:
+            break;
     }
 }
 
