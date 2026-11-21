@@ -112,6 +112,7 @@ struct Well {
     Material stair;
     Material lining;
     int liningBelow;
+    WellShape shape;
 }
 
 struct Materials {
@@ -225,6 +226,12 @@ enum int WELL_ROOM = 3;
 enum int SQUARE_INNER = 2;
 enum int SQUARE_SIDES = 2;
 enum int SQUARE_TREADS = 4 * (SQUARE_SIDES + 1);
+enum int FLIGHT_TREADS = 2 * PORT - 2;
+enum int SWITCHBACK_TREADS = 2 * FLIGHT_TREADS + 2;
+enum Span SPINE = Span(-1, 0);
+enum Span FLIGHT_LOW = Span(-PORT, SPINE.low - 1);
+enum Span FLIGHT_HIGH = Span(SPINE.high + 1, PORT - 1);
+enum Span LANDING = Span(-PORT, PORT - 1);
 enum double RING_STOP = SHAFT_RADIUS + 1.5;
 immutable int[3] TUBE_STOPS = [13, 17, 21];
 immutable int[2] LINING_SIDES = [-PORT - 1, PORT];
@@ -264,6 +271,7 @@ enum Shape : ubyte {
 enum WellShape : ubyte {
     spiral,
     square,
+    switchback,
 }
 
 enum Bottom : ubyte {
@@ -1590,7 +1598,7 @@ Found well(Turtle start, Lie lie, ref const Well kind, ref const Bed bed) {
 
 void sink(Turtle mouth, int above, WellDepth depth, ref const Well kind, ref const Bed bed) {
     Flight flight = flightAt(mouth);
-    WellShape shape = shapeOf(mouth, bed);
+    WellShape shape = shapeOf(mouth, bed, kind);
     Material stair = stairOf(kind, shape);
     Turtle top = flight.frame.forward(above);
     stairDown(flight, above, stair, shape);
@@ -1635,17 +1643,18 @@ Span liningOf(ref const Well kind, ref const Bed bed, int above, int edge) {
     }
 }
 
-WellShape shapeOf(Turtle mouth, ref const Bed bed) {
+WellShape shapeOf(Turtle mouth, ref const Bed bed, ref const Well kind) {
     if (bed.mouth == Mouth.open && unitOf(mouth.probeHash(SitePart.vertex), WELL_SALT) < tuning.squareWellOdds) {
         return WellShape.square;
     } else {
-        return WellShape.spiral;
+        return kind.shape;
     }
 }
 
 Material stairOf(ref const Well kind, WellShape shape) {
     final switch (shape) {
         case WellShape.spiral:
+        case WellShape.switchback:
             return kind.stair;
         case WellShape.square:
             return materials.drain;
@@ -1677,6 +1686,9 @@ void stairDown(Flight flight, int above, Material stair, WellShape shape) {
             break;
         case WellShape.square:
             break;
+        case WellShape.switchback:
+            top.paint(stair, boxOf(SPINE, Span(-PORT + 1, PORT - 2), whole));
+            break;
     }
     int treads = treadsOf(shape);
     foreach (index; 0 .. treads) {
@@ -1691,6 +1703,8 @@ int treadsOf(WellShape shape) {
             return WELL_TREADS;
         case WellShape.square:
             return SQUARE_TREADS;
+        case WellShape.switchback:
+            return SWITCHBACK_TREADS;
     }
 }
 
@@ -1700,6 +1714,23 @@ Tread treadOf(WellShape shape, int index) {
             return wellTreadAt(index);
         case WellShape.square:
             return treadAround(SQUARE_INNER, PORT - SQUARE_INNER, SQUARE_SIDES, index);
+        case WellShape.switchback:
+            return switchbackTreadAt(index);
+    }
+}
+
+Tread switchbackTreadAt(int index) {
+    int at = floorMod(index, SWITCHBACK_TREADS);
+    if (at < FLIGHT_TREADS) {
+        int y = -PORT + 1 + at;
+        return Tread(FLIGHT_LOW, Span(y, y));
+    } else if (at == FLIGHT_TREADS) {
+        return Tread(LANDING, Span(PORT - 1, PORT - 1));
+    } else if (at < SWITCHBACK_TREADS - 1) {
+        int y = PORT - 2 - (at - FLIGHT_TREADS - 1);
+        return Tread(FLIGHT_HIGH, Span(y, y));
+    } else {
+        return Tread(LANDING, Span(-PORT, -PORT));
     }
 }
 

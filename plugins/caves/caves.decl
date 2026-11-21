@@ -31,6 +31,7 @@ kind caves-well {
     stair: one -> material
     lining: one -> material
     lining-below: integer 0.. = 0
+    shape: "spiral" | "square" | "switchback" = "spiral"
 }
 
 kind caves-materials {

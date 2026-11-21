@@ -217,6 +217,7 @@ caves-well caves:backrooms-well {
     stair -> base:concrete
     lining -> base:wet-concrete
     lining-below: 31
+    shape: switchback
 }
 
 caves-well caves:vaults-well {

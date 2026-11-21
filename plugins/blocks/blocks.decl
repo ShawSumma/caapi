@@ -48,5 +48,10 @@ kind blocks-materials {
     railing: one -> material
     entrance: one -> material
     transfer: one -> material
+    bench: one -> material
+    staff-wall: one -> material
+    staff-floor: one -> material
+    locker: one -> material
+    table: one -> material
     bands: some -> material
 }

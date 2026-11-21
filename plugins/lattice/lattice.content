@@ -24,7 +24,14 @@ lattice-materials lattice:materials {
     shelf-decks -> [base:wood-planks base:marble base:red-carpet]
     books -> [base:red-carpet base:acacia-wood base:jungle-wood base:birch-wood base:oak-wood base:carpet base:red-sandstone]
     rocks -> [base:andesite base:basalt base:gabbro base:granite base:slate base:diorite]
+    corners -> [lattice:bare-joint lattice:marble-hub lattice:lamp-hub lattice:basalt-flare lattice:steel-cage]
 }
+
+lattice-corner lattice:bare-joint { form: joint, material -> base:basalt }
+lattice-corner lattice:marble-hub { form: hub, material -> base:marble, half: 3 }
+lattice-corner lattice:lamp-hub { form: hub, material -> base:light-panel, half: 1 }
+lattice-corner lattice:basalt-flare { form: flare, material -> base:basalt, half: 4 }
+lattice-corner lattice:steel-cage { form: cage, material -> base:steel, half: 5 }
 
 lattice-weave lattice:plain { }
 lattice-weave lattice:sparse { keep: 0.55, platform-odds: 0.2, stair-odds: 0.3 }

@@ -403,17 +403,25 @@ void wall(ref Frame f, Axis axis, int at, Span span, const(int)[] doors) {
     }
 }
 
-void slab(ref const Frame f, Material material, Region area, int z) {
+void slab(ref const Frame f, Material material, Region area, Span z) {
     foreach (piece; outsideShaft(f, area).slice()) {
-        f.tower.paint(material, boxOf(piece.x, piece.y, Span(z, z)));
+        f.tower.paint(material, boxOf(piece.x, piece.y, z));
     }
 }
 
-void lid(ref const Frame f, Material material, Region area, int z) {
+void lid(ref const Frame f, Material material, Region area, Span z) {
     if (f.isTop() && f.hasWell()) {
-        f.tower.paint(material, boxOf(area.x, area.y, Span(z, z)));
+        f.tower.paint(material, boxOf(area.x, area.y, z));
     } else {
         slab(f, material, area, z);
+    }
+}
+
+Span ceilingBand(ref const Frame f) {
+    if (f.isTop()) {
+        return Span(ceilingZ(f), ceilingZ(f));
+    } else {
+        return Span(ceilingZ(f), ceilingZ(f) + SEPARATION);
     }
 }
 
@@ -430,17 +438,17 @@ Pieces bands(ref const Frame f) {
 
 void shell(ref const Frame f) {
     Region whole = Region(Span(0, f.far), Span(0, f.far));
-    slab(f, f.biome.floor, whole, f.base);
+    slab(f, f.biome.floor, whole, Span(f.base, f.base));
     foreach (piece; outsideShaft(f, whole).slice()) {
         f.tower.paint(Material.none, boxOf(piece.x, piece.y, roomZ(f)));
     }
-    lid(f, f.biome.ceiling, whole, ceilingZ(f));
+    lid(f, f.biome.ceiling, whole, ceilingBand(f));
     foreach (band; bands(f).slice()) {
-        slab(f, f.hall.floor, band, f.base);
-        lid(f, f.hall.ceiling, band, ceilingZ(f));
+        slab(f, f.hall.floor, band, Span(f.base, f.base));
+        lid(f, f.hall.ceiling, band, Span(ceilingZ(f), ceilingZ(f)));
     }
     if (f.isTop()) {
-        lid(f, rooms.roof, whole, ceilingZ(f) + ROOF);
+        lid(f, rooms.roof, whole, Span(ceilingZ(f) + ROOF, ceilingZ(f) + ROOF));
     } else if (f.hasShaft()) {
         f.tower.paint(Material.none, boxOf(Span(0, SHAFT), Span(0, SHAFT), Span(f.base, ceilingZ(f) + SEPARATION)));
     }
@@ -721,12 +729,18 @@ struct Maze {
     void open(ref const Frame f, Cell a, Cell b) {
         exits[mazeKey(a.x, a.y)] += 1;
         exits[mazeKey(b.x, b.y)] += 1;
+        Box gap = mazeGap(f, Axis.y, lowerOf(a.y, b.y), a.x);
         if (a.x != b.x) {
-            f.tower.paint(Material.none, mazeGap(f, Axis.x, lowerOf(a.x, b.x), a.y));
-        } else {
-            f.tower.paint(Material.none, mazeGap(f, Axis.y, lowerOf(a.y, b.y), a.x));
+            gap = mazeGap(f, Axis.x, lowerOf(a.x, b.x), a.y);
+        }
+        if (!isInShaft(f, gap)) {
+            f.tower.paint(Material.none, gap);
         }
     }
+}
+
+bool isInShaft(ref const Frame f, Box box) {
+    return isShaft(f, box.low.x, box.low.y) && isShaft(f, box.high.x, box.high.y);
 }
 
 void maze(ref Frame f, ref const Doors[4] lines) {
@@ -783,7 +797,9 @@ void maze(ref Frame f, ref const Doors[4] lines) {
     if (roomy) {
         int i = f.tower.pickBetween(0, cells - 2);
         int j = f.tower.pickBetween(0, cells - 2);
-        f.tower.paint(Material.none, boxOf(Span(mazeSpan(f, i).low, mazeSpan(f, i + 1).high), Span(mazeSpan(f, j).low, mazeSpan(f, j + 1).high), roomZ(f)));
+        if (!isShaft(f, mazeSpan(f, i).low, mazeSpan(f, j).low)) {
+            f.tower.paint(Material.none, boxOf(Span(mazeSpan(f, i).low, mazeSpan(f, i + 1).high), Span(mazeSpan(f, j).low, mazeSpan(f, j + 1).high), roomZ(f)));
+        }
     }
     foreach (side; SIDES) {
         Axis axis = axisOf(side);
@@ -806,7 +822,7 @@ void maze(ref Frame f, ref const Doors[4] lines) {
             if (lit) {
                 light(f, f.biome.light, x.low, y.low);
             }
-            if (carved.exits[mazeKey(i, j)] == 1) {
+            if (carved.exits[mazeKey(i, j)] == 1 && !isShaft(f, x.low, y.low)) {
                 bool nowhere = rollChance(f, f.biome.nowhere);
                 if (nowhere) {
                     foreach (step; 1 .. NOWHERE_STEPS + 1) {

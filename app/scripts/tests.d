@@ -193,7 +193,7 @@ immutable NamedScript[] TESTS = [
     NamedScript("structure/backroomscaves", &caveStack!("backrooms", 3.85f, "base:lava", "base:glass", "Under the backrooms the caves four edges down are a boiler room: lava lies in the chamber a well passes there, and none of the glass beams an open cave has at that depth.")),
     NamedScript("structure/vaultscaves", &caveStack!("vaults", 2.85f, "base:red-sandstone", "base:silty-loam", "Under the vaults the caves three edges down are a reliquary: red sandstone is laid in the floor of the chamber a well passes there, and none of the loam an open cave has at that depth.")),
     NamedScript("structure/wellstair", &structureWellStair),
-    NamedScript("structure/wellflight", &wellFlight!("backrooms", "base:concrete")),
+    NamedScript("structure/wellflight", &switchbackFlight!("backrooms", "base:concrete")),
     NamedScript("structure/vaultwellflight", &wellFlight!("vaults", "base:marble")),
     NamedScript("structure/citywellflight", &wellFlight!("city", "base:steel")),
     NamedScript("structure/wildwellflight", &wildWellFlight!("base:spruce-wood")),    NamedScript("structure/latticeflight", &structureLatticeFlight),
@@ -678,7 +678,7 @@ void biologyWildTide(ref Script world) {
     Eaten thornbush = eatWild(world, "base:thornbush", TIDE_FAMILY, Route.ingested, 1);
     Eaten moss = eatWild(world, "base:moss", TIDE_FAMILY, Route.ingested, 1);
     Eaten fern = eatWild(world, "base:fern", TIDE_FAMILY, Route.ingested, 1);
-    world.link(Topic.body, Topic.perception, "Some wild strains of mushroom cap show tide when one is eaten, and no wild strain of thornbush, moss or fern does.", mushroom.shown > 0 && thornbush.shown == 0 && moss.shown == 0 && fern.shown == 0, Measure.of("wild strains tried of each", WILD_FLOWERS), Measure.of("mushroom caps that showed tide", mushroom.shown), Measure.of("thornbush", thornbush.shown), Measure.of("its highest tide level", thornbush.best), Measure.of("moss", moss.shown), Measure.of("fern", fern.shown));
+    world.link(Topic.body, Topic.perception, "Some wild strains of mushroom cap show tide when one is eaten, and no wild strain of thornbush, moss or fern does.", mushroom.shown > 0 && thornbush.shown == 0 && moss.shown == 0 && fern.shown == 0, Measure.of("wild strains tried of each", WILD_FLOWERS), Measure.of("mushroom caps that showed tide", mushroom.shown), Measure.of("their highest tide level", mushroom.best), Measure.of("revealed above", REVEAL_ON_LEVEL), Measure.of("thornbush", thornbush.shown), Measure.of("its highest tide level", thornbush.best), Measure.of("moss", moss.shown), Measure.of("fern", fern.shown));
 }
 
 void biologyWildMist(ref Script world) {
@@ -3897,6 +3897,110 @@ void checkFlight(ref Script world, string stair) {
 void wellFlight(string name, string stair)(ref Script world) {
     world.structure(name);
     checkFlight(world, stair);
+}
+
+enum int SHAFT_SIDE = 2 * walk.SHAFT_HALF;
+
+struct ShaftCells {
+    bool[SHAFT_SIDE][SHAFT_SIDE] stair;
+
+    uint count() const {
+        uint found = 0;
+        foreach (x; 0 .. SHAFT_SIDE) {
+            foreach (y; 0 .. SHAFT_SIDE) {
+                if (stair[x][y]) {
+                    found += 1;
+                }
+            }
+        }
+        return found;
+    }
+}
+
+ShaftCells shaftCellsAt(ref Script world, SiteFrame up, Material stair, int z) {
+    ShaftCells read;
+    world.game.generateWithin(walk.cellPosition(world, up, 0, 0, z), Length(walk.TREAD_REACH_CELLS * world.game.blockLength().value));
+    foreach (x; 0 .. SHAFT_SIDE) {
+        foreach (y; 0 .. SHAFT_SIDE) {
+            Maybe!Material held = walk.generatedAt(world, walk.cellPosition(world, up, x - walk.SHAFT_HALF, y - walk.SHAFT_HALF, z));
+            read.stair[x][y] = held.exists && held.value == stair;
+        }
+    }
+    return read;
+}
+
+ShaftCells treadBetween(ref const ShaftCells over, ref const ShaftCells mid, ref const ShaftCells under) {
+    ShaftCells tread;
+    foreach (x; 0 .. SHAFT_SIDE) {
+        foreach (y; 0 .. SHAFT_SIDE) {
+            tread.stair[x][y] = mid.stair[x][y] && !over.stair[x][y] && !under.stair[x][y];
+        }
+    }
+    return tread;
+}
+
+bool isBeside(ref const ShaftCells cells, int x, int y) {
+    return x >= 0 && x < SHAFT_SIDE && y >= 0 && y < SHAFT_SIDE && cells.stair[x][y];
+}
+
+bool isNextTread(ref const ShaftCells above, ref const ShaftCells below) {
+    uint overlap = 0;
+    uint touching = 0;
+    foreach (x; 0 .. SHAFT_SIDE) {
+        foreach (y; 0 .. SHAFT_SIDE) {
+            if (below.stair[x][y] && above.stair[x][y]) {
+                overlap += 1;
+            }
+            if (below.stair[x][y] && (isBeside(above, x - 1, y) || isBeside(above, x + 1, y) || isBeside(above, x, y - 1) || isBeside(above, x, y + 1))) {
+                touching += 1;
+            }
+        }
+    }
+    return above.count() > 0 && below.count() > 0 && overlap == 0 && touching > 0;
+}
+
+void switchbackFlight(string name, string stair)(ref Script world) {
+    world.structure(name);
+    Maybe!SiteFrame port = walk.ensurePortSite(world);
+    world.check(port.exists, "found no port among the vertices nearest the world's root");
+    if (!world.isFailed) {
+        Graph* graph = &world.game.world.graph;
+        SiteFrame up = graph.view.turnSite(port.value, Turn.pitchUp);
+        int cells = edgeCells(graph.layout.dimension);
+        int deepest = FLIGHT_EDGES * cells;
+        if (!graph.horospheres.crustOf(ROOT).isBottomless()) {
+            float crust = graph.view.ensureUndersideAt(ROOT, walk.ensureVertex(*graph, port.value)) / graph.view.edgeOf();
+            deepest = lowerOf(deepest, cast(int)(crust * cells));
+        }
+        Material material = materialNamed(stair);
+        ShaftCells over = shaftCellsAt(world, up, material, -1);
+        ShaftCells mid = shaftCellsAt(world, up, material, -2);
+        ShaftCells previous;
+        uint read = 0;
+        uint broken = 0;
+        int firstBroken = 0;
+        uint brokenCells = 0;
+        uint brokenAbove = 0;
+        int z = -2;
+        while (z > -deepest) {
+            ShaftCells under = shaftCellsAt(world, up, material, z - 1);
+            ShaftCells tread = treadBetween(over, mid, under);
+            if (read > 0 && !isNextTread(previous, tread)) {
+                if (broken == 0) {
+                    firstBroken = -z;
+                    brokenCells = tread.count();
+                    brokenAbove = previous.count();
+                }
+                broken += 1;
+            }
+            previous = tread;
+            read += 1;
+            over = mid;
+            mid = under;
+            z -= 1;
+        }
+        world.claim(Topic.structures, "A switchback well's stair is one flight of straight runs: going down its shaft a cell at a time through the rock, each tread is new cells beside the tread above it, across the joints between the edges it is painted in.", broken == 0, Measure.of("stair", stair), Measure.of("treads read", read), Measure.of("treads not beside the one above", broken), Measure.of("first of them this many cells down", firstBroken), Measure.of("tread cells there", brokenCells), Measure.of("tread cells above it", brokenAbove));
+    }
 }
 
 void wildWellFlight(string stair)(ref Script world) {

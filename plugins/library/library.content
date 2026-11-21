@@ -30,10 +30,88 @@ library-materials library:materials {
     staff-wall -> base:wallpaper
     catalog -> pharmacology:catalog
     pipe -> base:steel
+    crypt -> base:sandstone
     floors -> [base:wood-planks base:spruce-wood base:marble base:red-carpet]
     books -> [base:red-carpet base:acacia-wood base:jungle-wood base:birch-wood base:oak-wood base:carpet base:red-sandstone]
-    rooms -> [library:reading-room library:childrens-corner library:meeting-room library:carrels library:office library:narrow-stacks library:stairs-down library:storage library:boiler-room library:archive library:deep-stacks library:stairs-deeper]
+    loculi -> [base:marble base:limestone base:white-brick]
+    rooms -> [library:reading-room library:childrens-corner library:meeting-room library:carrels library:office library:narrow-stacks library:stairs-down library:storage library:boiler-room library:archive library:deep-stacks library:stairs-deeper library:reading-cell library:archive-cell library:reliquary library:press-cell library:arcosolium library:ossuary library:crypt-chapel]
 }
+
+library-room library:reading-cell {
+    weight: 3
+    level: niche
+    wall -> base:spruce-wood
+    floor -> base:wood-planks
+    light -> base:light-panel
+    pieces -> [library:cell-desk library:cell-pamphlet library:cell-shelf library:cell-books]
+}
+
+library-room library:archive-cell {
+    weight: 3
+    level: niche
+    wall -> base:plaster
+    floor -> base:slate
+    light -> base:light-panel
+    pieces -> [library:cell-shelf library:cell-books library:cell-back-shelf library:cell-back-books]
+}
+
+library-room library:reliquary {
+    weight: 1
+    level: niche
+    wall -> base:marble
+    floor -> base:red-carpet
+    pieces -> [library:plinth library:relic]
+}
+
+library-room library:press-cell {
+    weight: 1
+    level: niche
+    wall -> base:plaster
+    floor -> base:wood-planks
+    light -> base:light-panel
+    pieces -> [library:cell-desk library:cell-press library:cell-shelf library:cell-books]
+}
+
+library-room library:arcosolium {
+    weight: 3
+    level: crypt
+    wall -> base:sandstone
+    floor -> base:sandstone
+    pieces -> [library:tomb library:votive]
+}
+
+library-room library:ossuary {
+    weight: 2
+    level: crypt
+    wall -> base:sandstone
+    floor -> base:limestone
+    pieces -> [library:bones-along library:bones-across library:votive]
+}
+
+library-room library:crypt-chapel {
+    weight: 1
+    level: crypt
+    wall -> base:marble
+    floor -> base:marble
+    light -> base:light-panel
+    pieces -> [library:altar library:altar-pamphlet]
+}
+
+library-piece library:cell-desk { material -> base:oak-wood, x: 1, y: 3, wide: 2 }
+library-piece library:cell-pamphlet { material -> game:pamphlet, x: 1, y: 3, z: 2 }
+library-piece library:cell-press { material -> pharmacology:press, x: 2, y: 3 }
+library-piece library:cell-shelf { material -> base:spruce-wood, x: 3, y: 1, deep: 2, tall: 4 }
+library-piece library:cell-books { x: 3, y: 1, deep: 2, z: 2, tall: 2 }
+library-piece library:cell-back-shelf { material -> base:spruce-wood, x: 1, y: 3, wide: 2, tall: 4 }
+library-piece library:cell-back-books { x: 1, y: 3, wide: 2, z: 2, tall: 2 }
+library-piece library:plinth { material -> base:marble, x: 2, y: 2 }
+library-piece library:relic { material -> base:light-panel, x: 2, y: 2, z: 2 }
+library-piece library:tomb { material -> base:marble, x: 1, y: 3, wide: 3, tall: 2 }
+library-piece library:votive { material -> base:light-panel, x: 3, y: 1 }
+library-piece library:bones-along { material -> base:white-brick, x: 1, y: 3, wide: 3, tall: 3 }
+library-piece library:bones-across { material -> base:white-brick, x: 3, y: 1, deep: 2, tall: 3 }
+library-piece library:altar { material -> base:marble, x: 2, y: 3 }
+library-piece library:altar-pamphlet { material -> game:pamphlet, x: 2, y: 3, z: 2 }
 
 library-room library:reading-room {
     weight: 3

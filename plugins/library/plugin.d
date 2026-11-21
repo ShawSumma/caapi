@@ -6,7 +6,7 @@ import plugins.api.binding : List, bound, settingsOf;
 import plugins.api.content : BASE, Content, Dependency, FIRST_VERSION, Manifest, dependencyOn;
 import blocks = plugins.blocks.blocks;
 import plugins.connector.connector : Connection, HALF_WIDTH, Routing, Style, footTile, resolveConnector;
-import plugins.turtle.turtle : Along, Cell, EVERY_HEIGHT, Offset, Rows, STAIR_HEADROOM, TURN_TREADS, Turtle, boxOf, cornersOf, floorDiv, floorMod, higherOf, line, lowerOf, mixed, onWedge, ringRows, roll, treadSpan, upright, wedgeRows;
+import plugins.turtle.turtle : Along, Cell, EVERY_HEIGHT, Offset, Rows, STAIR_HEADROOM, TURN_TREADS, Turtle, boxOf, cornersOf, floorDiv, floorMod, higherOf, line, lowerOf, mixed, negated, onWedge, ringRows, roll, treadSpan, upright, wedgeRows;
 
 enum string LOOK = "library:look";
 
@@ -87,10 +87,23 @@ enum ulong ROOM_SALT = 0x6C62272E;
 enum ulong ROOM_PICK_SALT = 0x07BB0142;
 enum ulong ROOM_LOOP_SALT = 0x62B82175;
 enum ulong ROOM_DOOR_SALT = 0x6A5D39EA;
+enum ulong SIDE_SALT = 0x51DE0000;
+enum int SIDE_WALL = 7;
+enum int SIDE_EDGE = 11;
+enum Span SIDE = Span(SIDE_WALL + 1, SIDE_EDGE - 1);
+immutable Cell[4] SIDE_SIGNS = [Cell(1, 1), Cell(1, -1), Cell(-1, 1), Cell(-1, -1)];
+immutable Rhythm LOCULI = Rhythm(STORY, 2, 2);
 
 enum Level : ubyte {
     main,
     basement,
+    niche,
+    crypt,
+}
+
+enum Zone : ubyte {
+    stacks,
+    catacombs,
 }
 
 enum Descent : ubyte {
@@ -138,8 +151,10 @@ struct Materials {
     Material staffWall;
     Material catalog;
     Material pipe;
+    Material crypt;
     List!(Material, MOST_CHOICES) floors;
     List!(Material, MOST_CHOICES) books;
+    List!(Material, MOST_CHOICES) loculi;
     List!(Room, MOST_ROOMS) rooms;
 }
 
@@ -166,6 +181,8 @@ struct Tuning {
     double roomOdds;
     double basementRoomOdds;
     double roomLoopOdds;
+    double nicheOdds;
+    int stackEdges;
 }
 
 __gshared Tuning tuning;
@@ -323,11 +340,17 @@ double roomOddsOf(Level level) {
             return tuning.roomOdds;
         case Level.basement:
             return tuning.basementRoomOdds;
+        case Level.niche:
+        case Level.crypt:
+            return tuning.nicheOdds;
     }
 }
 
 MaybeIndex!Room roomAt(ulong hash, int story) {
-    Level level = levelOf(story);
+    return roomIn(hash, levelOf(story), story);
+}
+
+MaybeIndex!Room roomIn(ulong hash, Level level, int story) {
     const(Room)[] rooms = materials.rooms.slice();
     double total = 0;
     foreach (ref room; rooms) {
@@ -630,6 +653,88 @@ void shelving(Turtle tower, Span z) {
     }
 }
 
+void catacomb(Turtle tower, Span z) {
+    Rows wall = ringRows(tower.column(), SHELF, RIM);
+    tower.paintRows(materials.crypt, wall, z);
+    foreach (row; wall.slice()) {
+        Material slab = materials.loculi.items[tower.pick(materials.loculi.count)];
+        tower.paint(slab, boxOf(row.x, Span(row.y, row.y), z), LOCULI);
+    }
+}
+
+Zone zoneOf(int segment) {
+    if (segment > -tuning.stackEdges) {
+        return Zone.stacks;
+    } else {
+        return Zone.catacombs;
+    }
+}
+
+Level sideLevelOf(Zone zone) {
+    final switch (zone) {
+        case Zone.stacks:
+            return Level.niche;
+        case Zone.catacombs:
+            return Level.crypt;
+    }
+}
+
+Span placed(int sign, Span span) {
+    if (sign > 0) {
+        return span;
+    } else {
+        return negated(span);
+    }
+}
+
+void sideBox(Turtle tower, Material material, Cell sign, Span x, Span y, Span z) {
+    tower.paint(material, boxOf(placed(sign.x, x), placed(sign.y, y), z));
+}
+
+void sideRoom(Turtle tower, ref const Room made, int floor, Cell sign) {
+    Span shell = Span(SIDE_WALL, SIDE_EDGE);
+    Span door = Span(floor + 1, floor + ROOM_DOOR_TOP);
+    sideBox(tower, made.wall, sign, shell, shell, Span(floor, floor + CEILING_AT));
+    sideBox(tower, Material.none, sign, SIDE, SIDE, Span(floor + 1, floor + CEILING_AT - 1));
+    if (made.floor != Material.none) {
+        sideBox(tower, made.floor, sign, SIDE, SIDE, Span(floor, floor));
+    }
+    sideBox(tower, Material.none, sign, Span(SIDE_WALL, SIDE_WALL), Span(SIDE_WALL, SIDE.low), door);
+    sideBox(tower, Material.none, sign, Span(SIDE.low, SIDE.low), Span(SIDE_WALL, SIDE_WALL), door);
+    foreach (ref piece; made.pieces.slice()) {
+        int x = SIDE_WALL + piece.x;
+        int y = SIDE_WALL + piece.y;
+        if (x <= SIDE.high && y <= SIDE.high) {
+            Material material = piece.material;
+            if (material == Material.none) {
+                material = bookOf(tower);
+            }
+            Span z = Span(floor + piece.z, lowerOf(floor + piece.z + piece.tall - 1, floor + CEILING_AT - 1));
+            sideBox(tower, material, sign, Span(x, lowerOf(x + piece.wide - 1, SIDE.high)), Span(y, lowerOf(y + piece.deep - 1, SIDE.high)), z);
+        }
+    }
+    if (made.light != Material.none) {
+        int middle = (SIDE.low + SIDE.high) / 2;
+        sideBox(tower, made.light, sign, Span(middle, middle), Span(middle, middle), Span(floor + CEILING_AT, floor + CEILING_AT));
+    }
+}
+
+void sideRooms(Turtle tower, Zone zone, Span z) {
+    ulong hash = tower.probeHash(SitePart.vertex);
+    foreach (story; 0 .. tower.edgeCells() / STORY) {
+        int floor = story * STORY;
+        if (floor >= z.low && floor + CEILING_AT <= z.high) {
+            foreach (index, sign; SIDE_SIGNS) {
+                ulong own = mixed(hash, SIDE_SALT + story * SIDE_SIGNS.length + index);
+                MaybeIndex!Room chosen = roomIn(own, sideLevelOf(zone), 0);
+                if (chosen.exists) {
+                    sideRoom(tower, materials.rooms.items[chosen.value], floor, sign);
+                }
+            }
+        }
+    }
+}
+
 void descent(Turtle tower, int lastTread) {
     Rows[TURN_TREADS] treads = wedgeRows(tower.column(), WELL, STAIR_OUT);
     foreach (at; -STAIR_HEADROOM .. lastTread + 1) {
@@ -674,8 +779,17 @@ void stacksDown(Turtle tower, int segment, int length, Ends ends, Material floor
     Span slab = Span(higherOf(BOTTOM, bottom), top);
     if (deep.low <= deep.high) {
         Span z = Span(deep.low - bottom, deep.high - bottom);
+        Zone zone = zoneOf(segment);
         stories(tower, SHELF, z, floor);
-        shelving(tower, z);
+        final switch (zone) {
+            case Zone.stacks:
+                shelving(tower, z);
+                break;
+            case Zone.catacombs:
+                catacomb(tower, z);
+                break;
+        }
+        sideRooms(tower, zone, z);
     }
     if (slab.low <= slab.high) {
         stories(tower, EVERYWHERE, Span(slab.low - bottom, slab.high - bottom), floor);

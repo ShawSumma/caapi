@@ -4,7 +4,7 @@ import core.stdc.math : fabs, sqrt;
 import plugins.api.api : Api, Box, KindTag, Material, Rhythm, Risen, Site, SitePart, Span, tagNamed;
 import plugins.api.binding : List, bound, settingsOf;
 import plugins.api.content : Content;
-import plugins.turtle.turtle : Along, FACE_CORNERS, Flight, Found, Lie, Tread, Turtle, boxOf, cornersOf, flightAt, floorMod, lowerOf, mixed, roll, strongestAround, treadAround, upright, wound;
+import plugins.turtle.turtle : Along, FACE_CORNERS, Flight, Found, Lie, Tread, Turtle, boxOf, cornersOf, flightAt, floorMod, higherOf, lowerOf, mixed, roll, strongestAround, treadAround, upright, wound;
 
 enum int BEAM = 1;
 enum int PLATFORM = 6;
@@ -38,6 +38,8 @@ enum size_t MOST_WEAVES = 16;
 enum double HANG_CLEAR = 4;
 enum string LOOK = "lattice:look";
 enum size_t MOST_FLOORS = 16;
+enum size_t MOST_CORNERS = 8;
+enum ulong DISTRICT_SALT = 0x44495354;
 enum ulong STAR_SALT = 0x53544152;
 enum ulong STAR_ACROSS_SALT = 0x53544158;
 enum ulong STAR_SIDE_SALT = 0x53544159;
@@ -80,6 +82,24 @@ enum Pattern : ubyte {
     regular,
 }
 
+enum CornerForm : ubyte {
+    joint,
+    hub,
+    flare,
+    cage,
+}
+
+struct Corner {
+    CornerForm form;
+    Material material;
+    int half;
+}
+
+enum Corners : ubyte {
+    joints,
+    districts,
+}
+
 struct Weave {
     int beam;
     double keep;
@@ -114,6 +134,7 @@ struct Materials {
     List!(Material, MOST_FLOORS) shelfDecks;
     List!(Material, MOST_FLOORS) books;
     List!(Material, MOST_FLOORS) rocks;
+    List!(Corner, MOST_CORNERS) corners;
 }
 
 __gshared Materials materials;
@@ -344,7 +365,75 @@ End endAt(Turtle frame, int sign) {
 }
 
 void edge(const(Api)* api, Site site, const(Risen)* risen, const(void)* data) {
-    beam(Turtle(api, site), *cast(const(Root)*) data, materials.weaves.items[0]);
+    beam(Turtle(api, site), *cast(const(Root)*) data, materials.weaves.items[0], Corners.districts);
+}
+
+ulong districtOf(Turtle frame) {
+    ulong strongest = mixed(frame.probeHash(SitePart.vertex), DISTRICT_SALT);
+    foreach (axis; AXES) {
+        foreach (sign; SIGNS) {
+            strongest = higherOf(strongest, mixed(along(frame, axis, sign).forward(1).probeHash(SitePart.vertex), DISTRICT_SALT));
+        }
+    }
+    return strongest;
+}
+
+Corner cornerAt(ref const End end, ref const Root root, ref const Weave weave, Corners corners, Span cross) {
+    Corner joint = Corner(CornerForm.joint, materials.joint, cross.high + 1);
+    final switch (corners) {
+        case Corners.joints:
+            return joint;
+        case Corners.districts:
+            bool raised = probePlatform(end, root, weave);
+            if (raised) {
+                return joint;
+            } else {
+                return materials.corners.items[districtOf(end.frame) % materials.corners.count];
+            }
+    }
+}
+
+bool isCornerPainter(ref const End end, Corners corners) {
+    final switch (corners) {
+        case Corners.joints:
+            return true;
+        case Corners.districts:
+            return end.vertical == Axis.z;
+    }
+}
+
+void paintCorner(ref const End end, Corner corner, Span cross) {
+    Span wide = Span(-corner.half, corner.half - 1);
+    final switch (corner.form) {
+        case CornerForm.joint:
+            end.frame.fill(corner.material, boxOf(cross, cross, near(end.sign, 0, 0)));
+            break;
+        case CornerForm.hub:
+            end.frame.fill(corner.material, boxOf(wide, wide, near(end.sign, 0, corner.half - 1)));
+            break;
+        case CornerForm.flare:
+            foreach (step; 0 .. corner.half) {
+                Span taper = Span(step - corner.half, corner.half - step - 1);
+                end.frame.fill(corner.material, boxOf(taper, taper, near(end.sign, step, step)));
+            }
+            break;
+        case CornerForm.cage:
+            Span ring = near(end.sign, corner.half - 1, corner.half - 1);
+            Span inside = Span(1 - corner.half, corner.half - 2);
+            end.frame.fill(materials.joint, boxOf(cross, cross, near(end.sign, 0, 0)));
+            end.frame.fill(corner.material, boxOf(wide, Span(wide.low, wide.low), ring));
+            end.frame.fill(corner.material, boxOf(wide, Span(wide.high, wide.high), ring));
+            end.frame.fill(corner.material, boxOf(Span(wide.low, wide.low), inside, ring));
+            end.frame.fill(corner.material, boxOf(Span(wide.high, wide.high), inside, ring));
+            Span post = near(end.sign, 0, corner.half - 2);
+            int[2] sides = [wide.low, wide.high];
+            foreach (x; sides) {
+                foreach (y; sides) {
+                    end.frame.fill(corner.material, boxOf(Span(x, x), Span(y, y), post));
+                }
+            }
+            break;
+    }
 }
 
 const(Weave)* weaveAt(Turtle start) {
@@ -394,13 +483,13 @@ bool isKept(Turtle start, ref const Weave weave) {
     return weave.keep >= 1 || roll(start.probeHash(SitePart.edge), KEEP_SALT) < weave.keep;
 }
 
-void beam(Turtle start, ref const Root root, ref const Weave weave) {
+void beam(Turtle start, ref const Root root, ref const Weave weave, Corners corners) {
     if (isKept(start, weave)) {
-        lay(start, root, weave);
+        lay(start, root, weave, corners);
     }
 }
 
-void lay(Turtle start, ref const Root root, ref const Weave weave) {
+void lay(Turtle start, ref const Root root, ref const Weave weave, Corners corners) {
     int length = start.edgeCells();
     Span cross = Span(-weave.beam, weave.beam - 1);
     End[2] ends = [endAt(start, 1), endAt(start.forward(1), -1)];
@@ -419,8 +508,11 @@ void lay(Turtle start, ref const Root root, ref const Weave weave) {
         Span beside = Span(weave.beam + DOUBLE_GAP, 2 * weave.beam + DOUBLE_GAP - 1);
         start.fill(strut.material, boxOf(beside, cross, strut.length));
     }
-    start.fill(materials.joint, boxOf(cross, cross, Span(0, 0)));
-    start.fill(materials.joint, boxOf(cross, cross, Span(length - 1, length - 1)));
+    foreach (end; ends) {
+        if (isCornerPainter(end, corners)) {
+            paintCorner(end, cornerAt(end, root, weave, corners, cross), cross);
+        }
+    }
     if (strut.stair == Found.some) {
         bool climbs(ulong edge) {
             return isClimbed(edge, weave);
@@ -454,7 +546,7 @@ void hang(Turtle start, Lie lie, double abyss) {
     }
     if (open && (lie.near > bottom || lie.far > bottom)) {
         Root root;
-        beam(start, root, *weaveAt(start));
+        beam(start, root, *weaveAt(start), Corners.joints);
     }
 }
 

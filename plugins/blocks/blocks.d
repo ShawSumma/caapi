@@ -17,6 +17,18 @@ enum ulong DEPTH_SALT = 0x44455054;
 enum ulong STATION_SALT = 0x53544154;
 enum ulong BAND_SALT = 0x42414E44;
 enum ulong CORNER_SALT = 0x434F524E;
+enum ulong STAFF_SALT = 0x53544146;
+enum ulong SHORT_SALT = 0x53484F52;
+enum Span SHORT_STATION = Span(9, 14);
+enum Span STAFF_ROOM = Span(7, 10);
+enum Span STAFF_ALONG = Span(9, 14);
+enum Span STAFF_DOOR = Span(11, 12);
+enum int STAFF_HEADROOM = 3;
+enum Span LOCKERS = Span(10, 13);
+enum Span STAFF_TABLE = Span(10, 11);
+enum int STAFF_LAMP = 12;
+immutable int[2] BENCH_ROWS = [4, -5];
+enum Rhythm BENCHES = Rhythm(4, 1, 2);
 enum double CORNER_ODDS = 0.5;
 enum int DEEP_BED = -12;
 enum int SHALLOW_BED = -8;
@@ -66,6 +78,7 @@ enum Span FAR_SIDEWALK = Span(-4, -3);
 enum int FRONT = 4;
 enum int CROSSING = 1;
 enum int TREE_SPACING = 8;
+enum int CROWN_PHASE = 4;
 enum int CURB = SIDEWALK.low;
 enum int PARKING_SPACING = 3;
 enum int CROWN_ROOM = 10;
@@ -121,6 +134,8 @@ struct Tuning {
     uint alleyPercent;
     double stationOdds;
     double deepOdds;
+    double staffOdds;
+    double shortOdds;
 }
 
 __gshared Tuning tuning;
@@ -169,6 +184,11 @@ struct Materials {
     Material railing;
     Material entrance;
     Material transfer;
+    Material bench;
+    Material staffWall;
+    Material staffFloor;
+    Material locker;
+    Material table;
     List!(Material, MOST_BANDS) bands;
 }
 
@@ -329,9 +349,9 @@ void sidewalk(Turtle edge, Span x, int startGap, int endGap) {
     edge.paint(materials.sidewalk, boxOf(x, Span(-1, 0), Span(startGap, edge.edgeCells() - 1 - endGap)));
 }
 
-void streetTrees(Turtle edge) {
+void streetTrees(Turtle edge, int clear) {
     int last = edge.edgeCells() - 1;
-    Span planted = Span(CROSSING + 4, last - CROSSING - 4);
+    Span planted = Span(higherOf(CROSSING + 4, clear + floorMod(CROWN_PHASE - clear, TREE_SPACING)), last - CROSSING - 4);
     Rhythm trunk = Rhythm(TREE_SPACING, 6, 1);
     edge.paint(materials.leaves, boxOf(Span(CURB - 1, CURB + 1), Span(5, 6), planted), Rhythm(TREE_SPACING, 4, 5));
     edge.paint(materials.leaves, boxOf(Span(CURB - 1, CURB + 1), Span(7, 7), planted), Rhythm(TREE_SPACING, 5, 3));
@@ -416,7 +436,11 @@ void street(Turtle edge, ref const Root root) {
     }
     bool trees = probeTrees(edge);
     if (trees) {
-        streetTrees(edge);
+        int clear = 0;
+        if (hasEntrance(edge, start)) {
+            clear = entranceBeyond(depthOf(edge)) + 1;
+        }
+        streetTrees(edge, clear);
     }
     subway(edge, start, finish);
 }
@@ -512,8 +536,19 @@ bool isContinued(ref const End end) {
     return end.marks.has(EndMark.onward) && !end.isClosed() && !end.isCrossed() && stopOf(end.frame.forward(-1)) == Stop.station;
 }
 
-Span stationOf(ref const End start, ref const End finish, int last) {
+bool isShort(Turtle edge, Depth depth) {
+    return depth == Depth.shallow && roll(edge.probeHash(SitePart.edge), SHORT_SALT) < tuning.shortOdds;
+}
+
+bool hasStaffRoom(Turtle edge) {
+    return roll(edge.probeHash(SitePart.edge), STAFF_SALT) < tuning.staffOdds;
+}
+
+Span stationOf(Turtle edge, Depth depth, ref const End start, ref const End finish, int last) {
     Span walls = STATION_ALONG;
+    if (isShort(edge, depth)) {
+        walls = SHORT_STATION;
+    }
     if (isContinued(start)) {
         walls.low = 0;
     }
@@ -541,7 +576,7 @@ void subway(Turtle edge, ref const End start, ref const End finish) {
     int last = edge.edgeCells() - 1;
     Span along = Span(clearingAt(start), last - clearingAt(finish));
     Span walls = Span(higherOf(along.low, SHELL_END), lowerOf(along.high, last - SHELL_END));
-    Span station = stationOf(start, finish, last);
+    Span station = stationOf(edge, depth, start, finish, last);
     edge.paint(materials.tunnel, boxOf(BORE_SHELL, Span(bed, lowerOf(bed + LEVEL, UNDER_STREET)), walls));
     final switch (stop) {
         case Stop.passing:
@@ -565,6 +600,9 @@ void subway(Turtle edge, ref const End start, ref const End finish) {
             break;
         case Stop.station:
             fittings(edge, depth, insideOf(station, last), materials.bands.items[mixed(edge.probeHash(SitePart.line), BAND_SALT) % materials.bands.count]);
+            if (hasStaffRoom(edge)) {
+                staffRoom(edge, depth);
+            }
             stationEnd(start, depth);
             stationEnd(finish, depth);
             break;
@@ -586,6 +624,9 @@ void fittings(Turtle edge, Depth depth, Span inside, Material band) {
     foreach (rim; RIMS) {
         edge.paint(materials.platformEdge, boxOf(rim, Span(platform, platform), inside));
     }
+    foreach (row; BENCH_ROWS) {
+        edge.paint(materials.bench, boxOf(Span(row, row), Span(platform + 1, platform + 1), inside), BENCHES);
+    }
     final switch (depth) {
         case Depth.deep:
             foreach (wall; WALLS) {
@@ -604,14 +645,30 @@ void fittings(Turtle edge, Depth depth, Span inside, Material band) {
             }
             break;
     }
-    stationHalf(edge, depth);
-    stationHalf(reversed(edge), depth);
+    int last = edge.edgeCells() - 1;
+    stationHalf(edge, depth, inside);
+    stationHalf(reversed(edge), depth, Span(last - inside.high, last - inside.low));
 }
 
-void stationHalf(Turtle frame, Depth depth) {
+void staffRoom(Turtle edge, Depth depth) {
+    int floor = bedOf(depth) + platformRiseOf(depth);
+    Span room = Span(floor + 1, floor + STAFF_HEADROOM);
+    Span shell = Span(STAFF_ROOM.low - 1, STAFF_ROOM.high + 1);
+    edge.paint(materials.staffWall, boxOf(shell, Span(floor, floor + STAFF_HEADROOM + 1), Span(STAFF_ALONG.low - 1, STAFF_ALONG.high + 1)));
+    edge.paint(Material.none, boxOf(STAFF_ROOM, room, STAFF_ALONG));
+    edge.paint(materials.staffFloor, boxOf(STAFF_ROOM, Span(floor, floor), STAFF_ALONG));
+    edge.paint(Material.none, boxOf(Span(STATION_WALLS.high, shell.low), room, STAFF_DOOR));
+    edge.paint(materials.locker, boxOf(Span(STAFF_ROOM.high, STAFF_ROOM.high), Span(floor + 1, floor + 2), LOCKERS));
+    edge.paint(materials.table, boxOf(Span(STAFF_ROOM.low + 1, STAFF_ROOM.low + 2), Span(floor + 1, floor + 1), STAFF_TABLE));
+    edge.paint(materials.tunnelLight, boxOf(Span(STAFF_ROOM.low + 2, STAFF_ROOM.low + 2), Span(floor + STAFF_HEADROOM + 1, floor + STAFF_HEADROOM + 1), Span(STAFF_LAMP, STAFF_LAMP)));
+}
+
+void stationHalf(Turtle frame, Depth depth, Span inside) {
     int bed = bedOf(depth);
     foreach (z; PILLARS) {
-        frame.paint(materials.pillar, boxOf(Span(PILLAR, PILLAR), Span(bed + platformRiseOf(depth) + 1, pillarTopOf(depth, z)), Span(z, z)));
+        if (z >= inside.low && z <= inside.high) {
+            frame.paint(materials.pillar, boxOf(Span(PILLAR, PILLAR), Span(bed + platformRiseOf(depth) + 1, pillarTopOf(depth, z)), Span(z, z)));
+        }
     }
     final switch (depth) {
         case Depth.deep:
@@ -646,10 +703,22 @@ bool isCornerYielded(ref const End end, Depth depth) {
     }
 }
 
+bool isEntranceAt(ref const End end, Depth depth) {
+    return !end.isClosed() && !end.isTransfer(depth) && !isCornerYielded(end, depth);
+}
+
+bool hasEntrance(Turtle edge, ref const End end) {
+    return stopOf(edge) == Stop.station && isEntranceAt(end, depthOf(edge));
+}
+
 void stationEnd(ref const End end, Depth depth) {
-    if (!end.isClosed() && !end.isTransfer(depth) && !isCornerYielded(end, depth)) {
+    if (isEntranceAt(end, depth)) {
         entrance(end.frame, depth);
     }
+}
+
+int entranceBeyond(Depth depth) {
+    return ENTRANCE_TOP + 2 - arrivalOf(depth);
 }
 
 void entrance(Turtle frame, Depth depth) {
@@ -660,7 +729,7 @@ void entrance(Turtle frame, Depth depth) {
         frame.paint(materials.platform, boxOf(ENTRANCE, Span(arrival - 1, -step), Span(z, z)));
         frame.paint(Material.none, boxOf(ENTRANCE, Span(1 - step, 0), Span(z, z)));
     }
-    int beyond = ENTRANCE_TOP + steps + 1;
+    int beyond = entranceBeyond(depth);
     frame.paint(materials.entrance, boxOf(Span(ENTRANCE.low - 1, ENTRANCE.low - 1), Span(0, 0), Span(ENTRANCE_TOP + 1, beyond - 1)));
     frame.paint(materials.entrance, boxOf(Span(ENTRANCE.high + 1, ENTRANCE.high + 1), Span(1, 1), Span(ENTRANCE_TOP, beyond)));
     frame.paint(materials.entrance, boxOf(ENTRANCE, Span(1, 1), Span(beyond, beyond)));

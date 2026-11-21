@@ -10,7 +10,7 @@ kind library-piece {
 
 kind library-room {
     weight: number 0.. = 1
-    level: "main" | "basement"
+    level: "main" | "basement" | "niche" | "crypt"
     wall: one -> material
     floor: optional -> material
     light: optional -> material
@@ -38,7 +38,9 @@ kind library-materials {
     staff-wall: one -> material
     catalog: one -> material
     pipe: one -> material
+    crypt: one -> material
     floors: some -> material
     books: some -> material
+    loculi: some -> material
     rooms: some -> library-room
 }

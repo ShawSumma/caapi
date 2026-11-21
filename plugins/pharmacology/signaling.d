@@ -20,7 +20,7 @@ immutable float[TRANSDUCER_COUNT][MESSENGER_COUNT] DRIVE = [
 ];
 
 immutable float[MESSENGER_COUNT][MESSENGER_COUNT] CROSSTALK = [
-    [0.0f, -0.6f, 0.0f],
+    [0.0f, -0.9f, 0.0f],
     [-0.6f, 0.0f, 0.0f],
     [0.4f, 0.4f, 0.0f],
 ];

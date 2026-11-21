@@ -14,7 +14,7 @@ enum float MISMATCH_SCORE = 2;
 enum float CLASH_PENALTY = 4;
 enum float EMPTY_PENALTY = 1;
 enum float BINDING_SCALE = 0.7f;
-enum float REFERENCE_SCORE = 2.5f;
+enum float REFERENCE_SCORE = 5;
 enum Ratio EFFICACY_LIMIT = Ratio(1);
 
 enum PocketKind : ubyte {

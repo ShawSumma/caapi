@@ -95,7 +95,7 @@ Maybe!Molecule coreOf(ref ContentGraph graph, uint material) {
         if (broken > 0) {
             return Maybe!Molecule.init;
         } else {
-            HalfPocket far = HalfPocket.init;
+            HalfPocket far = halves[0];
             if (count == MOST_TARGETS) {
                 far = halves[1];
             }

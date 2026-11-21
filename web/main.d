@@ -172,6 +172,7 @@ struct Session {
         clock = FrameClock.startingAt(started);
         meter = FrameMeter.startingAt(started);
         lastSave = started;
+        openMenu();
         marks.set(SessionMark.titleStale);
     }
 
@@ -270,9 +271,6 @@ struct Session {
         double frameStart = nowMilliseconds();
         double now = nowSeconds();
         Time dt = Time(cast(float) clock.tick(now, MOST_STEP_SECONDS));
-        if (game.screen == Screen.none && !isCaptured) {
-            openMenu();
-        }
         if (game.screen != Screen.none && isCaptured) {
             web_free_pointer();
         }
@@ -450,6 +448,7 @@ struct Session {
         mouse = state;
         if (state == MouseCapture.released && game.screen == Screen.none) {
             controls.letGoAll(game);
+            openMenu();
         } else if (state == MouseCapture.captured && game.screen == Screen.menu) {
             game.closeScreen();
         }

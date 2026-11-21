@@ -4,6 +4,7 @@ const CAPTURE_RELEASED = 0;
 const CAPTURE_CAPTURED = 1;
 const WHEEL_BACK = 4;
 const WHEEL_AHEAD = 5;
+const ESCAPE_KEY = "Escape";
 const LOCK_REFUSED = "the browser refused to capture the mouse; click the game again";
 
 const play = async () => {
@@ -86,7 +87,9 @@ const play = async () => {
             if (name !== undefined && !shortcut && game.exports.web_takes_keys(isCaptured() ? 1 : 0) !== 0) {
                 event.preventDefault();
                 game.exports.web_key_down(game.name(name), event.repeat ? STROKE_REPEATED : STROKE_FIRST);
-                lockIfWanted();
+                if (name !== ESCAPE_KEY) {
+                    lockIfWanted();
+                }
             }
         });
         document.addEventListener("keyup", (event) => {

@@ -26,6 +26,11 @@ blocks-materials blocks:materials {
     railing -> base:steel
     entrance -> base:steel
     transfer -> base:acacia-wood
+    bench -> base:spruce-wood
+    staff-wall -> base:grey-brick
+    staff-floor -> base:concrete
+    locker -> base:steel
+    table -> base:oak-wood
     bands -> [base:red-carpet base:slate base:red-sandstone base:sandstone base:spruce-wood]
 }
 
