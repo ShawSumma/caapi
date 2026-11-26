@@ -171,14 +171,18 @@ PngImage readPng(const(char)* path) {
         fseek(file, 0, SEEK_END);
         long length = ftell(file);
         fseek(file, 0, SEEK_SET);
-        ubyte* bytes = cast(ubyte*) malloc(cast(size_t) length + 1);
-        size_t read = fread(bytes, 1, cast(size_t) length, file);
-        fclose(file);
         PngImage image;
-        if (length > 0 && read == cast(size_t) length) {
-            image = decodePng(bytes[0 .. read]);
+        if (length > 0) {
+            ubyte* bytes = cast(ubyte*) malloc(cast(size_t) length);
+            if (bytes !is null) {
+                size_t read = fread(bytes, 1, cast(size_t) length, file);
+                if (read == cast(size_t) length) {
+                    image = decodePng(bytes[0 .. read]);
+                }
+                free(bytes);
+            }
         }
-        free(bytes);
+        fclose(file);
         return image;
     }
 }

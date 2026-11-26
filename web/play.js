@@ -30,16 +30,32 @@ const play = async () => {
             status.textContent = LOCK_REFUSED;
             status.hidden = false;
         };
+        const requestLock = () => {
+            const raw = canvas.requestPointerLock({unadjustedMovement: true});
+            if (raw instanceof Promise) {
+                return raw.catch((error) => {
+                    if (error.name === "NotSupportedError") {
+                        return canvas.requestPointerLock();
+                    } else {
+                        throw error;
+                    }
+                });
+            } else {
+                return raw;
+            }
+        };
         const lockIfWanted = () => {
             if (!isCaptured() && game.exports.web_wants_lock() !== 0) {
-                const asked = canvas.requestPointerLock();
+                const asked = requestLock();
                 if (asked instanceof Promise) {
                     asked.catch(refused);
                 }
             }
         };
+        let isFirstLockedMotion = false;
         document.addEventListener("pointerlockchange", () => {
             if (isCaptured()) {
+                isFirstLockedMotion = true;
                 status.hidden = true;
                 game.exports.web_capture(CAPTURE_CAPTURED);
             } else {
@@ -74,7 +90,11 @@ const play = async () => {
         });
         document.addEventListener("mousemove", (event) => {
             if (isCaptured()) {
-                game.exports.web_motion(event.movementX, event.movementY);
+                if (isFirstLockedMotion) {
+                    isFirstLockedMotion = false;
+                } else {
+                    game.exports.web_motion(event.movementX, event.movementY);
+                }
             } else {
                 const [x, y] = pixelsOf(event);
                 game.exports.web_pointer(x, y);
