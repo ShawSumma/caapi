@@ -1477,8 +1477,12 @@ void fallsLoss(ref Script world) {
         predictedLost += held / LOST_THIRD;
         world.claim(Topic.falls, "A fall keeps every kind of thing the body held one or two of and loses a third, rounded down, of every kind it held three or more of.", woke && kept == predicted, Measure.of("kind", STRAIN_NAMES[index]), Measure.of("held", held), Measure.of("kept", kept), Measure.of("predicted", predicted));
     }
-    const(Note)* said = &world.game.notes.ptr[world.game.notes.length - 1];
-    world.check(said.kind == NoteKind.woke && said.amount == predictedLost, "the note after the fall says %.0f things were lost, not %u", cast(double) said.amount, predictedLost);
+    if (world.game.notes.length == 0) {
+        world.fail("no note was written after the fall");
+    } else {
+        const(Note)* said = &world.game.notes.ptr[world.game.notes.length - 1];
+        world.check(said.kind == NoteKind.woke && said.amount == predictedLost, "the note after the fall says %.0f things were lost, not %u", cast(double) said.amount, predictedLost);
+    }
 }
 
 void fallsCreative(ref Script world) {
@@ -2228,8 +2232,12 @@ enum uint LEAVES_SLOT = 2;
 enum uint PRESS_SLOT = HOTBAR_SLOTS - 1;
 
 bool isLastTold(ref Script world, Told told) {
-    const(Note)* last = &world.game.notes.ptr[world.game.notes.length - 1];
-    return last.kind == NoteKind.written && last.code == told;
+    if (world.game.notes.length == 0) {
+        return false;
+    } else {
+        const(Note)* last = &world.game.notes.ptr[world.game.notes.length - 1];
+        return last.kind == NoteKind.written && last.code == told;
+    }
 }
 
 bool toldSince(ref Script world, Told told, Time since) {
